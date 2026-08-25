@@ -1,0 +1,40 @@
+name: goodvision-harness
+
+services:
+  harness:
+    build:
+      context: .
+    image: goodvision-harness:demo
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${HARNESS_BIND_ADDRESS:-127.0.0.1}:${HARNESS_PORT:-8080}:8080"
+    environment:
+      HARNESS_CONFIG: /app/config.yaml
+      HARNESS_HOST: 0.0.0.0
+      HARNESS_PORT: 8080
+      HARNESS_DRY_RUN: "${HARNESS_DRY_RUN:-false}"
+      HARNESS_SOURCE_ID: "${HARNESS_SOURCE_ID:-external-camera}"
+      RTSP_URL: "${RTSP_URL:-rtsp://host.docker.internal:8554/live/livestream}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      RESULT_WEBHOOK_URL: "${RESULT_WEBHOOK_URL:-}"
+      HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: "${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 10s
+    networks:
+      default:
+        aliases:
+          - goodvision-harness
+
+networks:
+  default:
+    name: goodvision-demo

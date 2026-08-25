@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:goodvision:harness:analysis-result:v1",
+  "title": "Goodvision analysis result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "schema_version",
+    "message_id",
+    "source_id",
+    "stream_session_id",
+    "sequence",
+    "emitted_at",
+    "frame",
+    "judgments",
+    "objects",
+    "model"
+  ],
+  "properties": {
+    "type": {
+      "const": "analysis_result"
+    },
+    "schema_version": {
+      "const": "1"
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stream_session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_frame_index",
+        "timestamp_seconds",
+        "observed_at",
+        "width",
+        "height",
+        "clock_source"
+      ],
+      "properties": {
+        "source_frame_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timestamp_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "clock_source": {
+          "const": "ingest_estimated"
+        }
+      }
+    },
+    "judgments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_label",
+          "detected",
+          "confidence",
+          "description",
+          "object_ids"
+        ],
+        "properties": {
+          "event_label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "detected": {
+            "type": "boolean"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "object_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {"detected": {"const": true}},
+              "required": ["detected"]
+            },
+            "then": {
+              "properties": {"object_ids": {"minItems": 1}}
+            }
+          }
+        ]
+      }
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "object_id",
+          "label",
+          "bbox"
+        ],
+        "properties": {
+          "object_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "bbox": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["coordinate_system", "x1", "y1", "x2", "y2"],
+            "properties": {
+              "coordinate_system": {
+                "const": "source_normalized_xyxy"
+              },
+              "x1": {"type": "number", "minimum": 0, "maximum": 1},
+              "y1": {"type": "number", "minimum": 0, "maximum": 1},
+              "x2": {"type": "number", "minimum": 0, "maximum": 1},
+              "y2": {"type": "number", "minimum": 0, "maximum": 1}
+            }
+          }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "latency_seconds"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "latency_seconds": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

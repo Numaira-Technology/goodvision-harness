@@ -1,0 +1,89 @@
+input:
+  default_video: null
+
+stream:
+  # The container deployment normally overrides this with RTSP_URL.
+  url: null
+  whep_headers: {}
+
+video:
+  # Model-facing sampling is intentionally slower than the display stream.
+  fps: 1.0
+  realtime: true
+  playback_speed: 1.0
+  max_sampled_frames: null
+  max_image_side: 640
+  jpeg_quality: 80
+
+display:
+  # Continuous raw live-preview frames; analyzed output uses sampled frames.
+  fps: 10.0
+  max_image_side: 960
+  jpeg_quality: 80
+
+sliding_window:
+  size_frames: 1
+  stride_frames: 1
+  include_partial_final_window: false
+
+openrouter:
+  endpoint: https://openrouter.ai/api/v1/chat/completions
+  api_key_env: OPENROUTER_API_KEY
+  timeout_seconds: 60.0
+  # One bounded transport retry covers transient HTTP failures. OpenRouter's
+  # default provider routing supplies provider-level fallbacks.
+  max_retries: 1
+  retry_backoff_seconds: 1.0
+  http_referer: null
+  app_title: Goodvision Harness
+  extra_headers: {}
+
+inference:
+  model: qwen/qwen3.5-35b-a3b
+  event_label: smoking
+  system_prompt: >-
+    You are a grounded event-recognition module for a live camera. Judge only
+    what is visible in the supplied images. Never infer an event from the mere
+    presence of a related object. Return one JSON object and no other text.
+  prompt: |-
+    Decide whether the target event is ACTUALLY HAPPENING in the NEWEST
+    (last) frame. Use earlier frames only as temporal context.
+
+    For smoking, detected=true only when a person is actively smoking in the
+    newest frame: a lit cigarette, cigar, or pipe is being puffed at the
+    mouth, or smoke is visibly being inhaled or exhaled at the mouth.
+
+    The following must be detected=false: merely holding a cigarette; an
+    unlit cigarette; a cigarette pack; reaching for a lighter; unrelated
+    flame, haze, or vapor. If evidence is ambiguous, use detected=false.
+
+    Return relevant visible objects in objects. Every bbox_2d must tightly
+    enclose its object in the NEWEST frame.
+  request_parameters:
+    temperature: 0.0
+    max_tokens: 320
+    reasoning:
+      effort: none
+
+runtime:
+  # Live windows are dropped, not queued, once these slots are occupied.
+  max_concurrent_requests: 4
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+service:
+  source_id: external-camera
+  result_history: 100
+  ready_max_frame_age_seconds: 10.0
+  ready_max_result_age_seconds: 120.0
+  overlay_jpeg_quality: 85
+  webhook:
+    # Optional. RESULT_WEBHOOK_URL overrides this value.
+    url: null
+    secret_env: HARNESS_WEBHOOK_SECRET
+    timeout_seconds: 5.0
+    max_retries: 2
+    retry_backoff_seconds: 0.5
+    queue_size: 100

@@ -1,0 +1,374 @@
+"""Load and validate the streaming-harness YAML configuration."""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import find_dotenv, load_dotenv
+
+from .openrouter import OpenRouterSettings
+
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
+
+
+@dataclass(frozen=True, slots=True)
+class StreamSettings:
+    """Optional network video source and WHEP request headers."""
+
+    url: str | None = None
+    whep_headers: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSettings:
+    """Model-facing frame sampling parameters."""
+
+    fps: float = 2.0
+    realtime: bool = True
+    playback_speed: float = 1.0
+    max_sampled_frames: int | None = None
+    max_image_side: int = 1280
+    jpeg_quality: int = 85
+
+
+@dataclass(frozen=True, slots=True)
+class DisplaySettings:
+    """Browser-facing live feed parameters used when streaming a file."""
+
+    fps: float = 15.0
+    max_image_side: int = 720
+    jpeg_quality: int = 70
+
+
+@dataclass(frozen=True, slots=True)
+class SlidingWindowSettings:
+    size_frames: int = 4
+    stride_frames: int = 2
+    include_partial_final_window: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceSettings:
+    model: str
+    event_label: str
+    system_prompt: str
+    prompt: str
+    request_parameters: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSettings:
+    max_concurrent_requests: int = 4
+
+
+@dataclass(frozen=True, slots=True)
+class ServerSettings:
+    host: str = "127.0.0.1"
+    port: int = 7900
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookSettings:
+    url: str | None = None
+    secret_env: str = "HARNESS_WEBHOOK_SECRET"
+    timeout_seconds: float = 5.0
+    max_retries: int = 2
+    retry_backoff_seconds: float = 0.5
+    queue_size: int = 100
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceSettings:
+    source_id: str = "external-camera"
+    result_history: int = 100
+    ready_max_frame_age_seconds: float = 10.0
+    ready_max_result_age_seconds: float = 120.0
+    overlay_jpeg_quality: int = 85
+    webhook: WebhookSettings = field(default_factory=WebhookSettings)
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessConfig:
+    path: Path
+    default_video: Path | None
+    stream: StreamSettings
+    video: VideoSettings
+    display: DisplaySettings
+    sliding_window: SlidingWindowSettings
+    openrouter: OpenRouterSettings
+    inference: InferenceSettings
+    runtime: RuntimeSettings
+    server: ServerSettings
+    service: ServiceSettings
+
+
+def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
+    dotenv_path = find_dotenv(usecwd=True)
+    if dotenv_path:
+        load_dotenv(dotenv_path, override=False)
+
+    config_path = Path(path).expanduser().resolve()
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    if not isinstance(raw, Mapping):
+        raise TypeError("config root must be a YAML mapping")
+
+    input_section = _mapping_section(raw, "input")
+    stream_section = _mapping_section(raw, "stream")
+    video_section = _mapping_section(raw, "video")
+    display_section = _mapping_section(raw, "display")
+    window_section = _mapping_section(raw, "sliding_window")
+    openrouter_section = _mapping_section(raw, "openrouter")
+    inference_section = _mapping_section(raw, "inference")
+    runtime_section = _mapping_section(raw, "runtime")
+    server_section = _mapping_section(raw, "server")
+    service_section = _mapping_section(raw, "service")
+
+    default_video_value = input_section.get("default_video")
+    default_video = None
+    if default_video_value:
+        default_video = (config_path.parent / str(default_video_value)).resolve()
+
+    stream_url_value = stream_section.get("url")
+    if stream_url_value is not None and not isinstance(stream_url_value, str):
+        raise TypeError("stream.url must be a string or null")
+    stream_url = (
+        stream_url_value.strip() or None if stream_url_value is not None else None
+    )
+
+    whep_headers_value = stream_section.get("whep_headers", {})
+    if whep_headers_value is None:
+        whep_headers_value = {}
+    if not isinstance(whep_headers_value, Mapping):
+        raise TypeError("stream.whep_headers must be a mapping")
+    whep_headers: dict[str, str] = {}
+    for raw_key, raw_value in whep_headers_value.items():
+        key = str(raw_key).strip()
+        if not key:
+            raise ValueError("stream.whep_headers keys must not be empty")
+        if raw_value is None:
+            raise TypeError(f"stream.whep_headers.{key} must be a string")
+        whep_headers[key] = str(raw_value)
+    stream = StreamSettings(url=stream_url, whep_headers=whep_headers)
+
+    video = VideoSettings(
+        fps=_positive_float(video_section.get("fps", 2.0), "video.fps"),
+        realtime=_bool(video_section.get("realtime", True), "video.realtime"),
+        playback_speed=_positive_float(
+            video_section.get("playback_speed", 1.0), "video.playback_speed"
+        ),
+        max_sampled_frames=_optional_positive_int(
+            video_section.get("max_sampled_frames"), "video.max_sampled_frames"
+        ),
+        max_image_side=_positive_int(
+            video_section.get("max_image_side", 1280), "video.max_image_side"
+        ),
+        jpeg_quality=_bounded_int(
+            video_section.get("jpeg_quality", 85),
+            "video.jpeg_quality",
+            minimum=1,
+            maximum=100,
+        ),
+    )
+    display = DisplaySettings(
+        fps=_positive_float(display_section.get("fps", 15.0), "display.fps"),
+        max_image_side=_positive_int(
+            display_section.get("max_image_side", 720), "display.max_image_side"
+        ),
+        jpeg_quality=_bounded_int(
+            display_section.get("jpeg_quality", 70),
+            "display.jpeg_quality",
+            minimum=1,
+            maximum=100,
+        ),
+    )
+    sliding_window = SlidingWindowSettings(
+        size_frames=_positive_int(
+            window_section.get("size_frames", 4), "sliding_window.size_frames"
+        ),
+        stride_frames=_positive_int(
+            window_section.get("stride_frames", 2),
+            "sliding_window.stride_frames",
+        ),
+        include_partial_final_window=_bool(
+            window_section.get("include_partial_final_window", False),
+            "sliding_window.include_partial_final_window",
+        ),
+    )
+
+    request_parameters = inference_section.get("request_parameters") or {}
+    if not isinstance(request_parameters, Mapping):
+        raise TypeError("inference.request_parameters must be a mapping")
+    model = str(inference_section.get("model", "")).strip()
+    event_label = str(inference_section.get("event_label", "")).strip()
+    system_prompt = str(inference_section.get("system_prompt", "")).strip()
+    prompt = str(inference_section.get("prompt", "")).strip()
+    for key, value in {
+        "inference.model": model,
+        "inference.event_label": event_label,
+        "inference.system_prompt": system_prompt,
+        "inference.prompt": prompt,
+    }.items():
+        if not value:
+            raise ValueError(f"{key} must not be empty")
+
+    inference = InferenceSettings(
+        model=model,
+        event_label=event_label,
+        system_prompt=system_prompt,
+        prompt=prompt,
+        request_parameters=dict(request_parameters),
+    )
+    runtime = RuntimeSettings(
+        max_concurrent_requests=_positive_int(
+            runtime_section.get("max_concurrent_requests", 4),
+            "runtime.max_concurrent_requests",
+        )
+    )
+    server = ServerSettings(
+        host=str(server_section.get("host", "127.0.0.1")),
+        port=_positive_int(server_section.get("port", 7900), "server.port"),
+    )
+
+    webhook_value = service_section.get("webhook") or {}
+    if not isinstance(webhook_value, Mapping):
+        raise TypeError("service.webhook must be a mapping")
+    webhook_url_value = webhook_value.get("url")
+    if webhook_url_value is not None and not isinstance(webhook_url_value, str):
+        raise TypeError("service.webhook.url must be a string or null")
+    webhook_url = (
+        webhook_url_value.strip() or None if webhook_url_value is not None else None
+    )
+    webhook = WebhookSettings(
+        url=webhook_url,
+        secret_env=_required_string(
+            webhook_value.get("secret_env", "HARNESS_WEBHOOK_SECRET"),
+            "service.webhook.secret_env",
+        ),
+        timeout_seconds=_positive_float(
+            webhook_value.get("timeout_seconds", 5.0),
+            "service.webhook.timeout_seconds",
+        ),
+        max_retries=_non_negative_int(
+            webhook_value.get("max_retries", 2),
+            "service.webhook.max_retries",
+        ),
+        retry_backoff_seconds=_non_negative_float(
+            webhook_value.get("retry_backoff_seconds", 0.5),
+            "service.webhook.retry_backoff_seconds",
+        ),
+        queue_size=_positive_int(
+            webhook_value.get("queue_size", 100),
+            "service.webhook.queue_size",
+        ),
+    )
+    service = ServiceSettings(
+        source_id=_required_string(
+            service_section.get("source_id", "external-camera"),
+            "service.source_id",
+        ),
+        result_history=_positive_int(
+            service_section.get("result_history", 100),
+            "service.result_history",
+        ),
+        ready_max_frame_age_seconds=_positive_float(
+            service_section.get("ready_max_frame_age_seconds", 10.0),
+            "service.ready_max_frame_age_seconds",
+        ),
+        ready_max_result_age_seconds=_positive_float(
+            service_section.get("ready_max_result_age_seconds", 120.0),
+            "service.ready_max_result_age_seconds",
+        ),
+        overlay_jpeg_quality=_bounded_int(
+            service_section.get("overlay_jpeg_quality", 85),
+            "service.overlay_jpeg_quality",
+            minimum=1,
+            maximum=100,
+        ),
+        webhook=webhook,
+    )
+
+    return HarnessConfig(
+        path=config_path,
+        default_video=default_video,
+        stream=stream,
+        video=video,
+        display=display,
+        sliding_window=sliding_window,
+        openrouter=OpenRouterSettings.from_mapping(openrouter_section),
+        inference=inference,
+        runtime=runtime,
+        server=server,
+        service=service,
+    )
+
+
+def _mapping_section(root: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    section = root.get(name) or {}
+    if not isinstance(section, Mapping):
+        raise TypeError(f"{name} must be a YAML mapping")
+    return section
+
+
+def _bool(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be true or false")
+    return value
+
+
+def _positive_float(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be a positive number")
+    rendered = float(value)
+    if not math.isfinite(rendered) or rendered <= 0:
+        raise ValueError(f"{name} must be a positive number")
+    return rendered
+
+
+def _non_negative_float(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be a non-negative number")
+    rendered = float(value)
+    if not math.isfinite(rendered) or rendered < 0:
+        raise ValueError(f"{name} must be a non-negative number")
+    return rendered
+
+
+def _required_string(value: Any, name: str) -> str:
+    rendered = str(value).strip()
+    if not rendered:
+        raise ValueError(f"{name} must not be empty")
+    return rendered
+
+
+def _non_negative_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _positive_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _optional_positive_int(value: Any, name: str) -> int | None:
+    if value is None:
+        return None
+    return _positive_int(value, name)
+
+
+def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= maximum
+    ):
+        raise ValueError(f"{name} must be an integer from {minimum} to {maximum}")
+    return value

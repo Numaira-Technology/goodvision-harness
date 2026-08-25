@@ -1,0 +1,201 @@
+"""Canonical JSON contract for live analysis results."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Any
+
+ANALYSIS_RESULT_SCHEMA_VERSION = "1"
+BBOX_COORDINATE_SYSTEM = "source_normalized_xyxy"
+
+
+def _required_text(value: str, name: str) -> str:
+    rendered = str(value).strip()
+    if not rendered:
+        raise ValueError(f"{name} must not be empty")
+    return rendered
+
+
+def _confidence(value: float, name: str) -> float:
+    rendered = float(value)
+    if not math.isfinite(rendered) or not 0.0 <= rendered <= 1.0:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return rendered
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedBBox:
+    """Top-left-origin xyxy coordinates relative to the source frame."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+    def __post_init__(self) -> None:
+        values = tuple(float(value) for value in (self.x1, self.y1, self.x2, self.y2))
+        if any(not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in values):
+            raise ValueError("bbox coordinates must be finite values between 0 and 1")
+        if values[2] <= values[0] or values[3] <= values[1]:
+            raise ValueError("bbox must satisfy x2>x1 and y2>y1")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "coordinate_system": BBOX_COORDINATE_SYSTEM,
+            "x1": round(float(self.x1), 6),
+            "y1": round(float(self.y1), 6),
+            "x2": round(float(self.x2), 6),
+            "y2": round(float(self.y2), 6),
+        }
+
+    def to_pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
+        if width < 1 or height < 1:
+            raise ValueError("frame dimensions must be positive")
+        x1 = max(0, min(width - 1, round(self.x1 * width)))
+        y1 = max(0, min(height - 1, round(self.y1 * height)))
+        x2 = max(x1 + 1, min(width, round(self.x2 * width)))
+        y2 = max(y1 + 1, min(height, round(self.y2 * height)))
+        return x1, y1, x2, y2
+
+
+@dataclass(frozen=True, slots=True)
+class GroundedObject:
+    object_id: str
+    label: str
+    bbox: NormalizedBBox
+    confidence: float | None = None
+
+    def __post_init__(self) -> None:
+        _required_text(self.object_id, "object_id")
+        _required_text(self.label, "object label")
+        if self.confidence is not None:
+            _confidence(self.confidence, "object confidence")
+
+    def as_dict(self) -> dict[str, object]:
+        record: dict[str, object] = {
+            "object_id": self.object_id,
+            "label": self.label,
+            "bbox": self.bbox.as_dict(),
+        }
+        if self.confidence is not None:
+            record["confidence"] = round(float(self.confidence), 3)
+        return record
+
+
+@dataclass(frozen=True, slots=True)
+class FrameReference:
+    source_frame_index: int
+    timestamp_seconds: float
+    observed_at: str
+    width: int
+    height: int
+    clock_source: str = "ingest_estimated"
+
+    def __post_init__(self) -> None:
+        if self.source_frame_index < 0:
+            raise ValueError("source_frame_index must be non-negative")
+        if not math.isfinite(self.timestamp_seconds) or self.timestamp_seconds < 0:
+            raise ValueError("timestamp_seconds must be finite and non-negative")
+        _required_text(self.observed_at, "observed_at")
+        if self.width < 1 or self.height < 1:
+            raise ValueError("frame dimensions must be positive")
+        _required_text(self.clock_source, "clock_source")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "source_frame_index": self.source_frame_index,
+            "timestamp_seconds": round(self.timestamp_seconds, 3),
+            "observed_at": self.observed_at,
+            "width": self.width,
+            "height": self.height,
+            "clock_source": self.clock_source,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EventJudgment:
+    event_label: str
+    detected: bool
+    confidence: float
+    description: str
+    object_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _required_text(self.event_label, "event_label")
+        if not isinstance(self.detected, bool):
+            raise TypeError("detected must be true or false")
+        _confidence(self.confidence, "judgment confidence")
+        _required_text(self.description, "description")
+        if any(not str(value).strip() for value in self.object_ids):
+            raise ValueError("object_ids must not contain empty values")
+        if len(set(self.object_ids)) != len(self.object_ids):
+            raise ValueError("object_ids must be unique")
+        if self.detected and not self.object_ids:
+            raise ValueError("detected judgments must reference at least one object")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "event_label": self.event_label,
+            "detected": self.detected,
+            "confidence": round(self.confidence, 3),
+            "description": self.description,
+            "object_ids": list(self.object_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisResult:
+    message_id: str
+    source_id: str
+    stream_session_id: str
+    sequence: int
+    emitted_at: str
+    frame: FrameReference
+    judgments: tuple[EventJudgment, ...]
+    objects: tuple[GroundedObject, ...]
+    model_name: str
+    model_latency_seconds: float
+
+    def __post_init__(self) -> None:
+        for name, value in {
+            "message_id": self.message_id,
+            "source_id": self.source_id,
+            "stream_session_id": self.stream_session_id,
+            "emitted_at": self.emitted_at,
+            "model_name": self.model_name,
+        }.items():
+            _required_text(value, name)
+        if self.sequence < 1:
+            raise ValueError("sequence must be positive")
+        if not self.judgments:
+            raise ValueError("judgments must not be empty")
+        if (
+            not math.isfinite(self.model_latency_seconds)
+            or self.model_latency_seconds < 0
+        ):
+            raise ValueError("model_latency_seconds must be finite and non-negative")
+        object_ids = {item.object_id for item in self.objects}
+        if len(object_ids) != len(self.objects):
+            raise ValueError("object_id values must be unique")
+        referenced = {value for item in self.judgments for value in item.object_ids}
+        if not referenced.issubset(object_ids):
+            raise ValueError("judgments reference unknown objects")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "type": "analysis_result",
+            "schema_version": ANALYSIS_RESULT_SCHEMA_VERSION,
+            "message_id": self.message_id,
+            "source_id": self.source_id,
+            "stream_session_id": self.stream_session_id,
+            "sequence": self.sequence,
+            "emitted_at": self.emitted_at,
+            "frame": self.frame.as_dict(),
+            "judgments": [item.as_dict() for item in self.judgments],
+            "objects": [item.as_dict() for item in self.objects],
+            "model": {
+                "name": self.model_name,
+                "latency_seconds": round(self.model_latency_seconds, 3),
+            },
+        }
