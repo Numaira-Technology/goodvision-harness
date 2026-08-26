@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
@@ -30,7 +30,8 @@ from .contracts import (
     FrameReference,
     GroundedObject,
 )
-from .grounding import GroundingClient, GroundingResponse, build_grounding_client
+from .grounding import GroundingClient
+from .inference import WindowClient, WindowResponse, build_client
 from .organizer import ResultOrganizer
 from .sliding_window import FrameWindow, SampledFrame, iter_sliding_windows
 from .stream_adapter import NetworkStreamAdapter
@@ -39,6 +40,7 @@ from .video_to_stream import (
     VideoFileStream,
     encode_jpeg,
 )
+from .vision_result import VisionResult
 
 FILE_MODE = "file"
 CAMERA_MODE = "camera"
@@ -58,7 +60,7 @@ class SessionCallbacks:
     on_event: Callable[[dict[str, Any]], None] | None = None
     on_state: Callable[[dict[str, Any]], None] | None = None
     on_end: Callable[[str, str | None], None] | None = None
-
+    on_vision_result: Callable[[VisionResult], None] | None = None
     on_analysis_frame: Callable[[AnalysisResult, bytes], None] | None = None
     on_analysis_result: Callable[[AnalysisResult], None] | None = None
 
@@ -69,7 +71,7 @@ class StreamingSession:
     def __init__(
         self,
         config: HarnessConfig,
-        client: GroundingClient,
+        client: WindowClient | GroundingClient,
         callbacks: SessionCallbacks,
         *,
         mode: str,
@@ -113,7 +115,7 @@ class StreamingSession:
     def for_file(
         cls,
         config: HarnessConfig,
-        client: GroundingClient,
+        client: WindowClient | GroundingClient,
         callbacks: SessionCallbacks,
         *,
         video_path: str | Path,
@@ -143,7 +145,7 @@ class StreamingSession:
     def for_stream(
         cls,
         config: HarnessConfig,
-        client: GroundingClient,
+        client: WindowClient | GroundingClient,
         callbacks: SessionCallbacks,
         *,
         stream_url: str,
@@ -168,7 +170,7 @@ class StreamingSession:
     def for_camera(
         cls,
         config: HarnessConfig,
-        client: GroundingClient,
+        client: WindowClient | GroundingClient,
         callbacks: SessionCallbacks,
         *,
         source_id: str = "camera",
@@ -354,7 +356,7 @@ class StreamingSession:
             return
         exc = future.exception()
         if exc is not None:
-            response = GroundingResponse(
+            response = WindowResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
@@ -367,60 +369,96 @@ class StreamingSession:
             record, snapshot = self.organizer.apply(
                 response, elapsed_seconds=self._elapsed()
             )
+            vision_result = None
             analysis_result = None
             analysis_frame_jpeg = None
             classification = response.classification
             if record.get("applied") is True and classification is not None:
-                grounded_objects = tuple(
-                    GroundedObject(
-                        object_id=f"object-{index}",
-                        label=item.label,
-                        bbox=item.bbox,
-                        confidence=item.confidence,
-                    )
-                    for index, item in enumerate(
-                        getattr(classification, "objects", ()), start=1
-                    )
+                # Preserve the original callback and result shape for existing
+                # CLI/library consumers.
+                vision_result = VisionResult(
+                    event_label=self.config.inference.event_label,
+                    detected=classification.detected,
+                    confidence=classification.confidence,
+                    description=classification.description,
+                    window_index=window.index,
+                    window_start_seconds=window.start_timestamp,
+                    window_end_seconds=window.end_timestamp,
                 )
-                newest = window.newest_frame
-                frame_width, frame_height = newest.original_dimensions
-                self._result_sequence += 1
-                analysis_result = AnalysisResult(
-                    message_id=str(uuid4()),
-                    source_id=self.source_id,
-                    stream_session_id=self.stream_session_id,
-                    sequence=self._result_sequence,
-                    emitted_at=_utc_now(),
-                    frame=FrameReference(
-                        source_frame_index=newest.source_frame_index,
-                        timestamp_seconds=newest.timestamp_seconds,
-                        observed_at=newest.observed_at or _utc_now(),
-                        width=frame_width,
-                        height=frame_height,
-                    ),
-                    judgments=(
-                        EventJudgment(
-                            event_label=self.config.inference.event_label,
-                            detected=classification.detected,
-                            confidence=classification.confidence,
-                            description=classification.description,
-                            object_ids=(
-                                tuple(item.object_id for item in grounded_objects)
-                                if classification.detected
-                                else ()
+                if (
+                    self.callbacks.on_analysis_frame is not None
+                    or self.callbacks.on_analysis_result is not None
+                ):
+                    grounded_objects = tuple(
+                        GroundedObject(
+                            object_id=f"object-{index}",
+                            label=item.label,
+                            bbox=item.bbox,
+                            confidence=item.confidence,
+                            attributes=getattr(item, "attributes", {}),
+                        )
+                        for index, item in enumerate(
+                            getattr(classification, "objects", ()), start=1
+                        )
+                    )
+                    event_object_indexes = getattr(
+                        classification, "event_object_indexes", None
+                    )
+                    if event_object_indexes is None:
+                        selected_indexes = (
+                            tuple(range(len(grounded_objects)))
+                            if classification.detected
+                            else ()
+                        )
+                    else:
+                        selected_indexes = tuple(event_object_indexes)
+                    event_object_ids = tuple(
+                        grounded_objects[index].object_id
+                        for index in selected_indexes
+                    )
+                    # The customer contract requires a bbox for a positive.
+                    # Legacy clients remain usable through on_vision_result,
+                    # while the grounded service rejects incomplete positives.
+                    if not classification.detected or event_object_ids:
+                        newest = window.newest_frame
+                        frame_width, frame_height = newest.original_dimensions
+                        self._result_sequence += 1
+                        analysis_result = AnalysisResult(
+                            message_id=str(uuid4()),
+                            source_id=self.source_id,
+                            stream_session_id=self.stream_session_id,
+                            sequence=self._result_sequence,
+                            emitted_at=_utc_now(),
+                            frame=FrameReference(
+                                source_frame_index=newest.source_frame_index,
+                                timestamp_seconds=newest.timestamp_seconds,
+                                observed_at=newest.observed_at or _utc_now(),
+                                width=frame_width,
+                                height=frame_height,
                             ),
-                        ),
-                    ),
-                    objects=grounded_objects,
-                    model_name=self.config.inference.model,
-                    model_latency_seconds=response.latency_seconds,
-                )
-                analysis_frame_jpeg = (
-                    newest.presentation_jpeg_bytes or newest.jpeg_bytes
-                )
+                            judgments=(
+                                EventJudgment(
+                                    event_label=self.config.inference.event_label,
+                                    detected=classification.detected,
+                                    confidence=classification.confidence,
+                                    description=classification.description,
+                                    object_ids=event_object_ids,
+                                ),
+                            ),
+                            objects=grounded_objects,
+                            model_name=self.config.inference.model,
+                            model_latency_seconds=response.latency_seconds,
+                            analysis_kind=getattr(
+                                classification, "analysis_kind", "event"
+                            ),
+                        )
+                        analysis_frame_jpeg = (
+                            newest.presentation_jpeg_bytes or newest.jpeg_bytes
+                        )
             self._emit(
                 record,
                 snapshot,
+                vision_result=vision_result,
                 analysis_result=analysis_result,
                 analysis_frame_jpeg=analysis_frame_jpeg,
             )
@@ -439,6 +477,7 @@ class StreamingSession:
         record: dict[str, Any],
         snapshot: dict[str, Any],
         *,
+        vision_result: VisionResult | None = None,
         analysis_result: AnalysisResult | None = None,
         analysis_frame_jpeg: bytes | None = None,
     ) -> None:
@@ -448,6 +487,8 @@ class StreamingSession:
             self.callbacks.on_event(record)
         if self.callbacks.on_state is not None:
             self.callbacks.on_state(snapshot)
+        if vision_result is not None and self.callbacks.on_vision_result is not None:
+            self.callbacks.on_vision_result(vision_result)
 
         if (
             analysis_result is not None
@@ -463,7 +504,11 @@ class StreamingSession:
 
 
 def _utc_now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 # ----------------------------------------------------------------- headless
@@ -549,18 +594,19 @@ def main(argv: list[str] | None = None) -> int:
     session: StreamingSession | None = None
 
     def on_end(reason: str, error: str | None) -> None:
+        record: dict[str, Any] = {"type": "ended", "reason": reason}
         if error:
-            print(f"harness ended with {reason}: {error}", file=sys.stderr)
+            record["error"] = error
+        if session is not None:
+            record["final_state"] = session.organizer.snapshot()
+        emit(record)
         done.set()
 
-    client = build_grounding_client(
-        config.inference,
-        config.openrouter,
-        dry_run=args.dry_run,
-    )
+    client = build_client(config.inference, config.openrouter, dry_run=args.dry_run)
     callbacks = SessionCallbacks(
+        on_event=emit,
         on_end=on_end,
-        on_analysis_result=lambda result: emit(result.as_dict()),
+        on_vision_result=lambda result: emit(result.as_dict()),
     )
     if stream_url is not None:
         session = StreamingSession.for_stream(

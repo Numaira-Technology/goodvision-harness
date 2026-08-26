@@ -3,11 +3,66 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 ANALYSIS_RESULT_SCHEMA_VERSION = "1"
 BBOX_COORDINATE_SYSTEM = "source_normalized_xyxy"
+
+
+def _freeze_json(value: Any, name: str) -> Any:
+    """Return an immutable representation of a JSON-compatible value."""
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must not contain non-finite numbers")
+        return value
+    if isinstance(value, Mapping):
+        frozen: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{name} keys must be strings")
+            frozen[key] = _freeze_json(item, f"{name}.{key}")
+        return MappingProxyType(frozen)
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            _freeze_json(item, f"{name}[{index}]")
+            for index, item in enumerate(value)
+        )
+    raise TypeError(f"{name} must contain only JSON-compatible values")
+
+
+def readonly_json_mapping(
+    value: Mapping[str, Any] | None,
+    *,
+    name: str = "attributes",
+) -> Mapping[str, Any]:
+    """Validate and deeply freeze a JSON object for use on result records."""
+
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    frozen = _freeze_json(value, name)
+    assert isinstance(frozen, Mapping)
+    return frozen
+
+
+def json_mapping_as_dict(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a mutable JSON-compatible copy of a frozen mapping."""
+
+    def thaw(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            return {key: thaw(child) for key, child in item.items()}
+        if isinstance(item, tuple):
+            return [thaw(child) for child in item]
+        return item
+
+    return {key: thaw(item) for key, item in value.items()}
 
 
 def _required_text(value: str, name: str) -> str:
@@ -65,18 +120,25 @@ class GroundedObject:
     label: str
     bbox: NormalizedBBox
     confidence: float | None = None
+    attributes: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         _required_text(self.object_id, "object_id")
         _required_text(self.label, "object label")
         if self.confidence is not None:
             _confidence(self.confidence, "object confidence")
+        object.__setattr__(
+            self,
+            "attributes",
+            readonly_json_mapping(self.attributes, name="object attributes"),
+        )
 
     def as_dict(self) -> dict[str, object]:
         record: dict[str, object] = {
             "object_id": self.object_id,
             "label": self.label,
             "bbox": self.bbox.as_dict(),
+            "attributes": json_mapping_as_dict(self.attributes),
         }
         if self.confidence is not None:
             record["confidence"] = round(float(self.confidence), 3)
@@ -156,6 +218,7 @@ class AnalysisResult:
     objects: tuple[GroundedObject, ...]
     model_name: str
     model_latency_seconds: float
+    analysis_kind: str = "event"
 
     def __post_init__(self) -> None:
         for name, value in {
@@ -164,6 +227,7 @@ class AnalysisResult:
             "stream_session_id": self.stream_session_id,
             "emitted_at": self.emitted_at,
             "model_name": self.model_name,
+            "analysis_kind": self.analysis_kind,
         }.items():
             _required_text(value, name)
         if self.sequence < 1:
@@ -186,7 +250,9 @@ class AnalysisResult:
         return {
             "type": "analysis_result",
             "schema_version": ANALYSIS_RESULT_SCHEMA_VERSION,
+            "analysis_kind": self.analysis_kind,
             "message_id": self.message_id,
+            "observation_id": self.message_id,
             "source_id": self.source_id,
             "stream_session_id": self.stream_session_id,
             "sequence": self.sequence,

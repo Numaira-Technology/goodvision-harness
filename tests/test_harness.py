@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import threading
+import time
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
@@ -26,9 +27,12 @@ from goodvision_harness.contracts import (
 from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.grounding import (
     DryRunGroundingClient,
+    build_grounding_messages,
     parse_grounded_classification,
 )
+from goodvision_harness.inference import DryRunWindowClient, WindowResponse
 from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
+from goodvision_harness.prompt import BinaryClassification
 from goodvision_harness.result_bus import FrameBus, FramePacket, ResultBus
 from goodvision_harness.service import (
     HarnessRuntime,
@@ -37,8 +41,50 @@ from goodvision_harness.service import (
     create_app,
 )
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
+from goodvision_harness.vision_result import VisionResult
 
 ROOT = Path(__file__).resolve().parents[1]
+
+ORIGINAL_SYSTEM_PROMPT = (
+    "You are the binary perception module for live AI glasses. You receive "
+    "short, chronologically ordered windows of frames sampled from a live "
+    "camera. Judge only what is visibly happening; never infer an event from "
+    "the mere presence of a related object. Prefer false negatives over false "
+    "positives. Answer with a single JSON object - no markdown, no extra text."
+)
+ORIGINAL_PROMPT = (
+    """Decide whether the target event is ACTUALLY HAPPENING in the NEWEST
+(last) frame. Use the earlier frames only as temporal context.
+
+Strict rule: the event itself must be visibly in progress. An object
+associated with the event is NOT the event.
+
+For smoking, detected=true ONLY when the person is actively smoking in
+the newest frame: a lit cigarette/cigar/pipe at the mouth being puffed
+or drawn on, or smoke visibly being inhaled or exhaled at the mouth.
+
+ALL of the following are NOT smoking and must be detected=false:
+- a cigarette/cigar merely visible in the scene, in a pack, or on a table
+- holding or carrying a cigarette away from the mouth, lit or unlit
+- an unlit cigarette in the mouth; cutting, tapping, or preparing one
+- reaching for or fetching a lighter, or a flame not at a cigarette
+- haze or vapor not clearly coming from the person's mouth
+
+If the evidence is ambiguous, answer detected=false.
+
+Respond with only this JSON object:
+"""
+    '{"detected": true or false, "confidence": 0.0-1.0, '
+    '"description": "one short sentence of visible evidence"}'
+)
+BBOX_PROMPT_APPEND = (
+    'For the delivery contract, extend that same JSON object with an "objects"\n'
+    """array. Each relevant visible object must be
+{"label": "...", "confidence": 0.0-1.0, "bbox_2d": [x1, y1, x2, y2]}.
+bbox_2d must tightly enclose the object in the NEWEST frame and use Qwen's
+top-left-origin relative 0..1000 xyxy coordinate grid. If detected=true,
+include at least one valid object; if detected=false, use "objects": []."""
+)
 
 
 def _analysis_result(*, detected: bool = True) -> AnalysisResult:
@@ -88,6 +134,200 @@ def _jpeg(width: int = 200, height: int = 100) -> bytes:
     assert ok
     return encoded.tobytes()
 
+
+def test_original_harness_defaults_and_prompt_are_preserved() -> None:
+    config = load_config(ROOT / "config.yaml")
+
+    assert config.default_video == (ROOT / "example_video.mp4").resolve()
+    assert (
+        config.video.fps,
+        config.video.max_image_side,
+        config.video.jpeg_quality,
+    ) == (2.5, 320, 75)
+    assert (
+        config.display.fps,
+        config.display.max_image_side,
+        config.display.jpeg_quality,
+    ) == (15.0, 720, 70)
+    assert (
+        config.sliding_window.size_frames,
+        config.sliding_window.stride_frames,
+        config.sliding_window.include_partial_final_window,
+    ) == (1, 1, False)
+    assert config.runtime.max_concurrent_requests == 6
+    assert config.openrouter.max_retries == 0
+    assert config.openrouter.app_title is None
+    assert config.server.host == "127.0.0.1"
+    assert config.server.port == 7900
+    assert config.inference.system_prompt == ORIGINAL_SYSTEM_PROMPT
+    assert config.inference.prompt == (
+        f"{ORIGINAL_PROMPT}\n\n{BBOX_PROMPT_APPEND}"
+    )
+    assert config.inference.request_parameters == {
+        "temperature": 0.0,
+        "max_tokens": 96,
+        "reasoning": {"effort": "none"},
+        "provider": {"only": ["coreweave"], "allow_fallbacks": False},
+    }
+    packaged = ROOT / "src" / "goodvision_harness" / "config.yaml"
+    assert packaged.read_text(encoding="utf-8") == (ROOT / "config.yaml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_model_prompt_has_one_bbox_append_and_original_dynamic_suffix() -> None:
+    config = load_config(ROOT / "config.yaml")
+    frame = SampledFrame(
+        sample_index=9,
+        source_frame_index=42,
+        timestamp_seconds=1.25,
+        jpeg_bytes=b"jpeg",
+        width=320,
+        height=180,
+    )
+    window = FrameWindow(index=7, frames=(frame,))
+
+    messages = build_grounding_messages(
+        window,
+        event_label=config.inference.event_label,
+        system_prompt=config.inference.system_prompt,
+        prompt=config.inference.prompt,
+    )
+    assert messages[0] == {"role": "system", "content": ORIGINAL_SYSTEM_PROMPT}
+    prompt_text = messages[1]["content"][0]["text"]
+    assert prompt_text == (
+        f"{ORIGINAL_PROMPT}\n\n{BBOX_PROMPT_APPEND}\n\n"
+        "Target event: smoking\n"
+        "Window: W7 · f9-f9\n"
+        "Sample timestamps: f9=1.250s\n"
+        "The JPEG images follow in chronological order."
+    )
+    assert prompt_text.count("For the delivery contract") == 1
+    assert prompt_text.count('"bbox_2d"') == 1
+
+
+def test_grounded_dry_run_preserves_original_pattern_latency_and_confidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(ROOT / "config.yaml")
+    sleeps: list[float] = []
+    monkeypatch.setattr("goodvision_harness.grounding.time.sleep", sleeps.append)
+    client = DryRunGroundingClient(config.inference)
+    frame = SampledFrame(
+        sample_index=0,
+        source_frame_index=0,
+        timestamp_seconds=0.0,
+        jpeg_bytes=b"jpeg",
+        width=320,
+        height=180,
+    )
+
+    responses = [
+        client.classify_window(FrameWindow(index=index, frames=(frame,)))
+        for index in range(6)
+    ]
+    classifications = [response.classification for response in responses]
+    assert all(item is not None for item in classifications)
+    assert [item.detected for item in classifications if item is not None] == [
+        False,
+        False,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert sleeps == pytest.approx(
+        [0.35 + (index * 13 % 40) / 100.0 for index in range(6)]
+    )
+    positive = classifications[2]
+    assert positive is not None
+    assert positive.confidence == 0.896
+    assert positive.description == "Dry run: smoking visibly active in W2 · f0-f0."
+    assert len(positive.objects) == 1
+    assert positive.objects[0].bbox == NormalizedBBox(0.18, 0.12, 0.72, 0.9)
+    negative = classifications[1]
+    assert negative is not None
+    assert negative.confidence == 0.748
+    assert negative.description == "Dry run: smoking not visible in W1 · f0-f0."
+    assert negative.objects == ()
+    assert all(response.raw_text is None for response in responses)
+
+
+def test_vision_result_contract_is_unchanged() -> None:
+    result = VisionResult(
+        event_label="smoking",
+        detected=True,
+        confidence=0.9126,
+        description="Visible evidence.",
+        window_index=4,
+        window_start_seconds=1.23456,
+        window_end_seconds=1.67891,
+    )
+    assert result.as_dict() == {
+        "type": "vision_result",
+        "schema_version": "1",
+        "event_label": "smoking",
+        "detected": True,
+        "confidence": 0.913,
+        "description": "Visible evidence.",
+        "window_index": 4,
+        "window_start_seconds": 1.235,
+        "window_end_seconds": 1.679,
+    }
+
+
+def test_legacy_window_client_keeps_vision_result_without_fabricating_bbox() -> None:
+    config = load_config(ROOT / "config.yaml")
+    client = DryRunWindowClient(config.inference)
+    legacy: list[VisionResult] = []
+    grounded: list[AnalysisResult] = []
+    session = StreamingSession.for_camera(
+        config,
+        client,
+        SessionCallbacks(
+            on_vision_result=legacy.append,
+            on_analysis_result=grounded.append,
+        ),
+    )
+    frame = SampledFrame(
+        sample_index=0,
+        source_frame_index=8,
+        timestamp_seconds=1.5,
+        jpeg_bytes=_jpeg(),
+        width=200,
+        height=100,
+    )
+    window = FrameWindow(index=4, frames=(frame,))
+    future: Future[Any] = Future()
+    future.set_result(
+        WindowResponse(
+            window=window,
+            classification=BinaryClassification(
+                detected=True,
+                confidence=0.88,
+                description="Visible evidence.",
+            ),
+            raw_text=None,
+            latency_seconds=0.25,
+        )
+    )
+
+    session._on_window_done(future, window)
+
+    assert [result.as_dict() for result in legacy] == [
+        {
+            "type": "vision_result",
+            "schema_version": "1",
+            "event_label": "smoking",
+            "detected": True,
+            "confidence": 0.88,
+            "description": "Visible evidence.",
+            "window_index": 4,
+            "window_start_seconds": 1.5,
+            "window_end_seconds": 1.5,
+        }
+    ]
+    assert grounded == []
 
 def test_qwen_bbox_is_normalized_and_validated() -> None:
     classification = parse_grounded_classification(
@@ -145,19 +385,38 @@ def test_analysis_result_matches_versioned_json_schema() -> None:
     assert payload["frame"]["width"] == 1920
 
 
-def test_pipeline_emits_grounded_result_with_source_frame_mapping() -> None:
+def test_pipeline_emits_grounded_result_with_source_frame_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = load_config(ROOT / "config.yaml")
+    monkeypatch.setattr("goodvision_harness.grounding.time.sleep", lambda _: None)
     client = DryRunGroundingClient(config.inference)
     emitted: list[AnalysisResult] = []
+    legacy: list[VisionResult] = []
     emitted_frames: list[tuple[AnalysisResult, bytes]] = []
+    callback_order: list[str] = []
+
+    def on_analysis_frame(result: AnalysisResult, jpeg: bytes) -> None:
+        callback_order.append("analysis_frame")
+        emitted_frames.append((result, jpeg))
+
+    def on_analysis_result(result: AnalysisResult) -> None:
+        callback_order.append("analysis_result")
+        emitted.append(result)
+
+    def on_vision_result(result: VisionResult) -> None:
+        callback_order.append("vision_result")
+        legacy.append(result)
+
     session = StreamingSession.for_camera(
         config,
         client,
         SessionCallbacks(
-            on_analysis_frame=lambda result, jpeg: emitted_frames.append(
-                (result, jpeg)
-            ),
-            on_analysis_result=emitted.append,
+            on_event=lambda _: callback_order.append("event"),
+            on_state=lambda _: callback_order.append("state"),
+            on_analysis_frame=on_analysis_frame,
+            on_analysis_result=on_analysis_result,
+            on_vision_result=on_vision_result,
         ),
         source_id="camera-a",
     )
@@ -174,13 +433,23 @@ def test_pipeline_emits_grounded_result_with_source_frame_mapping() -> None:
         observed_at="2026-08-25T10:00:00.000Z",
         presentation_jpeg_bytes=presentation_jpeg,
     )
-    window = FrameWindow(index=1, frames=(frame,))
+    window = FrameWindow(index=2, frames=(frame,))
 
     future: Future[Any] = Future()
     future.set_result(client.classify_window(window))
     session._on_window_done(future, window)
 
+    assert callback_order == [
+        "event",
+        "state",
+        "vision_result",
+        "analysis_frame",
+        "analysis_result",
+    ]
     assert len(emitted) == 1
+    assert len(legacy) == 1
+    assert legacy[0].detected is True
+    assert legacy[0].confidence == emitted[0].judgments[0].confidence
     payload = emitted[0].as_dict()
     assert payload["source_id"] == "camera-a"
     assert payload["frame"]["source_frame_index"] == 77
@@ -189,8 +458,11 @@ def test_pipeline_emits_grounded_result_with_source_frame_mapping() -> None:
     assert emitted_frames == [(emitted[0], presentation_jpeg)]
 
 
-def test_pending_future_remains_until_delivery_callbacks_finish() -> None:
+def test_pending_future_remains_until_delivery_callbacks_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = load_config(ROOT / "config.yaml")
+    monkeypatch.setattr("goodvision_harness.grounding.time.sleep", lambda _: None)
     client = DryRunGroundingClient(config.inference)
     callback_entered = threading.Event()
     release_callback = threading.Event()
@@ -212,7 +484,7 @@ def test_pending_future_remains_until_delivery_callbacks_finish() -> None:
         width=200,
         height=100,
     )
-    window = FrameWindow(index=1, frames=(frame,))
+    window = FrameWindow(index=2, frames=(frame,))
     future: Future[Any] = Future()
     future.set_result(client.classify_window(window))
     with session._pending_lock:
@@ -271,6 +543,51 @@ def test_result_and_frame_buses_are_bounded_and_resumable() -> None:
     assert packet.jpeg in part
 
 
+def test_result_and_frame_bus_reset_clear_old_session_and_remain_usable() -> None:
+    results = ResultBus(history_size=2)
+    first = results.publish({"message_id": "old-1"})
+    second = results.publish({"message_id": "old-2"})
+    old_epoch = results.epoch
+
+    results.reset()
+
+    assert results.epoch != old_epoch
+    assert results.latest() is None
+    assert results.records_after(0) == ()
+    replacement = results.publish({"message_id": "new-1"})
+    assert replacement.cursor == second.cursor + 1
+    assert [item.payload for item in results.records_after(second.cursor)] == [
+        {"message_id": "new-1"}
+    ]
+    assert first.cursor < second.cursor < replacement.cursor
+
+    frames = FrameBus()
+    old_packet = FramePacket(
+        jpeg=_jpeg(),
+        media_timestamp=1.0,
+        frame_sequence=1,
+        observed_at="2026-08-25T10:00:00.000Z",
+        analysis_message_id="old-message",
+    )
+    old_version = frames.publish(old_packet)
+    reset_version = frames.reset()
+
+    assert reset_version > old_version
+    assert frames.latest() is None
+    assert frames.wait_after(old_version) is None
+
+    new_packet = FramePacket(
+        jpeg=_jpeg(),
+        media_timestamp=2.0,
+        frame_sequence=2,
+        observed_at="2026-08-25T10:00:01.000Z",
+        analysis_message_id="new-message",
+    )
+    new_version = frames.publish(new_packet)
+    assert new_version > reset_version
+    assert frames.wait_after(reset_version) == (new_version, new_packet)
+
+
 class _StubRuntime:
     def __init__(self) -> None:
         self.results = ResultBus()
@@ -310,6 +627,35 @@ class _StubRuntime:
         return {"pipeline_state": "running", "ready": True}
 
 
+def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_url = (
+        "rtsp://camera-user:camera-secret@private-camera.example:8554/live"
+    )
+    monkeypatch.setenv("RTSP_URL", configured_url)
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
+    app = create_app(lambda: runtime)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/ui/info")
+        assert response.status_code == 200
+        info = response.json()
+
+    assert info["sample_fps"] == 2.5
+    assert info["max_image_side"] == 320
+    assert info["jpeg_quality"] == 75
+    assert info["max_concurrent_requests"] == 6
+    assert info["configured_stream"] is True
+    assert info["configured_stream_protocol"] == "rtsp"
+    assert "stream_url" not in info
+    rendered = json.dumps(info, sort_keys=True)
+    assert configured_url not in rendered
+    assert "camera-secret" not in rendered
+    assert "private-camera.example" not in rendered
+
+
 def test_http_delivery_surface_and_degraded_liveness() -> None:
     stub = _StubRuntime()
     app = create_app(lambda: stub)  # type: ignore[arg-type]
@@ -341,6 +687,111 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert client.get("/v1/status").json()["pipeline_state"] == (
             "configuration_error"
         )
+
+
+def test_browser_camera_dry_run_delivers_raw_and_correlated_bbox_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RESULT_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr("goodvision_harness.grounding.time.sleep", lambda _: None)
+    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
+    owner = "browser-test"
+    camera_jpeg = _jpeg(width=200, height=100)
+
+    try:
+        session = runtime.start_camera(dry_run=True, owner=owner)
+        assert session["mode"] == "camera"
+        assert session["dry_run"] is True
+        for _ in range(3):
+            assert runtime.push_camera_frame(
+                camera_jpeg,
+                width=200,
+                height=100,
+                owner=owner,
+            )
+
+        result_record = None
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            latest = runtime.results.latest()
+            if latest is not None and latest.payload["judgments"][0]["detected"]:
+                result_record = latest
+                break
+            time.sleep(0.01)
+
+        assert result_record is not None
+        result = result_record.payload
+        assert result["type"] == "analysis_result"
+        assert result["frame"]["source_frame_index"] == 2
+        assert result["frame"]["width"] == 200
+        assert result["frame"]["height"] == 100
+        assert result["judgments"][0]["object_ids"] == ["object-1"]
+        assert result["objects"][0]["bbox"]["coordinate_system"] == (
+            "source_normalized_xyxy"
+        )
+
+        raw_update = runtime.preview_frames.latest()
+        assert raw_update is not None
+        _, raw_packet = raw_update
+        assert raw_packet.jpeg == camera_jpeg
+        assert raw_packet.frame_sequence == 2
+        assert raw_packet.analysis_message_id is None
+
+        annotated_update = runtime.frames.latest()
+        assert annotated_update is not None
+        _, annotated_packet = annotated_update
+        assert annotated_packet.analysis_message_id == result["message_id"]
+        assert annotated_packet.frame_sequence == result["frame"][
+            "source_frame_index"
+        ]
+        assert cv2.imdecode(
+            np.frombuffer(annotated_packet.jpeg, dtype=np.uint8),
+            cv2.IMREAD_COLOR,
+        ) is not None
+    finally:
+        runtime.stop()
+
+
+def test_camera_runtime_rejects_invalid_frames_and_second_active_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RESULT_WEBHOOK_URL", raising=False)
+    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
+
+    try:
+        runtime.start_camera(dry_run=True, owner="owner-a")
+        with pytest.raises(RuntimeError, match="already running"):
+            runtime.start_camera(dry_run=True, owner="owner-b")
+
+        with pytest.raises(ValueError, match="exceeds 320px"):
+            runtime.push_camera_frame(
+                _jpeg(width=321, height=100),
+                width=321,
+                height=100,
+                owner="owner-a",
+            )
+        with pytest.raises(ValueError, match="dimensions do not match"):
+            runtime.push_camera_frame(
+                _jpeg(width=200, height=100),
+                width=199,
+                height=100,
+                owner="owner-a",
+            )
+        with pytest.raises(ValueError, match="not a valid JPEG"):
+            runtime.push_camera_frame(
+                b"not-a-jpeg",
+                width=1,
+                height=1,
+                owner="owner-a",
+            )
+        assert not runtime.push_camera_frame(
+            _jpeg(width=200, height=100),
+            width=200,
+            height=100,
+            owner="owner-b",
+        )
+    finally:
+        runtime.stop()
 
 
 def test_readiness_requires_video_and_successful_analysis() -> None:
@@ -413,7 +864,7 @@ def test_webhook_close_discards_backlog_and_worker_can_exit(
     delivery.start()
     payload = _analysis_result().as_dict()
     assert delivery.submit(payload)
-    assert entered.wait(1.0)
+    assert entered.wait(3.0)
     payload["message_id"] = "message-2"
     assert delivery.submit(payload)
     try:

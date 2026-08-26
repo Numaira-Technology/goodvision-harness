@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,22 @@ class InferenceSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class FaceSettings:
+    """Local InsightFace recognition and enrollment settings."""
+
+    model_name: str = "buffalo_l"
+    model_root: Path = Path(".models/insightface")
+    provider: str = "CPUExecutionProvider"
+    det_size: int = 640
+    threshold: float = 0.4
+    min_face_size: int = 80
+    sample_fps: float = 2.5
+    max_image_side: int = 1280
+    jpeg_quality: int = 90
+    gallery_path: Path = Path(".goodvision/face-gallery.json")
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeSettings:
     max_concurrent_requests: int = 4
 
@@ -102,6 +119,7 @@ class HarnessConfig:
     sliding_window: SlidingWindowSettings
     openrouter: OpenRouterSettings
     inference: InferenceSettings
+    face: FaceSettings
     runtime: RuntimeSettings
     server: ServerSettings
     service: ServiceSettings
@@ -125,6 +143,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     window_section = _mapping_section(raw, "sliding_window")
     openrouter_section = _mapping_section(raw, "openrouter")
     inference_section = _mapping_section(raw, "inference")
+    face_section = _mapping_section(raw, "face")
     runtime_section = _mapping_section(raw, "runtime")
     server_section = _mapping_section(raw, "server")
     service_section = _mapping_section(raw, "service")
@@ -224,6 +243,48 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         prompt=prompt,
         request_parameters=dict(request_parameters),
     )
+    face = FaceSettings(
+        model_name=_required_string(
+            face_section.get("model_name", "buffalo_l"), "face.model_name"
+        ),
+        model_root=_configured_path(
+            os.environ.get("FACE_MODEL_ROOT")
+            or face_section.get("model_root", ".models/insightface"),
+            config_path=config_path,
+            name="face.model_root",
+        ),
+        provider=_execution_provider(
+            face_section.get("provider", "CPUExecutionProvider")
+        ),
+        det_size=_positive_int(face_section.get("det_size", 640), "face.det_size"),
+        threshold=_bounded_float(
+            face_section.get("threshold", 0.4),
+            "face.threshold",
+            minimum=-1.0,
+            maximum=1.0,
+        ),
+        min_face_size=_positive_int(
+            face_section.get("min_face_size", 80), "face.min_face_size"
+        ),
+        sample_fps=_positive_float(
+            face_section.get("sample_fps", 2.5), "face.sample_fps"
+        ),
+        max_image_side=_positive_int(
+            face_section.get("max_image_side", 1280), "face.max_image_side"
+        ),
+        jpeg_quality=_bounded_int(
+            face_section.get("jpeg_quality", 90),
+            "face.jpeg_quality",
+            minimum=1,
+            maximum=100,
+        ),
+        gallery_path=_configured_path(
+            os.environ.get("FACE_GALLERY_PATH")
+            or face_section.get("gallery_path", ".goodvision/face-gallery.json"),
+            config_path=config_path,
+            name="face.gallery_path",
+        ),
+    )
     runtime = RuntimeSettings(
         max_concurrent_requests=_positive_int(
             runtime_section.get("max_concurrent_requests", 4),
@@ -302,6 +363,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         sliding_window=sliding_window,
         openrouter=OpenRouterSettings.from_mapping(openrouter_section),
         inference=inference,
+        face=face,
         runtime=runtime,
         server=server,
         service=service,
@@ -372,3 +434,37 @@ def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
     ):
         raise ValueError(f"{name} must be an integer from {minimum} to {maximum}")
     return value
+
+
+def _bounded_float(
+    value: Any,
+    name: str,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be a number")
+    rendered = float(value)
+    if not math.isfinite(rendered) or not minimum <= rendered <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return rendered
+
+
+def _configured_path(value: Any, *, config_path: Path, name: str) -> Path:
+    rendered = str(value).strip()
+    if not rendered:
+        raise ValueError(f"{name} must not be empty")
+    path = Path(rendered).expanduser()
+    if not path.is_absolute():
+        path = config_path.parent / path
+    return path.resolve()
+
+
+def _execution_provider(value: Any) -> str:
+    provider = _required_string(value, "face.provider")
+    if provider not in {"CPUExecutionProvider", "CUDAExecutionProvider"}:
+        raise ValueError(
+            "face.provider must be CPUExecutionProvider or CUDAExecutionProvider"
+        )
+    return provider

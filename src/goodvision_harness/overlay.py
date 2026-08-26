@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import cv2
@@ -17,11 +17,22 @@ def draw_overlay(
     description: str,
     objects: Sequence[Any],
     stale: bool = False,
+    analysis_kind: str = "event",
 ) -> Any:
     """Return a copy of ``bgr`` with a compact verdict and normalized boxes."""
 
     rendered = bgr.copy()
     height, width = rendered.shape[:2]
+    if analysis_kind == "face_recognition":
+        return _draw_face_overlay(
+            rendered,
+            detected=detected,
+            confidence=confidence,
+            description=description,
+            objects=objects,
+            stale=stale,
+        )
+
     positive = bool(detected) and not stale
     color = (40, 40, 220) if positive else (55, 180, 70)
     if stale:
@@ -45,6 +56,84 @@ def draw_overlay(
     state = "STALE" if stale else (event_label.upper() if detected else "CLEAR")
     title = f"{state}  {float(confidence):.2f}"
     _text_with_background(rendered, title[:100], (12, 28), color, scale=0.7)
+    if description:
+        _text_with_background(
+            rendered,
+            _ascii_safe(description)[:110],
+            (12, 55),
+            (45, 45, 45),
+            scale=0.48,
+        )
+    return rendered
+
+
+def _draw_face_overlay(
+    rendered: Any,
+    *,
+    detected: bool,
+    confidence: float,
+    description: str,
+    objects: Sequence[Any],
+    stale: bool,
+) -> Any:
+    height, width = rendered.shape[:2]
+    colors = {
+        "known": (55, 180, 70),
+        "unknown": (40, 40, 220),
+        "unusable": (105, 105, 105),
+    }
+    statuses: list[str] = []
+    for item in objects:
+        attributes = getattr(item, "attributes", {})
+        if not isinstance(attributes, Mapping):
+            attributes = {}
+        status = str(attributes.get("status", "unusable"))
+        if status not in colors:
+            status = "unusable"
+        statuses.append(status)
+        bbox = getattr(item, "bbox", None)
+        if bbox is None:
+            continue
+        try:
+            x1, y1, x2, y2 = bbox.to_pixels(width, height)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        color = colors[status]
+        cv2.rectangle(
+            rendered,
+            (x1, y1),
+            (max(x1, x2 - 1), max(y1, y2 - 1)),
+            color,
+            2,
+        )
+        if status == "known":
+            label = str(attributes.get("name") or "known")
+        elif status == "unknown":
+            label = "UNKNOWN"
+        else:
+            label = "unusable"
+        similarity = attributes.get("similarity")
+        if isinstance(similarity, (int, float)) and not isinstance(similarity, bool):
+            label += f" {float(similarity):.2f}"
+        _text_with_background(rendered, label[:80], (x1, max(18, y1)), color)
+
+    if stale:
+        state, color = "STALE", (90, 150, 220)
+    elif detected or "unknown" in statuses:
+        state, color = "UNKNOWN", colors["unknown"]
+    elif not statuses:
+        state, color = "NO FACE", colors["unusable"]
+    elif all(status == "unusable" for status in statuses):
+        state, color = "NO USABLE FACE", colors["unusable"]
+    else:
+        state, color = "CLEAR", colors["known"]
+    _text_with_background(
+        rendered,
+        f"{state}  {float(confidence):.2f}"[:100],
+        (12, 28),
+        color,
+        scale=0.7,
+    )
     if description:
         _text_with_background(
             rendered,

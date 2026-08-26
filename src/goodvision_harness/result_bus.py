@@ -40,6 +40,14 @@ class ResultBus:
             self._condition.notify_all()
             return _copy_result(record)
 
+    def reset(self) -> None:
+        """Clear one session's history while keeping cursors monotonic."""
+
+        with self._condition:
+            self._history.clear()
+            self.epoch = str(uuid4())
+            self._condition.notify_all()
+
     def latest(self) -> ResultRecord | None:
         with self._condition:
             if not self._history:
@@ -106,6 +114,15 @@ class FrameBus:
         with self._condition:
             self._version += 1
             self._latest = packet
+            self._condition.notify_all()
+            return self._version
+
+    def reset(self) -> int:
+        """Clear the latest frame and wake clients waiting on the old session."""
+
+        with self._condition:
+            self._version += 1
+            self._latest = None
             self._condition.notify_all()
             return self._version
 

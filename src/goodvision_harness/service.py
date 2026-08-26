@@ -7,19 +7,23 @@ import copy
 import json
 import logging
 import os
+import struct
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC
+from dataclasses import replace
+from datetime import timezone
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from typing import Any
+from uuid import uuid4
 
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.websockets import WebSocketDisconnect
 
 from .config import (
     DEFAULT_CONFIG_PATH,
@@ -29,24 +33,40 @@ from .config import (
 )
 from .contracts import AnalysisResult
 from .delivery import WebhookDelivery
+from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
 from .grounding import build_grounding_client
+from .openrouter import api_key_present
 from .overlay import draw_overlay
-from .pipeline import SessionCallbacks, StreamingSession
+from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .result_bus import FrameBus, FramePacket, ResultBus
 from .stream_adapter import parse_stream_source
+from .visual_memory import (
+    VisualMemoryRecord,
+    VisualMemorySink,
+)
 
 LOGGER = logging.getLogger(__name__)
 MJPEG_BOUNDARY = "goodvision-frame"
+CAMERA_FRAME_HEADER = struct.Struct(">HH")
+CAMERA_FRAME_MAX_BYTES = 2_000_000
+EVENT_LABEL_MAX_CHARS = 80
+PERSON_FIELD_MAX_CHARS = 120
+FACE_ENROLLMENT_MAX_BYTES = 10_000_000
+EVENT_ANALYSIS_MODE = "event"
+FACE_ANALYSIS_MODE = "face"
+ANALYSIS_MODES = frozenset({EVENT_ANALYSIS_MODE, FACE_ANALYSIS_MODE})
 
 
 class HarnessRuntime:
-    """Own the RTSP session and expose thread-safe delivery state."""
+    """Own one active stream or browser-camera session."""
 
     def __init__(
         self,
         config: HarnessConfig | None,
         *,
         config_error: str | None = None,
+        memory_sink: VisualMemorySink | None = None,
+        face_runtime: FaceRecognitionRuntime | None = None,
     ) -> None:
         try:
             dry_run = _env_bool("HARNESS_DRY_RUN", False)
@@ -61,22 +81,35 @@ class HarnessRuntime:
             os.environ.get("HARNESS_SOURCE_ID", "").strip() or self.settings.source_id
         )
         self.results = ResultBus(self.settings.result_history)
-        # ``frames`` carries one exact analyzed frame per result. The separate
-        # preview bus remains smooth and intentionally has no delayed boxes.
         self.frames = FrameBus()
         self.preview_frames = FrameBus()
-        self._state_lock = Lock()
+        self._state_lock = RLock()
+        self._control_lock = RLock()
         self._session: StreamingSession | None = None
+        self._session_mode: str | None = None
+        self._camera_owner: str | None = None
+        self._camera_frame_sequence = 0
+        self._camera_max_image_side = (
+            config.video.max_image_side if config is not None else 0
+        )
+        self._session_started_monotonic: float | None = None
+        self._generation = 0
         self._delivery: WebhookDelivery | None = None
+        self._delivery_initialized = False
+        self._memory_sink = memory_sink
+        self._face_runtime = face_runtime
         self._last_frame_monotonic: float | None = None
         self._last_result_monotonic: float | None = None
-        self._stopping = False
+        self._closed = False
         self._state: dict[str, Any] = {
             "service_started_at": _utc_now(),
             "source_id": self.source_id,
             "pipeline_state": (
-                "configuration_error" if config_error else "not_started"
+                "configuration_error" if config_error else "idle"
             ),
+            "input_mode": None,
+            "analysis_mode": EVENT_ANALYSIS_MODE,
+            "generation": 0,
             "ready": False,
             "last_frame_at": None,
             "last_result_at": None,
@@ -87,9 +120,15 @@ class HarnessRuntime:
             "end_reason": None,
             "stream": None,
             "stream_session_id": None,
+            "event_label": (
+                config.inference.event_label if config is not None else None
+            ),
             "model": config.inference.model if config is not None else None,
             "dry_run": self.dry_run,
             "webhook_enabled": False,
+            "memory_enabled": memory_sink is not None,
+            "memory_records_accepted": 0,
+            "memory_records_dropped": 0,
             "pipeline": None,
         }
 
@@ -103,80 +142,495 @@ class HarnessRuntime:
             return cls(None, config_error=f"configuration error: {exc}")
         return cls(config)
 
-    def start(self) -> None:
-        if self.config is None or self.config_error is not None:
-            return
-        stream_url = (
+    def configured_stream_url(self) -> str:
+        if self.config is None:
+            return ""
+        return (
             os.environ.get("RTSP_URL", "").strip()
             or os.environ.get("HARNESS_STREAM_URL", "").strip()
-            or self.config.stream.url
+            or (self.config.stream.url or "")
         )
-        if not stream_url:
-            self._update_state(
-                pipeline_state="configuration_error",
-                last_error=(
-                    "no video source configured; set RTSP_URL, "
-                    "HARNESS_STREAM_URL, or stream.url"
-                ),
-            )
-            return
+
+    def ui_info(self) -> dict[str, Any]:
+        if self.config is None:
+            return {
+                "configured": False,
+                "error": self.config_error or "configuration unavailable",
+            }
+        stream_url = self.configured_stream_url()
+        protocol = None
+        if stream_url:
+            try:
+                protocol = parse_stream_source(stream_url).protocol
+            except ValueError:
+                protocol = None
+        return {
+            "configured": True,
+            "model": self.config.inference.model,
+            "event_label": self.config.inference.event_label,
+            "sample_fps": self.config.video.fps,
+            "max_image_side": self.config.video.max_image_side,
+            "jpeg_quality": self.config.video.jpeg_quality,
+            "window": {
+                "size_frames": self.config.sliding_window.size_frames,
+                "stride_frames": self.config.sliding_window.stride_frames,
+            },
+            "max_concurrent_requests": self.config.runtime.max_concurrent_requests,
+            "api_key_present": api_key_present(self.config.openrouter),
+            "dry_run": self.dry_run,
+            "configured_stream": bool(stream_url),
+            "configured_stream_protocol": protocol,
+            "analysis_modes": sorted(ANALYSIS_MODES),
+            "face": {
+                "model_name": self.config.face.model_name,
+                "sample_fps": self.config.face.sample_fps,
+                "max_image_side": self.config.face.max_image_side,
+                "jpeg_quality": self.config.face.jpeg_quality,
+                "threshold": self.config.face.threshold,
+            },
+        }
+
+    def face_gallery(self) -> dict[str, Any]:
+        """Return an embedding-free view of the local known-person gallery."""
 
         try:
-            source = parse_stream_source(stream_url)
-            client = build_grounding_client(
-                self.config.inference,
-                self.config.openrouter,
-                dry_run=self.dry_run,
-            )
-            self._delivery = self._build_delivery()
-            if self._delivery is not None:
-                self._delivery.start()
-            callbacks = SessionCallbacks(
-                on_display_frame=self._on_display_frame,
-                on_state=self._on_pipeline_state,
-                on_end=self._on_end,
-                on_analysis_frame=self._on_analysis_frame,
-                on_analysis_result=self._on_analysis_result,
-            )
-            self._session = StreamingSession.for_stream(
-                self.config,
-                client,
-                callbacks,
-                stream_url=stream_url,
-                whep_headers=self.config.stream.whep_headers,
-                source_id=self.source_id,
-            )
+            people = self._ensure_face_runtime().list_people()
+        except Exception as exc:
+            LOGGER.warning("could not open face gallery", exc_info=True)
+            return {
+                "ready": False,
+                "people": [],
+                "sample_count": 0,
+                "error": str(exc),
+            }
+        public_people = [
+            {
+                "person_id": person.person_id,
+                "name": person.name,
+                "samples": person.sample_count,
+                "sample_count": person.sample_count,
+            }
+            for person in people
+        ]
+        return {
+            "ready": True,
+            "people": public_people,
+            "sample_count": sum(person.sample_count for person in people),
+        }
+
+    def enroll_face(
+        self,
+        person_id: str,
+        name: str,
+        image_bytes: bytes,
+    ) -> dict[str, Any]:
+        person = self._ensure_face_runtime().enroll(person_id, name, image_bytes)
+        return {
+            "ready": True,
+            "person": {
+                "person_id": person.person_id,
+                "name": person.name,
+                "samples": person.sample_count,
+                "sample_count": person.sample_count,
+            },
+        }
+
+    def delete_face(self, person_id: str) -> bool:
+        return self._ensure_face_runtime().delete_person(person_id)
+
+    def _ensure_face_runtime(self) -> FaceRecognitionRuntime:
+        if self.config is None:
+            raise RuntimeError(self.config_error or "configuration unavailable")
+        with self._control_lock:
+            if self._face_runtime is None:
+                face = self.config.face
+                self._face_runtime = FaceRecognitionRuntime(
+                    FaceRecognizerConfig(
+                        model_name=face.model_name,
+                        model_root=face.model_root,
+                        provider=face.provider,
+                        det_size=face.det_size,
+                        threshold=face.threshold,
+                        min_face_size=face.min_face_size,
+                        gallery_path=face.gallery_path,
+                    )
+                )
+            return self._face_runtime
+
+    def start(self) -> None:
+        """Initialize delivery and optionally start the configured network stream."""
+
+        if self.config is None or self.config_error is not None:
+            return
+        try:
+            with self._control_lock:
+                self._ensure_delivery()
+            autostart = _env_bool("HARNESS_AUTOSTART", True)
+            stream_url = self.configured_stream_url()
+            if autostart and stream_url:
+                self.start_stream(stream_url)
+                return
             self._update_state(
-                pipeline_state="starting",
+                pipeline_state="idle",
                 last_error=None,
-                stream={
-                    "protocol": source.protocol,
-                    "host": source.host,
-                },
-                stream_session_id=self._session.stream_session_id,
                 webhook_enabled=self._delivery is not None,
             )
-            self._session.start()
         except Exception as exc:
             LOGGER.exception("could not start harness runtime")
-            if self._delivery is not None:
-                self._delivery.close()
-                self._delivery = None
             self._update_state(
                 pipeline_state="error",
                 last_error=str(exc),
                 ready=False,
             )
 
-    def stop(self) -> None:
-        self._stopping = True
-        session = self._session
-        if session is not None:
+    def start_stream(
+        self,
+        stream_url: str | None = None,
+        *,
+        dry_run: bool | None = None,
+        event_label: str | None = None,
+        analysis_mode: str = EVENT_ANALYSIS_MODE,
+    ) -> dict[str, Any]:
+        url = (stream_url or "").strip() or self.configured_stream_url()
+        if not url:
+            raise ValueError("provide an RTSP, RTMP, or WebRTC/WHEP stream URL")
+        source = parse_stream_source(url)
+        return self._start_session(
+            STREAM_MODE,
+            stream_url=url,
+            stream_protocol=source.protocol,
+            stream_host=source.host,
+            dry_run=dry_run,
+            event_label=event_label,
+            analysis_mode=analysis_mode,
+        )
+
+    def start_camera(
+        self,
+        *,
+        dry_run: bool | None = None,
+        event_label: str | None = None,
+        analysis_mode: str = EVENT_ANALYSIS_MODE,
+        owner: str | None = None,
+    ) -> dict[str, Any]:
+        return self._start_session(
+            CAMERA_MODE,
+            dry_run=dry_run,
+            event_label=event_label,
+            analysis_mode=analysis_mode,
+            camera_owner=owner,
+        )
+
+    def _start_session(
+        self,
+        mode: str,
+        *,
+        stream_url: str | None = None,
+        stream_protocol: str | None = None,
+        stream_host: str | None = None,
+        dry_run: bool | None = None,
+        event_label: str | None = None,
+        analysis_mode: str = EVENT_ANALYSIS_MODE,
+        camera_owner: str | None = None,
+    ) -> dict[str, Any]:
+        if self.config is None or self.config_error is not None:
+            raise RuntimeError(self.config_error or "configuration unavailable")
+        if mode not in {CAMERA_MODE, STREAM_MODE}:
+            raise ValueError(f"unsupported input mode: {mode}")
+
+        selected_analysis = str(analysis_mode).strip().lower()
+        if selected_analysis not in ANALYSIS_MODES:
+            raise ValueError("analysis_mode must be event or face")
+
+        if selected_analysis == FACE_ANALYSIS_MODE:
+            label = "unknown_person"
+            use_dry_run = False
+        else:
+            label = (event_label or self.config.inference.event_label).strip()
+            if not label:
+                label = self.config.inference.event_label
+            label = label[:EVENT_LABEL_MAX_CHARS]
+            use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
+
+        with self._control_lock:
+            if self._closed:
+                raise RuntimeError("harness service is stopping")
+            if self._session is not None and self._session.running:
+                raise RuntimeError(
+                    "a harness session is already running; stop it first"
+                )
+            self._ensure_delivery()
+
+            if selected_analysis == FACE_ANALYSIS_MODE:
+                face_runtime = self._ensure_face_runtime()
+                face = self.config.face
+                session_config = replace(
+                    self.config,
+                    video=replace(
+                        self.config.video,
+                        fps=face.sample_fps,
+                        max_image_side=face.max_image_side,
+                        jpeg_quality=face.jpeg_quality,
+                    ),
+                    sliding_window=replace(
+                        self.config.sliding_window,
+                        size_frames=1,
+                        stride_frames=1,
+                        include_partial_final_window=False,
+                    ),
+                    inference=face_runtime.settings,
+                    runtime=replace(
+                        self.config.runtime,
+                        max_concurrent_requests=1,
+                    ),
+                )
+                client = face_runtime
+            else:
+                session_config = self.config
+                if label != self.config.inference.event_label:
+                    session_config = replace(
+                        self.config,
+                        inference=replace(self.config.inference, event_label=label),
+                    )
+                client = build_grounding_client(
+                    session_config.inference,
+                    session_config.openrouter,
+                    dry_run=use_dry_run,
+                )
+            generation = self._generation + 1
+            callbacks = SessionCallbacks(
+                on_display_frame=(
+                    (
+                        lambda jpeg, timestamp, sequence: self._guarded_callback(
+                            generation,
+                            self._on_display_frame,
+                            jpeg,
+                            timestamp,
+                            sequence,
+                        )
+                    )
+                    if mode == STREAM_MODE
+                    else None
+                ),
+                on_state=lambda state: self._guarded_callback(
+                    generation, self._on_pipeline_state, state
+                ),
+                on_end=lambda reason, error: self._guarded_callback(
+                    generation, self._on_end, reason, error
+                ),
+                on_analysis_frame=lambda result, jpeg: self._guarded_callback(
+                    generation, self._on_analysis_frame, result, jpeg
+                ),
+                on_analysis_result=lambda result: self._guarded_callback(
+                    generation, self._on_analysis_result, result
+                ),
+            )
+            if mode == STREAM_MODE:
+                assert stream_url is not None
+                session = StreamingSession.for_stream(
+                    session_config,
+                    client,
+                    callbacks,
+                    stream_url=stream_url,
+                    whep_headers=session_config.stream.whep_headers,
+                    source_id=self.source_id,
+                )
+            else:
+                session = StreamingSession.for_camera(
+                    session_config,
+                    client,
+                    callbacks,
+                    source_id=self.source_id,
+                )
+
+            self.results.reset()
+            self.frames.reset()
+            self.preview_frames.reset()
+            with self._state_lock:
+                self._generation = generation
+                self._session = session
+                self._session_mode = mode
+                self._camera_owner = camera_owner if mode == CAMERA_MODE else None
+                self._camera_frame_sequence = 0
+                self._camera_max_image_side = session_config.video.max_image_side
+                self._session_started_monotonic = time.monotonic()
+                self._last_frame_monotonic = None
+                self._last_result_monotonic = None
+                self._state.update(
+                    {
+                        "pipeline_state": "starting",
+                        "input_mode": mode,
+                        "analysis_mode": selected_analysis,
+                        "generation": generation,
+                        "last_frame_at": None,
+                        "last_result_at": None,
+                        "source_frames_received": 0,
+                        "analysis_frames_published": 0,
+                        "results_published": 0,
+                        "last_error": None,
+                        "end_reason": None,
+                        "stream": (
+                            {
+                                "protocol": stream_protocol,
+                                "host": stream_host,
+                            }
+                            if mode == STREAM_MODE
+                            else None
+                        ),
+                        "stream_session_id": session.stream_session_id,
+                        "event_label": label,
+                        "model": session_config.inference.model,
+                        "dry_run": use_dry_run,
+                        "webhook_enabled": self._delivery is not None,
+                        "pipeline": None,
+                    }
+                )
+            try:
+                session.start()
+            except Exception:
+                with self._state_lock:
+                    self._session = None
+                    self._session_mode = None
+                    self._camera_owner = None
+                    self._state.update(
+                        {
+                            "pipeline_state": "error",
+                            "input_mode": None,
+                            "last_error": "could not start streaming session",
+                        }
+                    )
+                raise
+
+            response: dict[str, Any] = {
+                "type": "session",
+                "mode": mode,
+                "analysis_mode": selected_analysis,
+                "generation": generation,
+                "stream_session_id": session.stream_session_id,
+                "event_label": label,
+                "model": session_config.inference.model,
+                "dry_run": use_dry_run,
+            }
+            if stream_protocol is not None:
+                response["stream_protocol"] = stream_protocol
+            return response
+
+    def stop_session(self, *, camera_owner: str | None = None) -> bool:
+        """Stop the current run but keep the service available for another."""
+
+        with self._control_lock:
+            with self._state_lock:
+                if (
+                    camera_owner is not None
+                    and (
+                        self._session_mode != CAMERA_MODE
+                        or self._camera_owner != camera_owner
+                    )
+                ):
+                    return False
+                session = self._session
+                if session is None:
+                    self._state.update(
+                        {"pipeline_state": "idle", "input_mode": None, "ready": False}
+                    )
+                    return False
+                self._generation += 1
+                self._state.update(
+                    {
+                        "pipeline_state": "stopping",
+                        "generation": self._generation,
+                        "ready": False,
+                    }
+                )
+
             session.stop()
             session.join(timeout=5.0)
+            if session.running:
+                self._update_state(
+                    pipeline_state="error",
+                    last_error="the previous video session did not stop in time",
+                )
+                return False
+
+            with self._state_lock:
+                self._session = None
+                self._session_mode = None
+                self._camera_owner = None
+                self._session_started_monotonic = None
+                self._camera_max_image_side = self.config.video.max_image_side
+                self._state.update(
+                    {
+                        "pipeline_state": "idle",
+                        "input_mode": None,
+                        "ready": False,
+                        "stream": None,
+                    }
+                )
+            return True
+
+    def stop_camera_owned_by(self, owner: str) -> None:
+        self.stop_session(camera_owner=owner)
+
+    def stop(self) -> None:
+        with self._control_lock:
+            self._closed = True
+        self.stop_session()
         if self._delivery is not None:
             self._delivery.close(timeout_seconds=5.0)
         self._update_state(pipeline_state="stopped", ready=False)
+
+    def push_camera_frame(
+        self,
+        jpeg: bytes,
+        *,
+        width: int,
+        height: int,
+        owner: str | None = None,
+    ) -> bool:
+        if self.config is None:
+            return False
+        if not jpeg or len(jpeg) > CAMERA_FRAME_MAX_BYTES:
+            raise ValueError("camera JPEG is empty or too large")
+        if width < 1 or height < 1:
+            raise ValueError("camera frame dimensions must be positive")
+        max_image_side = self._camera_max_image_side
+        if max(width, height) > max_image_side:
+            raise ValueError(
+                f"camera frame exceeds {max_image_side}px"
+            )
+        encoded = np.frombuffer(jpeg, dtype=np.uint8)
+        image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("camera payload is not a valid JPEG")
+        actual_height, actual_width = image.shape[:2]
+        if (actual_width, actual_height) != (width, height):
+            raise ValueError("camera JPEG dimensions do not match its header")
+
+        with self._control_lock:
+            session = self._session
+            if (
+                session is None
+                or self._session_mode != CAMERA_MODE
+                or not session.running
+                or (self._camera_owner is not None and owner != self._camera_owner)
+            ):
+                return False
+            accepted = session.push_camera_frame(jpeg, width=width, height=height)
+            if not accepted:
+                return False
+            sequence = self._camera_frame_sequence
+            self._camera_frame_sequence += 1
+            started = self._session_started_monotonic or time.monotonic()
+            timestamp = max(0.0, time.monotonic() - started)
+            generation = self._generation
+            self._guarded_callback(
+                generation,
+                self._on_display_frame,
+                jpeg,
+                timestamp,
+                sequence,
+            )
+            return True
 
     def status(self) -> dict[str, Any]:
         with self._state_lock:
@@ -193,9 +647,16 @@ class HarnessRuntime:
             state = self._state["pipeline_state"]
             last_frame = self._last_frame_monotonic
             last_result = self._last_result_monotonic
-        if state in {"configuration_error", "error", "stopped"}:
+            session = self._session
+        if state in {
+            "configuration_error",
+            "error",
+            "stopped",
+            "idle",
+            "ended",
+            "stopping",
+        }:
             return False, str(state)
-        session = self._session
         if session is None or not session.running:
             return False, "pipeline_not_running"
         if last_frame is None:
@@ -208,6 +669,14 @@ class HarnessRuntime:
         if now - last_result > self.settings.ready_max_result_age_seconds:
             return False, "analysis_stale"
         return True, "ready"
+
+    def _ensure_delivery(self) -> None:
+        if self._delivery_initialized:
+            return
+        self._delivery = self._build_delivery()
+        if self._delivery is not None:
+            self._delivery.start()
+        self._delivery_initialized = True
 
     def _build_delivery(self) -> WebhookDelivery | None:
         assert self.config is not None
@@ -225,8 +694,37 @@ class HarnessRuntime:
             queue_size=webhook.queue_size,
         )
 
+    def _guarded_callback(
+        self,
+        generation: int,
+        callback: Callable[..., None],
+        *args: Any,
+    ) -> None:
+        with self._state_lock:
+            if generation != self._generation:
+                return
+        callback(*args)
+
     def _on_analysis_frame(self, result: AnalysisResult, jpeg: bytes) -> None:
         source_jpeg = bytes(jpeg)
+        if self._memory_sink is not None:
+            try:
+                accepted = self._memory_sink.submit(
+                    VisualMemoryRecord(
+                        observation=result.as_dict(),
+                        evidence_jpeg=source_jpeg,
+                    )
+                )
+            except Exception:
+                LOGGER.warning(
+                    "visual memory sink rejected an observation",
+                    exc_info=True,
+                )
+                accepted = False
+            memory_key = (
+                "memory_records_accepted" if accepted else "memory_records_dropped"
+            )
+            self._update_state(**{memory_key: int(self._state[memory_key]) + 1})
         try:
             rendered = _render_analysis_jpeg(
                 source_jpeg,
@@ -234,7 +732,6 @@ class HarnessRuntime:
                 quality=self.settings.overlay_jpeg_quality,
             )
         except (cv2.error, TypeError, ValueError):
-            # Preserve time correlation even if visualization rendering fails.
             LOGGER.warning("could not render analysis overlay", exc_info=True)
             rendered = source_jpeg
         self.frames.publish(
@@ -246,8 +743,7 @@ class HarnessRuntime:
                 analysis_message_id=result.message_id,
             )
         )
-        with self._state_lock:
-            frame_count = int(self._state["analysis_frames_published"]) + 1
+        frame_count = int(self._state["analysis_frames_published"]) + 1
         self._update_state(
             analysis_frames_published=frame_count,
             last_analysis_frame_at=_utc_now(),
@@ -256,9 +752,8 @@ class HarnessRuntime:
     def _on_analysis_result(self, result: AnalysisResult) -> None:
         payload = result.as_dict()
         self.results.publish(payload)
-        with self._state_lock:
-            result_count = int(self._state["results_published"]) + 1
-            self._last_result_monotonic = time.monotonic()
+        result_count = int(self._state["results_published"]) + 1
+        self._last_result_monotonic = time.monotonic()
         self._update_state(
             last_result_at=_utc_now(),
             results_published=result_count,
@@ -282,9 +777,8 @@ class HarnessRuntime:
                 observed_at=observed_at,
             )
         )
-        with self._state_lock:
-            frame_count = int(self._state["source_frames_received"]) + 1
-            self._last_frame_monotonic = time.monotonic()
+        frame_count = int(self._state["source_frames_received"]) + 1
+        self._last_frame_monotonic = time.monotonic()
         self._update_state(
             pipeline_state="running",
             last_frame_at=observed_at,
@@ -294,12 +788,14 @@ class HarnessRuntime:
         )
 
     def _on_pipeline_state(self, state: dict[str, Any]) -> None:
-        self._update_state(pipeline=copy.deepcopy(state))
+        values: dict[str, Any] = {"pipeline": copy.deepcopy(state)}
+        pipeline_error = state.get("last_error")
+        if pipeline_error:
+            values["last_error"] = str(pipeline_error)
+        self._update_state(**values)
 
     def _on_end(self, reason: str, error: str | None) -> None:
-        next_state = "stopped" if self._stopping or reason == "stopped" else "ended"
-        if error:
-            next_state = "error"
+        next_state = "error" if error else "ended"
         self._update_state(
             pipeline_state=next_state,
             ready=False,
@@ -323,8 +819,13 @@ def _render_analysis_jpeg(
     if image is None:
         raise ValueError("display callback did not contain a valid JPEG")
     judgment = analysis.judgments[0]
-    referenced = set(judgment.object_ids)
-    objects = tuple(item for item in analysis.objects if item.object_id in referenced)
+    if analysis.analysis_kind == "face_recognition":
+        objects = analysis.objects
+    else:
+        referenced = set(judgment.object_ids)
+        objects = tuple(
+            item for item in analysis.objects if item.object_id in referenced
+        )
     rendered = draw_overlay(
         image,
         event_label=judgment.event_label,
@@ -332,6 +833,7 @@ def _render_analysis_jpeg(
         confidence=judgment.confidence,
         description=judgment.description,
         objects=objects,
+        analysis_kind=analysis.analysis_kind,
     )
     ok, output = cv2.imencode(
         ".jpg",
@@ -366,7 +868,119 @@ def create_app(
 
     @application.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index() -> str:
-        return _DASHBOARD_HTML
+        return Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
+
+    @application.get("/v1/ui/info")
+    async def ui_info(request: Request) -> dict[str, Any]:
+        return _runtime(request).ui_info()
+
+    @application.websocket("/ws")
+    async def control_socket(websocket: WebSocket) -> None:
+        await websocket.accept()
+        runtime: HarnessRuntime = websocket.app.state.runtime
+        owner = str(uuid4())
+        await websocket.send_json({"type": "hello", **runtime.ui_info()})
+        try:
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                text_message = message.get("text")
+                if text_message is not None:
+                    try:
+                        payload = json.loads(text_message)
+                    except json.JSONDecodeError:
+                        await websocket.send_json(
+                            {"type": "error", "message": "control message must be JSON"}
+                        )
+                        continue
+                    if not isinstance(payload, dict):
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "control message must be an object",
+                            }
+                        )
+                        continue
+                    command = payload.get("type")
+                    if command == "start":
+                        mode = str(payload.get("mode") or "")
+                        analysis_mode = str(
+                            payload.get("analysis_mode") or EVENT_ANALYSIS_MODE
+                        )
+                        requested_dry_run = payload.get("dry_run")
+                        if requested_dry_run is not None and not isinstance(
+                            requested_dry_run, bool
+                        ):
+                            await websocket.send_json(
+                                {"type": "error", "message": "dry_run must be boolean"}
+                            )
+                            continue
+                        event_label = str(payload.get("event_label") or "").strip()
+                        try:
+                            if mode == CAMERA_MODE:
+                                response = await asyncio.to_thread(
+                                    runtime.start_camera,
+                                    dry_run=requested_dry_run,
+                                    event_label=event_label,
+                                    analysis_mode=analysis_mode,
+                                    owner=owner,
+                                )
+                            elif mode == STREAM_MODE:
+                                response = await asyncio.to_thread(
+                                    runtime.start_stream,
+                                    str(payload.get("stream_url") or ""),
+                                    dry_run=requested_dry_run,
+                                    event_label=event_label,
+                                    analysis_mode=analysis_mode,
+                                )
+                            else:
+                                raise ValueError("mode must be camera or stream")
+                        except Exception as exc:
+                            await websocket.send_json(
+                                {"type": "error", "message": str(exc)}
+                            )
+                        else:
+                            await websocket.send_json(response)
+                    elif command == "stop":
+                        await asyncio.to_thread(runtime.stop_session)
+                        await websocket.send_json(
+                            {"type": "ended", "reason": "stopped", "error": None}
+                        )
+                    else:
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": f"unknown command: {command!r}",
+                            }
+                        )
+                    continue
+
+                data = message.get("bytes")
+                if data is None:
+                    continue
+                if len(data) <= CAMERA_FRAME_HEADER.size:
+                    await websocket.send_json(
+                        {"type": "error", "message": "camera frame is truncated"}
+                    )
+                    continue
+                width, height = CAMERA_FRAME_HEADER.unpack_from(data)
+                try:
+                    await asyncio.to_thread(
+                        runtime.push_camera_frame,
+                        data[CAMERA_FRAME_HEADER.size :],
+                        width=width,
+                        height=height,
+                        owner=owner,
+                    )
+                except ValueError as exc:
+                    await websocket.send_json(
+                        {"type": "error", "message": str(exc)}
+                    )
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            await asyncio.to_thread(runtime.stop_camera_owned_by, owner)
 
     @application.get("/health/live")
     async def health_live() -> dict[str, str]:
@@ -384,6 +998,64 @@ def create_app(
     @application.get("/v1/status")
     async def status(request: Request) -> dict[str, Any]:
         return _runtime(request).status()
+
+    @application.get("/v1/faces/gallery")
+    async def face_gallery(request: Request) -> dict[str, Any]:
+        return await asyncio.to_thread(_runtime(request).face_gallery)
+
+    @application.post("/v1/faces/gallery/{person_id}")
+    async def enroll_face(
+        person_id: str,
+        request: Request,
+        name: str = Query(min_length=1, max_length=PERSON_FIELD_MAX_CHARS),
+    ) -> dict[str, Any]:
+        rendered_id = person_id.strip()
+        if not rendered_id or len(rendered_id) > PERSON_FIELD_MAX_CHARS:
+            raise HTTPException(status_code=400, detail="invalid person_id")
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > FACE_ENROLLMENT_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="enrollment image is too large",
+                    )
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="invalid Content-Length",
+                ) from None
+        image_bytes = await request.body()
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="enrollment image is empty")
+        if len(image_bytes) > FACE_ENROLLMENT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="enrollment image is too large")
+        try:
+            return await asyncio.to_thread(
+                _runtime(request).enroll_face,
+                rendered_id,
+                name.strip(),
+                image_bytes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @application.delete("/v1/faces/gallery/{person_id}")
+    async def delete_face(person_id: str, request: Request) -> dict[str, Any]:
+        try:
+            deleted = await asyncio.to_thread(
+                _runtime(request).delete_face,
+                person_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not deleted:
+            raise HTTPException(status_code=404, detail="person not found")
+        return {"deleted": True, "person_id": person_id}
 
     @application.get("/v1/results/latest")
     async def latest_result(request: Request) -> JSONResponse:
@@ -549,7 +1221,11 @@ def _mjpeg_part(packet: FramePacket) -> bytes:
 def _utc_now() -> str:
     from datetime import datetime
 
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -568,82 +1244,6 @@ def main() -> None:
     host = os.environ.get("HARNESS_HOST", "0.0.0.0")
     port = int(os.environ.get("HARNESS_PORT", "8080"))
     uvicorn.run(app, host=host, port=port)
-
-
-_DASHBOARD_HTML = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Goodvision Harness</title>
-  <style>
-    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-    body { margin: 0; padding: 24px; background: #101318; color: #edf2f7; }
-    main { max-width: 1200px; margin: auto; display: grid; gap: 20px; }
-    h1 { margin: 0; font-size: 24px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 20px;
-    }
-    .card {
-      background: #191f28;
-      border: 1px solid #2b3441;
-      border-radius: 12px;
-      padding: 16px;
-    }
-    img {
-      width: 100%;
-      min-height: 320px;
-      object-fit: contain;
-      background: #080a0d;
-      border-radius: 8px;
-    }
-    pre {
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      max-height: 520px;
-      overflow: auto;
-    }
-    .muted { color: #9aabba; }
-    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
-  </style>
-</head>
-<body><main>
-  <h1>Goodvision Streaming Harness</h1>
-  <div class="muted">RTSP in → public LLM API → JSON + annotated MJPEG out</div>
-  <div class="grid">
-    <section class="card">
-      <h2>Analyzed frame</h2>
-      <div class="muted">One time-aligned frame per JSON result</div>
-      <img src="/v1/video/stream.mjpeg" alt="Waiting for analyzed frame">
-    </section>
-    <section class="card">
-      <h2>Live input</h2>
-      <div class="muted">Continuous preview without delayed boxes</div>
-      <img src="/v1/video/live/stream.mjpeg" alt="Waiting for live stream">
-    </section>
-    <section class="card">
-      <h2>Status</h2><pre id="status">Loading…</pre>
-      <h2>Latest result</h2><pre id="result">Waiting…</pre>
-    </section>
-  </div>
-</main>
-<script>
-const statusNode = document.querySelector("#status");
-const resultNode = document.querySelector("#result");
-async function updateStatus() {
-  try {
-    const response = await fetch("/v1/status", {cache: "no-store"});
-    statusNode.textContent = JSON.stringify(await response.json(), null, 2);
-  } catch (error) { statusNode.textContent = String(error); }
-}
-setInterval(updateStatus, 2000); updateStatus();
-const events = new EventSource("/v1/results/events");
-events.addEventListener("analysis_result", event => {
-  resultNode.textContent = JSON.stringify(JSON.parse(event.data), null, 2);
-});
-</script></body></html>"""
 
 
 app = create_app()

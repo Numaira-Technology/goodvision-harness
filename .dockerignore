@@ -20,3 +20,5 @@ personal
 *.webm
 logs
 output
+.models
+.goodvision

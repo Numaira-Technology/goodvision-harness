@@ -17,6 +17,7 @@ from .sliding_window import FrameWindow
 
 if TYPE_CHECKING:
     from .grounding import GroundingResponse
+    from .inference import WindowResponse
 
 # Decision lifecycle: warming (no result yet) -> live (newest window applied).
 STATUS_WARMING = "warming"
@@ -65,7 +66,7 @@ class ResultOrganizer:
             return record, self._snapshot_locked()
 
     def apply(
-        self, response: GroundingResponse, *, elapsed_seconds: float
+        self, response: WindowResponse | GroundingResponse, *, elapsed_seconds: float
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Fold one finished response into counters and, if newest, the decision."""
 

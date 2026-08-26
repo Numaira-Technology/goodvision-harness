@@ -21,3 +21,5 @@ dist/
 logs/
 output/
 tmp/
+.models/
+.goodvision/

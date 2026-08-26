@@ -24,7 +24,15 @@
     "schema_version": {
       "const": "1"
     },
+    "analysis_kind": {
+      "type": "string",
+      "minLength": 1
+    },
     "message_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observation_id": {
       "type": "string",
       "minLength": 1
     },
@@ -156,6 +164,9 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1
+          },
+          "attributes": {
+            "type": "object"
           },
           "bbox": {
             "type": "object",

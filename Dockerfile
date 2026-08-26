@@ -12,6 +12,7 @@ RUN apt-get update \
         ca-certificates \
         ffmpeg \
         libgl1 \
+        libgomp1 \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -19,13 +20,14 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir '.[face]'
 
 COPY config.yaml ./config.yaml
 
 RUN groupadd --system --gid 10001 harness \
     && useradd --system --uid 10001 --gid harness --home-dir /nonexistent harness \
-    && chown -R harness:harness /app
+    && mkdir -p /models /data \
+    && chown -R harness:harness /app /models /data
 
 USER 10001:10001
 

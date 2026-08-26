@@ -1,77 +1,134 @@
 input:
-  default_video: null
+  # Resolved relative to this config file when no --video argument is supplied.
+  default_video: example_video.mp4
 
 stream:
-  # The container deployment normally overrides this with RTSP_URL.
+  # Optional RTSP/RTMP/WHEP source. Keep credentials in a deployment-only config.
   url: null
   whep_headers: {}
 
 video:
-  # Model-facing sampling is intentionally slower than the display stream.
-  fps: 1.0
+  # Frames sampled from the live stream per second and sent to the model.
+  # Independent of the source file's native frame rate.
+  fps: 2.5
   realtime: true
   playback_speed: 1.0
   max_sampled_frames: null
-  max_image_side: 640
-  jpeg_quality: 80
+  max_image_side: 320
+  jpeg_quality: 75
 
 display:
-  # Continuous raw live-preview frames; analyzed output uses sampled frames.
-  fps: 10.0
-  max_image_side: 960
-  jpeg_quality: 80
+  # Browser-facing live feed when streaming a file (camera mode previews
+  # locally in the browser and never uses this path).
+  fps: 15.0
+  max_image_side: 720
+  jpeg_quality: 70
 
 sliding_window:
+  # Classify the newest frame every 0.4s with no window-collection delay:
+  # f0, f1, f2, ...
   size_frames: 1
   stride_frames: 1
   include_partial_final_window: false
 
 openrouter:
+  # OpenRouter route selected by the live visual-latency benchmark below.
   endpoint: https://openrouter.ai/api/v1/chat/completions
   api_key_env: OPENROUTER_API_KEY
   timeout_seconds: 60.0
-  # One bounded transport retry covers transient HTTP failures. OpenRouter's
-  # default provider routing supplies provider-level fallbacks.
-  max_retries: 1
+  # Avoid retrying provider errors into stale live results.
+  max_retries: 0
   retry_backoff_seconds: 1.0
   http_referer: null
-  app_title: Goodvision Harness
+  app_title: null
   extra_headers: {}
 
 inference:
+  # Fastest sustained route measured: OpenRouter -> CoreWeave -> Qwen3.5.
   model: qwen/qwen3.5-35b-a3b
   event_label: smoking
   system_prompt: >-
-    You are a grounded event-recognition module for a live camera. Judge only
-    what is visible in the supplied images. Never infer an event from the mere
-    presence of a related object. Return one JSON object and no other text.
+    You are the binary perception module for live AI glasses. You receive
+    short, chronologically ordered windows of frames sampled from a live
+    camera. Judge only what is visibly happening; never infer an event from
+    the mere presence of a related object. Prefer false negatives over false
+    positives. Answer with a single JSON object - no markdown, no extra text.
   prompt: |-
     Decide whether the target event is ACTUALLY HAPPENING in the NEWEST
-    (last) frame. Use earlier frames only as temporal context.
+    (last) frame. Use the earlier frames only as temporal context.
 
-    For smoking, detected=true only when a person is actively smoking in the
-    newest frame: a lit cigarette, cigar, or pipe is being puffed at the
-    mouth, or smoke is visibly being inhaled or exhaled at the mouth.
+    Strict rule: the event itself must be visibly in progress. An object
+    associated with the event is NOT the event.
 
-    The following must be detected=false: merely holding a cigarette; an
-    unlit cigarette; a cigarette pack; reaching for a lighter; unrelated
-    flame, haze, or vapor. If evidence is ambiguous, use detected=false.
+    For smoking, detected=true ONLY when the person is actively smoking in
+    the newest frame: a lit cigarette/cigar/pipe at the mouth being puffed
+    or drawn on, or smoke visibly being inhaled or exhaled at the mouth.
 
-    Return relevant visible objects in objects. Every bbox_2d must tightly
-    enclose its object in the NEWEST frame.
+    ALL of the following are NOT smoking and must be detected=false:
+    - a cigarette/cigar merely visible in the scene, in a pack, or on a table
+    - holding or carrying a cigarette away from the mouth, lit or unlit
+    - an unlit cigarette in the mouth; cutting, tapping, or preparing one
+    - reaching for or fetching a lighter, or a flame not at a cigarette
+    - haze or vapor not clearly coming from the person's mouth
+
+    If the evidence is ambiguous, answer detected=false.
+
+    Respond with only this JSON object:
+    {"detected": true or false, "confidence": 0.0-1.0, "description": "one short sentence of visible evidence"}
+
+    For the delivery contract, extend that same JSON object with an "objects"
+    array. Each relevant visible object must be
+    {"label": "...", "confidence": 0.0-1.0, "bbox_2d": [x1, y1, x2, y2]}.
+    bbox_2d must tightly enclose the object in the NEWEST frame and use Qwen's
+    top-left-origin relative 0..1000 xyxy coordinate grid. If detected=true,
+    include at least one valid object; if detected=false, use "objects": [].
   request_parameters:
     temperature: 0.0
-    max_tokens: 320
+    max_tokens: 96
     reasoning:
-      effort: none
+      effort: "none"
+    provider:
+      only:
+        - coreweave
+      allow_fallbacks: false
+    # If your endpoint supports structured outputs you can force the schema:
+    # response_format:
+    #   type: json_schema
+    #   json_schema:
+    #     name: live_binary_classification
+    #     strict: true
+    #     schema:
+    #       type: object
+    #       properties:
+    #         detected: {type: boolean}
+    #         confidence: {type: number, minimum: 0.0, maximum: 1.0}
+    #         description: {type: string}
+    #       required: [detected, confidence, description]
+    #       additionalProperties: false
+
+face:
+  # Local InsightFace mode. FACE_MODEL_ROOT and FACE_GALLERY_PATH override
+  # these paths in the read-only Docker deployment.
+  model_name: buffalo_l
+  model_root: .models/insightface
+  provider: CPUExecutionProvider
+  det_size: 640
+  threshold: 0.4
+  min_face_size: 80
+  sample_fps: 2.5
+  max_image_side: 1280
+  jpeg_quality: 90
+  gallery_path: .goodvision/face-gallery.json
 
 runtime:
-  # Live windows are dropped, not queued, once these slots are occupied.
-  max_concurrent_requests: 4
+  # Independent windows are sent concurrently, up to this limit. Windows that
+  # would exceed it are dropped (a live feed never queues up the past).
+  # Six slots provide headroom for 2.5 requests/second.
+  max_concurrent_requests: 6
 
 server:
-  host: 0.0.0.0
-  port: 8080
+  host: 127.0.0.1
+  port: 7900
 
 service:
   source_id: external-camera

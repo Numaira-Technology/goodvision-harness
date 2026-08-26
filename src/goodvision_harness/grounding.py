@@ -7,11 +7,11 @@ import json
 import math
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .config import InferenceSettings
-from .contracts import NormalizedBBox
+from .contracts import NormalizedBBox, readonly_json_mapping
 from .openrouter import OpenRouterClient, OpenRouterError, OpenRouterSettings
 from .sliding_window import FrameWindow
 
@@ -23,6 +23,14 @@ class ModelObject:
     label: str
     bbox: NormalizedBBox
     confidence: float | None = None
+    attributes: Mapping[str, Any] = field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "attributes",
+            readonly_json_mapping(self.attributes, name="model object attributes"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +39,33 @@ class GroundedClassification:
     confidence: float
     description: str
     objects: tuple[ModelObject, ...] = ()
+    analysis_kind: str = "event"
+    event_object_indexes: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        analysis_kind = str(self.analysis_kind).strip()
+        if not analysis_kind:
+            raise ValueError("analysis_kind must not be empty")
+        object.__setattr__(self, "analysis_kind", analysis_kind)
+
+        indexes = self.event_object_indexes
+        if indexes is not None:
+            try:
+                normalized = tuple(indexes)
+            except TypeError as exc:
+                raise TypeError(
+                    "event_object_indexes must be an iterable of integers"
+                ) from exc
+            if any(
+                isinstance(index, bool) or not isinstance(index, int)
+                for index in normalized
+            ):
+                raise TypeError("event_object_indexes must contain only integers")
+            if any(index < 0 or index >= len(self.objects) for index in normalized):
+                raise ValueError("event_object_indexes contains an out-of-range index")
+            if len(set(normalized)) != len(normalized):
+                raise ValueError("event_object_indexes must not contain duplicates")
+            object.__setattr__(self, "event_object_indexes", normalized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,11 +173,15 @@ def parse_grounded_classification(text: str) -> GroundedClassification:
             )
             if not 0.0 <= parsed_object_confidence <= 1.0:
                 raise ValueError(f"objects[{index}].confidence must be between 0 and 1")
+        attributes = raw_object.get("attributes", {})
+        if not isinstance(attributes, Mapping):
+            raise TypeError(f"objects[{index}].attributes must be an object")
         objects.append(
             ModelObject(
                 label=label.strip(),
                 bbox=NormalizedBBox(x1 / 1000.0, y1 / 1000.0, x2 / 1000.0, y2 / 1000.0),
                 confidence=parsed_object_confidence,
+                attributes=attributes,
             )
         )
     if detected and not objects:
@@ -169,19 +208,12 @@ def build_grounding_messages(
         f"f{frame.sample_index}={frame.timestamp_seconds:.3f}s"
         for frame in window.frames
     )
-    output_contract = (
-        "Judge the target event on the NEWEST (last) image. Return only one JSON "
-        "object with detected (boolean), confidence (0..1), description (short "
-        "text), and objects (array). Each relevant object must be "
-        '{"label":"...","confidence":0..1,"bbox_2d":[x1,y1,x2,y2]}. '
-        "bbox_2d uses Qwen's relative 0..1000 top-left-origin xyxy canvas for "
-        "the NEWEST image. If detected=true, include at least one valid object; "
-        "use [] only when detected=false."
-    )
     text = (
-        f"{rendered_prompt}\n\nTarget event: {event_label}\n"
-        f"Window: {window.label}\nSample timestamps: {timestamps}\n"
-        f"{output_contract}\nThe JPEG images follow in chronological order."
+        f"{rendered_prompt}\n\n"
+        f"Target event: {event_label}\n"
+        f"Window: {window.label}\n"
+        f"Sample timestamps: {timestamps}\n"
+        "The JPEG images follow in chronological order."
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     content.extend(
@@ -223,22 +255,34 @@ class OpenRouterGroundingClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-            classification = parse_grounded_classification(text)
-        except (OpenRouterError, TypeError, ValueError) as exc:
+        except (OpenRouterError, ValueError) as exc:
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=locals().get("text"),
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
                 error=str(exc),
             )
+        latency = time.monotonic() - started
         response_id = str(response["id"]) if response.get("id") is not None else None
         usage = response.get("usage")
+        try:
+            classification = parse_grounded_classification(text)
+        except (TypeError, ValueError) as exc:
+            return GroundingResponse(
+                window=window,
+                classification=None,
+                raw_text=text,
+                latency_seconds=latency,
+                response_id=response_id,
+                usage=usage if isinstance(usage, Mapping) else None,
+                error=f"unparseable model reply: {exc}",
+            )
         return GroundingResponse(
             window=window,
             classification=classification,
             raw_text=text,
-            latency_seconds=time.monotonic() - started,
+            latency_seconds=latency,
             response_id=response_id,
             usage=usage if isinstance(usage, Mapping) else None,
         )
@@ -252,44 +296,32 @@ class DryRunGroundingClient:
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
-        detected = window.index % 4 in {1, 2}
+        time.sleep(0.35 + (window.index * 13 % 40) / 100.0)
+        detected = window.index % 6 in {2, 3, 4}
+        confidence = round(0.6 + (window.index * 37 % 100) / 250.0, 3)
+        state = "visibly active" if detected else "not visible"
         objects: tuple[ModelObject, ...] = ()
         if detected:
-            shift = (window.index % 3) * 0.04
             objects = (
                 ModelObject(
                     label="person",
-                    bbox=NormalizedBBox(
-                        0.18 + shift,
-                        0.12,
-                        0.72 + shift,
-                        0.9,
-                    ),
-                    confidence=0.91,
+                    bbox=NormalizedBBox(0.18, 0.12, 0.72, 0.9),
+                    confidence=confidence,
                 ),
             )
         classification = GroundedClassification(
             detected=detected,
-            confidence=0.92 if detected else 0.96,
+            confidence=confidence,
             description=(
-                "Dry-run event and object are visible."
-                if detected
-                else "Dry-run event is not visible."
+                f"Dry run: {self.settings.event_label} {state} in {window.label}."
             ),
             objects=objects,
         )
         return GroundingResponse(
             window=window,
             classification=classification,
-            raw_text=json.dumps(
-                {
-                    "detected": classification.detected,
-                    "confidence": classification.confidence,
-                    "description": classification.description,
-                }
-            ),
+            raw_text=None,
             latency_seconds=time.monotonic() - started,
-            response_id=f"dry-run-{window.index}",
         )
 
 
