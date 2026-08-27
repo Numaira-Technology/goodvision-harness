@@ -100,10 +100,15 @@ class HarnessRuntime:
         self.annotated_frames = FrameBus()
         display = config.display if config is not None else DisplaySettings()
         self._display_settings = display
+        self._annotated_output_fps = (
+            max(display.fps, config.video.fps, config.face.sample_fps)
+            if config is not None
+            else display.fps
+        )
         self._delayed_overlay = DelayedOverlayComposer(
             delay_seconds=display.delay_seconds,
             max_gap_seconds=display.bbox_max_gap_seconds,
-            output_fps=display.fps,
+            output_fps=self._annotated_output_fps,
             render=lambda jpeg, analysis: _render_analysis_jpeg(
                 jpeg,
                 analysis,
@@ -236,7 +241,7 @@ class HarnessRuntime:
                 "safety_max_image_side": self.config.video.max_image_side,
             },
             "annotated_output": {
-                "output_fps": self.config.display.fps,
+                "output_fps": self._annotated_output_fps,
                 "max_image_side": self.config.display.max_image_side,
                 "buffer_delay_seconds": self.config.display.delay_seconds,
                 "bbox_max_gap_seconds": (

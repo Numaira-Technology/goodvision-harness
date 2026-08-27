@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from concurrent.futures import Future
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +207,21 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert packaged.read_text(encoding="utf-8") == (ROOT / "config.yaml").read_text(
         encoding="utf-8"
     )
+
+
+def test_annotated_output_rate_covers_the_fastest_analysis_source() -> None:
+    config = load_config(ROOT / "config.yaml")
+    fast_config = replace(
+        config,
+        video=replace(config.video, fps=24.0),
+        face=replace(config.face, sample_fps=30.0),
+    )
+    runtime = HarnessRuntime(fast_config)
+    try:
+        assert runtime.ui_info()["annotated_output"]["output_fps"] == 30.0
+        assert runtime.status()["annotated_output"]["output_fps"] == 30.0
+    finally:
+        runtime.stop()
 
 
 def test_model_prompt_has_one_bbox_append_and_dynamic_suffix() -> None:
@@ -817,6 +833,7 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert dashboard.status_code == 200
         assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
         assert "Continuous delayed annotation" in dashboard.text
+        assert "Math.max(displayFps,analysisFps)" in dashboard.text
         paths = {route.path for route in app.routes}
         assert "/v1/results/events" in paths
         assert "/v1/video/annotated/stream.mjpeg" in paths

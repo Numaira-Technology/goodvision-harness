@@ -407,6 +407,8 @@ function startSampler(){
   const settings=cameraSettings();
   const output=state.info&&state.info.annotated_output||{};
   const displayFps=Number(output.output_fps)||15;
+  const analysisFps=Number(settings.sample_fps)||0;
+  const captureFps=Math.max(displayFps,analysisFps);
   const canvas=document.createElement("canvas"),context=canvas.getContext("2d");
   state.cameraTimer=setInterval(async()=>{
     const video=ui.cameraPreview,socket=state.ws;
@@ -423,7 +425,7 @@ function startSampler(){
       const header=new DataView(packet.buffer);header.setUint16(0,canvas.width);header.setUint16(2,canvas.height);
       packet.set(jpeg,4);if(socket.readyState===1)socket.send(packet.buffer)
     }finally{state.cameraBusy=false}
-  },1000/displayFps)
+  },1000/captureFps)
 }
 function stopSampler(){
   if(state.cameraTimer)clearInterval(state.cameraTimer);
