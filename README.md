@@ -1,31 +1,41 @@
 # Goodvision Harness
 
-An independent demo service that pulls a live RTSP stream, sends sampled
-frames to a public vision-LLM API, and exposes both structured analysis JSON
-and an annotated video stream.
+An independent demo service that pulls a live RTSP stream and simultaneously
+detects five fixed events: `fight`, `smoking`, `fall`, `weapon`, and
+`stranger`. It exposes one structured result and one exactly correlated,
+annotated frame for every analyzed video frame, plus a continuous delayed
+annotation stream for display.
 
 The harness has no runtime dependency on the original `goodvision`
 repository.
 
 ## Harness behavior
 
-The delivery service retains the original Harness recognition loop while using
-a deliberately high-recall safety-event decision policy. These runtime
-defaults remain fixed:
+The default service mode performs one external Qwen request for the four visual
+safety events while the existing local InsightFace known-person matcher checks
+the same frame for `stranger`, then merges both into one fixed-order
+five-judgment result. It does not run five LLM calls. Before a real multi-event
+or face-only session accepts its first frame, the service loads InsightFace and
+runs one blank inference to remove its first-frame cold start; dry-run skips
+that warmup. These runtime defaults remain fixed:
 
-- model sampling: 2.5 FPS, 320 px maximum image side, JPEG quality 75;
-- display sampling: 15 FPS, 720 px maximum image side, JPEG quality 70;
+- source/face sampling: 2.5 FPS, 1280 px maximum image side, JPEG quality 90;
+- the same frame is resized to 320 px, JPEG quality 75, for the single Qwen
+  safety request;
+- display output: 15 FPS, 720 px maximum image side, JPEG quality 70, delayed
+  2.4 seconds so 2.5 FPS analysis keyframes can be interpolated;
 - one-frame windows with stride 1 and six concurrent model requests;
-- `max_tokens=192`, no API retry, and OpenRouter routed only to CoreWeave with
+- `max_tokens=1200`, no API retry, and OpenRouter routed only to CoreWeave with
   provider fallback disabled;
-- high-recall safety-event prompts that deliberately favor possible-event
-  detections over missed events, with one bbox delivery paragraph appended to
-  the end of the user prompt.
+- one multi-label, high-recall safety prompt that independently evaluates
+  `fight`, `smoking`, `fall`, and `weapon` and permits simultaneous positives.
 
 The original headless CLI keeps its prior event and result protocol. Browser
 testing now uses one unified page, based on the familiar original Demo UI.
 Both browser-camera and network-stream modes use the same grounded delivery
-pipeline and expose customer JSON plus analyzed and raw video outputs.
+pipeline and expose customer JSON plus analyzed and raw video outputs. The
+legacy single-event and face-only modes remain available as diagnostic API
+modes; the page starts the fixed-five mode by default.
 
 ## Demo topology on `14.198.55.6`
 
@@ -38,7 +48,7 @@ goodvision-harness container on 14.198.55.6
       |                         |
       | HTTPS 443               | localhost:8080
       v                         v
-OpenRouter / Qwen          JSON + analyzed/raw video
+OpenRouter / Qwen          JSON + delayed/exact/raw video
                                 |
                                 v
                     receiver on 14.198.55.6
@@ -64,13 +74,16 @@ The default deployment needs:
   (2 cores and 4 GB is the practical minimum for one stream);
 - about 10 GB free disk for the image, build cache, and operating headroom;
 - outbound HTTPS/DNS access to the configured LLM endpoint on TCP 443;
+- authorized InsightFace-compatible detection and recognition weights under
+  `FACE_MODEL_ROOT/models/<face.model_name>/` for stranger detection;
 - network access from the container to the configured RTSP endpoint and port;
 - local TCP 8080 for the receiver or reverse proxy;
 - correct system time and CA certificates for HTTPS.
 
-A GPU is not required: video decoding and overlays run on CPU, while model
-inference runs through the public LLM API. The host does not need inbound
-Internet access to port 8080 when the receiver is also on the host.
+A GPU is not required: video decoding, overlays, and the default local face
+matcher can run on CPU, while the four safety-event judgments use the public
+LLM API. The host does not need inbound Internet access to port 8080 when the
+receiver is also on the host.
 
 ## Deploy
 
@@ -82,6 +95,11 @@ cp .env.example .env
 docker compose up --build -d
 docker compose ps
 ```
+
+For normal fixed-five mode, the current non-commercial demo configuration may
+download `buffalo_l` into the Compose `insightface-models` volume on first use.
+Alternatively, pre-populate `/models/models/<face.model_name>/` with compatible
+weights. `HARNESS_DRY_RUN=true` does not need them.
 
 `RTSP_URL` has no automatic default. Use the camera's agreed public/private
 RTSP endpoint directly. If an RTSP relay actually runs on `14.198.55.6`, the
@@ -111,11 +129,12 @@ arrived; invalid API credentials or repeated model failures therefore keep the
 container unready. The Docker image uses this stricter endpoint for its health
 check, with a startup allowance for the first model request.
 
-Open `http://127.0.0.1:8080/` for the single internal test page. It has the
-familiar Camera / Network stream controls and shows the raw preview, the exact
-analyzed frame with bbox, and the complete JSON result together. Leave the
-network URL blank to use `RTSP_URL`, or enter a different RTSP/RTMP/WHEP URL
-for that run.
+Open `http://127.0.0.1:8080/` for the single internal test page. It has Camera /
+Network stream controls, five separate event status cards, the continuous
+delayed annotation stream, and the complete JSON result together. A link under
+the player opens the exact 2.5 FPS evidence stream for debugging and audit.
+Leave the network URL blank to use `RTSP_URL`, or enter a different
+RTSP/RTMP/WHEP URL for that run.
 
 A browser can use its local camera from `localhost`. When the page is opened
 remotely from `14.198.55.6`, browsers normally require HTTPS/WSS before they
@@ -126,14 +145,15 @@ firewall or reverse proxy.
 
 ### Zero-cost smoke mode
 
-To test RTSP, JSON delivery, and both video outputs without calling the LLM:
+To test RTSP, JSON delivery, and all video outputs without calling the LLM:
 
 ```dotenv
 HARNESS_DRY_RUN=true
 ```
 
-Restart with `docker compose up -d`. Dry-run results are deterministic and
-include a synthetic normalized bbox.
+Restart with `docker compose up -d`. Dry-run bypasses both the external model
+and local face weights, and emits deterministic five-status results with
+synthetic normalized boxes.
 
 ## Output endpoints
 
@@ -144,6 +164,8 @@ include a synthetic normalized bbox.
 | `GET /v1/status` | Sanitized source, pipeline, counters, and delivery state. |
 | `GET /v1/results/latest` | Latest customer-facing analysis JSON. Returns 404 before the first result. |
 | `GET /v1/results/events` | Server-Sent Events stream of analysis JSON with bounded in-memory replay. |
+| `GET /v1/video/annotated/latest.jpg` | Latest full-cadence delayed frame with exact, interpolated, or briefly held bbox. |
+| `GET /v1/video/annotated/stream.mjpeg` | Continuous delayed annotated MJPEG, 15 FPS by default. This is the display output. |
 | `GET /v1/video/latest.jpg` | Latest exact analyzed frame with burned-in verdict/bbox. |
 | `GET /v1/video/stream.mjpeg` | Annotated MJPEG at result cadence: one exact analyzed frame per JSON result. |
 | `GET /v1/video/live/latest.jpg` | Latest unannotated source-preview frame. |
@@ -155,6 +177,7 @@ Examples:
 ```bash
 curl http://127.0.0.1:8080/v1/results/latest
 curl -N http://127.0.0.1:8080/v1/results/events
+ffplay http://127.0.0.1:8080/v1/video/annotated/stream.mjpeg
 ffplay http://127.0.0.1:8080/v1/video/stream.mjpeg
 ffplay http://127.0.0.1:8080/v1/video/live/stream.mjpeg
 ```
@@ -169,7 +192,9 @@ A result has the following shape:
 {
   "type": "analysis_result",
   "schema_version": "1",
+  "analysis_kind": "fixed_five_events",
   "message_id": "cb44b47c-332f-4947-971b-8297fc8c64db",
+  "observation_id": "cb44b47c-332f-4947-971b-8297fc8c64db",
   "source_id": "external-camera",
   "stream_session_id": "7da2e5db-6fcc-45fa-ad04-99ec62f50e87",
   "sequence": 18,
@@ -184,11 +209,39 @@ A result has the following shape:
   },
   "judgments": [
     {
+      "event_label": "fight",
+      "detected": false,
+      "confidence": 0.91,
+      "description": "No fighting cues are visible.",
+      "object_ids": []
+    },
+    {
       "event_label": "smoking",
       "detected": true,
       "confidence": 0.94,
-      "description": "A person is visibly smoking at the mouth.",
-      "object_ids": ["object-1"]
+      "description": "A person holds an e-cigarette at the mouth.",
+      "object_ids": ["object-1", "object-2"]
+    },
+    {
+      "event_label": "fall",
+      "detected": false,
+      "confidence": 0.88,
+      "description": "No fall is visible.",
+      "object_ids": []
+    },
+    {
+      "event_label": "weapon",
+      "detected": false,
+      "confidence": 0.86,
+      "description": "No weapon cue is visible.",
+      "object_ids": []
+    },
+    {
+      "event_label": "stranger",
+      "detected": true,
+      "confidence": 0.93,
+      "description": "One face does not match the known-person gallery.",
+      "object_ids": ["object-3"]
     }
   ],
   "objects": [
@@ -202,15 +255,52 @@ A result has the following shape:
         "y1": 0.112,
         "x2": 0.704,
         "y2": 0.902
+      },
+      "attributes": {}
+    },
+    {
+      "object_id": "object-2",
+      "label": "e-cigarette",
+      "confidence": 0.86,
+      "bbox": {
+        "coordinate_system": "source_normalized_xyxy",
+        "x1": 0.481,
+        "y1": 0.294,
+        "x2": 0.516,
+        "y2": 0.354
+      },
+      "attributes": {}
+    },
+    {
+      "object_id": "object-3",
+      "label": "unknown_person",
+      "confidence": 0.93,
+      "bbox": {
+        "coordinate_system": "source_normalized_xyxy",
+        "x1": 0.361,
+        "y1": 0.108,
+        "x2": 0.491,
+        "y2": 0.301
+      },
+      "attributes": {
+        "status": "unknown",
+        "threshold": 0.4
       }
     }
   ],
   "model": {
-    "name": "qwen/qwen3.5-35b-a3b",
+    "name": "qwen/qwen3.5-35b-a3b + buffalo_l",
     "latency_seconds": 1.247
   }
 }
 ```
+
+In `fixed_five_events` mode, `judgments` always has exactly these labels in
+this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`. Each status is
+independent, so any number may be true in the same result. Negative judgments
+use an empty `object_ids` array; every positive judgment references the boxes
+that support that event. The `stranger` status comes from a mismatch against
+the local known-person gallery, not merely from seeing a person.
 
 `bbox` is top-left-origin `xyxy`, normalized to the source frame. Convert
 it to pixels with `x * frame.width` and `y * frame.height`.
@@ -218,13 +308,24 @@ it to pixels with `x * frame.width` and `y * frame.height`.
 `observed_at` is the harness ingest-time estimate because ordinary RTSP
 decoding does not guarantee access to the camera's absolute capture clock.
 
-For every successful JSON result, the harness annotates the exact newest frame
-that the result references. `GET /v1/video/latest.jpg` and every multipart JPEG
-in `GET /v1/video/stream.mjpeg` carry `X-Analysis-Message-Id`; its value is the
-same as the JSON `message_id`. The annotated feed runs at model-result cadence
-and can look stepwise when inference is slow. The `/v1/video/live/*` endpoints
-provide a smoother raw preview and intentionally do not paint delayed bbox data
-onto later frames.
+For every successful JSON result, the harness still annotates the exact newest
+frame that the result references. `GET /v1/video/latest.jpg` and every
+multipart JPEG in `GET /v1/video/stream.mjpeg` carry
+`X-Analysis-Message-Id`; its value is the same as the JSON `message_id`. This
+exact evidence feed remains at model-result cadence.
+
+For the display path, the container separately buffers the continuous source
+frames for 2.4 seconds. Results at 2.5 FPS act as bbox keyframes on the same
+media timeline. Between two compatible keyframes, the service linearly moves
+the box. If the next result is late or a sampled request is dropped, the last
+analyzed state is latched onto every display frame; only a later keyframe may
+update or explicitly clear it. This prevents a continuously detected bbox from
+blinking between model samples. The original video frames are not synthesized
+or skipped, so `/v1/video/annotated/stream.mjpeg` remains smooth while staying
+intentionally behind the camera. Multipart frames report `X-Annotation-Mode`
+(`exact`, `interpolated`, `held`, or `none`), the left and optional next
+analysis IDs, and `X-Stream-Delay`. The
+`/v1/video/live/*` endpoints remain the unannotated, near-live diagnostic feed.
 
 ## Optional webhook
 
@@ -243,8 +344,10 @@ when replay guarantees matter.
 
 ## Configuration
 
-`config.yaml` controls sampling, model selection, prompts, concurrency,
-readiness windows, overlay JPEG quality, and optional webhook behavior. The
+`config.yaml` controls sampling, model selection, the legacy single-event
+prompt, the fixed-four `multi_event_prompt`, concurrency, readiness windows,
+the `display.delay_seconds` / `display.bbox_max_gap_seconds` compositor timing,
+overlay JPEG quality, and optional webhook behavior. The
 original CoreWeave-only OpenRouter route remains explicit:
 `provider.only=[coreweave]` and `allow_fallbacks=false`. The API retry count
 also remains zero so a failed live request is not replayed as a stale result.
@@ -270,12 +373,13 @@ Do not commit `.env`, RTSP credentials, or LLM API keys.
 
 ```powershell
 python -m venv .venv
-python -m pip install -e '.[dev]'
+python -m pip install -e '.[dev,face]'
 $env:HARNESS_AUTOSTART = 'false'
 goodvision-harness-demo --host 127.0.0.1 --port 7900
 ```
 
-Open `http://127.0.0.1:7900`, choose Camera, enable it, then press Start.
+Open `http://127.0.0.1:7900`, enroll the known people, choose Camera, enable it,
+then press Start.
 For a network test, choose Network stream and either enter a URL or leave it
 blank to use `RTSP_URL`. Set `HARNESS_DRY_RUN=true` for a no-cost pipeline
 check. `goodvision-harness-demo` is now a compatibility launcher for the same
@@ -284,7 +388,7 @@ serves that same page on port 8080 by default. `goodvision-harness-cli`
 retains the original window lifecycle, `vision_result`, and final-state JSONL
 behavior.
 
-### Local InsightFace face demo
+### Known-person gallery
 
 Install the face extra (combine it with the test tools when developing):
 
@@ -296,20 +400,22 @@ $env:HARNESS_AUTOSTART = 'false'
 goodvision-harness-demo --host 127.0.0.1 --port 7900
 ```
 
-Open `http://127.0.0.1:7900`, select **Face recognition**, enroll each known
-person with a stable person ID, name, and one clear single-face image, then
-choose Camera or Network stream and press Start. Install compatible detection
-and recognition weights under
-`FACE_MODEL_ROOT/models/<face.model_name>/` first. The harness does not bundle
-models and does not download one unless `face.allow_model_download` is
-explicitly set to `true`; the known-person gallery persists at
-`FACE_GALLERY_PATH`.
+The unified Five Events page keeps this gallery next to the detector controls
+and uses it for the `stranger` judgment. Enroll each known person with a stable
+person ID, name, and one clear single-face image. The stranger card includes a
+face-diagnostics summary for every analyzed frame. The face-only backend mode
+remains available for API compatibility, but it is no longer a separate mode
+in the test UI. Install compatible detection and recognition weights under
+`FACE_MODEL_ROOT/models/<face.model_name>/`, or allow the configured first-use
+download. The harness does not bundle models; the known-person gallery persists
+at `FACE_GALLERY_PATH`.
 
 InsightFace's Python code is MIT-licensed, but its official public pretrained
 model packs, including `buffalo_l`, are restricted to non-commercial research
 unless separately licensed. For customer or other commercial use, supply model
-weights you are authorized to use. Enable automatic download only after
-confirming that the applicable model terms permit the intended deployment; see
+weights you are authorized to use. The current configuration opts into the
+download only for the declared non-commercial demo; disable it before any use
+not covered by those terms. See
 the official [InsightFace license notice](https://pypi.org/project/insightface/)
 and [model-zoo terms](https://github.com/deepinsight/insightface/tree/master/model_zoo).
 
@@ -348,8 +454,9 @@ matches InsightFace; `matched_memory_ids` is additional Qwen reference metadata:
 | Unknown face only | `true` | `[]` |
 | Known and unknown faces | `true` | Known IDs |
 
-The default remains local InsightFace for face recognition. Enable Qwen
-reference memory only as an explicit fallback/experiment by setting
+The fixed-five mode and the face diagnostics mode both use local InsightFace by
+default. Enable Qwen reference memory only as an explicit legacy
+fallback/experiment by setting
 `memory.enabled: true`, adding reference entries under `memory.references`,
 and using `inference.event_label: unknown_person`. The harness also enforces
 that label whenever the built-in face-reference purpose is active. Relative
@@ -376,5 +483,6 @@ docker build -t goodvision-harness:demo .
 
 The test suite is offline by default: it validates positive-result bbox
 requirements, normalized pixel placement, exact frame/result correlation,
+out-of-order timeline recovery, delayed interpolation and session resets,
 callback completion, analysis readiness, result/frame fan-out, HTTP endpoints,
 and webhook delivery/shutdown without calling RTSP or an LLM.

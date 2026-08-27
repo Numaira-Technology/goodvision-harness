@@ -351,6 +351,8 @@ class FaceRecognitionRuntime:
         self._model: Any | None = None
         self._model_lock = threading.Lock()
         self._inference_lock = threading.Lock()
+        self._warmup_lock = threading.Lock()
+        self._warmed = False
 
     @property
     def model(self) -> str:
@@ -364,6 +366,24 @@ class FaceRecognitionRuntime:
     def loaded(self) -> bool:
         with self._model_lock:
             return self._model is not None
+
+    @property
+    def warmed(self) -> bool:
+        with self._warmup_lock:
+            return self._warmed
+
+    def warmup(self) -> float:
+        """Load the model and execute one blank inference before live frames."""
+
+        started = time.monotonic()
+        with self._warmup_lock:
+            if self._warmed:
+                return 0.0
+            width, height = _detector_size(self.config.det_size)
+            image = np.zeros((height, width, 3), dtype=np.uint8)
+            self._infer(image, operation="warmup")
+            self._warmed = True
+        return time.monotonic() - started
 
     def enroll(self, person_id: str, name: str, image_bytes: bytes) -> GalleryPerson:
         image = _decode_image(image_bytes)

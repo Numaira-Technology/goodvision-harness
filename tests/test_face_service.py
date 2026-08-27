@@ -46,6 +46,11 @@ class _FakeFaceRuntime:
         )
         self.people = {"alice": GalleryPerson("alice", "Alice", 2)}
         self.last_enrollment: tuple[str, str, bytes] | None = None
+        self.warmup_calls = 0
+
+    def warmup(self) -> float:
+        self.warmup_calls += 1
+        return 0.01
 
     def list_people(self) -> tuple[GalleryPerson, ...]:
         return tuple(self.people.values())
@@ -82,7 +87,7 @@ def test_face_gallery_http_surface_and_ui_info(
 
     with TestClient(app) as client:
         info = client.get("/v1/ui/info").json()
-        assert info["analysis_modes"] == ["event", "face"]
+        assert info["analysis_modes"] == ["event", "face", "multi"]
         assert info["face"] == {
             "model_name": "buffalo_l",
             "sample_fps": 2.5,
@@ -90,6 +95,15 @@ def test_face_gallery_http_surface_and_ui_info(
             "jpeg_quality": 90,
             "threshold": 0.4,
         }
+
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        assert 'id="face-controls" class="face-gallery"' in dashboard.text
+        assert 'id="face-controls" class="face-gallery" hidden' not in dashboard.text
+        assert 'id="face-analysis-mode"' not in dashboard.text
+        assert 'id="event-analysis-mode"' not in dashboard.text
+        assert 'id="face-diagnostic-summary"' in dashboard.text
+        assert 'analysis_mode:"multi"' in dashboard.text
 
         gallery = client.get("/v1/faces/gallery")
         assert gallery.status_code == 200
@@ -183,6 +197,7 @@ def test_face_mode_reuses_streaming_session_with_face_settings(
         assert runtime._session.config.sliding_window.size_frames == 1
         assert runtime._session.config.runtime.max_concurrent_requests == 1
         assert runtime._session.client is fake
+        assert fake.warmup_calls == 1
         runtime._on_pipeline_state(
             {"status": "warming", "last_error": "provider unavailable"}
         )
@@ -219,6 +234,28 @@ def test_local_face_mode_keeps_insightface_runtime_with_reference_memory() -> No
         assert "reference_memory" not in response
         assert runtime._session is not None
         assert runtime._session.client is fake
+        assert fake.warmup_calls == 1
+    finally:
+        runtime.stop()
+
+
+def test_multi_dry_run_skips_face_model_warmup() -> None:
+    fake = _FakeFaceRuntime()
+    runtime = HarnessRuntime(
+        load_config(ROOT / "config.yaml"),
+        face_runtime=fake,  # type: ignore[arg-type]
+    )
+
+    try:
+        response = runtime.start_camera(
+            analysis_mode="multi",
+            dry_run=True,
+            owner="multi-dry-run-test",
+        )
+
+        assert response["analysis_mode"] == "multi"
+        assert response["dry_run"] is True
+        assert fake.warmup_calls == 0
     finally:
         runtime.stop()
 

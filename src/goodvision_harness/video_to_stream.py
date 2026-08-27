@@ -219,20 +219,35 @@ class PushSampledSource:
     def closed(self) -> bool:
         return self._closed.is_set()
 
-    def push_jpeg(self, jpeg_bytes: bytes, *, width: int, height: int) -> bool:
+    def push_jpeg(
+        self,
+        jpeg_bytes: bytes,
+        *,
+        width: int,
+        height: int,
+        timestamp_seconds: float | None = None,
+        source_frame_index: int | None = None,
+    ) -> bool:
         """Enqueue one camera frame; False when closed or the queue is full."""
 
         if self._closed.is_set() or not jpeg_bytes:
             return False
         with self._lock:
             # Clamp to monotonic non-decreasing session time.
-            timestamp = max(
-                self._last_timestamp,
-                time.monotonic() - self._started_wall,
+            supplied_timestamp = (
+                time.monotonic() - self._started_wall
+                if timestamp_seconds is None
+                else float(timestamp_seconds)
+            )
+            timestamp = max(self._last_timestamp, supplied_timestamp)
+            source_index = (
+                self._sample_index
+                if source_frame_index is None
+                else int(source_frame_index)
             )
             frame = SampledFrame(
                 sample_index=self._sample_index,
-                source_frame_index=self._sample_index,
+                source_frame_index=source_index,
                 timestamp_seconds=timestamp,
                 jpeg_bytes=jpeg_bytes,
                 width=width,

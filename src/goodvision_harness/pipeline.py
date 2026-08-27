@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import threading
 import time
@@ -30,7 +31,7 @@ from .contracts import (
     FrameReference,
     GroundedObject,
 )
-from .grounding import GroundingClient
+from .grounding import GroundingClient, MultiGroundedClassification
 from .inference import WindowClient, WindowResponse, build_client
 from .organizer import ResultOrganizer
 from .reference_memory import (
@@ -49,6 +50,7 @@ from .vision_result import VisionResult
 FILE_MODE = "file"
 CAMERA_MODE = "camera"
 STREAM_MODE = "stream"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -67,6 +69,10 @@ class SessionCallbacks:
     on_vision_result: Callable[[VisionResult], None] | None = None
     on_analysis_frame: Callable[[AnalysisResult, bytes], None] | None = None
     on_analysis_result: Callable[[AnalysisResult], None] | None = None
+    # Every successful grounded keyframe, including an older response that
+    # finished after a newer one. Customer-facing result callbacks remain
+    # newest-wins; the delayed video compositor reorders this private timeline.
+    on_timeline_result: Callable[[AnalysisResult], None] | None = None
 
 
 class StreamingSession:
@@ -101,12 +107,16 @@ class StreamingSession:
         self.source_id = source_id.strip()
         self.stream_session_id = stream_session_id or str(uuid4())
         memory_context = getattr(client, "memory_context", None)
-        self.event_label = (
-            UNKNOWN_FACE_EVENT_LABEL
-            if memory_context is not None
-            and memory_context.purpose == FACE_RECOGNITION_PURPOSE
-            else client.settings.event_label
-        )
+        event_labels = tuple(getattr(client, "event_labels", ()))
+        if event_labels:
+            self.event_label = ",".join(event_labels)
+        else:
+            self.event_label = (
+                UNKNOWN_FACE_EVENT_LABEL
+                if memory_context is not None
+                and memory_context.purpose == FACE_RECOGNITION_PURPOSE
+                else client.settings.event_label
+            )
         self.organizer = ResultOrganizer(self.event_label)
         # Live sources drop windows when all request slots are busy (the feed
         # cannot wait); offline runs block instead so every window is scored.
@@ -220,10 +230,24 @@ class StreamingSession:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def push_camera_frame(self, jpeg_bytes: bytes, *, width: int, height: int) -> bool:
+    def push_camera_frame(
+        self,
+        jpeg_bytes: bytes,
+        *,
+        width: int,
+        height: int,
+        timestamp_seconds: float | None = None,
+        source_frame_index: int | None = None,
+    ) -> bool:
         if self.camera_source is None:
             return False
-        return self.camera_source.push_jpeg(jpeg_bytes, width=width, height=height)
+        return self.camera_source.push_jpeg(
+            jpeg_bytes,
+            width=width,
+            height=height,
+            timestamp_seconds=timestamp_seconds,
+            source_frame_index=source_frame_index,
+        )
 
     # ------------------------------------------------------------------ run
 
@@ -276,7 +300,6 @@ class StreamingSession:
         sample_period = 1.0 / video.fps
         next_sample_time = 0.0
         sample_index = 0
-        display_seq = 0
         for frame in self.video_stream.frames():
             presentation_jpeg_bytes: bytes | None = None
             if self.callbacks.on_display_frame is not None:
@@ -286,9 +309,8 @@ class StreamingSession:
                     quality=display.jpeg_quality,
                 )
                 self.callbacks.on_display_frame(
-                    presentation_jpeg_bytes, frame.timestamp_seconds, display_seq
+                    presentation_jpeg_bytes, frame.timestamp_seconds, frame.index
                 )
-                display_seq += 1
 
             if frame.timestamp_seconds + 1e-9 < next_sample_time:
                 continue
@@ -382,9 +404,11 @@ class StreamingSession:
             )
             vision_result = None
             analysis_result = None
+            timeline_result = None
             analysis_frame_jpeg = None
             classification = response.classification
-            if record.get("applied") is True and classification is not None:
+            applied = record.get("applied") is True
+            if applied and classification is not None:
                 # Preserve the original callback and result shape for existing
                 # CLI/library consumers.
                 vision_result = VisionResult(
@@ -396,58 +420,75 @@ class StreamingSession:
                     window_start_seconds=window.start_timestamp,
                     window_end_seconds=window.end_timestamp,
                 )
+            if classification is not None:
                 if (
                     self.callbacks.on_analysis_frame is not None
                     or self.callbacks.on_analysis_result is not None
+                    or self.callbacks.on_timeline_result is not None
                 ):
-                    grounded_objects = tuple(
-                        GroundedObject(
-                            object_id=f"object-{index}",
-                            label=item.label,
-                            bbox=item.bbox,
-                            confidence=item.confidence,
-                            attributes=getattr(item, "attributes", {}),
-                        )
-                        for index, item in enumerate(
-                            getattr(classification, "objects", ()), start=1
-                        )
-                    )
-                    event_object_indexes = getattr(
-                        classification, "event_object_indexes", None
-                    )
-                    if event_object_indexes is None:
-                        selected_indexes = (
-                            tuple(range(len(grounded_objects)))
-                            if classification.detected
-                            else ()
-                        )
+                    grounded_objects: tuple[GroundedObject, ...]
+                    judgments: tuple[EventJudgment, ...] | None
+                    if isinstance(classification, MultiGroundedClassification):
+                        object_records: list[GroundedObject] = []
+                        judgment_records: list[EventJudgment] = []
+                        for judgment in classification.judgments:
+                            object_ids: list[str] = []
+                            for item in judgment.objects:
+                                object_id = f"object-{len(object_records) + 1}"
+                                object_records.append(
+                                    GroundedObject(
+                                        object_id=object_id,
+                                        label=item.label,
+                                        bbox=item.bbox,
+                                        confidence=item.confidence,
+                                        attributes=getattr(item, "attributes", {}),
+                                    )
+                                )
+                                object_ids.append(object_id)
+                            judgment_records.append(
+                                EventJudgment(
+                                    event_label=judgment.event_label,
+                                    detected=judgment.detected,
+                                    confidence=judgment.confidence,
+                                    description=judgment.description,
+                                    object_ids=tuple(object_ids),
+                                    matched_memory_ids=judgment.matched_memory_ids,
+                                )
+                            )
+                        grounded_objects = tuple(object_records)
+                        judgments = tuple(judgment_records)
                     else:
-                        selected_indexes = tuple(event_object_indexes)
-                    event_object_ids = tuple(
-                        grounded_objects[index].object_id
-                        for index in selected_indexes
-                    )
-                    # The customer contract requires a bbox for a positive.
-                    # Legacy clients remain usable through on_vision_result,
-                    # while the grounded service rejects incomplete positives.
-                    if not classification.detected or event_object_ids:
-                        newest = window.newest_frame
-                        frame_width, frame_height = newest.original_dimensions
-                        self._result_sequence += 1
-                        analysis_result = AnalysisResult(
-                            message_id=str(uuid4()),
-                            source_id=self.source_id,
-                            stream_session_id=self.stream_session_id,
-                            sequence=self._result_sequence,
-                            emitted_at=_utc_now(),
-                            frame=FrameReference(
-                                source_frame_index=newest.source_frame_index,
-                                timestamp_seconds=newest.timestamp_seconds,
-                                observed_at=newest.observed_at or _utc_now(),
-                                width=frame_width,
-                                height=frame_height,
-                            ),
-                            judgments=(
+                        grounded_objects = tuple(
+                            GroundedObject(
+                                object_id=f"object-{index}",
+                                label=item.label,
+                                bbox=item.bbox,
+                                confidence=item.confidence,
+                                attributes=getattr(item, "attributes", {}),
+                            )
+                            for index, item in enumerate(
+                                getattr(classification, "objects", ()), start=1
+                            )
+                        )
+                        event_object_indexes = getattr(
+                            classification, "event_object_indexes", None
+                        )
+                        if event_object_indexes is None:
+                            selected_indexes = (
+                                tuple(range(len(grounded_objects)))
+                                if classification.detected
+                                else ()
+                            )
+                        else:
+                            selected_indexes = tuple(event_object_indexes)
+                        event_object_ids = tuple(
+                            grounded_objects[index].object_id
+                            for index in selected_indexes
+                        )
+                        # The customer contract requires a bbox for a positive.
+                        # Legacy callbacks still accept an ungrounded positive.
+                        judgments = (
+                            (
                                 EventJudgment(
                                     event_label=self.event_label,
                                     detected=classification.detected,
@@ -460,22 +501,57 @@ class StreamingSession:
                                         (),
                                     ),
                                 ),
+                            )
+                            if not classification.detected or event_object_ids
+                            else None
+                        )
+
+                    if judgments is not None:
+                        newest = window.newest_frame
+                        frame_width, frame_height = newest.original_dimensions
+                        if applied:
+                            self._result_sequence += 1
+                            result_sequence = self._result_sequence
+                        else:
+                            # This value is only used by the private timeline.
+                            # It stays stable even when requests finish out of order.
+                            result_sequence = window.index + 1
+                        timeline_result = AnalysisResult(
+                            message_id=str(uuid4()),
+                            source_id=self.source_id,
+                            stream_session_id=self.stream_session_id,
+                            sequence=result_sequence,
+                            emitted_at=_utc_now(),
+                            frame=FrameReference(
+                                source_frame_index=newest.source_frame_index,
+                                timestamp_seconds=newest.timestamp_seconds,
+                                observed_at=newest.observed_at or _utc_now(),
+                                width=frame_width,
+                                height=frame_height,
                             ),
+                            judgments=judgments,
                             objects=grounded_objects,
-                            model_name=self.config.inference.model,
+                            model_name=getattr(
+                                self.client,
+                                "model_name",
+                                self.config.inference.model,
+                            ),
                             model_latency_seconds=response.latency_seconds,
                             analysis_kind=getattr(
                                 classification, "analysis_kind", "event"
                             ),
                         )
-                        analysis_frame_jpeg = (
-                            newest.presentation_jpeg_bytes or newest.jpeg_bytes
-                        )
+                        if applied:
+                            analysis_result = timeline_result
+                            analysis_frame_jpeg = (
+                                newest.presentation_jpeg_bytes or newest.jpeg_bytes
+                            )
             self._emit(
                 record,
                 snapshot,
                 vision_result=vision_result,
                 analysis_result=analysis_result,
+                timeline_result=timeline_result,
                 analysis_frame_jpeg=analysis_frame_jpeg,
             )
 
@@ -495,28 +571,65 @@ class StreamingSession:
         *,
         vision_result: VisionResult | None = None,
         analysis_result: AnalysisResult | None = None,
+        timeline_result: AnalysisResult | None = None,
         analysis_frame_jpeg: bytes | None = None,
     ) -> None:
         if not self._emit_open:
             return
         if self.callbacks.on_event is not None:
-            self.callbacks.on_event(record)
+            _invoke_callback("event", self.callbacks.on_event, record)
         if self.callbacks.on_state is not None:
-            self.callbacks.on_state(snapshot)
+            _invoke_callback("state", self.callbacks.on_state, snapshot)
         if vision_result is not None and self.callbacks.on_vision_result is not None:
-            self.callbacks.on_vision_result(vision_result)
+            _invoke_callback(
+                "vision result",
+                self.callbacks.on_vision_result,
+                vision_result,
+            )
+
+        if (
+            timeline_result is not None
+            and self.callbacks.on_timeline_result is not None
+        ):
+            _invoke_callback(
+                "private overlay timeline",
+                self.callbacks.on_timeline_result,
+                timeline_result,
+            )
 
         if (
             analysis_result is not None
             and analysis_frame_jpeg is not None
             and self.callbacks.on_analysis_frame is not None
         ):
-            self.callbacks.on_analysis_frame(analysis_result, analysis_frame_jpeg)
+            _invoke_callback(
+                "exact analysis frame",
+                self.callbacks.on_analysis_frame,
+                analysis_result,
+                analysis_frame_jpeg,
+            )
         if (
             analysis_result is not None
             and self.callbacks.on_analysis_result is not None
         ):
-            self.callbacks.on_analysis_result(analysis_result)
+            _invoke_callback(
+                "analysis result",
+                self.callbacks.on_analysis_result,
+                analysis_result,
+            )
+
+
+def _invoke_callback(
+    name: str,
+    callback: Callable[..., None],
+    *args: Any,
+) -> None:
+    """Keep an optional delivery sink from breaking the other outputs."""
+
+    try:
+        callback(*args)
+    except Exception:
+        LOGGER.exception("%s callback failed", name)
 
 
 def _utc_now() -> str:
