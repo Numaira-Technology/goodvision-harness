@@ -373,7 +373,7 @@ Do not commit `.env`, RTSP credentials, or LLM API keys.
 
 ```powershell
 python -m venv .venv
-python -m pip install -e '.[dev]'
+python -m pip install -e '.[dev,face]'
 $env:HARNESS_AUTOSTART = 'false'
 goodvision-harness-demo --host 127.0.0.1 --port 7900
 ```
