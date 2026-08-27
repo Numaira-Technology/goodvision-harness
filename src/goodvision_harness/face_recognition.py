@@ -54,6 +54,7 @@ class FaceRecognizerConfig:
 
     model_name: str = "buffalo_l"
     model_root: Path = Path(".models/insightface")
+    allow_model_download: bool = False
     provider: str = "CPUExecutionProvider"
     det_size: int | tuple[int, int] = 640
     threshold: float = 0.4
@@ -68,6 +69,8 @@ class FaceRecognizerConfig:
         object.__setattr__(self, "model_root", Path(self.model_root).expanduser())
         object.__setattr__(self, "gallery_path", Path(self.gallery_path).expanduser())
 
+        if not isinstance(self.allow_model_download, bool):
+            raise TypeError("allow_model_download must be true or false")
         if self.provider not in _SUPPORTED_PROVIDERS:
             supported = ", ".join(sorted(_SUPPORTED_PROVIDERS))
             raise ValueError(f"provider must be one of: {supported}")
@@ -551,6 +554,18 @@ def _load_face_analysis(config: FaceRecognizerConfig) -> Any:
     face_analysis = getattr(insightface_app, "FaceAnalysis", None)
     if face_analysis is None:
         raise RuntimeError("installed InsightFace package does not expose FaceAnalysis")
+
+    model_directory = config.model_root / "models" / config.model_name
+    if not model_directory.is_dir() and not config.allow_model_download:
+        raise RuntimeError(
+            f"InsightFace model {config.model_name!r} is not installed at "
+            f"{model_directory}. Automatic model download is disabled because "
+            "InsightFace-provided pretrained models are restricted to "
+            "non-commercial research unless separately licensed. Supply model "
+            "files you are authorized to use, or set "
+            "face.allow_model_download=true only after verifying that the model "
+            "license permits your intended use."
+        )
 
     config.model_root.mkdir(parents=True, exist_ok=True)
     try:

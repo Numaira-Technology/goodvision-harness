@@ -261,6 +261,7 @@ class HarnessRuntime:
                     FaceRecognizerConfig(
                         model_name=face.model_name,
                         model_root=face.model_root,
+                        allow_model_download=face.allow_model_download,
                         provider=face.provider,
                         det_size=face.det_size,
                         threshold=face.threshold,
@@ -1056,11 +1057,17 @@ def create_app(
                     status_code=400,
                     detail="invalid Content-Length",
                 ) from None
-        image_bytes = await request.body()
+        image_buffer = bytearray()
+        async for chunk in request.stream():
+            if len(image_buffer) + len(chunk) > FACE_ENROLLMENT_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="enrollment image is too large",
+                )
+            image_buffer.extend(chunk)
+        image_bytes = bytes(image_buffer)
         if not image_bytes:
             raise HTTPException(status_code=400, detail="enrollment image is empty")
-        if len(image_bytes) > FACE_ENROLLMENT_MAX_BYTES:
-            raise HTTPException(status_code=413, detail="enrollment image is too large")
         try:
             return await asyncio.to_thread(
                 _runtime(request).enroll_face,

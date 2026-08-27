@@ -45,32 +45,45 @@ from goodvision_harness.vision_result import VisionResult
 
 ROOT = Path(__file__).resolve().parents[1]
 
-ORIGINAL_SYSTEM_PROMPT = (
-    "You are the binary perception module for live AI glasses. You receive "
+EXPECTED_SYSTEM_PROMPT = (
+    "You are a risk-sensitive binary safety-event perception module for live "
+    "AI glasses. You receive "
     "short, chronologically ordered windows of frames sampled from a live "
-    "camera. Judge only what is visibly happening; never infer an event from "
-    "the mere presence of a related object. Prefer false negatives over false "
-    "positives. Answer with a single JSON object - no markdown, no extra text."
+    "camera. Use visible objects, human interaction, posture, motion, and "
+    "temporal context to detect plausible events, including precursors and "
+    "partial events. Use a deliberately low detection threshold and prefer "
+    "false positives over false negatives. Do not require certainty or a "
+    "textbook-complete event. Answer with a single JSON object - no markdown, "
+    "no extra text."
 )
-ORIGINAL_PROMPT = (
-    """Decide whether the target event is ACTUALLY HAPPENING in the NEWEST
-(last) frame. Use the earlier frames only as temporal context.
+EXPECTED_PROMPT = (
+    """Decide whether the target event is happening, starting, imminent, or
+plausibly indicated in the NEWEST (last) frame. Use earlier frames as
+temporal context.
 
-Strict rule: the event itself must be visibly in progress. An object
-associated with the event is NOT the event.
+This is a high-recall safety detector with a deliberately low threshold.
+Set detected=true whenever visible evidence makes the target event a
+reasonable possibility, even when the evidence is partial or ambiguous.
+A related object combined with a person's interaction, posture, movement,
+or context can be sufficient. When choosing between a plausible positive
+and a negative, choose detected=true; lower confidence may express the
+uncertainty. Use detected=false only when there is no meaningful visible
+cue for the event or the evidence clearly indicates an unrelated activity.
 
-For smoking, detected=true ONLY when the person is actively smoking in
-the newest frame: a lit cigarette/cigar/pipe at the mouth being puffed
-or drawn on, or smoke visibly being inhaled or exhaled at the mouth.
-
-ALL of the following are NOT smoking and must be detected=false:
-- a cigarette/cigar merely visible in the scene, in a pack, or on a table
-- holding or carrying a cigarette away from the mouth, lit or unlit
-- an unlit cigarette in the mouth; cutting, tapping, or preparing one
-- reaching for or fetching a lighter, or a flame not at a cigarette
-- haze or vapor not clearly coming from the person's mouth
-
-If the evidence is ambiguous, answer detected=false.
+Event-specific sensitivity examples:
+- Smoking: detected=true when a person holds, handles, carries, or has a
+  cigarette, cigar, pipe, or e-cigarette in their hand or mouth; moves it
+  toward the mouth; takes it out or prepares it; appears to reach for or
+  use a lighter with it; or visibly puffs or emits smoke/vapor. The item
+  may be lit or unlit. Do not require a flame, glowing tip, inhalation,
+  exhalation, or visible smoke. An unattended item with no person
+  interacting with it is not sufficient by itself.
+- Fighting: detected=true for striking or kicking, pushing, grabbing,
+  wrestling, aggressive lunging or chasing, raised fists, an attack
+  posture, or an apparently imminent attack. Do not require visible impact.
+- Falling: detected=true for loss of balance, stumbling, uncontrolled
+  downward motion, collapse, being in the process of falling, or being
+  newly or abnormally on the ground. Do not require seeing the full impact.
 
 Respond with only this JSON object:
 """
@@ -79,11 +92,15 @@ Respond with only this JSON object:
 )
 BBOX_PROMPT_APPEND = (
     'For the delivery contract, extend that same JSON object with an "objects"\n'
-    """array. Each relevant visible object must be
+    """array. Each relevant visible entity must be
 {"label": "...", "confidence": 0.0-1.0, "bbox_2d": [x1, y1, x2, y2]}.
 bbox_2d must tightly enclose the object in the NEWEST frame and use Qwen's
-top-left-origin relative 0..1000 xyxy coordinate grid. If detected=true,
-include at least one valid object; if detected=false, use "objects": []."""
+top-left-origin relative 0..1000 xyxy coordinate grid.
+
+If detected=true, include at least one valid object.
+For events involving a person and an item, such as smoking or holding a
+weapon, return separate tight boxes for both the person and the item. Never
+merge them or omit either one. If detected=false, use "objects": []."""
 )
 
 
@@ -135,10 +152,10 @@ def _jpeg(width: int = 200, height: int = 100) -> bytes:
     return encoded.tobytes()
 
 
-def test_original_harness_defaults_and_prompt_are_preserved() -> None:
+def test_harness_defaults_and_high_recall_prompt() -> None:
     config = load_config(ROOT / "config.yaml")
 
-    assert config.default_video == (ROOT / "example_video.mp4").resolve()
+    assert config.default_video is None
     assert (
         config.video.fps,
         config.video.max_image_side,
@@ -159,13 +176,14 @@ def test_original_harness_defaults_and_prompt_are_preserved() -> None:
     assert config.openrouter.app_title is None
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900
-    assert config.inference.system_prompt == ORIGINAL_SYSTEM_PROMPT
+    assert config.face.allow_model_download is False
+    assert config.inference.system_prompt == EXPECTED_SYSTEM_PROMPT
     assert config.inference.prompt == (
-        f"{ORIGINAL_PROMPT}\n\n{BBOX_PROMPT_APPEND}"
+        f"{EXPECTED_PROMPT}\n\n{BBOX_PROMPT_APPEND}"
     )
     assert config.inference.request_parameters == {
         "temperature": 0.0,
-        "max_tokens": 96,
+        "max_tokens": 192,
         "reasoning": {"effort": "none"},
         "provider": {"only": ["coreweave"], "allow_fallbacks": False},
     }
@@ -175,7 +193,7 @@ def test_original_harness_defaults_and_prompt_are_preserved() -> None:
     )
 
 
-def test_model_prompt_has_one_bbox_append_and_original_dynamic_suffix() -> None:
+def test_model_prompt_has_one_bbox_append_and_dynamic_suffix() -> None:
     config = load_config(ROOT / "config.yaml")
     frame = SampledFrame(
         sample_index=9,
@@ -193,10 +211,10 @@ def test_model_prompt_has_one_bbox_append_and_original_dynamic_suffix() -> None:
         system_prompt=config.inference.system_prompt,
         prompt=config.inference.prompt,
     )
-    assert messages[0] == {"role": "system", "content": ORIGINAL_SYSTEM_PROMPT}
+    assert messages[0] == {"role": "system", "content": EXPECTED_SYSTEM_PROMPT}
     prompt_text = messages[1]["content"][0]["text"]
     assert prompt_text == (
-        f"{ORIGINAL_PROMPT}\n\n{BBOX_PROMPT_APPEND}\n\n"
+        f"{EXPECTED_PROMPT}\n\n{BBOX_PROMPT_APPEND}\n\n"
         "Target event: smoking\n"
         "Window: W7 · f9-f9\n"
         "Sample timestamps: f9=1.250s\n"

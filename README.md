@@ -7,18 +7,20 @@ and an annotated video stream.
 The harness has no runtime dependency on the original `goodvision`
 repository.
 
-## Preserved Harness behavior
+## Harness behavior
 
-The delivery service extends the original Harness; it does not retune its
-recognition loop. These original defaults remain fixed:
+The delivery service retains the original Harness recognition loop while using
+a deliberately high-recall safety-event decision policy. These runtime
+defaults remain fixed:
 
 - model sampling: 2.5 FPS, 320 px maximum image side, JPEG quality 75;
 - display sampling: 15 FPS, 720 px maximum image side, JPEG quality 70;
 - one-frame windows with stride 1 and six concurrent model requests;
-- `max_tokens=96`, no API retry, and OpenRouter routed only to CoreWeave with
+- `max_tokens=192`, no API retry, and OpenRouter routed only to CoreWeave with
   provider fallback disabled;
-- the original system and user prompts, with one bbox delivery paragraph
-  appended to the end of the user prompt.
+- high-recall safety-event prompts that deliberately favor possible-event
+  detections over missed events, with one bbox delivery paragraph appended to
+  the end of the user prompt.
 
 The original headless CLI keeps its prior event and result protocol. Browser
 testing now uses one unified page, based on the familiar original Demo UI.
@@ -259,7 +261,7 @@ Environment variables override deployment-specific values:
 | `HARNESS_WEBHOOK_SECRET` | Optional webhook HMAC secret. |
 | `HARNESS_BIND_ADDRESS` | Host bind address used by Compose. |
 | `HARNESS_PORT` | Host HTTP port used by Compose. |
-| `FACE_MODEL_ROOT` | InsightFace model cache; downloaded on first use. |
+| `FACE_MODEL_ROOT` | Root containing operator-supplied InsightFace-compatible models. |
 | `FACE_GALLERY_PATH` | Persistent known-person gallery JSON path. |
 
 Do not commit `.env`, RTSP credentials, or LLM API keys.
@@ -296,9 +298,20 @@ goodvision-harness-demo --host 127.0.0.1 --port 7900
 
 Open `http://127.0.0.1:7900`, select **Face recognition**, enroll each known
 person with a stable person ID, name, and one clear single-face image, then
-choose Camera or Network stream and press Start. The first enrollment or face
-run downloads the configured InsightFace model into `FACE_MODEL_ROOT`; the
-known-person gallery persists at `FACE_GALLERY_PATH`.
+choose Camera or Network stream and press Start. Install compatible detection
+and recognition weights under
+`FACE_MODEL_ROOT/models/<face.model_name>/` first. The harness does not bundle
+models and does not download one unless `face.allow_model_download` is
+explicitly set to `true`; the known-person gallery persists at
+`FACE_GALLERY_PATH`.
+
+InsightFace's Python code is MIT-licensed, but its official public pretrained
+model packs, including `buffalo_l`, are restricted to non-commercial research
+unless separately licensed. For customer or other commercial use, supply model
+weights you are authorized to use. Enable automatic download only after
+confirming that the applicable model terms permit the intended deployment; see
+the official [InsightFace license notice](https://pypi.org/project/insightface/)
+and [model-zoo terms](https://github.com/deepinsight/insightface/tree/master/model_zoo).
 
 The result envelope is ready for the separate visual Memory layer:
 `analysis_kind` distinguishes event and `face_recognition` observations,

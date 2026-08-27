@@ -19,7 +19,11 @@ from goodvision_harness.contracts import (
 )
 from goodvision_harness.face_recognition import GalleryPerson
 from goodvision_harness.reference_memory import MemoryContext, MemoryReference
-from goodvision_harness.service import HarnessRuntime, create_app
+from goodvision_harness.service import (
+    FACE_ENROLLMENT_MAX_BYTES,
+    HarnessRuntime,
+    create_app,
+)
 from goodvision_harness.visual_memory import VisualMemoryRecord
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,6 +107,54 @@ def test_face_gallery_http_surface_and_ui_info(
         deleted = client.delete("/v1/faces/gallery/bob")
         assert deleted.json() == {"deleted": True, "person_id": "bob"}
         assert client.delete("/v1/faces/gallery/missing").status_code == 404
+
+
+def test_face_enrollment_rejects_oversized_declared_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    fake = _FakeFaceRuntime()
+    runtime = HarnessRuntime(
+        load_config(ROOT / "config.yaml"),
+        face_runtime=fake,  # type: ignore[arg-type]
+    )
+    app = create_app(lambda: runtime)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/faces/gallery/bob?name=Bob",
+            content=b"not read",
+            headers={"Content-Length": str(FACE_ENROLLMENT_MAX_BYTES + 1)},
+        )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "enrollment image is too large"}
+    assert fake.last_enrollment is None
+
+
+def test_face_enrollment_rejects_oversized_stream_without_content_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    fake = _FakeFaceRuntime()
+    runtime = HarnessRuntime(
+        load_config(ROOT / "config.yaml"),
+        face_runtime=fake,  # type: ignore[arg-type]
+    )
+    app = create_app(lambda: runtime)
+    half_limit = FACE_ENROLLMENT_MAX_BYTES // 2
+    chunks = iter((b"a" * half_limit, b"b" * half_limit, b"c"))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/faces/gallery/bob?name=Bob",
+            content=chunks,
+            headers={"Content-Type": "image/jpeg"},
+        )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "enrollment image is too large"}
+    assert fake.last_enrollment is None
 
 
 def test_face_mode_reuses_streaming_session_with_face_settings(

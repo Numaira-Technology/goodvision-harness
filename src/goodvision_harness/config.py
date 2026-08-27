@@ -69,6 +69,7 @@ class FaceSettings:
 
     model_name: str = "buffalo_l"
     model_root: Path = Path(".models/insightface")
+    allow_model_download: bool = False
     provider: str = "CPUExecutionProvider"
     det_size: int = 640
     threshold: float = 0.4
@@ -259,6 +260,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             or face_section.get("model_root", ".models/insightface"),
             config_path=config_path,
             name="face.model_root",
+        ),
+        allow_model_download=_bool(
+            face_section.get("allow_model_download", False),
+            "face.allow_model_download",
         ),
         provider=_execution_provider(
             face_section.get("provider", "CPUExecutionProvider")

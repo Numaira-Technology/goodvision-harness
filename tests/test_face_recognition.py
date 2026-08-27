@@ -270,6 +270,65 @@ def test_missing_insightface_is_reported_on_first_use(
     assert runtime.loaded is False
 
 
+def test_missing_model_does_not_auto_download_without_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = importlib.import_module
+
+    class UnexpectedFaceAnalysis:
+        def __init__(self, **_kwargs: Any) -> None:
+            raise AssertionError("FaceAnalysis must not run before the license gate")
+
+    def fake_import(name: str, package: str | None = None) -> Any:
+        if name == "insightface.app":
+            return SimpleNamespace(FaceAnalysis=UnexpectedFaceAnalysis)
+        if name == "onnxruntime":
+            return SimpleNamespace(
+                get_available_providers=lambda: ["CPUExecutionProvider"]
+            )
+        return real_import(name, package)
+
+    monkeypatch.setattr(face_module.importlib, "import_module", fake_import)
+
+    with pytest.raises(RuntimeError, match="Automatic model download is disabled"):
+        face_module._load_face_analysis(_config(tmp_path))
+    assert not (tmp_path / "models").exists()
+
+
+def test_explicit_opt_in_allows_face_analysis_to_install_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = importlib.import_module
+    prepared: list[tuple[int, tuple[int, int]]] = []
+
+    class FakeFaceAnalysis:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["name"] == "buffalo_l"
+            assert kwargs["root"] == str(tmp_path / "models")
+
+        def prepare(self, *, ctx_id: int, det_size: tuple[int, int]) -> None:
+            prepared.append((ctx_id, det_size))
+
+    def fake_import(name: str, package: str | None = None) -> Any:
+        if name == "insightface.app":
+            return SimpleNamespace(FaceAnalysis=FakeFaceAnalysis)
+        if name == "onnxruntime":
+            return SimpleNamespace(
+                get_available_providers=lambda: ["CPUExecutionProvider"]
+            )
+        return real_import(name, package)
+
+    monkeypatch.setattr(face_module.importlib, "import_module", fake_import)
+
+    model = face_module._load_face_analysis(
+        _config(tmp_path, allow_model_download=True)
+    )
+    assert isinstance(model, FakeFaceAnalysis)
+    assert prepared == [(-1, (640, 640))]
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
@@ -286,3 +345,8 @@ def test_config_rejects_invalid_values(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         _config(tmp_path, **overrides)
+
+
+def test_config_rejects_non_boolean_model_download_opt_in(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="true or false"):
+        _config(tmp_path, allow_model_download="yes")
