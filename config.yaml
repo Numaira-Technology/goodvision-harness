@@ -18,11 +18,16 @@ video:
   jpeg_quality: 75
 
 display:
-  # Browser-facing live feed when streaming a file (camera mode previews
-  # locally in the browser and never uses this path).
+  # Full-cadence display frames are buffered while sparse bbox keyframes arrive.
+  # The output stays smooth but intentionally trails the source timeline.
   fps: 15.0
   max_image_side: 720
   jpeg_quality: 70
+  # 2.0s model latency + one 2.5 FPS keyframe interval for two-sided interpolation.
+  delay_seconds: 2.4
+  # Maximum gap for motion interpolation. Beyond it, hold the last bbox on
+  # every frame until a new keyframe explicitly updates or clears the state.
+  bbox_max_gap_seconds: 0.8
 
 sliding_window:
   # Classify the newest frame every 0.4s with no window-collection delay:
@@ -48,15 +53,15 @@ inference:
   model: qwen/qwen3.5-35b-a3b
   event_label: smoking
   system_prompt: >-
-    You are a risk-sensitive binary safety-event perception module for live
-    AI glasses. You receive
+    You are a risk-sensitive multi-label safety-event perception module for
+    live AI glasses. You receive
     short, chronologically ordered windows of frames sampled from a live
     camera. Use visible objects, human interaction, posture, motion, and
     temporal context to detect plausible events, including precursors and
     partial events. Use a deliberately low detection threshold and prefer
     false positives over false negatives. Do not require certainty or a
-    textbook-complete event. Answer with a single JSON object - no markdown,
-    no extra text.
+    textbook-complete event. Evaluate every requested event independently.
+    Answer with a single JSON object - no markdown, no extra text.
   prompt: |-
     Decide whether the target event is happening, starting, imminent, or
     plausibly indicated in the NEWEST (last) frame. Use earlier frames as
@@ -99,30 +104,58 @@ inference:
     For events involving a person and an item, such as smoking or holding a
     weapon, return separate tight boxes for both the person and the item. Never
     merge them or omit either one. If detected=false, use "objects": [].
+  multi_event_prompt: |-
+    Evaluate exactly these four safety events in the NEWEST (last) frame:
+    fight, smoking, fall, and weapon. Use earlier frames only as temporal
+    context. Judge every event independently, so multiple events may be true.
+
+    This is a high-recall safety detector with a deliberately low threshold.
+    Set detected=true whenever visible evidence makes an event a reasonable
+    possibility, including partial, starting, imminent, or ambiguous evidence.
+    Prefer a lower-confidence positive over missing a plausible safety event.
+    Use detected=false only when there is no meaningful visible cue or the
+    evidence clearly indicates an unrelated activity.
+
+    Event rules:
+    - fight: striking, kicking, pushing, grabbing, wrestling, aggressive
+      lunging or chasing, raised fists, attack posture, or imminent attack.
+      Visible impact is not required.
+    - smoking: a person holds, handles, carries, or has a cigarette, cigar,
+      pipe, or e-cigarette in hand or mouth; moves it toward the mouth;
+      prepares or lights it; puffs; or emits smoke/vapor. A flame, glowing tip,
+      inhalation, exhalation, or visible smoke is not required. An unattended
+      item alone is insufficient.
+    - fall: loss of balance, stumbling, uncontrolled downward motion,
+      collapse, being in the process of falling, or being newly or abnormally
+      on the ground. The full impact is not required.
+    - weapon: a person visibly holds, carries, draws, reaches for, points,
+      brandishes, or uses a likely gun, firearm, knife, blade, club, or other
+      object being used or readied as a weapon.
+
+    Respond with only one JSON object in this exact shape and order:
+    {"events":[
+      {"event_label":"fight","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
+      {"event_label":"smoking","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
+      {"event_label":"fall","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
+      {"event_label":"weapon","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]}
+    ]}
+
+    Include each event exactly once and do not add other event labels. Each
+    object must be {"label":"...","confidence":0.0-1.0,
+    "bbox_2d":[x1,y1,x2,y2]}. bbox_2d must tightly enclose that relevant
+    entity in the NEWEST frame on Qwen's top-left-origin 0..1000 xyxy grid.
+    Every detected=true event requires at least one object. For an event
+    involving a person and an item, return separate tight boxes for both.
+    Every detected=false event must use "objects": [].
   request_parameters:
     temperature: 0.0
-    max_tokens: 192
+    max_tokens: 1200
     reasoning:
       effort: "none"
     provider:
       only:
         - coreweave
       allow_fallbacks: false
-    # If your endpoint supports structured outputs you can force the schema:
-    # response_format:
-    #   type: json_schema
-    #   json_schema:
-    #     name: live_binary_classification
-    #     strict: true
-    #     schema:
-    #       type: object
-    #       properties:
-    #         detected: {type: boolean}
-    #         confidence: {type: number, minimum: 0.0, maximum: 1.0}
-    #         description: {type: string}
-    #       required: [detected, confidence, description]
-    #       additionalProperties: false
-
 memory:
   # Optional fixed reference-image prefix for multimodal inference. Private
   # images can live under the Git-ignored top-level memory/ directory.
@@ -143,10 +176,11 @@ face:
   # Local InsightFace mode. FACE_MODEL_ROOT and FACE_GALLERY_PATH override
   # these paths in the read-only Docker deployment. Public InsightFace model
   # packs are restricted to non-commercial research unless separately licensed,
-  # so automatic downloads require an explicit opt-in.
+  # so this download opt-in is only appropriate for this declared
+  # non-commercial demo/testing use.
   model_name: buffalo_l
   model_root: .models/insightface
-  allow_model_download: false
+  allow_model_download: true
   provider: CPUExecutionProvider
   det_size: 640
   threshold: 0.4

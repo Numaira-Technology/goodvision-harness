@@ -45,6 +45,8 @@ class DisplaySettings:
     fps: float = 15.0
     max_image_side: int = 720
     jpeg_quality: int = 70
+    delay_seconds: float = 2.4
+    bbox_max_gap_seconds: float = 0.8
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +63,7 @@ class InferenceSettings:
     system_prompt: str
     prompt: str
     request_parameters: Mapping[str, Any] = field(default_factory=dict)
+    multi_event_prompt: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +212,14 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             minimum=1,
             maximum=100,
         ),
+        delay_seconds=_non_negative_float(
+            display_section.get("delay_seconds", 2.4),
+            "display.delay_seconds",
+        ),
+        bbox_max_gap_seconds=_positive_float(
+            display_section.get("bbox_max_gap_seconds", 0.8),
+            "display.bbox_max_gap_seconds",
+        ),
     )
     sliding_window = SlidingWindowSettings(
         size_frames=_positive_int(
@@ -231,6 +242,9 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     event_label = str(inference_section.get("event_label", "")).strip()
     system_prompt = str(inference_section.get("system_prompt", "")).strip()
     prompt = str(inference_section.get("prompt", "")).strip()
+    multi_event_prompt = str(
+        inference_section.get("multi_event_prompt", "")
+    ).strip()
     for key, value in {
         "inference.model": model,
         "inference.event_label": event_label,
@@ -246,6 +260,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         system_prompt=system_prompt,
         prompt=prompt,
         request_parameters=dict(request_parameters),
+        multi_event_prompt=multi_event_prompt,
     )
     memory = load_memory_context(
         memory_section,

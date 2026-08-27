@@ -27,14 +27,20 @@ from starlette.websockets import WebSocketDisconnect
 
 from .config import (
     DEFAULT_CONFIG_PATH,
+    DisplaySettings,
     HarnessConfig,
     ServiceSettings,
     load_config,
 )
 from .contracts import AnalysisResult
+from .delayed_overlay import DelayedOverlayComposer
 from .delivery import WebhookDelivery
 from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
-from .grounding import build_grounding_client
+from .grounding import (
+    DETECTION_EVENT_LABELS,
+    build_fixed_five_grounding_client,
+    build_grounding_client,
+)
 from .openrouter import api_key_present
 from .overlay import draw_overlay
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
@@ -44,6 +50,7 @@ from .reference_memory import (
 )
 from .result_bus import FrameBus, FramePacket, ResultBus
 from .stream_adapter import parse_stream_source
+from .video_to_stream import encode_jpeg
 from .visual_memory import (
     VisualMemoryRecord,
     VisualMemorySink,
@@ -58,7 +65,10 @@ PERSON_FIELD_MAX_CHARS = 120
 FACE_ENROLLMENT_MAX_BYTES = 10_000_000
 EVENT_ANALYSIS_MODE = "event"
 FACE_ANALYSIS_MODE = "face"
-ANALYSIS_MODES = frozenset({EVENT_ANALYSIS_MODE, FACE_ANALYSIS_MODE})
+MULTI_ANALYSIS_MODE = "multi"
+ANALYSIS_MODES = frozenset(
+    {EVENT_ANALYSIS_MODE, FACE_ANALYSIS_MODE, MULTI_ANALYSIS_MODE}
+)
 
 
 class HarnessRuntime:
@@ -87,12 +97,28 @@ class HarnessRuntime:
         self.results = ResultBus(self.settings.result_history)
         self.frames = FrameBus()
         self.preview_frames = FrameBus()
+        self.annotated_frames = FrameBus()
+        display = config.display if config is not None else DisplaySettings()
+        self._display_settings = display
+        self._delayed_overlay = DelayedOverlayComposer(
+            delay_seconds=display.delay_seconds,
+            max_gap_seconds=display.bbox_max_gap_seconds,
+            output_fps=display.fps,
+            render=lambda jpeg, analysis: _render_analysis_jpeg(
+                jpeg,
+                analysis,
+                quality=self.settings.overlay_jpeg_quality,
+            ),
+            publish=self.annotated_frames.publish,
+        )
         self._state_lock = RLock()
         self._control_lock = RLock()
         self._session: StreamingSession | None = None
         self._session_mode: str | None = None
         self._camera_owner: str | None = None
         self._camera_frame_sequence = 0
+        self._camera_sample_period = 0.4
+        self._camera_next_sample_at = 0.0
         self._camera_max_image_side = (
             config.video.max_image_side if config is not None else 0
         )
@@ -112,7 +138,7 @@ class HarnessRuntime:
                 "configuration_error" if config_error else "idle"
             ),
             "input_mode": None,
-            "analysis_mode": EVENT_ANALYSIS_MODE,
+            "analysis_mode": MULTI_ANALYSIS_MODE,
             "generation": 0,
             "ready": False,
             "last_frame_at": None,
@@ -125,8 +151,9 @@ class HarnessRuntime:
             "stream": None,
             "stream_session_id": None,
             "event_label": (
-                config.inference.event_label if config is not None else None
+                ",".join(DETECTION_EVENT_LABELS) if config is not None else None
             ),
+            "event_labels": list(DETECTION_EVENT_LABELS),
             "model": config.inference.model if config is not None else None,
             "dry_run": self.dry_run,
             "webhook_enabled": False,
@@ -172,6 +199,7 @@ class HarnessRuntime:
             "configured": True,
             "model": self.config.inference.model,
             "event_label": self.config.inference.event_label,
+            "event_labels": list(DETECTION_EVENT_LABELS),
             "sample_fps": self.config.video.fps,
             "max_image_side": self.config.video.max_image_side,
             "jpeg_quality": self.config.video.jpeg_quality,
@@ -200,6 +228,20 @@ class HarnessRuntime:
                 "max_image_side": self.config.face.max_image_side,
                 "jpeg_quality": self.config.face.jpeg_quality,
                 "threshold": self.config.face.threshold,
+            },
+            "multi": {
+                "sample_fps": self.config.face.sample_fps,
+                "max_image_side": self.config.face.max_image_side,
+                "jpeg_quality": self.config.face.jpeg_quality,
+                "safety_max_image_side": self.config.video.max_image_side,
+            },
+            "annotated_output": {
+                "output_fps": self.config.display.fps,
+                "max_image_side": self.config.display.max_image_side,
+                "buffer_delay_seconds": self.config.display.delay_seconds,
+                "bbox_max_gap_seconds": (
+                    self.config.display.bbox_max_gap_seconds
+                ),
             },
         }
 
@@ -303,7 +345,7 @@ class HarnessRuntime:
         *,
         dry_run: bool | None = None,
         event_label: str | None = None,
-        analysis_mode: str = EVENT_ANALYSIS_MODE,
+        analysis_mode: str = MULTI_ANALYSIS_MODE,
     ) -> dict[str, Any]:
         url = (stream_url or "").strip() or self.configured_stream_url()
         if not url:
@@ -324,7 +366,7 @@ class HarnessRuntime:
         *,
         dry_run: bool | None = None,
         event_label: str | None = None,
-        analysis_mode: str = EVENT_ANALYSIS_MODE,
+        analysis_mode: str = MULTI_ANALYSIS_MODE,
         owner: str | None = None,
     ) -> dict[str, Any]:
         return self._start_session(
@@ -344,7 +386,7 @@ class HarnessRuntime:
         stream_host: str | None = None,
         dry_run: bool | None = None,
         event_label: str | None = None,
-        analysis_mode: str = EVENT_ANALYSIS_MODE,
+        analysis_mode: str = MULTI_ANALYSIS_MODE,
         camera_owner: str | None = None,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
@@ -354,9 +396,12 @@ class HarnessRuntime:
 
         selected_analysis = str(analysis_mode).strip().lower()
         if selected_analysis not in ANALYSIS_MODES:
-            raise ValueError("analysis_mode must be event or face")
+            raise ValueError("analysis_mode must be event, face, or multi")
 
-        if selected_analysis == FACE_ANALYSIS_MODE:
+        if selected_analysis == MULTI_ANALYSIS_MODE:
+            label = ",".join(DETECTION_EVENT_LABELS)
+            use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
+        elif selected_analysis == FACE_ANALYSIS_MODE:
             label = UNKNOWN_FACE_EVENT_LABEL
             use_dry_run = False
         else:
@@ -384,6 +429,13 @@ class HarnessRuntime:
 
             if selected_analysis == FACE_ANALYSIS_MODE:
                 face_runtime = self._ensure_face_runtime()
+                warmup_seconds = face_runtime.warmup()
+                if warmup_seconds:
+                    LOGGER.info(
+                        "warmed InsightFace model %s in %.3fs",
+                        face_runtime.settings.model,
+                        warmup_seconds,
+                    )
                 face = self.config.face
                 session_config = replace(
                     self.config,
@@ -406,6 +458,40 @@ class HarnessRuntime:
                     ),
                 )
                 client = face_runtime
+            elif selected_analysis == MULTI_ANALYSIS_MODE:
+                face = self.config.face
+                face_runtime = self._ensure_face_runtime()
+                if not use_dry_run:
+                    warmup_seconds = face_runtime.warmup()
+                    if warmup_seconds:
+                        LOGGER.info(
+                            "warmed InsightFace model %s in %.3fs",
+                            face_runtime.settings.model,
+                            warmup_seconds,
+                        )
+                session_config = replace(
+                    self.config,
+                    video=replace(
+                        self.config.video,
+                        fps=face.sample_fps,
+                        max_image_side=face.max_image_side,
+                        jpeg_quality=face.jpeg_quality,
+                    ),
+                    sliding_window=replace(
+                        self.config.sliding_window,
+                        size_frames=1,
+                        stride_frames=1,
+                        include_partial_final_window=False,
+                    ),
+                )
+                client = build_fixed_five_grounding_client(
+                    session_config.inference,
+                    session_config.openrouter,
+                    stranger_client=face_runtime,
+                    safety_max_image_side=self.config.video.max_image_side,
+                    safety_jpeg_quality=self.config.video.jpeg_quality,
+                    dry_run=use_dry_run,
+                )
             else:
                 session_config = self.config
                 if label != self.config.inference.event_label:
@@ -446,6 +532,9 @@ class HarnessRuntime:
                 on_analysis_result=lambda result: self._guarded_callback(
                     generation, self._on_analysis_result, result
                 ),
+                on_timeline_result=lambda result: self._guarded_callback(
+                    generation, self._on_timeline_result, result
+                ),
             )
             if mode == STREAM_MODE:
                 assert stream_url is not None
@@ -465,15 +554,22 @@ class HarnessRuntime:
                     source_id=self.source_id,
                 )
 
-            self.results.reset()
-            self.frames.reset()
-            self.preview_frames.reset()
             with self._state_lock:
                 self._generation = generation
+                # Reset the compositor before its public bus. A frame already
+                # being published finishes first, then the bus reset clears it;
+                # the new generation cannot leak an old session frame.
+                self._delayed_overlay.reset()
+                self.annotated_frames.reset()
+                self.results.reset()
+                self.frames.reset()
+                self.preview_frames.reset()
                 self._session = session
                 self._session_mode = mode
                 self._camera_owner = camera_owner if mode == CAMERA_MODE else None
                 self._camera_frame_sequence = 0
+                self._camera_sample_period = 1.0 / session_config.video.fps
+                self._camera_next_sample_at = 0.0
                 self._camera_max_image_side = session_config.video.max_image_side
                 self._session_started_monotonic = time.monotonic()
                 self._last_frame_monotonic = None
@@ -501,6 +597,11 @@ class HarnessRuntime:
                         ),
                         "stream_session_id": session.stream_session_id,
                         "event_label": label,
+                        "event_labels": (
+                            list(DETECTION_EVENT_LABELS)
+                            if selected_analysis == MULTI_ANALYSIS_MODE
+                            else [label]
+                        ),
                         "model": session_config.inference.model,
                         "dry_run": use_dry_run,
                         "webhook_enabled": self._delivery is not None,
@@ -533,6 +634,8 @@ class HarnessRuntime:
                 "model": session_config.inference.model,
                 "dry_run": use_dry_run,
             }
+            if selected_analysis == MULTI_ANALYSIS_MODE:
+                response["event_labels"] = list(DETECTION_EVENT_LABELS)
             if stream_protocol is not None:
                 response["stream_protocol"] = stream_protocol
             if (
@@ -584,6 +687,9 @@ class HarnessRuntime:
                 )
                 return False
 
+            self._delayed_overlay.reset()
+            self.annotated_frames.reset()
+
             with self._state_lock:
                 self._session = None
                 self._session_mode = None
@@ -607,6 +713,7 @@ class HarnessRuntime:
         with self._control_lock:
             self._closed = True
         self.stop_session()
+        self._delayed_overlay.close(timeout_seconds=5.0)
         if self._delivery is not None:
             self._delivery.close(timeout_seconds=5.0)
         self._update_state(pipeline_state="stopped", ready=False)
@@ -637,6 +744,11 @@ class HarnessRuntime:
         actual_height, actual_width = image.shape[:2]
         if (actual_width, actual_height) != (width, height):
             raise ValueError("camera JPEG dimensions do not match its header")
+        display_jpeg, _, _ = encode_jpeg(
+            image,
+            max_image_side=self._display_settings.max_image_side,
+            quality=self._display_settings.jpeg_quality,
+        )
 
         with self._control_lock:
             session = self._session
@@ -647,18 +759,26 @@ class HarnessRuntime:
                 or (self._camera_owner is not None and owner != self._camera_owner)
             ):
                 return False
-            accepted = session.push_camera_frame(jpeg, width=width, height=height)
-            if not accepted:
-                return False
             sequence = self._camera_frame_sequence
             self._camera_frame_sequence += 1
             started = self._session_started_monotonic or time.monotonic()
             timestamp = max(0.0, time.monotonic() - started)
+            should_sample = timestamp + 1e-9 >= self._camera_next_sample_at
+            if should_sample:
+                while self._camera_next_sample_at <= timestamp + 1e-9:
+                    self._camera_next_sample_at += self._camera_sample_period
+                session.push_camera_frame(
+                    jpeg,
+                    width=width,
+                    height=height,
+                    timestamp_seconds=timestamp,
+                    source_frame_index=sequence,
+                )
             generation = self._generation
             self._guarded_callback(
                 generation,
                 self._on_display_frame,
-                jpeg,
+                display_jpeg,
                 timestamp,
                 sequence,
             )
@@ -667,6 +787,7 @@ class HarnessRuntime:
     def status(self) -> dict[str, Any]:
         with self._state_lock:
             payload = copy.deepcopy(self._state)
+        payload["annotated_output"] = self._delayed_overlay.stats()
         ready, reason = self.readiness()
         payload["ready"] = ready
         payload["readiness_reason"] = reason
@@ -735,7 +856,10 @@ class HarnessRuntime:
         with self._state_lock:
             if generation != self._generation:
                 return
-        callback(*args)
+            # Keep generation validation and callback submission atomic with
+            # session reset. Callback state updates are safe because this is an
+            # RLock.
+            callback(*args)
 
     def _on_analysis_frame(self, result: AnalysisResult, jpeg: bytes) -> None:
         source_jpeg = bytes(jpeg)
@@ -794,6 +918,9 @@ class HarnessRuntime:
         if self._delivery is not None:
             self._delivery.submit(payload)
 
+    def _on_timeline_result(self, result: AnalysisResult) -> None:
+        self._delayed_overlay.submit_result(result)
+
     def _on_display_frame(
         self,
         jpeg: bytes,
@@ -801,14 +928,14 @@ class HarnessRuntime:
         frame_sequence: int,
     ) -> None:
         observed_at = _utc_now()
-        self.preview_frames.publish(
-            FramePacket(
-                jpeg=bytes(jpeg),
-                media_timestamp=float(media_timestamp),
-                frame_sequence=int(frame_sequence),
-                observed_at=observed_at,
-            )
+        packet = FramePacket(
+            jpeg=bytes(jpeg),
+            media_timestamp=float(media_timestamp),
+            frame_sequence=int(frame_sequence),
+            observed_at=observed_at,
         )
+        self.preview_frames.publish(packet)
+        self._delayed_overlay.submit_frame(packet)
         frame_count = int(self._state["source_frames_received"]) + 1
         self._last_frame_monotonic = time.monotonic()
         self._update_state(
@@ -850,20 +977,68 @@ def _render_analysis_jpeg(
     image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("display callback did not contain a valid JPEG")
-    judgment = analysis.judgments[0]
     if analysis.analysis_kind == "face_recognition":
-        objects = analysis.objects
-    else:
-        referenced = set(judgment.object_ids)
-        objects = tuple(
-            item for item in analysis.objects if item.object_id in referenced
+        detected_judgments = tuple(
+            judgment for judgment in analysis.judgments if judgment.detected
         )
+        displayed_judgments = detected_judgments or analysis.judgments
+        objects = analysis.objects
+        event_label = " | ".join(
+            judgment.event_label for judgment in displayed_judgments
+        )
+        detected = bool(detected_judgments)
+        confidence = max(
+            (judgment.confidence for judgment in displayed_judgments),
+            default=0.0,
+        )
+        description = "; ".join(
+            judgment.description for judgment in displayed_judgments
+        )
+    else:
+        detected_judgments = tuple(
+            judgment for judgment in analysis.judgments if judgment.detected
+        )
+        labels_by_object: dict[str, list[str]] = {}
+        for judgment in detected_judgments:
+            for object_id in judgment.object_ids:
+                labels = labels_by_object.setdefault(object_id, [])
+                if judgment.event_label not in labels:
+                    labels.append(judgment.event_label)
+        objects = tuple(
+            replace(
+                item,
+                label=(
+                    f"{' / '.join(labels_by_object[item.object_id])} | {item.label}"
+                ),
+            )
+            for item in analysis.objects
+            if item.object_id in labels_by_object
+        )
+        detected = bool(detected_judgments)
+        if detected_judgments:
+            event_label = " | ".join(
+                judgment.event_label for judgment in detected_judgments
+            )
+            confidence = max(
+                judgment.confidence for judgment in detected_judgments
+            )
+            description = "; ".join(
+                f"{judgment.event_label}: {judgment.description}"
+                for judgment in detected_judgments
+            )
+        else:
+            event_label = "five events"
+            confidence = min(
+                (judgment.confidence for judgment in analysis.judgments),
+                default=0.0,
+            )
+            description = "No target events detected."
     rendered = draw_overlay(
         image,
-        event_label=judgment.event_label,
-        detected=judgment.detected,
-        confidence=judgment.confidence,
-        description=judgment.description,
+        event_label=event_label,
+        detected=detected,
+        confidence=confidence,
+        description=description,
         objects=objects,
         analysis_kind=analysis.analysis_kind,
     )
@@ -938,7 +1113,7 @@ def create_app(
                     if command == "start":
                         mode = str(payload.get("mode") or "")
                         analysis_mode = str(
-                            payload.get("analysis_mode") or EVENT_ANALYSIS_MODE
+                            payload.get("analysis_mode") or MULTI_ANALYSIS_MODE
                         )
                         requested_dry_run = payload.get("dry_run")
                         if requested_dry_run is not None and not isinstance(
@@ -1181,6 +1356,17 @@ def create_app(
     async def live_video_stream(request: Request) -> StreamingResponse:
         return _mjpeg_response(request, _runtime(request).preview_frames)
 
+    @application.get("/v1/video/annotated/latest.jpg")
+    async def latest_annotated_frame(request: Request) -> Response:
+        return _snapshot_response(
+            _runtime(request).annotated_frames,
+            missing_detail="no delayed annotated frame yet",
+        )
+
+    @application.get("/v1/video/annotated/stream.mjpeg")
+    async def annotated_video_stream(request: Request) -> StreamingResponse:
+        return _mjpeg_response(request, _runtime(request).annotated_frames)
+
     return application
 
 
@@ -1197,6 +1383,12 @@ def _frame_headers(packet: FramePacket) -> dict[str, str]:
     }
     if packet.analysis_message_id is not None:
         headers["X-Analysis-Message-Id"] = packet.analysis_message_id
+    if packet.next_analysis_message_id is not None:
+        headers["X-Next-Analysis-Message-Id"] = packet.next_analysis_message_id
+    if packet.annotation_mode is not None:
+        headers["X-Annotation-Mode"] = packet.annotation_mode
+    if packet.stream_delay_seconds is not None:
+        headers["X-Stream-Delay"] = f"{packet.stream_delay_seconds:.3f}"
     return headers
 
 
@@ -1241,9 +1433,22 @@ def _mjpeg_response(request: Request, bus: FrameBus) -> StreamingResponse:
 
 
 def _mjpeg_part(packet: FramePacket) -> bytes:
-    analysis_header = ""
+    optional_headers: list[str] = []
     if packet.analysis_message_id is not None:
-        analysis_header = f"X-Analysis-Message-Id: {packet.analysis_message_id}\r\n"
+        optional_headers.append(
+            f"X-Analysis-Message-Id: {packet.analysis_message_id}\r\n"
+        )
+    if packet.next_analysis_message_id is not None:
+        optional_headers.append(
+            f"X-Next-Analysis-Message-Id: {packet.next_analysis_message_id}\r\n"
+        )
+    if packet.annotation_mode is not None:
+        optional_headers.append(f"X-Annotation-Mode: {packet.annotation_mode}\r\n")
+    if packet.stream_delay_seconds is not None:
+        optional_headers.append(
+            f"X-Stream-Delay: {packet.stream_delay_seconds:.3f}\r\n"
+        )
+    rendered_optional_headers = "".join(optional_headers)
     headers = (
         f"--{MJPEG_BOUNDARY}\r\n"
         "Content-Type: image/jpeg\r\n"
@@ -1251,7 +1456,7 @@ def _mjpeg_part(packet: FramePacket) -> bytes:
         f"X-Frame-Sequence: {packet.frame_sequence}\r\n"
         f"X-Media-Timestamp: {packet.media_timestamp:.3f}\r\n"
         f"X-Observed-At: {packet.observed_at}\r\n"
-        f"{analysis_header}\r\n"
+        f"{rendered_optional_headers}\r\n"
     ).encode("ascii")
     return headers + packet.jpeg + b"\r\n"
 

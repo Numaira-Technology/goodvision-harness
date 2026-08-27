@@ -46,9 +46,11 @@ class _FakeFaceAnalysis:
     def __init__(self, responses: list[list[Any]]) -> None:
         self.responses = list(responses)
         self.calls = 0
+        self.image_shapes: list[tuple[int, ...]] = []
 
-    def get(self, _image: np.ndarray[Any, Any]) -> list[Any]:
+    def get(self, image: np.ndarray[Any, Any]) -> list[Any]:
         self.calls += 1
+        self.image_shapes.append(tuple(image.shape))
         if not self.responses:
             raise AssertionError("unexpected inference call")
         return self.responses.pop(0)
@@ -203,6 +205,31 @@ def test_runtime_enrolls_and_classifies_every_face(
     assert "1 known, 1 unknown, 1 unusable" in classification.description
     assert len(loads) == 1
     assert app.calls == 2
+
+
+def test_runtime_warmup_loads_model_and_runs_detector_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _FakeFaceAnalysis([[]])
+    loads: list[FaceRecognizerConfig] = []
+
+    def load(config: FaceRecognizerConfig) -> _FakeFaceAnalysis:
+        loads.append(config)
+        return app
+
+    monkeypatch.setattr(face_module, "_load_face_analysis", load)
+    runtime = FaceRecognitionRuntime(_config(tmp_path, det_size=(320, 240)))
+
+    assert runtime.loaded is False
+    assert runtime.warmed is False
+    assert runtime.warmup() >= 0.0
+    assert runtime.loaded is True
+    assert runtime.warmed is True
+    assert runtime.warmup() == 0.0
+    assert len(loads) == 1
+    assert app.calls == 1
+    assert app.image_shapes == [(240, 320, 3)]
 
 
 def test_empty_gallery_marks_usable_face_unknown(

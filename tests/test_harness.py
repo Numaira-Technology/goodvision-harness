@@ -26,8 +26,11 @@ from goodvision_harness.contracts import (
 )
 from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.grounding import (
+    DETECTION_EVENT_LABELS,
+    SAFETY_EVENT_LABELS,
     DryRunGroundingClient,
     build_grounding_messages,
+    build_multi_grounding_messages,
     parse_grounded_classification,
 )
 from goodvision_harness.inference import DryRunWindowClient, WindowResponse
@@ -46,15 +49,15 @@ from goodvision_harness.vision_result import VisionResult
 ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED_SYSTEM_PROMPT = (
-    "You are a risk-sensitive binary safety-event perception module for live "
+    "You are a risk-sensitive multi-label safety-event perception module for live "
     "AI glasses. You receive "
     "short, chronologically ordered windows of frames sampled from a live "
     "camera. Use visible objects, human interaction, posture, motion, and "
     "temporal context to detect plausible events, including precursors and "
     "partial events. Use a deliberately low detection threshold and prefer "
     "false positives over false negatives. Do not require certainty or a "
-    "textbook-complete event. Answer with a single JSON object - no markdown, "
-    "no extra text."
+    "textbook-complete event. Evaluate every requested event independently. "
+    "Answer with a single JSON object - no markdown, no extra text."
 )
 EXPECTED_PROMPT = (
     """Decide whether the target event is happening, starting, imminent, or
@@ -165,7 +168,9 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.display.fps,
         config.display.max_image_side,
         config.display.jpeg_quality,
-    ) == (15.0, 720, 70)
+        config.display.delay_seconds,
+        config.display.bbox_max_gap_seconds,
+    ) == (15.0, 720, 70, 2.4, 0.8)
     assert (
         config.sliding_window.size_frames,
         config.sliding_window.stride_frames,
@@ -176,14 +181,24 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert config.openrouter.app_title is None
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900
-    assert config.face.allow_model_download is False
+    assert config.face.allow_model_download is True
     assert config.inference.system_prompt == EXPECTED_SYSTEM_PROMPT
     assert config.inference.prompt == (
         f"{EXPECTED_PROMPT}\n\n{BBOX_PROMPT_APPEND}"
     )
+    assert config.inference.multi_event_prompt.startswith(
+        "Evaluate exactly these four safety events in the NEWEST (last) frame:"
+    )
+    assert '"event_label":"fight"' in config.inference.multi_event_prompt
+    assert '"event_label":"smoking"' in config.inference.multi_event_prompt
+    assert '"event_label":"fall"' in config.inference.multi_event_prompt
+    assert '"event_label":"weapon"' in config.inference.multi_event_prompt
+    assert "Every detected=false event must use \"objects\": []." in (
+        config.inference.multi_event_prompt
+    )
     assert config.inference.request_parameters == {
         "temperature": 0.0,
-        "max_tokens": 192,
+        "max_tokens": 1200,
         "reasoning": {"effort": "none"},
         "provider": {"only": ["coreweave"], "allow_fallbacks": False},
     }
@@ -222,6 +237,28 @@ def test_model_prompt_has_one_bbox_append_and_dynamic_suffix() -> None:
     )
     assert prompt_text.count("For the delivery contract") == 1
     assert prompt_text.count('"bbox_2d"') == 1
+
+    multi_messages = build_multi_grounding_messages(
+        window,
+        event_labels=SAFETY_EVENT_LABELS,
+        system_prompt=config.inference.system_prompt,
+        prompt=config.inference.multi_event_prompt,
+        append_contract=False,
+    )
+    assert multi_messages[0]["content"].endswith(
+        "independently judge every fixed safety event and allow multiple "
+        "simultaneous positives."
+    )
+    multi_prompt_text = multi_messages[1]["content"][0]["text"]
+    assert multi_prompt_text.startswith(config.inference.multi_event_prompt)
+    assert (
+        "Target safety events (exact order): fight, smoking, fall, weapon"
+        in multi_prompt_text
+    )
+    assert multi_prompt_text.count('"events":[') == 1
+    assert "Authoritative fixed safety-event output contract" not in (
+        multi_prompt_text
+    )
 
 
 def test_grounded_dry_run_preserves_original_pattern_latency_and_confidence(
@@ -476,6 +513,60 @@ def test_pipeline_emits_grounded_result_with_source_frame_mapping(
     assert emitted_frames == [(emitted[0], presentation_jpeg)]
 
 
+def test_pipeline_keeps_late_success_for_private_overlay_timeline() -> None:
+    config = load_config(ROOT / "config.yaml")
+    client = DryRunGroundingClient(config.inference)
+    public_results: list[AnalysisResult] = []
+    timeline_results: list[AnalysisResult] = []
+    records: list[dict[str, Any]] = []
+    session = StreamingSession.for_camera(
+        config,
+        client,
+        SessionCallbacks(
+            on_event=records.append,
+            on_analysis_result=public_results.append,
+            on_timeline_result=timeline_results.append,
+        ),
+    )
+    classification = parse_grounded_classification(
+        '{"detected":true,"confidence":0.9,"description":"visible",'
+        '"objects":[{"label":"person","bbox_2d":[100,100,500,900]}]}'
+    )
+
+    def completed_window(
+        index: int,
+        timestamp: float,
+    ) -> tuple[Future[Any], FrameWindow]:
+        frame = SampledFrame(
+            sample_index=index,
+            source_frame_index=index * 10,
+            timestamp_seconds=timestamp,
+            jpeg_bytes=_jpeg(),
+            width=200,
+            height=100,
+        )
+        window = FrameWindow(index=index, frames=(frame,))
+        future: Future[Any] = Future()
+        future.set_result(
+            WindowResponse(
+                window=window,
+                classification=classification,
+                raw_text=None,
+                latency_seconds=2.0,
+            )
+        )
+        return future, window
+
+    newer_future, newer_window = completed_window(2, 0.8)
+    older_future, older_window = completed_window(1, 0.4)
+    session._on_window_done(newer_future, newer_window)
+    session._on_window_done(older_future, older_window)
+
+    assert [item.frame.source_frame_index for item in public_results] == [20]
+    assert [item.frame.source_frame_index for item in timeline_results] == [20, 10]
+    assert [item["applied"] for item in records] == [True, False]
+
+
 def test_pending_future_remains_until_delivery_callbacks_finish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -552,12 +643,18 @@ def test_result_and_frame_buses_are_bounded_and_resumable() -> None:
         frame_sequence=9,
         observed_at="2026-08-25T10:00:00.000Z",
         analysis_message_id="message-9",
+        next_analysis_message_id="message-10",
+        annotation_mode="interpolated",
+        stream_delay_seconds=2.4,
     )
     version = frames.publish(packet)
     assert frames.wait_after(0) == (version, packet)
     part = _mjpeg_part(packet)
     assert b"Content-Type: image/jpeg" in part
     assert b"X-Analysis-Message-Id: message-9" in part
+    assert b"X-Next-Analysis-Message-Id: message-10" in part
+    assert b"X-Annotation-Mode: interpolated" in part
+    assert b"X-Stream-Delay: 2.400" in part
     assert packet.jpeg in part
 
 
@@ -611,6 +708,7 @@ class _StubRuntime:
         self.results = ResultBus()
         self.frames = FrameBus()
         self.preview_frames = FrameBus()
+        self.annotated_frames = FrameBus()
         self.started = False
         self.stopped = False
 
@@ -632,6 +730,18 @@ class _StubRuntime:
                 media_timestamp=1.1,
                 frame_sequence=4,
                 observed_at="2026-08-25T10:00:00.100Z",
+            )
+        )
+        self.annotated_frames.publish(
+            FramePacket(
+                jpeg=_jpeg(),
+                media_timestamp=0.6,
+                frame_sequence=2,
+                observed_at="2026-08-25T10:00:00.200Z",
+                analysis_message_id="message-1",
+                next_analysis_message_id="message-2",
+                annotation_mode="interpolated",
+                stream_delay_seconds=2.4,
             )
         )
 
@@ -665,6 +775,12 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert info["max_image_side"] == 320
     assert info["jpeg_quality"] == 75
     assert info["max_concurrent_requests"] == 6
+    assert info["annotated_output"] == {
+        "output_fps": 15.0,
+        "max_image_side": 720,
+        "buffer_delay_seconds": 2.4,
+        "bbox_max_gap_seconds": 0.8,
+    }
     assert info["configured_stream"] is True
     assert info["configured_stream_protocol"] == "rtsp"
     assert "stream_url" not in info
@@ -691,8 +807,19 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         live_frame = client.get("/v1/video/live/latest.jpg")
         assert live_frame.status_code == 200
         assert "X-Analysis-Message-Id" not in live_frame.headers
+        annotated = client.get("/v1/video/annotated/latest.jpg")
+        assert annotated.status_code == 200
+        assert annotated.headers["X-Analysis-Message-Id"] == "message-1"
+        assert annotated.headers["X-Next-Analysis-Message-Id"] == "message-2"
+        assert annotated.headers["X-Annotation-Mode"] == "interpolated"
+        assert annotated.headers["X-Stream-Delay"] == "2.400"
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
+        assert "Continuous delayed annotation" in dashboard.text
         paths = {route.path for route in app.routes}
         assert "/v1/results/events" in paths
+        assert "/v1/video/annotated/stream.mjpeg" in paths
         assert "/v1/video/stream.mjpeg" in paths
         assert "/v1/video/live/stream.mjpeg" in paths
     assert stub.started and stub.stopped
@@ -711,7 +838,6 @@ def test_browser_camera_dry_run_delivers_raw_and_correlated_bbox_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("RESULT_WEBHOOK_URL", raising=False)
-    monkeypatch.setattr("goodvision_harness.grounding.time.sleep", lambda _: None)
     runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
     owner = "browser-test"
     camera_jpeg = _jpeg(width=200, height=100)
@@ -720,30 +846,59 @@ def test_browser_camera_dry_run_delivers_raw_and_correlated_bbox_output(
         session = runtime.start_camera(dry_run=True, owner=owner)
         assert session["mode"] == "camera"
         assert session["dry_run"] is True
-        for _ in range(3):
-            assert runtime.push_camera_frame(
-                camera_jpeg,
-                width=200,
-                height=100,
-                owner=owner,
-            )
+        assert runtime.push_camera_frame(
+            camera_jpeg,
+            width=200,
+            height=100,
+            owner=owner,
+        )
+        # This frame is still published to the display path but falls between
+        # two 2.5 FPS model samples.
+        assert runtime.push_camera_frame(
+            camera_jpeg,
+            width=200,
+            height=100,
+            owner=owner,
+        )
+        time.sleep(0.41)
+        assert runtime.push_camera_frame(
+            camera_jpeg,
+            width=200,
+            height=100,
+            owner=owner,
+        )
 
         result_record = None
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
-            latest = runtime.results.latest()
-            if latest is not None and latest.payload["judgments"][0]["detected"]:
-                result_record = latest
+            for record in runtime.results.records_after(0):
+                if record.payload["frame"]["source_frame_index"] == 2:
+                    result_record = record
+                    break
+            if result_record is not None:
                 break
             time.sleep(0.01)
 
         assert result_record is not None
         result = result_record.payload
         assert result["type"] == "analysis_result"
+        assert result["analysis_kind"] == "fixed_five_events"
         assert result["frame"]["source_frame_index"] == 2
         assert result["frame"]["width"] == 200
         assert result["frame"]["height"] == 100
-        assert result["judgments"][0]["object_ids"] == ["object-1"]
+        assert [item["event_label"] for item in result["judgments"]] == list(
+            DETECTION_EVENT_LABELS
+        )
+        assert len(result["judgments"]) == 5
+        detected = [
+            item["event_label"] for item in result["judgments"] if item["detected"]
+        ]
+        assert detected == ["smoking", "stranger"]
+        assert all(
+            item["object_ids"] == []
+            for item in result["judgments"]
+            if not item["detected"]
+        )
         assert result["objects"][0]["bbox"]["coordinate_system"] == (
             "source_normalized_xyxy"
         )
@@ -751,7 +906,12 @@ def test_browser_camera_dry_run_delivers_raw_and_correlated_bbox_output(
         raw_update = runtime.preview_frames.latest()
         assert raw_update is not None
         _, raw_packet = raw_update
-        assert raw_packet.jpeg == camera_jpeg
+        raw_image = cv2.imdecode(
+            np.frombuffer(raw_packet.jpeg, dtype=np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        assert raw_image is not None
+        assert raw_image.shape[:2] == (100, 200)
         assert raw_packet.frame_sequence == 2
         assert raw_packet.analysis_message_id is None
 
@@ -781,10 +941,10 @@ def test_camera_runtime_rejects_invalid_frames_and_second_active_session(
         with pytest.raises(RuntimeError, match="already running"):
             runtime.start_camera(dry_run=True, owner="owner-b")
 
-        with pytest.raises(ValueError, match="exceeds 320px"):
+        with pytest.raises(ValueError, match="exceeds 1280px"):
             runtime.push_camera_frame(
-                _jpeg(width=321, height=100),
-                width=321,
+                _jpeg(width=1281, height=100),
+                width=1281,
                 height=100,
                 owner="owner-a",
             )
@@ -818,19 +978,28 @@ def test_readiness_requires_video_and_successful_analysis() -> None:
     class _RunningSession:
         running = True
 
-    runtime._session = _RunningSession()  # type: ignore[assignment]
-    runtime._update_state(pipeline_state="running")
-    runtime._on_display_frame(_jpeg(), 1.0, 1)
-    assert runtime.readiness() == (False, "waiting_for_first_analysis")
+        def stop(self) -> None:
+            self.running = False
 
-    result = _analysis_result()
-    runtime._on_analysis_frame(result, _jpeg())
-    runtime._on_analysis_result(result)
-    assert runtime.readiness() == (True, "ready")
-    _, packet = runtime.frames.latest() or (0, None)
-    assert packet is not None
-    assert packet.analysis_message_id == result.message_id
-    assert packet.frame_sequence == result.frame.source_frame_index
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+    try:
+        runtime._session = _RunningSession()  # type: ignore[assignment]
+        runtime._update_state(pipeline_state="running")
+        runtime._on_display_frame(_jpeg(), 1.0, 1)
+        assert runtime.readiness() == (False, "waiting_for_first_analysis")
+
+        result = _analysis_result()
+        runtime._on_analysis_frame(result, _jpeg())
+        runtime._on_analysis_result(result)
+        assert runtime.readiness() == (True, "ready")
+        _, packet = runtime.frames.latest() or (0, None)
+        assert packet is not None
+        assert packet.analysis_message_id == result.message_id
+        assert packet.frame_sequence == result.frame.source_frame_index
+    finally:
+        runtime.stop()
 
 
 def test_webhook_uses_stable_idempotency_and_hmac_signature() -> None:

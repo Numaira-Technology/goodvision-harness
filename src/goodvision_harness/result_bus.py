@@ -85,6 +85,9 @@ class FramePacket:
     frame_sequence: int
     observed_at: str
     analysis_message_id: str | None = None
+    next_analysis_message_id: str | None = None
+    annotation_mode: str | None = None
+    stream_delay_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if not self.jpeg:
@@ -100,6 +103,20 @@ class FramePacket:
             and not self.analysis_message_id.strip()
         ):
             raise ValueError("analysis_message_id must not be empty")
+        if (
+            self.next_analysis_message_id is not None
+            and not self.next_analysis_message_id.strip()
+        ):
+            raise ValueError("next_analysis_message_id must not be empty")
+        if self.annotation_mode is not None and self.annotation_mode not in {
+            "exact",
+            "interpolated",
+            "held",
+            "none",
+        }:
+            raise ValueError("annotation_mode is invalid")
+        if self.stream_delay_seconds is not None and self.stream_delay_seconds < 0:
+            raise ValueError("stream_delay_seconds must be non-negative")
 
 
 class FrameBus:
