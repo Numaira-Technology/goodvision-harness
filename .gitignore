@@ -21,3 +21,9 @@ dist/
 logs/
 output/
 tmp/
+.models/
+.goodvision/
+
+# Private fixed-reference images for multimodal memory context.
+/memory/
+/src/goodvision_harness/memory/

@@ -7,6 +7,7 @@ from .contracts import (
     GroundedObject,
     NormalizedBBox,
 )
+from .vision_result import VisionResult
 
 __all__ = [
     "AnalysisResult",
@@ -14,4 +15,5 @@ __all__ = [
     "FrameReference",
     "GroundedObject",
     "NormalizedBBox",
+    "VisionResult",
 ]

@@ -24,7 +24,15 @@
     "schema_version": {
       "const": "1"
     },
+    "analysis_kind": {
+      "type": "string",
+      "minLength": 1
+    },
     "message_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observation_id": {
       "type": "string",
       "minLength": 1
     },
@@ -100,7 +108,8 @@
             "minLength": 1
           },
           "detected": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether the target condition was detected. In face-recognition analysis, true means at least one unknown face is present."
           },
           "confidence": {
             "type": "number",
@@ -113,6 +122,15 @@
           },
           "object_ids": {
             "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "matched_memory_ids": {
+            "type": "array",
+            "description": "Known reference IDs matched independently of the detected decision.",
             "uniqueItems": true,
             "items": {
               "type": "string",
@@ -156,6 +174,9 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1
+          },
+          "attributes": {
+            "type": "object"
           },
           "bbox": {
             "type": "object",

@@ -7,14 +7,13 @@ name = "goodvision-harness"
 version = "0.1.0"
 description = "Independent RTSP-to-LLM streaming analysis and delivery harness"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115,<1",
   "httpx>=0.27,<1",
   "numpy>=1.26,<3",
   "opencv-python-headless>=4.10,<5",
   "python-dotenv>=1,<2",
-  "python-multipart>=0.0.12,<1",
   "PyYAML>=6,<7",
   "uvicorn[standard]>=0.30,<1",
 ]
@@ -25,9 +24,13 @@ dev = [
   "pytest>=8,<9",
   "ruff>=0.9,<1",
 ]
+face = [
+  "insightface==1.0.1",
+  "onnxruntime>=1.20,<2",
+]
 webrtc = [
   "aiohttp>=3.10,<4",
-  "aiortc>=1.9,<2",
+  "aiortc>=1.15,<2",
 ]
 
 [project.scripts]
@@ -42,7 +45,7 @@ include = ["goodvision_harness*"]
 [tool.setuptools.package-data]
 goodvision_harness = [
   "config.yaml",
-  "demo/index.html",
+  "dashboard.html",
 ]
 
 [tool.pytest.ini_options]
@@ -51,7 +54,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF"]

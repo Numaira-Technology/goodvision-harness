@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GoodVision | Live Perception</title>
+<style>
+:root{--bg:#fff;--soft:#f3f5f9;--line:#e4e8ef;--text:#17202e;--muted:#5d6b80;--orange:#ff7a1a;--green:#16a34a;--red:#dc2626;--gray:#64748b;font-size:16px}
+*{box-sizing:border-box;margin:0;padding:0}body{padding:22px clamp(14px,3vw,36px) 48px;color:var(--text);background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px}
+h1{font-size:clamp(20px,2.4vw,30px);letter-spacing:-.03em}h1 span{color:var(--orange)}
+.chips,.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.chip{padding:4px 12px;color:var(--muted);background:#f8fafc;border:1px solid var(--line);border-radius:999px;font-size:12px}.chip b{color:var(--text)}
+.grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(340px,2fr);gap:18px}.data{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel{min-width:0;padding:16px;background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 2px rgba(23,32,46,.04)}
+.stack{display:flex;flex-direction:column;gap:14px}.head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:7px}.head h2{color:var(--muted);font-size:13px;letter-spacing:.08em;text-transform:uppercase}.head span{color:#8a96a8;font-size:11.5px}
+.viewport{position:relative;height:min(38vh,390px);min-height:240px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#eef1f6;border:1px solid var(--line);border-radius:12px}
+.viewport img,.viewport video{position:absolute;inset:0;display:none;width:100%;height:100%;object-fit:contain;background:#0b0f16;z-index:1}.bbox-layer{position:absolute;display:none;pointer-events:none;z-index:2}.bbox-box{position:absolute;border:3px solid #ef4444;border-radius:4px;box-shadow:0 0 0 1px rgba(255,255,255,.75) inset}.bbox-box span{position:absolute;left:-3px;top:-25px;max-width:300px;padding:3px 7px;color:#fff;background:#dc2626;border-radius:4px;font-size:11px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bbox-box.face-known{border-color:var(--green)}.bbox-box.face-known span{background:#15803d}.bbox-box.face-unknown{border-color:var(--red)}.bbox-box.face-unknown span{background:#b91c1c}.bbox-box.face-unusable{border-color:var(--gray)}.bbox-box.face-unusable span{background:#475569}.analysis-hud{position:absolute;left:10px;right:10px;top:10px;display:grid;gap:3px;padding:9px 11px;color:#fff;background:rgba(22,101,52,.88);border-radius:7px;box-shadow:0 2px 10px rgba(0,0,0,.25)}.analysis-hud.hud-positive,.analysis-hud.hud-face-unknown{background:rgba(185,28,28,.9)}.analysis-hud.hud-face-neutral{background:rgba(71,85,105,.9)}.hud-title{font-size:14px;font-weight:850;letter-spacing:.04em}.hud-description{font-size:12px;line-height:1.35}.hud-meta{font-size:10.5px;opacity:.88}.placeholder{padding:24px;color:#8894a6;text-align:center;font-size:13px;line-height:1.55}
+.badge{z-index:3;position:absolute;top:10px;right:10px;display:none;align-items:center;gap:7px;padding:5px 10px;color:#fff;background:rgba(15,23,42,.8);border-radius:999px;font-size:11.5px;font-weight:700}.dot{width:7px;height:7px;background:#f87171;border-radius:50%;animation:pulse 1.1s infinite}@keyframes pulse{50%{opacity:.25}}
+.seg{display:inline-flex;padding:3px;background:var(--soft);border:1px solid var(--line);border-radius:10px}.seg button{padding:7px 16px;color:var(--muted);background:transparent;border:0;border-radius:8px;font-weight:650;cursor:pointer}.seg button.active{color:var(--text);background:#fff;box-shadow:0 1px 3px rgba(23,32,46,.12)}
+button,input{font:inherit}.btn{padding:8px 16px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px;font-size:13.5px;font-weight:650;cursor:pointer}.btn:disabled,.seg button:disabled{opacity:.38;cursor:default}.primary{padding:10px 24px;color:#fff;background:var(--orange);border-color:transparent;font-size:15px}.danger{color:#b91c1c;background:#fdf1f1;border-color:rgba(220,38,38,.3)}
+.field{display:flex;flex-direction:column;gap:5px;min-width:0}.field.grow{flex:1 1 360px}.field>span{color:var(--muted);font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+input[type=text],input[type=file]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=file]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
+.inline{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13.5px}.note,.status{color:var(--muted);font-size:12.5px;line-height:1.5}.status.error,.note.error{color:var(--red)}.notice{margin-bottom:18px;padding:10px 12px;color:#9a3412;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;font-size:12.5px;line-height:1.5}
+.decision{flex:1;min-height:390px;display:flex;flex-direction:column;justify-content:center;gap:14px;padding:clamp(22px,3vw,40px);background:linear-gradient(#fbfcfe,#f4f6fa);border:2px solid #d8dee9;border-radius:14px}.decision .eyebrow{color:var(--muted);font-size:12.5px;font-weight:750;letter-spacing:.18em;text-transform:uppercase}.verdict{font-size:clamp(40px,5.2vw,76px);font-weight:850;line-height:.95;letter-spacing:-.04em}.confidence{color:var(--muted);font-size:20px;font-weight:650}.description{color:#3f4a5c;font-size:15.5px;line-height:1.55}.meta{color:var(--muted);font-size:13px;line-height:1.5}.detected{border-color:var(--red);background:linear-gradient(#fef2f2,#fde8e8)}.detected .verdict{color:var(--red)}.clear{border-color:var(--green);background:linear-gradient(#f0fdf4,#e6f9ec)}.clear .verdict{color:#15803d}.warming{border-color:#e0c391}.warming .verdict{color:#8a94a6}
+.data{grid-template-columns:minmax(280px,2fr) minmax(340px,3fr);gap:18px;margin-top:18px}.data .panel{display:flex;flex-direction:column;gap:10px}pre{min-height:210px;max-height:420px;overflow:auto;padding:12px;color:#334155;background:#f8fafc;border:1px solid var(--line);border-radius:12px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.log{margin-top:18px}.scroll{max-height:310px;overflow:auto;margin-top:10px;border:1px solid var(--line);border-radius:12px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #eef1f5;white-space:nowrap}th{position:sticky;top:0;background:#f8fafc;color:var(--muted);font-size:11.5px;text-transform:uppercase}td:last-child{min-width:260px;color:var(--muted);white-space:normal}.pill{padding:2px 10px;border-radius:999px;font-size:11.5px;font-weight:750}.pill.yes{color:var(--red);background:#fee2e2}.pill.no{color:#15803d;background:#dcfce7}.pill.neutral{color:#475569;background:#e2e8f0}.analysis-picker{margin-bottom:2px}.face-gallery{padding:12px;background:#f8fafc;border:1px solid var(--line);border-radius:12px}.face-fields{display:grid;grid-template-columns:minmax(130px,1fr) minmax(150px,1fr) minmax(220px,2fr) auto;align-items:end;gap:10px}.face-list{max-height:180px;margin-top:10px}.face-list td:last-child{min-width:auto}.face-list .btn{padding:5px 10px;font-size:12px}[hidden]{display:none!important}
+@media(max-width:1050px){.grid,.data{grid-template-columns:1fr}}@media(max-width:720px){.viewport{height:300px}.decision{min-height:300px}.face-fields{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>GoodVision <span>|</span> Live Perception</h1>
+  <div class="chips">
+    <span class="chip">service <b id="service-chip">loading</b></span>
+    <span class="chip">model <b id="model-chip">...</b></span>
+    <span class="chip"><span id="analysis-chip-label">event</span> <b id="event-chip">...</b></span>
+    <span class="chip">sampling <b id="sampling-chip">...</b></span>
+  </div>
+</header>
+<div id="secure-warning" class="notice" hidden></div>
+
+<main>
+  <div class="grid">
+    <section class="panel stack">
+      <div>
+        <div class="head"><h2>Live input + rich annotation</h2><span>direct playback</span></div>
+        <div id="live-viewport" class="viewport">
+          <div id="raw-placeholder" class="placeholder">Choose Camera or Network stream, then start.</div>
+          <video id="camera-preview" muted playsinline autoplay></video>
+          <img id="raw-feed" alt="Waiting for raw source preview">
+          <div id="bbox-layer" class="bbox-layer" aria-hidden="true"></div>
+          <div id="raw-badge" class="badge"><span class="dot"></span><span id="raw-badge-text">LIVE</span></div>
+        </div>
+      </div>
+      <div id="annotation-note" class="note">
+        Input video is displayed directly. DETECTED shows rich text plus boxes; CLEAR still shows verdict,
+        confidence, and description.
+      </div>
+      <div class="row analysis-picker">
+        <div class="field">
+          <span>Analysis mode</span>
+          <div class="seg">
+            <button id="event-analysis-mode" class="active">Event</button>
+            <button id="face-analysis-mode">Stranger Recognition</button>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="seg">
+          <button id="camera-mode">Camera</button>
+          <button id="stream-mode" class="active">Network stream</button>
+        </div>
+        <div id="camera-controls" class="row" hidden>
+          <button id="camera-button" class="btn">Enable camera</button>
+          <span id="camera-note" class="note">camera off</span>
+        </div>
+        <div id="stream-controls" class="field grow">
+          <span>Stream URL</span>
+          <input id="stream-url" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Blank = configured RTSP, or enter rtsp:// | rtmp:// | webrtc+https://">
+        </div>
+      </div>
+      <div id="source-note" class="note">Loading source configuration...</div>
+      <div id="event-controls" class="row">
+        <div class="field">
+          <span>Target event</span>
+          <input id="event-input" type="text" spellcheck="false">
+        </div>
+        <label class="inline"><input id="dry-run" type="checkbox"> dry run (no API calls)</label>
+      </div>
+      <div id="face-controls" class="face-gallery" hidden>
+        <div class="head"><h2>Known people gallery</h2><span id="gallery-summary">Loading...</span></div>
+        <div class="face-fields">
+          <label class="field"><span>Person ID</span><input id="person-id" type="text" spellcheck="false" placeholder="alice"></label>
+          <label class="field"><span>Name</span><input id="person-name" type="text" spellcheck="false" placeholder="Alice"></label>
+          <label class="field"><span>Face image</span><input id="person-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
+          <button id="enroll-button" class="btn">Enroll</button>
+        </div>
+        <div id="gallery-note" class="note">Loading gallery...</div>
+        <div class="scroll face-list">
+          <table>
+            <thead><tr><th>Person ID</th><th>Name</th><th>Samples</th><th></th></tr></thead>
+            <tbody id="gallery-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel stack">
+      <div id="decision" class="decision">
+        <div id="decision-eyebrow" class="eyebrow">Live binary classification</div>
+        <div id="verdict" class="verdict">READY</div>
+        <div id="confidence" class="confidence"></div>
+        <div id="description" class="description">Choose an input, then start live perception.</div>
+        <div id="decision-meta" class="meta"></div>
+      </div>
+      <div class="row">
+        <button id="start-button" class="btn primary" disabled>Start live perception</button>
+        <button id="stop-button" class="btn danger" disabled>Stop</button>
+      </div>
+      <div id="status-line" class="status">Loading service information...</div>
+    </section>
+  </div>
+
+  <div class="data">
+    <section class="panel">
+      <div class="head"><h2>Service status</h2><span>GET /v1/status</span></div>
+      <pre id="status-json">Loading...</pre>
+    </section>
+    <section class="panel">
+      <div class="head"><h2>Latest AnalysisResult</h2><span>SSE /v1/results/events</span></div>
+      <pre id="result-json">Waiting for the first analysis result...</pre>
+    </section>
+  </div>
+
+  <section class="panel log">
+    <div class="head"><h2>Window log</h2><span id="result-count">0 results</span></div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Result</th><th>Video time</th><th>Verdict</th><th>Conf.</th><th>Latency</th><th>Bboxes</th><th>Description</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const ui={
+  service:$("service-chip"),model:$("model-chip"),event:$("event-chip"),sampling:$("sampling-chip"),
+  analysisChipLabel:$("analysis-chip-label"),eventAnalysisMode:$("event-analysis-mode"),
+  faceAnalysisMode:$("face-analysis-mode"),eventControls:$("event-controls"),faceControls:$("face-controls"),
+  warning:$("secure-warning"),cameraMode:$("camera-mode"),streamMode:$("stream-mode"),
+  cameraControls:$("camera-controls"),streamControls:$("stream-controls"),cameraButton:$("camera-button"),
+  cameraNote:$("camera-note"),sourceNote:$("source-note"),streamUrl:$("stream-url"),
+  eventInput:$("event-input"),dryRun:$("dry-run"),start:$("start-button"),stop:$("stop-button"),
+  gallerySummary:$("gallery-summary"),personId:$("person-id"),personName:$("person-name"),
+  personFile:$("person-file"),enroll:$("enroll-button"),galleryNote:$("gallery-note"),
+  galleryBody:$("gallery-body"),eyebrow:$("decision-eyebrow"),
+  annotationNote:$("annotation-note"),
+  statusLine:$("status-line"),viewport:$("live-viewport"),cameraPreview:$("camera-preview"),
+  rawFeed:$("raw-feed"),rawPlaceholder:$("raw-placeholder"),
+  rawBadge:$("raw-badge"),rawBadgeText:$("raw-badge-text"),bboxLayer:$("bbox-layer"),
+  decision:$("decision"),verdict:$("verdict"),confidence:$("confidence"),
+  description:$("description"),meta:$("decision-meta"),statusJson:$("status-json"),
+  resultJson:$("result-json"),resultCount:$("result-count"),logBody:$("log-body")
+};
+const localHosts=new Set(["localhost","127.0.0.1","::1","[::1]"]);
+const cameraAllowed=window.isSecureContext||localHosts.has(location.hostname);
+const activeStates=new Set(["starting","running"]);
+const state={
+  info:null,mode:"stream",analysisMode:"event",sessionAnalysisMode:null,
+  gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
+  ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,count:0,
+  activeAnnotationId:null,annotationTimer:null
+};
+function number(value,digits){const n=Number(value);return Number.isFinite(n)?n.toFixed(digits):"-"}
+function say(text,error=false){ui.statusLine.textContent=text;ui.statusLine.className="status"+(error?" error":"")}
+function configured(){return state.info&&state.info.configured_stream===true}
+function cameraSettings(){
+  if(!state.info)return null;
+  return state.analysisMode==="face"?state.info.face:state.info
+}
+function cameraConfig(){
+  const i=cameraSettings();
+  return i&&Number.isFinite(i.sample_fps)&&i.sample_fps>0&&Number.isInteger(i.max_image_side)&&
+    i.max_image_side>0&&Number.isFinite(i.jpeg_quality)&&i.jpeg_quality>=1&&i.jpeg_quality<=100
+}
+function faceReady(){return state.analysisMode!=="face"||(cameraConfig()&&state.gallery&&state.gallery.ready===true)}
+function controls(){
+  const busy=state.running||state.pending;
+  const ready=state.mode==="camera"
+    ?cameraAllowed&&cameraConfig()&&!!state.cameraStream
+    :!!ui.streamUrl.value.trim()||configured();
+  ui.start.disabled=busy||!state.info||!ready||!faceReady();ui.stop.disabled=!busy;
+  for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.eventInput,ui.dryRun])item.disabled=busy;
+  ui.eventAnalysisMode.disabled=busy;ui.faceAnalysisMode.disabled=busy;
+  ui.cameraButton.disabled=busy||!cameraAllowed||!cameraConfig();
+  const galleryBusy=busy||state.galleryLoading||!state.gallery||state.gallery.ready!==true;
+  for(const item of [ui.personId,ui.personName,ui.personFile,ui.enroll])item.disabled=galleryBusy;
+  for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy
+}
+function mode(next){
+  if(state.running||state.pending)return;
+  state.mode=next;ui.cameraMode.classList.toggle("active",next==="camera");
+  ui.streamMode.classList.toggle("active",next==="stream");
+  ui.cameraControls.hidden=next!=="camera";ui.streamControls.hidden=next!=="stream";
+  surfaces();controls()
+}
+function samplingText(settings){
+  return settings&&Number.isFinite(settings.sample_fps)&&Number.isInteger(settings.max_image_side)&&
+    Number.isFinite(settings.jpeg_quality)
+    ?number(settings.sample_fps,1)+" fps | "+settings.max_image_side+" px | Q"+settings.jpeg_quality
+    :"camera settings unavailable"
+}
+function updateAnalysisUi(){
+  const face=state.analysisMode==="face",settings=cameraSettings()||{};
+  ui.eventAnalysisMode.classList.toggle("active",!face);
+  ui.faceAnalysisMode.classList.toggle("active",face);
+  ui.eventControls.hidden=face;ui.faceControls.hidden=!face;
+  ui.analysisChipLabel.textContent=face?"face":"event";
+  ui.model.textContent=face?(settings.model_name||"unavailable"):(state.info&&state.info.model||"unknown");
+  ui.event.textContent=face
+    ?("threshold "+number(settings.threshold,2))
+    :(ui.eventInput.value.trim()||(state.info&&state.info.event_label)||"unknown");
+  ui.sampling.textContent=samplingText(settings);
+  ui.eyebrow.textContent=face?"Live stranger recognition":"Live binary classification";
+  ui.start.textContent=face?"Start stranger recognition":"Start live perception";
+  ui.annotationNote.textContent=face
+    ?"Known faces are green, unknown faces are red, and unusable detections are gray."
+    :"Input video is displayed directly. DETECTED shows rich text plus boxes; CLEAR still shows verdict, confidence, and description.";
+  if(!state.running&&!state.pending){
+    ui.decision.className="decision warming";ui.verdict.textContent="READY";
+    ui.confidence.textContent="";
+    ui.description.textContent=face
+      ?"Enroll known people, choose an input, then start stranger recognition."
+      :"Choose an input, then start live perception.";
+    ui.meta.textContent="";resetAnnotations()
+  }
+  controls();if(face&&!state.gallery&&!state.galleryLoading)refreshGallery()
+}
+function selectAnalysisMode(next){
+  if(state.running||state.pending||!new Set(["event","face"]).has(next))return;
+  state.analysisMode=next;updateAnalysisUi();
+  if(next==="face")refreshGallery()
+}
+function sourceMedia(){
+  if(state.cameraStream&&(state.sessionMode==="camera"||(!state.running&&state.mode==="camera")))return ui.cameraPreview;
+  if(state.running&&state.sessionMode==="stream")return ui.rawFeed;
+  return null
+}
+function sourceDimensions(media){
+  if(media===ui.cameraPreview)return [media.videoWidth,media.videoHeight];
+  return media?[media.naturalWidth,media.naturalHeight]:[0,0]
+}
+function surfaces(){
+  const previewCamera=!state.running&&state.mode==="camera"&&!!state.cameraStream;
+  const runningCamera=state.running&&state.sessionMode==="camera"&&!!state.cameraStream;
+  const runningStream=state.running&&state.sessionMode==="stream";
+  ui.cameraPreview.style.display=previewCamera||runningCamera?"block":"none";
+  ui.cameraPreview.style.visibility="visible";
+  ui.rawFeed.style.display=runningStream?"block":"none";
+  ui.rawFeed.style.visibility="visible";
+  if(!state.running&&!previewCamera){
+    ui.rawPlaceholder.textContent="Choose Camera or Network stream, then start.";
+    ui.rawPlaceholder.style.display="block"
+  }else{
+    ui.rawPlaceholder.style.display="none"
+  }
+  ui.rawBadge.style.display=state.running?"flex":"none";
+  ui.rawBadgeText.textContent="LIVE";
+  requestAnimationFrame(alignAnnotationLayer)
+}
+function openFeed(){
+  if(state.sessionMode==="stream"&&!ui.rawFeed.getAttribute("src")){
+    const key=encodeURIComponent(state.sessionId||Date.now());
+    ui.rawFeed.src="/v1/video/live/stream.mjpeg?ui="+key
+  }
+  if(state.sessionMode==="camera")ui.rawFeed.removeAttribute("src");
+  surfaces()
+}
+function closeFeed(){
+  ui.rawFeed.removeAttribute("src");resetAnnotations();surfaces()
+}
+
+async function info(){
+  try{
+    const response=await fetch("/v1/ui/info",{cache:"no-store"});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    const data=await response.json();
+    data.sample_fps=Number(data.sample_fps);data.max_image_side=Number(data.max_image_side);
+    data.jpeg_quality=Number(data.jpeg_quality);
+    if(data.face&&typeof data.face==="object"){
+      data.face.sample_fps=Number(data.face.sample_fps);
+      data.face.max_image_side=Number(data.face.max_image_side);
+      data.face.jpeg_quality=Number(data.face.jpeg_quality);
+      data.face.threshold=Number(data.face.threshold)
+    }
+    state.info=data;ui.eventInput.value=data.event_label||"";
+    ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present);
+    ui.sourceNote.textContent=configured()
+      ?"Leave Stream URL blank for the configured source, or enter a temporary network URL."
+      :"No server stream is configured. Enter a network URL.";
+    say("Ready. Choose an input or monitor the active server session.");updateAnalysisUi()
+  }catch(error){say("Could not load /v1/ui/info: "+error.message,true)}
+  controls()
+}
+async function responseError(response){
+  try{
+    const data=await response.json();
+    return data.error||data.detail||data.message||("HTTP "+response.status)
+  }catch(_){return "HTTP "+response.status}
+}
+function sampleCount(person){
+  if(Array.isArray(person.samples))return person.samples.length;
+  const value=Number(person.samples);return Number.isFinite(value)?value:0
+}
+function renderGallery(){
+  ui.galleryBody.replaceChildren();
+  const gallery=state.gallery,people=gallery&&Array.isArray(gallery.people)?gallery.people:[];
+  if(!gallery){ui.gallerySummary.textContent="Unavailable";ui.galleryNote.textContent="Gallery not loaded.";return}
+  const total=Number(gallery.sample_count);
+  ui.gallerySummary.textContent=people.length+" people | "+(Number.isFinite(total)?total:people.reduce((sum,p)=>sum+sampleCount(p),0))+" samples";
+  ui.galleryNote.textContent=gallery.error||
+    (gallery.ready?"Gallery ready. Enroll one clear face image at a time.":"Face gallery is not ready.");
+  ui.galleryNote.className="note"+(gallery.error||!gallery.ready?" error":"");
+  if(!people.length){
+    const row=document.createElement("tr"),cell=document.createElement("td");
+    cell.colSpan=4;cell.textContent="No known people enrolled.";row.appendChild(cell);ui.galleryBody.appendChild(row)
+  }
+  for(const person of people){
+    const row=document.createElement("tr");
+    for(const value of [person.person_id||"",person.name||"",String(sampleCount(person))]){
+      const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)
+    }
+    const action=document.createElement("td"),button=document.createElement("button");
+    button.className="btn danger";button.textContent="Delete";
+    button.onclick=()=>deletePerson(String(person.person_id||""),String(person.name||person.person_id||"person"));
+    action.appendChild(button);row.appendChild(action);ui.galleryBody.appendChild(row)
+  }
+  controls()
+}
+async function refreshGallery(){
+  if(state.galleryLoading)return;
+  state.galleryLoading=true;ui.gallerySummary.textContent="Loading...";ui.galleryNote.textContent="Loading gallery...";controls();
+  try{
+    const response=await fetch("/v1/faces/gallery",{cache:"no-store"});
+    if(!response.ok)throw new Error(await responseError(response));
+    const data=await response.json();
+    state.gallery={ready:data.ready===true,people:Array.isArray(data.people)?data.people:[],
+      sample_count:Number(data.sample_count),error:data.error||""}
+  }catch(error){
+    state.gallery={ready:false,people:[],sample_count:0,error:"Could not load gallery: "+error.message}
+  }finally{state.galleryLoading=false;renderGallery();controls()}
+}
+async function enrollPerson(){
+  const personId=ui.personId.value.trim(),name=ui.personName.value.trim(),file=ui.personFile.files[0];
+  if(!personId||!name||!file){ui.galleryNote.textContent="Person ID, name, and one face image are required.";ui.galleryNote.className="note error";return}
+  state.galleryLoading=true;ui.galleryNote.textContent="Enrolling "+name+"...";ui.galleryNote.className="note";controls();
+  try{
+    const url="/v1/faces/gallery/"+encodeURIComponent(personId)+"?name="+encodeURIComponent(name);
+    const response=await fetch(url,{method:"POST",headers:{"Content-Type":file.type||"application/octet-stream"},body:file});
+    if(!response.ok)throw new Error(await responseError(response));
+    ui.personFile.value="";say("Enrolled "+name+" in the known people gallery.");
+    state.galleryLoading=false;await refreshGallery()
+  }catch(error){
+    state.galleryLoading=false;ui.galleryNote.textContent="Enrollment failed: "+error.message;
+    ui.galleryNote.className="note error";controls()
+  }
+}
+async function deletePerson(personId,name){
+  if(!personId||!window.confirm("Delete "+name+" and all enrolled samples?"))return;
+  state.galleryLoading=true;ui.galleryNote.textContent="Deleting "+name+"...";ui.galleryNote.className="note";controls();
+  try{
+    const response=await fetch("/v1/faces/gallery/"+encodeURIComponent(personId),{method:"DELETE"});
+    if(!response.ok)throw new Error(await responseError(response));
+    say("Deleted "+name+" from the known people gallery.");state.galleryLoading=false;await refreshGallery()
+  }catch(error){
+    state.galleryLoading=false;ui.galleryNote.textContent="Delete failed: "+error.message;
+    ui.galleryNote.className="note error";controls()
+  }
+}
+async function camera(){
+  if(state.cameraStream){disableCamera();return}
+  if(!cameraAllowed){say("Camera access requires HTTPS or localhost.",true);return}
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+    state.cameraStream=stream;ui.cameraPreview.srcObject=stream;await ui.cameraPreview.play();
+    ui.cameraButton.textContent="Disable camera";ui.cameraNote.textContent="camera ready";
+    say("Camera ready. Press "+ui.start.textContent+".")
+  }catch(error){say("Camera unavailable: "+error.message,true)}
+  surfaces();controls()
+}
+function disableCamera(){
+  stopSampler();
+  if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
+  state.cameraStream=null;ui.cameraPreview.srcObject=null;ui.cameraButton.textContent="Enable camera";
+  ui.cameraNote.textContent="camera off";surfaces();controls()
+}
+function startSampler(){
+  stopSampler();if(!state.cameraStream||!cameraConfig())return;
+  const settings=cameraSettings();
+  const canvas=document.createElement("canvas"),context=canvas.getContext("2d");
+  state.cameraTimer=setInterval(async()=>{
+    const video=ui.cameraPreview,socket=state.ws;
+    if(state.cameraBusy||!socket||socket.readyState!==1||socket.bufferedAmount>1048576||!video.videoWidth)return;
+    state.cameraBusy=true;
+    try{
+      const scale=Math.min(1,settings.max_image_side/Math.max(video.videoWidth,video.videoHeight));
+      canvas.width=Math.max(1,Math.round(video.videoWidth*scale));
+      canvas.height=Math.max(1,Math.round(video.videoHeight*scale));
+      context.drawImage(video,0,0,canvas.width,canvas.height);
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",settings.jpeg_quality/100));
+      if(!blob)return;
+      const jpeg=new Uint8Array(await blob.arrayBuffer()),packet=new Uint8Array(4+jpeg.length);
+      const header=new DataView(packet.buffer);header.setUint16(0,canvas.width);header.setUint16(2,canvas.height);
+      packet.set(jpeg,4);if(socket.readyState===1)socket.send(packet.buffer)
+    }finally{state.cameraBusy=false}
+  },1000/settings.sample_fps)
+}
+function stopSampler(){
+  if(state.cameraTimer)clearInterval(state.cameraTimer);
+  state.cameraTimer=null;state.cameraBusy=false
+}
+
+function clearAnnotation(){
+  if(state.annotationTimer)clearTimeout(state.annotationTimer);
+  state.annotationTimer=null;ui.bboxLayer.replaceChildren();
+  ui.bboxLayer.style.display="none";state.activeAnnotationId=null
+}
+function resetAnnotations(){clearAnnotation()}
+function alignAnnotationLayer(){
+  if(!ui.bboxLayer.children.length){ui.bboxLayer.style.display="none";return}
+  const dimensions=sourceDimensions(sourceMedia()),width=dimensions[0],height=dimensions[1];
+  const viewWidth=ui.viewport.clientWidth,viewHeight=ui.viewport.clientHeight;
+  if(!width||!height||!viewWidth||!viewHeight){ui.bboxLayer.style.display="none";return}
+  const scale=Math.min(viewWidth/width,viewHeight/height);
+  const displayWidth=width*scale,displayHeight=height*scale;
+  Object.assign(ui.bboxLayer.style,{
+    left:(viewWidth-displayWidth)/2+"px",top:(viewHeight-displayHeight)/2+"px",
+    width:displayWidth+"px",height:displayHeight+"px",display:"block"
+  })
+}
+function renderRichAnnotation(result,judgment,allowBoxes=true,syncNote=""){
+  clearAnnotation();
+  const positive=judgment.detected===true,eventLabel=judgment.event_label||"event";
+  const positiveLabel=result.analysis_kind==="face_reference_match"?"UNKNOWN":eventLabel.toUpperCase();
+  const confidence=Number(judgment.confidence),frame=result.frame||{},model=result.model||{};
+  const hud=document.createElement("div");hud.className="analysis-hud"+(positive?" hud-positive":"");
+  const title=document.createElement("div");title.className="hud-title";
+  title.textContent=(positive?positiveLabel:"CLEAR | "+eventLabel.toUpperCase())+
+    (Number.isFinite(confidence)?"  "+confidence.toFixed(2):"");
+  const description=document.createElement("div");description.className="hud-description";
+  description.textContent=judgment.description||"No description.";
+  const meta=document.createElement("div");meta.className="hud-meta";
+  meta.textContent="R"+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | model "+number(model.latency_seconds,2)+"s"+
+    (syncNote?" | "+syncNote:"");
+  hud.append(title,description,meta);ui.bboxLayer.appendChild(hud);
+
+  let drewBoxes=false;
+  if(positive&&allowBoxes&&Array.isArray(result.objects)){
+    const referenced=new Set(Array.isArray(judgment.object_ids)?judgment.object_ids:[]);
+    for(const object of result.objects){
+      if(!referenced.has(object.object_id)||!object.bbox)continue;
+      const bbox=object.bbox,x1=Number(bbox.x1),y1=Number(bbox.y1);
+      const x2=Number(bbox.x2),y2=Number(bbox.y2);
+      if(![x1,y1,x2,y2].every(Number.isFinite)||x2<=x1||y2<=y1)continue;
+      const left=Math.max(0,Math.min(1,x1)),top=Math.max(0,Math.min(1,y1));
+      const right=Math.max(0,Math.min(1,x2)),bottom=Math.max(0,Math.min(1,y2));
+      if(right<=left||bottom<=top)continue;
+      const box=document.createElement("div");box.className="bbox-box";
+      Object.assign(box.style,{
+        left:left*100+"%",top:top*100+"%",
+        width:(right-left)*100+"%",height:(bottom-top)*100+"%"
+      });
+      const label=document.createElement("span"),objectConfidence=Number(object.confidence);
+      label.textContent=(object.label||object.object_id||"object")+" | "+eventLabel+
+        (Number.isFinite(objectConfidence)?" | "+objectConfidence.toFixed(2):"");
+      box.appendChild(label);ui.bboxLayer.appendChild(box);drewBoxes=true
+    }
+  }
+  state.activeAnnotationId=result.message_id||String(result.sequence||frame.timestamp_seconds);
+  alignAnnotationLayer();
+  if(drewBoxes){
+    const annotationId=state.activeAnnotationId;
+    const settings=cameraSettings()||{},sampleFps=Number(settings.sample_fps)||2.5;
+    state.annotationTimer=setTimeout(()=>{
+      if(state.activeAnnotationId===annotationId)
+        renderRichAnnotation(result,judgment,false,"bbox sample interval ended")
+    },1000/sampleFps)
+  }
+}
+function faceStatus(object){
+  const value=object&&object.attributes&&object.attributes.status;
+  return new Set(["known","unknown","unusable"]).has(String(value||"").toLowerCase())
+    ?String(value).toLowerCase():"unusable"
+}
+function faceSimilarity(object){
+  const attributes=object&&object.attributes||{};
+  for(const value of [attributes.similarity,attributes.match_score,attributes.score]){
+    const score=Number(value);if(Number.isFinite(score))return score
+  }
+  return null
+}
+function faceDisplayName(object){
+  const attributes=object&&object.attributes||{};
+  return attributes.name||attributes.person_name||attributes.person_id||object.label||"KNOWN"
+}
+function summarizeFaces(result){
+  const objects=Array.isArray(result.objects)?result.objects:[],known=[],unknown=[],unusable=[];
+  for(const object of objects){
+    const status=faceStatus(object);
+    if(status==="known")known.push(object);else if(status==="unknown")unknown.push(object);else unusable.push(object)
+  }
+  let verdict="NO FACE",decisionClass="warming",hudClass="hud-face-neutral";
+  if(unknown.length){verdict="UNKNOWN";decisionClass="detected";hudClass="hud-face-unknown"}
+  else if(known.length){verdict="CLEAR";decisionClass="clear";hudClass=""}
+  else if(objects.length)verdict="NO USABLE FACE";
+  const names=[...new Set(known.map(faceDisplayName))];
+  const parts=[];
+  if(unknown.length)parts.push(unknown.length+" unknown");
+  if(known.length)parts.push(known.length+" known"+(names.length?" ("+names.join(", ")+")":""));
+  if(unusable.length)parts.push(unusable.length+" unusable");
+  const scores=objects.map(faceSimilarity).filter(Number.isFinite),best=scores.length?Math.max(...scores):null;
+  return {objects,known,unknown,unusable,verdict,decisionClass,hudClass,best,
+    description:parts.length?parts.join(" | "):"No face detected in this sample."}
+}
+function renderFaceAnnotation(result,summary,allowBoxes=true,syncNote=""){
+  clearAnnotation();
+  const frame=result.frame||{},model=result.model||{},hud=document.createElement("div");
+  hud.className="analysis-hud"+(summary.hudClass?" "+summary.hudClass:"");
+  const title=document.createElement("div");title.className="hud-title";
+  title.textContent=summary.verdict+(Number.isFinite(summary.best)?"  "+summary.best.toFixed(3):"");
+  const description=document.createElement("div");description.className="hud-description";
+  description.textContent=summary.description;
+  const meta=document.createElement("div");meta.className="hud-meta";
+  meta.textContent="R"+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | model "+number(model.latency_seconds,2)+"s"+
+    (syncNote?" | "+syncNote:"");
+  hud.append(title,description,meta);ui.bboxLayer.appendChild(hud);
+
+  let drewBoxes=false;
+  if(allowBoxes){
+    for(const object of summary.objects){
+      if(!object||!object.bbox)continue;
+      const bbox=object.bbox,x1=Number(bbox.x1),y1=Number(bbox.y1),x2=Number(bbox.x2),y2=Number(bbox.y2);
+      if(![x1,y1,x2,y2].every(Number.isFinite)||x2<=x1||y2<=y1)continue;
+      const left=Math.max(0,Math.min(1,x1)),top=Math.max(0,Math.min(1,y1));
+      const right=Math.max(0,Math.min(1,x2)),bottom=Math.max(0,Math.min(1,y2));
+      if(right<=left||bottom<=top)continue;
+      const status=faceStatus(object),box=document.createElement("div");box.className="bbox-box face-"+status;
+      Object.assign(box.style,{left:left*100+"%",top:top*100+"%",width:(right-left)*100+"%",height:(bottom-top)*100+"%"});
+      const attributes=object.attributes||{},label=document.createElement("span"),score=faceSimilarity(object);
+      const identity=status==="known"?faceDisplayName(object):status.toUpperCase();
+      label.textContent=identity+(Number.isFinite(score)?" | "+score.toFixed(3):"")+
+        (status==="unusable"&&attributes.reason?" | "+attributes.reason:"");
+      box.appendChild(label);ui.bboxLayer.appendChild(box);drewBoxes=true
+    }
+  }
+  state.activeAnnotationId=result.message_id||String(result.sequence||frame.timestamp_seconds);
+  alignAnnotationLayer();
+  if(drewBoxes){
+    const annotationId=state.activeAnnotationId,settings=cameraSettings()||{};
+    const sampleFps=Number(settings.sample_fps)||2.5;
+    state.annotationTimer=setTimeout(()=>{
+      if(state.activeAnnotationId===annotationId)
+        renderFaceAnnotation(result,summary,false,"bbox sample interval ended")
+    },1000/sampleFps)
+  }
+}
+function connect(){
+  return new Promise((resolve,reject)=>{
+    if(state.ws&&state.ws.readyState===1){resolve(state.ws);return}
+    const scheme=location.protocol==="https:"?"wss://":"ws://",socket=new WebSocket(scheme+location.host+"/ws");
+    state.ws=socket;const timer=setTimeout(()=>reject(new Error("WebSocket timeout")),5000);
+    socket.onopen=()=>{clearTimeout(timer);resolve(socket)};
+    socket.onmessage=event=>{if(typeof event.data==="string")message(JSON.parse(event.data))};
+    socket.onerror=()=>{};
+    socket.onclose=()=>{clearTimeout(timer);state.ws=null;stopSampler()}
+  })
+}
+function message(data){
+  if(data.type==="session"){
+    state.pending=false;state.running=true;state.sessionMode=data.mode||state.mode;
+    state.sessionAnalysisMode=data.analysis_mode||state.analysisMode;
+    state.sessionId=data.stream_session_id||data.session_id||null;
+    openFeed();
+    if(state.sessionMode==="camera")startSampler();
+    say("Live | "+(state.sessionMode==="camera"?"browser camera":"network stream")+
+      " | "+(state.sessionAnalysisMode==="face"?"stranger recognition":"event analysis")+
+      " | direct playback"+(state.sessionAnalysisMode==="event"&&data.dry_run?" | DRY RUN":""));
+    controls()
+  }else if(data.type==="error"){
+    state.pending=false;say(data.message||data.error||"Session error",true);controls()
+  }else if(data.type==="ended"){
+    state.pending=false;state.running=false;state.sessionAnalysisMode=null;stopSampler();closeFeed();
+    say("Session ended | "+(data.reason||"unknown")+(data.error?" | "+data.error:""),!!data.error);
+    controls()
+  }
+}
+async function start(){
+  if(state.running||state.pending||!state.info)return;
+  state.pending=true;reset();say("Starting session...");controls();
+  try{
+    const socket=await connect(),data={
+      type:"start",mode:state.mode,analysis_mode:state.analysisMode
+    };
+    if(state.analysisMode==="event"){
+      data.event_label=ui.eventInput.value.trim()||state.info.event_label;
+      data.dry_run=ui.dryRun.checked
+    }
+    if(state.mode==="stream")data.stream_url=ui.streamUrl.value.trim();
+    socket.send(JSON.stringify(data))
+  }catch(error){state.pending=false;say("Could not start: "+error.message,true);controls()}
+}
+async function stop(){
+  try{
+    const socket=await connect();socket.send(JSON.stringify({type:"stop"}));say("Stopping session...")
+  }catch(error){say("Could not stop: "+error.message,true)}
+}
+function reset(){
+  state.count=0;ui.resultCount.textContent="0 results";ui.logBody.replaceChildren();
+  ui.resultJson.textContent="Waiting for the first analysis result...";ui.decision.className="decision warming";
+  ui.verdict.textContent="WARMING";ui.confidence.textContent="";
+  ui.description.textContent=state.analysisMode==="face"?"Waiting for face recognition.":"Waiting for analysis.";
+  ui.meta.textContent="";resetAnnotations()
+}
+
+async function status(){
+  try{
+    const response=await fetch("/v1/status",{cache:"no-store"}),data=await response.json();
+    ui.statusJson.textContent=JSON.stringify(data,null,2);ui.service.textContent=data.pipeline_state||"unknown";
+    const active=activeStates.has(data.pipeline_state);
+    if(active){
+      state.running=true;state.pending=false;state.sessionId=data.stream_session_id||state.sessionId;
+      if(new Set(["event","face"]).has(data.analysis_mode))state.analysisMode=data.analysis_mode;
+      state.sessionAnalysisMode=data.analysis_mode||state.sessionAnalysisMode||state.analysisMode;updateAnalysisUi();
+      state.sessionMode=data.input_mode||data.mode||(data.stream?"stream":state.sessionMode)||"stream";
+      if(state.sessionMode==="stream"){
+        state.mode="stream";ui.streamMode.classList.add("active");ui.cameraMode.classList.remove("active");
+        ui.streamControls.hidden=false;ui.cameraControls.hidden=true
+      }
+      openFeed();
+      say("Server session "+data.pipeline_state+" | "+
+        (data.ready?"ready":data.readiness_reason||"warming")+" | direct playback"+
+        (state.sessionAnalysisMode==="event"&&data.dry_run?" | DRY RUN":""))
+    }else if(state.running&&!state.pending){
+      state.running=false;state.sessionAnalysisMode=null;stopSampler();closeFeed()
+    }
+    if(data.last_error)say("Analysis error: "+data.last_error,true);controls()
+  }catch(error){ui.service.textContent="unreachable";ui.statusJson.textContent=String(error)}
+}
+function analysis(result){
+  if(!result||result.type!=="analysis_result")return;
+  if(!state.running||!state.sessionId||result.stream_session_id!==state.sessionId)return;
+  ui.resultJson.textContent=JSON.stringify(result,null,2);
+  if(result.analysis_kind==="face_recognition"){analysisFace(result);return}
+  const judgment=result.judgments&&result.judgments[0];if(!judgment)return;
+  const ids=Array.isArray(judgment.object_ids)?judgment.object_ids:[],yes=judgment.detected===true;
+  const memoryIds=Array.isArray(judgment.matched_memory_ids)?judgment.matched_memory_ids:[];
+  const positiveLabel=result.analysis_kind==="face_reference_match"?"UNKNOWN":
+    (judgment.event_label||"DETECTED").toUpperCase();
+  ui.decision.className="decision "+(yes?"detected":"clear");
+  ui.verdict.textContent=yes?positiveLabel:"CLEAR";
+  ui.confidence.textContent=number(Number(judgment.confidence)*100,1)+"% confidence";
+  ui.description.textContent=(judgment.description||"")+
+    (memoryIds.length?" | known: "+memoryIds.join(", "):"");
+  const frame=result.frame||{},model=result.model||{};
+  ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.length+" bbox"+(ids.length===1?"":"es")+
+    (memoryIds.length?" | "+memoryIds.length+" known reference"+(memoryIds.length===1?"":"s"):"")+
+    " | model "+number(model.latency_seconds,2)+"s";
+  ui.event.textContent=judgment.event_label||ui.event.textContent;
+  renderRichAnnotation(result,judgment);log(result,judgment,ids.length)
+}
+function analysisFace(result){
+  const summary=summarizeFaces(result),frame=result.frame||{},model=result.model||{};
+  ui.decision.className="decision "+summary.decisionClass;ui.verdict.textContent=summary.verdict;
+  const threshold=Number(state.info&&state.info.face&&state.info.face.threshold);
+  ui.confidence.textContent=(Number.isFinite(summary.best)?"best match "+summary.best.toFixed(3):"no match score")+
+    (Number.isFinite(threshold)?" | threshold "+threshold.toFixed(3):"");
+  ui.description.textContent=summary.description;
+  ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | "+summary.objects.length+" face"+
+    (summary.objects.length===1?"":"s")+" | model "+number(model.latency_seconds,2)+"s";
+  ui.analysisChipLabel.textContent="face";ui.event.textContent="threshold "+number(threshold,2);
+  renderFaceAnnotation(result,summary);logFace(result,summary)
+}
+function log(result,judgment,boxes){
+  state.count++;ui.resultCount.textContent=state.count+(state.count===1?" result":" results");
+  const frame=result.frame||{},model=result.model||{},row=document.createElement("tr");
+  const positiveLabel=result.analysis_kind==="face_reference_match"?"UNKNOWN":"DETECTED";
+  const values=["R"+(result.sequence||"-")+" | f"+(frame.source_frame_index??"-"),
+    number(frame.timestamp_seconds,3)+"s",judgment.detected?positiveLabel:"CLEAR",
+    number(judgment.confidence,3),number(model.latency_seconds,2)+"s",String(boxes),
+    judgment.description||""];
+  values.forEach((value,index)=>{
+    const cell=document.createElement("td");
+    if(index===2){
+      const pill=document.createElement("span");pill.className="pill "+(judgment.detected?"yes":"no");
+      pill.textContent=value;cell.appendChild(pill)
+    }else cell.textContent=value;
+    row.appendChild(cell)
+  });
+  ui.logBody.prepend(row);while(ui.logBody.children.length>200)ui.logBody.lastChild.remove()
+}
+function logFace(result,summary){
+  state.count++;ui.resultCount.textContent=state.count+(state.count===1?" result":" results");
+  const frame=result.frame||{},model=result.model||{},row=document.createElement("tr");
+  const values=["R"+(result.sequence||"-")+" | f"+(frame.source_frame_index??"-"),
+    number(frame.timestamp_seconds,3)+"s",summary.verdict,
+    Number.isFinite(summary.best)?number(summary.best,3):"-",number(model.latency_seconds,2)+"s",
+    String(summary.objects.length),summary.description];
+  values.forEach((value,index)=>{
+    const cell=document.createElement("td");
+    if(index===2){
+      const pill=document.createElement("span");
+      pill.className="pill "+(summary.verdict==="UNKNOWN"?"yes":summary.verdict==="CLEAR"?"no":"neutral");
+      pill.textContent=value;cell.appendChild(pill)
+    }else cell.textContent=value;
+    row.appendChild(cell)
+  });
+  ui.logBody.prepend(row);while(ui.logBody.children.length>200)ui.logBody.lastChild.remove()
+}
+
+ui.eventAnalysisMode.onclick=()=>selectAnalysisMode("event");
+ui.faceAnalysisMode.onclick=()=>selectAnalysisMode("face");
+ui.cameraMode.onclick=()=>mode("camera");ui.streamMode.onclick=()=>mode("stream");
+ui.cameraButton.onclick=camera;ui.streamUrl.oninput=controls;
+ui.eventInput.oninput=()=>{if(!state.running)ui.event.textContent=ui.eventInput.value.trim()||"..."};
+ui.enroll.onclick=enrollPerson;
+ui.start.onclick=start;ui.stop.onclick=stop;
+window.addEventListener("resize",()=>{alignAnnotationLayer()});
+if(!cameraAllowed){
+  ui.warning.hidden=false;
+  ui.warning.textContent="Local camera is unavailable on this origin. Browser camera access requires HTTPS, except on localhost. Open this dashboard through an HTTPS reverse proxy (or localhost); Network stream mode remains available.";
+  ui.cameraNote.textContent="HTTPS or localhost required";ui.cameraNote.className="note error"
+}
+let events=null;
+async function connectResultEvents(){
+  let after=0;
+  try{
+    const latest=await fetch("/v1/results/latest",{cache:"no-store"});
+    const cursor=Number(latest.headers.get("X-Result-Cursor"));
+    if(latest.ok&&Number.isInteger(cursor)&&cursor>=0)after=cursor
+  }catch(_){}
+  events=new EventSource("/v1/results/events?after="+after);
+  events.addEventListener("analysis_result",event=>{
+    try{analysis(JSON.parse(event.data))}catch(_){say("Invalid AnalysisResult JSON.",true)}
+  })
+}
+window.addEventListener("beforeunload",()=>{
+  if(events)events.close();stopSampler();resetAnnotations();
+  if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
+  if(state.ws)state.ws.close()
+});
+mode("stream");info();status().finally(connectResultEvents);setInterval(status,2000);
+</script>
+</body>
+</html>

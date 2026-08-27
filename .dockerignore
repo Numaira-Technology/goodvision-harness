@@ -20,3 +20,6 @@ personal
 *.webm
 logs
 output
+.models
+.goodvision
+**/memory

@@ -7,22 +7,38 @@ and an annotated video stream.
 The harness has no runtime dependency on the original `goodvision`
 repository.
 
+## Harness behavior
+
+The delivery service retains the original Harness recognition loop while using
+a deliberately high-recall safety-event decision policy. These runtime
+defaults remain fixed:
+
+- model sampling: 2.5 FPS, 320 px maximum image side, JPEG quality 75;
+- display sampling: 15 FPS, 720 px maximum image side, JPEG quality 70;
+- one-frame windows with stride 1 and six concurrent model requests;
+- `max_tokens=192`, no API retry, and OpenRouter routed only to CoreWeave with
+  provider fallback disabled;
+- high-recall safety-event prompts that deliberately favor possible-event
+  detections over missed events, with one bbox delivery paragraph appended to
+  the end of the user prompt.
+
+The original headless CLI keeps its prior event and result protocol. Browser
+testing now uses one unified page, based on the familiar original Demo UI.
+Both browser-camera and network-stream modes use the same grounded delivery
+pipeline and expose customer JSON plus analyzed and raw video outputs.
+
 ## Demo topology on `14.198.55.6`
 
 ```text
-external camera
+external camera / RTSP publisher
       |
-      | RTSP published to 14.198.55.6:8554
+      | configured RTSP_URL (pulled by the server)
       v
-Linux host 14.198.55.6
-      |
-      | rtsp://host.docker.internal:8554/live/livestream
-      v
-goodvision-harness container
+goodvision-harness container on 14.198.55.6
       |                         |
       | HTTPS 443               | localhost:8080
       v                         v
-OpenRouter / Qwen          JSON + annotated MJPEG
+OpenRouter / Qwen          JSON + analyzed/raw video
                                 |
                                 v
                     receiver on 14.198.55.6
@@ -48,7 +64,7 @@ The default deployment needs:
   (2 cores and 4 GB is the practical minimum for one stream);
 - about 10 GB free disk for the image, build cache, and operating headroom;
 - outbound HTTPS/DNS access to the configured LLM endpoint on TCP 443;
-- access from the container to the host RTSP publisher on TCP 8554;
+- network access from the container to the configured RTSP endpoint and port;
 - local TCP 8080 for the receiver or reverse proxy;
 - correct system time and CA certificates for HTTPS.
 
@@ -62,27 +78,24 @@ On `14.198.55.6`:
 
 ```bash
 cp .env.example .env
-# Put the real OPENROUTER_API_KEY in .env.
+# Put the agreed camera RTSP_URL and the real OPENROUTER_API_KEY in .env.
 docker compose up --build -d
 docker compose ps
 ```
 
-The Compose file already maps `host.docker.internal` to the Linux Docker
-host. Its default input is therefore:
+`RTSP_URL` has no automatic default. Use the camera's agreed public/private
+RTSP endpoint directly. If an RTSP relay actually runs on `14.198.55.6`, the
+Compose host-gateway mapping also permits:
 
 ```text
 rtsp://host.docker.internal:8554/live/livestream
 ```
 
-The hardware-provided public endpoint remains:
-
-```text
-rtsp://14.198.55.6:8554/live/livestream
-```
-
-Using the host alias from inside Docker avoids leaving the host only to
-hairpin back through its public address. Override `RTSP_URL` in `.env` if
-the publisher is elsewhere or requires credentials.
+Leaving `RTSP_URL` empty keeps the service unready instead of silently
+connecting to an assumed source. OpenCV/FFmpeg transport options are likewise
+not forced; the original RTSP behavior is preserved. Add
+`OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp|timeout;5000000` to the
+container environment only when troubleshooting proves that source needs it.
 
 The HTTP service binds to `127.0.0.1:8080` on the host by default:
 
@@ -98,13 +111,18 @@ arrived; invalid API credentials or repeated model failures therefore keep the
 container unready. The Docker image uses this stricter endpoint for its health
 check, with a startup allowance for the first model request.
 
-Open `http://127.0.0.1:8080/` on the server for the minimal dashboard. If a
-remote browser must access it, use an authenticated reverse proxy or set
-`HARNESS_BIND_ADDRESS=0.0.0.0` and restrict port 8080 with the server
-firewall. Do not expose an unauthenticated demo port broadly. If a separate
-browser frontend consumes the APIs, put it behind the same-origin reverse
-proxy; permissive CORS is intentionally not enabled. The built-in dashboard is
-same-origin and needs no CORS configuration.
+Open `http://127.0.0.1:8080/` for the single internal test page. It has the
+familiar Camera / Network stream controls and shows the raw preview, the exact
+analyzed frame with bbox, and the complete JSON result together. Leave the
+network URL blank to use `RTSP_URL`, or enter a different RTSP/RTMP/WHEP URL
+for that run.
+
+A browser can use its local camera from `localhost`. When the page is opened
+remotely from `14.198.55.6`, browsers normally require HTTPS/WSS before they
+allow camera access. Use an HTTPS reverse proxy or an SSH tunnel to
+`localhost:8080`. Network-stream mode does not depend on browser camera
+permission. Restrict this unauthenticated internal page with the server
+firewall or reverse proxy.
 
 ### Zero-cost smoke mode
 
@@ -130,7 +148,7 @@ include a synthetic normalized bbox.
 | `GET /v1/video/stream.mjpeg` | Annotated MJPEG at result cadence: one exact analyzed frame per JSON result. |
 | `GET /v1/video/live/latest.jpg` | Latest unannotated source-preview frame. |
 | `GET /v1/video/live/stream.mjpeg` | Continuous unannotated source preview. |
-| `GET /` | Minimal same-service demo dashboard. |
+| `GET /` | Single Camera / Network stream internal test page. |
 
 Examples:
 
@@ -226,11 +244,10 @@ when replay guarantees matter.
 ## Configuration
 
 `config.yaml` controls sampling, model selection, prompts, concurrency,
-readiness windows, overlay JPEG quality, and optional webhook behavior.
-The demo default leaves provider selection to OpenRouter so it can route around
-a provider outage; restrict `inference.request_parameters.provider` only when a
-customer data policy requires it. See OpenRouter's
-[provider-routing documentation](https://openrouter.ai/docs/guides/routing/provider-selection).
+readiness windows, overlay JPEG quality, and optional webhook behavior. The
+original CoreWeave-only OpenRouter route remains explicit:
+`provider.only=[coreweave]` and `allow_fallbacks=false`. The API retry count
+also remains zero so a failed live request is not replayed as a stale result.
 Environment variables override deployment-specific values:
 
 | Variable | Meaning |
@@ -238,11 +255,14 @@ Environment variables override deployment-specific values:
 | `RTSP_URL` | RTSP/RTMP/WHEP input URL. |
 | `OPENROUTER_API_KEY` | Public LLM API credential. |
 | `HARNESS_DRY_RUN` | Disable external inference and emit deterministic results. |
+| `HARNESS_AUTOSTART` | Start the configured network stream when the service starts; set false for local camera testing. |
 | `HARNESS_SOURCE_ID` | Stable customer-facing source identifier. |
 | `RESULT_WEBHOOK_URL` | Optional result-push destination. |
 | `HARNESS_WEBHOOK_SECRET` | Optional webhook HMAC secret. |
 | `HARNESS_BIND_ADDRESS` | Host bind address used by Compose. |
 | `HARNESS_PORT` | Host HTTP port used by Compose. |
+| `FACE_MODEL_ROOT` | Root containing operator-supplied InsightFace-compatible models. |
+| `FACE_GALLERY_PATH` | Persistent known-person gallery JSON path. |
 
 Do not commit `.env`, RTSP credentials, or LLM API keys.
 
@@ -251,16 +271,100 @@ Do not commit `.env`, RTSP credentials, or LLM API keys.
 ```powershell
 python -m venv .venv
 python -m pip install -e '.[dev]'
-$env:RTSP_URL = 'rtsp://14.198.55.6:8554/live/livestream'
-$env:HARNESS_DRY_RUN = 'true'
-goodvision-harness
+$env:HARNESS_AUTOSTART = 'false'
+goodvision-harness-demo --host 127.0.0.1 --port 7900
 ```
 
-Use `export RTSP_URL=...` and `export HARNESS_DRY_RUN=true` on Linux/macOS.
-The retained headless CLI emits the canonical grounded `analysis_result` JSONL;
-the browser-input development demo uses the same grounded client. They are
-available as `goodvision-harness-cli` and `goodvision-harness-demo`. The Docker
-HTTP service is the supported server delivery path.
+Open `http://127.0.0.1:7900`, choose Camera, enable it, then press Start.
+For a network test, choose Network stream and either enter a URL or leave it
+blank to use `RTSP_URL`. Set `HARNESS_DRY_RUN=true` for a no-cost pipeline
+check. `goodvision-harness-demo` is now a compatibility launcher for the same
+unified grounded page; it is not a second legacy Demo. `goodvision-harness`
+serves that same page on port 8080 by default. `goodvision-harness-cli`
+retains the original window lifecycle, `vision_result`, and final-state JSONL
+behavior.
+
+### Local InsightFace face demo
+
+Install the face extra (combine it with the test tools when developing):
+
+```powershell
+python -m pip install -e '.[face]'
+# or
+python -m pip install -e '.[dev,face]'
+$env:HARNESS_AUTOSTART = 'false'
+goodvision-harness-demo --host 127.0.0.1 --port 7900
+```
+
+Open `http://127.0.0.1:7900`, select **Face recognition**, enroll each known
+person with a stable person ID, name, and one clear single-face image, then
+choose Camera or Network stream and press Start. Install compatible detection
+and recognition weights under
+`FACE_MODEL_ROOT/models/<face.model_name>/` first. The harness does not bundle
+models and does not download one unless `face.allow_model_download` is
+explicitly set to `true`; the known-person gallery persists at
+`FACE_GALLERY_PATH`.
+
+InsightFace's Python code is MIT-licensed, but its official public pretrained
+model packs, including `buffalo_l`, are restricted to non-commercial research
+unless separately licensed. For customer or other commercial use, supply model
+weights you are authorized to use. Enable automatic download only after
+confirming that the applicable model terms permit the intended deployment; see
+the official [InsightFace license notice](https://pypi.org/project/insightface/)
+and [model-zoo terms](https://github.com/deepinsight/insightface/tree/master/model_zoo).
+
+The result envelope is ready for the separate visual Memory layer:
+`analysis_kind` distinguishes event and `face_recognition` observations,
+`observation_id` is the stable alias of `message_id`, and
+`objects[].attributes` carries mode-specific metadata. A Memory implementation
+only needs to implement the non-blocking `VisualMemorySink.submit(...)`
+interface, which receives a `VisualMemoryRecord` containing the observation
+and its exactly correlated evidence JPEG.
+
+### How the Memory pieces fit together
+
+There are three small, deliberately separate responsibilities:
+
+- **FaceGallery** is the primary identity memory for the local InsightFace
+  mode. It persists embeddings and answers known/unknown locally. In this mode,
+  `detected=true` means an **unknown** person is present.
+- **Reference memory** is an optional Qwen input prefix migrated from
+  Goodvision PR #53. It loads up to eight private reference images once,
+  sends them before the live frame, and rejects model-reported memory IDs that
+  were not supplied. It uses the same stranger-detection contract as
+  InsightFace: `detected=true` means an **unknown** live face is present.
+  Known identities are reported independently in `matched_memory_ids`.
+- **VisualMemorySink** is the existing output seam. It receives any completed
+  event or face observation plus its exactly correlated JPEG; it does not
+  participate in recognition.
+
+Qwen face-reference results use the following matrix. Its `detected` column
+matches InsightFace; `matched_memory_ids` is additional Qwen reference metadata:
+
+| Live frame | `detected` | `matched_memory_ids` |
+| --- | --- | --- |
+| No face | `false` | `[]` |
+| Known face only | `false` | Known IDs |
+| Unknown face only | `true` | `[]` |
+| Known and unknown faces | `true` | Known IDs |
+
+The default remains local InsightFace for face recognition. Enable Qwen
+reference memory only as an explicit fallback/experiment by setting
+`memory.enabled: true`, adding reference entries under `memory.references`,
+and using `inference.event_label: unknown_person`. The harness also enforces
+that label whenever the built-in face-reference purpose is active. Relative
+paths resolve from the selected config file. Docker exposes the ignored local
+`memory/` directory at `/app/memory`; for local development, pass
+`--config config.yaml` to use that same top-level directory. A memory-aware
+result reports validated IDs in `judgments[].matched_memory_ids`, and uses
+`analysis_kind=face_reference_match` for the built-in face purpose.
+Enabling it sends the resized reference images to the configured multimodal
+model provider on every inference request; keep it disabled unless that data
+flow is allowed.
+
+The old PR's process-local upload store is intentionally not duplicated: the
+main face path already has persistent enroll/list/delete APIs and UI through
+FaceGallery, while Qwen fallback references remain deployment configuration.
 
 ## Verification
 

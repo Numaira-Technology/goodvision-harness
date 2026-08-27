@@ -6,14 +6,23 @@ import base64
 import json
 import math
 import time
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .config import InferenceSettings
-from .contracts import NormalizedBBox
+from .contracts import NormalizedBBox, readonly_json_mapping
 from .openrouter import OpenRouterClient, OpenRouterError, OpenRouterSettings
+from .reference_memory import (
+    FACE_RECOGNITION_PURPOSE,
+    MemoryContext,
+    UNKNOWN_FACE_EVENT_LABEL,
+)
 from .sliding_window import FrameWindow
+
+
+FACE_REFERENCE_ANALYSIS_KIND = "face_reference_match"
+REFERENCE_MEMORY_ANALYSIS_KIND = "reference_memory"
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +32,14 @@ class ModelObject:
     label: str
     bbox: NormalizedBBox
     confidence: float | None = None
+    attributes: Mapping[str, Any] = field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "attributes",
+            readonly_json_mapping(self.attributes, name="model object attributes"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +48,44 @@ class GroundedClassification:
     confidence: float
     description: str
     objects: tuple[ModelObject, ...] = ()
+    analysis_kind: str = "event"
+    event_object_indexes: tuple[int, ...] | None = None
+    matched_memory_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        analysis_kind = str(self.analysis_kind).strip()
+        if not analysis_kind:
+            raise ValueError("analysis_kind must not be empty")
+        object.__setattr__(self, "analysis_kind", analysis_kind)
+
+        memory_ids = tuple(self.matched_memory_ids)
+        if any(
+            not isinstance(memory_id, str) or not memory_id
+            for memory_id in memory_ids
+        ):
+            raise TypeError("matched_memory_ids must contain non-empty text")
+        if len(set(memory_ids)) != len(memory_ids):
+            raise ValueError("matched_memory_ids must not contain duplicates")
+        object.__setattr__(self, "matched_memory_ids", memory_ids)
+
+        indexes = self.event_object_indexes
+        if indexes is not None:
+            try:
+                normalized = tuple(indexes)
+            except TypeError as exc:
+                raise TypeError(
+                    "event_object_indexes must be an iterable of integers"
+                ) from exc
+            if any(
+                isinstance(index, bool) or not isinstance(index, int)
+                for index in normalized
+            ):
+                raise TypeError("event_object_indexes must contain only integers")
+            if any(index < 0 or index >= len(self.objects) for index in normalized):
+                raise ValueError("event_object_indexes contains an out-of-range index")
+            if len(set(normalized)) != len(normalized):
+                raise ValueError("event_object_indexes must not contain duplicates")
+            object.__setattr__(self, "event_object_indexes", normalized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +143,47 @@ def _number(value: Any, name: str) -> float:
     return rendered
 
 
-def parse_grounded_classification(text: str) -> GroundedClassification:
+def _matched_memory_ids(
+    payload: Mapping[str, Any],
+    *,
+    allowed_memory_ids: Collection[str] | None,
+) -> tuple[str, ...]:
+    raw_memory_ids = payload.get("matched_memory_ids", [])
+    if not isinstance(raw_memory_ids, list):
+        raise TypeError("matched_memory_ids must be an array")
+
+    matched_memory_ids: list[str] = []
+    seen_memory_ids: set[str] = set()
+    for memory_id in raw_memory_ids:
+        if not isinstance(memory_id, str) or not memory_id:
+            raise TypeError("matched_memory_ids must contain non-empty text")
+        if memory_id in seen_memory_ids:
+            raise ValueError("matched_memory_ids must not contain duplicates")
+        seen_memory_ids.add(memory_id)
+        matched_memory_ids.append(memory_id)
+
+    if allowed_memory_ids is None:
+        if matched_memory_ids:
+            raise ValueError("model reported memory matches without a memory context")
+        return tuple(matched_memory_ids)
+
+    if "matched_memory_ids" not in payload:
+        raise ValueError("memory-aware result omitted matched_memory_ids")
+    allowed = set(allowed_memory_ids)
+    unknown_ids = [
+        memory_id for memory_id in matched_memory_ids if memory_id not in allowed
+    ]
+    if unknown_ids:
+        raise ValueError("model reported unknown memory IDs: " + ", ".join(unknown_ids))
+    return tuple(matched_memory_ids)
+
+
+def parse_grounded_classification(
+    text: str,
+    *,
+    allowed_memory_ids: Collection[str] | None = None,
+    analysis_kind: str = "event",
+) -> GroundedClassification:
     """Parse event judgment and Qwen-relative 2D boxes.
 
     Qwen grounding coordinates use a relative 0..1000 canvas. The public
@@ -107,6 +202,10 @@ def parse_grounded_classification(text: str) -> GroundedClassification:
         raise ValueError("confidence must be between 0 and 1")
     if not isinstance(description, str) or not description.strip():
         raise TypeError("description must be non-empty text")
+    matched_memory_ids = _matched_memory_ids(
+        payload,
+        allowed_memory_ids=allowed_memory_ids,
+    )
 
     raw_objects = payload.get("objects", [])
     if raw_objects is None:
@@ -138,11 +237,15 @@ def parse_grounded_classification(text: str) -> GroundedClassification:
             )
             if not 0.0 <= parsed_object_confidence <= 1.0:
                 raise ValueError(f"objects[{index}].confidence must be between 0 and 1")
+        attributes = raw_object.get("attributes", {})
+        if not isinstance(attributes, Mapping):
+            raise TypeError(f"objects[{index}].attributes must be an object")
         objects.append(
             ModelObject(
                 label=label.strip(),
                 bbox=NormalizedBBox(x1 / 1000.0, y1 / 1000.0, x2 / 1000.0, y2 / 1000.0),
                 confidence=parsed_object_confidence,
+                attributes=attributes,
             )
         )
     if detected and not objects:
@@ -152,6 +255,8 @@ def parse_grounded_classification(text: str) -> GroundedClassification:
         confidence=confidence_value,
         description=description.strip(),
         objects=tuple(objects),
+        analysis_kind=analysis_kind,
+        matched_memory_ids=matched_memory_ids,
     )
 
 
@@ -161,29 +266,64 @@ def build_grounding_messages(
     event_label: str,
     system_prompt: str,
     prompt: str,
+    memory_context: MemoryContext | None = None,
 ) -> list[dict[str, Any]]:
-    rendered_prompt = prompt.replace("{event}", event_label).replace(
+    effective_event_label = (
+        UNKNOWN_FACE_EVENT_LABEL
+        if memory_context is not None
+        and memory_context.purpose == FACE_RECOGNITION_PURPOSE
+        else event_label
+    )
+    rendered_prompt = prompt.replace("{event}", effective_event_label).replace(
         "{window_label}", window.label
+    )
+    live_frames = (
+        window.frames[-1:]
+        if memory_context is not None and memory_context.newest_frame_only
+        else window.frames
     )
     timestamps = ", ".join(
         f"f{frame.sample_index}={frame.timestamp_seconds:.3f}s"
-        for frame in window.frames
+        for frame in live_frames
     )
-    output_contract = (
-        "Judge the target event on the NEWEST (last) image. Return only one JSON "
-        "object with detected (boolean), confidence (0..1), description (short "
-        "text), and objects (array). Each relevant object must be "
-        '{"label":"...","confidence":0..1,"bbox_2d":[x1,y1,x2,y2]}. '
-        "bbox_2d uses Qwen's relative 0..1000 top-left-origin xyxy canvas for "
-        "the NEWEST image. If detected=true, include at least one valid object; "
-        "use [] only when detected=false."
-    )
-    text = (
-        f"{rendered_prompt}\n\nTarget event: {event_label}\n"
-        f"Window: {window.label}\nSample timestamps: {timestamps}\n"
-        f"{output_contract}\nThe JPEG images follow in chronological order."
-    )
-    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    if memory_context is None:
+        text = (
+            f"{rendered_prompt}\n\n"
+            f"Target event: {event_label}\n"
+            f"Window: {window.label}\n"
+            f"Sample timestamps: {timestamps}\n"
+            "The JPEG images follow in chronological order."
+        )
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    else:
+        decision_prompt = rendered_prompt
+        if memory_context.purpose == FACE_RECOGNITION_PURPOSE:
+            decision_prompt = (
+                "Classify faces in the NEWEST live camera frame, using the supplied "
+                "references only as known-identity context."
+            )
+        text = (
+            "BEGIN LIVE CAMERA INPUT\n"
+            f"{decision_prompt}\n\n"
+            f"Target event: {effective_event_label}\n"
+            f"Window: {window.label}\n"
+            f"Sample timestamps: {timestamps}\n"
+            "The live JPEG images follow in chronological order.\n\n"
+            "Authoritative memory decision rule:\n"
+            f"{memory_context.instruction}\n\n"
+            "Harness result contract:\n"
+            f"{memory_context.result_contract}\n\n"
+            "For this memory-aware request, respond with only one JSON object. "
+            "It must contain detected, confidence, matched_memory_ids, description, "
+            "and objects. matched_memory_ids may contain only supplied MEMORY_ID "
+            "values. detected and matched_memory_ids are independent. objects must "
+            "contain only live targets that caused detected=true; use an empty array "
+            "when detected=false. Each object must contain label and "
+            "bbox_2d=[x1,y1,x2,y2] on Qwen's 0..1000 grid; detected=true requires "
+            "at least one object."
+        )
+        content = list(memory_context.prompt_prefix)
+        content.append({"type": "text", "text": text})
     content.extend(
         {
             "type": "image_url",
@@ -192,7 +332,7 @@ def build_grounding_messages(
                 + base64.b64encode(frame.jpeg_bytes).decode("ascii")
             },
         }
-        for frame in window.frames
+        for frame in live_frames
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -200,14 +340,24 @@ def build_grounding_messages(
     ]
 
 
+def _memory_analysis_kind(memory_context: MemoryContext | None) -> str:
+    if memory_context is None:
+        return "event"
+    if memory_context.purpose == FACE_RECOGNITION_PURPOSE:
+        return FACE_REFERENCE_ANALYSIS_KIND
+    return REFERENCE_MEMORY_ANALYSIS_KIND
+
+
 class OpenRouterGroundingClient:
     def __init__(
         self,
         settings: InferenceSettings,
         transport: OpenRouterClient,
+        memory_context: MemoryContext | None = None,
     ) -> None:
         self.settings = settings
         self._transport = transport
+        self.memory_context = memory_context
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
@@ -219,26 +369,47 @@ class OpenRouterGroundingClient:
                     event_label=self.settings.event_label,
                     system_prompt=self.settings.system_prompt,
                     prompt=self.settings.prompt,
+                    memory_context=self.memory_context,
                 ),
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-            classification = parse_grounded_classification(text)
-        except (OpenRouterError, TypeError, ValueError) as exc:
+        except (OpenRouterError, ValueError) as exc:
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=locals().get("text"),
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
                 error=str(exc),
             )
+        latency = time.monotonic() - started
         response_id = str(response["id"]) if response.get("id") is not None else None
         usage = response.get("usage")
+        try:
+            classification = parse_grounded_classification(
+                text,
+                allowed_memory_ids=(
+                    self.memory_context.memory_ids
+                    if self.memory_context is not None
+                    else None
+                ),
+                analysis_kind=_memory_analysis_kind(self.memory_context),
+            )
+        except (TypeError, ValueError) as exc:
+            return GroundingResponse(
+                window=window,
+                classification=None,
+                raw_text=text,
+                latency_seconds=latency,
+                response_id=response_id,
+                usage=usage if isinstance(usage, Mapping) else None,
+                error=f"unparseable model reply: {exc}",
+            )
         return GroundingResponse(
             window=window,
             classification=classification,
             raw_text=text,
-            latency_seconds=time.monotonic() - started,
+            latency_seconds=latency,
             response_id=response_id,
             usage=usage if isinstance(usage, Mapping) else None,
         )
@@ -247,49 +418,55 @@ class OpenRouterGroundingClient:
 class DryRunGroundingClient:
     """Deterministic local client used by tests and zero-cost demos."""
 
-    def __init__(self, settings: InferenceSettings) -> None:
+    def __init__(
+        self,
+        settings: InferenceSettings,
+        memory_context: MemoryContext | None = None,
+    ) -> None:
         self.settings = settings
+        self.memory_context = memory_context
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
-        detected = window.index % 4 in {1, 2}
+        time.sleep(0.35 + (window.index * 13 % 40) / 100.0)
+        detected = window.index % 6 in {2, 3, 4}
+        confidence = round(0.6 + (window.index * 37 % 100) / 250.0, 3)
+        memory_ids = (
+            self.memory_context.memory_ids
+            if self.memory_context is not None
+            else ()
+        )
+        if self.memory_context is not None and not memory_ids:
+            detected = False
+        state = "visibly active" if detected else "not visible"
         objects: tuple[ModelObject, ...] = ()
         if detected:
-            shift = (window.index % 3) * 0.04
             objects = (
                 ModelObject(
                     label="person",
-                    bbox=NormalizedBBox(
-                        0.18 + shift,
-                        0.12,
-                        0.72 + shift,
-                        0.9,
-                    ),
-                    confidence=0.91,
+                    bbox=NormalizedBBox(0.18, 0.12, 0.72, 0.9),
+                    confidence=confidence,
                 ),
             )
         classification = GroundedClassification(
             detected=detected,
-            confidence=0.92 if detected else 0.96,
+            confidence=confidence,
             description=(
-                "Dry-run event and object are visible."
-                if detected
-                else "Dry-run event is not visible."
+                f"Dry run: {self.settings.event_label} {state} in {window.label}."
             ),
             objects=objects,
+            analysis_kind=_memory_analysis_kind(self.memory_context),
+            matched_memory_ids=(
+                memory_ids[:1]
+                if self.memory_context is not None and window.index % 2 == 0
+                else ()
+            ),
         )
         return GroundingResponse(
             window=window,
             classification=classification,
-            raw_text=json.dumps(
-                {
-                    "detected": classification.detected,
-                    "confidence": classification.confidence,
-                    "description": classification.description,
-                }
-            ),
+            raw_text=None,
             latency_seconds=time.monotonic() - started,
-            response_id=f"dry-run-{window.index}",
         )
 
 
@@ -297,11 +474,13 @@ def build_grounding_client(
     settings: InferenceSettings,
     openrouter_settings: OpenRouterSettings,
     *,
+    memory_context: MemoryContext | None = None,
     dry_run: bool = False,
 ) -> GroundingClient:
     if dry_run:
-        return DryRunGroundingClient(settings)
+        return DryRunGroundingClient(settings, memory_context)
     return OpenRouterGroundingClient(
         settings,
         OpenRouterClient(openrouter_settings),
+        memory_context,
     )

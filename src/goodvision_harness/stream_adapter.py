@@ -88,13 +88,13 @@ class NetworkStreamAdapter:
         source_url: str,
         *,
         output_fps: float = 15.0,
-        reconnect_attempts: int | None = None,
+        reconnect_attempts: int = 3,
         reconnect_delay_seconds: float = 1.0,
         whep_headers: Mapping[str, str] | None = None,
     ) -> None:
         if output_fps <= 0:
             raise ValueError("output_fps must be positive")
-        if reconnect_attempts is not None and reconnect_attempts < 0:
+        if reconnect_attempts < 0:
             raise ValueError("reconnect_attempts must be non-negative")
         if reconnect_delay_seconds < 0:
             raise ValueError("reconnect_delay_seconds must be non-negative")
@@ -174,10 +174,7 @@ class NetworkStreamAdapter:
                     if not self.stopped:
                         failures += 1
 
-                if (
-                    self.reconnect_attempts is not None
-                    and failures > self.reconnect_attempts
-                ):
+                if failures > self.reconnect_attempts:
                     action = "open" if emitted == 0 else "continue"
                     raise StreamAdapterError(
                         f"could not {action} {self.protocol.upper()} stream "
@@ -299,7 +296,7 @@ class NetworkStreamAdapter:
                     )
                     try:
                         track = await asyncio.wait_for(track_ready, timeout=15.0)
-                    except TimeoutError as exc:
+                    except asyncio.TimeoutError as exc:
                         raise StreamAdapterError(
                             "WHEP session did not deliver a video track"
                         ) from exc

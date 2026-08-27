@@ -14,22 +14,28 @@ services:
       HARNESS_HOST: 0.0.0.0
       HARNESS_PORT: 8080
       HARNESS_DRY_RUN: "${HARNESS_DRY_RUN:-false}"
+      HARNESS_AUTOSTART: "${HARNESS_AUTOSTART:-true}"
       HARNESS_SOURCE_ID: "${HARNESS_SOURCE_ID:-external-camera}"
-      RTSP_URL: "${RTSP_URL:-rtsp://host.docker.internal:8554/live/livestream}"
+      RTSP_URL: "${RTSP_URL:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       RESULT_WEBHOOK_URL: "${RESULT_WEBHOOK_URL:-}"
       HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
-      OPENCV_FFMPEG_CAPTURE_OPTIONS: "${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}"
+      FACE_MODEL_ROOT: /models
+      FACE_GALLERY_PATH: /data/face-gallery.json
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      # Optional Qwen reference images configured under config.yaml memory.*.
+      - ./memory:/app/memory:ro
+      - insightface-models:/models
+      - face-data:/data
     read_only: true
     tmpfs:
       - /tmp:size=256m
     security_opt:
       - no-new-privileges:true
-    stop_grace_period: 10s
+    stop_grace_period: 20s
     networks:
       default:
         aliases:
@@ -38,3 +44,7 @@ services:
 networks:
   default:
     name: goodvision-demo
+
+volumes:
+  insightface-models:
+  face-data:
