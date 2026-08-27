@@ -109,6 +109,8 @@ inference:
 memory:
   # Optional fixed reference-image prefix for multimodal inference. Private
   # images can live under the Git-ignored top-level memory/ directory.
+  # For face_recognition, detected=true means an unknown live face; known
+  # reference matches are reported independently in matched_memory_ids.
   enabled: false
   purpose: face_recognition
   newest_frame_only: true

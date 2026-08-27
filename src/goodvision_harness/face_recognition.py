@@ -30,6 +30,7 @@ from .grounding import (
     GroundingResponse,
     ModelObject,
 )
+from .reference_memory import UNKNOWN_FACE_EVENT_LABEL
 from .sliding_window import FrameWindow
 
 __all__ = [
@@ -42,7 +43,6 @@ __all__ = [
 
 _GALLERY_SCHEMA_VERSION = 1
 _ANALYSIS_KIND = "face_recognition"
-_EVENT_LABEL = "unknown_person"
 _SUPPORTED_PROVIDERS = frozenset(
     {"CPUExecutionProvider", "CUDAExecutionProvider"}
 )
@@ -336,7 +336,7 @@ class FaceRecognitionRuntime:
         self.config = config
         self.settings = InferenceSettings(
             model=config.model_name,
-            event_label=_EVENT_LABEL,
+            event_label=UNKNOWN_FACE_EVENT_LABEL,
             system_prompt="Local InsightFace recognition; no LLM prompt is used.",
             prompt="Classify enrolled and unenrolled faces in the newest frame.",
             request_parameters={},
@@ -448,7 +448,7 @@ class FaceRecognitionRuntime:
                         attributes["name"] = match.name
                     else:
                         status = "unknown"
-                        label = _EVENT_LABEL
+                        label = UNKNOWN_FACE_EVENT_LABEL
 
             attributes["status"] = status
             object_index = len(objects)

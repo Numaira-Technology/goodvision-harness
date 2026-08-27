@@ -38,6 +38,10 @@ from .grounding import build_grounding_client
 from .openrouter import api_key_present
 from .overlay import draw_overlay
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
+from .reference_memory import (
+    FACE_RECOGNITION_PURPOSE,
+    UNKNOWN_FACE_EVENT_LABEL,
+)
 from .result_bus import FrameBus, FramePacket, ResultBus
 from .stream_adapter import parse_stream_source
 from .visual_memory import (
@@ -352,12 +356,19 @@ class HarnessRuntime:
             raise ValueError("analysis_mode must be event or face")
 
         if selected_analysis == FACE_ANALYSIS_MODE:
-            label = "unknown_person"
+            label = UNKNOWN_FACE_EVENT_LABEL
             use_dry_run = False
         else:
-            label = (event_label or self.config.inference.event_label).strip()
-            if not label:
-                label = self.config.inference.event_label
+            face_reference_memory = (
+                self.config.memory is not None
+                and self.config.memory.purpose == FACE_RECOGNITION_PURPOSE
+            )
+            if face_reference_memory:
+                label = UNKNOWN_FACE_EVENT_LABEL
+            else:
+                label = (event_label or self.config.inference.event_label).strip()
+                if not label:
+                    label = self.config.inference.event_label
             label = label[:EVENT_LABEL_MAX_CHARS]
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
 

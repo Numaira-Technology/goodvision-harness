@@ -10,6 +10,7 @@ import pytest
 
 from goodvision_harness.config import load_config
 from goodvision_harness.grounding import (
+    DryRunGroundingClient,
     FACE_REFERENCE_ANALYSIS_KIND,
     REFERENCE_MEMORY_ANALYSIS_KIND,
     GroundingResponse,
@@ -17,7 +18,11 @@ from goodvision_harness.grounding import (
     build_grounding_messages,
     parse_grounded_classification,
 )
-from goodvision_harness.inference import QwenWindowClient, WindowResponse
+from goodvision_harness.inference import (
+    DryRunWindowClient,
+    QwenWindowClient,
+    WindowResponse,
+)
 from goodvision_harness.organizer import ResultOrganizer
 from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
 from goodvision_harness.prompt import (
@@ -52,7 +57,7 @@ def _memory_context(
     )
 
 
-def _window() -> FrameWindow:
+def _window(index: int = 3) -> FrameWindow:
     frames = tuple(
         SampledFrame(
             sample_index=index,
@@ -64,7 +69,7 @@ def _window() -> FrameWindow:
         )
         for index in range(2)
     )
-    return FrameWindow(index=3, frames=frames)
+    return FrameWindow(index=index, frames=frames)
 
 
 class _Transport:
@@ -98,7 +103,10 @@ def test_binary_memory_prompt_prefix_and_newest_frame_only() -> None:
     assert content[:4] == memory.prompt_prefix
     assert content[4]["type"] == "text"
     assert "BEGIN LIVE CAMERA INPUT" in content[4]["text"]
+    assert "Target event: unknown_person" in content[4]["text"]
+    assert "Find known face" not in content[4]["text"]
     assert '"matched_memory_ids"' in content[4]["text"]
+    assert "same stranger-detection semantics as InsightFace" in content[4]["text"]
     assert len(content) == 6
     assert content[-1]["image_url"]["url"] == (
         "data:image/jpeg;base64," + base64.b64encode(b"frame-1").decode()
@@ -119,6 +127,9 @@ def test_memory_context_can_keep_the_full_live_window() -> None:
     live_images = content[len(memory.prompt_prefix) + 1 :]
     assert len(live_images) == 2
     assert "matched_memory_ids" in content[len(memory.prompt_prefix)]["text"]
+    assert "detected and matched_memory_ids are independent" in content[
+        len(memory.prompt_prefix)
+    ]["text"]
     assert "bbox_2d" in content[len(memory.prompt_prefix)]["text"]
 
 
@@ -143,16 +154,6 @@ def test_memory_context_can_keep_the_full_live_window() -> None:
             },
             {"alice"},
             "unknown memory IDs",
-        ),
-        (
-            {
-                "detected": False,
-                "confidence": 0.9,
-                "description": "match",
-                "matched_memory_ids": ["alice"],
-            },
-            {"alice"},
-            "detected must be true exactly",
         ),
         (
             {
@@ -188,20 +189,33 @@ def test_binary_memory_result_validation_is_strict(
         )
 
 
-def test_binary_memory_result_accepts_consistent_allowlisted_matches() -> None:
+@pytest.mark.parametrize(
+    ("detected", "matched_memory_ids"),
+    [
+        (False, []),
+        (False, ["alice"]),
+        (True, []),
+        (True, ["alice"]),
+    ],
+)
+def test_binary_memory_result_keeps_detection_independent_from_known_matches(
+    detected: bool,
+    matched_memory_ids: list[str],
+) -> None:
     classification = parse_binary_classification(
         json.dumps(
             {
-                "detected": True,
+                "detected": detected,
                 "confidence": 0.9,
-                "description": "Alice is visible.",
-                "matched_memory_ids": ["alice"],
+                "description": "Face state classified.",
+                "matched_memory_ids": matched_memory_ids,
             }
         ),
         allowed_memory_ids={"alice"},
     )
 
-    assert classification.matched_memory_ids == ("alice",)
+    assert classification.detected is detected
+    assert classification.matched_memory_ids == tuple(matched_memory_ids)
 
 
 def test_qwen_client_applies_the_memory_allowlist() -> None:
@@ -226,6 +240,30 @@ def test_qwen_client_applies_the_memory_allowlist() -> None:
     )
 
 
+@pytest.mark.parametrize("client_type", [DryRunWindowClient, DryRunGroundingClient])
+@pytest.mark.parametrize(
+    ("window_index", "detected", "matched_memory_ids"),
+    [
+        (0, False, ("alice",)),
+        (3, True, ()),
+    ],
+)
+def test_dry_run_memory_keeps_detection_independent_from_known_matches(
+    client_type: type[DryRunWindowClient] | type[DryRunGroundingClient],
+    window_index: int,
+    detected: bool,
+    matched_memory_ids: tuple[str, ...],
+) -> None:
+    config = load_config(ROOT / "config.yaml")
+    client = client_type(config.inference, _memory_context())
+
+    response = client.classify_window(_window(window_index))
+
+    assert response.classification is not None
+    assert response.classification.detected is detected
+    assert response.classification.matched_memory_ids == matched_memory_ids
+
+
 @pytest.mark.parametrize(
     ("purpose", "expected_kind"),
     [
@@ -243,11 +281,11 @@ def test_grounding_memory_preserves_boxes_and_sets_distinct_analysis_kind(
             {
                 "detected": True,
                 "confidence": 0.93,
-                "description": "Reference match.",
+                "description": "An unknown face and Alice are visible.",
                 "matched_memory_ids": ["alice"],
                 "objects": [
                     {
-                        "label": "face",
+                        "label": "unknown_face",
                         "confidence": 0.91,
                         "bbox_2d": [100, 200, 900, 800],
                     }
@@ -264,6 +302,7 @@ def test_grounding_memory_preserves_boxes_and_sets_distinct_analysis_kind(
     response = client.classify_window(_window())
 
     assert response.classification is not None
+    assert response.classification.detected is True
     assert response.classification.analysis_kind == expected_kind
     assert response.classification.matched_memory_ids == ("alice",)
     assert response.classification.objects[0].bbox.as_dict() == {
@@ -275,15 +314,34 @@ def test_grounding_memory_preserves_boxes_and_sets_distinct_analysis_kind(
     }
 
 
-def test_grounding_memory_still_requires_a_box_for_a_positive_match() -> None:
+def test_grounding_memory_accepts_known_only_as_clear() -> None:
+    classification = parse_grounded_classification(
+        json.dumps(
+            {
+                "detected": False,
+                "confidence": 0.94,
+                "description": "Alice is the only visible face.",
+                "matched_memory_ids": ["alice"],
+                "objects": [],
+            }
+        ),
+        allowed_memory_ids={"alice"},
+    )
+
+    assert classification.detected is False
+    assert classification.matched_memory_ids == ("alice",)
+    assert classification.objects == ()
+
+
+def test_grounding_memory_still_requires_a_box_for_an_unknown_face() -> None:
     with pytest.raises(ValueError, match="at least one grounded object"):
         parse_grounded_classification(
             json.dumps(
                 {
                     "detected": True,
                     "confidence": 0.9,
-                    "description": "match",
-                    "matched_memory_ids": ["alice"],
+                    "description": "Unknown face.",
+                    "matched_memory_ids": [],
                 }
             ),
             allowed_memory_ids={"alice"},
@@ -295,7 +353,7 @@ def test_organizer_surfaces_memory_matches_in_record_and_decision() -> None:
     response = WindowResponse(
         window=window,
         classification=BinaryClassification(
-            detected=True,
+            detected=False,
             confidence=0.9,
             description="Alice is visible.",
             matched_memory_ids=("alice",),
@@ -311,6 +369,7 @@ def test_organizer_surfaces_memory_matches_in_record_and_decision() -> None:
 
     assert record["matched_memory_ids"] == ["alice"]
     assert snapshot["decision"]["matched_memory_ids"] == ["alice"]
+    assert snapshot["decision"]["detected"] is False
 
 
 def test_streaming_session_preserves_grounded_memory_metadata() -> None:
@@ -320,11 +379,11 @@ def test_streaming_session_preserves_grounded_memory_metadata() -> None:
             {
                 "detected": True,
                 "confidence": 0.93,
-                "description": "Reference match.",
+                "description": "An unknown face and Alice are visible.",
                 "matched_memory_ids": ["alice"],
                 "objects": [
                     {
-                        "label": "face",
+                        "label": "unknown_face",
                         "bbox_2d": [100, 200, 900, 800],
                     }
                 ],
@@ -352,6 +411,7 @@ def test_streaming_session_preserves_grounded_memory_metadata() -> None:
 
     assert len(emitted) == 1
     assert emitted[0].analysis_kind == FACE_REFERENCE_ANALYSIS_KIND
+    assert emitted[0].judgments[0].event_label == "unknown_person"
     assert emitted[0].judgments[0].matched_memory_ids == ("alice",)
     assert emitted[0].as_dict()["judgments"][0]["matched_memory_ids"] == [
         "alice"

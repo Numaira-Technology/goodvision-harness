@@ -108,7 +108,8 @@
             "minLength": 1
           },
           "detected": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether the target condition was detected. In face-recognition analysis, true means at least one unknown face is present."
           },
           "confidence": {
             "type": "number",
@@ -129,6 +130,7 @@
           },
           "matched_memory_ids": {
             "type": "array",
+            "description": "Known reference IDs matched independently of the detected decision.",
             "uniqueItems": true,
             "items": {
               "type": "string",

@@ -81,6 +81,10 @@ def test_load_config_resolves_enabled_memory_relative_to_config(
     assert config.memory.references[0].width == 96
     assert config.memory.references[0].height == 48
     assert config.memory.prompt_prefix[1]["text"] == "MEMORY_ID: alice"
+    assert "same stranger-detection semantics as InsightFace" in (
+        config.memory.result_contract
+    )
+    assert "independently reports all known matches" in config.memory.result_contract
 
 
 @pytest.mark.parametrize(

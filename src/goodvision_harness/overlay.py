@@ -53,7 +53,10 @@ def draw_overlay(
             label += f" {float(item_confidence):.2f}"
         _text_with_background(rendered, label[:80], (x1, max(18, y1)), color)
 
-    state = "STALE" if stale else (event_label.upper() if detected else "CLEAR")
+    positive_label = (
+        "UNKNOWN" if analysis_kind == "face_reference_match" else event_label.upper()
+    )
+    state = "STALE" if stale else (positive_label if detected else "CLEAR")
     title = f"{state}  {float(confidence):.2f}"
     _text_with_background(rendered, title[:100], (12, 28), color, scale=0.7)
     if description:

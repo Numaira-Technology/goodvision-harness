@@ -139,7 +139,7 @@ def test_face_mode_reuses_streaming_session_with_face_settings(
         runtime.stop()
 
 
-def test_local_face_mode_does_not_invert_to_reference_match_semantics() -> None:
+def test_local_face_mode_keeps_insightface_runtime_with_reference_memory() -> None:
     config = load_config(ROOT / "config.yaml")
     config = replace(
         config,
@@ -171,7 +171,7 @@ def test_local_face_mode_does_not_invert_to_reference_match_semantics() -> None:
         runtime.stop()
 
 
-def test_event_mode_passes_configured_reference_memory_to_qwen_client() -> None:
+def test_face_reference_memory_uses_unknown_person_semantics() -> None:
     config = load_config(ROOT / "config.yaml")
     memory = MemoryContext(
         purpose="face_recognition",
@@ -183,7 +183,7 @@ def test_event_mode_passes_configured_reference_memory_to_qwen_client() -> None:
                 height=1,
             ),
         ),
-        instruction="Match the supplied known face.",
+        instruction="Use the supplied face as known identity context.",
     )
     runtime = HarnessRuntime(replace(config, memory=memory))
 
@@ -196,8 +196,10 @@ def test_event_mode_passes_configured_reference_memory_to_qwen_client() -> None:
         )
 
         assert response["reference_memory"]["memory_ids"] == ["alice"]
+        assert response["event_label"] == "unknown_person"
         assert runtime._session is not None
         assert runtime._session.client.memory_context is memory
+        assert runtime._session.config.inference.event_label == "unknown_person"
     finally:
         runtime.stop()
 

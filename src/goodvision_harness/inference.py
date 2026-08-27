@@ -160,7 +160,11 @@ class DryRunWindowClient:
             description=(
                 f"Dry run: {self.settings.event_label} {state} in {window.label}."
             ),
-            matched_memory_ids=memory_ids[:1] if detected else (),
+            matched_memory_ids=(
+                memory_ids[:1]
+                if self.memory_context is not None and window.index % 2 == 0
+                else ()
+            ),
         )
         return WindowResponse(
             window=window,

@@ -13,7 +13,11 @@ from typing import Any, Protocol
 from .config import InferenceSettings
 from .contracts import NormalizedBBox, readonly_json_mapping
 from .openrouter import OpenRouterClient, OpenRouterError, OpenRouterSettings
-from .reference_memory import FACE_RECOGNITION_PURPOSE, MemoryContext
+from .reference_memory import (
+    FACE_RECOGNITION_PURPOSE,
+    MemoryContext,
+    UNKNOWN_FACE_EVENT_LABEL,
+)
 from .sliding_window import FrameWindow
 
 
@@ -142,7 +146,6 @@ def _number(value: Any, name: str) -> float:
 def _matched_memory_ids(
     payload: Mapping[str, Any],
     *,
-    detected: bool,
     allowed_memory_ids: Collection[str] | None,
 ) -> tuple[str, ...]:
     raw_memory_ids = payload.get("matched_memory_ids", [])
@@ -172,11 +175,6 @@ def _matched_memory_ids(
     ]
     if unknown_ids:
         raise ValueError("model reported unknown memory IDs: " + ", ".join(unknown_ids))
-    if detected != bool(matched_memory_ids):
-        raise ValueError(
-            "memory-aware detected must be true exactly when matched_memory_ids "
-            "is non-empty"
-        )
     return tuple(matched_memory_ids)
 
 
@@ -206,7 +204,6 @@ def parse_grounded_classification(
         raise TypeError("description must be non-empty text")
     matched_memory_ids = _matched_memory_ids(
         payload,
-        detected=detected,
         allowed_memory_ids=allowed_memory_ids,
     )
 
@@ -271,7 +268,13 @@ def build_grounding_messages(
     prompt: str,
     memory_context: MemoryContext | None = None,
 ) -> list[dict[str, Any]]:
-    rendered_prompt = prompt.replace("{event}", event_label).replace(
+    effective_event_label = (
+        UNKNOWN_FACE_EVENT_LABEL
+        if memory_context is not None
+        and memory_context.purpose == FACE_RECOGNITION_PURPOSE
+        else event_label
+    )
+    rendered_prompt = prompt.replace("{event}", effective_event_label).replace(
         "{window_label}", window.label
     )
     live_frames = (
@@ -293,21 +296,31 @@ def build_grounding_messages(
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     else:
+        decision_prompt = rendered_prompt
+        if memory_context.purpose == FACE_RECOGNITION_PURPOSE:
+            decision_prompt = (
+                "Classify faces in the NEWEST live camera frame, using the supplied "
+                "references only as known-identity context."
+            )
         text = (
             "BEGIN LIVE CAMERA INPUT\n"
-            f"{rendered_prompt}\n\n"
-            f"Target event: {event_label}\n"
+            f"{decision_prompt}\n\n"
+            f"Target event: {effective_event_label}\n"
             f"Window: {window.label}\n"
             f"Sample timestamps: {timestamps}\n"
             "The live JPEG images follow in chronological order.\n\n"
             "Authoritative memory decision rule:\n"
             f"{memory_context.instruction}\n\n"
+            "Harness result contract:\n"
+            f"{memory_context.result_contract}\n\n"
             "For this memory-aware request, respond with only one JSON object. "
             "It must contain detected, confidence, matched_memory_ids, description, "
             "and objects. matched_memory_ids may contain only supplied MEMORY_ID "
-            "values. detected must be true exactly when matched_memory_ids is "
-            "non-empty. Each object must contain label and bbox_2d=[x1,y1,x2,y2] "
-            "on Qwen's 0..1000 grid; detected=true requires at least one object."
+            "values. detected and matched_memory_ids are independent. objects must "
+            "contain only live targets that caused detected=true; use an empty array "
+            "when detected=false. Each object must contain label and "
+            "bbox_2d=[x1,y1,x2,y2] on Qwen's 0..1000 grid; detected=true requires "
+            "at least one object."
         )
         content = list(memory_context.prompt_prefix)
         content.append({"type": "text", "text": text})
@@ -443,7 +456,11 @@ class DryRunGroundingClient:
             ),
             objects=objects,
             analysis_kind=_memory_analysis_kind(self.memory_context),
-            matched_memory_ids=memory_ids[:1] if detected else (),
+            matched_memory_ids=(
+                memory_ids[:1]
+                if self.memory_context is not None and window.index % 2 == 0
+                else ()
+            ),
         )
         return GroundingResponse(
             window=window,

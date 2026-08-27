@@ -8,7 +8,11 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-from .reference_memory import MemoryContext
+from .reference_memory import (
+    FACE_RECOGNITION_PURPOSE,
+    MemoryContext,
+    UNKNOWN_FACE_EVENT_LABEL,
+)
 from .sliding_window import FrameWindow
 
 
@@ -96,11 +100,6 @@ def parse_binary_classification(
             raise ValueError(
                 "model reported unknown memory IDs: " + ", ".join(unknown_ids)
             )
-        if detected != bool(matched_memory_ids):
-            raise ValueError(
-                "memory-aware detected must be true exactly when matched_memory_ids "
-                "is non-empty"
-            )
     return BinaryClassification(
         detected=detected,
         confidence=confidence,
@@ -124,7 +123,13 @@ def build_window_messages(
     videos never need to be uploaded to a separate media host.
     """
 
-    rendered_prompt = prompt.replace("{event}", event_label).replace(
+    effective_event_label = (
+        UNKNOWN_FACE_EVENT_LABEL
+        if memory_context is not None
+        and memory_context.purpose == FACE_RECOGNITION_PURPOSE
+        else event_label
+    )
+    rendered_prompt = prompt.replace("{event}", effective_event_label).replace(
         "{window_label}", window.label
     )
     live_frames = (
@@ -146,15 +151,23 @@ def build_window_messages(
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     else:
+        decision_prompt = rendered_prompt
+        if memory_context.purpose == FACE_RECOGNITION_PURPOSE:
+            decision_prompt = (
+                "Classify faces in the NEWEST live camera frame, using the supplied "
+                "references only as known-identity context."
+            )
         text = (
             "BEGIN LIVE CAMERA INPUT\n"
-            f"{rendered_prompt}\n\n"
-            f"Target event: {event_label}\n"
+            f"{decision_prompt}\n\n"
+            f"Target event: {effective_event_label}\n"
             f"Window: {window.label}\n"
             f"Sample timestamps: {timestamps}\n"
             "The live JPEG images follow in chronological order.\n\n"
             "Authoritative memory decision rule:\n"
             f"{memory_context.instruction}\n\n"
+            "Harness result contract:\n"
+            f"{memory_context.result_contract}\n\n"
             "For this memory-aware request, respond with only this JSON object; "
             "this contract supersedes any earlier output example:\n"
             '{"detected": true or false, "confidence": 0.0-1.0, '

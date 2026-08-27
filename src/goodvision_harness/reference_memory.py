@@ -16,6 +16,7 @@ from .video_to_stream import encode_jpeg
 
 
 FACE_RECOGNITION_PURPOSE = "face_recognition"
+UNKNOWN_FACE_EVENT_LABEL = "unknown_person"
 DEFAULT_MAX_MEMORY_REFERENCES = 8
 DEFAULT_MEMORY_IMAGE_SIDE = 384
 DEFAULT_MEMORY_JPEG_QUALITY = 85
@@ -25,11 +26,24 @@ _MEMORY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 _FACE_RECOGNITION_INSTRUCTION = (
     "The reference images above are known-face memory and are context only; they "
     "must never trigger a detection by themselves. Compare faces visible in the "
-    "LIVE CAMERA INPUT against those references. Set detected=true only when at "
-    "least one live face is the same person as a supplied MEMORY_ID. A similar-looking "
-    "or uncertain face is not a match. Set detected=false when no face is visible, "
-    "every visible face is unknown, or identity is uncertain. matched_memory_ids must "
-    "contain every matched supplied ID and no other value."
+    "LIVE CAMERA INPUT against those references. A similar-looking or uncertain "
+    "face is not a match. matched_memory_ids must contain every confidently matched "
+    "supplied ID and no other value."
+)
+
+_FACE_RECOGNITION_RESULT_CONTRACT = (
+    "Use the same stranger-detection semantics as InsightFace: detected=true means "
+    "at least one face in the LIVE CAMERA INPUT is unknown, meaning it does not "
+    "confidently match any supplied MEMORY_ID. Treat uncertain identity as unknown. "
+    "Set detected=false when no live face is visible or every live face is a known "
+    "match. matched_memory_ids independently reports all known matches, so it may be "
+    "non-empty whether detected is true or false."
+)
+
+_GENERIC_MEMORY_RESULT_CONTRACT = (
+    "detected follows the configured decision instruction. matched_memory_ids "
+    "independently reports supplied references that matched the live input; one field "
+    "must not be inferred from the other."
 )
 
 
@@ -55,6 +69,14 @@ class MemoryContext:
     @property
     def memory_ids(self) -> tuple[str, ...]:
         return tuple(reference.memory_id for reference in self.references)
+
+    @property
+    def result_contract(self) -> str:
+        """Return the fixed relationship between detection and reference matches."""
+
+        if self.purpose == FACE_RECOGNITION_PURPOSE:
+            return _FACE_RECOGNITION_RESULT_CONTRACT
+        return _GENERIC_MEMORY_RESULT_CONTRACT
 
     @property
     def prompt_prefix(self) -> list[dict[str, Any]]:

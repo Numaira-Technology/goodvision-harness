@@ -17,7 +17,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
@@ -33,6 +33,10 @@ from .contracts import (
 from .grounding import GroundingClient
 from .inference import WindowClient, WindowResponse, build_client
 from .organizer import ResultOrganizer
+from .reference_memory import (
+    FACE_RECOGNITION_PURPOSE,
+    UNKNOWN_FACE_EVENT_LABEL,
+)
 from .sliding_window import FrameWindow, SampledFrame, iter_sliding_windows
 from .stream_adapter import NetworkStreamAdapter
 from .video_to_stream import (
@@ -96,7 +100,14 @@ class StreamingSession:
         self.camera_source = camera_source
         self.source_id = source_id.strip()
         self.stream_session_id = stream_session_id or str(uuid4())
-        self.organizer = ResultOrganizer(client.settings.event_label)
+        memory_context = getattr(client, "memory_context", None)
+        self.event_label = (
+            UNKNOWN_FACE_EVENT_LABEL
+            if memory_context is not None
+            and memory_context.purpose == FACE_RECOGNITION_PURPOSE
+            else client.settings.event_label
+        )
+        self.organizer = ResultOrganizer(self.event_label)
         # Live sources drop windows when all request slots are busy (the feed
         # cannot wait); offline runs block instead so every window is scored.
         self._drop_when_saturated = (
@@ -377,7 +388,7 @@ class StreamingSession:
                 # Preserve the original callback and result shape for existing
                 # CLI/library consumers.
                 vision_result = VisionResult(
-                    event_label=self.config.inference.event_label,
+                    event_label=self.event_label,
                     detected=classification.detected,
                     confidence=classification.confidence,
                     description=classification.description,
@@ -438,7 +449,7 @@ class StreamingSession:
                             ),
                             judgments=(
                                 EventJudgment(
-                                    event_label=self.config.inference.event_label,
+                                    event_label=self.event_label,
                                     detected=classification.detected,
                                     confidence=classification.confidence,
                                     description=classification.description,
@@ -606,6 +617,19 @@ def main(argv: list[str] | None = None) -> int:
             record["final_state"] = session.organizer.snapshot()
         emit(record)
         done.set()
+
+    if (
+        config.memory is not None
+        and config.memory.purpose == FACE_RECOGNITION_PURPOSE
+        and config.inference.event_label != UNKNOWN_FACE_EVENT_LABEL
+    ):
+        config = replace(
+            config,
+            inference=replace(
+                config.inference,
+                event_label=UNKNOWN_FACE_EVENT_LABEL,
+            ),
+        )
 
     client = build_client(
         config.inference,

@@ -318,17 +318,28 @@ There are three small, deliberately separate responsibilities:
 - **Reference memory** is an optional Qwen input prefix migrated from
   Goodvision PR #53. It loads up to eight private reference images once,
   sends them before the live frame, and rejects model-reported memory IDs that
-  were not supplied. For face-reference matching, `detected=true` means a
-  supplied **known** face matched, so it is not silently mixed into the local
-  stranger-recognition mode.
+  were not supplied. It uses the same stranger-detection contract as
+  InsightFace: `detected=true` means an **unknown** live face is present.
+  Known identities are reported independently in `matched_memory_ids`.
 - **VisualMemorySink** is the existing output seam. It receives any completed
   event or face observation plus its exactly correlated JPEG; it does not
   participate in recognition.
 
+Qwen face-reference results use the following matrix. Its `detected` column
+matches InsightFace; `matched_memory_ids` is additional Qwen reference metadata:
+
+| Live frame | `detected` | `matched_memory_ids` |
+| --- | --- | --- |
+| No face | `false` | `[]` |
+| Known face only | `false` | Known IDs |
+| Unknown face only | `true` | `[]` |
+| Known and unknown faces | `true` | Known IDs |
+
 The default remains local InsightFace for face recognition. Enable Qwen
-reference matching only as an explicit fallback/experiment by setting
+reference memory only as an explicit fallback/experiment by setting
 `memory.enabled: true`, adding reference entries under `memory.references`,
-and using a matching `inference.event_label` such as `known_face`. Relative
+and using `inference.event_label: unknown_person`. The harness also enforces
+that label whenever the built-in face-reference purpose is active. Relative
 paths resolve from the selected config file. Docker exposes the ignored local
 `memory/` directory at `/app/memory`; for local development, pass
 `--config config.yaml` to use that same top-level directory. A memory-aware
