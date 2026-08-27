@@ -89,6 +89,9 @@ class ResultOrganizer:
             self._counts["completed"] += 1
             if classification.detected:
                 self._counts["detected_windows"] += 1
+            matched_memory_ids = tuple(
+                getattr(classification, "matched_memory_ids", ())
+            )
 
             applied = window.index > self._applied_index
             if applied:
@@ -98,6 +101,7 @@ class ResultOrganizer:
                     "detected": classification.detected,
                     "confidence": classification.confidence,
                     "description": classification.description,
+                    "matched_memory_ids": list(matched_memory_ids),
                     "window_index": window.index,
                     "window_label": window.label,
                     "window_start": round(window.start_timestamp, 3),
@@ -113,6 +117,7 @@ class ResultOrganizer:
                 detected=classification.detected,
                 confidence=classification.confidence,
                 description=classification.description,
+                matched_memory_ids=matched_memory_ids,
                 applied=applied,
             )
             return record, self._snapshot_locked()
@@ -148,6 +153,7 @@ class ResultOrganizer:
         detected: bool | None = None,
         confidence: float | None = None,
         description: str | None = None,
+        matched_memory_ids: tuple[str, ...] | None = None,
         error: str | None = None,
         applied: bool | None = None,
     ) -> dict[str, Any]:
@@ -168,6 +174,8 @@ class ResultOrganizer:
             record["confidence"] = round(confidence, 3)
         if description is not None:
             record["description"] = description
+        if matched_memory_ids is not None:
+            record["matched_memory_ids"] = list(matched_memory_ids)
         if error is not None:
             record["error"] = error
         if applied is not None:

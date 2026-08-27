@@ -181,6 +181,15 @@ class HarnessRuntime:
             "configured_stream": bool(stream_url),
             "configured_stream_protocol": protocol,
             "analysis_modes": sorted(ANALYSIS_MODES),
+            "reference_memory": (
+                {
+                    "purpose": self.config.memory.purpose,
+                    "reference_count": len(self.config.memory.references),
+                    "newest_frame_only": self.config.memory.newest_frame_only,
+                }
+                if self.config.memory is not None
+                else None
+            ),
             "face": {
                 "model_name": self.config.face.model_name,
                 "sample_fps": self.config.face.sample_fps,
@@ -395,6 +404,7 @@ class HarnessRuntime:
                 client = build_grounding_client(
                     session_config.inference,
                     session_config.openrouter,
+                    memory_context=session_config.memory,
                     dry_run=use_dry_run,
                 )
             generation = self._generation + 1
@@ -513,6 +523,16 @@ class HarnessRuntime:
             }
             if stream_protocol is not None:
                 response["stream_protocol"] = stream_protocol
+            if (
+                selected_analysis == EVENT_ANALYSIS_MODE
+                and session_config.memory is not None
+            ):
+                response["reference_memory"] = {
+                    "purpose": session_config.memory.purpose,
+                    "reference_count": len(session_config.memory.references),
+                    "newest_frame_only": session_config.memory.newest_frame_only,
+                    "memory_ids": list(session_config.memory.memory_ids),
+                }
             return response
 
     def stop_session(self, *, camera_owner: str | None = None) -> bool:

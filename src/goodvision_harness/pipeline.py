@@ -443,6 +443,11 @@ class StreamingSession:
                                     confidence=classification.confidence,
                                     description=classification.description,
                                     object_ids=event_object_ids,
+                                    matched_memory_ids=getattr(
+                                        classification,
+                                        "matched_memory_ids",
+                                        (),
+                                    ),
                                 ),
                             ),
                             objects=grounded_objects,
@@ -602,7 +607,12 @@ def main(argv: list[str] | None = None) -> int:
         emit(record)
         done.set()
 
-    client = build_client(config.inference, config.openrouter, dry_run=args.dry_run)
+    client = build_client(
+        config.inference,
+        config.openrouter,
+        memory_context=config.memory,
+        dry_run=args.dry_run,
+    )
     callbacks = SessionCallbacks(
         on_event=emit,
         on_end=on_end,

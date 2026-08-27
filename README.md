@@ -308,6 +308,40 @@ only needs to implement the non-blocking `VisualMemorySink.submit(...)`
 interface, which receives a `VisualMemoryRecord` containing the observation
 and its exactly correlated evidence JPEG.
 
+### How the Memory pieces fit together
+
+There are three small, deliberately separate responsibilities:
+
+- **FaceGallery** is the primary identity memory for the local InsightFace
+  mode. It persists embeddings and answers known/unknown locally. In this mode,
+  `detected=true` means an **unknown** person is present.
+- **Reference memory** is an optional Qwen input prefix migrated from
+  Goodvision PR #53. It loads up to eight private reference images once,
+  sends them before the live frame, and rejects model-reported memory IDs that
+  were not supplied. For face-reference matching, `detected=true` means a
+  supplied **known** face matched, so it is not silently mixed into the local
+  stranger-recognition mode.
+- **VisualMemorySink** is the existing output seam. It receives any completed
+  event or face observation plus its exactly correlated JPEG; it does not
+  participate in recognition.
+
+The default remains local InsightFace for face recognition. Enable Qwen
+reference matching only as an explicit fallback/experiment by setting
+`memory.enabled: true`, adding reference entries under `memory.references`,
+and using a matching `inference.event_label` such as `known_face`. Relative
+paths resolve from the selected config file. Docker exposes the ignored local
+`memory/` directory at `/app/memory`; for local development, pass
+`--config config.yaml` to use that same top-level directory. A memory-aware
+result reports validated IDs in `judgments[].matched_memory_ids`, and uses
+`analysis_kind=face_reference_match` for the built-in face purpose.
+Enabling it sends the resized reference images to the configured multimodal
+model provider on every inference request; keep it disabled unless that data
+flow is allowed.
+
+The old PR's process-local upload store is intentionally not duplicated: the
+main face path already has persistent enroll/list/delete APIs and UI through
+FaceGallery, while Qwen fallback references remain deployment configuration.
+
 ## Verification
 
 ```bash

@@ -13,6 +13,7 @@ import yaml
 from dotenv import find_dotenv, load_dotenv
 
 from .openrouter import OpenRouterSettings
+from .reference_memory import MemoryContext, load_memory_context
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 
@@ -119,6 +120,7 @@ class HarnessConfig:
     sliding_window: SlidingWindowSettings
     openrouter: OpenRouterSettings
     inference: InferenceSettings
+    memory: MemoryContext | None
     face: FaceSettings
     runtime: RuntimeSettings
     server: ServerSettings
@@ -143,6 +145,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     window_section = _mapping_section(raw, "sliding_window")
     openrouter_section = _mapping_section(raw, "openrouter")
     inference_section = _mapping_section(raw, "inference")
+    memory_section = _mapping_section(raw, "memory")
     face_section = _mapping_section(raw, "face")
     runtime_section = _mapping_section(raw, "runtime")
     server_section = _mapping_section(raw, "server")
@@ -242,6 +245,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         system_prompt=system_prompt,
         prompt=prompt,
         request_parameters=dict(request_parameters),
+    )
+    memory = load_memory_context(
+        memory_section,
+        config_directory=config_path.parent,
     )
     face = FaceSettings(
         model_name=_required_string(
@@ -363,6 +370,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         sliding_window=sliding_window,
         openrouter=OpenRouterSettings.from_mapping(openrouter_section),
         inference=inference,
+        memory=memory,
         face=face,
         runtime=runtime,
         server=server,

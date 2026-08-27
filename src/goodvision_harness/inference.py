@@ -20,6 +20,7 @@ from .prompt import (
     build_window_messages,
     parse_binary_classification,
 )
+from .reference_memory import MemoryContext
 from .sliding_window import FrameWindow
 
 
@@ -44,6 +45,7 @@ class WindowClient(Protocol):
     """Anything that can turn a frame window into a ``WindowResponse``."""
 
     settings: InferenceSettings
+    memory_context: MemoryContext | None
 
     def classify_window(self, window: FrameWindow) -> WindowResponse: ...
 
@@ -60,9 +62,11 @@ class QwenWindowClient:
         self,
         settings: InferenceSettings,
         transport: OpenRouterClient,
+        memory_context: MemoryContext | None = None,
     ) -> None:
         self.settings = settings
         self._transport = transport
+        self.memory_context = memory_context
 
     def classify_window(self, window: FrameWindow) -> WindowResponse:
         started = time.monotonic()
@@ -74,6 +78,7 @@ class QwenWindowClient:
                     event_label=self.settings.event_label,
                     system_prompt=self.settings.system_prompt,
                     prompt=self.settings.prompt,
+                    memory_context=self.memory_context,
                 ),
                 **dict(self.settings.request_parameters),
             )
@@ -92,7 +97,14 @@ class QwenWindowClient:
         )
         usage = response.get("usage")
         try:
-            classification = parse_binary_classification(text)
+            classification = parse_binary_classification(
+                text,
+                allowed_memory_ids=(
+                    self.memory_context.memory_ids
+                    if self.memory_context is not None
+                    else None
+                ),
+            )
         except (TypeError, ValueError) as exc:
             return WindowResponse(
                 window=window,
@@ -121,14 +133,26 @@ class DryRunWindowClient:
     latency without randomness.
     """
 
-    def __init__(self, settings: InferenceSettings) -> None:
+    def __init__(
+        self,
+        settings: InferenceSettings,
+        memory_context: MemoryContext | None = None,
+    ) -> None:
         self.settings = settings
+        self.memory_context = memory_context
 
     def classify_window(self, window: FrameWindow) -> WindowResponse:
         started = time.monotonic()
         time.sleep(0.35 + (window.index * 13 % 40) / 100.0)
         detected = window.index % 6 in {2, 3, 4}
         confidence = round(0.6 + (window.index * 37 % 100) / 250.0, 3)
+        memory_ids = (
+            self.memory_context.memory_ids
+            if self.memory_context is not None
+            else ()
+        )
+        if self.memory_context is not None and not memory_ids:
+            detected = False
         state = "visibly active" if detected else "not visible"
         classification = BinaryClassification(
             detected=detected,
@@ -136,6 +160,7 @@ class DryRunWindowClient:
             description=(
                 f"Dry run: {self.settings.event_label} {state} in {window.label}."
             ),
+            matched_memory_ids=memory_ids[:1] if detected else (),
         )
         return WindowResponse(
             window=window,
@@ -149,10 +174,15 @@ def build_client(
     settings: InferenceSettings,
     openrouter: OpenRouterSettings,
     *,
+    memory_context: MemoryContext | None = None,
     dry_run: bool = False,
 ) -> WindowClient:
     """Build the live Qwen client, or the offline stand-in for dry runs."""
 
     if dry_run:
-        return DryRunWindowClient(settings)
-    return QwenWindowClient(settings, OpenRouterClient(openrouter))
+        return DryRunWindowClient(settings, memory_context)
+    return QwenWindowClient(
+        settings,
+        OpenRouterClient(openrouter),
+        memory_context,
+    )

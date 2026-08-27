@@ -26,6 +26,8 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      # Optional Qwen reference images configured under config.yaml memory.*.
+      - ./memory:/app/memory:ro
       - insightface-models:/models
       - face-data:/data
     read_only: true

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from goodvision_harness.contracts import (
     NormalizedBBox,
 )
 from goodvision_harness.face_recognition import GalleryPerson
+from goodvision_harness.reference_memory import MemoryContext, MemoryReference
 from goodvision_harness.service import HarnessRuntime, create_app
 from goodvision_harness.visual_memory import VisualMemoryRecord
 
@@ -133,6 +135,69 @@ def test_face_mode_reuses_streaming_session_with_face_settings(
             {"status": "warming", "last_error": "provider unavailable"}
         )
         assert runtime.status()["last_error"] == "provider unavailable"
+    finally:
+        runtime.stop()
+
+
+def test_local_face_mode_does_not_invert_to_reference_match_semantics() -> None:
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config,
+        memory=MemoryContext(
+            purpose="face_recognition",
+            references=(
+                MemoryReference(
+                    memory_id="alice",
+                    image_data_url="data:image/jpeg;base64,AA==",
+                    width=1,
+                    height=1,
+                ),
+            ),
+            instruction="Match the supplied known face.",
+        ),
+    )
+    fake = _FakeFaceRuntime()
+    runtime = HarnessRuntime(config, face_runtime=fake)  # type: ignore[arg-type]
+
+    try:
+        response = runtime.start_camera(analysis_mode="face", owner="face-test")
+
+        assert response["analysis_mode"] == "face"
+        assert response["event_label"] == "unknown_person"
+        assert "reference_memory" not in response
+        assert runtime._session is not None
+        assert runtime._session.client is fake
+    finally:
+        runtime.stop()
+
+
+def test_event_mode_passes_configured_reference_memory_to_qwen_client() -> None:
+    config = load_config(ROOT / "config.yaml")
+    memory = MemoryContext(
+        purpose="face_recognition",
+        references=(
+            MemoryReference(
+                memory_id="alice",
+                image_data_url="data:image/jpeg;base64,AA==",
+                width=1,
+                height=1,
+            ),
+        ),
+        instruction="Match the supplied known face.",
+    )
+    runtime = HarnessRuntime(replace(config, memory=memory))
+
+    try:
+        response = runtime.start_camera(
+            analysis_mode="event",
+            event_label="known_face",
+            dry_run=True,
+            owner="memory-test",
+        )
+
+        assert response["reference_memory"]["memory_ids"] == ["alice"]
+        assert runtime._session is not None
+        assert runtime._session.client.memory_context is memory
     finally:
         runtime.stop()
 

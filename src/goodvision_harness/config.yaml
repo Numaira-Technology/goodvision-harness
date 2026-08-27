@@ -106,6 +106,20 @@ inference:
     #       required: [detected, confidence, description]
     #       additionalProperties: false
 
+memory:
+  # Optional fixed reference-image prefix for multimodal inference. Private
+  # images can live under the Git-ignored top-level memory/ directory.
+  enabled: false
+  purpose: face_recognition
+  newest_frame_only: true
+  max_references: 8
+  max_image_side: 384
+  jpeg_quality: 85
+  references: []
+  # references:
+  #   - id: person_01
+  #     image: memory/person_01.jpg
+
 face:
   # Local InsightFace mode. FACE_MODEL_ROOT and FACE_GALLERY_PATH override
   # these paths in the read-only Docker deployment.

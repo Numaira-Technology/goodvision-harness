@@ -658,13 +658,16 @@ function analysis(result){
   if(result.analysis_kind==="face_recognition"){analysisFace(result);return}
   const judgment=result.judgments&&result.judgments[0];if(!judgment)return;
   const ids=Array.isArray(judgment.object_ids)?judgment.object_ids:[],yes=judgment.detected===true;
+  const memoryIds=Array.isArray(judgment.matched_memory_ids)?judgment.matched_memory_ids:[];
   ui.decision.className="decision "+(yes?"detected":"clear");
   ui.verdict.textContent=yes?(judgment.event_label||"DETECTED").toUpperCase():"CLEAR";
   ui.confidence.textContent=number(Number(judgment.confidence)*100,1)+"% confidence";
-  ui.description.textContent=judgment.description||"";
+  ui.description.textContent=(judgment.description||"")+
+    (memoryIds.length?" | matched "+memoryIds.join(", "):"");
   const frame=result.frame||{},model=result.model||{};
   ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
     " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.length+" bbox"+(ids.length===1?"":"es")+
+    (memoryIds.length?" | "+memoryIds.length+" memory match"+(memoryIds.length===1?"":"es"):"")+
     " | model "+number(model.latency_seconds,2)+"s";
   ui.event.textContent=judgment.event_label||ui.event.textContent;
   renderRichAnnotation(result,judgment);log(result,judgment,ids.length)

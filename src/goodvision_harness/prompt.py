@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
+from .reference_memory import MemoryContext
 from .sliding_window import FrameWindow
 
 
@@ -17,10 +19,15 @@ class BinaryClassification:
     detected: bool
     confidence: float
     description: str
+    matched_memory_ids: tuple[str, ...] = ()
 
 
-def parse_binary_classification(text: str) -> BinaryClassification:
-    """Parse a strict result while tolerating an accidental Markdown fence."""
+def parse_binary_classification(
+    text: str,
+    *,
+    allowed_memory_ids: Collection[str] | None = None,
+) -> BinaryClassification:
+    """Parse a strict result and validate any model-reported memory matches."""
 
     candidate = text.strip()
     if candidate.startswith("```"):
@@ -57,10 +64,48 @@ def parse_binary_classification(text: str) -> BinaryClassification:
         raise ValueError("binary classification confidence must be between 0 and 1")
     if not isinstance(description, str) or not description.strip():
         raise TypeError("binary classification description must be non-empty text")
+
+    raw_memory_ids = payload.get("matched_memory_ids", [])
+    if not isinstance(raw_memory_ids, list):
+        raise TypeError("binary classification matched_memory_ids must be a list")
+    matched_memory_ids: list[str] = []
+    seen_memory_ids: set[str] = set()
+    for memory_id in raw_memory_ids:
+        if not isinstance(memory_id, str) or not memory_id:
+            raise TypeError(
+                "binary classification matched_memory_ids must contain non-empty text"
+            )
+        if memory_id in seen_memory_ids:
+            raise ValueError(
+                "binary classification matched_memory_ids must not contain duplicates"
+            )
+        seen_memory_ids.add(memory_id)
+        matched_memory_ids.append(memory_id)
+
+    if allowed_memory_ids is None:
+        if matched_memory_ids:
+            raise ValueError("model reported memory matches without a memory context")
+    else:
+        if "matched_memory_ids" not in payload:
+            raise ValueError("memory-aware result omitted matched_memory_ids")
+        allowed = set(allowed_memory_ids)
+        unknown_ids = [
+            memory_id for memory_id in matched_memory_ids if memory_id not in allowed
+        ]
+        if unknown_ids:
+            raise ValueError(
+                "model reported unknown memory IDs: " + ", ".join(unknown_ids)
+            )
+        if detected != bool(matched_memory_ids):
+            raise ValueError(
+                "memory-aware detected must be true exactly when matched_memory_ids "
+                "is non-empty"
+            )
     return BinaryClassification(
         detected=detected,
         confidence=confidence,
         description=description.strip(),
+        matched_memory_ids=tuple(matched_memory_ids),
     )
 
 
@@ -70,8 +115,9 @@ def build_window_messages(
     event_label: str,
     system_prompt: str,
     prompt: str,
+    memory_context: MemoryContext | None = None,
 ) -> list[dict[str, Any]]:
-    """Return OpenRouter chat messages with text followed by ordered JPEGs.
+    """Return OpenRouter chat messages with optional memory and live JPEGs.
 
     The configurable prompt may contain the literal placeholders ``{event}`` and
     ``{window_label}``. JPEG frames are embedded as base64 data URLs so local
@@ -81,18 +127,42 @@ def build_window_messages(
     rendered_prompt = prompt.replace("{event}", event_label).replace(
         "{window_label}", window.label
     )
+    live_frames = (
+        window.frames[-1:]
+        if memory_context is not None and memory_context.newest_frame_only
+        else window.frames
+    )
     timestamps = ", ".join(
         f"f{frame.sample_index}={frame.timestamp_seconds:.3f}s"
-        for frame in window.frames
+        for frame in live_frames
     )
-    text = (
-        f"{rendered_prompt}\n\n"
-        f"Target event: {event_label}\n"
-        f"Window: {window.label}\n"
-        f"Sample timestamps: {timestamps}\n"
-        "The JPEG images follow in chronological order."
-    )
-    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    if memory_context is None:
+        text = (
+            f"{rendered_prompt}\n\n"
+            f"Target event: {event_label}\n"
+            f"Window: {window.label}\n"
+            f"Sample timestamps: {timestamps}\n"
+            "The JPEG images follow in chronological order."
+        )
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    else:
+        text = (
+            "BEGIN LIVE CAMERA INPUT\n"
+            f"{rendered_prompt}\n\n"
+            f"Target event: {event_label}\n"
+            f"Window: {window.label}\n"
+            f"Sample timestamps: {timestamps}\n"
+            "The live JPEG images follow in chronological order.\n\n"
+            "Authoritative memory decision rule:\n"
+            f"{memory_context.instruction}\n\n"
+            "For this memory-aware request, respond with only this JSON object; "
+            "this contract supersedes any earlier output example:\n"
+            '{"detected": true or false, "confidence": 0.0-1.0, '
+            '"matched_memory_ids": ["supplied MEMORY_ID"], '
+            '"description": "one short sentence of visible evidence"}'
+        )
+        content = list(memory_context.prompt_prefix)
+        content.append({"type": "text", "text": text})
     content.extend(
         {
             "type": "image_url",
@@ -101,7 +171,7 @@ def build_window_messages(
                 + base64.b64encode(frame.jpeg_bytes).decode("ascii")
             },
         }
-        for frame in window.frames
+        for frame in live_frames
     )
     return [
         {"role": "system", "content": system_prompt},

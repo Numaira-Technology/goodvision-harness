@@ -182,6 +182,7 @@ class EventJudgment:
     confidence: float
     description: str
     object_ids: tuple[str, ...] = ()
+    matched_memory_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _required_text(self.event_label, "event_label")
@@ -193,17 +194,27 @@ class EventJudgment:
             raise ValueError("object_ids must not contain empty values")
         if len(set(self.object_ids)) != len(self.object_ids):
             raise ValueError("object_ids must be unique")
+        if any(
+            not isinstance(value, str) or not value.strip()
+            for value in self.matched_memory_ids
+        ):
+            raise ValueError("matched_memory_ids must contain non-empty text")
+        if len(set(self.matched_memory_ids)) != len(self.matched_memory_ids):
+            raise ValueError("matched_memory_ids must be unique")
         if self.detected and not self.object_ids:
             raise ValueError("detected judgments must reference at least one object")
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        record: dict[str, object] = {
             "event_label": self.event_label,
             "detected": self.detected,
             "confidence": round(self.confidence, 3),
             "description": self.description,
             "object_ids": list(self.object_ids),
         }
+        if self.matched_memory_ids:
+            record["matched_memory_ids"] = list(self.matched_memory_ids)
+        return record
 
 
 @dataclass(frozen=True, slots=True)
