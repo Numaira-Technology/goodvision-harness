@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PADDLE_PDX_CACHE_HOME=/models \
     PADDLEX_HOME=/models \
+    MPLCONFIGDIR=/tmp/matplotlib \
     RICH_DEVICE=cpu
 
 RUN apt-get update \
@@ -13,9 +14,11 @@ RUN apt-get update \
 
 WORKDIR /worker
 COPY requirements.txt ./
+# Paddle 3.3.x regresses CPU inference through oneDNN for affected detectors. Keep the
+# official 3.2.2 workaround until a released wheel contains the upstream fix.
 RUN python -m pip install --no-cache-dir \
       --index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ \
-      paddlepaddle==3.3.0 \
+      paddlepaddle==3.2.2 \
     && python -m pip install --no-cache-dir -r requirements.txt
 
 RUN python -c "import cv2, paddlex; assert cv2.__version__.startswith('4.10.')"

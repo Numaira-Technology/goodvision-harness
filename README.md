@@ -48,8 +48,10 @@ the original frame and its event boxes are drawn as the alert layer. A missing,
 slow, or failed rich-label worker therefore drops only the decorative labels;
 it does not block VLM analysis or the raw video path.
 
-The reference Compose profile runs the CPU worker with PP-YOLOE+ object
-detection and PP-LCNet pedestrian attributes:
+The reference Compose profile runs the CPU worker with PicoDet-S object
+detection and PP-LCNet pedestrian attributes. PicoDet-S is the low-latency
+default; switch to `PicoDet-M`, `PicoDet-L`, or `PP-YOLOE_plus-S` only when the
+target host has enough inference headroom for a higher-accuracy detector:
 
 ```bash
 cp .env.example .env
@@ -64,19 +66,45 @@ The principal settings are:
 | `RICH_LABEL_ENABLED` | Enables submission to and rendering from the optional worker. Default: `false`. |
 | `RICH_LABEL_ENDPOINT` | Worker inference URL. Compose default: `http://rich-label-worker:8091/v1/labels`. |
 | `RICH_DEVICE` | Paddle device requested by the worker. The supplied image installs the CPU Paddle build. |
+| `RICH_DETECTOR_MODEL` | PaddleX detector name. CPU default: `PicoDet-S`; `PicoDet-M`, `PicoDet-L`, and `PP-YOLOE_plus-S` trade more latency for accuracy. |
+| `RICH_ATTRIBUTE_MODEL` | PaddleX pedestrian-attribute model name. Default: `PP-LCNet_x1_0_pedestrian_attribute`. |
 | `RICH_DETECTION_THRESHOLD` | Minimum object detector score. Default: `0.45`. |
 | `RICH_ATTRIBUTE_INTERVAL_FRAMES` | Re-run pedestrian attributes every N tracked frames. Default: `10`. |
 | `RICH_ATTRIBUTE_RETRY_SECONDS` | Backoff after optional pedestrian attributes fail to load. Default: `60`. |
+| `RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS` | Bounded drain time for an in-flight attribute task. Default: `5`. |
 | `RICH_DETECTOR_MODEL_DIR` / `RICH_ATTRIBUTE_MODEL_DIR` | Optional paths to pre-provisioned, authorized model directories. |
 
 `rich_labeling.max_fps`, timeout, history size, and interpolation gap remain in
 `config.yaml`. The worker's first model-backed start can be slow while PaddleX
 downloads model files into the persistent `rich-models` volume; allow outbound
 HTTPS, disk space, and readiness headroom, or pre-provision both model
-directories. The supplied image is CPU-oriented. GPU deployment requires a
+directories. The image pins Paddle 3.2.2 because Paddle 3.3.x has a confirmed
+CPU oneDNN regression for affected detectors. The supplied image is
+CPU-oriented. GPU deployment requires a
 separately built GPU-compatible Paddle worker image and the matching device
 setting; benchmark the complete stream on the target host before choosing its
 sampling rate.
+
+To benchmark the real HTTP worker with a local video, expose a separate test
+instance on loopback in one terminal:
+
+```bash
+docker compose --profile rich run --rm \
+  -p 127.0.0.1:8091:8091 rich-label-worker
+```
+
+Then run the reproducible benchmark from another terminal:
+
+```bash
+python tools/rich_label_benchmark.py input.mp4 \
+  --output-dir tmp/rich-benchmark \
+  --sample-fps 7.5 --timeout-seconds 0.8
+```
+
+It writes aggregate latency/success/track metrics to `metrics.json`, one record
+per source frame to `frames.jsonl`, and the full annotated result to
+`annotated.mp4`. The first request includes model loading (and may download
+weights); run a short warm-up first when measuring steady-state throughput.
 
 Treat rich metadata as display hints. `P...` and `O...` values are tracking IDs
 within one stream session, can change after an occlusion or restart, and are

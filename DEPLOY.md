@@ -34,8 +34,15 @@ docker compose --profile rich up --build
 `compose.delivery.yaml` 不内置 worker，若启用须单独交付兼容镜像、加入同一
 Docker 网络，并把 `RICH_LABEL_ENDPOINT` 指向其 `/v1/labels`。
 
-随源码提供的是 CPU 镜像；GPU 需要另行构建匹配的 Paddle GPU 镜像。首次启动
-可能下载模型，需预留外网、磁盘和启动时间，或把已授权模型预置到持久 volume。
+随源码提供的是 CPU 镜像，默认使用低延迟的 `PicoDet-S`；只有目标机器具备足够
+推理余量时才建议设置 `RICH_DETECTOR_MODEL=PicoDet-M`、`PicoDet-L` 或
+`PP-YOLOE_plus-S`。镜像固定 Paddle 3.2.2，以避开 Paddle 3.3.x 已确认的 CPU
+oneDNN 回归。GPU 需要另行构建匹配的 Paddle GPU 镜像。首次启动可能下载模型，
+需预留外网、磁盘和启动时间，或把已授权模型预置到持久 volume。
+
+交付前可用 `tools/rich_label_benchmark.py` 对本地视频执行真实 HTTP worker 测速；
+它会输出 `metrics.json`、逐帧 `frames.jsonl` 和 `annotated.mp4`，用于核对超时、
+吞吐、框和 ID 连续性。冷启动会包含模型加载，热态指标应在短预热后另跑一次。
 `P...`/`O...` 仅为单次视频会话内的跟踪 ID，并非真实身份；年龄是区间估计，
 gender 是外观模型估计。PaddleX/PaddleDetection 源码为 Apache-2.0，但商用或
 随交付包分发前仍须逐一确认具体预训练权重及其训练数据的许可条件。

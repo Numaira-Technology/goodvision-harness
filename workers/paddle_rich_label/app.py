@@ -13,7 +13,8 @@ import math
 import os
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +43,9 @@ class Track:
     last_frame_sequence: int
     attributes: dict[str, Any] = field(default_factory=dict)
     last_attribute_frame: int | None = None
+    velocity_x: float = 0.0
+    velocity_y: float = 0.0
+    motion_updates: int = 0
 
 
 class IoUTracker:
@@ -72,28 +76,60 @@ class IoUTracker:
             for track_id, track in self._tracks.items()
             if frame_sequence - track.last_frame_sequence <= self.max_idle_frames
         }
-        available = set(self._tracks)
-        current: list[Track] = []
-        for detection in sorted(
-            detections,
-            key=lambda item: item.confidence,
-            reverse=True,
-        ):
-            candidates = [
-                (
-                    self._tracks[track_id],
-                    _iou(self._tracks[track_id].bbox, detection.bbox),
+        candidates: list[tuple[float, float, float, str, int]] = []
+        for track_id, track in self._tracks.items():
+            for detection_index, detection in enumerate(detections):
+                if track.label != detection.label:
+                    continue
+                association = _association_score(
+                    track,
+                    detection,
+                    frame_sequence=frame_sequence,
+                    match_iou=self.match_iou,
                 )
-                for track_id in available
-                if self._tracks[track_id].label == detection.label
-            ]
-            candidates.sort(key=lambda item: item[1], reverse=True)
-            if candidates and candidates[0][1] >= self.match_iou:
-                track = candidates[0][0]
-                available.remove(track.track_id)
-                track.confidence = detection.confidence
-                track.bbox = detection.bbox
-                track.last_frame_sequence = frame_sequence
+                if association is None:
+                    continue
+                score, predicted_overlap, normalized_distance = association
+                candidates.append(
+                    (
+                        score,
+                        predicted_overlap,
+                        normalized_distance,
+                        track_id,
+                        detection_index,
+                    )
+                )
+        candidates.sort(
+            key=lambda item: (
+                -item[0],
+                -item[1],
+                item[2],
+                item[3],
+                item[4],
+            )
+        )
+        matched_tracks: set[str] = set()
+        matched_detections: set[int] = set()
+        assignments: dict[int, Track] = {}
+        for _score, _overlap, _distance, track_id, detection_index in candidates:
+            if (
+                track_id in matched_tracks
+                or detection_index in matched_detections
+            ):
+                continue
+            matched_tracks.add(track_id)
+            matched_detections.add(detection_index)
+            assignments[detection_index] = self._tracks[track_id]
+
+        current: list[Track] = []
+        for detection_index, detection in enumerate(detections):
+            track = assignments.get(detection_index)
+            if track is not None:
+                _update_track_motion(
+                    track,
+                    detection,
+                    frame_sequence=frame_sequence,
+                )
             else:
                 prefix = "P" if detection.label in PERSON_LABELS else "O"
                 track_id = f"{prefix}{self._next_id:04d}"
@@ -116,8 +152,8 @@ class PaddleRichModels:
     def __init__(self) -> None:
         self.device = os.environ.get("RICH_DEVICE", "cpu").strip() or "cpu"
         self.detector_name = (
-            os.environ.get("RICH_DETECTOR_MODEL", "PP-YOLOE_plus-S").strip()
-            or "PP-YOLOE_plus-S"
+            os.environ.get("RICH_DETECTOR_MODEL", "PicoDet-S").strip()
+            or "PicoDet-S"
         )
         self.attribute_name = (
             os.environ.get(
@@ -133,15 +169,6 @@ class PaddleRichModels:
         self._detector: Any | None = None
         self._attribute: Any | None = None
         self._lock = threading.Lock()
-        self._attribute_state_lock = threading.Lock()
-        self._attribute_loading = False
-        self._attribute_retry_at = 0.0
-        self._attribute_retry_seconds = _env_float(
-            "RICH_ATTRIBUTE_RETRY_SECONDS",
-            60.0,
-            minimum=1.0,
-            maximum=3600.0,
-        )
 
     @property
     def ready(self) -> bool:
@@ -180,44 +207,6 @@ class PaddleRichModels:
                 self.attribute_name, self.attribute_dir, self.device
             )
             self._attribute = create_model(**attribute_kwargs)
-
-    def prepare_attributes(self) -> bool:
-        """Warm the optional attribute model without delaying detector boxes."""
-
-        if self.attributes_ready:
-            return True
-        now = time.monotonic()
-        with self._attribute_state_lock:
-            if self.attributes_ready:
-                return True
-            if self._attribute_loading or now < self._attribute_retry_at:
-                return False
-            self._attribute_loading = True
-            threading.Thread(
-                target=self._warm_attribute_model,
-                name="paddle-attribute-warmup",
-                daemon=True,
-            ).start()
-            return False
-
-    def _warm_attribute_model(self) -> None:
-        error: Exception | None = None
-        try:
-            self.ensure_attribute_loaded()
-        except Exception as exc:
-            error = exc
-        with self._attribute_state_lock:
-            self._attribute_loading = False
-            self._attribute_retry_at = (
-                time.monotonic() + self._attribute_retry_seconds
-                if error is not None
-                else 0.0
-            )
-        if error is not None:
-            LOGGER.warning(
-                "pedestrian attribute model unavailable: %s",
-                type(error).__name__,
-            )
 
     def detect(self, image: np.ndarray[Any, Any]) -> tuple[Detection, ...]:
         self.ensure_detector_loaded()
@@ -258,14 +247,29 @@ class PaddleRichModels:
     ) -> tuple[dict[str, Any], ...]:
         if not crops:
             return ()
-        if self._attribute is None:
-            raise RuntimeError("pedestrian attribute model is not ready")
+        self.ensure_attribute_loaded()
+        assert self._attribute is not None
         results = self._attribute.predict(list(crops), batch_size=len(crops))
         return tuple(_pedestrian_attributes(_model_result(item)) for item in results)
 
 
 class RichLabelBusyError(RuntimeError):
     """A newer request must retry instead of queueing behind stale work."""
+
+
+@dataclass(frozen=True, slots=True)
+class _AttributeTarget:
+    track_id: str
+    track: Track
+
+
+@dataclass(frozen=True, slots=True)
+class _AttributeJob:
+    stream_session_id: str
+    session_generation: int
+    frame_sequence: int
+    targets: tuple[_AttributeTarget, ...]
+    crops: tuple[np.ndarray[Any, Any], ...]
 
 
 class RichLabelEngine:
@@ -280,7 +284,27 @@ class RichLabelEngine:
         )
         self.max_people = _env_int("RICH_MAX_PEOPLE", 8)
         self._session_id: str | None = None
+        self._session_generation = 0
+        self._state_lock = threading.Lock()
         self._lock = threading.Lock()
+        self._attribute_in_flight = False
+        self._attribute_retry_at = 0.0
+        self._attribute_retry_seconds = _env_float(
+            "RICH_ATTRIBUTE_RETRY_SECONDS",
+            60.0,
+            minimum=1.0,
+            maximum=3600.0,
+        )
+        self._attribute_idle = threading.Event()
+        self._attribute_idle.set()
+        self._attribute_thread: threading.Thread | None = None
+        self.attribute_shutdown_timeout_seconds = _env_float(
+            "RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS",
+            5.0,
+            minimum=0.0,
+            maximum=60.0,
+        )
+        self._closed = False
 
     @property
     def ready(self) -> bool:
@@ -297,45 +321,70 @@ class RichLabelEngine:
         if not self._lock.acquire(blocking=False):
             raise RichLabelBusyError("rich-label inference is already running")
         try:
-            if stream_session_id != self._session_id:
-                self.tracker.reset()
-                self._session_id = stream_session_id
             detections = self.models.detect(image)
-            tracks = self.tracker.update(
-                detections,
-                frame_sequence=frame_sequence,
-            )
-            self._refresh_person_attributes(image, tracks, frame_sequence)
-            height, width = image.shape[:2]
-            return {
-                "stream_session_id": stream_session_id,
-                "frame_sequence": frame_sequence,
-                "timestamp_seconds": timestamp_seconds,
-                "objects": [
-                    {
-                        "track_id": track.track_id,
-                        "label": track.label,
-                        "confidence": round(track.confidence, 6),
-                        "bbox": {
-                            "x1": track.bbox[0] / width,
-                            "y1": track.bbox[1] / height,
-                            "x2": track.bbox[2] / width,
-                            "y2": track.bbox[3] / height,
-                        },
-                        "attributes": dict(track.attributes),
-                    }
-                    for track in tracks
-                ],
-            }
+            with self._state_lock:
+                if stream_session_id != self._session_id:
+                    self.tracker.reset()
+                    self._session_id = stream_session_id
+                    self._session_generation += 1
+                tracks = self.tracker.update(
+                    detections,
+                    frame_sequence=frame_sequence,
+                )
+                self._schedule_person_attributes_locked(
+                    image,
+                    tracks,
+                    frame_sequence,
+                )
+                height, width = image.shape[:2]
+                return {
+                    "stream_session_id": stream_session_id,
+                    "frame_sequence": frame_sequence,
+                    "timestamp_seconds": timestamp_seconds,
+                    "objects": [
+                        {
+                            "track_id": track.track_id,
+                            "label": track.label,
+                            "confidence": round(track.confidence, 6),
+                            "bbox": {
+                                "x1": track.bbox[0] / width,
+                                "y1": track.bbox[1] / height,
+                                "x2": track.bbox[2] / width,
+                                "y2": track.bbox[3] / height,
+                            },
+                            "attributes": dict(track.attributes),
+                        }
+                        for track in tracks
+                    ],
+                }
         finally:
             self._lock.release()
 
-    def _refresh_person_attributes(
+    def close(self) -> None:
+        """Invalidate optional background work and drain it for a bounded time."""
+
+        with self._state_lock:
+            self._closed = True
+            self._session_generation += 1
+            attribute_thread = self._attribute_thread
+        if attribute_thread is None or attribute_thread is threading.current_thread():
+            return
+        attribute_thread.join(timeout=self.attribute_shutdown_timeout_seconds)
+        if attribute_thread.is_alive():
+            LOGGER.warning("pedestrian attribute task exceeded shutdown timeout")
+
+    def _schedule_person_attributes_locked(
         self,
         image: np.ndarray[Any, Any],
         tracks: Sequence[Track],
         frame_sequence: int,
     ) -> None:
+        if (
+            self._closed
+            or self._attribute_in_flight
+            or time.monotonic() < self._attribute_retry_at
+        ):
+            return
         candidates = [
             track
             for track in tracks
@@ -352,31 +401,106 @@ class RichLabelEngine:
         )
         candidates = candidates[: self.max_people]
         crops: list[np.ndarray[Any, Any]] = []
-        selected: list[Track] = []
+        targets: list[_AttributeTarget] = []
         for track in candidates:
             crop = _crop(image, track.bbox)
             if crop is None:
                 continue
             crops.append(crop)
-            selected.append(track)
+            targets.append(_AttributeTarget(track.track_id, track))
         if not crops:
             return
-        prepare_attributes = getattr(self.models, "prepare_attributes", None)
-        if callable(prepare_attributes) and not prepare_attributes():
-            return
+        assert self._session_id is not None
+        job = _AttributeJob(
+            stream_session_id=self._session_id,
+            session_generation=self._session_generation,
+            frame_sequence=frame_sequence,
+            targets=tuple(targets),
+            crops=tuple(crops),
+        )
+        self._attribute_in_flight = True
+        self._attribute_idle.clear()
+        attribute_thread = threading.Thread(
+            target=self._run_attribute_job,
+            args=(job,),
+            name="paddle-attribute-inference",
+            daemon=True,
+        )
+        self._attribute_thread = attribute_thread
         try:
-            attributes = self.models.attributes(crops)
-        except Exception:
-            LOGGER.warning("pedestrian attribute inference failed")
-            return
-        for track, values in zip(selected, attributes, strict=False):
-            track.attributes.update(values)
-            track.last_attribute_frame = frame_sequence
+            attribute_thread.start()
+        except Exception as exc:
+            self._attribute_in_flight = False
+            self._attribute_thread = None
+            self._attribute_retry_at = (
+                time.monotonic() + self._attribute_retry_seconds
+            )
+            self._attribute_idle.set()
+            LOGGER.warning(
+                "could not start pedestrian attribute inference: %s",
+                type(exc).__name__,
+            )
+
+    def _run_attribute_job(self, job: _AttributeJob) -> None:
+        attributes: tuple[dict[str, Any], ...] = ()
+        error: Exception | None = None
+        try:
+            attributes = tuple(self.models.attributes(job.crops))
+            if len(attributes) != len(job.targets) or any(
+                not isinstance(values, Mapping) for values in attributes
+            ):
+                raise RuntimeError("pedestrian attribute result count/type mismatch")
+        except Exception as exc:
+            error = exc
+
+        with self._state_lock:
+            try:
+                if error is not None:
+                    self._attribute_retry_at = (
+                        time.monotonic() + self._attribute_retry_seconds
+                    )
+                elif (
+                    not self._closed
+                    and job.stream_session_id == self._session_id
+                    and job.session_generation == self._session_generation
+                ):
+                    for target, values in zip(
+                        job.targets,
+                        attributes,
+                        strict=False,
+                    ):
+                        current = self.tracker._tracks.get(target.track_id)
+                        if current is not target.track:
+                            continue
+                        if not isinstance(values, Mapping):
+                            continue
+                        current.attributes.update(values)
+                        current.last_attribute_frame = job.frame_sequence
+            finally:
+                self._attribute_in_flight = False
+                if self._attribute_thread is threading.current_thread():
+                    self._attribute_thread = None
+                self._attribute_idle.set()
+
+        if error is not None:
+            LOGGER.warning(
+                "pedestrian attribute inference failed: %s",
+                type(error).__name__,
+            )
 
 
 def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
-    application = FastAPI(title="Goodvision Paddle rich-label worker")
     selected_engine = engine or RichLabelEngine()
+
+    @asynccontextmanager
+    async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
+        yield
+        selected_engine.close()
+
+    application = FastAPI(
+        title="Goodvision Paddle rich-label worker",
+        lifespan=lifespan,
+    )
     application.state.engine = selected_engine
 
     @application.get("/health/live")
@@ -538,6 +662,125 @@ def _valid_pixel_bbox(
 
 def _bbox_area(bbox: tuple[float, float, float, float]) -> float:
     return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
+
+
+def _association_score(
+    track: Track,
+    detection: Detection,
+    *,
+    frame_sequence: int,
+    match_iou: float,
+) -> tuple[float, float, float] | None:
+    gap = max(1, frame_sequence - track.last_frame_sequence)
+    predicted_bbox = _predicted_bbox(track, frame_sequence)
+    predicted_overlap = _iou(predicted_bbox, detection.bbox)
+    previous_overlap = _iou(track.bbox, detection.bbox)
+    predicted_center = _bbox_center(predicted_bbox)
+    detection_center = _bbox_center(detection.bbox)
+    center_distance = math.hypot(
+        predicted_center[0] - detection_center[0],
+        predicted_center[1] - detection_center[1],
+    )
+    distance_scale = max(
+        _bbox_diagonal(predicted_bbox),
+        _bbox_diagonal(detection.bbox),
+        1.0,
+    )
+    normalized_distance = center_distance / distance_scale
+    predicted_area = _bbox_area(predicted_bbox)
+    detection_area = _bbox_area(detection.bbox)
+    size_similarity = (
+        min(predicted_area, detection_area) / max(predicted_area, detection_area)
+        if predicted_area > 0 and detection_area > 0
+        else 0.0
+    )
+    center_limit = min(2.5, 1.25 + (0.12 * max(0, gap - 1)))
+    if not (
+        predicted_overlap >= max(0.05, match_iou * 0.5)
+        or previous_overlap >= match_iou
+        or (normalized_distance <= center_limit and size_similarity >= 0.25)
+    ):
+        return None
+
+    proximity = max(0.0, 1.0 - (normalized_distance / center_limit))
+    direction = _direction_alignment(track, detection.bbox)
+    score = (
+        (3.5 * predicted_overlap)
+        + (0.5 * previous_overlap)
+        + (1.5 * proximity)
+        + (0.35 * size_similarity)
+        + ((0.8 * direction) if track.motion_updates else 0.0)
+    )
+    return score, predicted_overlap, normalized_distance
+
+
+def _predicted_bbox(
+    track: Track,
+    frame_sequence: int,
+) -> tuple[float, float, float, float]:
+    gap = max(0, frame_sequence - track.last_frame_sequence)
+    offset_x = track.velocity_x * gap
+    offset_y = track.velocity_y * gap
+    return (
+        track.bbox[0] + offset_x,
+        track.bbox[1] + offset_y,
+        track.bbox[2] + offset_x,
+        track.bbox[3] + offset_y,
+    )
+
+
+def _update_track_motion(
+    track: Track,
+    detection: Detection,
+    *,
+    frame_sequence: int,
+) -> None:
+    gap = frame_sequence - track.last_frame_sequence
+    if gap > 0:
+        old_center = _bbox_center(track.bbox)
+        new_center = _bbox_center(detection.bbox)
+        observed_x = (new_center[0] - old_center[0]) / gap
+        observed_y = (new_center[1] - old_center[1]) / gap
+        if track.motion_updates:
+            track.velocity_x = (0.35 * track.velocity_x) + (0.65 * observed_x)
+            track.velocity_y = (0.35 * track.velocity_y) + (0.65 * observed_y)
+        else:
+            track.velocity_x = observed_x
+            track.velocity_y = observed_y
+        track.motion_updates += 1
+    track.confidence = detection.confidence
+    track.bbox = detection.bbox
+    track.last_frame_sequence = frame_sequence
+
+
+def _direction_alignment(
+    track: Track,
+    detection_bbox: tuple[float, float, float, float],
+) -> float:
+    if not track.motion_updates:
+        return 0.0
+    current_center = _bbox_center(track.bbox)
+    detection_center = _bbox_center(detection_bbox)
+    observed_x = detection_center[0] - current_center[0]
+    observed_y = detection_center[1] - current_center[1]
+    expected_norm = math.hypot(track.velocity_x, track.velocity_y)
+    observed_norm = math.hypot(observed_x, observed_y)
+    if expected_norm <= 1e-9 or observed_norm <= 1e-9:
+        return 0.5
+    cosine = (
+        (track.velocity_x * observed_x) + (track.velocity_y * observed_y)
+    ) / (expected_norm * observed_norm)
+    return max(0.0, min(1.0, (cosine + 1.0) / 2.0))
+
+
+def _bbox_center(
+    bbox: tuple[float, float, float, float],
+) -> tuple[float, float]:
+    return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+
+
+def _bbox_diagonal(bbox: tuple[float, float, float, float]) -> float:
+    return math.hypot(bbox[2] - bbox[0], bbox[3] - bbox[1])
 
 
 def _iou(
