@@ -9,8 +9,9 @@ the vision-language client so it can be passed directly to ``StreamingSession``.
 from __future__ import annotations
 
 import importlib
-import json
 import io
+import json
+import logging
 import math
 import os
 import threading
@@ -41,6 +42,7 @@ __all__ = [
     "FaceRecognitionRuntime",
     "FaceRecognizerConfig",
     "GalleryPerson",
+    "StrangerCapture",
 ]
 
 _GALLERY_SCHEMA_VERSION = 2
@@ -51,6 +53,7 @@ _SUPPORTED_PROVIDERS = frozenset(
     {"CPUExecutionProvider", "CUDAExecutionProvider"}
 )
 _RUNTIME_OUTPUT_LOCK = threading.Lock()
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +127,25 @@ class FaceMatch:
     person_id: str
     name: str
     similarity: float
+
+
+@dataclass(frozen=True, slots=True)
+class StrangerCapture:
+    """Embedding-free public metadata for one retained stranger face."""
+
+    stranger_id: str
+    photo_available: bool
+
+    @property
+    def photo_url(self) -> str:
+        return f"/v1/faces/strangers/{self.stranger_id}/photo"
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "stranger_id": self.stranger_id,
+            "photo_available": self.photo_available,
+            "photo_url": self.photo_url,
+        }
 
 
 @dataclass(slots=True)
@@ -371,6 +393,15 @@ class FaceRecognitionRuntime:
             config.gallery_path,
             model_name=config.model_name,
         )
+        stranger_gallery_path = config.gallery_path.with_name(
+            f"{config.gallery_path.stem}-strangers.json"
+        )
+        self.stranger_gallery = FaceGallery(
+            stranger_gallery_path,
+            model_name=config.model_name,
+        )
+        self.stranger_capture_dir = config.gallery_path.parent / "stranger-captures"
+        self._stranger_lock = threading.RLock()
         self._model: Any | None = None
         self._model_lock = threading.Lock()
         self._inference_lock = threading.Lock()
@@ -450,6 +481,35 @@ class FaceRecognitionRuntime:
     def delete_person(self, person_id: str) -> bool:
         return self.delete(person_id)
 
+    def list_strangers(self) -> tuple[StrangerCapture, ...]:
+        with self._stranger_lock:
+            return tuple(
+                StrangerCapture(
+                    person.person_id,
+                    self._stranger_photo_path(person.person_id).is_file(),
+                )
+                for person in self.stranger_gallery.list_people()
+                if _valid_stranger_id(person.person_id)
+            )
+
+    def stranger_photo(self, stranger_id: str) -> bytes | None:
+        rendered_id = _required_text(stranger_id, "stranger_id")
+        if not _valid_stranger_id(rendered_id):
+            return None
+        with self._stranger_lock:
+            known_ids = {
+                person.person_id for person in self.stranger_gallery.list_people()
+            }
+            if rendered_id not in known_ids:
+                return None
+            path = self._stranger_photo_path(rendered_id)
+            try:
+                return path.read_bytes()
+            except FileNotFoundError:
+                return None
+            except OSError as exc:
+                raise RuntimeError("could not read stranger photo") from exc
+
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
         try:
@@ -505,6 +565,21 @@ class FaceRecognitionRuntime:
                     else:
                         status = "unknown"
                         label = UNKNOWN_FACE_EVENT_LABEL
+                        try:
+                            stranger_id = self._identify_stranger(
+                                embedding,
+                                image,
+                                pixel_bbox,
+                            )
+                        except Exception:
+                            # Retention is best effort: a full or temporarily
+                            # unavailable data volume must not suppress alerts.
+                            LOGGER.warning("could not retain stranger face capture")
+                        else:
+                            attributes["stranger_id"] = stranger_id
+                            attributes["photo_url"] = (
+                                f"/v1/faces/strangers/{stranger_id}/photo"
+                            )
 
             attributes["status"] = status
             object_index = len(objects)
@@ -551,6 +626,42 @@ class FaceRecognitionRuntime:
             classification=classification,
             latency_seconds=time.monotonic() - started,
         )
+
+    def _identify_stranger(
+        self,
+        embedding: Any,
+        image: np.ndarray[Any, Any],
+        bbox: tuple[float, float, float, float],
+    ) -> str:
+        with self._stranger_lock:
+            match = self.stranger_gallery.match(embedding)
+            if match is not None and match.similarity >= self.config.threshold:
+                stranger_id = match.person_id
+                photo_path = self._stranger_photo_path(stranger_id)
+                if not photo_path.is_file():
+                    jpeg = _face_crop_jpeg(image, bbox)
+                    _atomic_write_bytes(photo_path, jpeg)
+            else:
+                stranger_id = f"stranger-{uuid4().hex}"
+                photo_path = self._stranger_photo_path(stranger_id)
+                jpeg = _face_crop_jpeg(image, bbox)
+                _atomic_write_bytes(photo_path, jpeg)
+                try:
+                    self.stranger_gallery.enroll(
+                        stranger_id,
+                        stranger_id,
+                        embedding,
+                    )
+                except Exception:
+                    try:
+                        photo_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
+            return stranger_id
+
+    def _stranger_photo_path(self, stranger_id: str) -> Path:
+        return self.stranger_capture_dir / f"{stranger_id}.jpg"
 
     def _ensure_model(self) -> Any:
         if self._model is not None:
@@ -774,3 +885,47 @@ def _detection_score(face: Any) -> float | None:
     if not math.isfinite(rendered):
         return None
     return max(0.0, min(1.0, rendered))
+
+
+def _face_crop_jpeg(
+    image: np.ndarray[Any, Any],
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    height, width = image.shape[:2]
+    x1, y1, x2, y2 = bbox
+    left = max(0, min(width - 1, math.floor(x1)))
+    top = max(0, min(height - 1, math.floor(y1)))
+    right = max(left + 1, min(width, math.ceil(x2)))
+    bottom = max(top + 1, min(height, math.ceil(y2)))
+    crop = image[top:bottom, left:right]
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        crop,
+        [int(cv2.IMWRITE_JPEG_QUALITY), 90],
+    )
+    if not ok:
+        raise RuntimeError("could not encode stranger face capture")
+    return encoded.tobytes()
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise RuntimeError("could not persist stranger face capture") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _valid_stranger_id(value: str) -> bool:
+    prefix = "stranger-"
+    suffix = value[len(prefix) :] if value.startswith(prefix) else ""
+    return len(suffix) == 32 and all(
+        character in "0123456789abcdef" for character in suffix
+    )

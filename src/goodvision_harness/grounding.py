@@ -31,10 +31,11 @@ FACE_REFERENCE_ANALYSIS_KIND = "face_reference_match"
 REFERENCE_MEMORY_ANALYSIS_KIND = "reference_memory"
 SAFETY_MULTI_ANALYSIS_KIND = "safety_events"
 FIXED_FIVE_ANALYSIS_KIND = "fixed_five_events"
+SELECTED_FEATURES_ANALYSIS_KIND = "selected_features"
 
 SAFETY_EVENT_LABELS = ("fight", "smoking", "fall", "weapon")
 STRANGER_EVENT_LABEL = "stranger"
-DETECTION_EVENT_LABELS = SAFETY_EVENT_LABELS + (STRANGER_EVENT_LABEL,)
+DETECTION_EVENT_LABELS = (*SAFETY_EVENT_LABELS, STRANGER_EVENT_LABEL)
 MIN_MULTI_EVENT_MAX_TOKENS = 1024
 
 
@@ -755,7 +756,13 @@ class OpenRouterMultiGroundingClient:
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
         multi_prompt = str(getattr(self.settings, "multi_event_prompt", "")).strip()
-        prompt = multi_prompt or self.settings.prompt
+        # The configured multi-event prompt contains a fully expanded four-label
+        # JSON example. Reuse it only for that exact request; selected subsets use
+        # the generic prompt plus the dynamic authoritative contract below.
+        use_fixed_prompt = (
+            bool(multi_prompt) and self.event_labels == SAFETY_EVENT_LABELS
+        )
+        prompt = multi_prompt if use_fixed_prompt else self.settings.prompt
         request_parameters = dict(self.settings.request_parameters)
         configured_max_tokens = request_parameters.get("max_tokens")
         if configured_max_tokens is None:
@@ -774,7 +781,7 @@ class OpenRouterMultiGroundingClient:
                     system_prompt=self.settings.system_prompt,
                     prompt=prompt,
                     event_labels=self.event_labels,
-                    append_contract=not bool(multi_prompt),
+                    append_contract=not use_fixed_prompt,
                 ),
                 **request_parameters,
             )
@@ -940,160 +947,186 @@ def _safety_window(
     return replace(window, frames=tuple(frames))
 
 
-class FixedFiveGroundingClient:
-    """Merge four Qwen safety judgments with local stranger recognition."""
+class SelectedFeaturesGroundingClient:
+    """Run only selected safety/stranger detectors and merge one-frame results."""
 
     def __init__(
         self,
-        safety_client: GroundingClient,
-        stranger_client: GroundingClient,
+        safety_client: GroundingClient | None,
+        stranger_client: GroundingClient | None,
         *,
+        safety_event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
+        include_stranger: bool = True,
         safety_max_image_side: int = 320,
         safety_jpeg_quality: int = 75,
     ) -> None:
+        labels = tuple(safety_event_labels)
+        if any(label not in SAFETY_EVENT_LABELS for label in labels):
+            raise ValueError("safety_event_labels contains an unsupported label")
+        if len(set(labels)) != len(labels):
+            raise ValueError("safety_event_labels must be unique")
+        canonical_labels = tuple(
+            label for label in SAFETY_EVENT_LABELS if label in labels
+        )
+        if labels != canonical_labels:
+            raise ValueError("safety_event_labels must use canonical order")
+        if bool(labels) != (safety_client is not None):
+            raise ValueError("safety client must match selected safety features")
+        if include_stranger != (stranger_client is not None):
+            raise ValueError("stranger client must match selected stranger feature")
+        if not labels and not include_stranger:
+            raise ValueError("at least one feature must be selected")
         if safety_max_image_side < 1:
             raise ValueError("safety_max_image_side must be positive")
         if not 1 <= safety_jpeg_quality <= 100:
             raise ValueError("safety_jpeg_quality must be between 1 and 100")
-        self.settings = safety_client.settings
-        self.event_labels = DETECTION_EVENT_LABELS
+        selected_client = safety_client or stranger_client
+        assert selected_client is not None
+        self.settings = selected_client.settings
+        self.event_labels = labels + (
+            (STRANGER_EVENT_LABEL,) if include_stranger else ()
+        )
         self.memory_context = None
         self.model_name = PUBLIC_MODEL_NAME
         self._safety_client = safety_client
         self._stranger_client = stranger_client
+        self._safety_event_labels = labels
+        self._include_stranger = include_stranger
         self._safety_max_image_side = safety_max_image_side
         self._safety_jpeg_quality = safety_jpeg_quality
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
-        try:
-            resized_window = _safety_window(
-                window,
-                max_image_side=self._safety_max_image_side,
-                jpeg_quality=self._safety_jpeg_quality,
-            )
-        except ValueError:
-            return GroundingResponse(
-                window=window,
-                classification=None,
-                latency_seconds=time.monotonic() - started,
-                error=PUBLIC_ANALYSIS_ERROR,
-            )
+        resized_window: FrameWindow | None = None
+        if self._safety_client is not None:
+            try:
+                resized_window = _safety_window(
+                    window,
+                    max_image_side=self._safety_max_image_side,
+                    jpeg_quality=self._safety_jpeg_quality,
+                )
+            except ValueError:
+                return GroundingResponse(
+                    window=window,
+                    classification=None,
+                    latency_seconds=time.monotonic() - started,
+                    error=PUBLIC_ANALYSIS_ERROR,
+                )
 
         safety_response: GroundingResponse | None = None
         stranger_response: GroundingResponse | None = None
         safety_error: Exception | None = None
         stranger_error: Exception | None = None
-        with ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="fixed-five-face",
-        ) as executor:
-            stranger_future = executor.submit(
-                self._stranger_client.classify_window,
-                window,
-            )
+        if self._safety_client is not None and self._stranger_client is not None:
+            assert resized_window is not None
+            with ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="selected-features-face",
+            ) as executor:
+                stranger_future = executor.submit(
+                    self._stranger_client.classify_window,
+                    window,
+                )
+                try:
+                    safety_response = self._safety_client.classify_window(
+                        resized_window
+                    )
+                except Exception as exc:
+                    safety_error = exc
+                try:
+                    stranger_response = stranger_future.result()
+                except Exception as exc:
+                    stranger_error = exc
+        elif self._safety_client is not None:
+            assert resized_window is not None
             try:
                 safety_response = self._safety_client.classify_window(
                     resized_window
                 )
             except Exception as exc:
                 safety_error = exc
+        else:
+            assert self._stranger_client is not None
             try:
-                stranger_response = stranger_future.result()
+                stranger_response = self._stranger_client.classify_window(window)
             except Exception as exc:
                 stranger_error = exc
 
-        if safety_error is not None:
-            return GroundingResponse(
-                window=window,
-                classification=None,
-                latency_seconds=time.monotonic() - started,
-                error=PUBLIC_ANALYSIS_ERROR,
+        judgments: list[GroundedEventClassification] = []
+        safety_failed = False
+        if self._safety_client is not None:
+            safety_classification = (
+                safety_response.classification
+                if safety_error is None and safety_response is not None
+                else None
             )
-        assert safety_response is not None
-        if safety_response.classification is None:
+            if isinstance(safety_classification, MultiGroundedClassification):
+                safety_labels = tuple(
+                    judgment.event_label
+                    for judgment in safety_classification.judgments
+                )
+                if safety_labels == self._safety_event_labels:
+                    judgments.extend(safety_classification.judgments)
+                else:
+                    safety_failed = True
+            else:
+                safety_failed = True
+
+        if self._stranger_client is not None:
+            face_classification = (
+                stranger_response.classification
+                if stranger_error is None and stranger_response is not None
+                else None
+            )
+            if isinstance(face_classification, GroundedClassification):
+                indexes = face_classification.event_object_indexes
+                if indexes is None:
+                    indexes = (
+                        tuple(range(len(face_classification.objects)))
+                        if face_classification.detected
+                        else ()
+                    )
+                stranger_objects = tuple(
+                    face_classification.objects[index] for index in indexes
+                )
+                try:
+                    judgments.append(
+                        GroundedEventClassification(
+                            event_label=STRANGER_EVENT_LABEL,
+                            detected=face_classification.detected,
+                            confidence=face_classification.confidence,
+                            description=face_classification.description,
+                            objects=stranger_objects,
+                            matched_memory_ids=(
+                                face_classification.matched_memory_ids
+                            ),
+                        )
+                    )
+                except (TypeError, ValueError, IndexError):
+                    pass
+
+        if not judgments:
             return GroundingResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                error=PUBLIC_ANALYSIS_ERROR,
-            )
-        if not isinstance(
-            safety_response.classification, MultiGroundedClassification
-        ):
-            return GroundingResponse(
-                window=window,
-                classification=None,
-                raw_text=None,
-                latency_seconds=time.monotonic() - started,
-                error="safety detector returned a single-event classification",
-            )
-        safety_labels = tuple(
-            judgment.event_label
-            for judgment in safety_response.classification.judgments
-        )
-        if safety_labels != SAFETY_EVENT_LABELS:
-            return GroundingResponse(
-                window=window,
-                classification=None,
-                raw_text=None,
-                latency_seconds=time.monotonic() - started,
-                error=PUBLIC_ANALYSIS_ERROR,
+                error=(
+                    PUBLIC_ANALYSIS_ERROR if safety_failed else PUBLIC_FACE_ERROR
+                ),
             )
 
-        if stranger_error is not None:
-            return GroundingResponse(
-                window=window,
-                classification=None,
-                raw_text=None,
-                latency_seconds=time.monotonic() - started,
-                error=PUBLIC_FACE_ERROR,
-            )
-        assert stranger_response is not None
-        face_classification = stranger_response.classification
-        if face_classification is None:
-            return GroundingResponse(
-                window=window,
-                classification=None,
-                raw_text=None,
-                latency_seconds=time.monotonic() - started,
-                error=PUBLIC_FACE_ERROR,
-            )
-        if not isinstance(face_classification, GroundedClassification):
-            return GroundingResponse(
-                window=window,
-                classification=None,
-                raw_text=None,
-                latency_seconds=time.monotonic() - started,
-                error="stranger detector returned a multi-event classification",
-            )
-
-        indexes = face_classification.event_object_indexes
-        if indexes is None:
-            indexes = (
-                tuple(range(len(face_classification.objects)))
-                if face_classification.detected
-                else ()
-            )
-        stranger_objects = tuple(
-            face_classification.objects[index] for index in indexes
-        )
         try:
-            stranger_judgment = GroundedEventClassification(
-                event_label=STRANGER_EVENT_LABEL,
-                detected=face_classification.detected,
-                confidence=face_classification.confidence,
-                description=face_classification.description,
-                objects=stranger_objects,
-                matched_memory_ids=face_classification.matched_memory_ids,
+            returned_labels = tuple(
+                judgment.event_label for judgment in judgments
             )
             classification = MultiGroundedClassification(
-                judgments=(
-                    *safety_response.classification.judgments,
-                    stranger_judgment,
+                judgments=tuple(judgments),
+                analysis_kind=(
+                    FIXED_FIVE_ANALYSIS_KIND
+                    if returned_labels == DETECTION_EVENT_LABELS
+                    else SELECTED_FEATURES_ANALYSIS_KIND
                 ),
-                analysis_kind=FIXED_FIVE_ANALYSIS_KIND,
             )
         except (TypeError, ValueError):
             return GroundingResponse(
@@ -1111,6 +1144,27 @@ class FixedFiveGroundingClient:
         )
 
 
+class FixedFiveGroundingClient(SelectedFeaturesGroundingClient):
+    """Backward-compatible all-five composite."""
+
+    def __init__(
+        self,
+        safety_client: GroundingClient,
+        stranger_client: GroundingClient,
+        *,
+        safety_max_image_side: int = 320,
+        safety_jpeg_quality: int = 75,
+    ) -> None:
+        super().__init__(
+            safety_client,
+            stranger_client,
+            safety_event_labels=SAFETY_EVENT_LABELS,
+            include_stranger=True,
+            safety_max_image_side=safety_max_image_side,
+            safety_jpeg_quality=safety_jpeg_quality,
+        )
+
+
 def build_grounding_client(
     settings: InferenceSettings,
     openrouter_settings: OpenRouterSettings,
@@ -1125,6 +1179,67 @@ def build_grounding_client(
         settings,
         OpenRouterClient(openrouter_settings, api_key=api_key),
         memory_context,
+    )
+
+
+def build_selected_features_grounding_client(
+    settings: InferenceSettings,
+    openrouter_settings: OpenRouterSettings,
+    *,
+    features: tuple[str, ...],
+    stranger_client: GroundingClient | None = None,
+    safety_max_image_side: int = 320,
+    safety_jpeg_quality: int = 75,
+    dry_run: bool = False,
+    api_key: str | None = None,
+) -> SelectedFeaturesGroundingClient:
+    """Build one detector graph for an arbitrary non-empty feature subset."""
+
+    selected = tuple(features)
+    if not selected or len(set(selected)) != len(selected):
+        raise ValueError("features must be non-empty and unique")
+    if any(feature not in DETECTION_EVENT_LABELS for feature in selected):
+        raise ValueError("features contains an unsupported label")
+    canonical = tuple(
+        feature for feature in DETECTION_EVENT_LABELS if feature in selected
+    )
+    if selected != canonical:
+        raise ValueError("features must use canonical order")
+
+    safety_labels = tuple(
+        feature for feature in selected if feature in SAFETY_EVENT_LABELS
+    )
+    include_stranger = STRANGER_EVENT_LABEL in selected
+    safety_client: GroundingClient | None = None
+    effective_stranger_client: GroundingClient | None = None
+    if safety_labels:
+        if dry_run:
+            safety_client = DryRunMultiGroundingClient(settings, safety_labels)
+        else:
+            safety_client = OpenRouterMultiGroundingClient(
+                settings,
+                OpenRouterClient(openrouter_settings, api_key=api_key),
+                safety_labels,
+            )
+    if include_stranger:
+        if dry_run:
+            face_settings = (
+                stranger_client.settings
+                if stranger_client is not None
+                else replace(settings, event_label=UNKNOWN_FACE_EVENT_LABEL)
+            )
+            effective_stranger_client = DryRunStrangerGroundingClient(face_settings)
+        else:
+            if stranger_client is None:
+                raise ValueError("stranger_client is required for stranger detection")
+            effective_stranger_client = stranger_client
+    return SelectedFeaturesGroundingClient(
+        safety_client,
+        effective_stranger_client,
+        safety_event_labels=safety_labels,
+        include_stranger=include_stranger,
+        safety_max_image_side=safety_max_image_side,
+        safety_jpeg_quality=safety_jpeg_quality,
     )
 
 

@@ -10,19 +10,19 @@ import os
 import struct
 import time
 import unicodedata
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
@@ -40,8 +40,8 @@ from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
 from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
 from .grounding import (
     DETECTION_EVENT_LABELS,
-    build_fixed_five_grounding_client,
     build_grounding_client,
+    build_selected_features_grounding_client,
 )
 from .overlay import draw_overlay
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
@@ -207,6 +207,7 @@ class HarnessRuntime:
                 ",".join(DETECTION_EVENT_LABELS) if config is not None else None
             ),
             "event_labels": list(DETECTION_EVENT_LABELS),
+            "features": list(DETECTION_EVENT_LABELS),
             "model": PUBLIC_MODEL_NAME if config is not None else None,
             "dry_run": self.dry_run,
             "webhook_enabled": False,
@@ -384,6 +385,8 @@ class HarnessRuntime:
             "model": PUBLIC_MODEL_NAME,
             "event_label": self.config.inference.event_label,
             "event_labels": list(DETECTION_EVENT_LABELS),
+            "features": list(DETECTION_EVENT_LABELS),
+            "supported_features": list(DETECTION_EVENT_LABELS),
             "sample_fps": self.config.video.fps,
             "max_image_side": self.config.video.max_image_side,
             "jpeg_quality": self.config.video.jpeg_quality,
@@ -469,6 +472,17 @@ class HarnessRuntime:
         assert isinstance(safe, dict)
         return safe
 
+    def stranger_captures(self) -> dict[str, Any]:
+        captures = self._ensure_face_runtime().list_strangers()
+        records = [capture.as_dict() for capture in captures]
+        result = {"count": len(records), "strangers": records}
+        safe = public_safe_value(result)
+        assert isinstance(safe, dict)
+        return safe
+
+    def stranger_photo(self, stranger_id: str) -> bytes | None:
+        return self._ensure_face_runtime().stranger_photo(stranger_id)
+
     def enroll_face(
         self,
         person_id: str,
@@ -545,6 +559,7 @@ class HarnessRuntime:
         dry_run: bool | None = None,
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
+        features: Collection[str] | None = None,
     ) -> dict[str, Any]:
         url = (stream_url or "").strip() or self.configured_stream_url()
         if not url:
@@ -558,6 +573,7 @@ class HarnessRuntime:
             dry_run=dry_run,
             event_label=event_label,
             analysis_mode=analysis_mode,
+            features=features,
         )
 
     def start_camera(
@@ -566,6 +582,7 @@ class HarnessRuntime:
         dry_run: bool | None = None,
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
+        features: Collection[str] | None = None,
         owner: str | None = None,
     ) -> dict[str, Any]:
         return self._start_session(
@@ -573,6 +590,7 @@ class HarnessRuntime:
             dry_run=dry_run,
             event_label=event_label,
             analysis_mode=analysis_mode,
+            features=features,
             camera_owner=owner,
         )
 
@@ -586,6 +604,7 @@ class HarnessRuntime:
         dry_run: bool | None = None,
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
+        features: Collection[str] | None = None,
         camera_owner: str | None = None,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
@@ -596,14 +615,19 @@ class HarnessRuntime:
         selected_analysis = str(analysis_mode).strip().lower()
         if selected_analysis not in ANALYSIS_MODES:
             raise ValueError("analysis_mode must be event, face, or multi")
+        if features is not None and selected_analysis != MULTI_ANALYSIS_MODE:
+            raise ValueError("features can only be used with analysis_mode=multi")
 
         if selected_analysis == MULTI_ANALYSIS_MODE:
-            label = ",".join(DETECTION_EVENT_LABELS)
+            selected_features = _normalize_features(features)
+            label = ",".join(selected_features)
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
         elif selected_analysis == FACE_ANALYSIS_MODE:
+            selected_features = None
             label = UNKNOWN_FACE_EVENT_LABEL
             use_dry_run = False
         else:
+            selected_features = None
             face_reference_memory = (
                 self.config.memory is not None
                 and self.config.memory.purpose == FACE_RECOGNITION_PURPOSE
@@ -657,31 +681,36 @@ class HarnessRuntime:
                 client = face_runtime
             elif selected_analysis == MULTI_ANALYSIS_MODE:
                 face = self.config.face
-                face_runtime = self._ensure_face_runtime()
-                if not use_dry_run:
+                include_stranger = "stranger" in selected_features
+                face_runtime = None
+                if include_stranger and not use_dry_run:
+                    face_runtime = self._ensure_face_runtime()
                     warmup_seconds = face_runtime.warmup()
                     if warmup_seconds:
                         LOGGER.info(
                             "warmed local face analysis in %.3fs", warmup_seconds
                         )
-                session_config = replace(
-                    self.config,
-                    video=replace(
-                        self.config.video,
-                        fps=face.sample_fps,
-                        max_image_side=face.max_image_side,
-                        jpeg_quality=face.jpeg_quality,
-                    ),
-                    sliding_window=replace(
-                        self.config.sliding_window,
-                        size_frames=1,
-                        stride_frames=1,
-                        include_partial_final_window=False,
-                    ),
-                )
-                client = build_fixed_five_grounding_client(
+                session_config = self.config
+                if include_stranger:
+                    session_config = replace(
+                        self.config,
+                        video=replace(
+                            self.config.video,
+                            fps=face.sample_fps,
+                            max_image_side=face.max_image_side,
+                            jpeg_quality=face.jpeg_quality,
+                        ),
+                        sliding_window=replace(
+                            self.config.sliding_window,
+                            size_frames=1,
+                            stride_frames=1,
+                            include_partial_final_window=False,
+                        ),
+                    )
+                client = build_selected_features_grounding_client(
                     session_config.inference,
                     session_config.openrouter,
+                    features=selected_features,
                     stranger_client=face_runtime,
                     safety_max_image_side=self.config.video.max_image_side,
                     safety_jpeg_quality=self.config.video.jpeg_quality,
@@ -796,9 +825,14 @@ class HarnessRuntime:
                         "stream_session_id": session.stream_session_id,
                         "event_label": label,
                         "event_labels": (
-                            list(DETECTION_EVENT_LABELS)
+                            list(selected_features)
                             if selected_analysis == MULTI_ANALYSIS_MODE
                             else [label]
+                        ),
+                        "features": (
+                            list(selected_features)
+                            if selected_analysis == MULTI_ANALYSIS_MODE
+                            else None
                         ),
                         "model": PUBLIC_MODEL_NAME,
                         "dry_run": use_dry_run,
@@ -833,7 +867,8 @@ class HarnessRuntime:
                 "dry_run": use_dry_run,
             }
             if selected_analysis == MULTI_ANALYSIS_MODE:
-                response["event_labels"] = list(DETECTION_EVENT_LABELS)
+                response["event_labels"] = list(selected_features)
+                response["features"] = list(selected_features)
             if stream_protocol is not None:
                 response["stream_protocol"] = stream_protocol
             if (
@@ -1228,7 +1263,9 @@ def _render_analysis_jpeg(
                 for judgment in detected_judgments
             )
         else:
-            event_label = "five events"
+            event_label = " | ".join(
+                judgment.event_label for judgment in analysis.judgments
+            )
             confidence = min(
                 (judgment.confidence for judgment in analysis.judgments),
                 default=0.0,
@@ -1251,6 +1288,29 @@ def _render_analysis_jpeg(
     if not ok:
         raise ValueError("could not encode annotated JPEG")
     return output.tobytes()
+
+
+def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
+    if features is None:
+        return DETECTION_EVENT_LABELS
+    if not isinstance(features, (list, tuple)):
+        raise ValueError("features must be an array")
+    raw = tuple(features)
+    if not raw:
+        raise ValueError("features must not be empty")
+    if any(not isinstance(feature, str) or not feature.strip() for feature in raw):
+        raise ValueError("features must contain non-empty strings")
+    rendered = tuple(feature.strip().lower() for feature in raw)
+    if len(set(rendered)) != len(rendered):
+        raise ValueError("features must not contain duplicates")
+    unsupported = tuple(
+        feature for feature in rendered if feature not in DETECTION_EVENT_LABELS
+    )
+    if unsupported:
+        raise ValueError(f"unsupported feature: {unsupported[0]}")
+    return tuple(
+        feature for feature in DETECTION_EVENT_LABELS if feature in rendered
+    )
 
 
 def create_app(
@@ -1373,6 +1433,7 @@ def create_app(
                         analysis_mode = str(
                             payload.get("analysis_mode") or MULTI_ANALYSIS_MODE
                         )
+                        requested_features = payload.get("features")
                         requested_dry_run = payload.get("dry_run")
                         if requested_dry_run is not None and not isinstance(
                             requested_dry_run, bool
@@ -1389,6 +1450,7 @@ def create_app(
                                     dry_run=requested_dry_run,
                                     event_label=event_label,
                                     analysis_mode=analysis_mode,
+                                    features=requested_features,
                                     owner=owner,
                                 )
                             elif mode == STREAM_MODE:
@@ -1398,9 +1460,17 @@ def create_app(
                                     dry_run=requested_dry_run,
                                     event_label=event_label,
                                     analysis_mode=analysis_mode,
+                                    features=requested_features,
                                 )
                             else:
                                 raise ValueError("mode must be camera or stream")
+                        except ValueError as exc:
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "message": redact_public_text(exc),
+                                }
+                            )
                         except Exception as exc:
                             await websocket.send_json(
                                 {
@@ -1471,9 +1541,101 @@ def create_app(
     async def status(request: Request) -> dict[str, Any]:
         return _runtime(request).status()
 
+    @application.post("/v1/sessions/start")
+    async def start_session(
+        request: Request,
+        payload: Annotated[dict[str, Any] | None, Body()] = None,
+    ) -> dict[str, Any]:
+        """Start one network-stream session with any selected feature subset."""
+
+        payload = payload or {}
+        mode = payload.get("mode", STREAM_MODE)
+        if not isinstance(mode, str) or mode not in {CAMERA_MODE, STREAM_MODE}:
+            raise HTTPException(status_code=400, detail="mode must be camera or stream")
+        if mode == CAMERA_MODE:
+            raise HTTPException(
+                status_code=400,
+                detail="camera sessions must be started over /ws",
+            )
+        analysis_mode = payload.get("analysis_mode", MULTI_ANALYSIS_MODE)
+        if not isinstance(analysis_mode, str):
+            raise HTTPException(
+                status_code=400,
+                detail="analysis_mode must be a string",
+            )
+        dry_run = payload.get("dry_run")
+        if dry_run is not None and not isinstance(dry_run, bool):
+            raise HTTPException(status_code=400, detail="dry_run must be boolean")
+        event_label = payload.get("event_label")
+        if event_label is not None and not isinstance(event_label, str):
+            raise HTTPException(status_code=400, detail="event_label must be a string")
+        stream_url = payload.get("stream_url", "")
+        if not isinstance(stream_url, str):
+            raise HTTPException(status_code=400, detail="stream_url must be a string")
+        runtime = _runtime(request)
+        try:
+            return await asyncio.to_thread(
+                runtime.start_stream,
+                stream_url,
+                dry_run=dry_run,
+                event_label=event_label,
+                analysis_mode=analysis_mode,
+                features=payload.get("features"),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=redact_public_text(exc),
+            ) from exc
+        except RuntimeError as exc:
+            status_code = 409 if "already running" in str(exc) else 503
+            raise HTTPException(
+                status_code=status_code,
+                detail=public_error_message(exc, fallback="could not start session"),
+            ) from exc
+
+    @application.post("/v1/sessions/stop")
+    async def stop_session(request: Request) -> dict[str, bool]:
+        return {
+            "stopped": await asyncio.to_thread(_runtime(request).stop_session)
+        }
+
     @application.get("/v1/faces/gallery")
     async def face_gallery(request: Request) -> dict[str, Any]:
         return await asyncio.to_thread(_runtime(request).face_gallery)
+
+    @application.get("/v1/faces/strangers")
+    async def stranger_captures(request: Request) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(_runtime(request).stranger_captures)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
+            ) from exc
+
+    @application.get("/v1/faces/strangers/{stranger_id}/photo")
+    async def stranger_photo(stranger_id: str, request: Request) -> Response:
+        try:
+            photo = await asyncio.to_thread(
+                _runtime(request).stranger_photo,
+                stranger_id,
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=503 if isinstance(exc, RuntimeError) else 400,
+                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
+            ) from exc
+        if photo is None:
+            raise HTTPException(status_code=404, detail="stranger photo not found")
+        return Response(
+            photo,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Stranger-Id": stranger_id,
+            },
+        )
 
     @application.post("/v1/faces/gallery/{person_id}")
     async def enroll_face(
@@ -1549,66 +1711,51 @@ def create_app(
 
     @application.get("/v1/results/latest")
     async def latest_result(request: Request) -> JSONResponse:
-        record = _runtime(request).results.latest()
-        if record is None:
-            raise HTTPException(status_code=404, detail="no analysis result yet")
-        return JSONResponse(
-            record.payload,
-            headers={
-                "Cache-Control": "no-store",
-                "X-Result-Cursor": str(record.cursor),
-                "X-Result-Stream": _runtime(request).results.epoch,
-            },
-        )
+        return _latest_result_response(_runtime(request))
 
     @application.get("/v1/results/events")
     async def result_events(
         request: Request,
         after: int = Query(default=0, ge=0),
     ) -> StreamingResponse:
-        runtime = _runtime(request)
-        header_cursor = request.headers.get("last-event-id")
-        cursor = after
-        if header_cursor and after == 0:
-            epoch, separator, raw_cursor = header_cursor.rpartition(":")
-            if separator and epoch == runtime.results.epoch:
-                try:
-                    cursor = max(0, int(raw_cursor))
-                except ValueError:
-                    cursor = 0
-            else:
-                cursor = 0
+        return _result_events_response(request, _runtime(request), after=after)
 
-        async def generate() -> AsyncIterator[bytes]:
-            current = cursor
-            while not await request.is_disconnected():
-                records = await asyncio.to_thread(
-                    runtime.results.records_after,
-                    current,
-                    timeout_seconds=15.0,
-                )
-                if not records:
-                    yield b": heartbeat\n\n"
-                    continue
-                for record in records:
-                    current = record.cursor
-                    data = json.dumps(
-                        record.payload,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    yield (
-                        f"id: {runtime.results.epoch}:{record.cursor}\n"
-                        f"event: analysis_result\ndata: {data}\n\n"
-                    ).encode()
+    def feature_latest_endpoint(
+        feature: str,
+    ) -> Callable[[Request], Any]:
+        async def endpoint(request: Request) -> JSONResponse:
+            return _latest_result_response(_runtime(request), feature=feature)
 
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-            },
+        return endpoint
+
+    def feature_events_endpoint(feature: str) -> Callable[..., Any]:
+        async def endpoint(
+            request: Request,
+            after: int = Query(default=0, ge=0),
+        ) -> StreamingResponse:
+            return _result_events_response(
+                request,
+                _runtime(request),
+                after=after,
+                feature=feature,
+            )
+
+        return endpoint
+
+    # Literal paths give downstream consumers five independently addressable
+    # APIs while all of them reuse the same correlated result history.
+    for feature in DETECTION_EVENT_LABELS:
+        application.add_api_route(
+            f"/v1/results/{feature}/latest",
+            feature_latest_endpoint(feature),
+            methods=["GET"],
+            name=f"latest_{feature}_result",
+        )
+        application.add_api_route(
+            f"/v1/results/{feature}/events",
+            feature_events_endpoint(feature),
+            methods=["GET"],
+            name=f"{feature}_result_events",
         )
 
     @application.get("/v1/video/latest.jpg")
@@ -1649,6 +1796,141 @@ def create_app(
 
 def _runtime(request: Request) -> HarnessRuntime:
     return request.app.state.runtime
+
+
+def _feature_result_payload(
+    payload: dict[str, Any],
+    feature: str,
+) -> dict[str, Any] | None:
+    accepted_labels = {feature}
+    if feature == "stranger":
+        accepted_labels.add(UNKNOWN_FACE_EVENT_LABEL)
+    judgments = payload.get("judgments")
+    if not isinstance(judgments, list):
+        return None
+    selected = next(
+        (
+            copy.deepcopy(judgment)
+            for judgment in judgments
+            if isinstance(judgment, dict)
+            and judgment.get("event_label") in accepted_labels
+        ),
+        None,
+    )
+    if selected is None:
+        return None
+    selected["event_label"] = feature
+    object_ids = {
+        object_id
+        for object_id in selected.get("object_ids", [])
+        if isinstance(object_id, str)
+    }
+    objects = payload.get("objects")
+    filtered_objects = (
+        [
+            copy.deepcopy(item)
+            for item in objects
+            if isinstance(item, dict) and item.get("object_id") in object_ids
+        ]
+        if isinstance(objects, list)
+        else []
+    )
+    result = copy.deepcopy(payload)
+    result["judgments"] = [selected]
+    result["objects"] = filtered_objects
+    return result
+
+
+def _latest_result_response(
+    runtime: HarnessRuntime,
+    *,
+    feature: str | None = None,
+) -> JSONResponse:
+    record = runtime.results.latest()
+    if record is None:
+        raise HTTPException(status_code=404, detail="no analysis result yet")
+    payload = record.payload
+    if feature is not None:
+        selected = _feature_result_payload(payload, feature)
+        if selected is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no {feature} result in the latest analysis",
+            )
+        payload = selected
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Result-Cursor": str(record.cursor),
+        "X-Result-Stream": runtime.results.epoch,
+    }
+    if feature is not None:
+        headers["X-Result-Feature"] = feature
+    return JSONResponse(payload, headers=headers)
+
+
+def _result_events_response(
+    request: Request,
+    runtime: HarnessRuntime,
+    *,
+    after: int,
+    feature: str | None = None,
+) -> StreamingResponse:
+    header_cursor = request.headers.get("last-event-id")
+    cursor = after
+    if header_cursor and after == 0:
+        epoch, separator, raw_cursor = header_cursor.rpartition(":")
+        if separator and epoch == runtime.results.epoch:
+            try:
+                cursor = max(0, int(raw_cursor))
+            except ValueError:
+                cursor = 0
+        else:
+            cursor = 0
+
+    async def generate() -> AsyncIterator[bytes]:
+        current = cursor
+        while not await request.is_disconnected():
+            records = await asyncio.to_thread(
+                runtime.results.records_after,
+                current,
+                timeout_seconds=15.0,
+            )
+            if not records:
+                yield b": heartbeat\n\n"
+                continue
+            emitted = False
+            for record in records:
+                current = record.cursor
+                payload = record.payload
+                if feature is not None:
+                    selected = _feature_result_payload(payload, feature)
+                    if selected is None:
+                        continue
+                    payload = selected
+                data = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                emitted = True
+                yield (
+                    f"id: {runtime.results.epoch}:{record.cursor}\n"
+                    f"event: analysis_result\ndata: {data}\n\n"
+                ).encode()
+            if not emitted:
+                yield b": heartbeat\n\n"
+
+    headers = {
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+    }
+    if feature is not None:
+        headers["X-Result-Feature"] = feature
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
 
 
 def _frame_headers(packet: FramePacket) -> dict[str, str]:

@@ -1,8 +1,8 @@
 # Goodvision Harness
 
 An independent demo service that pulls the robot's live WHEP/WebRTC stream and
-simultaneously detects five fixed events: `fight`, `smoking`, `fall`, `weapon`, and
-`stranger`. It exposes one structured result and one exactly correlated,
+detects any selected subset of `fight`, `smoking`, `fall`, `weapon`, and
+`stranger` (all five remain the default). It exposes one structured result and one exactly correlated,
 annotated frame for every analyzed video frame, plus a continuous delayed
 annotation stream for display.
 
@@ -11,10 +11,11 @@ repository.
 
 ## Harness behavior
 
-The default service mode performs one external model request for the four visual
-safety events while the local known-person matcher checks
-the same frame for `stranger`, then merges both into one fixed-order
-five-judgment result. It does not run five LLM calls. Before a real multi-event
+The service performs one external model request for whichever visual safety
+events are selected, while the local known-person matcher checks the same frame
+only when `stranger` is selected. Mixed results are merged in canonical order.
+It does not run one process or one LLM call per feature. Omitting `features`
+keeps the original fixed-five result. Before a real multi-event
 or face-only session accepts its first frame, the service loads the local engine and
 runs one blank inference to remove its first-frame cold start; dry-run skips
 that warmup. These runtime defaults remain fixed:
@@ -35,7 +36,7 @@ testing now uses one unified page, based on the familiar original Demo UI.
 Both browser-camera and network-stream modes use the same grounded delivery
 pipeline and expose customer JSON plus analyzed and raw video outputs. The
 legacy single-event and face-only modes remain available as diagnostic API
-modes; the page starts the fixed-five mode by default.
+modes; the page lets the operator select any non-empty feature combination.
 
 ## LAN deployment topology
 
@@ -200,6 +201,10 @@ curl --fail-with-body -X POST --data-binary @person.jpg \
   'http://127.0.0.1:8080/v1/faces/gallery/person_01?name=Person%20One'
 curl --fail-with-body -X DELETE \
   http://127.0.0.1:8080/v1/faces/gallery/person_01
+# List captured strangers, then retrieve a returned stranger_id.
+curl http://127.0.0.1:8080/v1/faces/strangers
+curl --output stranger.jpg \
+  http://127.0.0.1:8080/v1/faces/strangers/stranger-ID/photo
 docker compose logs --tail=200 harness
 docker volume inspect goodvision-harness_face-models goodvision-harness_face-data
 docker compose exec harness sh -lc \
@@ -209,7 +214,11 @@ docker compose exec harness sh -lc \
 In Compose, authorized face weights belong under
 `/models/models/<configured-profile>/` in the persistent `face-models`
 volume, while the gallery is `/data/face-gallery.json` in the persistent
-`face-data` volume. `docker compose down` preserves both volumes;
+`face-data` volume. Stranger embeddings and one representative face crop per
+ID are retained in `/data/face-gallery-strangers.json` and
+`/data/stranger-captures/` on that same volume. Repeated unknown faces whose
+embeddings meet the configured threshold reuse the same `stranger_id`; live
+result objects include that ID and its `photo_url`. `docker compose down` preserves both volumes;
 `docker compose down -v` deletes them. Back up the gallery volume before
 destructive maintenance. Optional local-file initialization is for the declared
 demo only. A customer deployment
@@ -224,8 +233,51 @@ HARNESS_DRY_RUN=true
 ```
 
 Restart with `docker compose up -d`. Dry-run bypasses both the external model
-and local face weights, and emits deterministic five-status results with
+and local face weights, and emits deterministic selected-feature results with
 synthetic normalized boxes.
+
+## Selecting detection features
+
+Use one session with a `features` array rather than separate processes or one
+endpoint per combination. The allowed values are `fight`, `smoking`, `fall`,
+`weapon`, and `stranger`. The array must be non-empty; duplicates and unknown
+values are rejected. Results contain only enabled judgments, always in the
+canonical order above. Omit `features` to retain the original all-five behavior.
+
+For a configured network stream:
+
+```bash
+# Stranger + smoking
+curl --fail-with-body -X POST http://127.0.0.1:8080/v1/sessions/start \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"stream","features":["stranger","smoking"]}'
+
+curl --fail-with-body -X POST http://127.0.0.1:8080/v1/sessions/stop
+```
+
+Another valid request is
+`{"mode":"stream","features":["fight","fall","smoking"]}`. Browser-camera
+clients use the same field in the existing `/ws` start message:
+`{"type":"start","mode":"camera","analysis_mode":"multi","features":["stranger"]}`.
+Only one input session runs at a time; selected safety labels share one model
+request, and `stranger` uses the local face matcher on the same frame.
+
+The combined output remains available at `/v1/results/latest` and
+`/v1/results/events`. Each feature also has an independent pull URL that returns
+only that judgment and the objects it references:
+
+| Feature | Latest result | SSE result stream |
+| --- | --- | --- |
+| Fight | `GET /v1/results/fight/latest` | `GET /v1/results/fight/events` |
+| Smoking | `GET /v1/results/smoking/latest` | `GET /v1/results/smoking/events` |
+| Fall | `GET /v1/results/fall/latest` | `GET /v1/results/fall/events` |
+| Weapon | `GET /v1/results/weapon/latest` | `GET /v1/results/weapon/events` |
+| Stranger | `GET /v1/results/stranger/latest` | `GET /v1/results/stranger/events` |
+
+For example, `curl http://127.0.0.1:8080/v1/results/smoking/latest`
+never includes fight, fall, weapon, or stranger judgments. It returns 404 when
+the latest analysis has no smoking judgment (for example, when smoking was not
+enabled for that session).
 
 ## Output endpoints
 
@@ -234,8 +286,14 @@ synthetic normalized boxes.
 | `GET /health/live` | HTTP-process liveness. |
 | `GET /health/ready` | Ready only with fresh source video and a fresh successful analysis. Used by the Docker healthcheck. |
 | `GET /v1/status` | Sanitized source, pipeline, counters, and delivery state. |
+| `POST /v1/sessions/start` | Start one network-stream session; JSON accepts the optional `features` array. Browser cameras start over `/ws`. |
+| `POST /v1/sessions/stop` | Stop the active session. |
+| `GET /v1/faces/strangers` | List retained stranger IDs and their photo URLs. |
+| `GET /v1/faces/strangers/{stranger_id}/photo` | Return one retained face crop as `image/jpeg`. |
 | `GET /v1/results/latest` | Latest customer-facing analysis JSON. Returns 404 before the first result. |
 | `GET /v1/results/events` | Server-Sent Events stream of analysis JSON with bounded in-memory replay. |
+| `GET /v1/results/<feature>/latest` | Independent latest result for one of the five feature names. |
+| `GET /v1/results/<feature>/events` | Independent SSE result stream for one feature. |
 | `GET /v1/video/annotated/latest.jpg` | Latest full-cadence delayed frame with exact, interpolated, or briefly held bbox. |
 | `GET /v1/video/annotated/stream.mjpeg` | Continuous delayed annotated MJPEG, 15 FPS by default. This is the display output. |
 | `GET /v1/video/latest.jpg` | Latest exact analyzed frame with burned-in verdict/bbox. |

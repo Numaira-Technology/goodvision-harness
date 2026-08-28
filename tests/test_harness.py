@@ -893,6 +893,16 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert latest.json()["message_id"] == "message-1"
         assert latest.json()["model"]["name"] == PUBLIC_MODEL_NAME
         assert latest.headers["X-Result-Stream"] == stub.results.epoch
+        smoking = client.get("/v1/results/smoking/latest")
+        assert smoking.status_code == 200
+        assert smoking.headers["X-Result-Feature"] == "smoking"
+        assert [item["event_label"] for item in smoking.json()["judgments"]] == [
+            "smoking"
+        ]
+        assert [item["object_id"] for item in smoking.json()["objects"]] == [
+            "object-1"
+        ]
+        assert client.get("/v1/results/fight/latest").status_code == 404
         frame = client.get("/v1/video/latest.jpg")
         assert frame.status_code == 200
         assert frame.headers["content-type"] == "image/jpeg"
@@ -915,6 +925,9 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert "Math.max(displayFps,analysisFps)" in dashboard.text
         paths = {route.path for route in app.routes}
         assert "/v1/results/events" in paths
+        for feature in ("fight", "smoking", "fall", "weapon", "stranger"):
+            assert f"/v1/results/{feature}/latest" in paths
+            assert f"/v1/results/{feature}/events" in paths
         assert "/v1/deployment/settings" in paths
         assert "/v1/video/annotated/stream.mjpeg" in paths
         assert "/v1/video/stream.mjpeg" in paths

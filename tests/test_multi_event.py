@@ -24,12 +24,14 @@ from goodvision_harness.grounding import (
     DETECTION_EVENT_LABELS,
     FIXED_FIVE_ANALYSIS_KIND,
     SAFETY_EVENT_LABELS,
+    SELECTED_FEATURES_ANALYSIS_KIND,
     FixedFiveGroundingClient,
     GroundedClassification,
     GroundedEventClassification,
     GroundingResponse,
     ModelObject,
     MultiGroundedClassification,
+    SelectedFeaturesGroundingClient,
     parse_multi_grounded_classification,
 )
 from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
@@ -151,6 +153,11 @@ def _stranger_classification(*, unknown: bool) -> GroundedClassification:
                 attributes={
                     "status": "unknown",
                     "similarity": 0.18,
+                    "stranger_id": "stranger-0123456789abcdef0123456789abcdef",
+                    "photo_url": (
+                        "/v1/faces/strangers/"
+                        "stranger-0123456789abcdef0123456789abcdef/photo"
+                    ),
                 },
             ),
         )
@@ -274,6 +281,88 @@ def test_fixed_five_combination_uses_only_unknown_faces_for_stranger() -> None:
     assert stranger.matched_memory_ids == ("alice",)
 
 
+def test_selected_feature_subset_runs_only_requested_detectors() -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+    smoking = _safety_classification().judgments[1]
+    safety = _StaticClient(
+        settings,
+        MultiGroundedClassification((smoking,)),
+    )
+    stranger = _StaticClient(
+        replace(settings, event_label="unknown_person"),
+        _stranger_classification(unknown=True),
+    )
+    client = SelectedFeaturesGroundingClient(
+        safety,
+        stranger,
+        safety_event_labels=("smoking",),
+        include_stranger=True,
+    )
+
+    response = client.classify_window(_window())
+
+    assert response.ok
+    classification = response.classification
+    assert isinstance(classification, MultiGroundedClassification)
+    assert classification.analysis_kind == SELECTED_FEATURES_ANALYSIS_KIND
+    assert [item.event_label for item in classification.judgments] == [
+        "smoking",
+        "stranger",
+    ]
+    assert len(safety.windows) == 1
+    assert len(stranger.windows) == 1
+
+
+def test_selected_features_keep_successful_branch_when_other_branch_fails() -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+    smoking = _safety_classification().judgments[1]
+    safety = _StaticClient(
+        settings,
+        MultiGroundedClassification((smoking,)),
+    )
+
+    class _FailingStrangerClient:
+        def classify_window(self, window: FrameWindow) -> GroundingResponse:
+            raise RuntimeError("face detector unavailable")
+
+    client = SelectedFeaturesGroundingClient(
+        safety,
+        _FailingStrangerClient(),
+        safety_event_labels=("smoking",),
+        include_stranger=True,
+    )
+
+    response = client.classify_window(_window())
+
+    assert response.ok
+    classification = response.classification
+    assert isinstance(classification, MultiGroundedClassification)
+    assert [item.event_label for item in classification.judgments] == ["smoking"]
+    assert classification.analysis_kind == SELECTED_FEATURES_ANALYSIS_KIND
+
+
+def test_stranger_only_selection_keeps_public_stranger_label() -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+    stranger = _StaticClient(
+        replace(settings, event_label="unknown_person"),
+        _stranger_classification(unknown=True),
+    )
+    client = SelectedFeaturesGroundingClient(
+        None,
+        stranger,
+        safety_event_labels=(),
+        include_stranger=True,
+    )
+
+    response = client.classify_window(_window())
+
+    classification = response.classification
+    assert isinstance(classification, MultiGroundedClassification)
+    assert [item.event_label for item in classification.judgments] == ["stranger"]
+    assert classification.analysis_kind == SELECTED_FEATURES_ANALYSIS_KIND
+    assert len(stranger.windows) == 1
+
+
 def test_fixed_five_runs_safety_and_stranger_in_parallel_on_same_frame() -> None:
     settings = load_config(ROOT / "config.yaml").inference
     barrier = threading.Barrier(2)
@@ -360,6 +449,10 @@ def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
     assert smoking_object["attributes"] == {"evidence": "at_mouth"}
     assert stranger_object["label"] == "unknown_person"
     assert stranger_object["attributes"]["status"] == "unknown"
+    assert stranger_object["attributes"]["stranger_id"] == (
+        "stranger-0123456789abcdef0123456789abcdef"
+    )
+    assert stranger_object["attributes"]["photo_url"].endswith("/photo")
     assert emitted_frames == [(result, window.newest_frame.presentation_jpeg_bytes)]
 
 
@@ -423,7 +516,9 @@ def test_renderer_passes_each_shared_positive_object_once(
         return image
 
     monkeypatch.setattr(service_module, "draw_overlay", capture_overlay)
-    rendered = service_module._render_analysis_jpeg(_jpeg(200, 100), analysis, quality=85)
+    rendered = service_module._render_analysis_jpeg(
+        _jpeg(200, 100), analysis, quality=85
+    )
 
     assert cv2.imdecode(
         np.frombuffer(rendered, dtype=np.uint8), cv2.IMREAD_COLOR
@@ -432,3 +527,40 @@ def test_renderer_passes_each_shared_positive_object_once(
     assert captured["detected"] is True
     assert [item.object_id for item in captured["objects"]] == ["object-1"]
     assert captured["objects"][0].label == "fight / weapon | person"
+
+
+def test_renderer_names_only_selected_features_when_all_are_clear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analysis = AnalysisResult(
+        message_id="message-selected-clear",
+        source_id="camera-multi",
+        stream_session_id="session-multi",
+        sequence=1,
+        emitted_at="2026-08-27T10:00:01.000Z",
+        frame=FrameReference(
+            source_frame_index=42,
+            timestamp_seconds=1.25,
+            observed_at="2026-08-27T10:00:00.000Z",
+            width=200,
+            height=100,
+        ),
+        judgments=(
+            EventJudgment("smoking", False, 0.96, "No smoking."),
+        ),
+        objects=(),
+        model_name="test-model",
+        model_latency_seconds=0.1,
+        analysis_kind=SELECTED_FEATURES_ANALYSIS_KIND,
+    )
+    captured: dict[str, Any] = {}
+
+    def capture_overlay(image: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return image
+
+    monkeypatch.setattr(service_module, "draw_overlay", capture_overlay)
+    service_module._render_analysis_jpeg(_jpeg(200, 100), analysis, quality=85)
+
+    assert captured["event_label"] == "smoking"
+    assert captured["detected"] is False

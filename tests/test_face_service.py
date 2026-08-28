@@ -18,7 +18,7 @@ from goodvision_harness.contracts import (
     NormalizedBBox,
     PUBLIC_MODEL_NAME,
 )
-from goodvision_harness.face_recognition import GalleryPerson
+from goodvision_harness.face_recognition import GalleryPerson, StrangerCapture
 from goodvision_harness.reference_memory import MemoryContext, MemoryReference
 from goodvision_harness.service import (
     FACE_ENROLLMENT_MAX_BYTES,
@@ -70,6 +70,12 @@ class _FakeFaceRuntime:
     def delete_person(self, person_id: str) -> bool:
         return self.people.pop(person_id, None) is not None
 
+    def list_strangers(self) -> tuple[StrangerCapture, ...]:
+        return (StrangerCapture("stranger-test", True),)
+
+    def stranger_photo(self, stranger_id: str) -> bytes | None:
+        return _jpeg(40, 50) if stranger_id == "stranger-test" else None
+
     def classify_window(self, _window: Any) -> Any:
         raise AssertionError("this test does not submit a frame")
 
@@ -108,6 +114,7 @@ def test_face_gallery_http_surface_and_ui_info(
         assert 'id="event-analysis-mode"' not in dashboard.text
         assert 'id="face-diagnostic-summary"' in dashboard.text
         assert 'analysis_mode:"multi"' in dashboard.text
+        assert 'visibleFeatures().includes("stranger")?' in dashboard.text
 
         gallery = client.get("/v1/faces/gallery")
         assert gallery.status_code == 200
@@ -121,6 +128,23 @@ def test_face_gallery_http_surface_and_ui_info(
         assert enrolled.status_code == 200
         assert enrolled.json()["person"]["person_id"] == "bob"
         assert fake.last_enrollment == ("bob", "Bob", image)
+
+        strangers = client.get("/v1/faces/strangers")
+        assert strangers.json() == {
+            "count": 1,
+            "strangers": [
+                {
+                    "stranger_id": "stranger-test",
+                    "photo_available": True,
+                    "photo_url": "/v1/faces/strangers/stranger-test/photo",
+                }
+            ],
+        }
+        photo = client.get("/v1/faces/strangers/stranger-test/photo")
+        assert photo.status_code == 200
+        assert photo.headers["content-type"] == "image/jpeg"
+        assert photo.headers["cache-control"] == "no-store"
+        assert client.get("/v1/faces/strangers/missing/photo").status_code == 404
 
         deleted = client.delete("/v1/faces/gallery/bob")
         assert deleted.json() == {"deleted": True, "person_id": "bob"}
@@ -263,6 +287,99 @@ def test_multi_dry_run_skips_face_model_warmup() -> None:
         assert fake.warmup_calls == 0
     finally:
         runtime.stop()
+
+
+def test_selected_features_are_canonical_and_skip_unselected_face_runtime() -> None:
+    fake = _FakeFaceRuntime()
+    runtime = HarnessRuntime(
+        load_config(ROOT / "config.yaml"),
+        face_runtime=fake,  # type: ignore[arg-type]
+    )
+
+    try:
+        response = runtime.start_camera(
+            analysis_mode="multi",
+            features=["smoking", "fight"],
+            dry_run=True,
+            owner="selected-test",
+        )
+
+        assert response["features"] == ["fight", "smoking"]
+        assert response["event_labels"] == ["fight", "smoking"]
+        assert runtime.status()["features"] == ["fight", "smoking"]
+        assert runtime._session is not None
+        assert runtime._session.client.event_labels == ("fight", "smoking")
+        assert fake.warmup_calls == 0
+    finally:
+        runtime.stop()
+
+
+def test_session_http_api_accepts_feature_subsets_and_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
+    app = create_app(lambda: runtime)
+
+    with TestClient(app) as client:
+        camera = client.post(
+            "/v1/sessions/start",
+            json={"mode": "camera", "dry_run": True, "features": ["smoking"]},
+        )
+        assert camera.status_code == 400
+        assert camera.json()["detail"] == "camera sessions must be started over /ws"
+        stream_request = {
+            "mode": "stream",
+            "stream_url": "rtsp://127.0.0.1:1/live",
+            "dry_run": True,
+        }
+        assert client.post(
+            "/v1/sessions/start",
+            json={**stream_request, "features": []},
+        ).status_code == 400
+        assert client.post(
+            "/v1/sessions/start",
+            json={**stream_request, "features": "smoking"},
+        ).status_code == 400
+        assert client.post(
+            "/v1/sessions/start",
+            json={
+                **stream_request,
+                "features": ["smoking", "SMOKING"],
+            },
+        ).status_code == 400
+        assert client.post(
+            "/v1/sessions/start",
+            json={
+                **stream_request,
+                "features": ["loitering"],
+            },
+        ).status_code == 400
+
+        recorded: dict[str, Any] = {}
+
+        def fake_start_stream(stream_url: str, **kwargs: Any) -> dict[str, Any]:
+            recorded.update({"stream_url": stream_url, **kwargs})
+            return {
+                "type": "session",
+                "mode": "stream",
+                "features": ["smoking", "stranger"],
+            }
+
+        monkeypatch.setattr(runtime, "start_stream", fake_start_stream)
+        started = client.post(
+            "/v1/sessions/start",
+            json={
+                "mode": "stream",
+                "stream_url": "rtsp://camera/live",
+                "dry_run": True,
+                "features": ["stranger", "smoking"],
+            },
+        )
+        assert started.status_code == 200
+        assert started.json()["features"] == ["smoking", "stranger"]
+        assert recorded["stream_url"] == "rtsp://camera/live"
+        assert recorded["features"] == ["stranger", "smoking"]
 
 
 def test_face_reference_memory_uses_unknown_person_semantics() -> None:

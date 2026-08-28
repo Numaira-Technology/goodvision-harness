@@ -286,6 +286,76 @@ def test_empty_gallery_marks_usable_face_unknown(
     assert "similarity" not in classification.objects[0].attributes
 
 
+def test_unknown_face_capture_persists_and_reuses_stranger_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_model = _FakeFaceAnalysis(
+        [
+            [_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.91)],
+            [_face((20, 20, 120, 130), (0.99, 0.01), detection_score=0.92)],
+        ]
+    )
+    restarted_model = _FakeFaceAnalysis(
+        [[_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.93)]]
+    )
+    models = iter((first_model, restarted_model))
+    monkeypatch.setattr(
+        face_module,
+        "_load_face_analysis",
+        lambda _config: next(models),
+    )
+    config = _config(tmp_path, min_face_size=20)
+    runtime = FaceRecognitionRuntime(config)
+
+    first = runtime.classify_window(_window(_jpeg(), index=0)).classification
+    second = runtime.classify_window(_window(_jpeg(), index=1)).classification
+    assert first is not None and second is not None
+    first_id = first.objects[0].attributes["stranger_id"]
+    assert second.objects[0].attributes["stranger_id"] == first_id
+    assert first.objects[0].attributes["photo_url"] == (
+        f"/v1/faces/strangers/{first_id}/photo"
+    )
+    captures = runtime.list_strangers()
+    assert [capture.stranger_id for capture in captures] == [first_id]
+    assert captures[0].photo_available is True
+    photo = runtime.stranger_photo(first_id)
+    assert photo is not None
+    decoded = cv2.imdecode(np.frombuffer(photo, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert decoded is not None
+    assert decoded.shape[:2] == (110, 100)
+    assert len(list((tmp_path / "stranger-captures").glob("*.jpg"))) == 1
+
+    restarted = FaceRecognitionRuntime(config)
+    after_restart = restarted.classify_window(_window(_jpeg())).classification
+    assert after_restart is not None
+    assert after_restart.objects[0].attributes["stranger_id"] == first_id
+
+
+def test_capture_write_failure_does_not_create_id_or_suppress_alert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _FakeFaceAnalysis(
+        [[_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.91)]]
+    )
+    monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: model)
+
+    def fail_write(_path: Path, _payload: bytes) -> None:
+        raise RuntimeError("disk unavailable")
+
+    monkeypatch.setattr(face_module, "_atomic_write_bytes", fail_write)
+    runtime = FaceRecognitionRuntime(_config(tmp_path, min_face_size=20))
+
+    classification = runtime.classify_window(_window(_jpeg())).classification
+
+    assert classification is not None
+    assert classification.detected is True
+    assert classification.objects[0].attributes["status"] == "unknown"
+    assert "stranger_id" not in classification.objects[0].attributes
+    assert runtime.list_strangers() == ()
+
+
 @pytest.mark.parametrize(
     ("face_width", "expected_status", "expected_detected"),
     [
