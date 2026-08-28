@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "goodvision-harness"
 version = "0.1.0"
-description = "Independent RTSP-to-LLM streaming analysis and delivery harness"
+description = "Independent WebRTC/WHEP video analysis and delivery harness"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

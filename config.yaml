@@ -3,9 +3,12 @@ input:
   default_video: null
 
 stream:
-  # Optional RTSP/RTMP/WHEP source. Keep credentials in a deployment-only config.
-  url: null
+  # Robot LAN WHEP default. The deployment console can persistently override it.
+  url: "webrtc+http://192.168.20.199:1985/rtc/v1/whep/?app=live&stream=livestream"
   whep_headers: {}
+  # The robot publishes left/right views side by side. Select one eye before
+  # display, face recognition, safety inference, and bbox normalization.
+  frame_crop: left_half
 
 video:
   # Frames sampled from the live stream per second and sent to the model.
@@ -23,8 +26,9 @@ display:
   fps: 15.0
   max_image_side: 720
   jpeg_quality: 70
-  # 2.0s model latency + one 2.5 FPS keyframe interval for two-sided interpolation.
-  delay_seconds: 2.4
+  # End-to-end completion can exceed raw model latency while concurrent
+  # results are applied. Leave enough headroom before publishing each frame.
+  delay_seconds: 3.0
   # Maximum gap for motion interpolation. Beyond it, hold the last bbox on
   # every frame until a new keyframe explicitly updates or clears the state.
   bbox_max_gap_seconds: 0.8
@@ -37,9 +41,9 @@ sliding_window:
   include_partial_final_window: false
 
 openrouter:
-  # OpenRouter route selected by the live visual-latency benchmark below.
+  # Fixed model API route selected by the live visual-latency benchmark.
   endpoint: https://openrouter.ai/api/v1/chat/completions
-  api_key_env: OPENROUTER_API_KEY
+  api_key_env: MODEL_API_KEY
   timeout_seconds: 60.0
   # Avoid retrying provider errors into stale live results.
   max_retries: 0
@@ -49,7 +53,7 @@ openrouter:
   extra_headers: {}
 
 inference:
-  # Fastest sustained route measured: OpenRouter -> CoreWeave -> Qwen3.5.
+  # Fixed internal route; implementation identifiers are never public output.
   model: qwen/qwen3.5-35b-a3b
   event_label: smoking
   system_prompt: >-
@@ -97,7 +101,7 @@ inference:
     For the delivery contract, extend that same JSON object with an "objects"
     array. Each relevant visible entity must be
     {"label": "...", "confidence": 0.0-1.0, "bbox_2d": [x1, y1, x2, y2]}.
-    bbox_2d must tightly enclose the object in the NEWEST frame and use Qwen's
+    bbox_2d must tightly enclose the object in the NEWEST frame and use the
     top-left-origin relative 0..1000 xyxy coordinate grid.
 
     If detected=true, include at least one valid object.
@@ -143,7 +147,7 @@ inference:
     Include each event exactly once and do not add other event labels. Each
     object must be {"label":"...","confidence":0.0-1.0,
     "bbox_2d":[x1,y1,x2,y2]}. bbox_2d must tightly enclose that relevant
-    entity in the NEWEST frame on Qwen's top-left-origin 0..1000 xyxy grid.
+    entity in the NEWEST frame on the top-left-origin 0..1000 xyxy grid.
     Every detected=true event requires at least one object. For an event
     involving a person and an item, return separate tight boxes for both.
     Every detected=false event must use "objects": [].
@@ -154,7 +158,7 @@ inference:
       effort: "none"
     provider:
       only:
-        - coreweave
+        - deepinfra
       allow_fallbacks: false
 memory:
   # Optional fixed reference-image prefix for multimodal inference. Private
@@ -173,8 +177,8 @@ memory:
   #     image: memory/person_01.jpg
 
 face:
-  # Local InsightFace mode. FACE_MODEL_ROOT and FACE_GALLERY_PATH override
-  # these paths in the read-only Docker deployment. Public InsightFace model
+  # Local face-analysis mode. FACE_MODEL_ROOT and FACE_GALLERY_PATH override
+  # these paths in the read-only Docker deployment. Local analysis files
   # packs are restricted to non-commercial research unless separately licensed,
   # so this download opt-in is only appropriate for this declared
   # non-commercial demo/testing use.
@@ -184,7 +188,11 @@ face:
   provider: CPUExecutionProvider
   det_size: 640
   threshold: 0.4
-  min_face_size: 80
+  # Live safety detection is fail-open for distant faces. The current 1280px
+  # analysis feed yields valid embeddings for faces down to roughly 20px.
+  min_face_size: 20
+  # Keep enrollment stricter so low-detail samples cannot degrade the gallery.
+  enrollment_min_face_size: 80
   sample_fps: 2.5
   max_image_side: 1280
   jpeg_quality: 90

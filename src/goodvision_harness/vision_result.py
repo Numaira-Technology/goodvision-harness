@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .privacy import public_safe_value
+
 VISION_RESULT_SCHEMA_VERSION = "1"
 
 
@@ -22,7 +24,7 @@ class VisionResult:
     def as_dict(self) -> dict[str, object]:
         """Render the canonical JSON-compatible record."""
 
-        return {
+        record = {
             "type": "vision_result",
             "schema_version": VISION_RESULT_SCHEMA_VERSION,
             "event_label": self.event_label,
@@ -33,3 +35,6 @@ class VisionResult:
             "window_start_seconds": round(self.window_start_seconds, 3),
             "window_end_seconds": round(self.window_end_seconds, 3),
         }
+        safe = public_safe_value(record)
+        assert isinstance(safe, dict)
+        return safe

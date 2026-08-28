@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GoodVision | Live Perception</title>
+<title>GoodVision | Deployment Console</title>
 <style>
-:root{--bg:#fff;--soft:#f3f5f9;--line:#e4e8ef;--text:#17202e;--muted:#5d6b80;--orange:#ff7a1a;--green:#16a34a;--red:#dc2626;--gray:#64748b;font-size:16px}
-*{box-sizing:border-box;margin:0;padding:0}body{padding:22px clamp(14px,3vw,36px) 48px;color:var(--text);background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif}
-header{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:18px}
+:root{--bg:#f7f8fb;--surface:#fff;--soft:#f3f5f9;--line:#e4e8ef;--text:#17202e;--muted:#5d6b80;--orange:#ff7a1a;--green:#16a34a;--red:#dc2626;--amber:#d97706;--blue:#2563eb;--gray:#64748b;font-size:16px}
+*{box-sizing:border-box;margin:0;padding:0}body{padding:22px clamp(14px,3vw,36px) 48px;color:var(--text);background:linear-gradient(180deg,#fff 0,#f7f8fb 240px);font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:14px;margin-bottom:18px}.brand{display:grid;gap:3px}.brand-subtitle{color:var(--muted);font-size:12.5px}
 h1{font-size:clamp(20px,2.4vw,30px);letter-spacing:-.03em}h1 span{color:var(--orange)}
 .chips,.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.chip{padding:4px 12px;color:var(--muted);background:#f8fafc;border:1px solid var(--line);border-radius:999px;font-size:12px}.chip b{color:var(--text)}
 .grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(340px,2fr);gap:18px}.data{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.panel{min-width:0;padding:16px;background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 2px rgba(23,32,46,.04)}
+.panel{min-width:0;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 2px rgba(23,32,46,.04)}
 .stack{display:flex;flex-direction:column;gap:14px}.head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:7px}.head h2{color:var(--muted);font-size:13px;letter-spacing:.08em;text-transform:uppercase}.head span{color:#8a96a8;font-size:11.5px}
 .viewport{position:relative;height:min(38vh,390px);min-height:240px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#eef1f6;border:1px solid var(--line);border-radius:12px}
 .viewport img,.viewport video{position:absolute;inset:0;display:none;width:100%;height:100%;object-fit:contain;background:#0b0f16;z-index:1}.bbox-layer{position:absolute;display:none;pointer-events:none;z-index:2}.bbox-box{position:absolute;border:3px solid #ef4444;border-radius:4px;box-shadow:0 0 0 1px rgba(255,255,255,.75) inset}.bbox-box span{position:absolute;left:-3px;top:-25px;max-width:300px;padding:3px 7px;color:#fff;background:#dc2626;border-radius:4px;font-size:11px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bbox-box.face-known{border-color:var(--green)}.bbox-box.face-known span{background:#15803d}.bbox-box.face-unknown{border-color:var(--red)}.bbox-box.face-unknown span{background:#b91c1c}.bbox-box.face-unusable{border-color:var(--gray)}.bbox-box.face-unusable span{background:#475569}.analysis-hud{position:absolute;left:10px;right:10px;top:10px;display:grid;gap:3px;padding:9px 11px;color:#fff;background:rgba(22,101,52,.88);border-radius:7px;box-shadow:0 2px 10px rgba(0,0,0,.25)}.analysis-hud.hud-positive,.analysis-hud.hud-face-unknown{background:rgba(185,28,28,.9)}.analysis-hud.hud-face-neutral{background:rgba(71,85,105,.9)}.hud-title{font-size:14px;font-weight:850;letter-spacing:.04em}.hud-description{font-size:12px;line-height:1.35}.hud-meta{font-size:10.5px;opacity:.88}.placeholder{padding:24px;color:#8894a6;text-align:center;font-size:13px;line-height:1.55}
@@ -20,19 +20,26 @@ h1{font-size:clamp(20px,2.4vw,30px);letter-spacing:-.03em}h1 span{color:var(--or
 button,input{font:inherit}.btn{padding:8px 16px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px;font-size:13.5px;font-weight:650;cursor:pointer}.btn:disabled,.seg button:disabled{opacity:.38;cursor:default}.primary{padding:10px 24px;color:#fff;background:var(--orange);border-color:transparent;font-size:15px}.danger{color:#b91c1c;background:#fdf1f1;border-color:rgba(220,38,38,.3)}
 a{color:#c2410c;text-decoration:none;font-weight:700}a:hover{text-decoration:underline}
 .field{display:flex;flex-direction:column;gap:5px;min-width:0}.field.grow{flex:1 1 360px}.field>span{color:var(--muted);font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
-input[type=text],input[type=file]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=file]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
+input[type=text],input[type=password],input[type=file]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=password]:focus,input[type=file]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
 .inline{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13.5px}.note,.status{color:var(--muted);font-size:12.5px;line-height:1.5}.status.error,.note.error{color:var(--red)}.notice{margin-bottom:18px;padding:10px 12px;color:#9a3412;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;font-size:12.5px;line-height:1.5}
 .decision{flex:1;min-height:390px;display:flex;flex-direction:column;justify-content:center;gap:14px;padding:clamp(22px,3vw,40px);background:linear-gradient(#fbfcfe,#f4f6fa);border:2px solid #d8dee9;border-radius:14px}.decision .eyebrow{color:var(--muted);font-size:12.5px;font-weight:750;letter-spacing:.18em;text-transform:uppercase}.verdict{font-size:clamp(40px,5.2vw,76px);font-weight:850;line-height:.95;letter-spacing:-.04em;overflow-wrap:anywhere}.confidence{color:var(--muted);font-size:20px;font-weight:650}.event-statuses{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.event-state{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;color:#15803d;background:rgba(22,163,74,.09);border-radius:9px;font-size:12px;font-weight:750;text-transform:uppercase}.event-state.detected{color:var(--red);background:rgba(220,38,38,.1)}.event-state.pending{color:var(--gray);background:#e2e8f0}.description{color:#3f4a5c;font-size:15.5px;line-height:1.55}.meta{color:var(--muted);font-size:13px;line-height:1.5}.detected{border-color:var(--red);background:linear-gradient(#fef2f2,#fde8e8)}.detected .verdict{color:var(--red)}.clear{border-color:var(--green);background:linear-gradient(#f0fdf4,#e6f9ec)}.clear .verdict{color:#15803d}.warming{border-color:#e0c391}.warming .verdict{color:#8a94a6}
 .data{grid-template-columns:minmax(280px,2fr) minmax(340px,3fr);gap:18px;margin-top:18px}.data .panel{display:flex;flex-direction:column;gap:10px}pre{min-height:210px;max-height:420px;overflow:auto;padding:12px;color:#334155;background:#f8fafc;border:1px solid var(--line);border-radius:12px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 .log{margin-top:18px}.scroll{max-height:310px;overflow:auto;margin-top:10px;border:1px solid var(--line);border-radius:12px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #eef1f5;white-space:nowrap}th{position:sticky;top:0;background:#f8fafc;color:var(--muted);font-size:11.5px;text-transform:uppercase}td:last-child{min-width:260px;color:var(--muted);white-space:normal}.pill{padding:2px 10px;border-radius:999px;font-size:11.5px;font-weight:750}.pill.yes{color:var(--red);background:#fee2e2}.pill.no{color:#15803d;background:#dcfce7}.pill.neutral{color:#475569;background:#e2e8f0}.face-gallery{padding:12px;background:#f8fafc;border:1px solid var(--line);border-radius:12px}.face-fields{display:grid;grid-template-columns:minmax(130px,1fr) minmax(150px,1fr) minmax(220px,2fr) auto;align-items:end;gap:10px}.face-list{max-height:180px;margin-top:10px}.face-list td:last-child{min-width:auto}.face-list .btn{padding:5px 10px;font-size:12px}[hidden]{display:none!important}
-@media(max-width:1050px){.grid,.data{grid-template-columns:1fr}}@media(max-width:720px){.viewport{height:300px}.decision{min-height:300px}.face-fields{grid-template-columns:1fr}}
+.control-panel{margin-bottom:18px}.control-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(280px,1fr);gap:14px}.control-block,.connection-card{padding:14px;background:#fbfcfe;border:1px solid var(--line);border-radius:12px}.control-block{display:grid;gap:12px}.connection-card{display:flex;flex-direction:column;justify-content:space-between;gap:12px}.section-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.step{display:inline-grid;place-items:center;width:24px;height:24px;color:#fff;background:var(--orange);border-radius:8px;font-size:12px;font-weight:850}.section-title h2{color:var(--text);font-size:15px;letter-spacing:-.01em;text-transform:none}.scope{padding:3px 8px;border-radius:999px;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase}.scope.persistent{color:#1d4ed8;background:#dbeafe}.scope.temporary{color:#9a3412;background:#ffedd5}.deployment-panel{margin-bottom:18px;border-left:4px solid var(--blue)}.deployment-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}.deployment-title{display:grid;gap:5px}.deployment-grid{display:grid;grid-template-columns:minmax(280px,2fr) minmax(250px,1fr);gap:12px;margin-top:14px}.deployment-fields,.deployment-options{display:grid;gap:10px;padding:13px;background:#f8fafc;border:1px solid var(--line);border-radius:12px}.deployment-options{align-content:start}.deployment-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}.deployment-note{min-height:19px;margin-top:8px}.secret-status{color:var(--muted);font-size:11.5px;line-height:1.4}.state-line{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.state-orb{width:10px;height:10px;background:var(--gray);border-radius:50%;box-shadow:0 0 0 4px rgba(100,116,139,.12)}.state-orb.good{background:var(--green);box-shadow:0 0 0 4px rgba(22,163,74,.12)}.state-orb.warn{background:var(--amber);box-shadow:0 0 0 4px rgba(217,119,6,.12)}.state-orb.bad{background:var(--red);box-shadow:0 0 0 4px rgba(220,38,38,.12)}.state-name{font-size:19px;font-weight:800}.state-detail{color:var(--muted);font-size:12.5px;line-height:1.45}.session-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.switch{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;background:#fff;border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:12.5px}.switch input{accent-color:var(--orange)}.error-banner{padding:9px 11px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:9px;font-size:12.5px;line-height:1.45}.output-console{margin-top:18px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px;margin-top:12px}.metric{padding:12px;background:#f8fafc;border:1px solid var(--line);border-radius:11px}.metric-label{display:block;margin-bottom:4px;color:var(--muted);font-size:10.5px;font-weight:750;letter-spacing:.08em;text-transform:uppercase}.metric-value{font-size:22px;font-weight:820;letter-spacing:-.03em}.metric-note{display:block;margin-top:3px;color:#8792a4;font-size:11px}.endpoint-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:9px;margin-top:12px}.endpoint{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 11px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px;font-size:12.5px;font-weight:720}.endpoint:hover{border-color:rgba(255,122,26,.55);box-shadow:0 2px 8px rgba(23,32,46,.06);text-decoration:none}.endpoint small{color:var(--muted);font-size:10px;font-weight:600}.channel-row{display:flex;gap:8px;flex-wrap:wrap}.channel{padding:4px 9px;color:var(--gray);background:#eef2f7;border-radius:999px;font-size:11px;font-weight:750}.channel.good{color:#166534;background:#dcfce7}.channel.warn{color:#92400e;background:#fef3c7}.face-diagnostic{margin-bottom:12px;padding:11px 12px;background:#f8fafc;border-left:4px solid var(--gray);border-radius:8px}.face-diagnostic.error{color:#991b1b;background:#fef2f2;border-left-color:var(--red)}.gallery-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.gallery-head-actions .btn{padding:5px 10px;font-size:12px}.debug-head{align-items:center}.debug-head .channel-row{justify-content:flex-end}.muted-link{font-size:11.5px}.control-source-row{display:flex;align-items:end;gap:10px;flex-wrap:wrap}.control-source-row .field.grow{min-width:240px}.session-note{min-height:19px}.face-panel{margin-top:18px}.face-panel>.section-title{margin-bottom:12px}
+.feature-select{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.feature-select .switch{padding:6px 9px}.feature-select .switch:has(input:not(:checked)){opacity:.58}
+@media(max-width:1050px){.grid,.data,.control-grid,.deployment-grid{grid-template-columns:1fr}.metrics,.endpoint-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}@media(max-width:720px){.viewport{height:300px}.decision{min-height:300px}.face-fields,.metrics,.endpoint-grid{grid-template-columns:1fr}.control-source-row{align-items:stretch}.session-actions .btn,.deployment-actions .btn{flex:1}.debug-head{align-items:flex-start;flex-direction:column}}
 </style>
 </head>
 <body>
 <header>
-  <h1>GoodVision <span>|</span> Live Perception</h1>
+  <div class="brand">
+    <h1>GoodVision <span>|</span> Deployment Console</h1>
+    <div class="brand-subtitle">Video ingest, live analysis, annotated delivery, and face-data diagnostics.</div>
+  </div>
   <div class="chips">
     <span class="chip">service <b id="service-chip">loading</b></span>
+    <span class="chip">source <b id="source-chip">waiting</b></span>
+    <span class="chip">readiness <b id="readiness-chip">checking</b></span>
     <span class="chip">model <b id="model-chip">...</b></span>
     <span class="chip"><span id="analysis-chip-label">events</span> <b id="event-chip">...</b></span>
     <span class="chip">sampling <b id="sampling-chip">...</b></span>
@@ -41,12 +48,111 @@ input[type=text],input[type=file]{width:100%;min-width:180px;padding:8px 12px;co
 <div id="secure-warning" class="notice" hidden></div>
 
 <main>
+  <section class="panel deployment-panel">
+    <div class="deployment-head">
+      <div class="deployment-title">
+        <div class="section-title">
+          <h2>Persistent deployment defaults</h2>
+          <span class="scope persistent">survives restart</span>
+        </div>
+        <div class="note">Saved outside the image in Docker data. Stop the current session before saving. Secret values are never shown again.</div>
+      </div>
+      <span id="deployment-storage" class="channel">Persistence · loading</span>
+    </div>
+    <div class="deployment-grid">
+      <div class="deployment-fields">
+        <label class="field">
+          <span>Default network stream URL</span>
+          <input id="default-stream-url" type="password" autocomplete="new-password" spellcheck="false"
+                 placeholder="Leave blank to keep the saved/default source">
+        </label>
+        <div id="default-stream-status" class="secret-status">Checking the saved/default video source...</div>
+        <label class="field">
+          <span>Model API key</span>
+          <input id="default-api-key" type="password" autocomplete="new-password" spellcheck="false"
+                 placeholder="Leave blank to keep the current key">
+        </label>
+        <div id="default-api-key-status" class="secret-status">Checking key status...</div>
+      </div>
+      <div class="deployment-options">
+        <span class="metric-label">Defaults for future sessions</span>
+        <label class="switch"><input id="default-dry-run" type="checkbox"> Test mode · no model calls</label>
+        <div class="secret-status">Unchecked means formal mode with model calls enabled.</div>
+        <label class="switch"><input id="default-autostart" type="checkbox"> Start automatically with the container</label>
+        <div id="deployment-source-status" class="secret-status">Loading effective settings source...</div>
+      </div>
+    </div>
+    <div class="deployment-actions">
+      <button id="save-deployment-button" class="btn primary" disabled>Save deployment defaults</button>
+      <button id="reset-deployment-button" class="btn" disabled>Discard edits</button>
+      <button id="clear-api-key-button" class="btn danger" disabled>Clear saved API key</button>
+    </div>
+    <div id="deployment-note" class="status deployment-note" role="status" aria-live="polite">Loading persistent settings...</div>
+  </section>
+
+  <section class="panel control-panel">
+    <div class="control-grid">
+      <div class="control-block">
+        <div class="section-title"><span class="step">1</span><h2>Run now</h2><span class="scope temporary">temporary override</span></div>
+        <div class="control-source-row">
+          <div class="seg" aria-label="Video source type">
+            <button id="camera-mode">Browser camera</button>
+            <button id="stream-mode" class="active">Network stream</button>
+          </div>
+          <div id="camera-controls" class="row" hidden>
+            <button id="camera-button" class="btn">Enable camera</button>
+            <span id="camera-note" class="note">camera off</span>
+          </div>
+          <div id="stream-controls" class="field grow">
+            <span>This session's RTSP / RTMP / WHEP URL</span>
+            <input id="stream-url" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Blank uses the saved/default network source">
+          </div>
+        </div>
+        <div id="source-note" class="note">Loading source configuration...</div>
+        <div id="event-controls" class="row">
+          <div class="field">
+            <span>Detection features (choose one or more)</span>
+            <div id="feature-select" class="feature-select">
+              <label class="switch"><input type="checkbox" data-feature="fight" checked> fight</label>
+              <label class="switch"><input type="checkbox" data-feature="smoking" checked> smoking</label>
+              <label class="switch"><input type="checkbox" data-feature="fall" checked> fall</label>
+              <label class="switch"><input type="checkbox" data-feature="weapon" checked> weapon</label>
+              <label class="switch"><input type="checkbox" data-feature="stranger" checked> stranger</label>
+            </div>
+          </div>
+          <label class="switch"><input id="dry-run" type="checkbox"> this run only · dry run · no model calls</label>
+        </div>
+        <div class="session-actions">
+          <button id="start-button" class="btn primary" disabled>Start selected detection</button>
+          <button id="stop-button" class="btn danger" disabled>Stop session</button>
+        </div>
+        <div id="status-line" class="status session-note">Loading service information...</div>
+        <div id="runtime-error" class="error-banner" hidden></div>
+      </div>
+      <aside class="connection-card">
+        <div>
+          <span class="metric-label">Current connection</span>
+          <div class="state-line">
+            <span id="connection-orb" class="state-orb"></span>
+            <strong id="connection-state" class="state-name">Checking service</strong>
+          </div>
+          <div id="connection-detail" class="state-detail">Waiting for the runtime status endpoint.</div>
+        </div>
+        <div class="channel-row">
+          <span id="control-channel" class="channel">Control WS · closed</span>
+          <span id="sse-channel" class="channel">Result SSE · connecting</span>
+        </div>
+      </aside>
+    </div>
+  </section>
+
   <div class="grid">
     <section class="panel stack">
       <div>
-        <div class="head"><h2>Continuous delayed annotation</h2><span id="stream-meta">buffering</span></div>
+        <div class="head"><div class="section-title"><span class="step">2</span><h2>Continuous delayed annotation</h2></div><span id="stream-meta">buffering</span></div>
         <div id="live-viewport" class="viewport">
-          <div id="raw-placeholder" class="placeholder">Choose Camera or Network stream, then start.</div>
+          <div id="raw-placeholder" class="placeholder">Connect a source above to inspect the Docker-delivered output.</div>
           <video id="camera-preview" muted playsinline autoplay></video>
           <img id="raw-feed" alt="Waiting for the continuous annotated stream">
           <div id="bbox-layer" class="bbox-layer" aria-hidden="true"></div>
@@ -57,79 +163,84 @@ input[type=text],input[type=file]{width:100%;min-width:180px;padding:8px 12px;co
         Full-cadence source frames are delayed and server-rendered with bbox interpolation.
         <a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.
       </div>
-      <div class="row">
-        <div class="seg">
-          <button id="camera-mode">Camera</button>
-          <button id="stream-mode" class="active">Network stream</button>
-        </div>
-        <div id="camera-controls" class="row" hidden>
-          <button id="camera-button" class="btn">Enable camera</button>
-          <span id="camera-note" class="note">camera off</span>
-        </div>
-        <div id="stream-controls" class="field grow">
-          <span>Stream URL</span>
-          <input id="stream-url" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="Blank = configured RTSP, or enter rtsp:// | rtmp:// | webrtc+https://">
-        </div>
-      </div>
-      <div id="source-note" class="note">Loading source configuration...</div>
-      <div id="event-controls" class="row">
-        <div class="field">
-          <span>Detection set</span>
-          <span class="note">fight | smoking | fall | weapon | stranger</span>
-        </div>
-        <label class="inline"><input id="dry-run" type="checkbox"> dry run (no API calls)</label>
-      </div>
-      <div id="face-controls" class="face-gallery">
-        <div class="head"><h2>Known people gallery</h2><span id="gallery-summary">Loading...</span></div>
-        <div class="note">Used by the stranger detector. A usable face that is not enrolled here is reported as a stranger.</div>
-        <div class="face-fields">
-          <label class="field"><span>Person ID</span><input id="person-id" type="text" spellcheck="false" placeholder="alice"></label>
-          <label class="field"><span>Name</span><input id="person-name" type="text" spellcheck="false" placeholder="Alice"></label>
-          <label class="field"><span>Face image</span><input id="person-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
-          <button id="enroll-button" class="btn">Enroll</button>
-        </div>
-        <div id="gallery-note" class="note">Loading gallery...</div>
-        <div class="scroll face-list">
-          <table>
-            <thead><tr><th>Person ID</th><th>Name</th><th>Samples</th><th></th></tr></thead>
-            <tbody id="gallery-body"></tbody>
-          </table>
-        </div>
-      </div>
     </section>
 
     <section class="panel stack">
       <div id="decision" class="decision">
-        <div id="decision-eyebrow" class="eyebrow">Live five-event classification</div>
+        <div id="decision-eyebrow" class="eyebrow">Live selected-feature classification</div>
         <div id="verdict" class="verdict">READY</div>
         <div id="confidence" class="confidence"></div>
         <div id="event-statuses" class="event-statuses"></div>
-        <div id="face-diagnostic-summary" class="note">Face diagnostics | waiting for the first analyzed frame.</div>
-        <div id="description" class="description">Choose an input, then start five-event detection.</div>
+        <div id="description" class="description">Choose features and an input, then start detection.</div>
         <div id="decision-meta" class="meta"></div>
       </div>
-      <div class="row">
-        <button id="start-button" class="btn primary" disabled>Start five-event detection</button>
-        <button id="stop-button" class="btn danger" disabled>Stop</button>
-      </div>
-      <div id="status-line" class="status">Loading service information...</div>
     </section>
   </div>
 
+  <section class="panel output-console">
+    <div class="head debug-head">
+      <div class="section-title"><span class="step">3</span><h2>Output debug &amp; delivery checks</h2></div>
+      <div class="channel-row">
+        <span id="output-channel" class="channel">Annotated output · buffering</span>
+        <span id="last-update" class="channel">Status · waiting</span>
+      </div>
+    </div>
+    <div class="metrics">
+      <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
+      <div class="metric"><span class="metric-label">Results published</span><strong id="published-result-count" class="metric-value">0</strong><span id="last-result-note" class="metric-note">No result yet</span></div>
+      <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Correlated 1:1 with results</span></div>
+      <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">Waiting for delayed frames</span></div>
+    </div>
+    <div class="endpoint-grid" aria-label="Output and API shortcuts">
+      <a class="endpoint" href="/v1/video/annotated/stream.mjpeg" target="_blank" rel="noreferrer">Annotated stream <small>MJPEG</small></a>
+      <a class="endpoint" href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Exact evidence stream <small>MJPEG</small></a>
+      <a class="endpoint" href="/v1/video/live/stream.mjpeg" target="_blank" rel="noreferrer">Raw source stream <small>MJPEG</small></a>
+      <a class="endpoint" href="/v1/video/annotated/latest.jpg" target="_blank" rel="noreferrer">Latest annotated frame <small>JPEG</small></a>
+      <a class="endpoint" href="/v1/video/latest.jpg" target="_blank" rel="noreferrer">Latest exact evidence <small>JPEG</small></a>
+      <a class="endpoint" href="/v1/results/latest" target="_blank" rel="noreferrer">Latest result <small>JSON</small></a>
+      <a class="endpoint" href="/v1/results/events" target="_blank" rel="noreferrer">Result event stream <small>SSE</small></a>
+      <a class="endpoint" href="/v1/status" target="_blank" rel="noreferrer">Runtime status <small>API</small></a>
+    </div>
+  </section>
+
   <div class="data">
     <section class="panel">
-      <div class="head"><h2>Service status</h2><span>GET /v1/status</span></div>
+      <div class="head"><h2>Service status</h2><a class="muted-link" href="/v1/status" target="_blank" rel="noreferrer">GET /v1/status ↗</a></div>
       <pre id="status-json">Loading...</pre>
     </section>
     <section class="panel">
-      <div class="head"><h2>Latest AnalysisResult</h2><span>SSE /v1/results/events</span></div>
+      <div class="head"><h2>Latest AnalysisResult</h2><a class="muted-link" href="/v1/results/events" target="_blank" rel="noreferrer">SSE /v1/results/events ↗</a></div>
       <pre id="result-json">Waiting for the first analysis result...</pre>
     </section>
   </div>
 
+  <section class="panel face-panel">
+    <div class="section-title"><span class="step">4</span><h2>Face data debug</h2></div>
+    <div id="face-diagnostic-summary" class="face-diagnostic">Face diagnostics | waiting for the first analyzed frame.</div>
+    <div id="face-controls" class="face-gallery">
+      <div class="head">
+        <h2>Known people gallery</h2>
+        <div class="gallery-head-actions"><span id="gallery-summary">Loading...</span><button id="refresh-gallery-button" class="btn">Refresh</button></div>
+      </div>
+      <div class="note">Used by the stranger detector. Upload one clear face image; any usable face not enrolled here is reported as a stranger.</div>
+      <div class="face-fields">
+        <label class="field"><span>Person ID</span><input id="person-id" type="text" spellcheck="false" placeholder="alice"></label>
+        <label class="field"><span>Display name</span><input id="person-name" type="text" spellcheck="false" placeholder="Alice"></label>
+        <label class="field"><span>Face image</span><input id="person-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
+        <button id="enroll-button" class="btn">Enroll face</button>
+      </div>
+      <div id="gallery-note" class="note">Loading gallery...</div>
+      <div class="scroll face-list">
+        <table>
+          <thead><tr><th>Person ID</th><th>Name</th><th>Samples</th><th>Action</th></tr></thead>
+          <tbody id="gallery-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <section class="panel log">
-    <div class="head"><h2>Window log</h2><span id="result-count">0 results</span></div>
+    <div class="head"><h2>Live result log</h2><span id="result-count">0 results</span></div>
     <div class="scroll">
       <table>
         <thead><tr><th>Result</th><th>Video time</th><th>Verdict</th><th>Conf.</th><th>Latency</th><th>Bboxes</th><th>Description</th></tr></thead>
@@ -143,17 +254,29 @@ input[type=text],input[type=file]{width:100%;min-width:180px;padding:8px 12px;co
 "use strict";
 const $=id=>document.getElementById(id);
 const ui={
-  service:$("service-chip"),model:$("model-chip"),event:$("event-chip"),sampling:$("sampling-chip"),
+  deploymentStorage:$("deployment-storage"),defaultStreamUrl:$("default-stream-url"),
+  defaultStreamStatus:$("default-stream-status"),defaultApiKey:$("default-api-key"),
+  defaultApiKeyStatus:$("default-api-key-status"),defaultDryRun:$("default-dry-run"),
+  defaultAutostart:$("default-autostart"),deploymentSourceStatus:$("deployment-source-status"),
+  saveDeployment:$("save-deployment-button"),resetDeployment:$("reset-deployment-button"),
+  clearApiKey:$("clear-api-key-button"),deploymentNote:$("deployment-note"),
+  service:$("service-chip"),sourceChip:$("source-chip"),readinessChip:$("readiness-chip"),
+  model:$("model-chip"),event:$("event-chip"),sampling:$("sampling-chip"),
   analysisChipLabel:$("analysis-chip-label"),eventControls:$("event-controls"),faceControls:$("face-controls"),
   warning:$("secure-warning"),cameraMode:$("camera-mode"),streamMode:$("stream-mode"),
   cameraControls:$("camera-controls"),streamControls:$("stream-controls"),cameraButton:$("camera-button"),
   cameraNote:$("camera-note"),sourceNote:$("source-note"),streamUrl:$("stream-url"),
-  dryRun:$("dry-run"),start:$("start-button"),stop:$("stop-button"),
+  dryRun:$("dry-run"),featureSelect:$("feature-select"),start:$("start-button"),stop:$("stop-button"),
   gallerySummary:$("gallery-summary"),personId:$("person-id"),personName:$("person-name"),
   personFile:$("person-file"),enroll:$("enroll-button"),galleryNote:$("gallery-note"),
-  galleryBody:$("gallery-body"),eyebrow:$("decision-eyebrow"),
-  annotationNote:$("annotation-note"),
-  streamMeta:$("stream-meta"),
+  galleryBody:$("gallery-body"),refreshGallery:$("refresh-gallery-button"),eyebrow:$("decision-eyebrow"),
+  annotationNote:$("annotation-note"),streamMeta:$("stream-meta"),runtimeError:$("runtime-error"),
+  connectionOrb:$("connection-orb"),connectionState:$("connection-state"),
+  connectionDetail:$("connection-detail"),controlChannel:$("control-channel"),sseChannel:$("sse-channel"),
+  outputChannel:$("output-channel"),lastUpdate:$("last-update"),
+  sourceFrameCount:$("source-frame-count"),publishedResultCount:$("published-result-count"),
+  analysisFrameCount:$("analysis-frame-count"),annotatedState:$("annotated-state"),
+  annotatedNote:$("annotated-note"),lastFrameNote:$("last-frame-note"),lastResultNote:$("last-result-note"),
   statusLine:$("status-line"),viewport:$("live-viewport"),cameraPreview:$("camera-preview"),
   rawFeed:$("raw-feed"),rawPlaceholder:$("raw-placeholder"),
   rawBadge:$("raw-badge"),rawBadgeText:$("raw-badge-text"),bboxLayer:$("bbox-layer"),
@@ -162,39 +285,71 @@ const ui={
   description:$("description"),meta:$("decision-meta"),statusJson:$("status-json"),
   resultJson:$("result-json"),resultCount:$("result-count"),logBody:$("log-body")
 };
+const featureInputs=[...document.querySelectorAll("[data-feature]")];
 const localHosts=new Set(["localhost","127.0.0.1","::1","[::1]"]);
 const detectionEvents=["fight","smoking","fall","weapon","stranger"];
 const cameraAllowed=window.isSecureContext||localHosts.has(location.hostname);
 const activeStates=new Set(["starting","running"]);
 const state={
-  info:null,mode:"stream",sessionAnalysisMode:null,
+  info:null,mode:"stream",sessionAnalysisMode:null,sessionFeatures:null,
+  deployment:null,deploymentLoading:false,deploymentSaving:false,runOverridesDirty:false,
   gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
   ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,count:0,
   activeAnnotationId:null,annotationTimer:null
 };
 function number(value,digits){const n=Number(value);return Number.isFinite(n)?n.toFixed(digits):"-"}
 function say(text,error=false){ui.statusLine.textContent=text;ui.statusLine.className="status"+(error?" error":"")}
-function configured(){return state.info&&state.info.configured_stream===true}
+function count(value){const n=Number(value);return Number.isFinite(n)&&n>=0?Math.floor(n).toLocaleString():"0"}
+function timeLabel(value){
+  if(!value)return "none yet";
+  const date=new Date(value);return Number.isNaN(date.getTime())?String(value):date.toLocaleTimeString()
+}
+function setChannel(element,text,tone=""){
+  element.textContent=text;element.className="channel"+(tone?" "+tone:"")
+}
+function setConnection(title,detail,tone=""){
+  ui.connectionState.textContent=title;ui.connectionDetail.textContent=detail;
+  ui.connectionOrb.className="state-orb"+(tone?" "+tone:"")
+}
+function deploymentSay(text,error=false){
+  ui.deploymentNote.textContent=text;ui.deploymentNote.className="status deployment-note"+(error?" error":"")
+}
+function configured(){
+  return state.deployment&&state.deployment.configured_stream===true||
+    state.info&&state.info.configured_stream===true
+}
 function cameraSettings(){
   if(!state.info)return null;
-  return state.info.multi||state.info
+  return visibleFeatures().includes("stranger")?(state.info.multi||state.info):state.info
 }
 function cameraConfig(){
   const i=cameraSettings();
   return i&&Number.isFinite(i.sample_fps)&&i.sample_fps>0&&Number.isInteger(i.max_image_side)&&
     i.max_image_side>0&&Number.isFinite(i.jpeg_quality)&&i.jpeg_quality>=1&&i.jpeg_quality<=100
 }
+function selectedFeatures(){return featureInputs.filter(item=>item.checked).map(item=>item.dataset.feature)}
+function visibleFeatures(){return state.running&&Array.isArray(state.sessionFeatures)?state.sessionFeatures:selectedFeatures()}
 function controls(){
   const busy=state.running||state.pending;
   const ready=state.mode==="camera"
     ?cameraAllowed&&cameraConfig()&&!!state.cameraStream
     :!!ui.streamUrl.value.trim()||configured();
-  ui.start.disabled=busy||!state.info||!ready;ui.stop.disabled=!busy;
+  ui.start.disabled=busy||!state.info||!ready||selectedFeatures().length===0;ui.stop.disabled=!busy;
   for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun])item.disabled=busy;
+  for(const item of featureInputs)item.disabled=busy;
   ui.cameraButton.disabled=busy||!cameraAllowed||!cameraConfig();
+  ui.refreshGallery.disabled=busy||state.galleryLoading;
   const galleryBusy=busy||state.galleryLoading||!state.gallery||state.gallery.ready!==true;
   for(const item of [ui.personId,ui.personName,ui.personFile,ui.enroll])item.disabled=galleryBusy;
-  for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy
+  for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy;
+  const persistenceReady=state.deployment&&state.deployment.persistence_available===true;
+  const deploymentBusy=state.deploymentLoading||state.deploymentSaving;
+  for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart])
+    item.disabled=!persistenceReady||deploymentBusy;
+  ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||busy;
+  ui.resetDeployment.disabled=deploymentBusy||!state.deployment;
+  ui.clearApiKey.disabled=!persistenceReady||deploymentBusy||busy||
+    state.deployment.api_key_persisted!==true
 }
 function mode(next){
   if(state.running||state.pending)return;
@@ -220,16 +375,22 @@ function updateAnnotatedOutput(output){
   const stateLabel=value.state==="running"?mode.toUpperCase():"BUFFERING";
   ui.rawBadgeText.textContent="DELAYED | "+stateLabel;
   ui.streamMeta.textContent=annotatedOutputText(value);
+  ui.annotatedState.textContent=stateLabel;
+  ui.annotatedNote.textContent=annotatedOutputText(value)+(mode!=="none"?" · "+mode:" · no frame yet");
+  setChannel(ui.outputChannel,"Annotated output · "+stateLabel.toLowerCase(),value.state==="running"?"good":"warn")
 }
 function updateAnalysisUi(){
   const settings=cameraSettings()||{};
+  const features=visibleFeatures();
   ui.eventControls.hidden=false;ui.faceControls.hidden=false;ui.eventStatuses.hidden=false;
   ui.analysisChipLabel.textContent="events";
+  // The public model label is supplied by the service (for example,
+  // numaira-beta-fast); never expose or infer an underlying provider model here.
   ui.model.textContent=state.info&&state.info.model||"unknown";
-  ui.event.textContent="5 fixed";
+  ui.event.textContent=features.length+" selected";
   ui.sampling.textContent=samplingText(settings)+" analysis";
-  ui.eyebrow.textContent="Live five-event classification";
-  ui.start.textContent="Start five-event detection";
+  ui.eyebrow.textContent="Live selected-feature classification";
+  ui.start.textContent="Start selected detection";
   const output=state.info&&state.info.annotated_output||{};
   ui.annotationNote.innerHTML="The server buffers full-cadence frames for "+
     annotatedOutputText(output)+". Every display frame keeps the last bbox until a keyframe updates or clears it; compatible keyframes are interpolated. "+
@@ -237,7 +398,9 @@ function updateAnalysisUi(){
   if(!state.running&&!state.pending){
     ui.decision.className="decision warming";ui.verdict.textContent="READY";
     ui.confidence.textContent="";
-    ui.description.textContent="Choose an input, then start detection for fight, smoking, fall, weapon, and stranger.";
+    ui.description.textContent=features.length
+      ?"Ready to detect: "+features.join(", ")+"."
+      :"Select at least one detection feature.";
     ui.meta.textContent="";resetAnnotations();renderEventStatuses([])
   }
   controls();if(!state.gallery&&!state.galleryLoading)refreshGallery()
@@ -258,7 +421,7 @@ function surfaces(){
   ui.rawFeed.style.display=state.running?"block":"none";
   ui.rawFeed.style.visibility="visible";
   if(!state.running&&!previewCamera){
-    ui.rawPlaceholder.textContent="Choose Camera or Network stream, then start.";
+    ui.rawPlaceholder.textContent="Connect a source above to inspect the Docker-delivered output.";
     ui.rawPlaceholder.style.display="block"
   }else{
     ui.rawPlaceholder.style.display="none"
@@ -276,6 +439,104 @@ function openFeed(){
 }
 function closeFeed(){
   ui.rawFeed.removeAttribute("src");resetAnnotations();surfaces()
+}
+
+function settingsSourceLabel(value){
+  const source=String(value||"built-in defaults").trim().replaceAll("_"," ");
+  return source.charAt(0).toUpperCase()+source.slice(1)
+}
+function updateSourceNote(){
+  const deployment=state.deployment;
+  if(deployment&&deployment.configured_stream===true){
+    const protocol=String(deployment.configured_stream_protocol||"network").toUpperCase();
+    ui.sourceNote.textContent="Saved/default "+protocol+" source is available. Leave this session URL blank to use it, or enter a one-run override."
+  }else if(configured()){
+    ui.sourceNote.textContent="A default network source is available. Leave this session URL blank to use it, or enter a one-run override."
+  }else{
+    ui.sourceNote.textContent="No saved/default network source is configured. Enter a one-run URL above or save one in Deployment defaults."
+  }
+}
+function renderDeploymentSettings(clearSecrets=true,syncRun=false){
+  const data=state.deployment;if(!data)return;
+  if(clearSecrets){ui.defaultStreamUrl.value="";ui.defaultApiKey.value=""}
+  ui.defaultDryRun.checked=data.dry_run===true;
+  ui.defaultAutostart.checked=data.autostart===true;
+  const available=data.persistence_available===true;
+  ui.deploymentStorage.textContent=available?"Persistence · available":"Persistence · unavailable";
+  ui.deploymentStorage.className="channel "+(available?"good":"warn");
+  const protocol=String(data.configured_stream_protocol||"network").toUpperCase();
+  ui.defaultStreamStatus.textContent=data.configured_stream===true
+    ?protocol+" source configured · address hidden · entering a value replaces it"
+    :"No default source configured · enter a network stream URL to save one";
+  ui.defaultApiKeyStatus.textContent=data.api_key_persisted===true
+    ?"Saved API key present · value hidden · blank keeps it"
+    :data.api_key_present===true
+      ?"API key available from runtime/environment · value hidden"
+      :"No API key configured · formal mode cannot call the model";
+  ui.defaultApiKey.placeholder=data.api_key_present===true
+    ?"Leave blank to keep the current key"
+    :"Enter an API key for formal mode";
+  ui.deploymentSourceStatus.textContent="Effective source: "+settingsSourceLabel(data.settings_source)+
+    (data.settings_saved===true?" · persistent settings saved":" · no persistent override saved");
+  if(syncRun&&!state.running&&!state.pending){
+    ui.streamUrl.value="";ui.dryRun.checked=data.dry_run===true;state.runOverridesDirty=false
+  }
+  updateSourceNote();controls()
+}
+async function loadDeploymentSettings(discarded=false){
+  if(state.deploymentLoading||state.deploymentSaving)return;
+  state.deploymentLoading=true;deploymentSay("Loading persistent settings...");controls();
+  try{
+    const response=await fetch("/v1/deployment/settings",{cache:"no-store"});
+    if(!response.ok)throw new Error(await responseError(response));
+    state.deployment=await response.json();renderDeploymentSettings(true,!state.runOverridesDirty);
+    if(state.deployment.storage_error){
+      deploymentSay("Persistent storage error: "+state.deployment.storage_error,true)
+    }else if(state.deployment.persistence_available!==true){
+      deploymentSay("Persistent storage is unavailable. The container needs a writable deployment data volume.",true)
+    }else{
+      deploymentSay(discarded
+        ?"Unsaved deployment edits discarded. Saved/default values reloaded; secret fields remain hidden."
+        :"Persistent defaults loaded. Stop the current session before saving changes.")
+    }
+  }catch(error){
+    state.deployment=null;ui.deploymentStorage.textContent="Persistence · unreachable";
+    ui.deploymentStorage.className="channel warn";
+    deploymentSay("Could not load persistent settings: "+error.message,true)
+  }finally{state.deploymentLoading=false;controls()}
+}
+async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={}){
+  if(state.running||state.pending){
+    deploymentSay("Stop the current session before saving persistent settings.",true);return false
+  }
+  if(!state.deployment||state.deployment.persistence_available!==true)return false;
+  state.deploymentSaving=true;deploymentSay("Saving persistent settings...");controls();
+  try{
+    const response=await fetch("/v1/deployment/settings",{
+      method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)
+    });
+    if(!response.ok)throw new Error(await responseError(response));
+    state.deployment=await response.json();renderDeploymentSettings(true,syncRun);
+    await info();renderDeploymentSettings(true,syncRun);
+    deploymentSay(successMessage);return true
+  }catch(error){
+    deploymentSay("Could not save persistent settings: "+error.message,true);return false
+  }finally{state.deploymentSaving=false;controls()}
+}
+async function saveDeploymentSettings(){
+  const payload={dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked};
+  const streamUrl=ui.defaultStreamUrl.value.trim(),apiKey=ui.defaultApiKey.value.trim();
+  if(streamUrl)payload.stream_url=streamUrl;
+  if(apiKey)payload.api_key=apiKey;
+  await updateDeploymentSettings(payload,
+    "Deployment defaults saved. They will be used by the next session and container start; no running session was restarted.",
+    {syncRun:true})
+}
+async function clearSavedApiKey(){
+  if(!state.deployment||state.deployment.api_key_persisted!==true)return;
+  if(!window.confirm("Clear the saved API key? Formal mode will require another available key."))return;
+  await updateDeploymentSettings({clear_api_key:true},
+    "Saved API key cleared. A runtime/environment key, if configured, remains available.")
 }
 
 async function info(){
@@ -302,10 +563,9 @@ async function info(){
     }
     state.info=data;
     updateAnnotatedOutput(data.annotated_output);
-    ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present);
-    ui.sourceNote.textContent=configured()
-      ?"Leave Stream URL blank for the configured source, or enter a temporary network URL."
-      :"No server stream is configured. Enter a network URL.";
+    if(!state.runOverridesDirty&&!state.deployment)
+      ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present);
+    updateSourceNote();
     say("Ready. Choose an input or monitor the active server session.");updateAnalysisUi()
   }catch(error){say("Could not load /v1/ui/info: "+error.message,true)}
   controls()
@@ -582,38 +842,43 @@ function connect(){
   return new Promise((resolve,reject)=>{
     if(state.ws&&state.ws.readyState===1){resolve(state.ws);return}
     const scheme=location.protocol==="https:"?"wss://":"ws://",socket=new WebSocket(scheme+location.host+"/ws");
-    state.ws=socket;const timer=setTimeout(()=>reject(new Error("WebSocket timeout")),5000);
-    socket.onopen=()=>{clearTimeout(timer);resolve(socket)};
+    state.ws=socket;setChannel(ui.controlChannel,"Control WS · connecting","warn");
+    const timer=setTimeout(()=>{setChannel(ui.controlChannel,"Control WS · timeout","warn");reject(new Error("WebSocket timeout"))},5000);
+    socket.onopen=()=>{clearTimeout(timer);setChannel(ui.controlChannel,"Control WS · connected","good");resolve(socket)};
     socket.onmessage=event=>{if(typeof event.data==="string")message(JSON.parse(event.data))};
-    socket.onerror=()=>{};
-    socket.onclose=()=>{clearTimeout(timer);state.ws=null;stopSampler()}
+    socket.onerror=()=>{setChannel(ui.controlChannel,"Control WS · error","warn")};
+    socket.onclose=()=>{clearTimeout(timer);state.ws=null;stopSampler();setChannel(ui.controlChannel,"Control WS · closed")}
   })
 }
 function message(data){
   if(data.type==="session"){
     state.pending=false;state.running=true;state.sessionMode=data.mode||state.mode;
     state.sessionAnalysisMode=data.analysis_mode||"multi";
+    state.sessionFeatures=Array.isArray(data.features)?data.features:detectionEvents;
     state.sessionId=data.stream_session_id||data.session_id||null;
     openFeed();
     if(state.sessionMode==="camera")startSampler();
     say("Live | "+(state.sessionMode==="camera"?"browser camera":"network stream")+
-      " | "+(state.sessionAnalysisMode==="face"?"face diagnostics":"five-event detection")+
+      " | "+(state.sessionAnalysisMode==="face"?"face diagnostics":state.sessionFeatures.join(" + "))+
       " | continuous delayed annotation"+(state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""));
     controls()
   }else if(data.type==="error"){
-    state.pending=false;say(data.message||data.error||"Session error",true);controls()
+    state.pending=false;const detail=data.message||data.error||"Session error";
+    say(detail,true);setConnection("Session error",detail,"bad");controls()
   }else if(data.type==="ended"){
-    state.pending=false;state.running=false;state.sessionAnalysisMode=null;stopSampler();closeFeed();
+    state.pending=false;state.running=false;state.sessionAnalysisMode=null;state.sessionFeatures=null;stopSampler();closeFeed();
     say("Session ended | "+(data.reason||"unknown")+(data.error?" | "+data.error:""),!!data.error);
+    setConnection(data.error?"Session failed":"Session stopped",data.error||data.reason||"No active video source.",data.error?"bad":"");
     updateAnalysisUi()
   }
 }
 async function start(){
   if(state.running||state.pending||!state.info)return;
-  state.pending=true;reset();say("Starting session...");controls();
+  state.pending=true;reset();say("Starting session...");
+  setConnection("Starting session","Opening the selected video source and waiting for its first frame.","warn");controls();
   try{
     const socket=await connect(),data={
-      type:"start",mode:state.mode,analysis_mode:"multi"
+      type:"start",mode:state.mode,analysis_mode:"multi",features:selectedFeatures()
     };
     data.dry_run=ui.dryRun.checked;
     if(state.mode==="stream")data.stream_url=ui.streamUrl.value.trim();
@@ -622,26 +887,54 @@ async function start(){
 }
 async function stop(){
   try{
-    const socket=await connect();socket.send(JSON.stringify({type:"stop"}));say("Stopping session...")
+    const socket=await connect();socket.send(JSON.stringify({type:"stop"}));say("Stopping session...");
+    setConnection("Stopping session","Waiting for the video worker to stop cleanly.","warn")
   }catch(error){say("Could not stop: "+error.message,true)}
 }
 function reset(){
   state.count=0;ui.resultCount.textContent="0 results";ui.logBody.replaceChildren();
   ui.resultJson.textContent="Waiting for the first analysis result...";ui.decision.className="decision warming";
   ui.verdict.textContent="WARMING";ui.confidence.textContent="";
-  ui.description.textContent="Waiting for five-event analysis.";
+  ui.description.textContent="Waiting for selected-feature analysis.";
   ui.meta.textContent="";resetAnnotations();renderEventStatuses([])
+}
+
+function updateRuntimeSummary(data){
+  const pipeline=String(data.pipeline_state||"unknown"),active=activeStates.has(pipeline);
+  const inputMode=String(data.input_mode||""),stream=data.stream&&typeof data.stream==="object"?data.stream:{};
+  const protocol=String(stream.protocol||"").toUpperCase();
+  const modeLabel=inputMode==="camera"?"browser camera":inputMode==="stream"?(protocol?protocol+" network stream":"network stream"):"no source";
+  const frames=count(data.source_frames_received),results=count(data.results_published),exact=count(data.analysis_frames_published);
+  ui.service.textContent=pipeline;ui.sourceChip.textContent=active?(Number(data.source_frames_received)>0?"receiving":"connecting"):pipeline;
+  ui.readinessChip.textContent=data.ready===true?"ready":String(data.readiness_reason||"not ready").replaceAll("_"," ");
+  ui.sourceFrameCount.textContent=frames;ui.publishedResultCount.textContent=results;ui.analysisFrameCount.textContent=exact;
+  ui.lastFrameNote.textContent=data.last_frame_at?"Last frame · "+timeLabel(data.last_frame_at):"No frame received";
+  ui.lastResultNote.textContent=data.last_result_at?"Last result · "+timeLabel(data.last_result_at):"No result yet";
+  setChannel(ui.lastUpdate,"Status · "+new Date().toLocaleTimeString(),data.ready===true?"good":"warn");
+  const error=String(data.last_error||"").trim();
+  ui.runtimeError.hidden=!error;ui.runtimeError.textContent=error?"Runtime error · "+error:"";
+  if(error||pipeline==="error"||pipeline==="configuration_error"){
+    setConnection("Attention required",error||("Runtime state: "+pipeline),"bad")
+  }else if(data.ready===true){
+    setConnection("Ready and delivering",modeLabel+" · fresh frames and analysis results are available.","good")
+  }else if(active){
+    const reason=String(data.readiness_reason||"warming").replaceAll("_"," ");
+    setConnection(pipeline==="starting"?"Connecting source":"Pipeline warming",modeLabel+" · "+reason+".","warn")
+  }else{
+    setConnection("No active session","Select a source and start detection. Runtime state: "+pipeline+".")
+  }
 }
 
 async function status(){
   try{
     const response=await fetch("/v1/status",{cache:"no-store"}),data=await response.json();
-    ui.statusJson.textContent=JSON.stringify(data,null,2);ui.service.textContent=data.pipeline_state||"unknown";
-    updateAnnotatedOutput(data.annotated_output);
+    ui.statusJson.textContent=JSON.stringify(data,null,2);updateAnnotatedOutput(data.annotated_output);updateRuntimeSummary(data);
     const active=activeStates.has(data.pipeline_state);
     if(active){
       state.running=true;state.pending=false;state.sessionId=data.stream_session_id||state.sessionId;
-      state.sessionAnalysisMode=data.analysis_mode||state.sessionAnalysisMode||"multi";updateAnalysisUi();
+      state.sessionAnalysisMode=data.analysis_mode||state.sessionAnalysisMode||"multi";
+      state.sessionFeatures=Array.isArray(data.features)?data.features:
+        (Array.isArray(data.event_labels)?data.event_labels:detectionEvents);updateAnalysisUi();
       state.sessionMode=data.input_mode||data.mode||(data.stream?"stream":state.sessionMode)||"stream";
       if(state.sessionMode==="stream"){
         state.mode="stream";ui.streamMode.classList.add("active");ui.cameraMode.classList.remove("active");
@@ -652,10 +945,14 @@ async function status(){
         (data.ready?"ready":data.readiness_reason||"warming")+" | continuous delayed annotation"+
         (state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""))
     }else if(state.running&&!state.pending){
-      state.running=false;state.sessionAnalysisMode=null;stopSampler();closeFeed();updateAnalysisUi()
+      state.running=false;state.sessionAnalysisMode=null;state.sessionFeatures=null;stopSampler();closeFeed();updateAnalysisUi()
     }
     if(data.last_error)say("Analysis error: "+data.last_error,true);controls()
-  }catch(error){ui.service.textContent="unreachable";ui.statusJson.textContent=String(error)}
+  }catch(error){
+    ui.service.textContent="unreachable";ui.sourceChip.textContent="unknown";ui.readinessChip.textContent="unreachable";
+    ui.statusJson.textContent=String(error);setConnection("Service unreachable","GET /v1/status failed: "+error.message,"bad");
+    setChannel(ui.lastUpdate,"Status · unreachable","warn")
+  }
 }
 function analysis(result){
   if(!result||result.type!=="analysis_result")return;
@@ -682,7 +979,7 @@ function analysis(result){
     " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.length+" bbox"+(ids.length===1?"":"es")+
     (memoryIds.length?" | "+memoryIds.length+" known reference"+(memoryIds.length===1?"":"s"):"")+
     " | model "+number(model.latency_seconds,2)+"s";
-  ui.analysisChipLabel.textContent="events";ui.event.textContent="5 fixed";ui.eventStatuses.hidden=false;
+  ui.analysisChipLabel.textContent="events";ui.event.textContent=judgments.length+" selected";ui.eventStatuses.hidden=false;
   renderEventStatuses(judgments);clearAnnotation();log(result,judgments,ids.length)
 }
 function analysisFace(result){
@@ -713,10 +1010,12 @@ function renderEventStatuses(judgments){
   ui.faceDiagnosticSummary.textContent=stranger
     ?"Face diagnostics | "+(stranger.detected===true?"STRANGER ALERT":"CLEAR")+" | "+
       (stranger.description||"No face diagnostic details.")
-    :"Face diagnostics | waiting for the first analyzed frame.";
-  ui.faceDiagnosticSummary.className="note"+(stranger&&stranger.detected===true?" error":"");
+    :visibleFeatures().includes("stranger")
+      ?"Face diagnostics | waiting for the first analyzed frame."
+      :"Face diagnostics | stranger detection is not enabled.";
+  ui.faceDiagnosticSummary.className="face-diagnostic"+(stranger&&stranger.detected===true?" error":"");
   ui.eventStatuses.replaceChildren();
-  for(const eventLabel of detectionEvents){
+  for(const eventLabel of visibleFeatures()){
     const judgment=indexed.get(eventLabel),item=document.createElement("div");
     item.className="event-state";
     const name=document.createElement("span"),status=document.createElement("span");
@@ -775,9 +1074,22 @@ function logFace(result,summary){
   ui.logBody.prepend(row);while(ui.logBody.children.length>200)ui.logBody.lastChild.remove()
 }
 
+function deploymentEdited(){
+  deploymentSay(state.running||state.pending
+    ?"Deployment edits are staged. Stop the current session before saving."
+    :"Unsaved deployment edits. Save defaults or discard edits.")
+}
+ui.defaultStreamUrl.oninput=deploymentEdited;ui.defaultApiKey.oninput=deploymentEdited;
+ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
+ui.saveDeployment.onclick=saveDeploymentSettings;
+ui.resetDeployment.onclick=()=>loadDeploymentSettings(true);
+ui.clearApiKey.onclick=clearSavedApiKey;
 ui.cameraMode.onclick=()=>mode("camera");ui.streamMode.onclick=()=>mode("stream");
-ui.cameraButton.onclick=camera;ui.streamUrl.oninput=controls;
-ui.enroll.onclick=enrollPerson;
+ui.cameraButton.onclick=camera;
+ui.streamUrl.oninput=()=>{state.runOverridesDirty=true;controls()};
+ui.dryRun.onchange=()=>{state.runOverridesDirty=true;controls()};
+for(const item of featureInputs)item.onchange=()=>{updateAnalysisUi();controls()};
+ui.enroll.onclick=enrollPerson;ui.refreshGallery.onclick=refreshGallery;
 ui.start.onclick=start;ui.stop.onclick=stop;
 window.addEventListener("resize",()=>{alignAnnotationLayer()});
 if(!cameraAllowed){
@@ -794,6 +1106,8 @@ async function connectResultEvents(){
     if(latest.ok&&Number.isInteger(cursor)&&cursor>=0)after=cursor
   }catch(_){}
   events=new EventSource("/v1/results/events?after="+after);
+  events.onopen=()=>setChannel(ui.sseChannel,"Result SSE · connected","good");
+  events.onerror=()=>setChannel(ui.sseChannel,"Result SSE · reconnecting","warn");
   events.addEventListener("analysis_result",event=>{
     try{analysis(JSON.parse(event.data))}catch(_){say("Invalid AnalysisResult JSON.",true)}
   })
@@ -803,7 +1117,7 @@ window.addEventListener("beforeunload",()=>{
   if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
   if(state.ws)state.ws.close()
 });
-mode("stream");info();status().finally(connectResultEvents);setInterval(status,2000);
+mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
 </script>
 </body>
 </html>

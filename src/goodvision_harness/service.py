@@ -9,19 +9,20 @@ import logging
 import os
 import struct
 import time
-from collections.abc import AsyncIterator, Callable
+import unicodedata
+from collections.abc import AsyncIterator, Callable, Collection
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
@@ -32,18 +33,25 @@ from .config import (
     ServiceSettings,
     load_config,
 )
-from .contracts import AnalysisResult
+from .contracts import AnalysisResult, PUBLIC_MODEL_NAME
 from .delayed_overlay import DelayedOverlayComposer
 from .delivery import WebhookDelivery
+from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
 from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
 from .grounding import (
     DETECTION_EVENT_LABELS,
-    build_fixed_five_grounding_client,
     build_grounding_client,
+    build_selected_features_grounding_client,
 )
-from .openrouter import api_key_present
 from .overlay import draw_overlay
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
+from .privacy import (
+    PUBLIC_ANALYSIS_ERROR,
+    PUBLIC_FACE_ERROR,
+    public_error_message,
+    public_safe_value,
+    redact_public_text,
+)
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
     UNKNOWN_FACE_EVENT_LABEL,
@@ -63,6 +71,8 @@ CAMERA_FRAME_MAX_BYTES = 2_000_000
 EVENT_LABEL_MAX_CHARS = 80
 PERSON_FIELD_MAX_CHARS = 120
 FACE_ENROLLMENT_MAX_BYTES = 10_000_000
+DEPLOYMENT_VALUE_MAX_CHARS = 4096
+DEPLOYMENT_REQUEST_MAX_BYTES = 64 * 1024
 EVENT_ANALYSIS_MODE = "event"
 FACE_ANALYSIS_MODE = "face"
 MULTI_ANALYSIS_MODE = "multi"
@@ -81,15 +91,53 @@ class HarnessRuntime:
         config_error: str | None = None,
         memory_sink: VisualMemorySink | None = None,
         face_runtime: FaceRecognitionRuntime | None = None,
+        deployment_store: DeploymentSettingsStore | None = None,
     ) -> None:
+        self._deployment_store = deployment_store
+        self._deployment_settings: DeploymentSettings | None = None
+        self._deployment_error: str | None = None
+        self._persisted_api_key: str | None = None
+        if deployment_store is not None:
+            try:
+                self._deployment_settings = deployment_store.load()
+                self._persisted_api_key = deployment_store.load_api_key()
+            except Exception:
+                LOGGER.error("could not load persistent deployment settings")
+                self._deployment_error = "persistent settings could not be loaded"
         try:
-            dry_run = _env_bool("HARNESS_DRY_RUN", False)
-        except ValueError as exc:
+            dry_run = (
+                self._deployment_settings.dry_run
+                if self._deployment_settings is not None
+                else _env_bool("HARNESS_DRY_RUN", False)
+            )
+            autostart = (
+                self._deployment_settings.autostart
+                if self._deployment_settings is not None
+                else _env_bool("HARNESS_AUTOSTART", True)
+            )
+        except ValueError:
             dry_run = False
-            config_error = config_error or f"configuration error: {exc}"
+            autostart = False
+            config_error = config_error or "configuration error"
         self.config = config
         self.config_error = config_error
         self.dry_run = dry_run
+        self.autostart = autostart
+        api_key_env = (
+            config.openrouter.api_key_env
+            if config is not None
+            else "MODEL_API_KEY"
+        )
+        self._environment_api_key = (
+            os.environ.get(api_key_env, "").strip()
+            or os.environ.get("MODEL_API_KEY", "").strip()
+            # Backward-compatible read only. The legacy name is never emitted.
+            or os.environ.get("OPENROUTER_API_KEY", "").strip()
+            or None
+        )
+        self._openrouter_api_key = (
+            self._persisted_api_key or self._environment_api_key
+        )
         self.settings = config.service if config is not None else ServiceSettings()
         self.source_id = (
             os.environ.get("HARNESS_SOURCE_ID", "").strip() or self.settings.source_id
@@ -159,7 +207,8 @@ class HarnessRuntime:
                 ",".join(DETECTION_EVENT_LABELS) if config is not None else None
             ),
             "event_labels": list(DETECTION_EVENT_LABELS),
-            "model": config.inference.model if config is not None else None,
+            "features": list(DETECTION_EVENT_LABELS),
+            "model": PUBLIC_MODEL_NAME if config is not None else None,
             "dry_run": self.dry_run,
             "webhook_enabled": False,
             "memory_enabled": memory_sink is not None,
@@ -171,28 +220,37 @@ class HarnessRuntime:
     @classmethod
     def from_environment(cls) -> HarnessRuntime:
         config_path = Path(os.environ.get("HARNESS_CONFIG", str(DEFAULT_CONFIG_PATH)))
+        deployment_path = os.environ.get(
+            "HARNESS_DEPLOYMENT_SETTINGS_PATH", ""
+        ).strip()
+        deployment_store = (
+            DeploymentSettingsStore(deployment_path) if deployment_path else None
+        )
         try:
             config = load_config(config_path)
-        except Exception as exc:
-            LOGGER.exception("could not load harness configuration")
-            return cls(None, config_error=f"configuration error: {exc}")
-        return cls(config)
+        except Exception:
+            LOGGER.error("could not load harness configuration")
+            return cls(
+                None,
+                config_error="configuration error",
+                deployment_store=deployment_store,
+            )
+        return cls(config, deployment_store=deployment_store)
 
     def configured_stream_url(self) -> str:
         if self.config is None:
             return ""
+        if self._deployment_settings is not None:
+            return self._deployment_settings.stream_url
         return (
-            os.environ.get("RTSP_URL", "").strip()
-            or os.environ.get("HARNESS_STREAM_URL", "").strip()
+            os.environ.get("HARNESS_STREAM_URL", "").strip()
+            or os.environ.get("RTSP_URL", "").strip()
             or (self.config.stream.url or "")
         )
 
-    def ui_info(self) -> dict[str, Any]:
-        if self.config is None:
-            return {
-                "configured": False,
-                "error": self.config_error or "configuration unavailable",
-            }
+    def deployment_settings(self) -> dict[str, Any]:
+        """Return persistent deployment metadata without returning any secret."""
+
         stream_url = self.configured_stream_url()
         protocol = None
         if stream_url:
@@ -200,11 +258,135 @@ class HarnessRuntime:
                 protocol = parse_stream_source(stream_url).protocol
             except ValueError:
                 protocol = None
+        if self._deployment_settings is not None:
+            source = "persistent"
+        elif os.environ.get("HARNESS_STREAM_URL", "").strip() or os.environ.get(
+            "RTSP_URL", ""
+        ).strip():
+            source = "environment"
+        else:
+            source = "image_default"
         return {
+            "persistence_available": self._deployment_store is not None,
+            "settings_saved": self._deployment_settings is not None,
+            "settings_source": source,
+            "configured_stream": bool(stream_url),
+            "configured_stream_protocol": protocol,
+            "stream_frame_crop": self.config.stream.frame_crop,
+            "dry_run": self.dry_run,
+            "autostart": self.autostart,
+            "api_key_present": bool(self._openrouter_api_key),
+            "api_key_persisted": bool(self._persisted_api_key),
+            "storage_error": self._deployment_error,
+        }
+
+    def update_deployment_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist console-managed defaults for the next session and restart."""
+
+        if self._deployment_store is None:
+            raise RuntimeError("persistent deployment storage is not configured")
+        allowed = {
+            "stream_url",
+            "dry_run",
+            "autostart",
+            "api_key",
+            "clear_api_key",
+        }
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise ValueError(f"unknown deployment setting: {unknown[0]}")
+        with self._control_lock:
+            if self._session is not None and self._session.running:
+                raise RuntimeError("stop the active session before saving settings")
+
+            setting_fields = {"stream_url", "dry_run", "autostart"}
+            settings: DeploymentSettings | None = None
+            if setting_fields.intersection(payload):
+                stream_url = payload.get("stream_url", self.configured_stream_url())
+                dry_run = payload.get("dry_run", self.dry_run)
+                autostart = payload.get("autostart", self.autostart)
+                if not isinstance(stream_url, str):
+                    raise ValueError("stream_url must be a string")
+                stream_url = stream_url.strip()
+                if len(stream_url) > DEPLOYMENT_VALUE_MAX_CHARS:
+                    raise ValueError("stream_url is too long")
+                if stream_url:
+                    parse_stream_source(stream_url)
+                if not isinstance(dry_run, bool):
+                    raise ValueError("dry_run must be boolean")
+                if not isinstance(autostart, bool):
+                    raise ValueError("autostart must be boolean")
+                settings = DeploymentSettings(
+                    stream_url=stream_url,
+                    dry_run=dry_run,
+                    autostart=autostart,
+                )
+
+            api_key = payload.get("api_key")
+            clear_api_key = payload.get("clear_api_key", False)
+            rendered_key: str | None = None
+            if not isinstance(clear_api_key, bool):
+                raise ValueError("clear_api_key must be boolean")
+            if api_key is not None and clear_api_key:
+                raise ValueError("cannot set and clear the API key together")
+            if api_key is not None:
+                if not isinstance(api_key, str):
+                    raise ValueError("api_key must be a string")
+                if any(
+                    unicodedata.category(character) == "Cc"
+                    for character in api_key
+                ):
+                    raise ValueError("api_key must not contain control characters")
+                rendered_key = api_key.strip()
+                if not rendered_key:
+                    raise ValueError("api_key must not be empty")
+                if len(rendered_key) > DEPLOYMENT_VALUE_MAX_CHARS:
+                    raise ValueError("api_key is too long")
+
+            # Do not mutate disk or runtime state until every supplied field has
+            # passed validation. A mixed request must fail as one unit when, for
+            # example, its stream settings are valid but its API key is not.
+            if settings is not None:
+                self._deployment_store.save(settings)
+                self._deployment_settings = settings
+                self.dry_run = settings.dry_run
+                self.autostart = settings.autostart
+            if rendered_key is not None:
+                self._deployment_store.save_api_key(rendered_key)
+                self._persisted_api_key = rendered_key
+            elif clear_api_key:
+                self._deployment_store.delete_api_key()
+                self._persisted_api_key = None
+            self._openrouter_api_key = (
+                self._persisted_api_key or self._environment_api_key
+            )
+            self._deployment_error = None
+            self._update_state(dry_run=self.dry_run)
+        return self.deployment_settings()
+
+    def ui_info(self) -> dict[str, Any]:
+        if self.config is None:
+            result = {
+                "configured": False,
+                "error": "configuration unavailable",
+            }
+            safe = public_safe_value(result)
+            assert isinstance(safe, dict)
+            return safe
+        stream_url = self.configured_stream_url()
+        protocol = None
+        if stream_url:
+            try:
+                protocol = parse_stream_source(stream_url).protocol
+            except ValueError:
+                protocol = None
+        result = {
             "configured": True,
-            "model": self.config.inference.model,
+            "model": PUBLIC_MODEL_NAME,
             "event_label": self.config.inference.event_label,
             "event_labels": list(DETECTION_EVENT_LABELS),
+            "features": list(DETECTION_EVENT_LABELS),
+            "supported_features": list(DETECTION_EVENT_LABELS),
             "sample_fps": self.config.video.fps,
             "max_image_side": self.config.video.max_image_side,
             "jpeg_quality": self.config.video.jpeg_quality,
@@ -213,10 +395,12 @@ class HarnessRuntime:
                 "stride_frames": self.config.sliding_window.stride_frames,
             },
             "max_concurrent_requests": self.config.runtime.max_concurrent_requests,
-            "api_key_present": api_key_present(self.config.openrouter),
+            "api_key_present": bool(self._openrouter_api_key),
             "dry_run": self.dry_run,
             "configured_stream": bool(stream_url),
             "configured_stream_protocol": protocol,
+            "stream_frame_crop": self.config.stream.frame_crop,
+            "deployment": self.deployment_settings(),
             "analysis_modes": sorted(ANALYSIS_MODES),
             "reference_memory": (
                 {
@@ -228,11 +412,15 @@ class HarnessRuntime:
                 else None
             ),
             "face": {
-                "model_name": self.config.face.model_name,
+                "engine": "local",
                 "sample_fps": self.config.face.sample_fps,
                 "max_image_side": self.config.face.max_image_side,
                 "jpeg_quality": self.config.face.jpeg_quality,
                 "threshold": self.config.face.threshold,
+                "min_face_size": self.config.face.min_face_size,
+                "enrollment_min_face_size": (
+                    self.config.face.enrollment_min_face_size
+                ),
             },
             "multi": {
                 "sample_fps": self.config.face.sample_fps,
@@ -249,19 +437,22 @@ class HarnessRuntime:
                 ),
             },
         }
+        safe = public_safe_value(result)
+        assert isinstance(safe, dict)
+        return safe
 
     def face_gallery(self) -> dict[str, Any]:
         """Return an embedding-free view of the local known-person gallery."""
 
         try:
             people = self._ensure_face_runtime().list_people()
-        except Exception as exc:
-            LOGGER.warning("could not open face gallery", exc_info=True)
+        except Exception:
+            LOGGER.warning("could not open face gallery")
             return {
                 "ready": False,
                 "people": [],
                 "sample_count": 0,
-                "error": str(exc),
+                "error": PUBLIC_FACE_ERROR,
             }
         public_people = [
             {
@@ -272,11 +463,25 @@ class HarnessRuntime:
             }
             for person in people
         ]
-        return {
+        result = {
             "ready": True,
             "people": public_people,
             "sample_count": sum(person.sample_count for person in people),
         }
+        safe = public_safe_value(result)
+        assert isinstance(safe, dict)
+        return safe
+
+    def stranger_captures(self) -> dict[str, Any]:
+        captures = self._ensure_face_runtime().list_strangers()
+        records = [capture.as_dict() for capture in captures]
+        result = {"count": len(records), "strangers": records}
+        safe = public_safe_value(result)
+        assert isinstance(safe, dict)
+        return safe
+
+    def stranger_photo(self, stranger_id: str) -> bytes | None:
+        return self._ensure_face_runtime().stranger_photo(stranger_id)
 
     def enroll_face(
         self,
@@ -285,7 +490,7 @@ class HarnessRuntime:
         image_bytes: bytes,
     ) -> dict[str, Any]:
         person = self._ensure_face_runtime().enroll(person_id, name, image_bytes)
-        return {
+        result = {
             "ready": True,
             "person": {
                 "person_id": person.person_id,
@@ -294,6 +499,9 @@ class HarnessRuntime:
                 "sample_count": person.sample_count,
             },
         }
+        safe = public_safe_value(result)
+        assert isinstance(safe, dict)
+        return safe
 
     def delete_face(self, person_id: str) -> bool:
         return self._ensure_face_runtime().delete_person(person_id)
@@ -313,6 +521,7 @@ class HarnessRuntime:
                         det_size=face.det_size,
                         threshold=face.threshold,
                         min_face_size=face.min_face_size,
+                        enrollment_min_face_size=face.enrollment_min_face_size,
                         gallery_path=face.gallery_path,
                     )
                 )
@@ -326,9 +535,8 @@ class HarnessRuntime:
         try:
             with self._control_lock:
                 self._ensure_delivery()
-            autostart = _env_bool("HARNESS_AUTOSTART", True)
             stream_url = self.configured_stream_url()
-            if autostart and stream_url:
+            if self.autostart and stream_url:
                 self.start_stream(stream_url)
                 return
             self._update_state(
@@ -336,11 +544,11 @@ class HarnessRuntime:
                 last_error=None,
                 webhook_enabled=self._delivery is not None,
             )
-        except Exception as exc:
-            LOGGER.exception("could not start harness runtime")
+        except Exception:
+            LOGGER.error("could not start harness runtime")
             self._update_state(
                 pipeline_state="error",
-                last_error=str(exc),
+                last_error=PUBLIC_ANALYSIS_ERROR,
                 ready=False,
             )
 
@@ -351,6 +559,7 @@ class HarnessRuntime:
         dry_run: bool | None = None,
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
+        features: Collection[str] | None = None,
     ) -> dict[str, Any]:
         url = (stream_url or "").strip() or self.configured_stream_url()
         if not url:
@@ -364,6 +573,7 @@ class HarnessRuntime:
             dry_run=dry_run,
             event_label=event_label,
             analysis_mode=analysis_mode,
+            features=features,
         )
 
     def start_camera(
@@ -372,6 +582,7 @@ class HarnessRuntime:
         dry_run: bool | None = None,
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
+        features: Collection[str] | None = None,
         owner: str | None = None,
     ) -> dict[str, Any]:
         return self._start_session(
@@ -379,6 +590,7 @@ class HarnessRuntime:
             dry_run=dry_run,
             event_label=event_label,
             analysis_mode=analysis_mode,
+            features=features,
             camera_owner=owner,
         )
 
@@ -392,6 +604,7 @@ class HarnessRuntime:
         dry_run: bool | None = None,
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
+        features: Collection[str] | None = None,
         camera_owner: str | None = None,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
@@ -402,14 +615,19 @@ class HarnessRuntime:
         selected_analysis = str(analysis_mode).strip().lower()
         if selected_analysis not in ANALYSIS_MODES:
             raise ValueError("analysis_mode must be event, face, or multi")
+        if features is not None and selected_analysis != MULTI_ANALYSIS_MODE:
+            raise ValueError("features can only be used with analysis_mode=multi")
 
         if selected_analysis == MULTI_ANALYSIS_MODE:
-            label = ",".join(DETECTION_EVENT_LABELS)
+            selected_features = _normalize_features(features)
+            label = ",".join(selected_features)
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
         elif selected_analysis == FACE_ANALYSIS_MODE:
+            selected_features = None
             label = UNKNOWN_FACE_EVENT_LABEL
             use_dry_run = False
         else:
+            selected_features = None
             face_reference_memory = (
                 self.config.memory is not None
                 and self.config.memory.purpose == FACE_RECOGNITION_PURPOSE
@@ -437,9 +655,7 @@ class HarnessRuntime:
                 warmup_seconds = face_runtime.warmup()
                 if warmup_seconds:
                     LOGGER.info(
-                        "warmed InsightFace model %s in %.3fs",
-                        face_runtime.settings.model,
-                        warmup_seconds,
+                        "warmed local face analysis in %.3fs", warmup_seconds
                     )
                 face = self.config.face
                 session_config = replace(
@@ -465,37 +681,41 @@ class HarnessRuntime:
                 client = face_runtime
             elif selected_analysis == MULTI_ANALYSIS_MODE:
                 face = self.config.face
-                face_runtime = self._ensure_face_runtime()
-                if not use_dry_run:
+                include_stranger = "stranger" in selected_features
+                face_runtime = None
+                if include_stranger and not use_dry_run:
+                    face_runtime = self._ensure_face_runtime()
                     warmup_seconds = face_runtime.warmup()
                     if warmup_seconds:
                         LOGGER.info(
-                            "warmed InsightFace model %s in %.3fs",
-                            face_runtime.settings.model,
-                            warmup_seconds,
+                            "warmed local face analysis in %.3fs", warmup_seconds
                         )
-                session_config = replace(
-                    self.config,
-                    video=replace(
-                        self.config.video,
-                        fps=face.sample_fps,
-                        max_image_side=face.max_image_side,
-                        jpeg_quality=face.jpeg_quality,
-                    ),
-                    sliding_window=replace(
-                        self.config.sliding_window,
-                        size_frames=1,
-                        stride_frames=1,
-                        include_partial_final_window=False,
-                    ),
-                )
-                client = build_fixed_five_grounding_client(
+                session_config = self.config
+                if include_stranger:
+                    session_config = replace(
+                        self.config,
+                        video=replace(
+                            self.config.video,
+                            fps=face.sample_fps,
+                            max_image_side=face.max_image_side,
+                            jpeg_quality=face.jpeg_quality,
+                        ),
+                        sliding_window=replace(
+                            self.config.sliding_window,
+                            size_frames=1,
+                            stride_frames=1,
+                            include_partial_final_window=False,
+                        ),
+                    )
+                client = build_selected_features_grounding_client(
                     session_config.inference,
                     session_config.openrouter,
+                    features=selected_features,
                     stranger_client=face_runtime,
                     safety_max_image_side=self.config.video.max_image_side,
                     safety_jpeg_quality=self.config.video.jpeg_quality,
                     dry_run=use_dry_run,
+                    api_key=self._openrouter_api_key,
                 )
             else:
                 session_config = self.config
@@ -509,6 +729,7 @@ class HarnessRuntime:
                     session_config.openrouter,
                     memory_context=session_config.memory,
                     dry_run=use_dry_run,
+                    api_key=self._openrouter_api_key,
                 )
             generation = self._generation + 1
             callbacks = SessionCallbacks(
@@ -596,6 +817,7 @@ class HarnessRuntime:
                             {
                                 "protocol": stream_protocol,
                                 "host": stream_host,
+                                "frame_crop": session_config.stream.frame_crop,
                             }
                             if mode == STREAM_MODE
                             else None
@@ -603,11 +825,16 @@ class HarnessRuntime:
                         "stream_session_id": session.stream_session_id,
                         "event_label": label,
                         "event_labels": (
-                            list(DETECTION_EVENT_LABELS)
+                            list(selected_features)
                             if selected_analysis == MULTI_ANALYSIS_MODE
                             else [label]
                         ),
-                        "model": session_config.inference.model,
+                        "features": (
+                            list(selected_features)
+                            if selected_analysis == MULTI_ANALYSIS_MODE
+                            else None
+                        ),
+                        "model": PUBLIC_MODEL_NAME,
                         "dry_run": use_dry_run,
                         "webhook_enabled": self._delivery is not None,
                         "pipeline": None,
@@ -636,11 +863,12 @@ class HarnessRuntime:
                 "generation": generation,
                 "stream_session_id": session.stream_session_id,
                 "event_label": label,
-                "model": session_config.inference.model,
+                "model": PUBLIC_MODEL_NAME,
                 "dry_run": use_dry_run,
             }
             if selected_analysis == MULTI_ANALYSIS_MODE:
-                response["event_labels"] = list(DETECTION_EVENT_LABELS)
+                response["event_labels"] = list(selected_features)
+                response["features"] = list(selected_features)
             if stream_protocol is not None:
                 response["stream_protocol"] = stream_protocol
             if (
@@ -653,7 +881,9 @@ class HarnessRuntime:
                     "newest_frame_only": session_config.memory.newest_frame_only,
                     "memory_ids": list(session_config.memory.memory_ids),
                 }
-            return response
+            safe_response = public_safe_value(response)
+            assert isinstance(safe_response, dict)
+            return safe_response
 
     def stop_session(self, *, camera_owner: str | None = None) -> bool:
         """Stop the current run but keep the service available for another."""
@@ -684,7 +914,7 @@ class HarnessRuntime:
                 )
 
             session.stop()
-            session.join(timeout=5.0)
+            session.join(timeout=10.0)
             if session.running:
                 self._update_state(
                     pipeline_state="error",
@@ -798,7 +1028,9 @@ class HarnessRuntime:
         payload["readiness_reason"] = reason
         if self._delivery is not None:
             payload["webhook"] = self._delivery.stats()
-        return payload
+        safe = public_safe_value(payload)
+        assert isinstance(safe, dict)
+        return safe
 
     def readiness(self) -> tuple[bool, str]:
         with self._state_lock:
@@ -877,10 +1109,7 @@ class HarnessRuntime:
                     )
                 )
             except Exception:
-                LOGGER.warning(
-                    "visual memory sink rejected an observation",
-                    exc_info=True,
-                )
+                LOGGER.warning("visual memory sink rejected an observation")
                 accepted = False
             memory_key = (
                 "memory_records_accepted" if accepted else "memory_records_dropped"
@@ -893,7 +1122,7 @@ class HarnessRuntime:
                 quality=self.settings.overlay_jpeg_quality,
             )
         except (cv2.error, TypeError, ValueError):
-            LOGGER.warning("could not render analysis overlay", exc_info=True)
+            LOGGER.warning("could not render analysis overlay")
             rendered = source_jpeg
         self.frames.publish(
             FramePacket(
@@ -952,10 +1181,10 @@ class HarnessRuntime:
         )
 
     def _on_pipeline_state(self, state: dict[str, Any]) -> None:
-        values: dict[str, Any] = {"pipeline": copy.deepcopy(state)}
+        values: dict[str, Any] = {"pipeline": public_safe_value(copy.deepcopy(state))}
         pipeline_error = state.get("last_error")
         if pipeline_error:
-            values["last_error"] = str(pipeline_error)
+            values["last_error"] = public_error_message(pipeline_error)
         self._update_state(**values)
 
     def _on_end(self, reason: str, error: str | None) -> None:
@@ -964,12 +1193,14 @@ class HarnessRuntime:
             pipeline_state=next_state,
             ready=False,
             end_reason=reason,
-            last_error=error,
+            last_error=(public_error_message(error) if error else None),
         )
 
     def _update_state(self, **values: Any) -> None:
         with self._state_lock:
-            self._state.update(values)
+            safe = public_safe_value(values)
+            assert isinstance(safe, dict)
+            self._state.update(safe)
 
 
 def _render_analysis_jpeg(
@@ -1032,7 +1263,9 @@ def _render_analysis_jpeg(
                 for judgment in detected_judgments
             )
         else:
-            event_label = "five events"
+            event_label = " | ".join(
+                judgment.event_label for judgment in analysis.judgments
+            )
             confidence = min(
                 (judgment.confidence for judgment in analysis.judgments),
                 default=0.0,
@@ -1055,6 +1288,29 @@ def _render_analysis_jpeg(
     if not ok:
         raise ValueError("could not encode annotated JPEG")
     return output.tobytes()
+
+
+def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
+    if features is None:
+        return DETECTION_EVENT_LABELS
+    if not isinstance(features, (list, tuple)):
+        raise ValueError("features must be an array")
+    raw = tuple(features)
+    if not raw:
+        raise ValueError("features must not be empty")
+    if any(not isinstance(feature, str) or not feature.strip() for feature in raw):
+        raise ValueError("features must contain non-empty strings")
+    rendered = tuple(feature.strip().lower() for feature in raw)
+    if len(set(rendered)) != len(rendered):
+        raise ValueError("features must not contain duplicates")
+    unsupported = tuple(
+        feature for feature in rendered if feature not in DETECTION_EVENT_LABELS
+    )
+    if unsupported:
+        raise ValueError(f"unsupported feature: {unsupported[0]}")
+    return tuple(
+        feature for feature in DETECTION_EVENT_LABELS if feature in rendered
+    )
 
 
 def create_app(
@@ -1085,6 +1341,63 @@ def create_app(
     @application.get("/v1/ui/info")
     async def ui_info(request: Request) -> dict[str, Any]:
         return _runtime(request).ui_info()
+
+    @application.get("/v1/deployment/settings")
+    async def deployment_settings(request: Request) -> dict[str, Any]:
+        return _runtime(request).deployment_settings()
+
+    @application.put("/v1/deployment/settings")
+    async def update_deployment_settings(request: Request) -> dict[str, Any]:
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400, detail="Content-Length must be an integer"
+                ) from exc
+            if declared_length < 0:
+                raise HTTPException(
+                    status_code=400, detail="Content-Length must not be negative"
+                )
+            if declared_length > DEPLOYMENT_REQUEST_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="deployment settings body exceeds 64 KiB",
+                )
+
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > DEPLOYMENT_REQUEST_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="deployment settings body exceeds 64 KiB",
+                )
+            body.extend(chunk)
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(
+                status_code=400, detail="deployment settings body must be JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=400, detail="deployment settings body must be an object"
+            )
+        try:
+            return await asyncio.to_thread(
+                _runtime(request).update_deployment_settings,
+                payload,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=redact_public_text(exc)
+            ) from exc
+        except RuntimeError as exc:
+            status_code = 409 if "active session" in str(exc) else 503
+            raise HTTPException(
+                status_code=status_code, detail=redact_public_text(exc)
+            ) from exc
 
     @application.websocket("/ws")
     async def control_socket(websocket: WebSocket) -> None:
@@ -1120,6 +1433,7 @@ def create_app(
                         analysis_mode = str(
                             payload.get("analysis_mode") or MULTI_ANALYSIS_MODE
                         )
+                        requested_features = payload.get("features")
                         requested_dry_run = payload.get("dry_run")
                         if requested_dry_run is not None and not isinstance(
                             requested_dry_run, bool
@@ -1136,6 +1450,7 @@ def create_app(
                                     dry_run=requested_dry_run,
                                     event_label=event_label,
                                     analysis_mode=analysis_mode,
+                                    features=requested_features,
                                     owner=owner,
                                 )
                             elif mode == STREAM_MODE:
@@ -1145,12 +1460,25 @@ def create_app(
                                     dry_run=requested_dry_run,
                                     event_label=event_label,
                                     analysis_mode=analysis_mode,
+                                    features=requested_features,
                                 )
                             else:
                                 raise ValueError("mode must be camera or stream")
+                        except ValueError as exc:
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "message": redact_public_text(exc),
+                                }
+                            )
                         except Exception as exc:
                             await websocket.send_json(
-                                {"type": "error", "message": str(exc)}
+                                {
+                                    "type": "error",
+                                    "message": public_error_message(
+                                        exc, fallback="could not start session"
+                                    ),
+                                }
                             )
                         else:
                             await websocket.send_json(response)
@@ -1163,7 +1491,9 @@ def create_app(
                         await websocket.send_json(
                             {
                                 "type": "error",
-                                "message": f"unknown command: {command!r}",
+                                "message": redact_public_text(
+                                    f"unknown command: {command!r}"
+                                ),
                             }
                         )
                     continue
@@ -1187,7 +1517,7 @@ def create_app(
                     )
                 except ValueError as exc:
                     await websocket.send_json(
-                        {"type": "error", "message": str(exc)}
+                        {"type": "error", "message": redact_public_text(exc)}
                     )
         except (WebSocketDisconnect, RuntimeError):
             pass
@@ -1211,9 +1541,101 @@ def create_app(
     async def status(request: Request) -> dict[str, Any]:
         return _runtime(request).status()
 
+    @application.post("/v1/sessions/start")
+    async def start_session(
+        request: Request,
+        payload: Annotated[dict[str, Any] | None, Body()] = None,
+    ) -> dict[str, Any]:
+        """Start one network-stream session with any selected feature subset."""
+
+        payload = payload or {}
+        mode = payload.get("mode", STREAM_MODE)
+        if not isinstance(mode, str) or mode not in {CAMERA_MODE, STREAM_MODE}:
+            raise HTTPException(status_code=400, detail="mode must be camera or stream")
+        if mode == CAMERA_MODE:
+            raise HTTPException(
+                status_code=400,
+                detail="camera sessions must be started over /ws",
+            )
+        analysis_mode = payload.get("analysis_mode", MULTI_ANALYSIS_MODE)
+        if not isinstance(analysis_mode, str):
+            raise HTTPException(
+                status_code=400,
+                detail="analysis_mode must be a string",
+            )
+        dry_run = payload.get("dry_run")
+        if dry_run is not None and not isinstance(dry_run, bool):
+            raise HTTPException(status_code=400, detail="dry_run must be boolean")
+        event_label = payload.get("event_label")
+        if event_label is not None and not isinstance(event_label, str):
+            raise HTTPException(status_code=400, detail="event_label must be a string")
+        stream_url = payload.get("stream_url", "")
+        if not isinstance(stream_url, str):
+            raise HTTPException(status_code=400, detail="stream_url must be a string")
+        runtime = _runtime(request)
+        try:
+            return await asyncio.to_thread(
+                runtime.start_stream,
+                stream_url,
+                dry_run=dry_run,
+                event_label=event_label,
+                analysis_mode=analysis_mode,
+                features=payload.get("features"),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=redact_public_text(exc),
+            ) from exc
+        except RuntimeError as exc:
+            status_code = 409 if "already running" in str(exc) else 503
+            raise HTTPException(
+                status_code=status_code,
+                detail=public_error_message(exc, fallback="could not start session"),
+            ) from exc
+
+    @application.post("/v1/sessions/stop")
+    async def stop_session(request: Request) -> dict[str, bool]:
+        return {
+            "stopped": await asyncio.to_thread(_runtime(request).stop_session)
+        }
+
     @application.get("/v1/faces/gallery")
     async def face_gallery(request: Request) -> dict[str, Any]:
         return await asyncio.to_thread(_runtime(request).face_gallery)
+
+    @application.get("/v1/faces/strangers")
+    async def stranger_captures(request: Request) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(_runtime(request).stranger_captures)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
+            ) from exc
+
+    @application.get("/v1/faces/strangers/{stranger_id}/photo")
+    async def stranger_photo(stranger_id: str, request: Request) -> Response:
+        try:
+            photo = await asyncio.to_thread(
+                _runtime(request).stranger_photo,
+                stranger_id,
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=503 if isinstance(exc, RuntimeError) else 400,
+                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
+            ) from exc
+        if photo is None:
+            raise HTTPException(status_code=404, detail="stranger photo not found")
+        return Response(
+            photo,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Stranger-Id": stranger_id,
+            },
+        )
 
     @application.post("/v1/faces/gallery/{person_id}")
     async def enroll_face(
@@ -1256,9 +1678,14 @@ def create_app(
                 image_bytes,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=400, detail=redact_public_text(exc)
+            ) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=503,
+                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
+            ) from exc
 
     @application.delete("/v1/faces/gallery/{person_id}")
     async def delete_face(person_id: str, request: Request) -> dict[str, Any]:
@@ -1268,75 +1695,67 @@ def create_app(
                 person_id,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=400, detail=redact_public_text(exc)
+            ) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=503,
+                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
+            ) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail="person not found")
-        return {"deleted": True, "person_id": person_id}
+        result = public_safe_value({"deleted": True, "person_id": person_id})
+        assert isinstance(result, dict)
+        return result
 
     @application.get("/v1/results/latest")
     async def latest_result(request: Request) -> JSONResponse:
-        record = _runtime(request).results.latest()
-        if record is None:
-            raise HTTPException(status_code=404, detail="no analysis result yet")
-        return JSONResponse(
-            record.payload,
-            headers={
-                "Cache-Control": "no-store",
-                "X-Result-Cursor": str(record.cursor),
-                "X-Result-Stream": _runtime(request).results.epoch,
-            },
-        )
+        return _latest_result_response(_runtime(request))
 
     @application.get("/v1/results/events")
     async def result_events(
         request: Request,
         after: int = Query(default=0, ge=0),
     ) -> StreamingResponse:
-        runtime = _runtime(request)
-        header_cursor = request.headers.get("last-event-id")
-        cursor = after
-        if header_cursor and after == 0:
-            epoch, separator, raw_cursor = header_cursor.rpartition(":")
-            if separator and epoch == runtime.results.epoch:
-                try:
-                    cursor = max(0, int(raw_cursor))
-                except ValueError:
-                    cursor = 0
-            else:
-                cursor = 0
+        return _result_events_response(request, _runtime(request), after=after)
 
-        async def generate() -> AsyncIterator[bytes]:
-            current = cursor
-            while not await request.is_disconnected():
-                records = await asyncio.to_thread(
-                    runtime.results.records_after,
-                    current,
-                    timeout_seconds=15.0,
-                )
-                if not records:
-                    yield b": heartbeat\n\n"
-                    continue
-                for record in records:
-                    current = record.cursor
-                    data = json.dumps(
-                        record.payload,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    yield (
-                        f"id: {runtime.results.epoch}:{record.cursor}\n"
-                        f"event: analysis_result\ndata: {data}\n\n"
-                    ).encode()
+    def feature_latest_endpoint(
+        feature: str,
+    ) -> Callable[[Request], Any]:
+        async def endpoint(request: Request) -> JSONResponse:
+            return _latest_result_response(_runtime(request), feature=feature)
 
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-            },
+        return endpoint
+
+    def feature_events_endpoint(feature: str) -> Callable[..., Any]:
+        async def endpoint(
+            request: Request,
+            after: int = Query(default=0, ge=0),
+        ) -> StreamingResponse:
+            return _result_events_response(
+                request,
+                _runtime(request),
+                after=after,
+                feature=feature,
+            )
+
+        return endpoint
+
+    # Literal paths give downstream consumers five independently addressable
+    # APIs while all of them reuse the same correlated result history.
+    for feature in DETECTION_EVENT_LABELS:
+        application.add_api_route(
+            f"/v1/results/{feature}/latest",
+            feature_latest_endpoint(feature),
+            methods=["GET"],
+            name=f"latest_{feature}_result",
+        )
+        application.add_api_route(
+            f"/v1/results/{feature}/events",
+            feature_events_endpoint(feature),
+            methods=["GET"],
+            name=f"{feature}_result_events",
         )
 
     @application.get("/v1/video/latest.jpg")
@@ -1377,6 +1796,141 @@ def create_app(
 
 def _runtime(request: Request) -> HarnessRuntime:
     return request.app.state.runtime
+
+
+def _feature_result_payload(
+    payload: dict[str, Any],
+    feature: str,
+) -> dict[str, Any] | None:
+    accepted_labels = {feature}
+    if feature == "stranger":
+        accepted_labels.add(UNKNOWN_FACE_EVENT_LABEL)
+    judgments = payload.get("judgments")
+    if not isinstance(judgments, list):
+        return None
+    selected = next(
+        (
+            copy.deepcopy(judgment)
+            for judgment in judgments
+            if isinstance(judgment, dict)
+            and judgment.get("event_label") in accepted_labels
+        ),
+        None,
+    )
+    if selected is None:
+        return None
+    selected["event_label"] = feature
+    object_ids = {
+        object_id
+        for object_id in selected.get("object_ids", [])
+        if isinstance(object_id, str)
+    }
+    objects = payload.get("objects")
+    filtered_objects = (
+        [
+            copy.deepcopy(item)
+            for item in objects
+            if isinstance(item, dict) and item.get("object_id") in object_ids
+        ]
+        if isinstance(objects, list)
+        else []
+    )
+    result = copy.deepcopy(payload)
+    result["judgments"] = [selected]
+    result["objects"] = filtered_objects
+    return result
+
+
+def _latest_result_response(
+    runtime: HarnessRuntime,
+    *,
+    feature: str | None = None,
+) -> JSONResponse:
+    record = runtime.results.latest()
+    if record is None:
+        raise HTTPException(status_code=404, detail="no analysis result yet")
+    payload = record.payload
+    if feature is not None:
+        selected = _feature_result_payload(payload, feature)
+        if selected is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no {feature} result in the latest analysis",
+            )
+        payload = selected
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Result-Cursor": str(record.cursor),
+        "X-Result-Stream": runtime.results.epoch,
+    }
+    if feature is not None:
+        headers["X-Result-Feature"] = feature
+    return JSONResponse(payload, headers=headers)
+
+
+def _result_events_response(
+    request: Request,
+    runtime: HarnessRuntime,
+    *,
+    after: int,
+    feature: str | None = None,
+) -> StreamingResponse:
+    header_cursor = request.headers.get("last-event-id")
+    cursor = after
+    if header_cursor and after == 0:
+        epoch, separator, raw_cursor = header_cursor.rpartition(":")
+        if separator and epoch == runtime.results.epoch:
+            try:
+                cursor = max(0, int(raw_cursor))
+            except ValueError:
+                cursor = 0
+        else:
+            cursor = 0
+
+    async def generate() -> AsyncIterator[bytes]:
+        current = cursor
+        while not await request.is_disconnected():
+            records = await asyncio.to_thread(
+                runtime.results.records_after,
+                current,
+                timeout_seconds=15.0,
+            )
+            if not records:
+                yield b": heartbeat\n\n"
+                continue
+            emitted = False
+            for record in records:
+                current = record.cursor
+                payload = record.payload
+                if feature is not None:
+                    selected = _feature_result_payload(payload, feature)
+                    if selected is None:
+                        continue
+                    payload = selected
+                data = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                emitted = True
+                yield (
+                    f"id: {runtime.results.epoch}:{record.cursor}\n"
+                    f"event: analysis_result\ndata: {data}\n\n"
+                ).encode()
+            if not emitted:
+                yield b": heartbeat\n\n"
+
+    headers = {
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+    }
+    if feature is not None:
+        headers["X-Result-Feature"] = feature
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
 
 
 def _frame_headers(packet: FramePacket) -> dict[str, str]:
@@ -1491,7 +2045,9 @@ def _env_bool(name: str, default: bool) -> bool:
 def main() -> None:
     host = os.environ.get("HARNESS_HOST", "0.0.0.0")
     port = int(os.environ.get("HARNESS_PORT", "8080"))
-    uvicorn.run(app, host=host, port=port)
+    # MJPEG/SSE clients are intentionally long-lived. Bound their shutdown so
+    # Docker can continue into application cleanup instead of waiting forever.
+    uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=10)
 
 
 app = create_app()

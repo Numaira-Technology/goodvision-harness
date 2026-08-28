@@ -13,6 +13,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
+from .privacy import PUBLIC_ANALYSIS_ERROR, public_safe_value
 from .sliding_window import FrameWindow
 
 if TYPE_CHECKING:
@@ -75,7 +76,7 @@ class ResultOrganizer:
             classification = response.classification
             if classification is None:
                 self._counts["failed"] += 1
-                self._last_error = response.error or "inference failed"
+                self._last_error = PUBLIC_ANALYSIS_ERROR
                 record = self._window_record(
                     window,
                     state="failed",
@@ -100,7 +101,7 @@ class ResultOrganizer:
                 self._decision = {
                     "detected": classification.detected,
                     "confidence": classification.confidence,
-                    "description": classification.description,
+                    "description": public_safe_value(classification.description),
                     "matched_memory_ids": list(matched_memory_ids),
                     "window_index": window.index,
                     "window_label": window.label,
@@ -116,7 +117,7 @@ class ResultOrganizer:
                 latency_seconds=response.latency_seconds,
                 detected=classification.detected,
                 confidence=classification.confidence,
-                description=classification.description,
+                description=public_safe_value(classification.description),
                 matched_memory_ids=matched_memory_ids,
                 applied=applied,
             )

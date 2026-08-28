@@ -8,8 +8,11 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
+from .privacy import public_safe_value
+
 ANALYSIS_RESULT_SCHEMA_VERSION = "1"
 BBOX_COORDINATE_SYSTEM = "source_normalized_xyxy"
+PUBLIC_MODEL_NAME = "numaira-beta-fast"
 
 
 def _freeze_json(value: Any, name: str) -> Any:
@@ -258,7 +261,7 @@ class AnalysisResult:
             raise ValueError("judgments reference unknown objects")
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        record = {
             "type": "analysis_result",
             "schema_version": ANALYSIS_RESULT_SCHEMA_VERSION,
             "analysis_kind": self.analysis_kind,
@@ -272,7 +275,12 @@ class AnalysisResult:
             "judgments": [item.as_dict() for item in self.judgments],
             "objects": [item.as_dict() for item in self.objects],
             "model": {
-                "name": self.model_name,
+                # Keep the provider route private while preserving the stable
+                # customer-facing product name in every serialized result.
+                "name": PUBLIC_MODEL_NAME,
                 "latency_seconds": round(self.model_latency_seconds, 3),
             },
         }
+        safe = public_safe_value(record)
+        assert isinstance(safe, dict)
+        return safe

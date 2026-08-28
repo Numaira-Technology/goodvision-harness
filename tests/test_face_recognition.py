@@ -94,6 +94,10 @@ def test_gallery_is_normalized_persistent_and_model_bound(tmp_path: Path) -> Non
     assert second.sample_count == 2
     assert [person.person_id for person in gallery.list_people()] == ["alice", "bob"]
     payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    assert payload["embedding_profile"] == "local-face-embedding-v1"
+    assert "model_name" not in payload
+    assert "buffalo" not in path.read_text(encoding="utf-8").lower()
     assert payload["embedding_dimension"] == 2
     assert payload["people"][0]["embeddings"][0] == pytest.approx([0.6, 0.8])
 
@@ -106,8 +110,39 @@ def test_gallery_is_normalized_persistent_and_model_bound(tmp_path: Path) -> Non
     assert reloaded.delete("alice") is False
     assert [person.person_id for person in reloaded.list_people()] == ["bob"]
 
-    with pytest.raises(RuntimeError, match="gallery model"):
-        FaceGallery(path, model_name="antelopev2")
+    payload["embedding_profile"] = "incompatible-profile"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="face gallery could not be loaded"):
+        FaceGallery(path, model_name="buffalo_l")
+
+
+def test_legacy_gallery_is_migrated_without_model_name(tmp_path: Path) -> None:
+    path = tmp_path / "gallery.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "model_name": "buffalo_l",
+                "embedding_dimension": 2,
+                "people": [
+                    {
+                        "person_id": "alice",
+                        "name": "Alice",
+                        "embeddings": [[1.0, 0.0]],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    gallery = FaceGallery(path, model_name="buffalo_l")
+
+    assert gallery.list_people()[0].person_id == "alice"
+    migrated = path.read_text(encoding="utf-8").lower()
+    assert '"schema_version":2' in migrated
+    assert "model_name" not in migrated
+    assert "buffalo" not in migrated
 
 
 def test_gallery_mutations_are_thread_safe(tmp_path: Path) -> None:
@@ -176,7 +211,7 @@ def test_runtime_enrolls_and_classifies_every_face(
         "sample_count": 1,
     }
     assert runtime.loaded is True
-    assert runtime.model == "buffalo_l"
+    assert runtime.model == "numaira-beta-fast"
     assert runtime.event_label == "unknown_person"
     assert runtime.settings.event_label == "unknown_person"
 
@@ -251,6 +286,143 @@ def test_empty_gallery_marks_usable_face_unknown(
     assert "similarity" not in classification.objects[0].attributes
 
 
+def test_unknown_face_capture_persists_and_reuses_stranger_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_model = _FakeFaceAnalysis(
+        [
+            [_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.91)],
+            [_face((20, 20, 120, 130), (0.99, 0.01), detection_score=0.92)],
+        ]
+    )
+    restarted_model = _FakeFaceAnalysis(
+        [[_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.93)]]
+    )
+    models = iter((first_model, restarted_model))
+    monkeypatch.setattr(
+        face_module,
+        "_load_face_analysis",
+        lambda _config: next(models),
+    )
+    config = _config(tmp_path, min_face_size=20)
+    runtime = FaceRecognitionRuntime(config)
+
+    first = runtime.classify_window(_window(_jpeg(), index=0)).classification
+    second = runtime.classify_window(_window(_jpeg(), index=1)).classification
+    assert first is not None and second is not None
+    first_id = first.objects[0].attributes["stranger_id"]
+    assert second.objects[0].attributes["stranger_id"] == first_id
+    assert first.objects[0].attributes["photo_url"] == (
+        f"/v1/faces/strangers/{first_id}/photo"
+    )
+    captures = runtime.list_strangers()
+    assert [capture.stranger_id for capture in captures] == [first_id]
+    assert captures[0].photo_available is True
+    photo = runtime.stranger_photo(first_id)
+    assert photo is not None
+    decoded = cv2.imdecode(np.frombuffer(photo, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert decoded is not None
+    assert decoded.shape[:2] == (110, 100)
+    assert len(list((tmp_path / "stranger-captures").glob("*.jpg"))) == 1
+
+    restarted = FaceRecognitionRuntime(config)
+    after_restart = restarted.classify_window(_window(_jpeg())).classification
+    assert after_restart is not None
+    assert after_restart.objects[0].attributes["stranger_id"] == first_id
+
+
+def test_capture_write_failure_does_not_create_id_or_suppress_alert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _FakeFaceAnalysis(
+        [[_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.91)]]
+    )
+    monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: model)
+
+    def fail_write(_path: Path, _payload: bytes) -> None:
+        raise RuntimeError("disk unavailable")
+
+    monkeypatch.setattr(face_module, "_atomic_write_bytes", fail_write)
+    runtime = FaceRecognitionRuntime(_config(tmp_path, min_face_size=20))
+
+    classification = runtime.classify_window(_window(_jpeg())).classification
+
+    assert classification is not None
+    assert classification.detected is True
+    assert classification.objects[0].attributes["status"] == "unknown"
+    assert "stranger_id" not in classification.objects[0].attributes
+    assert runtime.list_strangers() == ()
+
+
+@pytest.mark.parametrize(
+    ("face_width", "expected_status", "expected_detected"),
+    [
+        (19, "unusable", False),
+        (20, "unknown", True),
+    ],
+)
+def test_live_face_size_boundary_controls_alert_and_bbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    face_width: int,
+    expected_status: str,
+    expected_detected: bool,
+) -> None:
+    app = _FakeFaceAnalysis(
+        [
+            [
+                _face(
+                    (100, 30, 100 + face_width, 50),
+                    (1.0, 0.0),
+                    detection_score=0.86,
+                )
+            ]
+        ]
+    )
+    monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
+    runtime = FaceRecognitionRuntime(_config(tmp_path, min_face_size=20))
+
+    response = runtime.classify_window(_window(_jpeg()))
+    classification = response.classification
+    assert classification is not None
+    assert classification.detected is expected_detected
+    assert classification.event_object_indexes == (
+        (0,) if expected_detected else ()
+    )
+    face = classification.objects[0]
+    assert face.attributes["status"] == expected_status
+    assert face.confidence == pytest.approx(0.86)
+    assert face.bbox.to_pixels(320, 160) == (100, 30, 100 + face_width, 50)
+    if expected_detected:
+        assert face.label == "unknown_person"
+    else:
+        assert face.label == "unusable_face"
+        assert face.attributes["reason"] == "face_too_small"
+
+
+def test_enrollment_keeps_stricter_face_size_floor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _FakeFaceAnalysis(
+        [[_face((100, 30, 140, 70), (1.0, 0.0), detection_score=0.9)]]
+    )
+    monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
+    runtime = FaceRecognitionRuntime(
+        _config(
+            tmp_path,
+            min_face_size=20,
+            enrollment_min_face_size=80,
+        )
+    )
+
+    with pytest.raises(ValueError, match="enrollment_min_face_size=80"):
+        runtime.enroll("alice", "Alice", _jpeg())
+    assert runtime.list() == ()
+
+
 def test_enrollment_rejects_multiple_usable_faces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -291,7 +463,7 @@ def test_missing_insightface_is_reported_on_first_use(
 
     with pytest.raises(
         RuntimeError,
-        match="InsightFace face recognition is unavailable",
+        match="local face analysis is unavailable",
     ):
         runtime.classify_window(_window(_jpeg()))
     assert runtime.loaded is False
@@ -318,7 +490,7 @@ def test_missing_model_does_not_auto_download_without_opt_in(
 
     monkeypatch.setattr(face_module.importlib, "import_module", fake_import)
 
-    with pytest.raises(RuntimeError, match="Automatic model download is disabled"):
+    with pytest.raises(RuntimeError, match="automatic download is disabled"):
         face_module._load_face_analysis(_config(tmp_path))
     assert not (tmp_path / "models").exists()
 
@@ -361,6 +533,7 @@ def test_explicit_opt_in_allows_face_analysis_to_install_model(
     [
         ({"threshold": 1.1}, "raw cosine"),
         ({"min_face_size": 0}, "positive integer"),
+        ({"enrollment_min_face_size": 0}, "positive integer"),
         ({"det_size": (640, 0)}, "positive integers"),
         ({"provider": "UnknownExecutionProvider"}, "provider must be one of"),
     ],

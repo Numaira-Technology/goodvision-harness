@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from goodvision_harness.config import load_config
+from goodvision_harness.contracts import PUBLIC_MODEL_NAME
 from goodvision_harness.grounding import (
     DryRunGroundingClient,
     FACE_REFERENCE_ANALYSIS_KIND,
@@ -234,7 +235,10 @@ def test_qwen_client_applies_the_memory_allowlist() -> None:
 
     assert response.classification is None
     assert response.error is not None
-    assert "unknown memory IDs" in response.error
+    assert response.error == "analysis request failed"
+    assert config.inference.model == "qwen/qwen3.5-35b-a3b"
+    assert transport.calls[0]["model"] == config.inference.model
+    assert transport.calls[0]["model"] != PUBLIC_MODEL_NAME
     assert transport.calls[0]["messages"][1]["content"][0]["text"].startswith(
         "BEGIN MEMORY CONTEXT"
     )
