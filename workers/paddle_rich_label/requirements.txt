@@ -1,0 +1,4 @@
+fastapi>=0.115,<1
+numpy>=1.26,<2
+paddlex[cv]==3.7.2
+uvicorn[standard]>=0.30,<1

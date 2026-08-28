@@ -26,6 +26,8 @@ services:
       HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
       FACE_MODEL_ROOT: /models
       FACE_GALLERY_PATH: /data/face-gallery.json
+      RICH_LABEL_ENABLED: "${RICH_LABEL_ENABLED:-false}"
+      RICH_LABEL_ENDPOINT: "${RICH_LABEL_ENDPOINT:-http://rich-label-worker:8091/v1/labels}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -51,6 +53,33 @@ services:
         aliases:
           - goodvision-harness
 
+  rich-label-worker:
+    profiles: ["rich"]
+    build:
+      context: ./workers/paddle_rich_label
+    image: goodvision-rich-label-worker:demo-cpu
+    init: true
+    restart: unless-stopped
+    environment:
+      RICH_DEVICE: "${RICH_DEVICE:-cpu}"
+      RICH_DETECTION_THRESHOLD: "${RICH_DETECTION_THRESHOLD:-0.45}"
+      RICH_ATTRIBUTE_INTERVAL_FRAMES: "${RICH_ATTRIBUTE_INTERVAL_FRAMES:-10}"
+      RICH_ATTRIBUTE_RETRY_SECONDS: "${RICH_ATTRIBUTE_RETRY_SECONDS:-60}"
+      RICH_DETECTOR_MODEL_DIR: "${RICH_DETECTOR_MODEL_DIR:-}"
+      RICH_ATTRIBUTE_MODEL_DIR: "${RICH_ATTRIBUTE_MODEL_DIR:-}"
+    volumes:
+      - rich-models:/models
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   default:
     name: goodvision-demo
@@ -58,3 +87,4 @@ networks:
 volumes:
   face-models:
   face-data:
+  rich-models:

@@ -51,6 +51,18 @@ class DisplaySettings:
 
 
 @dataclass(frozen=True, slots=True)
+class RichLabelSettings:
+    """Optional isolated local worker used for high-cadence visual labels."""
+
+    enabled: bool = False
+    endpoint: str = "http://rich-label-worker:8091/v1/labels"
+    timeout_seconds: float = 0.8
+    max_fps: float = 7.5
+    history_size: int = 128
+    max_interpolation_gap_seconds: float = 0.75
+
+
+@dataclass(frozen=True, slots=True)
 class SlidingWindowSettings:
     size_frames: int = 4
     stride_frames: int = 2
@@ -123,6 +135,7 @@ class HarnessConfig:
     stream: StreamSettings
     video: VideoSettings
     display: DisplaySettings
+    rich_labeling: RichLabelSettings
     sliding_window: SlidingWindowSettings
     openrouter: OpenRouterSettings
     inference: InferenceSettings
@@ -148,6 +161,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     stream_section = _mapping_section(raw, "stream")
     video_section = _mapping_section(raw, "video")
     display_section = _mapping_section(raw, "display")
+    rich_label_section = _mapping_section(raw, "rich_labeling")
     window_section = _mapping_section(raw, "sliding_window")
     openrouter_section = _mapping_section(raw, "openrouter")
     inference_section = _mapping_section(raw, "inference")
@@ -232,6 +246,43 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         bbox_max_gap_seconds=_positive_float(
             display_section.get("bbox_max_gap_seconds", 0.8),
             "display.bbox_max_gap_seconds",
+        ),
+    )
+    rich_label_enabled = _environment_bool(
+        "RICH_LABEL_ENABLED",
+        _bool(rich_label_section.get("enabled", False), "rich_labeling.enabled"),
+    )
+    rich_label_endpoint = (
+        os.environ.get("RICH_LABEL_ENDPOINT", "").strip()
+        or _required_string(
+            rich_label_section.get(
+                "endpoint", "http://rich-label-worker:8091/v1/labels"
+            ),
+            "rich_labeling.endpoint",
+        )
+    )
+    if not rich_label_endpoint.startswith(("http://", "https://")):
+        raise ValueError("rich_labeling.endpoint must use http or https")
+    rich_label_history_size = _positive_int(
+        rich_label_section.get("history_size", 128),
+        "rich_labeling.history_size",
+    )
+    if rich_label_history_size < 2:
+        raise ValueError("rich_labeling.history_size must be at least 2")
+    rich_labeling = RichLabelSettings(
+        enabled=rich_label_enabled,
+        endpoint=rich_label_endpoint,
+        timeout_seconds=_positive_float(
+            rich_label_section.get("timeout_seconds", 0.8),
+            "rich_labeling.timeout_seconds",
+        ),
+        max_fps=_positive_float(
+            rich_label_section.get("max_fps", 7.5), "rich_labeling.max_fps"
+        ),
+        history_size=rich_label_history_size,
+        max_interpolation_gap_seconds=_positive_float(
+            rich_label_section.get("max_interpolation_gap_seconds", 0.75),
+            "rich_labeling.max_interpolation_gap_seconds",
         ),
     )
     sliding_window = SlidingWindowSettings(
@@ -404,6 +455,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         stream=stream,
         video=video,
         display=display,
+        rich_labeling=rich_labeling,
         sliding_window=sliding_window,
         openrouter=OpenRouterSettings.from_mapping(openrouter_section),
         inference=inference,
@@ -426,6 +478,18 @@ def _bool(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"{name} must be true or false")
     return value
+
+
+def _environment_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
 
 
 def _positive_float(value: Any, name: str) -> float:

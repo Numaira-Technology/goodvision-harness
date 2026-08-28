@@ -306,6 +306,145 @@ def test_delayed_composer_renders_latched_bbox_on_every_display_frame() -> None:
         composer.close()
 
 
+def test_delayed_composer_enriches_frames_without_analysis() -> None:
+    published: list[FramePacket] = []
+    published_event = threading.Event()
+    calls: list[tuple[bytes, float, int]] = []
+
+    def enrich(jpeg: bytes, media_timestamp: float, frame_sequence: int) -> bytes:
+        calls.append((jpeg, media_timestamp, frame_sequence))
+        return jpeg + b"-enriched"
+
+    def publish(packet: FramePacket) -> None:
+        published.append(packet)
+        if len(published) == 2:
+            published_event.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0.01,
+        max_gap_seconds=0.2,
+        output_fps=15.0,
+        render=lambda jpeg, analysis: jpeg + b"-event",
+        publish=publish,
+        enrich=enrich,
+    )
+    try:
+        composer.submit_frame(_packet(3, 0.2))
+        composer.submit_frame(_packet(4, 0.3))
+
+        assert published_event.wait(1.0)
+        assert calls == [(b"jpeg", 0.2, 3), (b"jpeg", 0.3, 4)]
+        assert [packet.jpeg for packet in published] == [
+            b"jpeg-enriched",
+            b"jpeg-enriched",
+        ]
+        assert all(packet.annotation_mode == "none" for packet in published)
+    finally:
+        composer.close()
+
+
+def test_delayed_composer_renders_event_after_enrichment() -> None:
+    published: list[FramePacket] = []
+    published_event = threading.Event()
+    call_order: list[str] = []
+
+    def enrich(jpeg: bytes, media_timestamp: float, frame_sequence: int) -> bytes:
+        call_order.append("enrich")
+        return jpeg + b"-enriched"
+
+    def render(jpeg: bytes, analysis: AnalysisResult) -> bytes:
+        call_order.append("event")
+        assert jpeg == b"jpeg-enriched"
+        return jpeg + b"-event"
+
+    def publish(packet: FramePacket) -> None:
+        published.append(packet)
+        published_event.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0.01,
+        max_gap_seconds=0.2,
+        output_fps=15.0,
+        render=render,
+        publish=publish,
+        enrich=enrich,
+    )
+    try:
+        assert composer.submit_result(
+            _result(
+                timestamp=0.0,
+                frame_index=0,
+                message_id="event",
+                bbox=(0.1, 0.1, 0.3, 0.3),
+            )
+        )
+        composer.submit_frame(_packet(0, 0.0))
+
+        assert published_event.wait(1.0)
+        assert call_order == ["enrich", "event"]
+        assert published[0].jpeg == b"jpeg-enriched-event"
+        assert published[0].annotation_mode == "exact"
+    finally:
+        composer.close()
+
+
+def test_delayed_composer_isolates_enrichment_failures_and_resets_stats() -> None:
+    published: list[FramePacket] = []
+    published_event = threading.Event()
+
+    def enrich(jpeg: bytes, media_timestamp: float, frame_sequence: int) -> bytes:
+        if frame_sequence == 0:
+            raise RuntimeError("broken enrichment")
+        return jpeg + b"-enriched"
+
+    def publish(packet: FramePacket) -> None:
+        published.append(packet)
+        if len(published) == 2:
+            published_event.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0.01,
+        max_gap_seconds=0.2,
+        output_fps=15.0,
+        render=lambda jpeg, analysis: jpeg,
+        publish=publish,
+        enrich=enrich,
+    )
+    try:
+        composer.submit_frame(_packet(0, 0.0))
+        composer.submit_frame(_packet(1, 0.1))
+
+        assert published_event.wait(1.0)
+        assert [packet.jpeg for packet in published] == [b"jpeg", b"jpeg-enriched"]
+        assert composer.stats()["enrichment_render_errors"] == 1
+
+        composer.reset()
+        assert composer.stats()["enrichment_render_errors"] == 0
+    finally:
+        composer.close()
+
+
+def test_delayed_composer_remains_backward_compatible_without_enrichment() -> None:
+    published: list[FramePacket] = []
+    published_event = threading.Event()
+    composer = DelayedOverlayComposer(
+        delay_seconds=0.01,
+        max_gap_seconds=0.2,
+        output_fps=15.0,
+        render=lambda jpeg, analysis: jpeg + b"-event",
+        publish=lambda packet: (published.append(packet), published_event.set()),
+    )
+    try:
+        composer.submit_frame(_packet(0, 0.0))
+
+        assert published_event.wait(1.0)
+        assert published[0].jpeg == b"jpeg"
+        assert published[0].annotation_mode == "none"
+        assert composer.stats()["enrichment_render_errors"] == 0
+    finally:
+        composer.close()
+
+
 def test_delayed_composer_reset_does_not_publish_old_session_frames() -> None:
     published: list[FramePacket] = []
     composer = DelayedOverlayComposer(

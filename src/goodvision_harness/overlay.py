@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import math
+import zlib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import cv2
 
 from .privacy import redact_public_text
+
+
+_RICH_COLORS: tuple[tuple[int, int, int], ...] = (
+    (63, 221, 255),
+    (255, 184, 77),
+    (113, 232, 104),
+    (255, 116, 184),
+    (224, 149, 255),
+    (255, 216, 91),
+    (94, 202, 255),
+    (174, 238, 77),
+)
+_PERSON_LABELS = frozenset({"person", "human", "pedestrian"})
 
 
 def draw_overlay(
@@ -72,6 +87,380 @@ def draw_overlay(
             scale=0.48,
         )
     return rendered
+
+
+def draw_rich_overlay(bgr: Any, objects: Sequence[Any]) -> Any:
+    """Return a copy of ``bgr`` with track-stable rich object annotations.
+
+    The renderer only presents metadata supplied by the caller.  In particular,
+    it does not derive demographic attributes from pixels or from an object's
+    label.  Bad objects are skipped independently so one malformed model result
+    cannot prevent the remaining annotations from being drawn.
+    """
+
+    rendered = bgr.copy()
+    try:
+        height, width = rendered.shape[:2]
+    except (AttributeError, TypeError, ValueError):
+        return rendered
+    if width < 1 or height < 1:
+        return rendered
+
+    if isinstance(objects, Mapping):
+        safe_objects: tuple[Any, ...] = (objects,)
+    else:
+        try:
+            safe_objects = tuple(objects or ())
+        except (TypeError, ValueError):
+            return rendered
+
+    for index, item in enumerate(safe_objects):
+        bbox = _rich_bbox_to_pixels(_object_value(item, "bbox"), width, height)
+        if bbox is None:
+            continue
+        attributes = _rich_attributes(item)
+        track_id = _first_scalar(
+            attributes,
+            ("track_id", "tracking_id"),
+        )
+        if track_id is None:
+            track_id = _object_value(item, "track_id")
+        object_id = _object_value(item, "object_id")
+        color_key = track_id
+        if color_key is None:
+            color_key = object_id
+        if color_key is None:
+            color_key = _object_value(item, "label", index)
+        color = _rich_track_color(color_key)
+
+        _draw_corner_bbox(rendered, bbox, color)
+        primary, detail = _rich_label_lines(
+            item,
+            attributes=attributes,
+            track_id=track_id,
+            object_id=object_id,
+        )
+        _draw_rich_card(rendered, bbox, primary, detail, color)
+
+    return rendered
+
+
+def _object_value(item: Any, key: str, default: Any = None) -> Any:
+    try:
+        if isinstance(item, Mapping):
+            return item.get(key, default)
+        return getattr(item, key, default)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return default
+
+
+def _rich_attributes(item: Any) -> Mapping[str, Any]:
+    attributes = _object_value(item, "attributes", {})
+    return attributes if isinstance(attributes, Mapping) else {}
+
+
+def _mapping_value(values: Mapping[str, Any], key: str) -> Any:
+    try:
+        return values.get(key)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _first_scalar(values: Mapping[str, Any], keys: Sequence[str]) -> Any:
+    for key in keys:
+        value = _mapping_value(values, key)
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, (str, int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                continue
+            if _public_hud_text(value):
+                return value
+    return None
+
+
+def _rich_bbox_to_pixels(
+    bbox: Any,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int] | None:
+    if bbox is None:
+        return None
+
+    normalized = False
+    try:
+        to_pixels = getattr(bbox, "to_pixels", None)
+    except (AttributeError, TypeError, ValueError):
+        to_pixels = None
+    if callable(to_pixels):
+        try:
+            raw_coordinates = to_pixels(width, height)
+        except (AttributeError, OverflowError, TypeError, ValueError):
+            return None
+    else:
+        coordinate_system = ""
+        if isinstance(bbox, Mapping):
+            try:
+                raw_coordinates = tuple(bbox[key] for key in ("x1", "y1", "x2", "y2"))
+                coordinate_system = str(bbox.get("coordinate_system", ""))
+            except (KeyError, TypeError, ValueError):
+                return None
+        elif isinstance(bbox, Sequence) and not isinstance(
+            bbox, (str, bytes, bytearray)
+        ):
+            try:
+                raw_coordinates = tuple(bbox)
+            except (TypeError, ValueError):
+                return None
+        else:
+            try:
+                raw_coordinates = tuple(
+                    getattr(bbox, key) for key in ("x1", "y1", "x2", "y2")
+                )
+            except (AttributeError, TypeError, ValueError):
+                return None
+        normalized = "normalized" in coordinate_system.casefold()
+
+    try:
+        if len(raw_coordinates) != 4 or any(
+            isinstance(value, bool) for value in raw_coordinates
+        ):
+            return None
+        x1, y1, x2, y2 = (float(value) for value in raw_coordinates)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
+        return None
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    if not callable(to_pixels) and not normalized:
+        normalized = all(0.0 <= value <= 1.0 for value in (x1, y1, x2, y2))
+    if normalized:
+        x1, x2 = x1 * width, x2 * width
+        y1, y2 = y1 * height, y2 * height
+
+    if x2 <= 0 or y2 <= 0 or x1 >= width or y1 >= height:
+        return None
+    left = max(0, min(width - 1, round(x1)))
+    top = max(0, min(height - 1, round(y1)))
+    right = max(left + 1, min(width, round(x2)))
+    bottom = max(top + 1, min(height, round(y2)))
+    return left, top, right, bottom
+
+
+def _stable_key(value: Any) -> str:
+    try:
+        rendered = str(value)
+    except (TypeError, ValueError):
+        return "object"
+    return rendered or "object"
+
+
+def _rich_track_color(value: Any) -> tuple[int, int, int]:
+    checksum = zlib.crc32(_stable_key(value).encode("utf-8", "replace"))
+    return _RICH_COLORS[checksum % len(_RICH_COLORS)]
+
+
+def _draw_corner_bbox(
+    image: Any,
+    bbox: tuple[int, int, int, int],
+    color: tuple[int, int, int],
+) -> None:
+    x1, y1, x2_exclusive, y2_exclusive = bbox
+    x2 = max(x1, x2_exclusive - 1)
+    y2 = max(y1, y2_exclusive - 1)
+    corner = max(4, min(28, round(min(x2 - x1 + 1, y2 - y1 + 1) * 0.24)))
+    segments = (
+        ((x1, y1), (min(x2, x1 + corner), y1)),
+        ((x1, y1), (x1, min(y2, y1 + corner))),
+        ((x2, y1), (max(x1, x2 - corner), y1)),
+        ((x2, y1), (x2, min(y2, y1 + corner))),
+        ((x1, y2), (min(x2, x1 + corner), y2)),
+        ((x1, y2), (x1, max(y1, y2 - corner))),
+        ((x2, y2), (max(x1, x2 - corner), y2)),
+        ((x2, y2), (x2, max(y1, y2 - corner))),
+    )
+    for start, end in segments:
+        cv2.line(image, start, end, (12, 14, 18), 5, cv2.LINE_AA)
+    for start, end in segments:
+        cv2.line(image, start, end, color, 2, cv2.LINE_AA)
+
+
+def _public_hud_text(value: Any, *, limit: int = 72) -> str:
+    if value is None:
+        return ""
+    try:
+        rendered = redact_public_text(value)
+    except (TypeError, ValueError):
+        return ""
+    rendered = _ascii_safe(rendered)
+    rendered = "".join(
+        character if character.isprintable() else " " for character in rendered
+    )
+    return " ".join(rendered.split())[:limit]
+
+
+def _rich_label_lines(
+    item: Any,
+    *,
+    attributes: Mapping[str, Any],
+    track_id: Any,
+    object_id: Any,
+) -> tuple[str, str]:
+    raw_label = _object_value(item, "label", "object")
+    label = _public_hud_text(raw_label) or "object"
+    is_person = label.casefold() in _PERSON_LABELS
+    name = _first_scalar(attributes, ("name", "display_name", "person_name"))
+    person_id = _first_scalar(attributes, ("person_id", "identity_id"))
+
+    if is_person:
+        identity = _public_hud_text(name or person_id)
+        primary_parts: list[str] = []
+        track_text = _public_hud_text(track_id, limit=24)
+        if track_text:
+            track_token = (
+                track_text.upper()
+                if track_text.casefold().startswith("p")
+                else f"P{track_text}"
+            )
+            primary_parts.append(track_token)
+        primary_parts.append(identity or label.upper())
+        if not track_text and person_id is None:
+            fallback_id = _public_hud_text(object_id, limit=28)
+            if fallback_id:
+                primary_parts.append(fallback_id)
+    else:
+        primary_parts = [label.upper()]
+        display_id = _public_hud_text(object_id or track_id, limit=28)
+        if display_id and display_id.casefold() != label.casefold():
+            primary_parts.append(f"#{display_id.lstrip('#')}")
+
+    details: list[str] = []
+    age = _first_scalar(
+        attributes,
+        (
+            "estimated_age_range",
+            "age_band",
+            "estimated_age_band",
+            "estimated_age",
+            "age",
+        ),
+    )
+    if age is not None:
+        details.append(f"AGE {_public_hud_text(age, limit=24).upper()}")
+    gender = _first_scalar(
+        attributes,
+        ("estimated_gender", "gender_presentation", "gender"),
+    )
+    if gender is not None:
+        details.append(f"GENDER {_public_hud_text(gender, limit=24).upper()}")
+    confidence = _rich_confidence(_object_value(item, "confidence"))
+    if confidence:
+        details.append(f"CONF {confidence}")
+
+    primary = "  |  ".join(part for part in primary_parts if part)[:72]
+    detail = "  |  ".join(details)[:72] or "DETECTED"
+    return primary, detail
+
+
+def _rich_confidence(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    try:
+        rendered = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return ""
+    if not math.isfinite(rendered) or not 0.0 <= rendered <= 1.0:
+        return ""
+    return f"{rendered:.0%}"
+
+
+def _fit_hud_text(text: str, width: int, scale: float) -> str:
+    if width <= 0:
+        return ""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    if cv2.getTextSize(text, font, scale, 1)[0][0] <= width:
+        return text
+    suffix = "..."
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = text[:middle].rstrip() + suffix
+        if cv2.getTextSize(candidate, font, scale, 1)[0][0] <= width:
+            low = middle
+        else:
+            high = middle - 1
+    return (text[:low].rstrip() + suffix) if low else ""
+
+
+def _draw_rich_card(
+    image: Any,
+    bbox: tuple[int, int, int, int],
+    primary: str,
+    detail: str,
+    color: tuple[int, int, int],
+) -> None:
+    height, width = image.shape[:2]
+    if width < 2 or height < 2:
+        return
+    x1, y1, _x2, y2 = bbox
+    primary_scale, detail_scale = 0.48, 0.39
+    primary_width = cv2.getTextSize(
+        primary, cv2.FONT_HERSHEY_SIMPLEX, primary_scale, 1
+    )[0][0]
+    detail_width = cv2.getTextSize(
+        detail, cv2.FONT_HERSHEY_SIMPLEX, detail_scale, 1
+    )[0][0]
+    card_width = min(width, max(96, min(360, max(primary_width, detail_width) + 22)))
+    card_height = min(height, 42)
+    left = max(0, min(x1, width - card_width))
+    if y1 >= card_height + 4:
+        top = y1 - card_height - 3
+    elif height - y2 >= card_height + 3:
+        top = y2 + 3
+    else:
+        top = max(0, min(y1 + 3, height - card_height))
+    right = min(width - 1, left + card_width - 1)
+    bottom = min(height - 1, top + card_height - 1)
+
+    region = image[top : bottom + 1, left : right + 1]
+    tint = region.copy()
+    tint[:] = (16, 20, 26)
+    cv2.addWeighted(tint, 0.78, region, 0.22, 0.0, region)
+    cv2.rectangle(image, (left, top), (right, bottom), (34, 39, 45), 1)
+    cv2.rectangle(
+        image,
+        (left, top),
+        (min(right, left + 3), bottom),
+        color,
+        -1,
+    )
+
+    text_x = min(right, left + 10)
+    available_width = max(0, right - text_x - 5)
+    primary = _fit_hud_text(primary, available_width, primary_scale)
+    detail = _fit_hud_text(detail, available_width, detail_scale)
+    cv2.putText(
+        image,
+        primary,
+        (text_x, min(bottom - 2, top + 17)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        primary_scale,
+        (245, 248, 250),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        image,
+        detail,
+        (text_x, min(bottom - 2, top + 34)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        detail_scale,
+        (190, 199, 207),
+        1,
+        cv2.LINE_AA,
+    )
 
 
 def _draw_face_overlay(

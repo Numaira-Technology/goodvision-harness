@@ -20,6 +20,26 @@ docker compose --env-file .env -f compose.delivery.yaml ps
 Compose 顶层项目名，以保留 `goodvision-harness_face-data` 和
 `goodvision-harness_face-models`。
 
+## 可选 rich bbox worker
+
+源码部署可用独立的 PaddleX/PaddleDetection sidecar；在 `.env` 设置
+`RICH_LABEL_ENABLED=true` 后运行：
+
+```bash
+docker compose --profile rich up --build
+```
+
+它只为延迟展示流提供人物/物品跟踪框和外观属性，不参与也不阻塞 VLM 安全
+判断；worker 超时或不可用时 Harness 会继续输出 VLM 结果与原始视频。交付版
+`compose.delivery.yaml` 不内置 worker，若启用须单独交付兼容镜像、加入同一
+Docker 网络，并把 `RICH_LABEL_ENDPOINT` 指向其 `/v1/labels`。
+
+随源码提供的是 CPU 镜像；GPU 需要另行构建匹配的 Paddle GPU 镜像。首次启动
+可能下载模型，需预留外网、磁盘和启动时间，或把已授权模型预置到持久 volume。
+`P...`/`O...` 仅为单次视频会话内的跟踪 ID，并非真实身份；年龄是区间估计，
+gender 是外观模型估计。PaddleX/PaddleDetection 源码为 Apache-2.0，但商用或
+随交付包分发前仍须逐一确认具体预训练权重及其训练数据的许可条件。
+
 ## 输入与永久设置
 
 默认输入：

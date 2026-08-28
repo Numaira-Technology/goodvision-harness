@@ -38,6 +38,57 @@ pipeline and expose customer JSON plus analyzed and raw video outputs. The
 legacy single-event and face-only modes remain available as diagnostic API
 modes; the page lets the operator select any non-empty feature combination.
 
+## Optional rich video labels
+
+Rich person/object labels are an optional local sidecar, not part of the VLM
+request. The harness samples source JPEGs to an isolated PaddleX/PaddleDetection
+worker, keeps only the newest pending request, and uses its tracked boxes as
+keyframes for the delayed display compositor. The normal safety VLM still sees
+the original frame and its event boxes are drawn as the alert layer. A missing,
+slow, or failed rich-label worker therefore drops only the decorative labels;
+it does not block VLM analysis or the raw video path.
+
+The reference Compose profile runs the CPU worker with PP-YOLOE+ object
+detection and PP-LCNet pedestrian attributes:
+
+```bash
+cp .env.example .env
+# Set RICH_LABEL_ENABLED=true in .env.
+docker compose --profile rich up --build
+```
+
+The principal settings are:
+
+| Variable | Meaning |
+| --- | --- |
+| `RICH_LABEL_ENABLED` | Enables submission to and rendering from the optional worker. Default: `false`. |
+| `RICH_LABEL_ENDPOINT` | Worker inference URL. Compose default: `http://rich-label-worker:8091/v1/labels`. |
+| `RICH_DEVICE` | Paddle device requested by the worker. The supplied image installs the CPU Paddle build. |
+| `RICH_DETECTION_THRESHOLD` | Minimum object detector score. Default: `0.45`. |
+| `RICH_ATTRIBUTE_INTERVAL_FRAMES` | Re-run pedestrian attributes every N tracked frames. Default: `10`. |
+| `RICH_ATTRIBUTE_RETRY_SECONDS` | Backoff after optional pedestrian attributes fail to load. Default: `60`. |
+| `RICH_DETECTOR_MODEL_DIR` / `RICH_ATTRIBUTE_MODEL_DIR` | Optional paths to pre-provisioned, authorized model directories. |
+
+`rich_labeling.max_fps`, timeout, history size, and interpolation gap remain in
+`config.yaml`. The worker's first model-backed start can be slow while PaddleX
+downloads model files into the persistent `rich-models` volume; allow outbound
+HTTPS, disk space, and readiness headroom, or pre-provision both model
+directories. The supplied image is CPU-oriented. GPU deployment requires a
+separately built GPU-compatible Paddle worker image and the matching device
+setting; benchmark the complete stream on the target host before choosing its
+sampling rate.
+
+Treat rich metadata as display hints. `P...` and `O...` values are tracking IDs
+within one stream session, can change after an occlusion or restart, and are
+not a person's identity. Age is an estimated range, and gender is an appearance
+model estimate; neither should be presented as a verified personal fact. Real
+known-person matching remains the separate, consent-controlled face gallery.
+
+PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
+itself grant rights to every pretrained weight or its training data. Before
+customer or commercial use, confirm the license and redistribution terms for
+the exact detector and attribute weights being shipped.
+
 ## LAN deployment topology
 
 ```text
@@ -497,6 +548,8 @@ stream variable takes precedence over the legacy RTSP variable:
 | `HARNESS_PORT` | Host HTTP port used by Compose. |
 | `FACE_MODEL_ROOT` | Root containing operator-supplied face-analysis files. |
 | `FACE_GALLERY_PATH` | Persistent known-person gallery JSON path. |
+| `RICH_LABEL_ENABLED` | Enable the optional rich-label worker path. |
+| `RICH_LABEL_ENDPOINT` | Rich-label worker inference URL. |
 
 Do not commit `.env`, RTSP credentials, or LLM API keys.
 
