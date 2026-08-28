@@ -1,0 +1,17 @@
+services:
+  rich-label-worker:
+    build:
+      context: ./workers/paddle_rich_label
+      dockerfile: Dockerfile.gpu
+    image: goodvision-rich-label-worker:demo-gpu-cu129
+    environment:
+      # One reserved GPU is exposed as gpu:0 inside this container.
+      RICH_DEVICE: gpu:0
+      RICH_DETECTOR_MODEL: "${RICH_GPU_DETECTOR_MODEL:-PP-YOLOE_plus-L}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

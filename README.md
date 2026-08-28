@@ -50,13 +50,24 @@ it does not block VLM analysis or the raw video path.
 
 The reference Compose profile runs the CPU worker with PicoDet-S object
 detection and PP-LCNet pedestrian attributes. PicoDet-S is the low-latency
-default; switch to `PicoDet-M`, `PicoDet-L`, or `PP-YOLOE_plus-S` only when the
-target host has enough inference headroom for a higher-accuracy detector:
+CPU default:
 
 ```bash
 cp .env.example .env
 # Set RICH_LABEL_ENABLED=true in .env.
 docker compose --profile rich up --build
+```
+
+For the customer's RTX 5090, use the separate CUDA 12.9 overlay. It keeps the
+CPU image unchanged and selects `PP-YOLOE_plus-L` as the provisional
+higher-accuracy default. Build it, run the real CUDA/model smoke check, and only
+then start the services:
+
+```bash
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich build rich-label-worker
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich run --rm \
+  rich-label-worker python gpu_smoke.py
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich up -d
 ```
 
 The principal settings are:
@@ -65,8 +76,9 @@ The principal settings are:
 | --- | --- |
 | `RICH_LABEL_ENABLED` | Enables submission to and rendering from the optional worker. Default: `false`. |
 | `RICH_LABEL_ENDPOINT` | Worker inference URL. Compose default: `http://rich-label-worker:8091/v1/labels`. |
-| `RICH_DEVICE` | Paddle device requested by the worker. The supplied image installs the CPU Paddle build. |
-| `RICH_DETECTOR_MODEL` | PaddleX detector name. CPU default: `PicoDet-S`; `PicoDet-M`, `PicoDet-L`, and `PP-YOLOE_plus-S` trade more latency for accuracy. |
+| `RICH_DEVICE` | Paddle device requested by the worker. The base image uses `cpu`; the GPU overlay fixes its single reserved device to `gpu:0`. |
+| `RICH_DETECTOR_MODEL` | PaddleX detector name used by the CPU image. Default: `PicoDet-S`. |
+| `RICH_GPU_DETECTOR_MODEL` | Detector used by the GPU overlays. Provisional RTX 5090 default: `PP-YOLOE_plus-L`. |
 | `RICH_ATTRIBUTE_MODEL` | PaddleX pedestrian-attribute model name. Default: `PP-LCNet_x1_0_pedestrian_attribute`. |
 | `RICH_DETECTION_THRESHOLD` | Minimum object detector score. Default: `0.45`. |
 | `RICH_ATTRIBUTE_INTERVAL_FRAMES` | Re-run pedestrian attributes every N tracked frames. Default: `10`. |
@@ -78,12 +90,26 @@ The principal settings are:
 `config.yaml`. The worker's first model-backed start can be slow while PaddleX
 downloads model files into the persistent `rich-models` volume; allow outbound
 HTTPS, disk space, and readiness headroom, or pre-provision both model
-directories. The image pins Paddle 3.2.2 because Paddle 3.3.x has a confirmed
-CPU oneDNN regression for affected detectors. The supplied image is
-CPU-oriented. GPU deployment requires a
-separately built GPU-compatible Paddle worker image and the matching device
-setting; benchmark the complete stream on the target host before choosing its
-sampling rate.
+directories. The CPU image pins Paddle 3.2.2 because Paddle 3.3.x has a
+confirmed CPU oneDNN regression for affected detectors. `Dockerfile.gpu` is an
+independent Paddle 3.3.0 CUDA 12.9 image: that is Paddle's current supported
+binary route for the RTX 5090's Blackwell `sm_120` architecture (see Paddle's
+[GPU architecture table](https://www.paddlepaddle.org.cn/documentation/docs/zh/install/Tables.html)). It deliberately
+uses ordinary Paddle GPU FP32 first, without TensorRT/high-performance mode, to
+keep the initial customer acceptance path small. The Linux host needs NVIDIA
+driver 570.26 or newer for this CUDA 12.9/cuDNN 9.9 Blackwell stack, plus the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
+use the current production driver when possible.
+
+The GPU image can be built on a host without an NVIDIA GPU; its build checks the
+installed versions and verifies that the wheel metadata contains architecture
+`120`. The NVIDIA runtime supplies `libcuda.so.1` only when the container is
+started with GPU access, so `gpu_smoke.py` intentionally performs the real
+Paddle import there. It fails unless a GPU is visible and then runs a CUDA
+tensor, Paddle's own check, the detector, and the attribute model. A local CPU
+video benchmark therefore remains the functional/fallback baseline; actual
+5090 latency, VRAM, cold starts, and restart stability must pass on the customer
+host before enabling `RICH_LABEL_ENABLED`.
 
 To benchmark the real HTTP worker with a local video, expose a separate test
 instance on loopback in one terminal:

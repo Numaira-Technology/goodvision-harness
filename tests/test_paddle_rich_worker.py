@@ -621,3 +621,40 @@ def test_worker_image_uses_the_writable_paddlex_cache_volume() -> None:
         ROOT / "workers" / "paddle_rich_label" / "requirements.txt"
     ).read_text(encoding="utf-8")
     assert "opencv-python-headless" not in requirements
+
+
+def test_gpu_worker_is_isolated_and_targets_blackwell_supported_paddle() -> None:
+    gpu_dockerfile = (
+        ROOT / "workers" / "paddle_rich_label" / "Dockerfile.gpu"
+    ).read_text(encoding="utf-8")
+    cpu_dockerfile = (
+        ROOT / "workers" / "paddle_rich_label" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    gpu_compose = (ROOT / "compose.gpu.yaml").read_text(encoding="utf-8")
+    delivery_compose = (
+        ROOT / "compose.rich-gpu.delivery.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "paddlepaddle-gpu==3.3.0" in gpu_dockerfile
+    assert "packages/stable/cu129" in gpu_dockerfile
+    assert "paddle/version/__init__.py" in gpu_dockerfile
+    assert "assert '120' in metadata" in gpu_dockerfile
+    assert "RICH_DEVICE=gpu:0" in gpu_dockerfile
+    assert "USER 10002:10002" in gpu_dockerfile
+    assert "paddlepaddle==3.2.2" in cpu_dockerfile
+    assert "paddlepaddle-gpu" not in cpu_dockerfile
+
+    for compose_text in (gpu_compose, delivery_compose):
+        assert "PP-YOLOE_plus-L" in compose_text
+        assert "driver: nvidia" in compose_text
+        assert "count: 1" in compose_text
+        assert "capabilities: [gpu]" in compose_text
+
+    gpu_smoke = (
+        ROOT / "workers" / "paddle_rich_label" / "gpu_smoke.py"
+    ).read_text(encoding="utf-8")
+    assert "paddle.device.is_compiled_with_cuda()" in gpu_smoke
+    assert "paddle.version.cuda_archs()" in gpu_smoke
+    assert "paddle.utils.run_check()" in gpu_smoke
+    assert "models.detect(image)" in gpu_smoke
+    assert "models.attributes((image,))" in gpu_smoke

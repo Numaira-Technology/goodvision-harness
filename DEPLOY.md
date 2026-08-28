@@ -22,8 +22,7 @@ Compose 顶层项目名，以保留 `goodvision-harness_face-data` 和
 
 ## 可选 rich bbox worker
 
-源码部署可用独立的 PaddleX/PaddleDetection sidecar；在 `.env` 设置
-`RICH_LABEL_ENABLED=true` 后运行：
+源码部署可用独立的 PaddleX/PaddleDetection sidecar。CPU 回退路径仍是：
 
 ```bash
 docker compose --profile rich up --build
@@ -34,15 +33,43 @@ docker compose --profile rich up --build
 `compose.delivery.yaml` 不内置 worker，若启用须单独交付兼容镜像、加入同一
 Docker 网络，并把 `RICH_LABEL_ENDPOINT` 指向其 `/v1/labels`。
 
-随源码提供的是 CPU 镜像，默认使用低延迟的 `PicoDet-S`；只有目标机器具备足够
-推理余量时才建议设置 `RICH_DETECTOR_MODEL=PicoDet-M`、`PicoDet-L` 或
-`PP-YOLOE_plus-S`。镜像固定 Paddle 3.2.2，以避开 Paddle 3.3.x 已确认的 CPU
-oneDNN 回归。GPU 需要另行构建匹配的 Paddle GPU 镜像。首次启动可能下载模型，
-需预留外网、磁盘和启动时间，或把已授权模型预置到持久 volume。
+随源码提供的基础镜像固定 Paddle 3.2.2，默认使用低延迟的 `PicoDet-S`，以避开
+Paddle 3.3.x 已确认的 CPU oneDNN 回归。客户 RTX 5090 是 Blackwell `sm_120`，
+必须使用独立的 `Dockerfile.gpu` / `compose.gpu.yaml`：其中安装官方 Paddle GPU
+3.3.0 CUDA 12.9 包，默认用精度更高的 `PP-YOLOE_plus-L`，不启用 TensorRT/HPI。
+Linux 宿主机须安装 NVIDIA 570.26 或更新驱动（优先当前 production driver）和
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
 
-交付前可用 `tools/rich_label_benchmark.py` 对本地视频执行真实 HTTP worker 测速；
+源码部署在 5090 上的启用顺序：
+
+```bash
+nvidia-smi
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich build rich-label-worker
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich run --rm \
+  rich-label-worker python gpu_smoke.py
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich up -d
+```
+
+离线镜像交付则先加载两个 tar，保持 `RICH_LABEL_ENABLED=false`，用交付覆盖文件
+完成相同的实际 CUDA/模型自检：
+
+```bash
+docker compose -f compose.delivery.yaml -f compose.rich-gpu.delivery.yaml \
+  --profile rich run --rm rich-label-worker python gpu_smoke.py
+```
+
+自检会验证容器内 GPU 可见、执行 CUDA tensor 和 Paddle 官方检查，并实际加载
+检测与行人属性模型。首次启动可能下载模型，需预留外网、磁盘和启动时间，或把
+已授权模型预置到持久 volume。自检通过后再把 `.env` 的
+`RICH_LABEL_ENABLED=true` 并启动完整 Compose；`/health/live` 本身不能证明
+`sm_120` kernel 或模型推理成功。
+
+交付前可用 `tools/rich_label_benchmark.py` 对同一视频执行真实 HTTP worker 测速；
 它会输出 `metrics.json`、逐帧 `frames.jsonl` 和 `annotated.mp4`，用于核对超时、
 吞吐、框和 ID 连续性。冷启动会包含模型加载，热态指标应在短预热后另跑一次。
+本地 CPU 结果作为功能和降级基线；5090 上还须检查首帧、热态 p50/p95、吞吐、
+显存及至少 10 次冷启动。当前 7.5 FPS 目标的最低验收线为完整视频零失败、零
+429、吞吐不低于 7.5 FPS、p95 小于 133 ms，并对 CPU/GPU 同帧输出做抽样复核。
 `P...`/`O...` 仅为单次视频会话内的跟踪 ID，并非真实身份；年龄是区间估计，
 gender 是外观模型估计。PaddleX/PaddleDetection 源码为 Apache-2.0，但商用或
 随交付包分发前仍须逐一确认具体预训练权重及其训练数据的许可条件。
