@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import importlib
 import json
+import io
 import math
 import os
 import threading
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,7 +26,7 @@ import cv2
 import numpy as np
 
 from .config import InferenceSettings
-from .contracts import NormalizedBBox
+from .contracts import NormalizedBBox, PUBLIC_MODEL_NAME
 from .grounding import (
     GroundedClassification,
     GroundingResponse,
@@ -41,11 +43,14 @@ __all__ = [
     "GalleryPerson",
 ]
 
-_GALLERY_SCHEMA_VERSION = 1
+_GALLERY_SCHEMA_VERSION = 2
+_LEGACY_GALLERY_SCHEMA_VERSION = 1
+_EMBEDDING_PROFILE = "local-face-embedding-v1"
 _ANALYSIS_KIND = "face_recognition"
 _SUPPORTED_PROVIDERS = frozenset(
     {"CPUExecutionProvider", "CUDAExecutionProvider"}
 )
+_RUNTIME_OUTPUT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +63,8 @@ class FaceRecognizerConfig:
     provider: str = "CPUExecutionProvider"
     det_size: int | tuple[int, int] = 640
     threshold: float = 0.4
-    min_face_size: int = 80
+    min_face_size: int = 20
+    enrollment_min_face_size: int = 80
     gallery_path: Path = Path(".goodvision/face-gallery.json")
 
     def __post_init__(self) -> None:
@@ -87,6 +93,12 @@ class FaceRecognizerConfig:
             or self.min_face_size < 1
         ):
             raise ValueError("min_face_size must be a positive integer")
+        if (
+            isinstance(self.enrollment_min_face_size, bool)
+            or not isinstance(self.enrollment_min_face_size, int)
+            or self.enrollment_min_face_size < 1
+        ):
+            raise ValueError("enrollment_min_face_size must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +194,7 @@ class FaceGallery:
             except OSError as exc:
                 self._people = previous_people
                 self._embedding_dimension = previous_dimension
-                raise RuntimeError(f"could not persist face gallery: {exc}") from exc
+                raise RuntimeError("could not persist face gallery") from exc
             return GalleryPerson(rendered_id, entry.name, len(entry.embeddings))
 
     def list_people(self) -> tuple[GalleryPerson, ...]:
@@ -208,7 +220,7 @@ class FaceGallery:
             except OSError as exc:
                 self._people = previous_people
                 self._embedding_dimension = previous_dimension
-                raise RuntimeError(f"could not persist face gallery: {exc}") from exc
+                raise RuntimeError("could not persist face gallery") from exc
             return True
 
     def match(self, embedding: Any) -> FaceMatch | None:
@@ -237,22 +249,32 @@ class FaceGallery:
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-            self._load_payload(payload)
+            migrate_legacy = self._load_payload(payload)
+            if migrate_legacy:
+                self._persist_locked()
         except (OSError, TypeError, ValueError) as exc:
-            raise RuntimeError(f"invalid face gallery {self.path}: {exc}") from exc
+            raise RuntimeError("face gallery could not be loaded") from exc
 
-    def _load_payload(self, payload: Any) -> None:
+    def _load_payload(self, payload: Any) -> bool:
         if not isinstance(payload, Mapping):
             raise TypeError("gallery root must be an object")
-        if payload.get("schema_version") != _GALLERY_SCHEMA_VERSION:
-            raise ValueError(
-                f"gallery schema_version must be {_GALLERY_SCHEMA_VERSION}"
+        schema_version = payload.get("schema_version")
+        migrate_legacy = schema_version == _LEGACY_GALLERY_SCHEMA_VERSION
+        if schema_version not in {
+            _LEGACY_GALLERY_SCHEMA_VERSION,
+            _GALLERY_SCHEMA_VERSION,
+        }:
+            raise ValueError("unsupported face gallery schema")
+        if migrate_legacy:
+            stored_model = _required_text(payload.get("model_name"), "model_name")
+            profile_matches = stored_model == self.model_name
+        else:
+            stored_profile = _required_text(
+                payload.get("embedding_profile"), "embedding_profile"
             )
-        stored_model = _required_text(payload.get("model_name"), "model_name")
-        if stored_model != self.model_name:
-            raise ValueError(
-                f"gallery model is {stored_model!r}, expected {self.model_name!r}"
-            )
+            profile_matches = stored_profile == _embedding_profile(self.model_name)
+        if not profile_matches:
+            raise ValueError("face gallery embedding profile is incompatible")
         raw_dimension = payload.get("embedding_dimension")
         if raw_dimension is not None and (
             isinstance(raw_dimension, bool)
@@ -293,11 +315,12 @@ class FaceGallery:
             raise ValueError("empty galleries must use null embedding_dimension")
         self._people = people
         self._embedding_dimension = inferred_dimension
+        return migrate_legacy
 
     def _persist_locked(self) -> None:
         payload = {
             "schema_version": _GALLERY_SCHEMA_VERSION,
-            "model_name": self.model_name,
+            "embedding_profile": _embedding_profile(self.model_name),
             "embedding_dimension": self._embedding_dimension,
             "people": [
                 {
@@ -338,9 +361,9 @@ class FaceRecognitionRuntime:
     ) -> None:
         self.config = config
         self.settings = InferenceSettings(
-            model=config.model_name,
+            model=PUBLIC_MODEL_NAME,
             event_label=UNKNOWN_FACE_EVENT_LABEL,
-            system_prompt="Local InsightFace recognition; no LLM prompt is used.",
+            system_prompt="Classify faces locally; no remote prompt is used.",
             prompt="Classify enrolled and unenrolled faces in the newest frame.",
             request_parameters={},
         )
@@ -388,11 +411,21 @@ class FaceRecognitionRuntime:
     def enroll(self, person_id: str, name: str, image_bytes: bytes) -> GalleryPerson:
         image = _decode_image(image_bytes)
         faces = self._infer(image, operation="enrollment")
-        usable = [face for face in faces if self._face_is_large_enough(face, image)]
+        usable = [
+            face
+            for face in faces
+            if self._face_is_large_enough(
+                face,
+                image,
+                minimum=self.config.enrollment_min_face_size,
+            )
+        ]
         if not usable:
             if faces:
                 raise ValueError(
-                    f"no face meets min_face_size={self.config.min_face_size}"
+                    "no face meets "
+                    "enrollment_min_face_size="
+                    f"{self.config.enrollment_min_face_size}"
                 )
             raise ValueError("no face detected in enrollment image")
         if len(usable) != 1:
@@ -402,7 +435,7 @@ class FaceRecognitionRuntime:
             )
         embedding = _face_embedding(usable[0])
         if embedding is None:
-            raise ValueError("InsightFace did not return an enrollment embedding")
+            raise ValueError("face embedding is unavailable")
         return self.gallery.enroll(person_id, name, embedding)
 
     def list(self) -> tuple[GalleryPerson, ...]:
@@ -538,53 +571,81 @@ class FaceRecognitionRuntime:
             with self._inference_lock:
                 return tuple(model.get(image))
         except Exception as exc:
-            raise RuntimeError(
-                f"InsightFace {operation} inference failed: {exc}"
-            ) from exc
+            raise RuntimeError("local face analysis failed") from exc
 
-    def _face_is_large_enough(self, face: Any, image: np.ndarray[Any, Any]) -> bool:
+    def _face_is_large_enough(
+        self,
+        face: Any,
+        image: np.ndarray[Any, Any],
+        *,
+        minimum: int,
+    ) -> bool:
         height, width = image.shape[:2]
         bbox = _face_bbox(face, width=width, height=height)
         if bbox is None:
             return False
         x1, y1, x2, y2 = bbox
-        return min(x2 - x1, y2 - y1) >= self.config.min_face_size
+        return min(x2 - x1, y2 - y1) >= minimum
 
 
 def _load_face_analysis(config: FaceRecognizerConfig) -> Any:
     """Import and initialize InsightFace on first use."""
 
+    # Some optional runtime libraries print their provider choice and model
+    # paths directly instead of using Python logging. Capture both streams so
+    # those implementation details cannot reach container logs.
+    try:
+        with _silence_runtime_output():
+            return _load_face_analysis_inner(config)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("local face analysis could not be initialized") from exc
+
+
+@contextmanager
+def _silence_runtime_output() -> Any:
+    """Capture Python and native fd output during optional engine startup."""
+
+    sink = io.StringIO()
+    with _RUNTIME_OUTPUT_LOCK:
+        saved_stdout = os.dup(1)
+        saved_stderr = os.dup(2)
+        null_fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(null_fd, 1)
+            os.dup2(null_fd, 2)
+            with redirect_stdout(sink), redirect_stderr(sink):
+                yield
+        finally:
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            os.close(null_fd)
+
+
+def _load_face_analysis_inner(config: FaceRecognizerConfig) -> Any:
+    """Load the optional local face engine while output capture is active."""
+
     try:
         insightface_app = importlib.import_module("insightface.app")
         onnxruntime = importlib.import_module("onnxruntime")
     except ModuleNotFoundError as exc:
-        missing = exc.name or "InsightFace dependency"
-        raise RuntimeError(
-            "InsightFace face recognition is unavailable because "
-            f"{missing!r} is not installed. Install 'insightface' and exactly one "
-            "of 'onnxruntime' (CPU) or 'onnxruntime-gpu' (CUDA)."
-        ) from exc
+        raise RuntimeError("local face analysis is unavailable") from exc
 
     available = set(onnxruntime.get_available_providers())
     if config.provider not in available:
-        raise RuntimeError(
-            f"requested ONNX Runtime provider {config.provider!r} is unavailable; "
-            f"available providers: {', '.join(sorted(available)) or 'none'}"
-        )
+        raise RuntimeError("configured local face execution mode is unavailable")
     face_analysis = getattr(insightface_app, "FaceAnalysis", None)
     if face_analysis is None:
-        raise RuntimeError("installed InsightFace package does not expose FaceAnalysis")
+        raise RuntimeError("local face analysis is unavailable")
 
     model_directory = config.model_root / "models" / config.model_name
     if not model_directory.is_dir() and not config.allow_model_download:
         raise RuntimeError(
-            f"InsightFace model {config.model_name!r} is not installed at "
-            f"{model_directory}. Automatic model download is disabled because "
-            "InsightFace-provided pretrained models are restricted to "
-            "non-commercial research unless separately licensed. Supply model "
-            "files you are authorized to use, or set "
-            "face.allow_model_download=true only after verifying that the model "
-            "license permits your intended use."
+            "authorized local face analysis files are not installed and automatic "
+            "download is disabled"
         )
 
     config.model_root.mkdir(parents=True, exist_ok=True)
@@ -600,11 +661,16 @@ def _load_face_analysis(config: FaceRecognizerConfig) -> Any:
             det_size=_detector_size(config.det_size),
         )
     except Exception as exc:
-        raise RuntimeError(
-            f"failed to initialize InsightFace model {config.model_name!r} "
-            f"with provider {config.provider!r}: {exc}"
-        ) from exc
+        raise RuntimeError("local face analysis could not be initialized") from exc
     return model
+
+
+def _embedding_profile(_model_name: str) -> str:
+    """Return the manually versioned public compatibility profile."""
+
+    # Bump this opaque version whenever the internal embedding implementation
+    # changes. It intentionally cannot be derived back to an engine/model name.
+    return _EMBEDDING_PROFILE
 
 
 def _decode_image(image_bytes: bytes) -> np.ndarray[Any, Any]:

@@ -15,8 +15,9 @@ import cv2
 import numpy as np
 
 from .config import InferenceSettings
-from .contracts import NormalizedBBox, readonly_json_mapping
+from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
 from .openrouter import OpenRouterClient, OpenRouterError, OpenRouterSettings
+from .privacy import PUBLIC_ANALYSIS_ERROR, PUBLIC_FACE_ERROR
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
     MemoryContext,
@@ -643,17 +644,15 @@ class OpenRouterGroundingClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-        except (OpenRouterError, ValueError) as exc:
+        except (OpenRouterError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                error=str(exc),
+                error=PUBLIC_ANALYSIS_ERROR,
             )
         latency = time.monotonic() - started
-        response_id = str(response["id"]) if response.get("id") is not None else None
-        usage = response.get("usage")
         try:
             classification = parse_grounded_classification(
                 text,
@@ -664,23 +663,19 @@ class OpenRouterGroundingClient:
                 ),
                 analysis_kind=_memory_analysis_kind(self.memory_context),
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=text,
+                raw_text=None,
                 latency_seconds=latency,
-                response_id=response_id,
-                usage=usage if isinstance(usage, Mapping) else None,
-                error=f"unparseable model reply: {exc}",
+                error=PUBLIC_ANALYSIS_ERROR,
             )
         return GroundingResponse(
             window=window,
             classification=classification,
-            raw_text=text,
+            raw_text=None,
             latency_seconds=latency,
-            response_id=response_id,
-            usage=usage if isinstance(usage, Mapping) else None,
         )
 
 
@@ -754,7 +749,7 @@ class OpenRouterMultiGroundingClient:
         self.settings = settings
         self.event_labels = labels
         self.memory_context = None
-        self.model_name = settings.model
+        self.model_name = PUBLIC_MODEL_NAME
         self._transport = transport
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
@@ -784,40 +779,34 @@ class OpenRouterMultiGroundingClient:
                 **request_parameters,
             )
             text = self._transport.assistant_text(response)
-        except (OpenRouterError, ValueError) as exc:
+        except (OpenRouterError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                error=str(exc),
+                error=PUBLIC_ANALYSIS_ERROR,
             )
 
         latency = time.monotonic() - started
-        response_id = str(response["id"]) if response.get("id") is not None else None
-        usage = response.get("usage")
         try:
             classification = parse_multi_grounded_classification(
                 text,
                 event_labels=self.event_labels,
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=text,
+                raw_text=None,
                 latency_seconds=latency,
-                response_id=response_id,
-                usage=usage if isinstance(usage, Mapping) else None,
-                error=f"unparseable multi-event model reply: {exc}",
+                error=PUBLIC_ANALYSIS_ERROR,
             )
         return GroundingResponse(
             window=window,
             classification=classification,
-            raw_text=text,
+            raw_text=None,
             latency_seconds=latency,
-            response_id=response_id,
-            usage=usage if isinstance(usage, Mapping) else None,
         )
 
 
@@ -832,7 +821,7 @@ class DryRunMultiGroundingClient:
         self.settings = settings
         self.event_labels = tuple(event_labels)
         self.memory_context = None
-        self.model_name = f"dry-run:{settings.model}"
+        self.model_name = PUBLIC_MODEL_NAME
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
@@ -878,7 +867,7 @@ class DryRunStrangerGroundingClient:
     def __init__(self, settings: InferenceSettings) -> None:
         self.settings = settings
         self.memory_context = None
-        self.model_name = f"dry-run:{settings.model}"
+        self.model_name = PUBLIC_MODEL_NAME
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
@@ -969,9 +958,7 @@ class FixedFiveGroundingClient:
         self.settings = safety_client.settings
         self.event_labels = DETECTION_EVENT_LABELS
         self.memory_context = None
-        self.model_name = (
-            f"{safety_client.settings.model} + {stranger_client.settings.model}"
-        )
+        self.model_name = PUBLIC_MODEL_NAME
         self._safety_client = safety_client
         self._stranger_client = stranger_client
         self._safety_max_image_side = safety_max_image_side
@@ -985,12 +972,12 @@ class FixedFiveGroundingClient:
                 max_image_side=self._safety_max_image_side,
                 jpeg_quality=self._safety_jpeg_quality,
             )
-        except ValueError as exc:
+        except ValueError:
             return GroundingResponse(
                 window=window,
                 classification=None,
                 latency_seconds=time.monotonic() - started,
-                error=str(exc),
+                error=PUBLIC_ANALYSIS_ERROR,
             )
 
         safety_response: GroundingResponse | None = None
@@ -1021,21 +1008,16 @@ class FixedFiveGroundingClient:
                 window=window,
                 classification=None,
                 latency_seconds=time.monotonic() - started,
-                error=f"safety detector crashed: {safety_error}",
+                error=PUBLIC_ANALYSIS_ERROR,
             )
         assert safety_response is not None
         if safety_response.classification is None:
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=safety_response.raw_text,
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                response_id=safety_response.response_id,
-                usage=safety_response.usage,
-                error=(
-                    "safety detector failed: "
-                    f"{safety_response.error or 'unknown error'}"
-                ),
+                error=PUBLIC_ANALYSIS_ERROR,
             )
         if not isinstance(
             safety_response.classification, MultiGroundedClassification
@@ -1043,10 +1025,8 @@ class FixedFiveGroundingClient:
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=safety_response.raw_text,
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                response_id=safety_response.response_id,
-                usage=safety_response.usage,
                 error="safety detector returned a single-event classification",
             )
         safety_labels = tuple(
@@ -1057,25 +1037,18 @@ class FixedFiveGroundingClient:
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=safety_response.raw_text,
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                response_id=safety_response.response_id,
-                usage=safety_response.usage,
-                error=(
-                    "safety detector returned unexpected event labels: "
-                    + ", ".join(safety_labels)
-                ),
+                error=PUBLIC_ANALYSIS_ERROR,
             )
 
         if stranger_error is not None:
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=safety_response.raw_text,
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                response_id=safety_response.response_id,
-                usage=safety_response.usage,
-                error=f"stranger detector crashed: {stranger_error}",
+                error=PUBLIC_FACE_ERROR,
             )
         assert stranger_response is not None
         face_classification = stranger_response.classification
@@ -1083,23 +1056,16 @@ class FixedFiveGroundingClient:
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=safety_response.raw_text,
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                response_id=safety_response.response_id,
-                usage=safety_response.usage,
-                error=(
-                    "stranger detector failed: "
-                    f"{stranger_response.error or 'unknown error'}"
-                ),
+                error=PUBLIC_FACE_ERROR,
             )
         if not isinstance(face_classification, GroundedClassification):
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=safety_response.raw_text,
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                response_id=safety_response.response_id,
-                usage=safety_response.usage,
                 error="stranger detector returned a multi-event classification",
             )
 
@@ -1129,23 +1095,19 @@ class FixedFiveGroundingClient:
                 ),
                 analysis_kind=FIXED_FIVE_ANALYSIS_KIND,
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
-                raw_text=safety_response.raw_text,
+                raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                response_id=safety_response.response_id,
-                usage=safety_response.usage,
-                error=f"invalid stranger detector result: {exc}",
+                error=PUBLIC_FACE_ERROR,
             )
         return GroundingResponse(
             window=window,
             classification=classification,
-            raw_text=safety_response.raw_text,
+            raw_text=None,
             latency_seconds=time.monotonic() - started,
-            response_id=safety_response.response_id,
-            usage=safety_response.usage,
         )
 
 
@@ -1155,12 +1117,13 @@ def build_grounding_client(
     *,
     memory_context: MemoryContext | None = None,
     dry_run: bool = False,
+    api_key: str | None = None,
 ) -> GroundingClient:
     if dry_run:
         return DryRunGroundingClient(settings, memory_context)
     return OpenRouterGroundingClient(
         settings,
-        OpenRouterClient(openrouter_settings),
+        OpenRouterClient(openrouter_settings, api_key=api_key),
         memory_context,
     )
 
@@ -1173,6 +1136,7 @@ def build_fixed_five_grounding_client(
     safety_max_image_side: int = 320,
     safety_jpeg_quality: int = 75,
     dry_run: bool = False,
+    api_key: str | None = None,
 ) -> FixedFiveGroundingClient:
     """Build the fixed-five composite while keeping legacy clients unchanged."""
 
@@ -1186,7 +1150,7 @@ def build_fixed_five_grounding_client(
     else:
         safety_client = OpenRouterMultiGroundingClient(
             settings,
-            OpenRouterClient(openrouter_settings),
+            OpenRouterClient(openrouter_settings, api_key=api_key),
         )
     return FixedFiveGroundingClient(
         safety_client,

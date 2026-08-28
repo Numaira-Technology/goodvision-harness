@@ -7,6 +7,8 @@ from typing import Any
 
 import cv2
 
+from .privacy import redact_public_text
+
 
 def draw_overlay(
     bgr: Any,
@@ -47,14 +49,16 @@ def draw_overlay(
         except (AttributeError, TypeError, ValueError):
             continue
         cv2.rectangle(rendered, (x1, y1), (max(x1, x2 - 1), max(y1, y2 - 1)), color, 2)
-        label = str(getattr(item, "label", "object"))
+        label = redact_public_text(getattr(item, "label", "object"))
         item_confidence = getattr(item, "confidence", None)
         if item_confidence is not None:
             label += f" {float(item_confidence):.2f}"
         _text_with_background(rendered, label[:80], (x1, max(18, y1)), color)
 
     positive_label = (
-        "UNKNOWN" if analysis_kind == "face_reference_match" else event_label.upper()
+        "UNKNOWN"
+        if analysis_kind == "face_reference_match"
+        else redact_public_text(event_label).upper()
     )
     state = "STALE" if stale else (positive_label if detected else "CLEAR")
     title = f"{state}  {float(confidence):.2f}"
@@ -62,7 +66,7 @@ def draw_overlay(
     if description:
         _text_with_background(
             rendered,
-            _ascii_safe(description)[:110],
+            _ascii_safe(redact_public_text(description))[:110],
             (12, 55),
             (45, 45, 45),
             scale=0.48,
@@ -110,7 +114,7 @@ def _draw_face_overlay(
             2,
         )
         if status == "known":
-            label = str(attributes.get("name") or "known")
+            label = redact_public_text(attributes.get("name") or "known")
         elif status == "unknown":
             label = "UNKNOWN"
         else:
@@ -140,7 +144,7 @@ def _draw_face_overlay(
     if description:
         _text_with_background(
             rendered,
-            _ascii_safe(description)[:110],
+            _ascii_safe(redact_public_text(description))[:110],
             (12, 55),
             (45, 45, 45),
             scale=0.48,

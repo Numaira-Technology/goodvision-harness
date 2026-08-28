@@ -9,6 +9,7 @@ import logging
 import os
 import struct
 import time
+import unicodedata
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -32,18 +33,25 @@ from .config import (
     ServiceSettings,
     load_config,
 )
-from .contracts import AnalysisResult
+from .contracts import AnalysisResult, PUBLIC_MODEL_NAME
 from .delayed_overlay import DelayedOverlayComposer
 from .delivery import WebhookDelivery
+from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
 from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
 from .grounding import (
     DETECTION_EVENT_LABELS,
     build_fixed_five_grounding_client,
     build_grounding_client,
 )
-from .openrouter import api_key_present
 from .overlay import draw_overlay
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
+from .privacy import (
+    PUBLIC_ANALYSIS_ERROR,
+    PUBLIC_FACE_ERROR,
+    public_error_message,
+    public_safe_value,
+    redact_public_text,
+)
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
     UNKNOWN_FACE_EVENT_LABEL,
@@ -63,6 +71,8 @@ CAMERA_FRAME_MAX_BYTES = 2_000_000
 EVENT_LABEL_MAX_CHARS = 80
 PERSON_FIELD_MAX_CHARS = 120
 FACE_ENROLLMENT_MAX_BYTES = 10_000_000
+DEPLOYMENT_VALUE_MAX_CHARS = 4096
+DEPLOYMENT_REQUEST_MAX_BYTES = 64 * 1024
 EVENT_ANALYSIS_MODE = "event"
 FACE_ANALYSIS_MODE = "face"
 MULTI_ANALYSIS_MODE = "multi"
@@ -81,15 +91,53 @@ class HarnessRuntime:
         config_error: str | None = None,
         memory_sink: VisualMemorySink | None = None,
         face_runtime: FaceRecognitionRuntime | None = None,
+        deployment_store: DeploymentSettingsStore | None = None,
     ) -> None:
+        self._deployment_store = deployment_store
+        self._deployment_settings: DeploymentSettings | None = None
+        self._deployment_error: str | None = None
+        self._persisted_api_key: str | None = None
+        if deployment_store is not None:
+            try:
+                self._deployment_settings = deployment_store.load()
+                self._persisted_api_key = deployment_store.load_api_key()
+            except Exception:
+                LOGGER.error("could not load persistent deployment settings")
+                self._deployment_error = "persistent settings could not be loaded"
         try:
-            dry_run = _env_bool("HARNESS_DRY_RUN", False)
-        except ValueError as exc:
+            dry_run = (
+                self._deployment_settings.dry_run
+                if self._deployment_settings is not None
+                else _env_bool("HARNESS_DRY_RUN", False)
+            )
+            autostart = (
+                self._deployment_settings.autostart
+                if self._deployment_settings is not None
+                else _env_bool("HARNESS_AUTOSTART", True)
+            )
+        except ValueError:
             dry_run = False
-            config_error = config_error or f"configuration error: {exc}"
+            autostart = False
+            config_error = config_error or "configuration error"
         self.config = config
         self.config_error = config_error
         self.dry_run = dry_run
+        self.autostart = autostart
+        api_key_env = (
+            config.openrouter.api_key_env
+            if config is not None
+            else "MODEL_API_KEY"
+        )
+        self._environment_api_key = (
+            os.environ.get(api_key_env, "").strip()
+            or os.environ.get("MODEL_API_KEY", "").strip()
+            # Backward-compatible read only. The legacy name is never emitted.
+            or os.environ.get("OPENROUTER_API_KEY", "").strip()
+            or None
+        )
+        self._openrouter_api_key = (
+            self._persisted_api_key or self._environment_api_key
+        )
         self.settings = config.service if config is not None else ServiceSettings()
         self.source_id = (
             os.environ.get("HARNESS_SOURCE_ID", "").strip() or self.settings.source_id
@@ -159,7 +207,7 @@ class HarnessRuntime:
                 ",".join(DETECTION_EVENT_LABELS) if config is not None else None
             ),
             "event_labels": list(DETECTION_EVENT_LABELS),
-            "model": config.inference.model if config is not None else None,
+            "model": PUBLIC_MODEL_NAME if config is not None else None,
             "dry_run": self.dry_run,
             "webhook_enabled": False,
             "memory_enabled": memory_sink is not None,
@@ -171,28 +219,37 @@ class HarnessRuntime:
     @classmethod
     def from_environment(cls) -> HarnessRuntime:
         config_path = Path(os.environ.get("HARNESS_CONFIG", str(DEFAULT_CONFIG_PATH)))
+        deployment_path = os.environ.get(
+            "HARNESS_DEPLOYMENT_SETTINGS_PATH", ""
+        ).strip()
+        deployment_store = (
+            DeploymentSettingsStore(deployment_path) if deployment_path else None
+        )
         try:
             config = load_config(config_path)
-        except Exception as exc:
-            LOGGER.exception("could not load harness configuration")
-            return cls(None, config_error=f"configuration error: {exc}")
-        return cls(config)
+        except Exception:
+            LOGGER.error("could not load harness configuration")
+            return cls(
+                None,
+                config_error="configuration error",
+                deployment_store=deployment_store,
+            )
+        return cls(config, deployment_store=deployment_store)
 
     def configured_stream_url(self) -> str:
         if self.config is None:
             return ""
+        if self._deployment_settings is not None:
+            return self._deployment_settings.stream_url
         return (
-            os.environ.get("RTSP_URL", "").strip()
-            or os.environ.get("HARNESS_STREAM_URL", "").strip()
+            os.environ.get("HARNESS_STREAM_URL", "").strip()
+            or os.environ.get("RTSP_URL", "").strip()
             or (self.config.stream.url or "")
         )
 
-    def ui_info(self) -> dict[str, Any]:
-        if self.config is None:
-            return {
-                "configured": False,
-                "error": self.config_error or "configuration unavailable",
-            }
+    def deployment_settings(self) -> dict[str, Any]:
+        """Return persistent deployment metadata without returning any secret."""
+
         stream_url = self.configured_stream_url()
         protocol = None
         if stream_url:
@@ -200,9 +257,131 @@ class HarnessRuntime:
                 protocol = parse_stream_source(stream_url).protocol
             except ValueError:
                 protocol = None
+        if self._deployment_settings is not None:
+            source = "persistent"
+        elif os.environ.get("HARNESS_STREAM_URL", "").strip() or os.environ.get(
+            "RTSP_URL", ""
+        ).strip():
+            source = "environment"
+        else:
+            source = "image_default"
         return {
+            "persistence_available": self._deployment_store is not None,
+            "settings_saved": self._deployment_settings is not None,
+            "settings_source": source,
+            "configured_stream": bool(stream_url),
+            "configured_stream_protocol": protocol,
+            "stream_frame_crop": self.config.stream.frame_crop,
+            "dry_run": self.dry_run,
+            "autostart": self.autostart,
+            "api_key_present": bool(self._openrouter_api_key),
+            "api_key_persisted": bool(self._persisted_api_key),
+            "storage_error": self._deployment_error,
+        }
+
+    def update_deployment_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist console-managed defaults for the next session and restart."""
+
+        if self._deployment_store is None:
+            raise RuntimeError("persistent deployment storage is not configured")
+        allowed = {
+            "stream_url",
+            "dry_run",
+            "autostart",
+            "api_key",
+            "clear_api_key",
+        }
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise ValueError(f"unknown deployment setting: {unknown[0]}")
+        with self._control_lock:
+            if self._session is not None and self._session.running:
+                raise RuntimeError("stop the active session before saving settings")
+
+            setting_fields = {"stream_url", "dry_run", "autostart"}
+            settings: DeploymentSettings | None = None
+            if setting_fields.intersection(payload):
+                stream_url = payload.get("stream_url", self.configured_stream_url())
+                dry_run = payload.get("dry_run", self.dry_run)
+                autostart = payload.get("autostart", self.autostart)
+                if not isinstance(stream_url, str):
+                    raise ValueError("stream_url must be a string")
+                stream_url = stream_url.strip()
+                if len(stream_url) > DEPLOYMENT_VALUE_MAX_CHARS:
+                    raise ValueError("stream_url is too long")
+                if stream_url:
+                    parse_stream_source(stream_url)
+                if not isinstance(dry_run, bool):
+                    raise ValueError("dry_run must be boolean")
+                if not isinstance(autostart, bool):
+                    raise ValueError("autostart must be boolean")
+                settings = DeploymentSettings(
+                    stream_url=stream_url,
+                    dry_run=dry_run,
+                    autostart=autostart,
+                )
+
+            api_key = payload.get("api_key")
+            clear_api_key = payload.get("clear_api_key", False)
+            rendered_key: str | None = None
+            if not isinstance(clear_api_key, bool):
+                raise ValueError("clear_api_key must be boolean")
+            if api_key is not None and clear_api_key:
+                raise ValueError("cannot set and clear the API key together")
+            if api_key is not None:
+                if not isinstance(api_key, str):
+                    raise ValueError("api_key must be a string")
+                if any(
+                    unicodedata.category(character) == "Cc"
+                    for character in api_key
+                ):
+                    raise ValueError("api_key must not contain control characters")
+                rendered_key = api_key.strip()
+                if not rendered_key:
+                    raise ValueError("api_key must not be empty")
+                if len(rendered_key) > DEPLOYMENT_VALUE_MAX_CHARS:
+                    raise ValueError("api_key is too long")
+
+            # Do not mutate disk or runtime state until every supplied field has
+            # passed validation. A mixed request must fail as one unit when, for
+            # example, its stream settings are valid but its API key is not.
+            if settings is not None:
+                self._deployment_store.save(settings)
+                self._deployment_settings = settings
+                self.dry_run = settings.dry_run
+                self.autostart = settings.autostart
+            if rendered_key is not None:
+                self._deployment_store.save_api_key(rendered_key)
+                self._persisted_api_key = rendered_key
+            elif clear_api_key:
+                self._deployment_store.delete_api_key()
+                self._persisted_api_key = None
+            self._openrouter_api_key = (
+                self._persisted_api_key or self._environment_api_key
+            )
+            self._deployment_error = None
+            self._update_state(dry_run=self.dry_run)
+        return self.deployment_settings()
+
+    def ui_info(self) -> dict[str, Any]:
+        if self.config is None:
+            result = {
+                "configured": False,
+                "error": "configuration unavailable",
+            }
+            safe = public_safe_value(result)
+            assert isinstance(safe, dict)
+            return safe
+        stream_url = self.configured_stream_url()
+        protocol = None
+        if stream_url:
+            try:
+                protocol = parse_stream_source(stream_url).protocol
+            except ValueError:
+                protocol = None
+        result = {
             "configured": True,
-            "model": self.config.inference.model,
+            "model": PUBLIC_MODEL_NAME,
             "event_label": self.config.inference.event_label,
             "event_labels": list(DETECTION_EVENT_LABELS),
             "sample_fps": self.config.video.fps,
@@ -213,10 +392,12 @@ class HarnessRuntime:
                 "stride_frames": self.config.sliding_window.stride_frames,
             },
             "max_concurrent_requests": self.config.runtime.max_concurrent_requests,
-            "api_key_present": api_key_present(self.config.openrouter),
+            "api_key_present": bool(self._openrouter_api_key),
             "dry_run": self.dry_run,
             "configured_stream": bool(stream_url),
             "configured_stream_protocol": protocol,
+            "stream_frame_crop": self.config.stream.frame_crop,
+            "deployment": self.deployment_settings(),
             "analysis_modes": sorted(ANALYSIS_MODES),
             "reference_memory": (
                 {
@@ -228,11 +409,15 @@ class HarnessRuntime:
                 else None
             ),
             "face": {
-                "model_name": self.config.face.model_name,
+                "engine": "local",
                 "sample_fps": self.config.face.sample_fps,
                 "max_image_side": self.config.face.max_image_side,
                 "jpeg_quality": self.config.face.jpeg_quality,
                 "threshold": self.config.face.threshold,
+                "min_face_size": self.config.face.min_face_size,
+                "enrollment_min_face_size": (
+                    self.config.face.enrollment_min_face_size
+                ),
             },
             "multi": {
                 "sample_fps": self.config.face.sample_fps,
@@ -249,19 +434,22 @@ class HarnessRuntime:
                 ),
             },
         }
+        safe = public_safe_value(result)
+        assert isinstance(safe, dict)
+        return safe
 
     def face_gallery(self) -> dict[str, Any]:
         """Return an embedding-free view of the local known-person gallery."""
 
         try:
             people = self._ensure_face_runtime().list_people()
-        except Exception as exc:
-            LOGGER.warning("could not open face gallery", exc_info=True)
+        except Exception:
+            LOGGER.warning("could not open face gallery")
             return {
                 "ready": False,
                 "people": [],
                 "sample_count": 0,
-                "error": str(exc),
+                "error": PUBLIC_FACE_ERROR,
             }
         public_people = [
             {
@@ -272,11 +460,14 @@ class HarnessRuntime:
             }
             for person in people
         ]
-        return {
+        result = {
             "ready": True,
             "people": public_people,
             "sample_count": sum(person.sample_count for person in people),
         }
+        safe = public_safe_value(result)
+        assert isinstance(safe, dict)
+        return safe
 
     def enroll_face(
         self,
@@ -285,7 +476,7 @@ class HarnessRuntime:
         image_bytes: bytes,
     ) -> dict[str, Any]:
         person = self._ensure_face_runtime().enroll(person_id, name, image_bytes)
-        return {
+        result = {
             "ready": True,
             "person": {
                 "person_id": person.person_id,
@@ -294,6 +485,9 @@ class HarnessRuntime:
                 "sample_count": person.sample_count,
             },
         }
+        safe = public_safe_value(result)
+        assert isinstance(safe, dict)
+        return safe
 
     def delete_face(self, person_id: str) -> bool:
         return self._ensure_face_runtime().delete_person(person_id)
@@ -313,6 +507,7 @@ class HarnessRuntime:
                         det_size=face.det_size,
                         threshold=face.threshold,
                         min_face_size=face.min_face_size,
+                        enrollment_min_face_size=face.enrollment_min_face_size,
                         gallery_path=face.gallery_path,
                     )
                 )
@@ -326,9 +521,8 @@ class HarnessRuntime:
         try:
             with self._control_lock:
                 self._ensure_delivery()
-            autostart = _env_bool("HARNESS_AUTOSTART", True)
             stream_url = self.configured_stream_url()
-            if autostart and stream_url:
+            if self.autostart and stream_url:
                 self.start_stream(stream_url)
                 return
             self._update_state(
@@ -336,11 +530,11 @@ class HarnessRuntime:
                 last_error=None,
                 webhook_enabled=self._delivery is not None,
             )
-        except Exception as exc:
-            LOGGER.exception("could not start harness runtime")
+        except Exception:
+            LOGGER.error("could not start harness runtime")
             self._update_state(
                 pipeline_state="error",
-                last_error=str(exc),
+                last_error=PUBLIC_ANALYSIS_ERROR,
                 ready=False,
             )
 
@@ -437,9 +631,7 @@ class HarnessRuntime:
                 warmup_seconds = face_runtime.warmup()
                 if warmup_seconds:
                     LOGGER.info(
-                        "warmed InsightFace model %s in %.3fs",
-                        face_runtime.settings.model,
-                        warmup_seconds,
+                        "warmed local face analysis in %.3fs", warmup_seconds
                     )
                 face = self.config.face
                 session_config = replace(
@@ -470,9 +662,7 @@ class HarnessRuntime:
                     warmup_seconds = face_runtime.warmup()
                     if warmup_seconds:
                         LOGGER.info(
-                            "warmed InsightFace model %s in %.3fs",
-                            face_runtime.settings.model,
-                            warmup_seconds,
+                            "warmed local face analysis in %.3fs", warmup_seconds
                         )
                 session_config = replace(
                     self.config,
@@ -496,6 +686,7 @@ class HarnessRuntime:
                     safety_max_image_side=self.config.video.max_image_side,
                     safety_jpeg_quality=self.config.video.jpeg_quality,
                     dry_run=use_dry_run,
+                    api_key=self._openrouter_api_key,
                 )
             else:
                 session_config = self.config
@@ -509,6 +700,7 @@ class HarnessRuntime:
                     session_config.openrouter,
                     memory_context=session_config.memory,
                     dry_run=use_dry_run,
+                    api_key=self._openrouter_api_key,
                 )
             generation = self._generation + 1
             callbacks = SessionCallbacks(
@@ -596,6 +788,7 @@ class HarnessRuntime:
                             {
                                 "protocol": stream_protocol,
                                 "host": stream_host,
+                                "frame_crop": session_config.stream.frame_crop,
                             }
                             if mode == STREAM_MODE
                             else None
@@ -607,7 +800,7 @@ class HarnessRuntime:
                             if selected_analysis == MULTI_ANALYSIS_MODE
                             else [label]
                         ),
-                        "model": session_config.inference.model,
+                        "model": PUBLIC_MODEL_NAME,
                         "dry_run": use_dry_run,
                         "webhook_enabled": self._delivery is not None,
                         "pipeline": None,
@@ -636,7 +829,7 @@ class HarnessRuntime:
                 "generation": generation,
                 "stream_session_id": session.stream_session_id,
                 "event_label": label,
-                "model": session_config.inference.model,
+                "model": PUBLIC_MODEL_NAME,
                 "dry_run": use_dry_run,
             }
             if selected_analysis == MULTI_ANALYSIS_MODE:
@@ -653,7 +846,9 @@ class HarnessRuntime:
                     "newest_frame_only": session_config.memory.newest_frame_only,
                     "memory_ids": list(session_config.memory.memory_ids),
                 }
-            return response
+            safe_response = public_safe_value(response)
+            assert isinstance(safe_response, dict)
+            return safe_response
 
     def stop_session(self, *, camera_owner: str | None = None) -> bool:
         """Stop the current run but keep the service available for another."""
@@ -684,7 +879,7 @@ class HarnessRuntime:
                 )
 
             session.stop()
-            session.join(timeout=5.0)
+            session.join(timeout=10.0)
             if session.running:
                 self._update_state(
                     pipeline_state="error",
@@ -798,7 +993,9 @@ class HarnessRuntime:
         payload["readiness_reason"] = reason
         if self._delivery is not None:
             payload["webhook"] = self._delivery.stats()
-        return payload
+        safe = public_safe_value(payload)
+        assert isinstance(safe, dict)
+        return safe
 
     def readiness(self) -> tuple[bool, str]:
         with self._state_lock:
@@ -877,10 +1074,7 @@ class HarnessRuntime:
                     )
                 )
             except Exception:
-                LOGGER.warning(
-                    "visual memory sink rejected an observation",
-                    exc_info=True,
-                )
+                LOGGER.warning("visual memory sink rejected an observation")
                 accepted = False
             memory_key = (
                 "memory_records_accepted" if accepted else "memory_records_dropped"
@@ -893,7 +1087,7 @@ class HarnessRuntime:
                 quality=self.settings.overlay_jpeg_quality,
             )
         except (cv2.error, TypeError, ValueError):
-            LOGGER.warning("could not render analysis overlay", exc_info=True)
+            LOGGER.warning("could not render analysis overlay")
             rendered = source_jpeg
         self.frames.publish(
             FramePacket(
@@ -952,10 +1146,10 @@ class HarnessRuntime:
         )
 
     def _on_pipeline_state(self, state: dict[str, Any]) -> None:
-        values: dict[str, Any] = {"pipeline": copy.deepcopy(state)}
+        values: dict[str, Any] = {"pipeline": public_safe_value(copy.deepcopy(state))}
         pipeline_error = state.get("last_error")
         if pipeline_error:
-            values["last_error"] = str(pipeline_error)
+            values["last_error"] = public_error_message(pipeline_error)
         self._update_state(**values)
 
     def _on_end(self, reason: str, error: str | None) -> None:
@@ -964,12 +1158,14 @@ class HarnessRuntime:
             pipeline_state=next_state,
             ready=False,
             end_reason=reason,
-            last_error=error,
+            last_error=(public_error_message(error) if error else None),
         )
 
     def _update_state(self, **values: Any) -> None:
         with self._state_lock:
-            self._state.update(values)
+            safe = public_safe_value(values)
+            assert isinstance(safe, dict)
+            self._state.update(safe)
 
 
 def _render_analysis_jpeg(
@@ -1086,6 +1282,63 @@ def create_app(
     async def ui_info(request: Request) -> dict[str, Any]:
         return _runtime(request).ui_info()
 
+    @application.get("/v1/deployment/settings")
+    async def deployment_settings(request: Request) -> dict[str, Any]:
+        return _runtime(request).deployment_settings()
+
+    @application.put("/v1/deployment/settings")
+    async def update_deployment_settings(request: Request) -> dict[str, Any]:
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400, detail="Content-Length must be an integer"
+                ) from exc
+            if declared_length < 0:
+                raise HTTPException(
+                    status_code=400, detail="Content-Length must not be negative"
+                )
+            if declared_length > DEPLOYMENT_REQUEST_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="deployment settings body exceeds 64 KiB",
+                )
+
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > DEPLOYMENT_REQUEST_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="deployment settings body exceeds 64 KiB",
+                )
+            body.extend(chunk)
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(
+                status_code=400, detail="deployment settings body must be JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=400, detail="deployment settings body must be an object"
+            )
+        try:
+            return await asyncio.to_thread(
+                _runtime(request).update_deployment_settings,
+                payload,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=redact_public_text(exc)
+            ) from exc
+        except RuntimeError as exc:
+            status_code = 409 if "active session" in str(exc) else 503
+            raise HTTPException(
+                status_code=status_code, detail=redact_public_text(exc)
+            ) from exc
+
     @application.websocket("/ws")
     async def control_socket(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -1150,7 +1403,12 @@ def create_app(
                                 raise ValueError("mode must be camera or stream")
                         except Exception as exc:
                             await websocket.send_json(
-                                {"type": "error", "message": str(exc)}
+                                {
+                                    "type": "error",
+                                    "message": public_error_message(
+                                        exc, fallback="could not start session"
+                                    ),
+                                }
                             )
                         else:
                             await websocket.send_json(response)
@@ -1163,7 +1421,9 @@ def create_app(
                         await websocket.send_json(
                             {
                                 "type": "error",
-                                "message": f"unknown command: {command!r}",
+                                "message": redact_public_text(
+                                    f"unknown command: {command!r}"
+                                ),
                             }
                         )
                     continue
@@ -1187,7 +1447,7 @@ def create_app(
                     )
                 except ValueError as exc:
                     await websocket.send_json(
-                        {"type": "error", "message": str(exc)}
+                        {"type": "error", "message": redact_public_text(exc)}
                     )
         except (WebSocketDisconnect, RuntimeError):
             pass
@@ -1256,9 +1516,14 @@ def create_app(
                 image_bytes,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=400, detail=redact_public_text(exc)
+            ) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=503,
+                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
+            ) from exc
 
     @application.delete("/v1/faces/gallery/{person_id}")
     async def delete_face(person_id: str, request: Request) -> dict[str, Any]:
@@ -1268,12 +1533,19 @@ def create_app(
                 person_id,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=400, detail=redact_public_text(exc)
+            ) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=503,
+                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
+            ) from exc
         if not deleted:
             raise HTTPException(status_code=404, detail="person not found")
-        return {"deleted": True, "person_id": person_id}
+        result = public_safe_value({"deleted": True, "person_id": person_id})
+        assert isinstance(result, dict)
+        return result
 
     @application.get("/v1/results/latest")
     async def latest_result(request: Request) -> JSONResponse:
@@ -1491,7 +1763,9 @@ def _env_bool(name: str, default: bool) -> bool:
 def main() -> None:
     host = os.environ.get("HARNESS_HOST", "0.0.0.0")
     port = int(os.environ.get("HARNESS_PORT", "8080"))
-    uvicorn.run(app, host=host, port=port)
+    # MJPEG/SSE clients are intentionally long-lived. Bound their shutdown so
+    # Docker can continue into application cleanup instead of waiting forever.
+    uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=10)
 
 
 app = create_app()

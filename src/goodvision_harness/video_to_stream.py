@@ -88,6 +88,24 @@ def encode_jpeg(
     return encoded.tobytes(), width, height
 
 
+def crop_frame(bgr: Any, *, mode: str) -> Any:
+    """Select one horizontal view before any resizing or JPEG encoding."""
+
+    if mode == "none":
+        return bgr
+    if mode not in {"left_half", "right_half"}:
+        raise ValueError("frame crop mode must be none, left_half, or right_half")
+    if getattr(bgr, "ndim", 0) < 2:
+        raise ValueError("frame must have at least two dimensions")
+    width = int(bgr.shape[1])
+    if width < 2:
+        raise ValueError("frame must be at least two pixels wide to crop in half")
+    midpoint = width // 2
+    if mode == "left_half":
+        return bgr[:, :midpoint]
+    return bgr[:, midpoint:]
+
+
 class VideoFileStream:
     """Emit decoded frames from a file at wall-clock pace, like a camera.
 

@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 
 
 class OpenRouterError(RuntimeError):
-    """Raised when OpenRouter cannot return a usable chat completion."""
+    """Raised when the configured model API cannot return a usable response."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +22,7 @@ class OpenRouterSettings:
     """Connection settings that do not depend on a specific model or prompt."""
 
     endpoint: str = "https://openrouter.ai/api/v1/chat/completions"
-    api_key_env: str = "OPENROUTER_API_KEY"
+    api_key_env: str = "MODEL_API_KEY"
     timeout_seconds: float = 90.0
     max_retries: int = 3
     retry_backoff_seconds: float = 1.0
@@ -52,7 +52,7 @@ class OpenRouterSettings:
             endpoint=str(
                 value.get("endpoint", "https://openrouter.ai/api/v1/chat/completions")
             ),
-            api_key_env=str(value.get("api_key_env", "OPENROUTER_API_KEY")),
+            api_key_env=str(value.get("api_key_env", "MODEL_API_KEY")),
             timeout_seconds=float(value.get("timeout_seconds", 90.0)),
             max_retries=int(value.get("max_retries", 3)),
             retry_backoff_seconds=float(value.get("retry_backoff_seconds", 1.0)),
@@ -98,9 +98,7 @@ class OpenRouterClient:
         self.settings = settings
         self._api_key = (api_key or os.environ.get(settings.api_key_env, "")).strip()
         if not self._api_key:
-            raise OpenRouterError(
-                f"missing OpenRouter API key; set {settings.api_key_env}"
-            )
+            raise OpenRouterError("model API key is not configured")
 
     def chat_completion(
         self,
@@ -180,27 +178,28 @@ class OpenRouterClient:
                 try:
                     decoded = json.loads(body)
                 except json.JSONDecodeError as exc:
-                    raise OpenRouterError("OpenRouter returned invalid JSON") from exc
+                    raise OpenRouterError("model API returned invalid JSON") from exc
                 if not isinstance(decoded, dict):
-                    raise OpenRouterError(
-                        "OpenRouter returned a non-object JSON response"
-                    )
+                    raise OpenRouterError("model API returned an invalid response")
                 return decoded
             except HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
+                # Consume the response so the connection can be released, but
+                # never copy the vendor error body into application records.
+                exc.read()
                 if (
                     exc.code in self._RETRYABLE_STATUSES
                     and attempt < self.settings.max_retries
                 ):
                     self._sleep_before_retry(attempt, exc.headers.get("Retry-After"))
                     continue
-                detail = _error_detail(body)
-                raise OpenRouterError(f"OpenRouter HTTP {exc.code}: {detail}") from exc
+                raise OpenRouterError(
+                    f"model API returned HTTP {int(exc.code)}"
+                ) from exc
             except (URLError, TimeoutError, OSError) as exc:
                 if attempt < self.settings.max_retries:
                     self._sleep_before_retry(attempt, None)
                     continue
-                raise OpenRouterError(f"OpenRouter request failed: {exc}") from exc
+                raise OpenRouterError("model API request failed") from exc
 
         raise AssertionError("retry loop terminated unexpectedly")
 
@@ -215,17 +214,3 @@ class OpenRouterClient:
             delay = self.settings.retry_backoff_seconds * (2**attempt)
         if delay:
             time.sleep(delay)
-
-
-def _error_detail(body: str) -> str:
-    try:
-        decoded = json.loads(body)
-    except json.JSONDecodeError:
-        return body.strip()[:500] or "empty response"
-    if isinstance(decoded, Mapping):
-        error = decoded.get("error")
-        if isinstance(error, Mapping) and error.get("message"):
-            return str(error["message"])[:500]
-        if isinstance(error, str):
-            return error[:500]
-    return body.strip()[:500] or "empty response"

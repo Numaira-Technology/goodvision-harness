@@ -24,6 +24,7 @@ class StreamSettings:
 
     url: str | None = None
     whep_headers: Mapping[str, str] = field(default_factory=dict)
+    frame_crop: str = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +46,7 @@ class DisplaySettings:
     fps: float = 15.0
     max_image_side: int = 720
     jpeg_quality: int = 70
-    delay_seconds: float = 2.4
+    delay_seconds: float = 3.0
     bbox_max_gap_seconds: float = 0.8
 
 
@@ -76,7 +77,8 @@ class FaceSettings:
     provider: str = "CPUExecutionProvider"
     det_size: int = 640
     threshold: float = 0.4
-    min_face_size: int = 80
+    min_face_size: int = 20
+    enrollment_min_face_size: int = 80
     sample_fps: float = 2.5
     max_image_side: int = 1280
     jpeg_quality: int = 90
@@ -180,7 +182,18 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         if raw_value is None:
             raise TypeError(f"stream.whep_headers.{key} must be a string")
         whep_headers[key] = str(raw_value)
-    stream = StreamSettings(url=stream_url, whep_headers=whep_headers)
+    frame_crop = _required_string(
+        stream_section.get("frame_crop", "none"), "stream.frame_crop"
+    ).lower()
+    if frame_crop not in {"none", "left_half", "right_half"}:
+        raise ValueError(
+            "stream.frame_crop must be none, left_half, or right_half"
+        )
+    stream = StreamSettings(
+        url=stream_url,
+        whep_headers=whep_headers,
+        frame_crop=frame_crop,
+    )
 
     video = VideoSettings(
         fps=_positive_float(video_section.get("fps", 2.0), "video.fps"),
@@ -213,7 +226,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             maximum=100,
         ),
         delay_seconds=_non_negative_float(
-            display_section.get("delay_seconds", 2.4),
+            display_section.get("delay_seconds", 3.0),
             "display.delay_seconds",
         ),
         bbox_max_gap_seconds=_positive_float(
@@ -291,7 +304,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             maximum=1.0,
         ),
         min_face_size=_positive_int(
-            face_section.get("min_face_size", 80), "face.min_face_size"
+            face_section.get("min_face_size", 20), "face.min_face_size"
+        ),
+        enrollment_min_face_size=_positive_int(
+            face_section.get("enrollment_min_face_size", 80),
+            "face.enrollment_min_face_size",
         ),
         sample_fps=_positive_float(
             face_section.get("sample_fps", 2.5), "face.sample_fps"

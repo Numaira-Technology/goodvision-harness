@@ -16,6 +16,7 @@ from goodvision_harness.contracts import (
     FrameReference,
     GroundedObject,
     NormalizedBBox,
+    PUBLIC_MODEL_NAME,
 )
 from goodvision_harness.face_recognition import GalleryPerson
 from goodvision_harness.reference_memory import MemoryContext, MemoryReference
@@ -87,13 +88,16 @@ def test_face_gallery_http_surface_and_ui_info(
 
     with TestClient(app) as client:
         info = client.get("/v1/ui/info").json()
+        assert info["model"] == PUBLIC_MODEL_NAME
         assert info["analysis_modes"] == ["event", "face", "multi"]
         assert info["face"] == {
-            "model_name": "buffalo_l",
+            "engine": "local",
             "sample_fps": 2.5,
             "max_image_side": 1280,
             "jpeg_quality": 90,
             "threshold": 0.4,
+            "min_face_size": 20,
+            "enrollment_min_face_size": 80,
         }
 
         dashboard = client.get("/")
@@ -189,7 +193,8 @@ def test_face_mode_reuses_streaming_session_with_face_settings(
         )
         assert response["analysis_mode"] == "face"
         assert response["event_label"] == "unknown_person"
-        assert response["model"] == "buffalo_l"
+        assert response["model"] == PUBLIC_MODEL_NAME
+        assert runtime.status()["model"] == PUBLIC_MODEL_NAME
         assert response["dry_run"] is False
         assert runtime.status()["analysis_mode"] == "face"
         assert runtime._session is not None
@@ -201,7 +206,7 @@ def test_face_mode_reuses_streaming_session_with_face_settings(
         runtime._on_pipeline_state(
             {"status": "warming", "last_error": "provider unavailable"}
         )
-        assert runtime.status()["last_error"] == "provider unavailable"
+        assert runtime.status()["last_error"] == "analysis request failed"
     finally:
         runtime.stop()
 

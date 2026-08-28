@@ -122,10 +122,6 @@ class NetworkStreamAdapter:
 
     def stop(self) -> None:
         self._stop.set()
-        with self._capture_lock:
-            capture = self._capture
-        if capture is not None:
-            capture.release()
 
     def frames(self) -> Iterator[LiveFrame]:
         if self.protocol in {"rtsp", "rtmp"}:
@@ -153,6 +149,8 @@ class NetworkStreamAdapter:
                         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     while not self.stopped:
                         read_ok, image = capture.read()
+                        if self.stopped:
+                            break
                         if not read_ok or image is None:
                             break
                         failures = 0
@@ -181,6 +179,8 @@ class NetworkStreamAdapter:
                         f"from host {self.source.host}"
                     )
             finally:
+                # Keep all native VideoCapture operations on this owner thread;
+                # cross-thread read()/release() races can crash OpenCV/FFmpeg.
                 capture.release()
                 with self._capture_lock:
                     if self._capture is capture:

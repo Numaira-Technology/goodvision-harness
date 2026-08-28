@@ -30,10 +30,16 @@ from .contracts import (
     EventJudgment,
     FrameReference,
     GroundedObject,
+    PUBLIC_MODEL_NAME,
 )
 from .grounding import GroundingClient, MultiGroundedClassification
 from .inference import WindowClient, WindowResponse, build_client
 from .organizer import ResultOrganizer
+from .privacy import (
+    PUBLIC_ANALYSIS_ERROR,
+    public_error_message,
+    public_safe_value,
+)
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
     UNKNOWN_FACE_EVENT_LABEL,
@@ -43,6 +49,7 @@ from .stream_adapter import NetworkStreamAdapter
 from .video_to_stream import (
     PushSampledSource,
     VideoFileStream,
+    crop_frame,
     encode_jpeg,
 )
 from .vision_result import VisionResult
@@ -257,7 +264,7 @@ class StreamingSession:
         error: str | None = None
         executor = ThreadPoolExecutor(
             max_workers=self.config.runtime.max_concurrent_requests,
-            thread_name_prefix="qwen-window",
+            thread_name_prefix="analysis-window",
         )
         try:
             windows = iter_sliding_windows(
@@ -280,8 +287,8 @@ class StreamingSession:
                     pass
                 if self._stop.is_set():
                     reason = "stopped"
-        except Exception as exc:
-            reason, error = "error", str(exc)
+        except Exception:
+            reason, error = "error", PUBLIC_ANALYSIS_ERROR
         finally:
             self._emit_open = False
             executor.shutdown(wait=False, cancel_futures=True)
@@ -301,10 +308,22 @@ class StreamingSession:
         next_sample_time = 0.0
         sample_index = 0
         for frame in self.video_stream.frames():
+            # The deployed WHEP source is a side-by-side stereo stream. Crop
+            # one eye before both display and inference encoding so the model,
+            # public frame dimensions, and normalized bbox coordinates all use
+            # the same single-view coordinate system.
+            frame_bgr = crop_frame(
+                frame.bgr,
+                mode=(
+                    self.config.stream.frame_crop
+                    if self.mode == STREAM_MODE
+                    else "none"
+                ),
+            )
             presentation_jpeg_bytes: bytes | None = None
             if self.callbacks.on_display_frame is not None:
                 presentation_jpeg_bytes, _, _ = encode_jpeg(
-                    frame.bgr,
+                    frame_bgr,
                     max_image_side=display.max_image_side,
                     quality=display.jpeg_quality,
                 )
@@ -318,11 +337,11 @@ class StreamingSession:
                 next_sample_time += sample_period
 
             jpeg_bytes, width, height = encode_jpeg(
-                frame.bgr,
+                frame_bgr,
                 max_image_side=video.max_image_side,
                 quality=video.jpeg_quality,
             )
-            source_height, source_width = frame.bgr.shape[:2]
+            source_height, source_width = frame_bgr.shape[:2]
             yield SampledFrame(
                 sample_index=sample_index,
                 source_frame_index=frame.index,
@@ -394,7 +413,7 @@ class StreamingSession:
                 classification=None,
                 raw_text=None,
                 latency_seconds=0.0,
-                error=f"window worker crashed: {exc}",
+                error=PUBLIC_ANALYSIS_ERROR,
             )
         else:
             response = future.result()
@@ -412,10 +431,10 @@ class StreamingSession:
                 # Preserve the original callback and result shape for existing
                 # CLI/library consumers.
                 vision_result = VisionResult(
-                    event_label=self.event_label,
+                    event_label=str(public_safe_value(self.event_label)),
                     detected=classification.detected,
                     confidence=classification.confidence,
-                    description=classification.description,
+                    description=str(public_safe_value(classification.description)),
                     window_index=window.index,
                     window_start_seconds=window.start_timestamp,
                     window_end_seconds=window.end_timestamp,
@@ -438,10 +457,12 @@ class StreamingSession:
                                 object_records.append(
                                     GroundedObject(
                                         object_id=object_id,
-                                        label=item.label,
+                                        label=str(public_safe_value(item.label)),
                                         bbox=item.bbox,
                                         confidence=item.confidence,
-                                        attributes=getattr(item, "attributes", {}),
+                                        attributes=public_safe_value(
+                                            getattr(item, "attributes", {})
+                                        ),
                                     )
                                 )
                                 object_ids.append(object_id)
@@ -450,7 +471,9 @@ class StreamingSession:
                                     event_label=judgment.event_label,
                                     detected=judgment.detected,
                                     confidence=judgment.confidence,
-                                    description=judgment.description,
+                                    description=str(
+                                        public_safe_value(judgment.description)
+                                    ),
                                     object_ids=tuple(object_ids),
                                     matched_memory_ids=judgment.matched_memory_ids,
                                 )
@@ -461,10 +484,12 @@ class StreamingSession:
                         grounded_objects = tuple(
                             GroundedObject(
                                 object_id=f"object-{index}",
-                                label=item.label,
+                                label=str(public_safe_value(item.label)),
                                 bbox=item.bbox,
                                 confidence=item.confidence,
-                                attributes=getattr(item, "attributes", {}),
+                                attributes=public_safe_value(
+                                    getattr(item, "attributes", {})
+                                ),
                             )
                             for index, item in enumerate(
                                 getattr(classification, "objects", ()), start=1
@@ -493,7 +518,9 @@ class StreamingSession:
                                     event_label=self.event_label,
                                     detected=classification.detected,
                                     confidence=classification.confidence,
-                                    description=classification.description,
+                                    description=str(
+                                        public_safe_value(classification.description)
+                                    ),
                                     object_ids=event_object_ids,
                                     matched_memory_ids=getattr(
                                         classification,
@@ -531,11 +558,7 @@ class StreamingSession:
                             ),
                             judgments=judgments,
                             objects=grounded_objects,
-                            model_name=getattr(
-                                self.client,
-                                "model_name",
-                                self.config.inference.model,
-                            ),
+                            model_name=PUBLIC_MODEL_NAME,
                             model_latency_seconds=response.latency_seconds,
                             analysis_kind=getattr(
                                 classification, "analysis_kind", "event"
@@ -629,7 +652,7 @@ def _invoke_callback(
     try:
         callback(*args)
     except Exception:
-        LOGGER.exception("%s callback failed", name)
+        LOGGER.error("%s callback failed", name)
 
 
 def _utc_now() -> str:
@@ -685,7 +708,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     config = load_config(args.config)
     stream_url: str | None = None
@@ -717,15 +740,17 @@ def main(argv: list[str] | None = None) -> int:
     done = threading.Event()
 
     def emit(record: dict[str, Any]) -> None:
+        safe = public_safe_value(record)
+        assert isinstance(safe, dict)
         with write_lock:
-            print(json.dumps(record, ensure_ascii=False), file=output, flush=True)
+            print(json.dumps(safe, ensure_ascii=False), file=output, flush=True)
 
     session: StreamingSession | None = None
 
     def on_end(reason: str, error: str | None) -> None:
         record: dict[str, Any] = {"type": "ended", "reason": reason}
         if error:
-            record["error"] = error
+            record["error"] = public_error_message(error)
         if session is not None:
             record["final_state"] = session.organizer.snapshot()
         emit(record)
@@ -784,6 +809,21 @@ def main(argv: list[str] | None = None) -> int:
         if close_output:
             output.close()
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the CLI with a stable public error boundary (no raw traceback)."""
+
+    try:
+        return _main(argv)
+    except Exception:
+        record = {
+            "type": "ended",
+            "reason": "error",
+            "error": PUBLIC_ANALYSIS_ERROR,
+        }
+        print(json.dumps(record, ensure_ascii=False), file=sys.stderr, flush=True)
+        return 1
 
 
 if __name__ == "__main__":

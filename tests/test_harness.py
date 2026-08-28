@@ -24,6 +24,7 @@ from goodvision_harness.contracts import (
     FrameReference,
     GroundedObject,
     NormalizedBBox,
+    PUBLIC_MODEL_NAME,
 )
 from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.grounding import (
@@ -45,6 +46,7 @@ from goodvision_harness.service import (
     create_app,
 )
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
+from goodvision_harness.video_to_stream import LiveFrame
 from goodvision_harness.vision_result import VisionResult
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,7 +100,7 @@ BBOX_PROMPT_APPEND = (
     'For the delivery contract, extend that same JSON object with an "objects"\n'
     """array. Each relevant visible entity must be
 {"label": "...", "confidence": 0.0-1.0, "bbox_2d": [x1, y1, x2, y2]}.
-bbox_2d must tightly enclose the object in the NEWEST frame and use Qwen's
+bbox_2d must tightly enclose the object in the NEWEST frame and use the
 top-left-origin relative 0..1000 xyxy coordinate grid.
 
 If detected=true, include at least one valid object.
@@ -160,6 +162,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     config = load_config(ROOT / "config.yaml")
 
     assert config.default_video is None
+    assert config.stream.frame_crop == "left_half"
     assert (
         config.video.fps,
         config.video.max_image_side,
@@ -171,7 +174,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.display.jpeg_quality,
         config.display.delay_seconds,
         config.display.bbox_max_gap_seconds,
-    ) == (15.0, 720, 70, 2.4, 0.8)
+    ) == (15.0, 720, 70, 3.0, 0.8)
     assert (
         config.sliding_window.size_frames,
         config.sliding_window.stride_frames,
@@ -180,9 +183,14 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert config.runtime.max_concurrent_requests == 6
     assert config.openrouter.max_retries == 0
     assert config.openrouter.app_title is None
+    # Branding is applied only at public serialization boundaries; the
+    # provider request must continue using the validated Qwen route.
+    assert config.inference.model == "qwen/qwen3.5-35b-a3b"
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900
     assert config.face.allow_model_download is True
+    assert config.face.min_face_size == 20
+    assert config.face.enrollment_min_face_size == 80
     assert config.inference.system_prompt == EXPECTED_SYSTEM_PROMPT
     assert config.inference.prompt == (
         f"{EXPECTED_PROMPT}\n\n{BBOX_PROMPT_APPEND}"
@@ -201,12 +209,73 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         "temperature": 0.0,
         "max_tokens": 1200,
         "reasoning": {"effort": "none"},
-        "provider": {"only": ["coreweave"], "allow_fallbacks": False},
+        "provider": {"only": ["deepinfra"], "allow_fallbacks": False},
     }
     packaged = ROOT / "src" / "goodvision_harness" / "config.yaml"
     assert packaged.read_text(encoding="utf-8") == (ROOT / "config.yaml").read_text(
         encoding="utf-8"
     )
+
+
+def test_stream_crop_is_applied_before_display_sampling_and_source_mapping() -> None:
+    config = load_config(ROOT / "config.yaml")
+    image = np.zeros((100, 400, 3), dtype=np.uint8)
+    image[:, :200] = (12, 34, 220)
+    image[:, 200:] = (210, 32, 14)
+
+    class OneFrameStream:
+        realtime = True
+
+        def frames(self):
+            yield LiveFrame(index=7, timestamp_seconds=0.0, bgr=image)
+
+        def stop(self) -> None:
+            pass
+
+    displayed: list[bytes] = []
+    session = StreamingSession(
+        config,
+        DryRunGroundingClient(config.inference),
+        SessionCallbacks(
+            on_display_frame=lambda jpeg, _timestamp, _index: displayed.append(jpeg)
+        ),
+        mode="stream",
+        video_stream=OneFrameStream(),  # type: ignore[arg-type]
+    )
+
+    sampled = next(session._sampled_frames())
+    sampled_image = cv2.imdecode(
+        np.frombuffer(sampled.jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR
+    )
+    display_image = cv2.imdecode(
+        np.frombuffer(displayed[0], dtype=np.uint8), cv2.IMREAD_COLOR
+    )
+
+    assert sampled.original_dimensions == (200, 100)
+    assert sampled_image.shape[:2] == (100, 200)
+    assert display_image.shape[:2] == (100, 200)
+    assert float(sampled_image[:, :, 2].mean()) > 180
+    assert float(sampled_image[:, :, 0].mean()) < 60
+
+    result = replace(
+        _analysis_result(),
+        frame=FrameReference(
+            source_frame_index=7,
+            timestamp_seconds=0.0,
+            observed_at="2026-08-28T00:00:00.000Z",
+            width=sampled.original_dimensions[0],
+            height=sampled.original_dimensions[1],
+        ),
+    )
+    rendered = _render_analysis_jpeg(displayed[0], result, quality=90)
+    rendered_image = cv2.imdecode(
+        np.frombuffer(rendered, dtype=np.uint8), cv2.IMREAD_COLOR
+    )
+    assert rendered_image.shape[:2] == (100, 200)
+    # The normalized x1=0.1 edge must land at x=20 on the cropped 200px view,
+    # not at x=40 as it would on the original side-by-side frame.
+    box_edge = rendered_image[60:75, 18:23].mean(axis=(0, 1))
+    assert box_edge[2] > box_edge[1] + 40
 
 
 def test_annotated_output_rate_covers_the_fastest_analysis_source() -> None:
@@ -439,6 +508,7 @@ def test_qwen_bbox_is_normalized_and_validated() -> None:
 
 def test_analysis_result_matches_versioned_json_schema() -> None:
     payload = _analysis_result().as_dict()
+    assert payload["model"]["name"] == PUBLIC_MODEL_NAME
     schema = json.loads(
         (ROOT / "schemas" / "analysis-result-v1.schema.json").read_text(
             encoding="utf-8"
@@ -777,16 +847,20 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     configured_url = (
         "rtsp://camera-user:camera-secret@private-camera.example:8554/live"
     )
-    monkeypatch.setenv("RTSP_URL", configured_url)
+    monkeypatch.setenv("HARNESS_STREAM_URL", configured_url)
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
-    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
+    config = load_config(ROOT / "config.yaml")
+    runtime = HarnessRuntime(config)
     app = create_app(lambda: runtime)
 
     with TestClient(app) as client:
         response = client.get("/v1/ui/info")
         assert response.status_code == 200
         info = response.json()
+        status = client.get("/v1/status").json()
 
+    assert info["model"] == PUBLIC_MODEL_NAME
+    assert status["model"] == PUBLIC_MODEL_NAME
     assert info["sample_fps"] == 2.5
     assert info["max_image_side"] == 320
     assert info["jpeg_quality"] == 75
@@ -794,13 +868,15 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert info["annotated_output"] == {
         "output_fps": 15.0,
         "max_image_side": 720,
-        "buffer_delay_seconds": 2.4,
+        "buffer_delay_seconds": 3.0,
         "bbox_max_gap_seconds": 0.8,
     }
     assert info["configured_stream"] is True
     assert info["configured_stream_protocol"] == "rtsp"
+    assert info["stream_frame_crop"] == "left_half"
     assert "stream_url" not in info
-    rendered = json.dumps(info, sort_keys=True)
+    rendered = json.dumps({"info": info, "status": status}, sort_keys=True)
+    assert config.inference.model not in rendered
     assert configured_url not in rendered
     assert "camera-secret" not in rendered
     assert "private-camera.example" not in rendered
@@ -815,6 +891,7 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         latest = client.get("/v1/results/latest")
         assert latest.status_code == 200
         assert latest.json()["message_id"] == "message-1"
+        assert latest.json()["model"]["name"] == PUBLIC_MODEL_NAME
         assert latest.headers["X-Result-Stream"] == stub.results.epoch
         frame = client.get("/v1/video/latest.jpg")
         assert frame.status_code == 200
@@ -831,11 +908,14 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert annotated.headers["X-Stream-Delay"] == "2.400"
         dashboard = client.get("/")
         assert dashboard.status_code == 200
+        assert "qwen/qwen3.5-35b-a3b" not in dashboard.text
+        assert "Persistent deployment defaults" in dashboard.text
         assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
         assert "Continuous delayed annotation" in dashboard.text
         assert "Math.max(displayFps,analysisFps)" in dashboard.text
         paths = {route.path for route in app.routes}
         assert "/v1/results/events" in paths
+        assert "/v1/deployment/settings" in paths
         assert "/v1/video/annotated/stream.mjpeg" in paths
         assert "/v1/video/stream.mjpeg" in paths
         assert "/v1/video/live/stream.mjpeg" in paths
@@ -1090,4 +1170,5 @@ def test_invalid_dry_run_env_degrades_without_crashing(
     runtime.start()
     status = runtime.status()
     assert status["pipeline_state"] == "configuration_error"
-    assert "HARNESS_DRY_RUN" in status["last_error"]
+    assert status["last_error"] == "configuration error"
+    assert "HARNESS_DRY_RUN" not in str(status)

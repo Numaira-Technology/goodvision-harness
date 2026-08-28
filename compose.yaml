@@ -11,13 +11,17 @@ services:
       - "${HARNESS_BIND_ADDRESS:-127.0.0.1}:${HARNESS_PORT:-8080}:8080"
     environment:
       HARNESS_CONFIG: /app/config.yaml
+      HARNESS_DEPLOYMENT_SETTINGS_PATH: /data/deployment-settings.json
       HARNESS_HOST: 0.0.0.0
       HARNESS_PORT: 8080
       HARNESS_DRY_RUN: "${HARNESS_DRY_RUN:-false}"
       HARNESS_AUTOSTART: "${HARNESS_AUTOSTART:-true}"
       HARNESS_SOURCE_ID: "${HARNESS_SOURCE_ID:-external-camera}"
+      # Primary generic stream setting; RTSP_URL remains a compatibility fallback.
+      HARNESS_STREAM_URL: "${HARNESS_STREAM_URL:-}"
       RTSP_URL: "${RTSP_URL:-}"
-      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: "${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}"
+      MODEL_API_KEY: "${MODEL_API_KEY:-}"
       RESULT_WEBHOOK_URL: "${RESULT_WEBHOOK_URL:-}"
       HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
       FACE_MODEL_ROOT: /models
@@ -26,16 +30,22 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      # Optional Qwen reference images configured under config.yaml memory.*.
+      # Optional reference images configured under config.yaml memory.*.
       - ./memory:/app/memory:ro
-      - insightface-models:/models
+      - face-models:/models
       - face-data:/data
     read_only: true
     tmpfs:
       - /tmp:size=256m
     security_opt:
       - no-new-privileges:true
-    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Cover the 10s HTTP drain plus the 60s model timeout and cleanup headroom.
+    stop_grace_period: 90s
     networks:
       default:
         aliases:
@@ -46,5 +56,5 @@ networks:
     name: goodvision-demo
 
 volumes:
-  insightface-models:
+  face-models:
   face-data:

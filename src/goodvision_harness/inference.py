@@ -20,6 +20,7 @@ from .prompt import (
     build_window_messages,
     parse_binary_classification,
 )
+from .privacy import PUBLIC_ANALYSIS_ERROR
 from .reference_memory import MemoryContext
 from .sliding_window import FrameWindow
 
@@ -83,19 +84,15 @@ class QwenWindowClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-        except (OpenRouterError, ValueError) as exc:
+        except (OpenRouterError, ValueError):
             return WindowResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                error=str(exc),
+                error=PUBLIC_ANALYSIS_ERROR,
             )
         latency = time.monotonic() - started
-        response_id = (
-            str(response["id"]) if response.get("id") is not None else None
-        )
-        usage = response.get("usage")
         try:
             classification = parse_binary_classification(
                 text,
@@ -105,23 +102,19 @@ class QwenWindowClient:
                     else None
                 ),
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             return WindowResponse(
                 window=window,
                 classification=None,
-                raw_text=text,
+                raw_text=None,
                 latency_seconds=latency,
-                response_id=response_id,
-                usage=usage if isinstance(usage, Mapping) else None,
-                error=f"unparseable model reply: {exc}",
+                error=PUBLIC_ANALYSIS_ERROR,
             )
         return WindowResponse(
             window=window,
             classification=classification,
-            raw_text=text,
+            raw_text=None,
             latency_seconds=latency,
-            response_id=response_id,
-            usage=usage if isinstance(usage, Mapping) else None,
         )
 
 

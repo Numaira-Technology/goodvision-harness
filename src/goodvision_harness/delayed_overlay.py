@@ -280,10 +280,7 @@ class DelayedOverlayComposer:
                 try:
                     rendered = self._render(rendered, selection.analysis)
                 except Exception:
-                    LOGGER.warning(
-                        "could not render delayed overlay frame",
-                        exc_info=True,
-                    )
+                    LOGGER.warning("could not render delayed overlay frame")
                     mode = "none"
                     rendered = buffered.packet.jpeg
 
@@ -303,10 +300,7 @@ class DelayedOverlayComposer:
                     # reset cannot be followed by an old-generation frame.
                     self._publish(output)
                 except Exception:
-                    LOGGER.warning(
-                        "could not publish delayed overlay frame",
-                        exc_info=True,
-                    )
+                    LOGGER.warning("could not publish delayed overlay frame")
                     self._stats["publish_errors"] += 1
                     self._stats["frames_dropped"] += 1
                     continue

@@ -6,11 +6,16 @@ __pycache__
 *.pyc
 *.pyo
 *.egg-info
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
 .pytest_cache
 .ruff_cache
 .mypy_cache
 build
 dist
+*.tar
 tests
 personal
 *.mp4
@@ -22,4 +27,7 @@ logs
 output
 .models
 .goodvision
+**/.models
+**/.goodvision
 **/memory
+tmp
