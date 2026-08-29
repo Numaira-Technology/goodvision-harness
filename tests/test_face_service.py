@@ -314,6 +314,36 @@ def test_selected_features_are_canonical_and_skip_unselected_face_runtime() -> N
         runtime.stop()
 
 
+@pytest.mark.parametrize(
+    ("features", "expected_concurrency"),
+    [
+        (["stranger"], 1),
+        (["smoking", "stranger"], 6),
+    ],
+)
+def test_multi_face_concurrency_only_serializes_stranger_only_sessions(
+    features: list[str],
+    expected_concurrency: int,
+) -> None:
+    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
+
+    try:
+        runtime.start_camera(
+            analysis_mode="multi",
+            features=features,
+            dry_run=True,
+            owner="face-concurrency-test",
+        )
+
+        assert runtime._session is not None
+        assert (
+            runtime._session.config.runtime.max_concurrent_requests
+            == expected_concurrency
+        )
+    finally:
+        runtime.stop()
+
+
 def test_session_http_api_accepts_feature_subsets_and_rejects_invalid_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

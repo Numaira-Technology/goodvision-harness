@@ -750,6 +750,19 @@ class HarnessRuntime:
                             stride_frames=1,
                             include_partial_final_window=False,
                         ),
+                        # Stranger-only mode has no remote branch to overlap.
+                        # Keep one live request so callers never queue at the
+                        # single InsightFace inference session. Mixed safety +
+                        # stranger mode retains the configured OpenRouter
+                        # concurrency and drops only busy face samples.
+                        runtime=(
+                            replace(
+                                self.config.runtime,
+                                max_concurrent_requests=1,
+                            )
+                            if selected_features == ("stranger",)
+                            else self.config.runtime
+                        ),
                     )
                 client = build_selected_features_grounding_client(
                     session_config.inference,

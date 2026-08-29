@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import threading
 import time
 from collections.abc import Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -995,6 +996,25 @@ class SelectedFeaturesGroundingClient:
         self._include_stranger = include_stranger
         self._safety_max_image_side = safety_max_image_side
         self._safety_jpeg_quality = safety_jpeg_quality
+        # InsightFace owns one inference session protected by a model lock.  The
+        # outer live pipeline can have several OpenRouter windows in flight, but
+        # queueing every one of those windows at the face-model lock turns a
+        # single CPU inference into many seconds of stale backlog.  Admit at
+        # most one live face branch per selected-features session; busy windows
+        # remain useful safety-only results and the next fresh window retries.
+        self._stranger_live_slot = threading.Lock()
+
+    def _classify_stranger_with_slot(
+        self,
+        window: FrameWindow,
+    ) -> GroundingResponse:
+        """Run one live face sample and always release its single-flight slot."""
+
+        assert self._stranger_client is not None
+        try:
+            return self._stranger_client.classify_window(window)
+        finally:
+            self._stranger_live_slot.release()
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
@@ -1018,16 +1038,24 @@ class SelectedFeaturesGroundingClient:
         stranger_response: GroundingResponse | None = None
         safety_error: Exception | None = None
         stranger_error: Exception | None = None
-        if self._safety_client is not None and self._stranger_client is not None:
+        if (
+            self._safety_client is not None
+            and self._stranger_client is not None
+            and self._stranger_live_slot.acquire(blocking=False)
+        ):
             assert resized_window is not None
             with ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="selected-features-face",
             ) as executor:
-                stranger_future = executor.submit(
-                    self._stranger_client.classify_window,
-                    window,
-                )
+                try:
+                    stranger_future = executor.submit(
+                        self._classify_stranger_with_slot,
+                        window,
+                    )
+                except BaseException:
+                    self._stranger_live_slot.release()
+                    raise
                 try:
                     safety_response = self._safety_client.classify_window(
                         resized_window
@@ -1038,6 +1066,18 @@ class SelectedFeaturesGroundingClient:
                     stranger_response = stranger_future.result()
                 except Exception as exc:
                     stranger_error = exc
+        elif self._safety_client is not None and self._stranger_client is not None:
+            # Face inference is already running for a nearby frame. Dropping
+            # this face branch keeps the live path latest-first without copying
+            # an old bbox onto a different frame. OpenRouter remains fully
+            # concurrent and its complete safety result is still delivered.
+            assert resized_window is not None
+            try:
+                safety_response = self._safety_client.classify_window(
+                    resized_window
+                )
+            except Exception as exc:
+                safety_error = exc
         elif self._safety_client is not None:
             assert resized_window is not None
             try:
