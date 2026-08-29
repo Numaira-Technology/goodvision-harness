@@ -327,12 +327,14 @@ def test_selection_handles_exact_held_long_gap_and_pre_detection() -> None:
 
     before = select_rich_labels((left, right), 0.5, max_gap_seconds=1.0)
     exact = select_rich_labels((left, right), 1.0, max_gap_seconds=1.0)
-    long_gap = select_rich_labels((left, right), 2.0, max_gap_seconds=1.0)
+    long_gap = select_rich_labels((left, right), 2.5, max_gap_seconds=1.0)
+    updated = select_rich_labels((left, right), 3.0, max_gap_seconds=1.0)
     after = select_rich_labels((left, right), 5.0, max_gap_seconds=1.0)
 
     assert before.mode == "none" and before.objects == ()
     assert exact.mode == "exact" and exact.snapshot is left
     assert long_gap.mode == "held" and long_gap.snapshot is left
+    assert updated.mode == "exact" and updated.snapshot is right
     assert after.mode == "none" and after.objects == ()
 
 
@@ -342,17 +344,44 @@ def test_selection_expires_frozen_boxes_after_worker_outage() -> None:
     briefly_held = select_rich_labels(
         (latest,),
         10.75,
-        max_gap_seconds=0.75,
+        max_gap_seconds=0.25,
+        max_hold_seconds=0.75,
     )
     expired = select_rich_labels(
         (latest,),
         10.751,
-        max_gap_seconds=0.75,
+        max_gap_seconds=0.25,
+        max_hold_seconds=0.75,
     )
 
     assert briefly_held.mode == "held"
     assert expired.mode == "none"
     assert expired.objects == ()
+
+
+def test_selection_holds_long_gap_until_empty_keyframe_clears() -> None:
+    detected = _snapshot(2, 1.0, _object())
+    cleared = _snapshot(12, 3.0)
+
+    held = select_rich_labels(
+        (detected, cleared),
+        2.999,
+        max_gap_seconds=0.75,
+        max_hold_seconds=0.25,
+    )
+    exact_clear = select_rich_labels(
+        (detected, cleared),
+        3.0,
+        max_gap_seconds=0.75,
+        max_hold_seconds=0.25,
+    )
+
+    assert held.mode == "held"
+    assert held.snapshot is detected
+    assert held.objects
+    assert exact_clear.mode == "exact"
+    assert exact_clear.snapshot is cleared
+    assert exact_clear.objects == ()
 
 
 class _BlockingClient:

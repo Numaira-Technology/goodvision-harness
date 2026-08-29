@@ -56,10 +56,11 @@ class RichLabelSettings:
 
     enabled: bool = False
     endpoint: str = "http://rich-label-worker:8091/v1/labels"
-    timeout_seconds: float = 0.8
+    timeout_seconds: float = 2.0
     max_fps: float = 7.5
     history_size: int = 128
-    max_interpolation_gap_seconds: float = 0.75
+    max_interpolation_gap_seconds: float = 2.0
+    max_hold_seconds: float = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,7 +274,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         enabled=rich_label_enabled,
         endpoint=rich_label_endpoint,
         timeout_seconds=_positive_float(
-            rich_label_section.get("timeout_seconds", 0.8),
+            rich_label_section.get("timeout_seconds", 2.0),
             "rich_labeling.timeout_seconds",
         ),
         max_fps=_positive_float(
@@ -281,8 +282,12 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         ),
         history_size=rich_label_history_size,
         max_interpolation_gap_seconds=_positive_float(
-            rich_label_section.get("max_interpolation_gap_seconds", 0.75),
+            rich_label_section.get("max_interpolation_gap_seconds", 2.0),
             "rich_labeling.max_interpolation_gap_seconds",
+        ),
+        max_hold_seconds=_positive_float(
+            rich_label_section.get("max_hold_seconds", 2.0),
+            "rich_labeling.max_hold_seconds",
         ),
     )
     sliding_window = SlidingWindowSettings(

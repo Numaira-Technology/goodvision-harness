@@ -11,7 +11,6 @@ import cv2
 
 from .privacy import redact_public_text
 
-
 _RICH_COLORS: tuple[tuple[int, int, int], ...] = (
     (63, 221, 255),
     (255, 184, 77),
@@ -23,6 +22,36 @@ _RICH_COLORS: tuple[tuple[int, int, int], ...] = (
     (174, 238, 77),
 )
 _PERSON_LABELS = frozenset({"person", "human", "pedestrian"})
+_ALERT_COLOR = (40, 40, 220)
+
+_APPEARANCE_TOKENS = {
+    "front": ("direction", "FRONT"),
+    "side": ("direction", "SIDE"),
+    "back": ("direction", "BACK"),
+    "glasses": ("glasses", "GLASSES"),
+    "hat": ("hat", "HAT"),
+    "holdobjectsinfront": ("holding", "HOLDING ITEM"),
+    "backpack": ("bag", "BACKPACK"),
+    "handbag": ("bag", "HANDBAG"),
+    "shoulderbag": ("bag", "SHOULDER BAG"),
+    "longsleeve": ("sleeve", "LONG SLEEVE"),
+    "shortsleeve": ("sleeve", "SHORT SLEEVE"),
+    "upperstripe": ("upper", "TOP STRIPED"),
+    "upperstride": ("upper", "TOP STRIPED"),
+    "upperlogo": ("upper", "TOP LOGO"),
+    "upperplaid": ("upper", "TOP PLAID"),
+    "uppersplice": ("upper", "TOP SPLICED"),
+    "lowerstripe": ("lower", "BOTTOM STRIPED"),
+    "lowerpattern": ("lower", "BOTTOM PATTERN"),
+    "longcoat": ("lower", "LONG COAT"),
+    "trousers": ("lower", "TROUSERS"),
+    "shorts": ("lower", "SHORTS"),
+    "skirtdress": ("lower", "SKIRT/DRESS"),
+    "boots": ("boots", "BOOTS"),
+}
+_APPEARANCE_PRIORITY = (
+    "direction", "glasses", "hat", "holding", "bag", "boots", "sleeve", "upper", "lower"
+)
 
 
 def draw_overlay(
@@ -89,7 +118,12 @@ def draw_overlay(
     return rendered
 
 
-def draw_rich_overlay(bgr: Any, objects: Sequence[Any]) -> Any:
+def draw_rich_overlay(
+    bgr: Any,
+    objects: Sequence[Any],
+    *,
+    alerts_by_track_id: Mapping[str, Sequence[Any]] | None = None,
+) -> Any:
     """Return a copy of ``bgr`` with track-stable rich object annotations.
 
     The renderer only presents metadata supplied by the caller.  In particular,
@@ -131,16 +165,78 @@ def draw_rich_overlay(bgr: Any, objects: Sequence[Any]) -> Any:
             color_key = object_id
         if color_key is None:
             color_key = _object_value(item, "label", index)
-        color = _rich_track_color(color_key)
+        alerts = _rich_alerts_for_track(alerts_by_track_id, track_id)
+        alert_text = _rich_alert_text(alerts)
+        color = _ALERT_COLOR if alert_text else _rich_track_color(color_key)
 
         _draw_corner_bbox(rendered, bbox, color)
-        primary, detail = _rich_label_lines(
+        primary, detail, appearance = _rich_label_lines(
             item,
             attributes=attributes,
             track_id=track_id,
             object_id=object_id,
         )
-        _draw_rich_card(rendered, bbox, primary, detail, color)
+        _draw_rich_card(
+            rendered,
+            bbox,
+            primary,
+            detail,
+            appearance,
+            color,
+            alert=alert_text,
+        )
+
+    return rendered
+
+
+def draw_event_rich_overlay(
+    bgr: Any,
+    objects: Sequence[Any],
+    *,
+    alerts_by_object_id: Mapping[str, Sequence[Any]],
+) -> Any:
+    """Draw unmatched model objects with the same HUD language as Rich boxes."""
+
+    rendered = bgr.copy()
+    try:
+        height, width = rendered.shape[:2]
+    except (AttributeError, TypeError, ValueError):
+        return rendered
+    if width < 1 or height < 1:
+        return rendered
+
+    if isinstance(objects, Mapping):
+        safe_objects: tuple[Any, ...] = (objects,)
+    else:
+        try:
+            safe_objects = tuple(objects or ())
+        except (TypeError, ValueError):
+            return rendered
+
+    for item in safe_objects:
+        object_id = _object_value(item, "object_id")
+        alerts = _rich_alerts_for_track(alerts_by_object_id, object_id)
+        alert_text = _rich_alert_text(alerts)
+        if not alert_text:
+            continue
+        bbox = _rich_bbox_to_pixels(_object_value(item, "bbox"), width, height)
+        if bbox is None:
+            continue
+
+        label = _public_hud_text(_object_value(item, "label", "object"))
+        primary = (label or "object").upper()
+        confidence = _rich_confidence(_object_value(item, "confidence"))
+        detail = f"CONF {confidence}" if confidence else "DETECTED"
+        _draw_corner_bbox(rendered, bbox, _ALERT_COLOR)
+        _draw_rich_card(
+            rendered,
+            bbox,
+            primary,
+            detail,
+            "",
+            _ALERT_COLOR,
+            alert=alert_text,
+        )
 
     return rendered
 
@@ -157,6 +253,41 @@ def _object_value(item: Any, key: str, default: Any = None) -> Any:
 def _rich_attributes(item: Any) -> Mapping[str, Any]:
     attributes = _object_value(item, "attributes", {})
     return attributes if isinstance(attributes, Mapping) else {}
+
+
+def _rich_alerts_for_track(
+    alerts_by_track_id: Mapping[str, Sequence[Any]] | None,
+    track_id: Any,
+) -> tuple[Any, ...]:
+    if not isinstance(alerts_by_track_id, Mapping) or track_id is None:
+        return ()
+    try:
+        alerts = alerts_by_track_id.get(str(track_id), ())
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return ()
+    if isinstance(alerts, Sequence) and not isinstance(
+        alerts, (str, bytes, bytearray)
+    ):
+        try:
+            return tuple(alerts)
+        except (TypeError, ValueError):
+            return ()
+    return ()
+
+
+def _rich_alert_text(alerts: Sequence[Any]) -> str:
+    badges: list[str] = []
+    for alert in alerts:
+        label = _public_hud_text(_object_value(alert, "event_label"), limit=32)
+        if not label:
+            continue
+        badge = label.upper()
+        confidence = _rich_confidence(_object_value(alert, "confidence"))
+        if confidence:
+            badge += f" {confidence}"
+        if badge not in badges:
+            badges.append(badge)
+    return ("ALERT  " + " / ".join(badges))[:96] if badges else ""
 
 
 def _mapping_value(values: Mapping[str, Any], key: str) -> Any:
@@ -307,7 +438,7 @@ def _rich_label_lines(
     attributes: Mapping[str, Any],
     track_id: Any,
     object_id: Any,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     raw_label = _object_value(item, "label", "object")
     label = _public_hud_text(raw_label) or "object"
     is_person = label.casefold() in _PERSON_LABELS
@@ -354,14 +485,78 @@ def _rich_label_lines(
         ("estimated_gender", "gender_presentation", "gender"),
     )
     if gender is not None:
-        details.append(f"GENDER {_public_hud_text(gender, limit=24).upper()}")
+        gender_text = _public_hud_text(gender, limit=24).upper()
+        gender_text = {
+            "FEMALE-PRESENTING": "FEMALE",
+            "MALE-PRESENTING": "MALE",
+        }.get(gender_text, gender_text)
+        details.append(f"GENDER {gender_text}")
     confidence = _rich_confidence(_object_value(item, "confidence"))
     if confidence:
         details.append(f"CONF {confidence}")
 
     primary = "  |  ".join(part for part in primary_parts if part)[:72]
     detail = "  |  ".join(details)[:72] or "DETECTED"
-    return primary, detail
+    appearance = " / ".join(_rich_appearance_tokens(attributes))[:72]
+    return primary, detail, appearance if is_person else ""
+
+
+def _attribute_key(value: Any) -> str:
+    text = _public_hud_text(value, limit=32)
+    return "".join(character for character in text.casefold() if character.isalnum())
+
+
+def _attribute_items(value: Any) -> tuple[Any, ...]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(value)
+    return (value,)
+
+
+def _rich_appearance_tokens(attributes: Mapping[str, Any]) -> tuple[str, ...]:
+    """Decode the worker contract, then fill missing groups from legacy labels."""
+
+    found: list[tuple[str, str]] = []
+    covered: set[str] = set()
+    fields = (
+        ("estimated_direction", "direction"),
+        ("bag_type", "bag"),
+        ("sleeve_type", "sleeve"),
+        ("upper_style", "upper"),
+        ("lower_styles", "lower"),
+    )
+    for field, category in fields:
+        if field not in attributes:
+            continue
+        covered.add(category)
+        value = _mapping_value(attributes, field)
+        for item in _attribute_items(value):
+            match = _APPEARANCE_TOKENS.get(_attribute_key(item))
+            if match is not None and match[0] == category:
+                found.append(match)
+
+    flags = (
+        ("wearing_glasses", "glasses", "GLASSES"),
+        ("wearing_hat", "hat", "HAT"),
+        ("holding_object", "holding", "HOLDING ITEM"),
+        ("wearing_boots", "boots", "BOOTS"),
+    )
+    for field, category, token in flags:
+        if field in attributes:
+            covered.add(category)
+            if _mapping_value(attributes, field) is True:
+                found.append((category, token))
+
+    fallback = _mapping_value(attributes, "appearance_attributes")
+    if isinstance(fallback, Sequence) and not isinstance(
+        fallback, (str, bytes, bytearray)
+    ):
+        for item in fallback:
+            match = _APPEARANCE_TOKENS.get(_attribute_key(item))
+            if match is not None and match[0] not in covered:
+                found.append(match)
+
+    found.sort(key=lambda item: _APPEARANCE_PRIORITY.index(item[0]))
+    return tuple(dict.fromkeys(token for _category, token in found))
 
 
 def _rich_confidence(value: Any) -> str:
@@ -399,21 +594,30 @@ def _draw_rich_card(
     bbox: tuple[int, int, int, int],
     primary: str,
     detail: str,
+    appearance: str,
     color: tuple[int, int, int],
+    *,
+    alert: str = "",
 ) -> None:
     height, width = image.shape[:2]
     if width < 2 or height < 2:
         return
     x1, y1, _x2, y2 = bbox
-    primary_scale, detail_scale = 0.48, 0.39
-    primary_width = cv2.getTextSize(
-        primary, cv2.FONT_HERSHEY_SIMPLEX, primary_scale, 1
-    )[0][0]
-    detail_width = cv2.getTextSize(
-        detail, cv2.FONT_HERSHEY_SIMPLEX, detail_scale, 1
-    )[0][0]
-    card_width = min(width, max(96, min(360, max(primary_width, detail_width) + 22)))
-    card_height = min(height, 42)
+    lines = [(primary, 0.48, (245, 248, 250))]
+    if alert:
+        lines.append((alert, 0.42, (145, 178, 255)))
+    lines.append((detail, 0.39, (190, 199, 207)))
+    if appearance:
+        lines.append((appearance, 0.36, (164, 177, 188)))
+    text_widths = tuple(
+        cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0]
+        for text, scale, _text_color in lines
+    )
+    card_width = min(
+        width,
+        max(96, min(360, max(text_widths, default=74) + 22)),
+    )
+    card_height = min(height, 8 + 17 * len(lines))
     left = max(0, min(x1, width - card_width))
     if y1 >= card_height + 4:
         top = y1 - card_height - 3
@@ -439,28 +643,18 @@ def _draw_rich_card(
 
     text_x = min(right, left + 10)
     available_width = max(0, right - text_x - 5)
-    primary = _fit_hud_text(primary, available_width, primary_scale)
-    detail = _fit_hud_text(detail, available_width, detail_scale)
-    cv2.putText(
-        image,
-        primary,
-        (text_x, min(bottom - 2, top + 17)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        primary_scale,
-        (245, 248, 250),
-        1,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        image,
-        detail,
-        (text_x, min(bottom - 2, top + 34)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        detail_scale,
-        (190, 199, 207),
-        1,
-        cv2.LINE_AA,
-    )
+    for index, (text, scale, text_color) in enumerate(lines):
+        fitted = _fit_hud_text(text, available_width, scale)
+        cv2.putText(
+            image,
+            fitted,
+            (text_x, min(bottom - 2, top + 17 * (index + 1))),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            text_color,
+            1,
+            cv2.LINE_AA,
+        )
 
 
 def _draw_face_overlay(

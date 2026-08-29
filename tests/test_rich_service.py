@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -7,8 +8,15 @@ import cv2
 import numpy as np
 from fastapi.testclient import TestClient
 
+from goodvision_harness import service as service_module
 from goodvision_harness.config import load_config
-from goodvision_harness.contracts import NormalizedBBox
+from goodvision_harness.contracts import (
+    AnalysisResult,
+    EventJudgment,
+    FrameReference,
+    GroundedObject,
+    NormalizedBBox,
+)
 from goodvision_harness.rich_labeling import (
     RichLabelObject,
     RichLabelSelection,
@@ -94,6 +102,98 @@ def _runtime(coordinator: _RichCoordinator) -> HarnessRuntime:
     return runtime
 
 
+def _analysis() -> AnalysisResult:
+    return AnalysisResult(
+        message_id="event-rich",
+        source_id="camera",
+        stream_session_id="stream-rich",
+        sequence=1,
+        emitted_at="2026-08-30T00:00:01.000Z",
+        frame=FrameReference(
+            source_frame_index=4,
+            timestamp_seconds=1.0,
+            observed_at="2026-08-30T00:00:00.000Z",
+            width=240,
+            height=160,
+        ),
+        judgments=(
+            EventJudgment(
+                event_label="fight",
+                detected=True,
+                confidence=0.91,
+                description="Fight evidence.",
+                object_ids=("event-person",),
+            ),
+        ),
+        objects=(
+            GroundedObject(
+                object_id="event-person",
+                label="person",
+                bbox=NormalizedBBox(0.21, 0.16, 0.74, 0.89),
+                confidence=0.9,
+            ),
+        ),
+        model_name="test-model",
+        model_latency_seconds=0.2,
+    )
+
+
+def _smoking_stranger_analysis() -> AnalysisResult:
+    return AnalysisResult(
+        message_id="event-smoking-stranger",
+        source_id="camera",
+        stream_session_id="stream-rich",
+        sequence=2,
+        emitted_at="2026-08-30T00:00:01.000Z",
+        frame=FrameReference(
+            source_frame_index=4,
+            timestamp_seconds=1.0,
+            observed_at="2026-08-30T00:00:00.000Z",
+            width=640,
+            height=480,
+        ),
+        judgments=(
+            EventJudgment(
+                event_label="smoking",
+                detected=True,
+                confidence=0.95,
+                description="A person is holding a cigarette.",
+                object_ids=("smoking-person", "cigarette"),
+            ),
+            EventJudgment(
+                event_label="stranger",
+                detected=True,
+                confidence=0.875,
+                description="Unknown face detected.",
+                object_ids=("unknown-face",),
+            ),
+        ),
+        objects=(
+            GroundedObject(
+                object_id="smoking-person",
+                label="person",
+                bbox=NormalizedBBox(0.381, 0.344, 0.906, 1.0),
+                confidence=0.98,
+            ),
+            GroundedObject(
+                object_id="cigarette",
+                label="cigarette",
+                bbox=NormalizedBBox(0.781, 0.644, 0.862, 0.738),
+                confidence=0.92,
+            ),
+            GroundedObject(
+                object_id="unknown-face",
+                label="unknown_person",
+                bbox=NormalizedBBox(0.615527, 0.434649, 0.775671, 0.709401),
+                confidence=0.875,
+            ),
+        ),
+        model_name="test-model",
+        model_latency_seconds=0.2,
+        analysis_kind="selected_features",
+    )
+
+
 def test_runtime_queues_display_frames_and_renders_rich_labels() -> None:
     coordinator = _RichCoordinator()
     runtime = _runtime(coordinator)
@@ -121,6 +221,198 @@ def test_runtime_queues_display_frames_and_renders_rich_labels() -> None:
     finally:
         runtime.stop()
     assert coordinator.closed
+
+
+def test_exact_analysis_frame_fuses_alert_with_one_jpeg_codec_pass(
+    monkeypatch: Any,
+) -> None:
+    coordinator = _RichCoordinator()
+    runtime = _runtime(coordinator)
+    source = _jpeg()
+    captured: dict[str, Any] = {}
+    decode_calls = 0
+    encode_calls = 0
+    original_decode = service_module.cv2.imdecode
+    original_encode = service_module.cv2.imencode
+
+    def count_decode(*args: Any, **kwargs: Any) -> Any:
+        nonlocal decode_calls
+        decode_calls += 1
+        return original_decode(*args, **kwargs)
+
+    def count_encode(*args: Any, **kwargs: Any) -> Any:
+        nonlocal encode_calls
+        encode_calls += 1
+        return original_encode(*args, **kwargs)
+
+    def capture_rich(image: Any, objects: Any, **kwargs: Any) -> Any:
+        captured["rich_objects"] = tuple(objects)
+        captured["alerts"] = kwargs.get("alerts_by_track_id")
+        return image.copy()
+
+    def capture_event(image: Any, **kwargs: Any) -> Any:
+        captured["event_objects"] = tuple(kwargs["objects"])
+        return image.copy()
+
+    monkeypatch.setattr(service_module.cv2, "imdecode", count_decode)
+    monkeypatch.setattr(service_module.cv2, "imencode", count_encode)
+    monkeypatch.setattr(service_module, "draw_rich_overlay", capture_rich)
+    monkeypatch.setattr(service_module, "draw_overlay", capture_event)
+    try:
+        runtime._on_analysis_frame(_analysis(), source)
+
+        assert [item.track_id for item in captured["rich_objects"]] == ["P0001"]
+        assert [
+            alert.event_label for alert in captured["alerts"]["P0001"]
+        ] == ["fight"]
+        assert captured["event_objects"] == ()
+        assert decode_calls == 1
+        assert encode_calls == 1
+        _, published = runtime.frames.latest() or (0, None)
+        assert published is not None
+        assert published.analysis_message_id == "event-rich"
+    finally:
+        runtime.stop()
+
+
+def test_face_reference_box_stays_independent_from_rich_body_track(
+    monkeypatch: Any,
+) -> None:
+    coordinator = _RichCoordinator()
+    runtime = _runtime(coordinator)
+    original = _analysis()
+    face_reference = replace(
+        original,
+        analysis_kind="face_reference_match",
+        judgments=(
+            EventJudgment(
+                event_label="unknown_person",
+                detected=True,
+                confidence=0.91,
+                description="Unknown face evidence.",
+                object_ids=("event-person",),
+            ),
+        ),
+        objects=(replace(original.objects[0], label="unknown_person"),),
+    )
+    captured: dict[str, Any] = {}
+
+    def fail_fusion(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise AssertionError("face-reference result reached fusion matcher")
+
+    def capture_rich(image: Any, objects: Any, **kwargs: Any) -> Any:
+        captured["rich_objects"] = tuple(objects)
+        captured["rich_kwargs"] = kwargs
+        return image.copy()
+
+    def capture_event(image: Any, **kwargs: Any) -> Any:
+        captured["event_objects"] = tuple(kwargs["objects"])
+        return image.copy()
+
+    monkeypatch.setattr(runtime._overlay_fusion, "plan", fail_fusion)
+    monkeypatch.setattr(service_module, "draw_rich_overlay", capture_rich)
+    monkeypatch.setattr(service_module, "draw_overlay", capture_event)
+    try:
+        runtime._on_timeline_result(face_reference)
+        runtime._on_analysis_frame(face_reference, _jpeg())
+
+        assert [item.track_id for item in captured["rich_objects"]] == ["P0001"]
+        assert captured["rich_kwargs"] == {}
+        assert [item.object_id for item in captured["event_objects"]] == [
+            "event-person"
+        ]
+    finally:
+        runtime.stop()
+
+
+def test_selected_stranger_uses_person_track_and_smoking_item_uses_rich_fallback(
+    monkeypatch: Any,
+) -> None:
+    coordinator = _RichCoordinator()
+    coordinator.snapshot = RichLabelSnapshot(
+        stream_session_id="stream-rich",
+        frame_sequence=4,
+        timestamp_seconds=1.0,
+        objects=(
+            RichLabelObject(
+                track_id="P0001",
+                label="person",
+                bbox=NormalizedBBox(0.37, 0.33, 0.92, 1.0),
+                confidence=0.94,
+            ),
+        ),
+    )
+    runtime = _runtime(coordinator)
+    captured: dict[str, Any] = {}
+
+    def capture_rich(image: Any, objects: Any, **kwargs: Any) -> Any:
+        captured["rich_objects"] = tuple(objects)
+        captured["track_alerts"] = kwargs.get("alerts_by_track_id")
+        return image.copy()
+
+    def capture_fallback(image: Any, objects: Any, **kwargs: Any) -> Any:
+        captured["fallback_objects"] = tuple(objects)
+        captured["fallback_alerts"] = kwargs["alerts_by_object_id"]
+        return image.copy()
+
+    def capture_summary(image: Any, **kwargs: Any) -> Any:
+        captured["summary_objects"] = tuple(kwargs["objects"])
+        return image.copy()
+
+    monkeypatch.setattr(service_module, "draw_rich_overlay", capture_rich)
+    monkeypatch.setattr(
+        service_module,
+        "draw_event_rich_overlay",
+        capture_fallback,
+    )
+    monkeypatch.setattr(service_module, "draw_overlay", capture_summary)
+    try:
+        runtime._on_analysis_frame(_smoking_stranger_analysis(), _jpeg())
+
+        assert [item.track_id for item in captured["rich_objects"]] == ["P0001"]
+        assert [
+            alert.event_label
+            for alert in captured["track_alerts"]["P0001"]
+        ] == ["stranger"]
+        assert [
+            item.object_id for item in captured["fallback_objects"]
+        ] == ["cigarette"]
+        assert [
+            alert.event_label
+            for alert in captured["fallback_alerts"]["cigarette"]
+        ] == ["smoking"]
+        assert captured["summary_objects"] == ()
+    finally:
+        runtime.stop()
+
+
+def test_exact_analysis_frame_falls_back_to_event_when_rich_select_fails(
+    monkeypatch: Any,
+) -> None:
+    class _FailingSelectCoordinator(_RichCoordinator):
+        def select(self, *args: Any, **kwargs: Any) -> RichLabelSelection:
+            del args, kwargs
+            raise RuntimeError("rich history unavailable")
+
+    coordinator = _FailingSelectCoordinator()
+    runtime = _runtime(coordinator)
+    captured_objects: list[tuple[GroundedObject, ...]] = []
+
+    def capture_event(image: Any, **kwargs: Any) -> Any:
+        captured_objects.append(tuple(kwargs["objects"]))
+        return image.copy()
+
+    monkeypatch.setattr(service_module, "draw_overlay", capture_event)
+    try:
+        runtime._on_analysis_frame(_analysis(), _jpeg())
+
+        assert len(captured_objects) == 1
+        assert [item.object_id for item in captured_objects[0]] == ["event-person"]
+        _, published = runtime.frames.latest() or (0, None)
+        assert published is not None
+    finally:
+        runtime.stop()
 
 
 def test_latest_rich_labels_endpoint_returns_worker_snapshot() -> None:

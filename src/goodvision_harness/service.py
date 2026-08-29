@@ -33,8 +33,8 @@ from .config import (
     ServiceSettings,
     load_config,
 )
-from .contracts import AnalysisResult, PUBLIC_MODEL_NAME
-from .delayed_overlay import DelayedOverlayComposer
+from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
+from .delayed_overlay import DelayedOverlayComposer, OverlaySelection
 from .delivery import WebhookDelivery
 from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
 from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
@@ -43,7 +43,8 @@ from .grounding import (
     build_grounding_client,
     build_selected_features_grounding_client,
 )
-from .overlay import draw_overlay, draw_rich_overlay
+from .overlay import draw_event_rich_overlay, draw_overlay, draw_rich_overlay
+from .overlay_fusion import OverlayFusionMatcher
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
@@ -56,8 +57,8 @@ from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
     UNKNOWN_FACE_EVENT_LABEL,
 )
-from .rich_labeling import RichLabelCoordinator, RichLabelHTTPClient
 from .result_bus import FrameBus, FramePacket, ResultBus
+from .rich_labeling import RichLabelCoordinator, RichLabelHTTPClient
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
 from .visual_memory import (
@@ -79,6 +80,9 @@ FACE_ANALYSIS_MODE = "face"
 MULTI_ANALYSIS_MODE = "multi"
 ANALYSIS_MODES = frozenset(
     {EVENT_ANALYSIS_MODE, FACE_ANALYSIS_MODE, MULTI_ANALYSIS_MODE}
+)
+INDEPENDENT_FACE_ANALYSIS_KINDS = frozenset(
+    {"face_recognition", "face_reference_match"}
 )
 
 
@@ -164,10 +168,12 @@ class HarnessRuntime:
                 max_interpolation_gap_seconds=(
                     rich.max_interpolation_gap_seconds
                 ),
+                max_hold_seconds=rich.max_hold_seconds,
             )
         else:
             self._rich_labels = None
         self._active_rich_session_id: str | None = None
+        self._overlay_fusion = OverlayFusionMatcher()
         self._annotated_output_fps = (
             max(display.fps, config.video.fps, config.face.sample_fps)
             if config is not None
@@ -185,6 +191,11 @@ class HarnessRuntime:
             publish=self.annotated_frames.publish,
             enrich=(
                 self._render_rich_label_jpeg
+                if self._rich_labels is not None
+                else None
+            ),
+            compose=(
+                self._render_fused_label_jpeg
                 if self._rich_labels is not None
                 else None
             ),
@@ -823,6 +834,7 @@ class HarnessRuntime:
                     self._active_rich_session_id = session.stream_session_id
                 else:
                     self._active_rich_session_id = None
+                self._overlay_fusion.reset()
                 self._delayed_overlay.reset()
                 self.annotated_frames.reset()
                 self.results.reset()
@@ -943,6 +955,7 @@ class HarnessRuntime:
                 if session is None:
                     if self._rich_labels is not None:
                         self._rich_labels.reset(None)
+                    self._overlay_fusion.reset()
                     self._active_rich_session_id = None
                     self._state.update(
                         {"pipeline_state": "idle", "input_mode": None, "ready": False}
@@ -967,6 +980,7 @@ class HarnessRuntime:
                 return False
 
             self._delayed_overlay.reset()
+            self._overlay_fusion.reset()
             if self._rich_labels is not None:
                 self._rich_labels.reset(None)
             self.annotated_frames.reset()
@@ -1185,25 +1199,37 @@ class HarnessRuntime:
                 "memory_records_accepted" if accepted else "memory_records_dropped"
             )
             self._update_state(**{memory_key: int(self._state[memory_key]) + 1})
-        enriched_jpeg = source_jpeg
+        rendered: bytes | None = None
         if self._rich_labels is not None:
             try:
-                enriched_jpeg = self._render_rich_label_jpeg(
+                rendered = self._render_fused_label_jpeg(
                     source_jpeg,
+                    OverlaySelection(result, "exact", result.message_id),
                     result.frame.timestamp_seconds,
                     result.frame.source_frame_index,
                 )
             except Exception:
-                LOGGER.warning("could not render rich labels on analysis frame")
-        try:
-            rendered = _render_analysis_jpeg(
-                enriched_jpeg,
-                result,
-                quality=self.settings.overlay_jpeg_quality,
-            )
-        except (cv2.error, TypeError, ValueError):
-            LOGGER.warning("could not render analysis overlay")
-            rendered = enriched_jpeg
+                LOGGER.warning("could not render fused labels on analysis frame")
+        if rendered is None:
+            enriched_jpeg = source_jpeg
+            if self._rich_labels is not None:
+                try:
+                    enriched_jpeg = self._render_rich_label_jpeg(
+                        source_jpeg,
+                        result.frame.timestamp_seconds,
+                        result.frame.source_frame_index,
+                    )
+                except Exception:
+                    LOGGER.warning("could not render rich labels on analysis frame")
+            try:
+                rendered = _render_analysis_jpeg(
+                    enriched_jpeg,
+                    result,
+                    quality=self.settings.overlay_jpeg_quality,
+                )
+            except (cv2.error, TypeError, ValueError):
+                LOGGER.warning("could not render analysis overlay")
+                rendered = enriched_jpeg
         self.frames.publish(
             FramePacket(
                 jpeg=rendered,
@@ -1233,6 +1259,27 @@ class HarnessRuntime:
             self._delivery.submit(payload)
 
     def _on_timeline_result(self, result: AnalysisResult) -> None:
+        coordinator = self._rich_labels
+        if (
+            coordinator is not None
+            and result.analysis_kind not in INDEPENDENT_FACE_ANALYSIS_KINDS
+        ):
+            with self._state_lock:
+                session_id = self._active_rich_session_id
+            if session_id == result.stream_session_id:
+                try:
+                    rich_selection = coordinator.select(
+                        session_id,
+                        result.frame.timestamp_seconds,
+                        frame_sequence=result.frame.source_frame_index,
+                    )
+                    self._overlay_fusion.plan(
+                        result,
+                        rich_selection.objects,
+                        association_message_id=result.message_id,
+                    )
+                except Exception:
+                    LOGGER.warning("could not prime event-to-rich association")
         self._delayed_overlay.submit_result(result)
 
     def _on_display_frame(
@@ -1308,6 +1355,81 @@ class HarnessRuntime:
             raise ValueError("could not encode rich-label JPEG")
         return output.tobytes()
 
+    def _render_fused_label_jpeg(
+        self,
+        jpeg: bytes,
+        overlay_selection: OverlaySelection,
+        media_timestamp: float,
+        frame_sequence: int,
+    ) -> bytes:
+        """Render Rich and Event annotations together with one JPEG codec pass."""
+
+        coordinator = self._rich_labels
+        analysis = overlay_selection.analysis
+        rich_objects = ()
+        if coordinator is not None:
+            with self._state_lock:
+                session_id = self._active_rich_session_id
+            if session_id is not None and (
+                analysis is None or analysis.stream_session_id == session_id
+            ):
+                rich_selection = coordinator.select(
+                    session_id,
+                    float(media_timestamp),
+                    frame_sequence=int(frame_sequence),
+                )
+                rich_objects = rich_selection.objects
+
+        if not rich_objects and analysis is None:
+            return jpeg
+
+        encoded = np.frombuffer(jpeg, dtype=np.uint8)
+        image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("fused-label frame did not contain a valid JPEG")
+
+        if analysis is None:
+            rendered = draw_rich_overlay(image, rich_objects)
+        elif analysis.analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS:
+            rendered = (
+                draw_rich_overlay(image, rich_objects) if rich_objects else image
+            )
+            rendered = _draw_analysis_overlay(rendered, analysis)
+        else:
+            plan = self._overlay_fusion.plan(
+                analysis,
+                rich_objects,
+                association_message_id=(
+                    overlay_selection.left_message_id or analysis.message_id
+                ),
+            )
+            rendered = draw_rich_overlay(
+                image,
+                rich_objects,
+                alerts_by_track_id=plan.alerts_by_track_id(),
+            )
+            fallback_ids = set(plan.unmatched_event_object_ids)
+            fallback_objects = tuple(
+                item for item in analysis.objects if item.object_id in fallback_ids
+            )
+            rendered = draw_event_rich_overlay(
+                rendered,
+                fallback_objects,
+                alerts_by_object_id=plan.alerts_by_unmatched_object_id(),
+            )
+            arguments = _analysis_overlay_arguments(analysis)
+            arguments["objects"] = ()
+            rendered = draw_overlay(rendered, **arguments)
+
+        ok, output = cv2.imencode(
+            ".jpg",
+            rendered,
+            [cv2.IMWRITE_JPEG_QUALITY, self.settings.overlay_jpeg_quality],
+        )
+        if not ok:
+            raise ValueError("could not encode fused-label JPEG")
+        return output.tobytes()
+
     def _on_pipeline_state(self, state: dict[str, Any]) -> None:
         values: dict[str, Any] = {"pipeline": public_safe_value(copy.deepcopy(state))}
         pipeline_error = state.get("last_error")
@@ -1341,6 +1463,22 @@ def _render_analysis_jpeg(
     image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("display callback did not contain a valid JPEG")
+    rendered = _draw_analysis_overlay(image, analysis)
+    ok, output = cv2.imencode(
+        ".jpg",
+        rendered,
+        [cv2.IMWRITE_JPEG_QUALITY, quality],
+    )
+    if not ok:
+        raise ValueError("could not encode annotated JPEG")
+    return output.tobytes()
+
+
+def _draw_analysis_overlay(image: Any, analysis: AnalysisResult) -> Any:
+    return draw_overlay(image, **_analysis_overlay_arguments(analysis))
+
+
+def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
     if analysis.analysis_kind == "face_recognition":
         detected_judgments = tuple(
             judgment for judgment in analysis.judgments if judgment.detected
@@ -1399,23 +1537,14 @@ def _render_analysis_jpeg(
                 default=0.0,
             )
             description = "No target events detected."
-    rendered = draw_overlay(
-        image,
-        event_label=event_label,
-        detected=detected,
-        confidence=confidence,
-        description=description,
-        objects=objects,
-        analysis_kind=analysis.analysis_kind,
-    )
-    ok, output = cv2.imencode(
-        ".jpg",
-        rendered,
-        [cv2.IMWRITE_JPEG_QUALITY, quality],
-    )
-    if not ok:
-        raise ValueError("could not encode annotated JPEG")
-    return output.tobytes()
+    return {
+        "event_label": event_label,
+        "detected": detected,
+        "confidence": confidence,
+        "description": description,
+        "objects": objects,
+        "analysis_kind": analysis.analysis_kind,
+    }
 
 
 def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:

@@ -38,12 +38,18 @@ rich_labeling:
   # sidecar is running; event/VLM inference remains fail-open and independent.
   enabled: false
   endpoint: http://rich-label-worker:8091/v1/labels
-  timeout_seconds: 0.8
+  # CPU demo inference can briefly cross 0.8s on the first hot request. The
+  # coordinator is latest-only and fail-open, so 2s adds startup headroom
+  # without delaying the video/VLM path or changing GPU throughput.
+  timeout_seconds: 2.0
   # The delayed 15 FPS compositor interpolates stable track boxes between these
   # lower-cost local keyframes.
   max_fps: 7.5
   history_size: 128
-  max_interpolation_gap_seconds: 0.75
+  # Interpolate matching tracks across normal local CPU inference gaps.
+  max_interpolation_gap_seconds: 2.0
+  # Bound stale boxes only when no later rich-label keyframe is known.
+  max_hold_seconds: 2.0
 
 sliding_window:
   # Classify the newest frame every 0.4s with no window-collection delay:
@@ -66,7 +72,7 @@ openrouter:
 
 inference:
   # Fixed internal route; implementation identifiers are never public output.
-  model: qwen/qwen3.5-35b-a3b
+  model: qwen/qwen3-vl-8b-instruct
   event_label: smoking
   system_prompt: >-
     You are a risk-sensitive multi-label safety-event perception module for
@@ -116,10 +122,11 @@ inference:
     bbox_2d must tightly enclose the object in the NEWEST frame and use the
     top-left-origin relative 0..1000 xyxy coordinate grid.
 
-    If detected=true, include at least one valid object.
-    For events involving a person and an item, such as smoking or holding a
-    weapon, return separate tight boxes for both the person and the item. Never
-    merge them or omit either one. If detected=false, use "objects": [].
+    If detected=true, include at least one valid target object. For fight and
+    fall, return only the involved person's tight body box or boxes. For
+    smoking, return only the cigarette, cigar, pipe, or e-cigarette box; do not
+    return the smoker's person box. For weapon, return only the weapon box; do
+    not return the holder's person box. If detected=false, use "objects": [].
   multi_event_prompt: |-
     Evaluate exactly these four safety events in the NEWEST (last) frame:
     fight, smoking, fall, and weapon. Use earlier frames only as temporal
@@ -160,17 +167,17 @@ inference:
     object must be {"label":"...","confidence":0.0-1.0,
     "bbox_2d":[x1,y1,x2,y2]}. bbox_2d must tightly enclose that relevant
     entity in the NEWEST frame on the top-left-origin 0..1000 xyxy grid.
-    Every detected=true event requires at least one object. For an event
-    involving a person and an item, return separate tight boxes for both.
+    Every detected=true event requires at least one target object. For fight
+    and fall, return only the involved person's tight body box or boxes. For
+    smoking, return only the smoking item box, not the smoker. For weapon,
+    return only the weapon box, not the holder.
     Every detected=false event must use "objects": [].
   request_parameters:
     temperature: 0.0
     max_tokens: 1200
-    reasoning:
-      effort: "none"
     provider:
       only:
-        - deepinfra
+        - alibaba
       allow_fallbacks: false
 memory:
   # Optional fixed reference-image prefix for multimodal inference. Private

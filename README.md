@@ -81,13 +81,15 @@ The principal settings are:
 | `RICH_GPU_DETECTOR_MODEL` | Detector used by the GPU overlays. Provisional RTX 5090 default: `PP-YOLOE_plus-L`. |
 | `RICH_ATTRIBUTE_MODEL` | PaddleX pedestrian-attribute model name. Default: `PP-LCNet_x1_0_pedestrian_attribute`. |
 | `RICH_DETECTION_THRESHOLD` | Minimum object detector score. Default: `0.45`. |
+| `RICH_TRACK_VISIBLE_IDLE_FRAMES` | Hold a track through this many detector misses to prevent one-frame bbox flicker. Default: `1`; use `0` to disable. |
 | `RICH_ATTRIBUTE_INTERVAL_FRAMES` | Re-run pedestrian attributes every N tracked frames. Default: `10`. |
 | `RICH_ATTRIBUTE_RETRY_SECONDS` | Backoff after optional pedestrian attributes fail to load. Default: `60`. |
 | `RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS` | Bounded drain time for an in-flight attribute task. Default: `5`. |
 | `RICH_DETECTOR_MODEL_DIR` / `RICH_ATTRIBUTE_MODEL_DIR` | Optional paths to pre-provisioned, authorized model directories. |
 
-`rich_labeling.max_fps`, timeout, history size, and interpolation gap remain in
-`config.yaml`. The worker's first model-backed start can be slow while PaddleX
+`rich_labeling.max_fps`, timeout, history size, interpolation gap, and bounded
+tail hold remain in `config.yaml`. The worker's first model-backed start can be
+slow while PaddleX
 downloads model files into the persistent `rich-models` volume; allow outbound
 HTTPS, disk space, and readiness headroom, or pre-provision both model
 directories. The CPU image pins Paddle 3.2.2 because Paddle 3.3.x has a
@@ -137,6 +139,13 @@ within one stream session, can change after an occlusion or restart, and are
 not a person's identity. Age is an estimated range, and gender is an appearance
 model estimate; neither should be presented as a verified personal fact. Real
 known-person matching remains the separate, consent-controlled face gallery.
+
+The bundled pedestrian-attribute weights expose only three age bands: `<18`,
+`18-60`, and `>60`. The worker requests the complete 26-score output and applies
+the PP-Human grouped decoder (including the negative `Female` branch for
+male-presenting results) instead of treating PaddleX's positive-label list as a
+complete classification. The HUD shows age and gender estimates first, followed
+by a compact selection of direction, clothing, bag, and accessory hints.
 
 PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
 itself grant rights to every pretrained weight or its training data. Before

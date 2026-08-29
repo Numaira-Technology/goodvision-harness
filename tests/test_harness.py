@@ -19,12 +19,12 @@ from fastapi.testclient import TestClient
 
 from goodvision_harness.config import load_config
 from goodvision_harness.contracts import (
+    PUBLIC_MODEL_NAME,
     AnalysisResult,
     EventJudgment,
     FrameReference,
     GroundedObject,
     NormalizedBBox,
-    PUBLIC_MODEL_NAME,
 )
 from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.grounding import (
@@ -103,10 +103,11 @@ BBOX_PROMPT_APPEND = (
 bbox_2d must tightly enclose the object in the NEWEST frame and use the
 top-left-origin relative 0..1000 xyxy coordinate grid.
 
-If detected=true, include at least one valid object.
-For events involving a person and an item, such as smoking or holding a
-weapon, return separate tight boxes for both the person and the item. Never
-merge them or omit either one. If detected=false, use "objects": []."""
+If detected=true, include at least one valid target object. For fight and
+fall, return only the involved person's tight body box or boxes. For
+smoking, return only the cigarette, cigar, pipe, or e-cigarette box; do not
+return the smoker's person box. For weapon, return only the weapon box; do
+not return the holder's person box. If detected=false, use "objects": []."""
 )
 
 
@@ -185,7 +186,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert config.openrouter.app_title is None
     # Branding is applied only at public serialization boundaries; the
     # provider request must continue using the validated Qwen route.
-    assert config.inference.model == "qwen/qwen3.5-35b-a3b"
+    assert config.inference.model == "qwen/qwen3-vl-8b-instruct"
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900
     assert config.face.allow_model_download is True
@@ -205,11 +206,16 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert "Every detected=false event must use \"objects\": []." in (
         config.inference.multi_event_prompt
     )
+    assert "return only the smoking item box, not the smoker" in (
+        config.inference.multi_event_prompt
+    )
+    assert "return only the weapon box, not the holder" in (
+        config.inference.multi_event_prompt
+    )
     assert config.inference.request_parameters == {
         "temperature": 0.0,
         "max_tokens": 1200,
-        "reasoning": {"effort": "none"},
-        "provider": {"only": ["deepinfra"], "allow_fallbacks": False},
+        "provider": {"only": ["alibaba"], "allow_fallbacks": False},
     }
     packaged = ROOT / "src" / "goodvision_harness" / "config.yaml"
     assert packaged.read_text(encoding="utf-8") == (ROOT / "config.yaml").read_text(
@@ -918,7 +924,7 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert annotated.headers["X-Stream-Delay"] == "2.400"
         dashboard = client.get("/")
         assert dashboard.status_code == 200
-        assert "qwen/qwen3.5-35b-a3b" not in dashboard.text
+        assert "qwen/qwen3-vl-8b-instruct" not in dashboard.text
         assert "Persistent deployment defaults" in dashboard.text
         assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
         assert "Continuous delayed annotation" in dashboard.text

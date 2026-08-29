@@ -341,6 +341,7 @@ class RichLabelCoordinator:
         max_fps: float = 5.0,
         history_size: int = 16,
         max_interpolation_gap_seconds: float = 1.0,
+        max_hold_seconds: float = 2.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if not math.isfinite(max_fps) or max_fps <= 0:
@@ -354,6 +355,8 @@ class RichLabelCoordinator:
             or max_interpolation_gap_seconds <= 0
         ):
             raise ValueError("max_interpolation_gap_seconds must be positive")
+        if not math.isfinite(max_hold_seconds) or max_hold_seconds <= 0:
+            raise ValueError("max_hold_seconds must be positive")
         if not callable(clock):
             raise TypeError("clock must be callable")
         self.max_fps = float(max_fps)
@@ -361,6 +364,7 @@ class RichLabelCoordinator:
         self.max_interpolation_gap_seconds = float(
             max_interpolation_gap_seconds
         )
+        self.max_hold_seconds = float(max_hold_seconds)
         self._client = client
         self._clock = clock
         self._condition = threading.Condition()
@@ -482,6 +486,7 @@ class RichLabelCoordinator:
             history,
             timestamp,
             max_gap_seconds=self.max_interpolation_gap_seconds,
+            max_hold_seconds=self.max_hold_seconds,
             frame_sequence=frame_sequence,
         )
 
@@ -669,13 +674,27 @@ def select_rich_labels(
     timestamp_seconds: float,
     *,
     max_gap_seconds: float,
+    max_hold_seconds: float | None = None,
     frame_sequence: int | None = None,
 ) -> RichLabelSelection:
-    """Select or interpolate labels using detector-provided stable track IDs."""
+    """Select or interpolate labels using detector-provided stable track IDs.
+
+    ``max_gap_seconds`` limits motion interpolation only. When the next
+    keyframe is already known, a long gap holds the left state until that
+    keyframe explicitly updates or clears it, matching the delayed event
+    compositor and avoiding unannotated flashes. At the unknown history tail,
+    ``max_hold_seconds`` remains bounded so a worker outage cannot leave stale
+    decorative boxes on screen forever.
+    """
 
     timestamp = _timestamp(timestamp_seconds)
     if not math.isfinite(max_gap_seconds) or max_gap_seconds <= 0:
         raise ValueError("max_gap_seconds must be finite and positive")
+    hold_limit = (
+        max_gap_seconds if max_hold_seconds is None else max_hold_seconds
+    )
+    if not math.isfinite(hold_limit) or hold_limit <= 0:
+        raise ValueError("max_hold_seconds must be finite and positive")
     if frame_sequence is not None:
         _frame_sequence(frame_sequence)
     if not snapshots:
@@ -708,13 +727,14 @@ def select_rich_labels(
     right = ordered[position + 1] if position + 1 < len(ordered) else None
     hold_age = max(0.0, timestamp - left.timestamp_seconds)
     if right is None:
-        if hold_age > max_gap_seconds + 1e-9:
+        if hold_age > hold_limit + 1e-9:
             return RichLabelSelection(None, "none")
         return RichLabelSelection(left, "held", left.frame_sequence, None)
     gap = right.timestamp_seconds - left.timestamp_seconds
     if gap <= 0 or gap > max_gap_seconds + 1e-9:
-        if hold_age > max_gap_seconds + 1e-9:
-            return RichLabelSelection(None, "none")
+        # Long/invalid gaps are unsafe for geometry interpolation, but the
+        # known right keyframe is authoritative at its own timestamp. Holding
+        # until then prevents sparse inference from blinking the bbox off.
         return RichLabelSelection(left, "held", left.frame_sequence, None)
     alpha = max(0.0, min(1.0, (timestamp - left.timestamp_seconds) / gap))
     interpolated = _interpolate_snapshot(

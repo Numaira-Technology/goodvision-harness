@@ -20,12 +20,11 @@ from .openrouter import OpenRouterClient, OpenRouterError, OpenRouterSettings
 from .privacy import PUBLIC_ANALYSIS_ERROR, PUBLIC_FACE_ERROR
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
-    MemoryContext,
     UNKNOWN_FACE_EVENT_LABEL,
+    MemoryContext,
 )
 from .sliding_window import FrameWindow
 from .video_to_stream import encode_jpeg
-
 
 FACE_REFERENCE_ANALYSIS_KIND = "face_reference_match"
 REFERENCE_MEMORY_ANALYSIS_KIND = "reference_memory"
@@ -580,10 +579,12 @@ def build_multi_grounding_messages(
         "objects (array). Each object must contain label, confidence (0..1), and "
         "bbox_2d=[x1,y1,x2,y2] on Qwen's relative 0..1000 top-left-origin "
         "xyxy grid for the NEWEST image. A positive item requires at least one "
-        "tight evidence box; a negative item must use objects=[]. For weapon, use "
-        "the same high-recall policy: detect a person visibly holding, carrying, "
-        "drawing, pointing, or brandishing a plausible firearm, knife, machete, "
-        "or other clear weapon; box the person and weapon separately when visible."
+        "tight target box; a negative item must use objects=[]. For fight and "
+        "fall, return only the involved person's body box or boxes. For smoking, "
+        "return only the cigarette, cigar, pipe, or e-cigarette box, never the "
+        "smoker's person box. For weapon, use the same high-recall policy but "
+        "return only the firearm, knife, machete, club, or other weapon box, "
+        "never the holder's person box."
     )
     contract_section = f"\n\n{contract}" if append_contract else ""
     text = (

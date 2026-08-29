@@ -21,7 +21,8 @@ def test_rich_labeling_defaults_are_safe_and_disabled(
     assert settings.enabled is False
     assert settings.endpoint == "http://rich-label-worker:8091/v1/labels"
     assert settings.max_fps == 7.5
-    assert settings.max_interpolation_gap_seconds == 0.75
+    assert settings.max_interpolation_gap_seconds == 2.0
+    assert settings.max_hold_seconds == 2.0
 
 
 def test_rich_labeling_environment_overrides_connection_only(
@@ -45,6 +46,7 @@ def test_rich_labeling_environment_overrides_connection_only(
         ("history_size", 0, "positive integer"),
         ("history_size", 1, "at least 2"),
         ("max_interpolation_gap_seconds", -1, "positive number"),
+        ("max_hold_seconds", -1, "positive number"),
     ],
 )
 def test_rich_labeling_config_validation_is_strict(

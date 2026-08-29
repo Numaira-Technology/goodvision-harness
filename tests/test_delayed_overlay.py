@@ -14,6 +14,7 @@ from goodvision_harness.contracts import (
 )
 from goodvision_harness.delayed_overlay import (
     DelayedOverlayComposer,
+    OverlaySelection,
     select_overlay,
 )
 from goodvision_harness.result_bus import FramePacket
@@ -384,6 +385,157 @@ def test_delayed_composer_renders_event_after_enrichment() -> None:
         assert call_order == ["enrich", "event"]
         assert published[0].jpeg == b"jpeg-enriched-event"
         assert published[0].annotation_mode == "exact"
+    finally:
+        composer.close()
+
+
+def test_delayed_composer_uses_unified_compose_with_display_time() -> None:
+    published: list[FramePacket] = []
+    published_event = threading.Event()
+    calls: list[tuple[bytes, str, float, int, str | None, str | None]] = []
+
+    def compose(
+        jpeg: bytes,
+        selection: OverlaySelection,
+        media_timestamp: float,
+        frame_sequence: int,
+    ) -> bytes:
+        calls.append(
+            (
+                jpeg,
+                selection.mode,
+                media_timestamp,
+                frame_sequence,
+                selection.left_message_id,
+                selection.right_message_id,
+            )
+        )
+        return jpeg + b"-composed"
+
+    def publish(packet: FramePacket) -> None:
+        published.append(packet)
+        published_event.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0.01,
+        max_gap_seconds=0.2,
+        output_fps=15.0,
+        render=lambda jpeg, analysis: pytest.fail("legacy event renderer called"),
+        publish=publish,
+        enrich=lambda jpeg, timestamp, sequence: pytest.fail(
+            "legacy enrichment called"
+        ),
+        compose=compose,
+    )
+    try:
+        assert composer.submit_result(
+            _result(
+                timestamp=0.0,
+                frame_index=0,
+                message_id="left",
+                bbox=(0.1, 0.1, 0.3, 0.3),
+            )
+        )
+        assert composer.submit_result(
+            _result(
+                timestamp=0.1,
+                frame_index=2,
+                message_id="right",
+                bbox=(0.2, 0.1, 0.4, 0.3),
+            )
+        )
+        composer.submit_frame(_packet(1, 0.05))
+
+        assert published_event.wait(1.0)
+        assert calls == [(b"jpeg", "interpolated", 0.05, 1, "left", "right")]
+        assert published[0].jpeg == b"jpeg-composed"
+        assert published[0].annotation_mode == "interpolated"
+    finally:
+        composer.close()
+
+
+def test_delayed_composer_composes_rich_only_frames_without_analysis() -> None:
+    published: list[FramePacket] = []
+    published_event = threading.Event()
+    selections: list[OverlaySelection] = []
+
+    def compose(
+        jpeg: bytes,
+        selection: OverlaySelection,
+        media_timestamp: float,
+        frame_sequence: int,
+    ) -> bytes:
+        assert media_timestamp == 0.2
+        assert frame_sequence == 3
+        selections.append(selection)
+        return jpeg + b"-rich"
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0.01,
+        max_gap_seconds=0.2,
+        output_fps=15.0,
+        render=lambda jpeg, analysis: jpeg,
+        publish=lambda packet: (
+            published.append(packet),
+            published_event.set(),
+        ),
+        compose=compose,
+    )
+    try:
+        composer.submit_frame(_packet(3, 0.2))
+
+        assert published_event.wait(1.0)
+        assert len(selections) == 1
+        assert selections[0].analysis is None
+        assert published[0].jpeg == b"jpeg-rich"
+        assert published[0].annotation_mode == "none"
+    finally:
+        composer.close()
+
+
+def test_delayed_composer_falls_back_to_event_when_compose_fails() -> None:
+    published: list[FramePacket] = []
+    published_event = threading.Event()
+
+    def broken_compose(
+        jpeg: bytes,
+        selection: OverlaySelection,
+        media_timestamp: float,
+        frame_sequence: int,
+    ) -> bytes:
+        del jpeg, selection, media_timestamp, frame_sequence
+        raise RuntimeError("fusion failed")
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0.01,
+        max_gap_seconds=0.2,
+        output_fps=15.0,
+        render=lambda jpeg, analysis: jpeg + b"-event",
+        publish=lambda packet: (
+            published.append(packet),
+            published_event.set(),
+        ),
+        enrich=lambda jpeg, timestamp, sequence: jpeg + b"-rich",
+        compose=broken_compose,
+    )
+    try:
+        assert composer.submit_result(
+            _result(
+                timestamp=0.0,
+                frame_index=0,
+                message_id="event",
+                bbox=(0.1, 0.1, 0.3, 0.3),
+            )
+        )
+        composer.submit_frame(_packet(0, 0.0))
+
+        assert published_event.wait(1.0)
+        assert published[0].jpeg == b"jpeg-rich-event"
+        assert published[0].annotation_mode == "exact"
+        assert composer.stats()["composition_render_errors"] == 1
+
+        composer.reset()
+        assert composer.stats()["composition_render_errors"] == 0
     finally:
         composer.close()
 

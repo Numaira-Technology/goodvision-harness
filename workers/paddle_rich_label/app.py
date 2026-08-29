@@ -26,6 +26,42 @@ LOGGER = logging.getLogger(__name__)
 MAX_JPEG_BYTES = 8 * 1024 * 1024
 PERSON_LABELS = frozenset({"person", "pedestrian"})
 
+# PP-Human's pedestrian attribute model is trained against this fixed PA100K
+# layout. PaddleX normally filters the public classification result by a
+# threshold, so callers must request all classes and reconstruct this vector by
+# class id before applying PaddleDetection's grouped post-processing rules.
+_PEDESTRIAN_ATTRIBUTE_LABELS = (
+    "Hat",
+    "Glasses",
+    "ShortSleeve",
+    "LongSleeve",
+    "UpperStride",
+    "UpperLogo",
+    "UpperPlaid",
+    "UpperSplice",
+    "LowerStripe",
+    "LowerPattern",
+    "LongCoat",
+    "Trousers",
+    "Shorts",
+    "Skirt&Dress",
+    "Boots",
+    "HandBag",
+    "ShoulderBag",
+    "Backpack",
+    "HoldObjectsInFront",
+    "AgeLess18",
+    "Age18-60",
+    "AgeOver60",
+    "Female",
+    "Front",
+    "Side",
+    "Back",
+)
+_ATTRIBUTE_THRESHOLD = 0.5
+_GLASSES_THRESHOLD = 0.3
+_HOLD_OBJECT_THRESHOLD = 0.6
+
 
 @dataclass(frozen=True, slots=True)
 class Detection:
@@ -41,6 +77,7 @@ class Track:
     confidence: float
     bbox: tuple[float, float, float, float]
     last_frame_sequence: int
+    last_update_tick: int = 0
     attributes: dict[str, Any] = field(default_factory=dict)
     last_attribute_frame: int | None = None
     velocity_x: float = 0.0
@@ -51,19 +88,30 @@ class Track:
 class IoUTracker:
     """Small deterministic single-camera tracker around Paddle detections."""
 
-    def __init__(self, *, match_iou: float = 0.3, max_idle_frames: int = 20) -> None:
+    def __init__(
+        self,
+        *,
+        match_iou: float = 0.3,
+        max_idle_frames: int = 20,
+        visible_idle_frames: int = 1,
+    ) -> None:
         if not 0.0 < match_iou <= 1.0:
             raise ValueError("match_iou must be between 0 and 1")
         if max_idle_frames < 1:
             raise ValueError("max_idle_frames must be positive")
+        if visible_idle_frames < 0:
+            raise ValueError("visible_idle_frames cannot be negative")
         self.match_iou = float(match_iou)
         self.max_idle_frames = int(max_idle_frames)
+        self.visible_idle_frames = int(visible_idle_frames)
         self._tracks: dict[str, Track] = {}
         self._next_id = 1
+        self._update_tick = 0
 
     def reset(self) -> None:
         self._tracks.clear()
         self._next_id = 1
+        self._update_tick = 0
 
     def update(
         self,
@@ -71,10 +119,11 @@ class IoUTracker:
         *,
         frame_sequence: int,
     ) -> tuple[Track, ...]:
+        self._update_tick += 1
         self._tracks = {
             track_id: track
             for track_id, track in self._tracks.items()
-            if frame_sequence - track.last_frame_sequence <= self.max_idle_frames
+            if self._update_tick - track.last_update_tick <= self.max_idle_frames
         }
         candidates: list[tuple[float, float, float, str, int]] = []
         for track_id, track in self._tracks.items():
@@ -130,6 +179,7 @@ class IoUTracker:
                     detection,
                     frame_sequence=frame_sequence,
                 )
+                track.last_update_tick = self._update_tick
             else:
                 prefix = "P" if detection.label in PERSON_LABELS else "O"
                 track_id = f"{prefix}{self._next_id:04d}"
@@ -140,10 +190,19 @@ class IoUTracker:
                     confidence=detection.confidence,
                     bbox=detection.bbox,
                     last_frame_sequence=frame_sequence,
+                    last_update_tick=self._update_tick,
                 )
                 self._tracks[track_id] = track
             current.append(track)
-        return tuple(sorted(current, key=lambda item: item.track_id))
+        visible = {track.track_id: track for track in current}
+        for track_id, track in self._tracks.items():
+            if (
+                track_id not in visible
+                and self._update_tick - track.last_update_tick
+                <= self.visible_idle_frames
+            ):
+                visible[track_id] = track
+        return tuple(sorted(visible.values(), key=lambda item: item.track_id))
 
 
 class PaddleRichModels:
@@ -249,7 +308,17 @@ class PaddleRichModels:
             return ()
         self.ensure_attribute_loaded()
         assert self._attribute is not None
-        results = self._attribute.predict(list(crops), batch_size=len(crops))
+        results = self._attribute.predict(
+            list(crops),
+            batch_size=len(crops),
+            # The default PaddleX classifier threshold removes the low-scoring
+            # alternatives which PP-Human needs for argmax groups and for the
+            # implicit Male branch of the single Female output.
+            # PaddleX uses score > threshold, so zero would still discard an
+            # exact-zero class. Its public API accepts -1 and then returns all
+            # 26 PA100K outputs without changing the model's scores.
+            threshold=-1.0,
+        )
         return tuple(_pedestrian_attributes(_model_result(item)) for item in results)
 
 
@@ -278,6 +347,9 @@ class RichLabelEngine:
         self.tracker = IoUTracker(
             match_iou=_env_float("RICH_TRACK_IOU", 0.3, minimum=0.01, maximum=1.0),
             max_idle_frames=_env_int("RICH_TRACK_MAX_IDLE_FRAMES", 20),
+            visible_idle_frames=_env_int(
+                "RICH_TRACK_VISIBLE_IDLE_FRAMES", 1, minimum=0
+            ),
         )
         self.attribute_interval_frames = _env_int(
             "RICH_ATTRIBUTE_INTERVAL_FRAMES", 10
@@ -309,6 +381,13 @@ class RichLabelEngine:
     @property
     def ready(self) -> bool:
         return self.models.ready
+
+    def warmup(self) -> None:
+        """Load the detector before the HTTP service advertises readiness."""
+
+        ensure_loaded = getattr(self.models, "ensure_detector_loaded", None)
+        if callable(ensure_loaded):
+            ensure_loaded()
 
     def infer(
         self,
@@ -389,6 +468,7 @@ class RichLabelEngine:
             track
             for track in tracks
             if track.label in PERSON_LABELS
+            and track.last_update_tick == self.tracker._update_tick
             and (
                 track.last_attribute_frame is None
                 or frame_sequence - track.last_attribute_frame
@@ -494,8 +574,11 @@ def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
-        yield
-        selected_engine.close()
+        await asyncio.to_thread(selected_engine.warmup)
+        try:
+            yield
+        finally:
+            selected_engine.close()
 
     application = FastAPI(
         title="Goodvision Paddle rich-label worker",
@@ -598,39 +681,271 @@ def _model_result(value: Any) -> Mapping[str, Any]:
 
 
 def _pedestrian_attributes(payload: Mapping[str, Any]) -> dict[str, Any]:
-    raw_labels = payload.get("label_names", [])
-    raw_scores = payload.get("scores", [])
-    labels = [str(value).split("(", 1)[0].strip() for value in raw_labels]
-    scores: list[float | None] = []
-    for value in raw_scores:
-        try:
-            rendered = float(value)
-        except (TypeError, ValueError):
-            rendered = math.nan
-        scores.append(rendered if math.isfinite(rendered) else None)
+    scores = _pedestrian_attribute_scores(payload)
     result: dict[str, Any] = {}
-    age_map = {
-        "AgeLess18": "<18",
-        "Age18-60": "18-60",
-        "AgeOver60": ">60",
-    }
-    gender_map = {
-        "Female": "female-presenting",
-        "Male": "male-presenting",
-    }
-    for label, score in zip(labels, scores, strict=False):
-        if label in age_map:
-            result["estimated_age_range"] = age_map[label]
-            if score is not None:
-                result["estimated_age_confidence"] = round(score, 6)
-        elif label in gender_map:
-            result["estimated_gender"] = gender_map[label]
-            if score is not None:
-                result["estimated_gender_confidence"] = round(score, 6)
-    visible = [label for label in labels if label and label not in age_map | gender_map]
-    if visible:
-        result["appearance_attributes"] = visible[:12]
+    appearance: list[str] = []
+
+    # PP-Human has only one gender output: Female. Male is the official
+    # complementary branch, not a separate class returned by PaddleX.
+    female_score = scores.get(22)
+    if female_score is not None:
+        is_female = female_score > _ATTRIBUTE_THRESHOLD
+        result["estimated_gender"] = (
+            "female-presenting" if is_female else "male-presenting"
+        )
+        result["estimated_gender_confidence"] = _binary_confidence(
+            female_score, is_female
+        )
+
+    age = _argmax_complete_group(
+        scores,
+        ((19, "<18"), (20, "18-60"), (21, ">60")),
+    )
+    if age is not None:
+        result["estimated_age_range"] = age[0]
+        result["estimated_age_confidence"] = _round_confidence(age[1])
+
+    direction = _argmax_complete_group(
+        scores,
+        ((23, "Front"), (24, "Side"), (25, "Back")),
+    )
+    if direction is not None:
+        result["estimated_direction"] = direction[0]
+        result["estimated_direction_confidence"] = _round_confidence(direction[1])
+        appearance.append(direction[0])
+
+    _decode_boolean_attribute(
+        result,
+        appearance,
+        scores,
+        class_id=1,
+        value_key="wearing_glasses",
+        confidence_key="wearing_glasses_confidence",
+        positive_label="Glasses",
+        threshold=_GLASSES_THRESHOLD,
+    )
+    _decode_boolean_attribute(
+        result,
+        appearance,
+        scores,
+        class_id=0,
+        value_key="wearing_hat",
+        confidence_key="wearing_hat_confidence",
+        positive_label="Hat",
+        threshold=_ATTRIBUTE_THRESHOLD,
+    )
+    _decode_boolean_attribute(
+        result,
+        appearance,
+        scores,
+        class_id=18,
+        value_key="holding_object",
+        confidence_key="holding_object_confidence",
+        positive_label="HoldObjectsInFront",
+        threshold=_HOLD_OBJECT_THRESHOLD,
+    )
+
+    bag = _argmax_complete_group(
+        scores,
+        ((15, "HandBag"), (16, "ShoulderBag"), (17, "Backpack")),
+    )
+    if bag is not None:
+        bag_label, bag_score = bag
+        has_bag = bag_score > _ATTRIBUTE_THRESHOLD
+        result["bag_type"] = bag_label if has_bag else "No bag"
+        result["bag_confidence"] = (
+            _round_confidence(bag_score)
+            if has_bag
+            else _round_confidence(1.0 - bag_score)
+        )
+        if has_bag:
+            appearance.append(bag_label)
+
+    sleeves = _argmax_complete_group(
+        scores,
+        ((2, "ShortSleeve"), (3, "LongSleeve")),
+    )
+    if sleeves is not None:
+        result["sleeve_type"] = sleeves[0]
+        result["sleeve_confidence"] = _round_confidence(sleeves[1])
+        appearance.append(sleeves[0])
+
+    upper = _argmax_complete_group(
+        scores,
+        (
+            (4, "UpperStride"),
+            (5, "UpperLogo"),
+            (6, "UpperPlaid"),
+            (7, "UpperSplice"),
+        ),
+    )
+    if upper is not None and upper[1] > _ATTRIBUTE_THRESHOLD:
+        result["upper_style"] = upper[0]
+        result["upper_style_confidence"] = _round_confidence(upper[1])
+        appearance.append(upper[0])
+
+    lower_group = (
+        (8, "LowerStripe"),
+        (9, "LowerPattern"),
+        (10, "LongCoat"),
+        (11, "Trousers"),
+        (12, "Shorts"),
+        (13, "Skirt&Dress"),
+    )
+    lower_scores = _complete_group(scores, lower_group)
+    if lower_scores is not None:
+        selected_lower = [
+            (label, score)
+            for (_class_id, label), score in zip(
+                lower_group, lower_scores, strict=True
+            )
+            if score > _ATTRIBUTE_THRESHOLD
+        ]
+        # This fallback is intentional: PaddleDetection always shows the
+        # highest-scoring lower attribute when none clear the threshold.
+        if not selected_lower:
+            winning_index = max(
+                range(len(lower_scores)), key=lower_scores.__getitem__
+            )
+            selected_lower = [
+                (lower_group[winning_index][1], lower_scores[winning_index])
+            ]
+        result["lower_styles"] = [label for label, _score in selected_lower]
+        result["lower_style_confidences"] = {
+            label: _round_confidence(score) for label, score in selected_lower
+        }
+        appearance.extend(label for label, _score in selected_lower)
+
+    _decode_boolean_attribute(
+        result,
+        appearance,
+        scores,
+        class_id=14,
+        value_key="wearing_boots",
+        confidence_key="wearing_boots_confidence",
+        positive_label="Boots",
+        threshold=_ATTRIBUTE_THRESHOLD,
+    )
+
+    if appearance:
+        result["appearance_attributes"] = appearance[:12]
     return result
+
+
+def _pedestrian_attribute_scores(payload: Mapping[str, Any]) -> dict[int, float]:
+    """Return a validated, complete PA100K vector keyed by fixed class id.
+
+    Grouped post-processing is unsafe when PaddleX has filtered or reordered a
+    partial result. Fail open with no attributes unless ids, names, and scores
+    prove that all 26 classes are present exactly once.
+    """
+
+    raw_scores = _attribute_sequence(payload.get("scores"))
+    raw_ids = _attribute_sequence(payload.get("class_ids"))
+    raw_labels = _attribute_sequence(payload.get("label_names"))
+    attribute_count = len(_PEDESTRIAN_ATTRIBUTE_LABELS)
+    if not (
+        len(raw_ids) == attribute_count
+        and len(raw_scores) == attribute_count
+        and len(raw_labels) == attribute_count
+    ):
+        return {}
+
+    decoded: dict[int, float] = {}
+    for raw_id, raw_label, raw_score in zip(
+        raw_ids, raw_labels, raw_scores, strict=True
+    ):
+        class_id = _attribute_class_id(raw_id)
+        score = _attribute_score(raw_score)
+        if class_id is None or score is None or class_id in decoded:
+            return {}
+        label = str(raw_label).split("(", 1)[0].strip().casefold()
+        if label != _PEDESTRIAN_ATTRIBUTE_LABELS[class_id].casefold():
+            return {}
+        decoded[class_id] = score
+    return decoded if len(decoded) == attribute_count else {}
+
+
+def _attribute_sequence(value: Any) -> tuple[Any, ...]:
+    if isinstance(value, np.ndarray):
+        return tuple(value.reshape(-1).tolist())
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return tuple(value)
+    return ()
+
+
+def _attribute_class_id(value: Any) -> int | None:
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        rendered = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(rendered) or not rendered.is_integer():
+        return None
+    class_id = int(rendered)
+    return class_id if 0 <= class_id < len(_PEDESTRIAN_ATTRIBUTE_LABELS) else None
+
+
+def _attribute_score(value: Any) -> float | None:
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return score if math.isfinite(score) and 0.0 <= score <= 1.0 else None
+
+
+def _complete_group(
+    scores: Mapping[int, float],
+    group: Sequence[tuple[int, str]],
+) -> tuple[float, ...] | None:
+    if any(class_id not in scores for class_id, _label in group):
+        return None
+    return tuple(scores[class_id] for class_id, _label in group)
+
+
+def _argmax_complete_group(
+    scores: Mapping[int, float],
+    group: Sequence[tuple[int, str]],
+) -> tuple[str, float] | None:
+    group_scores = _complete_group(scores, group)
+    if group_scores is None:
+        return None
+    winning_index = max(range(len(group_scores)), key=group_scores.__getitem__)
+    return group[winning_index][1], group_scores[winning_index]
+
+
+def _decode_boolean_attribute(
+    result: dict[str, Any],
+    appearance: list[str],
+    scores: Mapping[int, float],
+    *,
+    class_id: int,
+    value_key: str,
+    confidence_key: str,
+    positive_label: str,
+    threshold: float,
+) -> None:
+    score = scores.get(class_id)
+    if score is None:
+        return
+    selected = score > threshold
+    result[value_key] = selected
+    result[confidence_key] = _binary_confidence(score, selected)
+    if selected:
+        appearance.append(positive_label)
+
+
+def _binary_confidence(score: float, selected: bool) -> float:
+    return _round_confidence(score if selected else 1.0 - score)
+
+
+def _round_confidence(score: float) -> float:
+    return round(score, 6)
 
 
 def _crop(
@@ -808,13 +1123,13 @@ def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> 
     return value
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     try:
         value = int(os.environ.get(name, str(default)))
     except ValueError as exc:
         raise RuntimeError(f"{name} must be an integer") from exc
-    if value < 1:
-        raise RuntimeError(f"{name} must be positive")
+    if value < minimum:
+        raise RuntimeError(f"{name} must be at least {minimum}")
     return value
 
 

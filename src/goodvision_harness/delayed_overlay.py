@@ -115,6 +115,8 @@ class DelayedOverlayComposer:
         render: Callable[[bytes, AnalysisResult], bytes],
         publish: Callable[[FramePacket], Any],
         enrich: Callable[[bytes, float, int], bytes] | None = None,
+        compose: Callable[[bytes, OverlaySelection, float, int], bytes]
+        | None = None,
     ) -> None:
         if delay_seconds < 0:
             raise ValueError("delay_seconds must be non-negative")
@@ -128,6 +130,7 @@ class DelayedOverlayComposer:
         self._render = render
         self._publish = publish
         self._enrich = enrich
+        self._compose = compose
         self._condition = threading.Condition()
         self._frames: deque[_BufferedFrame] = deque()
         self._results: list[AnalysisResult] = []
@@ -151,6 +154,7 @@ class DelayedOverlayComposer:
             "late_results": 0,
             "publish_errors": 0,
             "enrichment_render_errors": 0,
+            "composition_render_errors": 0,
             "annotation_mode": "none",
             "frame_sequence": None,
             "media_timestamp": None,
@@ -189,6 +193,7 @@ class DelayedOverlayComposer:
                     "late_results": 0,
                     "publish_errors": 0,
                     "enrichment_render_errors": 0,
+                    "composition_render_errors": 0,
                     "annotation_mode": "none",
                     "frame_sequence": None,
                     "media_timestamp": None,
@@ -278,33 +283,26 @@ class DelayedOverlayComposer:
                 max_gap_seconds=self.max_gap_seconds,
                 frame_sequence=buffered.packet.frame_sequence,
             )
-            rendered = buffered.packet.jpeg
-            if self._enrich is not None:
+            mode = selection.mode
+            if self._compose is not None:
                 try:
-                    rendered = self._enrich(
-                        rendered,
+                    rendered = self._compose(
+                        buffered.packet.jpeg,
+                        selection,
                         buffered.packet.media_timestamp,
                         buffered.packet.frame_sequence,
                     )
                 except Exception:
-                    LOGGER.warning("could not render delayed frame enrichment")
-                    rendered = buffered.packet.jpeg
+                    LOGGER.warning("could not render delayed composed overlay frame")
                     with self._condition:
                         if (
                             buffered.generation == self._generation
                             and not self._closed
                         ):
-                            self._stats["enrichment_render_errors"] += 1
-
-            enriched = rendered
-            mode = selection.mode
-            if selection.analysis is not None:
-                try:
-                    rendered = self._render(rendered, selection.analysis)
-                except Exception:
-                    LOGGER.warning("could not render delayed overlay frame")
-                    mode = "none"
-                    rendered = enriched
+                            self._stats["composition_render_errors"] += 1
+                    rendered, mode = self._render_legacy(buffered, selection)
+            else:
+                rendered, mode = self._render_legacy(buffered, selection)
 
             output = replace(
                 buffered.packet,
@@ -339,6 +337,42 @@ class DelayedOverlayComposer:
                     }
                 )
                 self._prune_results_locked(output.media_timestamp)
+
+    def _render_legacy(
+        self,
+        buffered: _BufferedFrame,
+        selection: OverlaySelection,
+    ) -> tuple[bytes, str]:
+        """Render the original two-stage path as compatibility and fail-open."""
+
+        rendered = buffered.packet.jpeg
+        if self._enrich is not None:
+            try:
+                rendered = self._enrich(
+                    rendered,
+                    buffered.packet.media_timestamp,
+                    buffered.packet.frame_sequence,
+                )
+            except Exception:
+                LOGGER.warning("could not render delayed frame enrichment")
+                rendered = buffered.packet.jpeg
+                with self._condition:
+                    if (
+                        buffered.generation == self._generation
+                        and not self._closed
+                    ):
+                        self._stats["enrichment_render_errors"] += 1
+
+        enriched = rendered
+        mode = selection.mode
+        if selection.analysis is not None:
+            try:
+                rendered = self._render(rendered, selection.analysis)
+            except Exception:
+                LOGGER.warning("could not render delayed overlay frame")
+                mode = "none"
+                rendered = enriched
+        return rendered, mode
 
     def _prune_results_locked(self, media_timestamp: float) -> None:
         cutoff = media_timestamp - self.max_gap_seconds
