@@ -66,7 +66,7 @@ def test_deployment_settings_api_persists_without_returning_secrets(
 ) -> None:
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
     monkeypatch.setenv("HARNESS_DRY_RUN", "false")
-    monkeypatch.setenv("MODEL_API_KEY", "environment-key")
+    monkeypatch.setenv("AICLUB_API_KEY", "environment-key")
     store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
     runtime = HarnessRuntime(
         load_config(ROOT / "config.yaml"),
@@ -311,11 +311,11 @@ def test_persisted_api_key_is_injected_without_changing_model_route(
     )
     captured: dict[str, object] = {}
 
-    def fake_builder(settings, openrouter_settings, **kwargs):
+    def fake_builder(settings, aiclub_settings, **kwargs):
         captured.update(
             model=settings.model,
             api_key=kwargs.get("api_key"),
-            endpoint=openrouter_settings.endpoint,
+            endpoint=aiclub_settings.endpoint,
         )
         return DryRunGroundingClient(settings, kwargs.get("memory_context"))
 

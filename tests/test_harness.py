@@ -181,11 +181,11 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.sliding_window.include_partial_final_window,
     ) == (1, 1, False)
     assert config.runtime.max_concurrent_requests == 6
-    assert config.openrouter.max_retries == 0
-    assert config.openrouter.app_title is None
+    assert config.aiclub.max_retries == 0
+    assert config.aiclub.api_key_env == "AICLUB_API_KEY"
     # Branding is applied only at public serialization boundaries; the
-    # provider request must continue using the validated Qwen route.
-    assert config.inference.model == "qwen/qwen3.5-35b-a3b"
+    # provider request must continue using the validated AIClub route.
+    assert config.inference.model == "qwen3.5-plus"
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900
     assert config.face.allow_model_download is True
@@ -208,8 +208,6 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert config.inference.request_parameters == {
         "temperature": 0.0,
         "max_tokens": 1200,
-        "reasoning": {"effort": "none"},
-        "provider": {"only": ["deepinfra"], "allow_fallbacks": False},
     }
     packaged = ROOT / "src" / "goodvision_harness" / "config.yaml"
     assert packaged.read_text(encoding="utf-8") == (ROOT / "config.yaml").read_text(
@@ -918,7 +916,7 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert annotated.headers["X-Stream-Delay"] == "2.400"
         dashboard = client.get("/")
         assert dashboard.status_code == 200
-        assert "qwen/qwen3.5-35b-a3b" not in dashboard.text
+        assert "qwen3.5-plus" not in dashboard.text
         assert "Persistent deployment defaults" in dashboard.text
         assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
         assert "Continuous delayed annotation" in dashboard.text

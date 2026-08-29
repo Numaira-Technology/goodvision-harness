@@ -40,21 +40,18 @@ sliding_window:
   stride_frames: 1
   include_partial_final_window: false
 
-openrouter:
-  # Fixed model API route selected by the live visual-latency benchmark.
-  endpoint: https://openrouter.ai/api/v1/chat/completions
-  api_key_env: MODEL_API_KEY
+aiclub:
+  endpoint: https://aiclub.zimaocloud.com/model/openApi/v1/chat/completions
+  api_key_env: AICLUB_API_KEY
   timeout_seconds: 60.0
   # Avoid retrying provider errors into stale live results.
   max_retries: 0
   retry_backoff_seconds: 1.0
-  http_referer: null
-  app_title: null
   extra_headers: {}
 
 inference:
-  # Fixed internal route; implementation identifiers are never public output.
-  model: qwen/qwen3.5-35b-a3b
+  # Fixed AIClub route; implementation identifiers are never public output.
+  model: qwen3.5-plus
   event_label: smoking
   system_prompt: >-
     You are a risk-sensitive multi-label safety-event perception module for
@@ -154,12 +151,6 @@ inference:
   request_parameters:
     temperature: 0.0
     max_tokens: 1200
-    reasoning:
-      effort: "none"
-    provider:
-      only:
-        - deepinfra
-      allow_fallbacks: false
 memory:
   # Optional fixed reference-image prefix for multimodal inference. Private
   # images can live under the Git-ignored top-level memory/ directory.
