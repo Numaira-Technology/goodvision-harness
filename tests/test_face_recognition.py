@@ -20,6 +20,9 @@ from goodvision_harness.face_recognition import (
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def _jpeg(width: int = 320, height: int = 160) -> bytes:
     image = np.zeros((height, width, 3), dtype=np.uint8)
     ok, encoded = cv2.imencode(".jpg", image)
@@ -526,6 +529,125 @@ def test_explicit_opt_in_allows_face_analysis_to_install_model(
     )
     assert isinstance(model, FakeFaceAnalysis)
     assert prepared == [(-1, (640, 640))]
+
+
+def test_cuda_face_analysis_preloads_and_verifies_real_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = importlib.import_module
+    preloads: list[str] = []
+    prepared: list[tuple[int, tuple[int, int]]] = []
+
+    class FakeSession:
+        def get_providers(self) -> list[str]:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    class FakeFaceAnalysis:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["providers"] == ["CUDAExecutionProvider"]
+            self.models = {
+                "detection": SimpleNamespace(session=FakeSession()),
+                "recognition": SimpleNamespace(session=FakeSession()),
+            }
+
+        def prepare(self, *, ctx_id: int, det_size: tuple[int, int]) -> None:
+            prepared.append((ctx_id, det_size))
+
+    def fake_import(name: str, package: str | None = None) -> Any:
+        if name == "insightface.app":
+            return SimpleNamespace(FaceAnalysis=FakeFaceAnalysis)
+        if name == "onnxruntime":
+            return SimpleNamespace(
+                preload_dlls=lambda *, directory: preloads.append(directory),
+                get_available_providers=lambda: [
+                    "CUDAExecutionProvider",
+                    "CPUExecutionProvider",
+                ],
+            )
+        return real_import(name, package)
+
+    monkeypatch.setattr(face_module.importlib, "import_module", fake_import)
+
+    model = face_module._load_face_analysis(
+        _config(
+            tmp_path,
+            allow_model_download=True,
+            provider="CUDAExecutionProvider",
+        )
+    )
+
+    assert isinstance(model, FakeFaceAnalysis)
+    assert preloads == [""]
+    assert prepared == [(0, (640, 640))]
+
+
+def test_cuda_face_analysis_rejects_silent_cpu_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = importlib.import_module
+
+    class FakeSession:
+        def get_providers(self) -> list[str]:
+            return ["CPUExecutionProvider"]
+
+    class FakeFaceAnalysis:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.models = {
+                "detection": SimpleNamespace(session=FakeSession()),
+                "recognition": SimpleNamespace(session=FakeSession()),
+            }
+
+        def prepare(self, **_kwargs: Any) -> None:
+            pass
+
+    def fake_import(name: str, package: str | None = None) -> Any:
+        if name == "insightface.app":
+            return SimpleNamespace(FaceAnalysis=FakeFaceAnalysis)
+        if name == "onnxruntime":
+            return SimpleNamespace(
+                preload_dlls=lambda **_kwargs: None,
+                get_available_providers=lambda: [
+                    "CUDAExecutionProvider",
+                    "CPUExecutionProvider",
+                ],
+            )
+        return real_import(name, package)
+
+    monkeypatch.setattr(face_module.importlib, "import_module", fake_import)
+
+    with pytest.raises(
+        RuntimeError,
+        match="local face analysis could not be initialized",
+    ):
+        face_module._load_face_analysis(
+            _config(
+                tmp_path,
+                allow_model_download=True,
+                provider="CUDAExecutionProvider",
+            )
+        )
+
+
+def test_face_gpu_image_and_compose_are_isolated_from_cpu_delivery() -> None:
+    cpu_dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    gpu_dockerfile = (ROOT / "Dockerfile.face-gpu").read_text(encoding="utf-8")
+    dev_overlay = (ROOT / "compose.face-gpu.yaml").read_text(encoding="utf-8")
+    delivery_overlay = (ROOT / "compose.face-gpu.delivery.yaml").read_text(
+        encoding="utf-8"
+    )
+    smoke = (ROOT / "tools" / "face_gpu_smoke.py").read_text(encoding="utf-8")
+
+    assert "onnxruntime-gpu" not in cpu_dockerfile
+    assert ".[face-gpu,webrtc]" in gpu_dockerfile
+    assert "FACE_PROVIDER=CUDAExecutionProvider" in gpu_dockerfile
+    assert "face_gpu_smoke.py" in gpu_dockerfile
+    for overlay in (dev_overlay, delivery_overlay):
+        assert "FACE_PROVIDER: CUDAExecutionProvider" in overlay
+        assert "capabilities: [gpu]" in overlay
+    assert "runtime.warmup()" in smoke
+    assert 'print("face_gpu_smoke=ready")' in smoke
 
 
 @pytest.mark.parametrize(

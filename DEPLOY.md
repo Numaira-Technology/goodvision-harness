@@ -74,6 +74,34 @@ docker compose -f compose.delivery.yaml -f compose.rich-gpu.delivery.yaml \
 gender 是外观模型估计。PaddleX/PaddleDetection 源码为 Apache-2.0，但商用或
 随交付包分发前仍须逐一确认具体预训练权重及其训练数据的许可条件。
 
+## 可选 InsightFace GPU 加速
+
+基础 Harness 镜像安装 CPU 版 ONNX Runtime；服务器即使有 RTX 5090，也不会
+自动加速人脸识别。GPU 交付须额外加载 `Dockerfile.face-gpu` 构建的 Harness
+镜像，并叠加 `compose.face-gpu.delivery.yaml`。该镜像固定 ONNX Runtime GPU
+1.26（CUDA 12.8、cuDNN 9），避免 1.27 及以后默认 CUDA 13 wheel 带来的运行时
+漂移。
+
+先在客户机执行真实模型自检，再启动服务：
+
+```bash
+docker compose -f compose.delivery.yaml -f compose.face-gpu.delivery.yaml \
+  run --rm harness python tools/face_gpu_smoke.py
+docker compose -f compose.delivery.yaml -f compose.face-gpu.delivery.yaml \
+  up -d --force-recreate
+```
+
+自检要求已授权的 detection/recognition 权重存在于 `face-models` volume；仅在
+许可覆盖的非商业测试中，才可临时增加
+`-e FACE_ALLOW_MODEL_DOWNLOAD=true`。Harness 会核对两条实际 ONNX Session 的
+首选 provider，CUDA 缺失或静默回落 CPU 时直接失败。若同时启用 Paddle rich
+worker，可再叠加 `compose.rich-gpu.delivery.yaml --profile rich`；两容器共享同一
+5090，应分别记录 face-only 与并跑时的热态 p50/p95、吞吐和显存。
+
+GPU 能显著减少单次人脸推理及 CPU 争用，但 live scheduler 仍保持 single-flight：
+混合检测继续保留 LLM 六并发，忙碌的人脸帧直接丢弃而不排队；仅选陌生人时，
+Harness 自动将分析并发降为 1。这样 GPU 故障或回退也不会重新形成六深度队列。
+
 ## 输入与永久设置
 
 默认输入：

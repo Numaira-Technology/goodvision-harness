@@ -745,6 +745,14 @@ def _load_face_analysis_inner(config: FaceRecognizerConfig) -> Any:
     except ModuleNotFoundError as exc:
         raise RuntimeError("local face analysis is unavailable") from exc
 
+    if config.provider == "CUDAExecutionProvider":
+        # The GPU distribution can install its CUDA/cuDNN runtime libraries as
+        # Python packages. Preload them before InsightFace creates ONNX
+        # sessions; the NVIDIA container runtime supplies only the host driver.
+        preload_dlls = getattr(onnxruntime, "preload_dlls", None)
+        if callable(preload_dlls):
+            preload_dlls(directory="")
+
     available = set(onnxruntime.get_available_providers())
     if config.provider not in available:
         raise RuntimeError("configured local face execution mode is unavailable")
@@ -771,9 +779,28 @@ def _load_face_analysis_inner(config: FaceRecognizerConfig) -> Any:
             ctx_id=-1 if config.provider == "CPUExecutionProvider" else 0,
             det_size=_detector_size(config.det_size),
         )
+        if config.provider == "CUDAExecutionProvider":
+            _require_cuda_face_sessions(model)
     except Exception as exc:
         raise RuntimeError("local face analysis could not be initialized") from exc
     return model
+
+
+def _require_cuda_face_sessions(model: Any) -> None:
+    """Fail fast when InsightFace silently creates CPU-backed GPU sessions."""
+
+    modules = getattr(model, "models", None)
+    if not isinstance(modules, Mapping):
+        raise RuntimeError("local face GPU execution could not be verified")
+    required = {"detection", "recognition"}
+    if not required.issubset(modules):
+        raise RuntimeError("local face GPU execution could not be verified")
+    for name in sorted(required):
+        session = getattr(modules[name], "session", None)
+        get_providers = getattr(session, "get_providers", None)
+        providers = tuple(get_providers()) if callable(get_providers) else ()
+        if not providers or providers[0] != "CUDAExecutionProvider":
+            raise RuntimeError("local face GPU execution could not be verified")
 
 
 def _embedding_profile(_model_name: str) -> str:

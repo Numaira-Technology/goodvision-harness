@@ -113,6 +113,46 @@ video benchmark therefore remains the functional/fallback baseline; actual
 5090 latency, VRAM, cold starts, and restart stability must pass on the customer
 host before enabling `RICH_LABEL_ENABLED`.
 
+### Optional GPU face recognition
+
+The base Harness image intentionally keeps InsightFace on CPU. Merely deploying
+that image to an RTX 5090 does not move face detection to the GPU. Use the
+separate face overlay to install the CUDA ONNX Runtime build, expose one NVIDIA
+device to the Harness container, and select `CUDAExecutionProvider`:
+
+```bash
+docker compose -f compose.yaml -f compose.face-gpu.yaml build harness
+docker compose -f compose.yaml -f compose.face-gpu.yaml run --rm \
+  -e FACE_ALLOW_MODEL_DOWNLOAD=true \
+  harness python tools/face_gpu_smoke.py
+docker compose -f compose.yaml -f compose.face-gpu.yaml up -d
+```
+
+Use `FACE_ALLOW_MODEL_DOWNLOAD=true` only for the licensed non-commercial demo,
+or pre-provision authorized weights in the `face-models` volume and omit it.
+The smoke command loads the real detection and recognition sessions, executes a
+warm inference, and fails if either session silently falls back to CPU.
+
+`Dockerfile.face-gpu` pins ONNX Runtime GPU 1.26, whose official wheel uses
+CUDA 12.8 and cuDNN 9. Starting with ONNX Runtime 1.27, the default PyPI GPU
+wheel uses CUDA 13, so the pin is deliberate; see the official
+[CUDA execution-provider compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
+The image installs the CUDA/cuDNN user-space libraries through the wheel extras;
+the host still needs a current Blackwell-capable NVIDIA driver and NVIDIA
+Container Toolkit.
+
+To run both accelerated paths on one 5090, combine the independent overlays:
+
+```bash
+docker compose -f compose.yaml -f compose.face-gpu.yaml -f compose.gpu.yaml \
+  --profile rich up -d
+```
+
+The two containers share the device rather than receiving exclusive GPUs.
+Benchmark face-only and face-plus-rich loads on the customer host before
+acceptance. The live face scheduler remains single-flight on both CPU and GPU,
+so a slow or unavailable GPU can never recreate a six-frame face backlog.
+
 To benchmark the real HTTP worker with a local video, expose a separate test
 instance on loopback in one terminal:
 
@@ -198,8 +238,9 @@ The default deployment needs:
 
 A GPU is not required: video decoding, overlays, and the default local face
 matcher can run on CPU, while the four safety-event judgments use the public
-LLM API. The host does not need inbound Internet access to port 8080 when the
-receiver is also on the host.
+LLM API. On an NVIDIA host, `compose.face-gpu.yaml` can move the local face
+matcher to CUDA. The host does not need inbound Internet access to port 8080
+when the receiver is also on the host.
 
 ## Deploy
 

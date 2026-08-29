@@ -223,6 +223,16 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     )
 
 
+def test_face_provider_can_be_selected_by_deployment_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_PROVIDER", "CUDAExecutionProvider")
+
+    config = load_config(ROOT / "config.yaml")
+
+    assert config.face.provider == "CUDAExecutionProvider"
+
+
 def test_stream_crop_is_applied_before_display_sampling_and_source_mapping() -> None:
     config = load_config(ROOT / "config.yaml")
     image = np.zeros((100, 400, 3), dtype=np.uint8)

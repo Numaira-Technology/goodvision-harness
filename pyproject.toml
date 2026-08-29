@@ -28,6 +28,10 @@ face = [
   "insightface==1.0.1",
   "onnxruntime>=1.20,<2",
 ]
+face-gpu = [
+  "insightface==1.0.1",
+  "onnxruntime-gpu[cuda,cudnn]==1.26.0",
+]
 webrtc = [
   "aiohttp>=3.10,<4",
   "aiortc>=1.15,<2",

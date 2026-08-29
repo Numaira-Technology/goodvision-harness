@@ -27,6 +27,7 @@ services:
       HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
       FACE_MODEL_ROOT: /models
       FACE_GALLERY_PATH: /data/face-gallery.json
+      FACE_PROVIDER: "${FACE_PROVIDER:-CPUExecutionProvider}"
       # Point this at an independently deployed Paddle rich-label worker.
       RICH_LABEL_ENABLED: "${RICH_LABEL_ENABLED:-false}"
       RICH_LABEL_ENDPOINT: "${RICH_LABEL_ENDPOINT:-http://rich-label-worker:8091/v1/labels}"

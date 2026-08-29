@@ -1,0 +1,15 @@
+services:
+  harness:
+    build:
+      context: .
+      dockerfile: Dockerfile.face-gpu
+    image: goodvision-harness:demo-face-gpu-cu128
+    environment:
+      FACE_PROVIDER: CUDAExecutionProvider
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

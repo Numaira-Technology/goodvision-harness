@@ -350,7 +350,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "face.allow_model_download",
         ),
         provider=_execution_provider(
-            face_section.get("provider", "CPUExecutionProvider")
+            os.environ.get("FACE_PROVIDER")
+            or face_section.get("provider", "CPUExecutionProvider")
         ),
         det_size=_positive_int(face_section.get("det_size", 640), "face.det_size"),
         threshold=_bounded_float(
