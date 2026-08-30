@@ -991,6 +991,29 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         )
 
 
+def test_dashboard_annotation_workspace_has_fullscreen_contract() -> None:
+    stub = _StubRuntime()
+    app = create_app(lambda: stub)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        dashboard = client.get("/")
+
+    assert dashboard.status_code == 200
+    html = dashboard.text
+    assert html.count('id="analysis-workspace"') == 1
+    assert html.count('id="fullscreen-button"') == 1
+    assert html.count('id="detection-overlay-toggle"') == 1
+    assert 'class="grid analysis-workspace"' in html
+    assert 'aria-controls="analysis-workspace" aria-pressed="false"' in html
+    assert 'aria-controls="decision" aria-expanded="true"' in html
+    assert ".analysis-workspace:fullscreen" in html
+    assert ".analysis-workspace.fullscreen-active .classification-panel" in html
+    assert "ui.analysisWorkspace.requestFullscreen" in html
+    assert "document.exitFullscreen" in html
+    assert 'document.addEventListener("fullscreenchange",syncFullscreenUi)' in html
+    assert 'new ResizeObserver(()=>alignAnnotationLayer()).observe(ui.viewport)' in html
+
+
 def test_browser_camera_dry_run_delivers_raw_and_correlated_bbox_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -28,29 +28,15 @@ _APPEARANCE_TOKENS = {
     "front": ("direction", "FRONT"),
     "side": ("direction", "SIDE"),
     "back": ("direction", "BACK"),
-    "glasses": ("glasses", "GLASSES"),
-    "hat": ("hat", "HAT"),
     "holdobjectsinfront": ("holding", "HOLDING ITEM"),
     "backpack": ("bag", "BACKPACK"),
     "handbag": ("bag", "HANDBAG"),
     "shoulderbag": ("bag", "SHOULDER BAG"),
-    "longsleeve": ("sleeve", "LONG SLEEVE"),
-    "shortsleeve": ("sleeve", "SHORT SLEEVE"),
-    "upperstripe": ("upper", "TOP STRIPED"),
-    "upperstride": ("upper", "TOP STRIPED"),
-    "upperlogo": ("upper", "TOP LOGO"),
-    "upperplaid": ("upper", "TOP PLAID"),
-    "uppersplice": ("upper", "TOP SPLICED"),
-    "lowerstripe": ("lower", "BOTTOM STRIPED"),
-    "lowerpattern": ("lower", "BOTTOM PATTERN"),
-    "longcoat": ("lower", "LONG COAT"),
-    "trousers": ("lower", "TROUSERS"),
-    "shorts": ("lower", "SHORTS"),
-    "skirtdress": ("lower", "SKIRT/DRESS"),
-    "boots": ("boots", "BOOTS"),
 }
 _APPEARANCE_PRIORITY = (
-    "direction", "glasses", "hat", "holding", "bag", "boots", "sleeve", "upper", "lower"
+    "direction",
+    "holding",
+    "bag",
 )
 
 
@@ -513,16 +499,13 @@ def _attribute_items(value: Any) -> tuple[Any, ...]:
 
 
 def _rich_appearance_tokens(attributes: Mapping[str, Any]) -> tuple[str, ...]:
-    """Decode the worker contract, then fill missing groups from legacy labels."""
+    """Decode non-garment attributes without presenting clothing guesses."""
 
     found: list[tuple[str, str]] = []
     covered: set[str] = set()
     fields = (
         ("estimated_direction", "direction"),
         ("bag_type", "bag"),
-        ("sleeve_type", "sleeve"),
-        ("upper_style", "upper"),
-        ("lower_styles", "lower"),
     )
     for field, category in fields:
         if field not in attributes:
@@ -535,10 +518,7 @@ def _rich_appearance_tokens(attributes: Mapping[str, Any]) -> tuple[str, ...]:
                 found.append(match)
 
     flags = (
-        ("wearing_glasses", "glasses", "GLASSES"),
-        ("wearing_hat", "hat", "HAT"),
         ("holding_object", "holding", "HOLDING ITEM"),
-        ("wearing_boots", "boots", "BOOTS"),
     )
     for field, category, token in flags:
         if field in attributes:

@@ -280,16 +280,22 @@ def test_rich_overlay_keeps_demographics_and_adds_compact_structured_appearance(
     assert "AGE 18-60" in captured[1]
     assert "GENDER MALE" in captured[1]
     assert "CONF 92%" in captured[1]
-    assert "GLASSES" in captured[2]
+    assert "GLASSES" not in captured[2]
     assert "HOLDING ITEM" in captured[2]
     assert "BACKPACK" in captured[2]
     assert "HAT" not in captured[2]
     assert "SHORT SLEEVE" not in captured[2]
+    assert "LONG SLEEVE" not in captured[2]
+    assert "TOP LOGO" not in captured[2]
+    assert "TROUSERS" not in captured[2]
+    assert "SKIRT/DRESS" not in captured[2]
+    assert "BOOTS" not in captured[2]
     assert "\n" not in " ".join(captured)
     assert not contains_private_implementation_detail(" ".join(captured))
 
 
-def test_rich_appearance_decodes_all_structured_fields_and_positive_fallbacks() -> None:
+def test_rich_appearance_excludes_garments_from_structured_and_fallback_values(
+) -> None:
     structured = overlay_module._rich_appearance_tokens(
         {
             "estimated_direction": "side",
@@ -306,15 +312,8 @@ def test_rich_appearance_decodes_all_structured_fields_and_positive_fallbacks() 
 
     assert structured == (
         "SIDE",
-        "GLASSES",
-        "HAT",
         "HOLDING ITEM",
         "SHOULDER BAG",
-        "BOOTS",
-        "SHORT SLEEVE",
-        "TOP STRIPED",
-        "BOTTOM PATTERN",
-        "SHORTS",
     )
 
     fallback = overlay_module._rich_appearance_tokens(
@@ -339,14 +338,8 @@ def test_rich_appearance_decodes_all_structured_fields_and_positive_fallbacks() 
 
     assert fallback == (
         "BACK",
-        "GLASSES",
-        "HAT",
         "HOLDING ITEM",
         "HANDBAG",
-        "BOOTS",
-        "LONG SLEEVE",
-        "TOP STRIPED",
-        "BOTTOM PATTERN",
     )
 
 
