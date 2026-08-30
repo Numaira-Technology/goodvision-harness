@@ -150,8 +150,11 @@ docker compose -f compose.yaml -f compose.face-gpu.yaml -f compose.gpu.yaml \
 
 The two containers share the device rather than receiving exclusive GPUs.
 Benchmark face-only and face-plus-rich loads on the customer host before
-acceptance. The live face scheduler remains single-flight on both CPU and GPU,
-so a slow or unavailable GPU can never recreate a six-frame face backlog.
+acceptance. `FACE_LIVE_SCHEDULER=auto` keeps CPU InsightFace single-flight, but
+uses full sampling for DirectML or CUDA: every admitted mixed-detector request
+runs its own face branch while the OpenRouter safety branches retain their
+configured concurrency. Operators can force `full` for an experiment or
+`single_flight` as a bounded-backlog fallback.
 
 To benchmark the real HTTP worker with a local video, expose a separate test
 instance on loopback in one terminal:
@@ -652,6 +655,8 @@ stream variable takes precedence over the legacy RTSP variable:
 | `HARNESS_PORT` | Host HTTP port used by Compose. |
 | `FACE_MODEL_ROOT` | Root containing operator-supplied face-analysis files. |
 | `FACE_GALLERY_PATH` | Persistent known-person gallery JSON path. |
+| `FACE_PROVIDER` | InsightFace ONNX provider: CPU, DirectML, or CUDA. |
+| `FACE_LIVE_SCHEDULER` | `auto` selects CPU single-flight and accelerated full sampling; `full`/`single_flight` override it. |
 | `RICH_LABEL_ENABLED` | Enable the optional rich-label worker path. |
 | `RICH_LABEL_ENDPOINT` | Rich-label worker inference URL. |
 
@@ -675,6 +680,10 @@ unified grounded page; it is not a second legacy Demo. `goodvision-harness`
 serves that same page on port 8080 by default. `goodvision-harness-cli`
 retains the original window lifecycle, `vision_result`, and final-state JSONL
 behavior.
+
+For the Windows non-NVIDIA GPU experiment, follow
+[`WINDOWS_HYBRID.md`](WINDOWS_HYBRID.md). It runs InsightFace through DirectML
+in a native Harness while retaining the complete Paddle worker on Docker CPU.
 
 ### Known-person gallery
 

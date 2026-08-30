@@ -88,6 +88,7 @@ class FaceSettings:
     model_root: Path = Path(".models/insightface")
     allow_model_download: bool = False
     provider: str = "CPUExecutionProvider"
+    live_scheduler: str = "auto"
     det_size: int = 640
     threshold: float = 0.4
     min_face_size: int = 20
@@ -353,6 +354,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             os.environ.get("FACE_PROVIDER")
             or face_section.get("provider", "CPUExecutionProvider")
         ),
+        live_scheduler=_face_live_scheduler(
+            os.environ.get("FACE_LIVE_SCHEDULER")
+            or face_section.get("live_scheduler", "auto")
+        ),
         det_size=_positive_int(face_section.get("det_size", 640), "face.det_size"),
         threshold=_bounded_float(
             face_section.get("threshold", 0.4),
@@ -578,8 +583,22 @@ def _configured_path(value: Any, *, config_path: Path, name: str) -> Path:
 
 def _execution_provider(value: Any) -> str:
     provider = _required_string(value, "face.provider")
-    if provider not in {"CPUExecutionProvider", "CUDAExecutionProvider"}:
+    if provider not in {
+        "CPUExecutionProvider",
+        "CUDAExecutionProvider",
+        "DmlExecutionProvider",
+    }:
         raise ValueError(
-            "face.provider must be CPUExecutionProvider or CUDAExecutionProvider"
+            "face.provider must be CPUExecutionProvider, CUDAExecutionProvider, "
+            "or DmlExecutionProvider"
         )
     return provider
+
+
+def _face_live_scheduler(value: Any) -> str:
+    scheduler = _required_string(value, "face.live_scheduler")
+    if scheduler not in {"auto", "full", "single_flight"}:
+        raise ValueError(
+            "face.live_scheduler must be auto, full, or single_flight"
+        )
+    return scheduler

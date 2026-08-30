@@ -98,9 +98,11 @@ docker compose -f compose.delivery.yaml -f compose.face-gpu.delivery.yaml \
 worker，可再叠加 `compose.rich-gpu.delivery.yaml --profile rich`；两容器共享同一
 5090，应分别记录 face-only 与并跑时的热态 p50/p95、吞吐和显存。
 
-GPU 能显著减少单次人脸推理及 CPU 争用，但 live scheduler 仍保持 single-flight：
-混合检测继续保留 LLM 六并发，忙碌的人脸帧直接丢弃而不排队；仅选陌生人时，
-Harness 自动将分析并发降为 1。这样 GPU 故障或回退也不会重新形成六深度队列。
+`FACE_LIVE_SCHEDULER=auto` 在 CPU provider 下保留 single-flight：混合检测继续
+保留 LLM 六并发，忙碌的人脸分支直接跳过；仅选陌生人时并发降为 1。在 DirectML
+或 CUDA provider 下，`auto` 会切换为 `full`，每个已接纳的混合检测请求都执行
+InsightFace，同时保留 LLM 配置并发。可显式设为 `single_flight` 做有界回退，或设为
+`full` 在 CPU 上进行完整频次的对照实验。
 
 ## 输入与永久设置
 

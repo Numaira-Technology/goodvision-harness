@@ -630,6 +630,101 @@ def test_cuda_face_analysis_rejects_silent_cpu_fallback(
         )
 
 
+def test_directml_face_analysis_uses_and_verifies_real_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = importlib.import_module
+    prepared: list[tuple[int, tuple[int, int]]] = []
+
+    class FakeSession:
+        def get_providers(self) -> list[str]:
+            return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+    class FakeFaceAnalysis:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["providers"] == ["DmlExecutionProvider"]
+            self.models = {
+                "detection": SimpleNamespace(session=FakeSession()),
+                "recognition": SimpleNamespace(session=FakeSession()),
+            }
+
+        def prepare(self, *, ctx_id: int, det_size: tuple[int, int]) -> None:
+            prepared.append((ctx_id, det_size))
+
+    def fake_import(name: str, package: str | None = None) -> Any:
+        if name == "insightface.app":
+            return SimpleNamespace(FaceAnalysis=FakeFaceAnalysis)
+        if name == "onnxruntime":
+            return SimpleNamespace(
+                get_available_providers=lambda: [
+                    "DmlExecutionProvider",
+                    "CPUExecutionProvider",
+                ],
+            )
+        return real_import(name, package)
+
+    monkeypatch.setattr(face_module.importlib, "import_module", fake_import)
+
+    model = face_module._load_face_analysis(
+        _config(
+            tmp_path,
+            allow_model_download=True,
+            provider="DmlExecutionProvider",
+        )
+    )
+
+    assert isinstance(model, FakeFaceAnalysis)
+    assert prepared == [(0, (640, 640))]
+
+
+def test_directml_face_analysis_rejects_silent_cpu_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = importlib.import_module
+
+    class FakeSession:
+        def get_providers(self) -> list[str]:
+            return ["CPUExecutionProvider"]
+
+    class FakeFaceAnalysis:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.models = {
+                "detection": SimpleNamespace(session=FakeSession()),
+                "recognition": SimpleNamespace(session=FakeSession()),
+            }
+
+        def prepare(self, **_kwargs: Any) -> None:
+            pass
+
+    def fake_import(name: str, package: str | None = None) -> Any:
+        if name == "insightface.app":
+            return SimpleNamespace(FaceAnalysis=FakeFaceAnalysis)
+        if name == "onnxruntime":
+            return SimpleNamespace(
+                get_available_providers=lambda: [
+                    "DmlExecutionProvider",
+                    "CPUExecutionProvider",
+                ],
+            )
+        return real_import(name, package)
+
+    monkeypatch.setattr(face_module.importlib, "import_module", fake_import)
+
+    with pytest.raises(
+        RuntimeError,
+        match="local face analysis could not be initialized",
+    ):
+        face_module._load_face_analysis(
+            _config(
+                tmp_path,
+                allow_model_download=True,
+                provider="DmlExecutionProvider",
+            )
+        )
+
+
 def test_face_gpu_image_and_compose_are_isolated_from_cpu_delivery() -> None:
     cpu_dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     gpu_dockerfile = (ROOT / "Dockerfile.face-gpu").read_text(encoding="utf-8")

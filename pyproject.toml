@@ -32,6 +32,10 @@ face-gpu = [
   "insightface==1.0.1",
   "onnxruntime-gpu[cuda,cudnn]==1.26.0",
 ]
+face-directml = [
+  "insightface==1.0.1",
+  "onnxruntime-directml==1.24.4; sys_platform == 'win32'",
+]
 webrtc = [
   "aiohttp>=3.10,<4",
   "aiortc>=1.15,<2",

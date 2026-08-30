@@ -50,8 +50,9 @@ _LEGACY_GALLERY_SCHEMA_VERSION = 1
 _EMBEDDING_PROFILE = "local-face-embedding-v1"
 _ANALYSIS_KIND = "face_recognition"
 _SUPPORTED_PROVIDERS = frozenset(
-    {"CPUExecutionProvider", "CUDAExecutionProvider"}
+    {"CPUExecutionProvider", "CUDAExecutionProvider", "DmlExecutionProvider"}
 )
+_ACCELERATED_PROVIDERS = _SUPPORTED_PROVIDERS - {"CPUExecutionProvider"}
 _RUNTIME_OUTPUT_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
 
@@ -779,28 +780,28 @@ def _load_face_analysis_inner(config: FaceRecognizerConfig) -> Any:
             ctx_id=-1 if config.provider == "CPUExecutionProvider" else 0,
             det_size=_detector_size(config.det_size),
         )
-        if config.provider == "CUDAExecutionProvider":
-            _require_cuda_face_sessions(model)
+        if config.provider in _ACCELERATED_PROVIDERS:
+            _require_accelerated_face_sessions(model, config.provider)
     except Exception as exc:
         raise RuntimeError("local face analysis could not be initialized") from exc
     return model
 
 
-def _require_cuda_face_sessions(model: Any) -> None:
-    """Fail fast when InsightFace silently creates CPU-backed GPU sessions."""
+def _require_accelerated_face_sessions(model: Any, provider: str) -> None:
+    """Fail fast when InsightFace silently creates CPU-backed sessions."""
 
     modules = getattr(model, "models", None)
     if not isinstance(modules, Mapping):
-        raise RuntimeError("local face GPU execution could not be verified")
+        raise RuntimeError("local face accelerated execution could not be verified")
     required = {"detection", "recognition"}
     if not required.issubset(modules):
-        raise RuntimeError("local face GPU execution could not be verified")
+        raise RuntimeError("local face accelerated execution could not be verified")
     for name in sorted(required):
         session = getattr(modules[name], "session", None)
         get_providers = getattr(session, "get_providers", None)
         providers = tuple(get_providers()) if callable(get_providers) else ()
-        if not providers or providers[0] != "CUDAExecutionProvider":
-            raise RuntimeError("local face GPU execution could not be verified")
+        if not providers or providers[0] != provider:
+            raise RuntimeError("local face accelerated execution could not be verified")
 
 
 def _embedding_profile(_model_name: str) -> str:

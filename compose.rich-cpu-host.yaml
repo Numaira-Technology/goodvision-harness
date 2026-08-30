@@ -1,0 +1,11 @@
+services:
+  rich-label-worker:
+    # The Harness runs natively on Windows for the DirectML experiment, so the
+    # otherwise internal Paddle HTTP port must be reachable from the host.
+    # Keep it loopback-only: this is a local experiment endpoint, not a LAN API.
+    ports:
+      - "127.0.0.1:${RICH_HOST_PORT:-8091}:8091"
+    environment:
+      # A non-NVIDIA experiment deliberately leaves the complete Paddle worker
+      # on CPU while only InsightFace uses the host GPU through DirectML.
+      RICH_DEVICE: cpu

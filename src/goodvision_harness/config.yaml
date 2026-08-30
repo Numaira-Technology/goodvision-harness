@@ -205,6 +205,8 @@ face:
   model_root: .models/insightface
   allow_model_download: true
   provider: CPUExecutionProvider
+  # auto uses full cadence on accelerated providers and single-flight on CPU.
+  live_scheduler: auto
   det_size: 640
   threshold: 0.4
   # Live safety detection is fail-open for distant faces. The current 1280px

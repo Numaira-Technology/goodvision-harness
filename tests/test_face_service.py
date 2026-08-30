@@ -315,17 +315,57 @@ def test_selected_features_are_canonical_and_skip_unselected_face_runtime() -> N
 
 
 @pytest.mark.parametrize(
-    ("features", "expected_concurrency"),
+    (
+        "features",
+        "provider",
+        "configured_scheduler",
+        "expected_scheduler",
+        "expected_concurrency",
+    ),
     [
-        (["stranger"], 1),
-        (["smoking", "stranger"], 6),
+        (["stranger"], "CPUExecutionProvider", "auto", "single_flight", 1),
+        (
+            ["smoking", "stranger"],
+            "CPUExecutionProvider",
+            "auto",
+            "single_flight",
+            6,
+        ),
+        (["stranger"], "DmlExecutionProvider", "auto", "full", 6),
+        (
+            ["smoking", "stranger"],
+            "CUDAExecutionProvider",
+            "auto",
+            "full",
+            6,
+        ),
+        (["stranger"], "CPUExecutionProvider", "full", "full", 6),
+        (
+            ["smoking", "stranger"],
+            "CUDAExecutionProvider",
+            "single_flight",
+            "single_flight",
+            6,
+        ),
     ],
 )
-def test_multi_face_concurrency_only_serializes_stranger_only_sessions(
+def test_multi_face_live_scheduler_resolves_provider_and_override(
     features: list[str],
+    provider: str,
+    configured_scheduler: str,
+    expected_scheduler: str,
     expected_concurrency: int,
 ) -> None:
-    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config,
+        face=replace(
+            config.face,
+            provider=provider,
+            live_scheduler=configured_scheduler,
+        ),
+    )
+    runtime = HarnessRuntime(config)
 
     try:
         runtime.start_camera(
@@ -339,6 +379,32 @@ def test_multi_face_concurrency_only_serializes_stranger_only_sessions(
         assert (
             runtime._session.config.runtime.max_concurrent_requests
             == expected_concurrency
+        )
+        assert runtime._session.client.face_live_scheduler == expected_scheduler
+    finally:
+        runtime.stop()
+
+
+def test_face_only_full_scheduler_keeps_configured_concurrency() -> None:
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config,
+        face=replace(
+            config.face,
+            provider="DmlExecutionProvider",
+            live_scheduler="auto",
+        ),
+    )
+    fake = _FakeFaceRuntime()
+    runtime = HarnessRuntime(config, face_runtime=fake)  # type: ignore[arg-type]
+
+    try:
+        runtime.start_camera(analysis_mode="face", owner="face-full-test")
+
+        assert runtime._session is not None
+        assert (
+            runtime._session.config.runtime.max_concurrent_requests
+            == config.runtime.max_concurrent_requests
         )
     finally:
         runtime.stop()

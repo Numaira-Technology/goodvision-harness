@@ -233,6 +233,37 @@ def test_face_provider_can_be_selected_by_deployment_overlay(
     assert config.face.provider == "CUDAExecutionProvider"
 
 
+def test_directml_face_provider_can_be_selected_by_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_PROVIDER", "DmlExecutionProvider")
+
+    config = load_config(ROOT / "config.yaml")
+
+    assert config.face.provider == "DmlExecutionProvider"
+
+
+@pytest.mark.parametrize("scheduler", ["auto", "full", "single_flight"])
+def test_face_live_scheduler_can_be_selected_by_environment(
+    scheduler: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_LIVE_SCHEDULER", scheduler)
+
+    config = load_config(ROOT / "config.yaml")
+
+    assert config.face.live_scheduler == scheduler
+
+
+def test_face_live_scheduler_rejects_unknown_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_LIVE_SCHEDULER", "sometimes")
+
+    with pytest.raises(ValueError, match=r"face\.live_scheduler must be"):
+        load_config(ROOT / "config.yaml")
+
+
 def test_stream_crop_is_applied_before_display_sampling_and_source_mapping() -> None:
     config = load_config(ROOT / "config.yaml")
     image = np.zeros((100, 400, 3), dtype=np.uint8)

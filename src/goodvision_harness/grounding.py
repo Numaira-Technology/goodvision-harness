@@ -961,6 +961,7 @@ class SelectedFeaturesGroundingClient:
         include_stranger: bool = True,
         safety_max_image_side: int = 320,
         safety_jpeg_quality: int = 75,
+        face_live_scheduler: str = "single_flight",
     ) -> None:
         labels = tuple(safety_event_labels)
         if any(label not in SAFETY_EVENT_LABELS for label in labels):
@@ -982,6 +983,10 @@ class SelectedFeaturesGroundingClient:
             raise ValueError("safety_max_image_side must be positive")
         if not 1 <= safety_jpeg_quality <= 100:
             raise ValueError("safety_jpeg_quality must be between 1 and 100")
+        if face_live_scheduler not in {"full", "single_flight"}:
+            raise ValueError(
+                "face_live_scheduler must be full or single_flight"
+            )
         selected_client = safety_client or stranger_client
         assert selected_client is not None
         self.settings = selected_client.settings
@@ -996,12 +1001,15 @@ class SelectedFeaturesGroundingClient:
         self._include_stranger = include_stranger
         self._safety_max_image_side = safety_max_image_side
         self._safety_jpeg_quality = safety_jpeg_quality
+        self.face_live_scheduler = face_live_scheduler
         # InsightFace owns one inference session protected by a model lock.  The
         # outer live pipeline can have several OpenRouter windows in flight, but
         # queueing every one of those windows at the face-model lock turns a
-        # single CPU inference into many seconds of stale backlog.  Admit at
-        # most one live face branch per selected-features session; busy windows
-        # remain useful safety-only results and the next fresh window retries.
+        # single CPU inference into many seconds of stale backlog.  CPU mode
+        # therefore admits at most one live face branch per selected-features
+        # session. Accelerated providers deliberately run the face branch for
+        # every admitted mixed-detector request so their throughput can be
+        # measured without silently reducing stranger sampling.
         self._stranger_live_slot = threading.Lock()
 
     def _classify_stranger_with_slot(
@@ -1041,7 +1049,10 @@ class SelectedFeaturesGroundingClient:
         if (
             self._safety_client is not None
             and self._stranger_client is not None
-            and self._stranger_live_slot.acquire(blocking=False)
+            and (
+                self.face_live_scheduler == "full"
+                or self._stranger_live_slot.acquire(blocking=False)
+            )
         ):
             assert resized_window is not None
             with ThreadPoolExecutor(
@@ -1050,11 +1061,16 @@ class SelectedFeaturesGroundingClient:
             ) as executor:
                 try:
                     stranger_future = executor.submit(
-                        self._classify_stranger_with_slot,
+                        (
+                            self._classify_stranger_with_slot
+                            if self.face_live_scheduler == "single_flight"
+                            else self._stranger_client.classify_window
+                        ),
                         window,
                     )
                 except BaseException:
-                    self._stranger_live_slot.release()
+                    if self.face_live_scheduler == "single_flight":
+                        self._stranger_live_slot.release()
                     raise
                 try:
                     safety_response = self._safety_client.classify_window(
@@ -1231,6 +1247,7 @@ def build_selected_features_grounding_client(
     stranger_client: GroundingClient | None = None,
     safety_max_image_side: int = 320,
     safety_jpeg_quality: int = 75,
+    face_live_scheduler: str = "single_flight",
     dry_run: bool = False,
     api_key: str | None = None,
 ) -> SelectedFeaturesGroundingClient:
@@ -1281,6 +1298,7 @@ def build_selected_features_grounding_client(
         include_stranger=include_stranger,
         safety_max_image_side=safety_max_image_side,
         safety_jpeg_quality=safety_jpeg_quality,
+        face_live_scheduler=face_live_scheduler,
     )
 
 

@@ -86,6 +86,20 @@ INDEPENDENT_FACE_ANALYSIS_KINDS = frozenset(
 )
 
 
+def _resolved_face_live_scheduler(*, provider: str, configured: str) -> str:
+    """Resolve auto without coupling the scheduler to a particular GPU vendor."""
+
+    if configured == "auto":
+        return (
+            "single_flight"
+            if provider == "CPUExecutionProvider"
+            else "full"
+        )
+    if configured not in {"full", "single_flight"}:
+        raise ValueError("face live scheduler must be auto, full, or single_flight")
+    return configured
+
+
 class HarnessRuntime:
     """Own one active stream or browser-camera session."""
 
@@ -702,6 +716,10 @@ class HarnessRuntime:
                         "warmed local face analysis in %.3fs", warmup_seconds
                     )
                 face = self.config.face
+                face_live_scheduler = _resolved_face_live_scheduler(
+                    provider=face.provider,
+                    configured=face.live_scheduler,
+                )
                 session_config = replace(
                     self.config,
                     video=replace(
@@ -717,14 +735,22 @@ class HarnessRuntime:
                         include_partial_final_window=False,
                     ),
                     inference=face_runtime.settings,
-                    runtime=replace(
-                        self.config.runtime,
-                        max_concurrent_requests=1,
+                    runtime=(
+                        replace(
+                            self.config.runtime,
+                            max_concurrent_requests=1,
+                        )
+                        if face_live_scheduler == "single_flight"
+                        else self.config.runtime
                     ),
                 )
                 client = face_runtime
             elif selected_analysis == MULTI_ANALYSIS_MODE:
                 face = self.config.face
+                face_live_scheduler = _resolved_face_live_scheduler(
+                    provider=face.provider,
+                    configured=face.live_scheduler,
+                )
                 include_stranger = "stranger" in selected_features
                 face_runtime = None
                 if include_stranger and not use_dry_run:
@@ -750,17 +776,20 @@ class HarnessRuntime:
                             stride_frames=1,
                             include_partial_final_window=False,
                         ),
-                        # Stranger-only mode has no remote branch to overlap.
-                        # Keep one live request so callers never queue at the
-                        # single InsightFace inference session. Mixed safety +
-                        # stranger mode retains the configured OpenRouter
-                        # concurrency and drops only busy face samples.
+                        # CPU single-flight keeps stranger-only sessions at one
+                        # request and drops only busy face branches in mixed
+                        # sessions. Full mode keeps the configured request
+                        # concurrency and evaluates InsightFace for every
+                        # admitted request, including DirectML and CUDA auto.
                         runtime=(
                             replace(
                                 self.config.runtime,
                                 max_concurrent_requests=1,
                             )
-                            if selected_features == ("stranger",)
+                            if (
+                                selected_features == ("stranger",)
+                                and face_live_scheduler == "single_flight"
+                            )
                             else self.config.runtime
                         ),
                     )
@@ -771,6 +800,7 @@ class HarnessRuntime:
                     stranger_client=face_runtime,
                     safety_max_image_side=self.config.video.max_image_side,
                     safety_jpeg_quality=self.config.video.jpeg_quality,
+                    face_live_scheduler=face_live_scheduler,
                     dry_run=use_dry_run,
                     api_key=self._openrouter_api_key,
                 )
