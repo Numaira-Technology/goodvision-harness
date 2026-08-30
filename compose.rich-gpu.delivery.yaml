@@ -1,0 +1,40 @@
+services:
+  rich-label-worker:
+    profiles: ["rich"]
+    image: goodvision-rich-label-worker:2026.08.29-gpu-cu129.1
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    environment:
+      RICH_DEVICE: gpu:0
+      RICH_DETECTOR_MODEL: "${RICH_GPU_DETECTOR_MODEL:-PP-YOLOE_plus-L}"
+      RICH_ATTRIBUTE_MODEL: "${RICH_ATTRIBUTE_MODEL:-PP-LCNet_x1_0_pedestrian_attribute}"
+      RICH_DETECTION_THRESHOLD: "${RICH_DETECTION_THRESHOLD:-0.45}"
+      RICH_TRACK_VISIBLE_IDLE_FRAMES: "${RICH_TRACK_VISIBLE_IDLE_FRAMES:-1}"
+      RICH_ATTRIBUTE_INTERVAL_FRAMES: "${RICH_ATTRIBUTE_INTERVAL_FRAMES:-10}"
+      RICH_ATTRIBUTE_RETRY_SECONDS: "${RICH_ATTRIBUTE_RETRY_SECONDS:-60}"
+      RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS: "${RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS:-5}"
+      RICH_DETECTOR_MODEL_DIR: "${RICH_DETECTOR_MODEL_DIR:-}"
+      RICH_ATTRIBUTE_MODEL_DIR: "${RICH_ATTRIBUTE_MODEL_DIR:-}"
+    volumes:
+      - rich-models:/models
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  rich-models:

@@ -1,0 +1,50 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HARNESS_CONFIG=/app/config.yaml \
+    HARNESS_DEPLOYMENT_SETTINGS_PATH=/data/deployment-settings.json \
+    HARNESS_STREAM_URL=webrtc+http://192.168.20.199:1985/rtc/v1/whep/?app=live&stream=livestream \
+    HARNESS_DRY_RUN=true \
+    HARNESS_AUTOSTART=true \
+    HARNESS_HOST=0.0.0.0 \
+    HARNESS_PORT=8080 \
+    FACE_PROVIDER=CUDAExecutionProvider
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        ca-certificates \
+        ffmpeg \
+        libgl1 \
+        libgomp1 \
+        libglib2.0-0 \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+# ORT 1.26 is the final CUDA 12.8/cuDNN 9 PyPI line before the default wheel
+# changes to CUDA 13. The cuda/cudnn extras vendor user-space libraries; the
+# NVIDIA container runtime injects the host driver on the RTX 5090 server.
+RUN python -m pip install --no-cache-dir '.[face-gpu,webrtc]'
+
+COPY config.yaml ./config.yaml
+COPY tools/face_gpu_smoke.py ./tools/face_gpu_smoke.py
+
+RUN groupadd --system --gid 10001 harness \
+    && useradd --system --uid 10001 --gid harness --home-dir /nonexistent harness \
+    && mkdir -p /models /data \
+    && chown -R harness:harness /app /models /data
+
+USER 10001:10001
+
+EXPOSE 8080
+STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=120s --retries=4 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=2).read()"]
+
+CMD ["goodvision-harness"]

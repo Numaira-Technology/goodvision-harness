@@ -24,7 +24,7 @@ that warmup. These runtime defaults remain fixed:
 - the same frame is resized to 320 px, JPEG quality 75, for the single remote
   safety request;
 - display output: 15 FPS, 720 px maximum image side, JPEG quality 70, delayed
-  3.0 seconds so most completed 2.5 FPS analysis keyframes can be interpolated;
+  2.5 seconds so most completed 2.5 FPS analysis keyframes can be interpolated;
 - one-frame windows with stride 1 and six concurrent model requests;
 - `max_tokens=1200`, no API retry, and a fixed validated model route with
   route fallback disabled;
@@ -37,6 +37,163 @@ Both browser-camera and network-stream modes use the same grounded delivery
 pipeline and expose customer JSON plus analyzed and raw video outputs. The
 legacy single-event and face-only modes remain available as diagnostic API
 modes; the page lets the operator select any non-empty feature combination.
+
+## Optional rich video labels
+
+Rich person/object labels are an optional local sidecar, not part of the VLM
+request. The harness samples source JPEGs to an isolated PaddleX/PaddleDetection
+worker, keeps only the newest pending request, and uses its tracked boxes as
+keyframes for the delayed display compositor. The normal safety VLM still sees
+the original frame and its event boxes are drawn as the alert layer. A missing,
+slow, or failed rich-label worker therefore drops only the decorative labels;
+it does not block VLM analysis or the raw video path.
+
+The reference Compose profile runs the CPU worker with PicoDet-S object
+detection and PP-LCNet pedestrian attributes. PicoDet-S is the low-latency
+CPU default:
+
+```bash
+cp .env.example .env
+# Set RICH_LABEL_ENABLED=true in .env.
+docker compose --profile rich up --build
+```
+
+For the customer's RTX 5090, use the separate CUDA 12.9 overlay. It keeps the
+CPU image unchanged and selects `PP-YOLOE_plus-L` as the provisional
+higher-accuracy default. Build it, run the real CUDA/model smoke check, and only
+then start the services:
+
+```bash
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich build rich-label-worker
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich run --rm \
+  rich-label-worker python gpu_smoke.py
+docker compose -f compose.yaml -f compose.gpu.yaml --profile rich up -d
+```
+
+The principal settings are:
+
+| Variable | Meaning |
+| --- | --- |
+| `RICH_LABEL_ENABLED` | Enables submission to and rendering from the optional worker. Default: `false`. |
+| `RICH_LABEL_ENDPOINT` | Worker inference URL. Compose default: `http://rich-label-worker:8091/v1/labels`. |
+| `RICH_DEVICE` | Paddle device requested by the worker. The base image uses `cpu`; the GPU overlay fixes its single reserved device to `gpu:0`. |
+| `RICH_DETECTOR_MODEL` | PaddleX detector name used by the CPU image. Default: `PicoDet-S`. |
+| `RICH_GPU_DETECTOR_MODEL` | Detector used by the GPU overlays. Provisional RTX 5090 default: `PP-YOLOE_plus-L`. |
+| `RICH_ATTRIBUTE_MODEL` | PaddleX pedestrian-attribute model name. Default: `PP-LCNet_x1_0_pedestrian_attribute`. |
+| `RICH_DETECTION_THRESHOLD` | Minimum object detector score. Default: `0.45`. |
+| `RICH_TRACK_VISIBLE_IDLE_FRAMES` | Hold a track through this many detector misses to prevent one-frame bbox flicker. Default: `1`; use `0` to disable. |
+| `RICH_ATTRIBUTE_INTERVAL_FRAMES` | Re-run pedestrian attributes every N tracked frames. Default: `10`. |
+| `RICH_ATTRIBUTE_RETRY_SECONDS` | Backoff after optional pedestrian attributes fail to load. Default: `60`. |
+| `RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS` | Bounded drain time for an in-flight attribute task. Default: `5`. |
+| `RICH_DETECTOR_MODEL_DIR` / `RICH_ATTRIBUTE_MODEL_DIR` | Optional paths to pre-provisioned, authorized model directories. |
+
+`rich_labeling.max_fps`, timeout, history size, interpolation gap, and bounded
+tail hold remain in `config.yaml`. The worker's first model-backed start can be
+slow while PaddleX
+downloads model files into the persistent `rich-models` volume; allow outbound
+HTTPS, disk space, and readiness headroom, or pre-provision both model
+directories. The CPU image pins Paddle 3.2.2 because Paddle 3.3.x has a
+confirmed CPU oneDNN regression for affected detectors. `Dockerfile.gpu` is an
+independent Paddle 3.3.0 CUDA 12.9 image: that is Paddle's current supported
+binary route for the RTX 5090's Blackwell `sm_120` architecture (see Paddle's
+[GPU architecture table](https://www.paddlepaddle.org.cn/documentation/docs/zh/install/Tables.html)). It deliberately
+uses ordinary Paddle GPU FP32 first, without TensorRT/high-performance mode, to
+keep the initial customer acceptance path small. The Linux host needs NVIDIA
+driver 570.26 or newer for this CUDA 12.9/cuDNN 9.9 Blackwell stack, plus the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html);
+use the current production driver when possible.
+
+The GPU image can be built on a host without an NVIDIA GPU; its build checks the
+installed versions and verifies that the wheel metadata contains architecture
+`120`. The NVIDIA runtime supplies `libcuda.so.1` only when the container is
+started with GPU access, so `gpu_smoke.py` intentionally performs the real
+Paddle import there. It fails unless a GPU is visible and then runs a CUDA
+tensor, Paddle's own check, the detector, and the attribute model. A local CPU
+video benchmark therefore remains the functional/fallback baseline; actual
+5090 latency, VRAM, cold starts, and restart stability must pass on the customer
+host before enabling `RICH_LABEL_ENABLED`.
+
+### Optional GPU face recognition
+
+The base Harness image intentionally keeps InsightFace on CPU. Merely deploying
+that image to an RTX 5090 does not move face detection to the GPU. Use the
+separate face overlay to install the CUDA ONNX Runtime build, expose one NVIDIA
+device to the Harness container, and select `CUDAExecutionProvider`:
+
+```bash
+docker compose -f compose.yaml -f compose.face-gpu.yaml build harness
+docker compose -f compose.yaml -f compose.face-gpu.yaml run --rm \
+  -e FACE_ALLOW_MODEL_DOWNLOAD=true \
+  harness python tools/face_gpu_smoke.py
+docker compose -f compose.yaml -f compose.face-gpu.yaml up -d
+```
+
+Use `FACE_ALLOW_MODEL_DOWNLOAD=true` only for the licensed non-commercial demo,
+or pre-provision authorized weights in the `face-models` volume and omit it.
+The smoke command loads the real detection and recognition sessions, executes a
+warm inference, and fails if either session silently falls back to CPU.
+
+`Dockerfile.face-gpu` pins ONNX Runtime GPU 1.26, whose official wheel uses
+CUDA 12.8 and cuDNN 9. Starting with ONNX Runtime 1.27, the default PyPI GPU
+wheel uses CUDA 13, so the pin is deliberate; see the official
+[CUDA execution-provider compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
+The image installs the CUDA/cuDNN user-space libraries through the wheel extras;
+the host still needs a current Blackwell-capable NVIDIA driver and NVIDIA
+Container Toolkit.
+
+To run both accelerated paths on one 5090, combine the independent overlays:
+
+```bash
+docker compose -f compose.yaml -f compose.face-gpu.yaml -f compose.gpu.yaml \
+  --profile rich up -d
+```
+
+The two containers share the device rather than receiving exclusive GPUs.
+Benchmark face-only and face-plus-rich loads on the customer host before
+acceptance. `FACE_LIVE_SCHEDULER=auto` keeps CPU InsightFace single-flight, but
+uses full sampling for DirectML or CUDA: every admitted mixed-detector request
+runs its own face branch while the AIClub safety branches retain their
+configured concurrency. Operators can force `full` for an experiment or
+`single_flight` as a bounded-backlog fallback.
+
+To benchmark the real HTTP worker with a local video, expose a separate test
+instance on loopback in one terminal:
+
+```bash
+docker compose --profile rich run --rm \
+  -p 127.0.0.1:8091:8091 rich-label-worker
+```
+
+Then run the reproducible benchmark from another terminal:
+
+```bash
+python tools/rich_label_benchmark.py input.mp4 \
+  --output-dir tmp/rich-benchmark \
+  --sample-fps 7.5 --timeout-seconds 0.8
+```
+
+It writes aggregate latency/success/track metrics to `metrics.json`, one record
+per source frame to `frames.jsonl`, and the full annotated result to
+`annotated.mp4`. The first request includes model loading (and may download
+weights); run a short warm-up first when measuring steady-state throughput.
+
+Treat rich metadata as display hints. `P...` and `O...` values are tracking IDs
+within one stream session, can change after an occlusion or restart, and are
+not a person's identity. Age is an estimated range, and gender is an appearance
+model estimate; neither should be presented as a verified personal fact. Real
+known-person matching remains the separate, consent-controlled face gallery.
+
+The bundled pedestrian-attribute weights expose only three age bands: `<18`,
+`18-60`, and `>60`. The worker requests the complete 26-score output and applies
+the PP-Human grouped decoder (including the negative `Female` branch for
+male-presenting results) instead of treating PaddleX's positive-label list as a
+complete classification. The HUD shows age and gender estimates first, followed
+by a compact selection of direction, clothing, bag, and accessory hints.
+
+PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
+itself grant rights to every pretrained weight or its training data. Before
+customer or commercial use, confirm the license and redistribution terms for
+the exact detector and attribute weights being shipped.
 
 ## LAN deployment topology
 
@@ -84,8 +241,9 @@ The default deployment needs:
 
 A GPU is not required: video decoding, overlays, and the default local face
 matcher can run on CPU, while the four safety-event judgments use the public
-LLM API. The host does not need inbound Internet access to port 8080 when the
-receiver is also on the host.
+LLM API. On an NVIDIA host, `compose.face-gpu.yaml` can move the local face
+matcher to CUDA. The host does not need inbound Internet access to port 8080
+when the receiver is also on the host.
 
 ## Deploy
 
@@ -448,7 +606,7 @@ multipart JPEG in `GET /v1/video/stream.mjpeg` carry
 exact evidence feed remains at model-result cadence.
 
 For the display path, the container separately buffers the continuous source
-frames for 3.0 seconds. Results at 2.5 FPS act as bbox keyframes on the same
+frames for 2.5 seconds. Results at 2.5 FPS act as bbox keyframes on the same
 media timeline. Between two compatible keyframes, the service linearly moves
 the box. If the next result is late or a sampled request is dropped, the last
 analyzed state is latched onto every display frame; only a later keyframe may
@@ -500,6 +658,10 @@ stream variable takes precedence over the legacy RTSP variable:
 | `HARNESS_PORT` | Host HTTP port used by Compose. |
 | `FACE_MODEL_ROOT` | Root containing operator-supplied face-analysis files. |
 | `FACE_GALLERY_PATH` | Persistent known-person gallery JSON path. |
+| `FACE_PROVIDER` | InsightFace ONNX provider: CPU, DirectML, or CUDA. |
+| `FACE_LIVE_SCHEDULER` | `auto` selects CPU single-flight and accelerated full sampling; `full`/`single_flight` override it. |
+| `RICH_LABEL_ENABLED` | Enable the optional rich-label worker path. |
+| `RICH_LABEL_ENDPOINT` | Rich-label worker inference URL. |
 
 Do not commit `.env`, RTSP credentials, or LLM API keys.
 
@@ -521,6 +683,10 @@ unified grounded page; it is not a second legacy Demo. `goodvision-harness`
 serves that same page on port 8080 by default. `goodvision-harness-cli`
 retains the original window lifecycle, `vision_result`, and final-state JSONL
 behavior.
+
+For the Windows non-NVIDIA GPU experiment, follow
+[`WINDOWS_HYBRID.md`](WINDOWS_HYBRID.md). It runs InsightFace through DirectML
+in a native Harness while retaining the complete Paddle worker on Docker CPU.
 
 ### Known-person gallery
 

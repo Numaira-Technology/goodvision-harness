@@ -46,8 +46,21 @@ class DisplaySettings:
     fps: float = 15.0
     max_image_side: int = 720
     jpeg_quality: int = 70
-    delay_seconds: float = 3.0
+    delay_seconds: float = 2.5
     bbox_max_gap_seconds: float = 0.8
+
+
+@dataclass(frozen=True, slots=True)
+class RichLabelSettings:
+    """Optional isolated local worker used for high-cadence visual labels."""
+
+    enabled: bool = False
+    endpoint: str = "http://rich-label-worker:8091/v1/labels"
+    timeout_seconds: float = 2.0
+    max_fps: float = 7.5
+    history_size: int = 128
+    max_interpolation_gap_seconds: float = 2.0
+    max_hold_seconds: float = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +88,7 @@ class FaceSettings:
     model_root: Path = Path(".models/insightface")
     allow_model_download: bool = False
     provider: str = "CPUExecutionProvider"
+    live_scheduler: str = "auto"
     det_size: int = 640
     threshold: float = 0.4
     min_face_size: int = 20
@@ -123,6 +137,7 @@ class HarnessConfig:
     stream: StreamSettings
     video: VideoSettings
     display: DisplaySettings
+    rich_labeling: RichLabelSettings
     sliding_window: SlidingWindowSettings
     aiclub: AIClubSettings
     inference: InferenceSettings
@@ -148,6 +163,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     stream_section = _mapping_section(raw, "stream")
     video_section = _mapping_section(raw, "video")
     display_section = _mapping_section(raw, "display")
+    rich_label_section = _mapping_section(raw, "rich_labeling")
     window_section = _mapping_section(raw, "sliding_window")
     aiclub_section = _mapping_section(raw, "aiclub")
     inference_section = _mapping_section(raw, "inference")
@@ -226,12 +242,53 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             maximum=100,
         ),
         delay_seconds=_non_negative_float(
-            display_section.get("delay_seconds", 3.0),
+            display_section.get("delay_seconds", 2.5),
             "display.delay_seconds",
         ),
         bbox_max_gap_seconds=_positive_float(
             display_section.get("bbox_max_gap_seconds", 0.8),
             "display.bbox_max_gap_seconds",
+        ),
+    )
+    rich_label_enabled = _environment_bool(
+        "RICH_LABEL_ENABLED",
+        _bool(rich_label_section.get("enabled", False), "rich_labeling.enabled"),
+    )
+    rich_label_endpoint = (
+        os.environ.get("RICH_LABEL_ENDPOINT", "").strip()
+        or _required_string(
+            rich_label_section.get(
+                "endpoint", "http://rich-label-worker:8091/v1/labels"
+            ),
+            "rich_labeling.endpoint",
+        )
+    )
+    if not rich_label_endpoint.startswith(("http://", "https://")):
+        raise ValueError("rich_labeling.endpoint must use http or https")
+    rich_label_history_size = _positive_int(
+        rich_label_section.get("history_size", 128),
+        "rich_labeling.history_size",
+    )
+    if rich_label_history_size < 2:
+        raise ValueError("rich_labeling.history_size must be at least 2")
+    rich_labeling = RichLabelSettings(
+        enabled=rich_label_enabled,
+        endpoint=rich_label_endpoint,
+        timeout_seconds=_positive_float(
+            rich_label_section.get("timeout_seconds", 2.0),
+            "rich_labeling.timeout_seconds",
+        ),
+        max_fps=_positive_float(
+            rich_label_section.get("max_fps", 7.5), "rich_labeling.max_fps"
+        ),
+        history_size=rich_label_history_size,
+        max_interpolation_gap_seconds=_positive_float(
+            rich_label_section.get("max_interpolation_gap_seconds", 2.0),
+            "rich_labeling.max_interpolation_gap_seconds",
+        ),
+        max_hold_seconds=_positive_float(
+            rich_label_section.get("max_hold_seconds", 2.0),
+            "rich_labeling.max_hold_seconds",
         ),
     )
     sliding_window = SlidingWindowSettings(
@@ -294,7 +351,12 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "face.allow_model_download",
         ),
         provider=_execution_provider(
-            face_section.get("provider", "CPUExecutionProvider")
+            os.environ.get("FACE_PROVIDER")
+            or face_section.get("provider", "CPUExecutionProvider")
+        ),
+        live_scheduler=_face_live_scheduler(
+            os.environ.get("FACE_LIVE_SCHEDULER")
+            or face_section.get("live_scheduler", "auto")
         ),
         det_size=_positive_int(face_section.get("det_size", 640), "face.det_size"),
         threshold=_bounded_float(
@@ -404,6 +466,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         stream=stream,
         video=video,
         display=display,
+        rich_labeling=rich_labeling,
         sliding_window=sliding_window,
         aiclub=AIClubSettings.from_mapping(aiclub_section),
         inference=inference,
@@ -426,6 +489,18 @@ def _bool(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"{name} must be true or false")
     return value
+
+
+def _environment_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
 
 
 def _positive_float(value: Any, name: str) -> float:
@@ -508,8 +583,22 @@ def _configured_path(value: Any, *, config_path: Path, name: str) -> Path:
 
 def _execution_provider(value: Any) -> str:
     provider = _required_string(value, "face.provider")
-    if provider not in {"CPUExecutionProvider", "CUDAExecutionProvider"}:
+    if provider not in {
+        "CPUExecutionProvider",
+        "CUDAExecutionProvider",
+        "DmlExecutionProvider",
+    }:
         raise ValueError(
-            "face.provider must be CPUExecutionProvider or CUDAExecutionProvider"
+            "face.provider must be CPUExecutionProvider, CUDAExecutionProvider, "
+            "or DmlExecutionProvider"
         )
     return provider
+
+
+def _face_live_scheduler(value: Any) -> str:
+    scheduler = _required_string(value, "face.live_scheduler")
+    if scheduler not in {"auto", "full", "single_flight"}:
+        raise ValueError(
+            "face.live_scheduler must be auto, full, or single_flight"
+        )
+    return scheduler

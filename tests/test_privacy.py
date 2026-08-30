@@ -38,11 +38,12 @@ PRIVATE_MARKERS = (
     "buffalo_l",
     "onnxruntime",
     "cpuexecutionprovider",
+    "dmlexecutionprovider",
 )
 PRIVATE_TEXT = (
     "AIClub https://aiclub.zimaocloud.com qwen3.5-plus "
-    "OpenRouter https://openrouter.ai CoreWeave DeepInfra "
-    "InsightFace buffalo_l onnxruntime CPUExecutionProvider"
+    "OpenRouter https://openrouter.ai qwen/qwen3.5-35b-a3b CoreWeave DeepInfra "
+    "InsightFace buffalo_l onnxruntime CPUExecutionProvider DmlExecutionProvider"
 )
 
 

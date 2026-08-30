@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import threading
 import time
 from collections.abc import Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -20,12 +21,11 @@ from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
 from .privacy import PUBLIC_ANALYSIS_ERROR, PUBLIC_FACE_ERROR
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
-    MemoryContext,
     UNKNOWN_FACE_EVENT_LABEL,
+    MemoryContext,
 )
 from .sliding_window import FrameWindow
 from .video_to_stream import encode_jpeg
-
 
 FACE_REFERENCE_ANALYSIS_KIND = "face_reference_match"
 REFERENCE_MEMORY_ANALYSIS_KIND = "reference_memory"
@@ -580,10 +580,12 @@ def build_multi_grounding_messages(
         "objects (array). Each object must contain label, confidence (0..1), and "
         "bbox_2d=[x1,y1,x2,y2] on Qwen's relative 0..1000 top-left-origin "
         "xyxy grid for the NEWEST image. A positive item requires at least one "
-        "tight evidence box; a negative item must use objects=[]. For weapon, use "
-        "the same high-recall policy: detect a person visibly holding, carrying, "
-        "drawing, pointing, or brandishing a plausible firearm, knife, machete, "
-        "or other clear weapon; box the person and weapon separately when visible."
+        "tight target box; a negative item must use objects=[]. For fight and "
+        "fall, return only the involved person's body box or boxes. For smoking, "
+        "return only the cigarette, cigar, pipe, or e-cigarette box, never the "
+        "smoker's person box. For weapon, use the same high-recall policy but "
+        "return only the firearm, knife, machete, club, or other weapon box, "
+        "never the holder's person box."
     )
     contract_section = f"\n\n{contract}" if append_contract else ""
     text = (
@@ -959,6 +961,7 @@ class SelectedFeaturesGroundingClient:
         include_stranger: bool = True,
         safety_max_image_side: int = 320,
         safety_jpeg_quality: int = 75,
+        face_live_scheduler: str = "single_flight",
     ) -> None:
         labels = tuple(safety_event_labels)
         if any(label not in SAFETY_EVENT_LABELS for label in labels):
@@ -980,6 +983,10 @@ class SelectedFeaturesGroundingClient:
             raise ValueError("safety_max_image_side must be positive")
         if not 1 <= safety_jpeg_quality <= 100:
             raise ValueError("safety_jpeg_quality must be between 1 and 100")
+        if face_live_scheduler not in {"full", "single_flight"}:
+            raise ValueError(
+                "face_live_scheduler must be full or single_flight"
+            )
         selected_client = safety_client or stranger_client
         assert selected_client is not None
         self.settings = selected_client.settings
@@ -994,6 +1001,28 @@ class SelectedFeaturesGroundingClient:
         self._include_stranger = include_stranger
         self._safety_max_image_side = safety_max_image_side
         self._safety_jpeg_quality = safety_jpeg_quality
+        self.face_live_scheduler = face_live_scheduler
+        # InsightFace owns one inference session protected by a model lock.  The
+        # outer live pipeline can have several AIClub windows in flight, but
+        # queueing every one of those windows at the face-model lock turns a
+        # single CPU inference into many seconds of stale backlog.  CPU mode
+        # therefore admits at most one live face branch per selected-features
+        # session. Accelerated providers deliberately run the face branch for
+        # every admitted mixed-detector request so their throughput can be
+        # measured without silently reducing stranger sampling.
+        self._stranger_live_slot = threading.Lock()
+
+    def _classify_stranger_with_slot(
+        self,
+        window: FrameWindow,
+    ) -> GroundingResponse:
+        """Run one live face sample and always release its single-flight slot."""
+
+        assert self._stranger_client is not None
+        try:
+            return self._stranger_client.classify_window(window)
+        finally:
+            self._stranger_live_slot.release()
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
@@ -1017,16 +1046,32 @@ class SelectedFeaturesGroundingClient:
         stranger_response: GroundingResponse | None = None
         safety_error: Exception | None = None
         stranger_error: Exception | None = None
-        if self._safety_client is not None and self._stranger_client is not None:
+        if (
+            self._safety_client is not None
+            and self._stranger_client is not None
+            and (
+                self.face_live_scheduler == "full"
+                or self._stranger_live_slot.acquire(blocking=False)
+            )
+        ):
             assert resized_window is not None
             with ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="selected-features-face",
             ) as executor:
-                stranger_future = executor.submit(
-                    self._stranger_client.classify_window,
-                    window,
-                )
+                try:
+                    stranger_future = executor.submit(
+                        (
+                            self._classify_stranger_with_slot
+                            if self.face_live_scheduler == "single_flight"
+                            else self._stranger_client.classify_window
+                        ),
+                        window,
+                    )
+                except BaseException:
+                    if self.face_live_scheduler == "single_flight":
+                        self._stranger_live_slot.release()
+                    raise
                 try:
                     safety_response = self._safety_client.classify_window(
                         resized_window
@@ -1037,6 +1082,18 @@ class SelectedFeaturesGroundingClient:
                     stranger_response = stranger_future.result()
                 except Exception as exc:
                     stranger_error = exc
+        elif self._safety_client is not None and self._stranger_client is not None:
+            # Face inference is already running for a nearby frame. Dropping
+            # this face branch keeps the live path latest-first without copying
+            # an old bbox onto a different frame. AIClub remains fully
+            # concurrent and its complete safety result is still delivered.
+            assert resized_window is not None
+            try:
+                safety_response = self._safety_client.classify_window(
+                    resized_window
+                )
+            except Exception as exc:
+                safety_error = exc
         elif self._safety_client is not None:
             assert resized_window is not None
             try:
@@ -1190,6 +1247,7 @@ def build_selected_features_grounding_client(
     stranger_client: GroundingClient | None = None,
     safety_max_image_side: int = 320,
     safety_jpeg_quality: int = 75,
+    face_live_scheduler: str = "single_flight",
     dry_run: bool = False,
     api_key: str | None = None,
 ) -> SelectedFeaturesGroundingClient:
@@ -1240,6 +1298,7 @@ def build_selected_features_grounding_client(
         include_stranger=include_stranger,
         safety_max_image_side=safety_max_image_side,
         safety_jpeg_quality=safety_jpeg_quality,
+        face_live_scheduler=face_live_scheduler,
     )
 
 

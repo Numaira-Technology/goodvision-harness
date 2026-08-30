@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -339,6 +339,202 @@ def test_selected_features_keep_successful_branch_when_other_branch_fails() -> N
     assert isinstance(classification, MultiGroundedClassification)
     assert [item.event_label for item in classification.judgments] == ["smoking"]
     assert classification.analysis_kind == SELECTED_FEATURES_ANALYSIS_KIND
+
+
+def test_selected_features_drop_busy_face_samples_without_building_a_queue() -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+    smoking = _safety_classification().judgments[1]
+    safety = _StaticClient(
+        settings,
+        MultiGroundedClassification((smoking,)),
+    )
+    face_started = threading.Event()
+    release_face = threading.Event()
+
+    class _BlockingStrangerClient:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        def classify_window(self, window: FrameWindow) -> GroundingResponse:
+            with self.lock:
+                self.calls.append(window.index)
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            face_started.set()
+            try:
+                assert release_face.wait(3.0)
+                return GroundingResponse(
+                    window=window,
+                    classification=_stranger_classification(unknown=True),
+                    latency_seconds=0.05,
+                )
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    stranger = _BlockingStrangerClient()
+    client = SelectedFeaturesGroundingClient(
+        safety,
+        stranger,
+        safety_event_labels=("smoking",),
+        include_stranger=True,
+    )
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        primary = executor.submit(
+            client.classify_window,
+            replace(_window(), index=0),
+        )
+        assert face_started.wait(2.0)
+        busy = [
+            executor.submit(
+                client.classify_window,
+                replace(_window(), index=index),
+            )
+            for index in range(1, 6)
+        ]
+        busy_responses = [future.result(timeout=2.0) for future in busy]
+
+        # All remote safety branches complete while the one face
+        # sample is still blocked; no caller queues behind the face runtime.
+        assert stranger.calls == [0]
+        assert len(safety.windows) == 6
+        assert all(window.newest_frame.width == 320 for window in safety.windows)
+        for response in busy_responses:
+            classification = response.classification
+            assert isinstance(classification, MultiGroundedClassification)
+            assert [item.event_label for item in classification.judgments] == [
+                "smoking"
+            ]
+
+        release_face.set()
+        primary_response = primary.result(timeout=2.0)
+
+    primary_classification = primary_response.classification
+    assert isinstance(primary_classification, MultiGroundedClassification)
+    assert [
+        item.event_label for item in primary_classification.judgments
+    ] == ["smoking", "stranger"]
+    assert stranger.max_active == 1
+
+    follow_up = client.classify_window(replace(_window(), index=6))
+    assert follow_up.ok
+    assert stranger.calls == [0, 6]
+
+
+def test_selected_features_full_face_scheduler_runs_every_concurrent_sample() -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+    smoking = _safety_classification().judgments[1]
+    safety = _StaticClient(
+        settings,
+        MultiGroundedClassification((smoking,)),
+    )
+    all_faces_started = threading.Event()
+    release_faces = threading.Event()
+
+    class _BlockingStrangerClient:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        def classify_window(self, window: FrameWindow) -> GroundingResponse:
+            with self.lock:
+                self.calls.append(window.index)
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                if len(self.calls) == 6:
+                    all_faces_started.set()
+            try:
+                assert release_faces.wait(3.0)
+                return GroundingResponse(
+                    window=window,
+                    classification=_stranger_classification(unknown=True),
+                    latency_seconds=0.05,
+                )
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    stranger = _BlockingStrangerClient()
+    client = SelectedFeaturesGroundingClient(
+        safety,
+        stranger,
+        safety_event_labels=("smoking",),
+        include_stranger=True,
+        face_live_scheduler="full",
+    )
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [
+            executor.submit(
+                client.classify_window,
+                replace(_window(), index=index),
+            )
+            for index in range(6)
+        ]
+        assert all_faces_started.wait(2.0)
+        assert sorted(stranger.calls) == list(range(6))
+        release_faces.set()
+        responses = [future.result(timeout=2.0) for future in futures]
+
+    assert stranger.max_active == 6
+    assert len(safety.windows) == 6
+    for response in responses:
+        classification = response.classification
+        assert isinstance(classification, MultiGroundedClassification)
+        assert [item.event_label for item in classification.judgments] == [
+            "smoking",
+            "stranger",
+        ]
+
+
+def test_selected_features_release_face_slot_after_failure() -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+    smoking = _safety_classification().judgments[1]
+    safety = _StaticClient(
+        settings,
+        MultiGroundedClassification((smoking,)),
+    )
+
+    class _FailOnceStrangerClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def classify_window(self, window: FrameWindow) -> GroundingResponse:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary face failure")
+            return GroundingResponse(
+                window=window,
+                classification=_stranger_classification(unknown=True),
+                latency_seconds=0.05,
+            )
+
+    stranger = _FailOnceStrangerClient()
+    client = SelectedFeaturesGroundingClient(
+        safety,
+        stranger,
+        safety_event_labels=("smoking",),
+        include_stranger=True,
+    )
+
+    first = client.classify_window(replace(_window(), index=0))
+    second = client.classify_window(replace(_window(), index=1))
+
+    assert first.ok
+    assert second.ok
+    assert stranger.calls == 2
+    classification = second.classification
+    assert isinstance(classification, MultiGroundedClassification)
+    assert [item.event_label for item in classification.judgments] == [
+        "smoking",
+        "stranger",
+    ]
 
 
 def test_stranger_only_selection_keeps_public_stranger_label() -> None:

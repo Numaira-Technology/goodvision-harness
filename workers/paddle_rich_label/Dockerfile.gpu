@@ -1,0 +1,42 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PADDLE_PDX_CACHE_HOME=/models \
+    PADDLEX_HOME=/models \
+    MPLCONFIGDIR=/tmp/matplotlib \
+    RICH_DEVICE=gpu:0 \
+    RICH_DETECTOR_MODEL=PP-YOLOE_plus-L
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libgomp1 libglib2.0-0 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /worker
+COPY requirements.txt ./
+# RTX 5090 is Blackwell sm_120. Paddle's supported binary route for it is the
+# CUDA 12.9 (or 13.0) GPU wheel; keep this image independent from the CPU pin.
+RUN python -m pip install --no-cache-dir \
+      --index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/ \
+      paddlepaddle-gpu==3.3.0 \
+    && python -m pip install --no-cache-dir -r requirements.txt
+
+# libcuda.so.1 is injected by the NVIDIA runtime and is intentionally absent
+# while building on a CPU-only host. Validate package versions and the wheel's
+# generated architecture metadata here; gpu_smoke.py performs the real import.
+RUN python -c "from importlib.metadata import version; from pathlib import Path; import cv2, site; assert cv2.__version__.startswith('4.10.'); assert version('paddlepaddle-gpu') == '3.3.0'; assert version('paddlex') == '3.7.2'; metadata = (Path(site.getsitepackages()[0]) / 'paddle/version/__init__.py').read_text(); assert '120' in metadata"
+
+COPY app.py ./app.py
+COPY gpu_smoke.py ./gpu_smoke.py
+
+RUN groupadd --system --gid 10002 richlabel \
+    && useradd --system --uid 10002 --gid richlabel --home-dir /nonexistent richlabel \
+    && mkdir -p /models \
+    && chown -R richlabel:richlabel /worker /models
+
+USER 10002:10002
+EXPOSE 8091
+HEALTHCHECK --interval=15s --timeout=3s --start-period=180s --retries=4 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health/ready', timeout=2).read()"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8091"]

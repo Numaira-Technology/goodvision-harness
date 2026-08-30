@@ -29,7 +29,7 @@ _PRIVATE_PATTERNS = tuple(
         r"\bbuffalo(?:[_-][\w.-]+)?\b",
         r"\bantelope(?:v\d+)?\b",
         r"\bonnx(?:runtime)?(?:-gpu)?\b",
-        r"\b(?:cpu|cuda)executionprovider\b",
+        r"\b(?:cpu|cuda|dml)executionprovider\b",
         r"\bfaceanalysis\b",
     )
 )

@@ -19,12 +19,12 @@ from fastapi.testclient import TestClient
 
 from goodvision_harness.config import load_config
 from goodvision_harness.contracts import (
+    PUBLIC_MODEL_NAME,
     AnalysisResult,
     EventJudgment,
     FrameReference,
     GroundedObject,
     NormalizedBBox,
-    PUBLIC_MODEL_NAME,
 )
 from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.grounding import (
@@ -103,10 +103,11 @@ BBOX_PROMPT_APPEND = (
 bbox_2d must tightly enclose the object in the NEWEST frame and use the
 top-left-origin relative 0..1000 xyxy coordinate grid.
 
-If detected=true, include at least one valid object.
-For events involving a person and an item, such as smoking or holding a
-weapon, return separate tight boxes for both the person and the item. Never
-merge them or omit either one. If detected=false, use "objects": []."""
+If detected=true, include at least one valid target object. For fight and
+fall, return only the involved person's tight body box or boxes. For
+smoking, return only the cigarette, cigar, pipe, or e-cigarette box; do not
+return the smoker's person box. For weapon, return only the weapon box; do
+not return the holder's person box. If detected=false, use "objects": []."""
 )
 
 
@@ -174,7 +175,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.display.jpeg_quality,
         config.display.delay_seconds,
         config.display.bbox_max_gap_seconds,
-    ) == (15.0, 720, 70, 3.0, 0.8)
+    ) == (15.0, 720, 70, 2.5, 0.8)
     assert (
         config.sliding_window.size_frames,
         config.sliding_window.stride_frames,
@@ -205,6 +206,12 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert "Every detected=false event must use \"objects\": []." in (
         config.inference.multi_event_prompt
     )
+    assert "return only the smoking item box, not the smoker" in (
+        config.inference.multi_event_prompt
+    )
+    assert "return only the weapon box, not the holder" in (
+        config.inference.multi_event_prompt
+    )
     assert config.inference.request_parameters == {
         "temperature": 0.0,
         "max_tokens": 1200,
@@ -213,6 +220,47 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert packaged.read_text(encoding="utf-8") == (ROOT / "config.yaml").read_text(
         encoding="utf-8"
     )
+
+
+def test_face_provider_can_be_selected_by_deployment_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_PROVIDER", "CUDAExecutionProvider")
+
+    config = load_config(ROOT / "config.yaml")
+
+    assert config.face.provider == "CUDAExecutionProvider"
+
+
+def test_directml_face_provider_can_be_selected_by_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_PROVIDER", "DmlExecutionProvider")
+
+    config = load_config(ROOT / "config.yaml")
+
+    assert config.face.provider == "DmlExecutionProvider"
+
+
+@pytest.mark.parametrize("scheduler", ["auto", "full", "single_flight"])
+def test_face_live_scheduler_can_be_selected_by_environment(
+    scheduler: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_LIVE_SCHEDULER", scheduler)
+
+    config = load_config(ROOT / "config.yaml")
+
+    assert config.face.live_scheduler == scheduler
+
+
+def test_face_live_scheduler_rejects_unknown_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_LIVE_SCHEDULER", "sometimes")
+
+    with pytest.raises(ValueError, match=r"face\.live_scheduler must be"):
+        load_config(ROOT / "config.yaml")
 
 
 def test_stream_crop_is_applied_before_display_sampling_and_source_mapping() -> None:
@@ -866,7 +914,7 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert info["annotated_output"] == {
         "output_fps": 15.0,
         "max_image_side": 720,
-        "buffer_delay_seconds": 3.0,
+        "buffer_delay_seconds": 2.5,
         "bbox_max_gap_seconds": 0.8,
     }
     assert info["configured_stream"] is True
@@ -916,6 +964,7 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert annotated.headers["X-Stream-Delay"] == "2.400"
         dashboard = client.get("/")
         assert dashboard.status_code == 200
+        assert "qwen/qwen3-vl-8b-instruct" not in dashboard.text
         assert "qwen3.5-plus" not in dashboard.text
         assert "Persistent deployment defaults" in dashboard.text
         assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
@@ -940,6 +989,29 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert client.get("/v1/status").json()["pipeline_state"] == (
             "configuration_error"
         )
+
+
+def test_dashboard_annotation_workspace_has_fullscreen_contract() -> None:
+    stub = _StubRuntime()
+    app = create_app(lambda: stub)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        dashboard = client.get("/")
+
+    assert dashboard.status_code == 200
+    html = dashboard.text
+    assert html.count('id="analysis-workspace"') == 1
+    assert html.count('id="fullscreen-button"') == 1
+    assert html.count('id="detection-overlay-toggle"') == 1
+    assert 'class="grid analysis-workspace"' in html
+    assert 'aria-controls="analysis-workspace" aria-pressed="false"' in html
+    assert 'aria-controls="decision" aria-expanded="true"' in html
+    assert ".analysis-workspace:fullscreen" in html
+    assert ".analysis-workspace.fullscreen-active .classification-panel" in html
+    assert "ui.analysisWorkspace.requestFullscreen" in html
+    assert "document.exitFullscreen" in html
+    assert 'document.addEventListener("fullscreenchange",syncFullscreenUi)' in html
+    assert 'new ResizeObserver(()=>alignAnnotationLayer()).observe(ui.viewport)' in html
 
 
 def test_browser_camera_dry_run_delivers_raw_and_correlated_bbox_output(

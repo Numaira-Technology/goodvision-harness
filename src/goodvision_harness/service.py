@@ -33,8 +33,8 @@ from .config import (
     ServiceSettings,
     load_config,
 )
-from .contracts import AnalysisResult, PUBLIC_MODEL_NAME
-from .delayed_overlay import DelayedOverlayComposer
+from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
+from .delayed_overlay import DelayedOverlayComposer, OverlaySelection
 from .delivery import WebhookDelivery
 from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
 from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
@@ -43,7 +43,8 @@ from .grounding import (
     build_grounding_client,
     build_selected_features_grounding_client,
 )
-from .overlay import draw_overlay
+from .overlay import draw_event_rich_overlay, draw_overlay, draw_rich_overlay
+from .overlay_fusion import OverlayFusionMatcher
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
@@ -57,6 +58,7 @@ from .reference_memory import (
     UNKNOWN_FACE_EVENT_LABEL,
 )
 from .result_bus import FrameBus, FramePacket, ResultBus
+from .rich_labeling import RichLabelCoordinator, RichLabelHTTPClient
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
 from .visual_memory import (
@@ -79,6 +81,23 @@ MULTI_ANALYSIS_MODE = "multi"
 ANALYSIS_MODES = frozenset(
     {EVENT_ANALYSIS_MODE, FACE_ANALYSIS_MODE, MULTI_ANALYSIS_MODE}
 )
+INDEPENDENT_FACE_ANALYSIS_KINDS = frozenset(
+    {"face_recognition", "face_reference_match"}
+)
+
+
+def _resolved_face_live_scheduler(*, provider: str, configured: str) -> str:
+    """Resolve auto without coupling the scheduler to a particular GPU vendor."""
+
+    if configured == "auto":
+        return (
+            "single_flight"
+            if provider == "CPUExecutionProvider"
+            else "full"
+        )
+    if configured not in {"full", "single_flight"}:
+        raise ValueError("face live scheduler must be auto, full, or single_flight")
+    return configured
 
 
 class HarnessRuntime:
@@ -92,6 +111,7 @@ class HarnessRuntime:
         memory_sink: VisualMemorySink | None = None,
         face_runtime: FaceRecognitionRuntime | None = None,
         deployment_store: DeploymentSettingsStore | None = None,
+        rich_label_coordinator: RichLabelCoordinator | None = None,
     ) -> None:
         self._deployment_store = deployment_store
         self._deployment_settings: DeploymentSettings | None = None
@@ -149,6 +169,26 @@ class HarnessRuntime:
         self.annotated_frames = FrameBus()
         display = config.display if config is not None else DisplaySettings()
         self._display_settings = display
+        if rich_label_coordinator is not None:
+            self._rich_labels = rich_label_coordinator
+        elif config is not None and config.rich_labeling.enabled:
+            rich = config.rich_labeling
+            self._rich_labels = RichLabelCoordinator(
+                RichLabelHTTPClient(
+                    rich.endpoint,
+                    timeout_seconds=rich.timeout_seconds,
+                ),
+                max_fps=rich.max_fps,
+                history_size=rich.history_size,
+                max_interpolation_gap_seconds=(
+                    rich.max_interpolation_gap_seconds
+                ),
+                max_hold_seconds=rich.max_hold_seconds,
+            )
+        else:
+            self._rich_labels = None
+        self._active_rich_session_id: str | None = None
+        self._overlay_fusion = OverlayFusionMatcher()
         self._annotated_output_fps = (
             max(display.fps, config.video.fps, config.face.sample_fps)
             if config is not None
@@ -164,6 +204,16 @@ class HarnessRuntime:
                 quality=self.settings.overlay_jpeg_quality,
             ),
             publish=self.annotated_frames.publish,
+            enrich=(
+                self._render_rich_label_jpeg
+                if self._rich_labels is not None
+                else None
+            ),
+            compose=(
+                self._render_fused_label_jpeg
+                if self._rich_labels is not None
+                else None
+            ),
         )
         self._state_lock = RLock()
         self._control_lock = RLock()
@@ -215,6 +265,7 @@ class HarnessRuntime:
             "memory_enabled": memory_sink is not None,
             "memory_records_accepted": 0,
             "memory_records_dropped": 0,
+            "rich_labeling_enabled": self._rich_labels is not None,
             "pipeline": None,
         }
 
@@ -436,6 +487,13 @@ class HarnessRuntime:
                 "bbox_max_gap_seconds": (
                     self.config.display.bbox_max_gap_seconds
                 ),
+            },
+            "rich_labeling": {
+                "enabled": self._rich_labels is not None,
+                "max_fps": self.config.rich_labeling.max_fps,
+                "track_identity": "session_scoped",
+                "age": "estimated_range",
+                "gender": "estimated_presentation",
             },
         }
         safe = public_safe_value(result)
@@ -659,6 +717,10 @@ class HarnessRuntime:
                         "warmed local face analysis in %.3fs", warmup_seconds
                     )
                 face = self.config.face
+                face_live_scheduler = _resolved_face_live_scheduler(
+                    provider=face.provider,
+                    configured=face.live_scheduler,
+                )
                 session_config = replace(
                     self.config,
                     video=replace(
@@ -674,14 +736,22 @@ class HarnessRuntime:
                         include_partial_final_window=False,
                     ),
                     inference=face_runtime.settings,
-                    runtime=replace(
-                        self.config.runtime,
-                        max_concurrent_requests=1,
+                    runtime=(
+                        replace(
+                            self.config.runtime,
+                            max_concurrent_requests=1,
+                        )
+                        if face_live_scheduler == "single_flight"
+                        else self.config.runtime
                     ),
                 )
                 client = face_runtime
             elif selected_analysis == MULTI_ANALYSIS_MODE:
                 face = self.config.face
+                face_live_scheduler = _resolved_face_live_scheduler(
+                    provider=face.provider,
+                    configured=face.live_scheduler,
+                )
                 include_stranger = "stranger" in selected_features
                 face_runtime = None
                 if include_stranger and not use_dry_run:
@@ -707,6 +777,22 @@ class HarnessRuntime:
                             stride_frames=1,
                             include_partial_final_window=False,
                         ),
+                        # CPU single-flight keeps stranger-only sessions at one
+                        # request and drops only busy face branches in mixed
+                        # sessions. Full mode keeps the configured request
+                        # concurrency and evaluates InsightFace for every
+                        # admitted request, including DirectML and CUDA auto.
+                        runtime=(
+                            replace(
+                                self.config.runtime,
+                                max_concurrent_requests=1,
+                            )
+                            if (
+                                selected_features == ("stranger",)
+                                and face_live_scheduler == "single_flight"
+                            )
+                            else self.config.runtime
+                        ),
                     )
                 client = build_selected_features_grounding_client(
                     session_config.inference,
@@ -715,6 +801,7 @@ class HarnessRuntime:
                     stranger_client=face_runtime,
                     safety_max_image_side=self.config.video.max_image_side,
                     safety_jpeg_quality=self.config.video.jpeg_quality,
+                    face_live_scheduler=face_live_scheduler,
                     dry_run=use_dry_run,
                     api_key=self._aiclub_api_key,
                 )
@@ -786,6 +873,12 @@ class HarnessRuntime:
                 # Reset the compositor before its public bus. A frame already
                 # being published finishes first, then the bus reset clears it;
                 # the new generation cannot leak an old session frame.
+                if self._rich_labels is not None:
+                    self._rich_labels.reset(session.stream_session_id)
+                    self._active_rich_session_id = session.stream_session_id
+                else:
+                    self._active_rich_session_id = None
+                self._overlay_fusion.reset()
                 self._delayed_overlay.reset()
                 self.annotated_frames.reset()
                 self.results.reset()
@@ -845,6 +938,9 @@ class HarnessRuntime:
                 session.start()
             except Exception:
                 with self._state_lock:
+                    if self._rich_labels is not None:
+                        self._rich_labels.reset(None)
+                    self._active_rich_session_id = None
                     self._session = None
                     self._session_mode = None
                     self._camera_owner = None
@@ -901,6 +997,10 @@ class HarnessRuntime:
                     return False
                 session = self._session
                 if session is None:
+                    if self._rich_labels is not None:
+                        self._rich_labels.reset(None)
+                    self._overlay_fusion.reset()
+                    self._active_rich_session_id = None
                     self._state.update(
                         {"pipeline_state": "idle", "input_mode": None, "ready": False}
                     )
@@ -924,9 +1024,13 @@ class HarnessRuntime:
                 return False
 
             self._delayed_overlay.reset()
+            self._overlay_fusion.reset()
+            if self._rich_labels is not None:
+                self._rich_labels.reset(None)
             self.annotated_frames.reset()
 
             with self._state_lock:
+                self._active_rich_session_id = None
                 self._session = None
                 self._session_mode = None
                 self._camera_owner = None
@@ -950,6 +1054,8 @@ class HarnessRuntime:
             self._closed = True
         self.stop_session()
         self._delayed_overlay.close(timeout_seconds=5.0)
+        if self._rich_labels is not None:
+            self._rich_labels.close(timeout_seconds=5.0)
         if self._delivery is not None:
             self._delivery.close(timeout_seconds=5.0)
         self._update_state(pipeline_state="stopped", ready=False)
@@ -1024,12 +1130,33 @@ class HarnessRuntime:
         with self._state_lock:
             payload = copy.deepcopy(self._state)
         payload["annotated_output"] = self._delayed_overlay.stats()
+        payload["rich_labeling"] = (
+            self._rich_labels.stats()
+            if self._rich_labels is not None
+            else {"state": "disabled"}
+        )
         ready, reason = self.readiness()
         payload["ready"] = ready
         payload["readiness_reason"] = reason
         if self._delivery is not None:
             payload["webhook"] = self._delivery.stats()
         safe = public_safe_value(payload)
+        assert isinstance(safe, dict)
+        return safe
+
+    def latest_rich_labels(self) -> dict[str, Any] | None:
+        """Return the latest worker snapshot without exposing worker internals."""
+
+        if self._rich_labels is None:
+            return None
+        with self._state_lock:
+            session_id = self._active_rich_session_id
+        if session_id is None:
+            return None
+        snapshot = self._rich_labels.latest(session_id)
+        if snapshot is None:
+            return None
+        safe = public_safe_value(snapshot.as_dict())
         assert isinstance(safe, dict)
         return safe
 
@@ -1116,15 +1243,37 @@ class HarnessRuntime:
                 "memory_records_accepted" if accepted else "memory_records_dropped"
             )
             self._update_state(**{memory_key: int(self._state[memory_key]) + 1})
-        try:
-            rendered = _render_analysis_jpeg(
-                source_jpeg,
-                result,
-                quality=self.settings.overlay_jpeg_quality,
-            )
-        except (cv2.error, TypeError, ValueError):
-            LOGGER.warning("could not render analysis overlay")
-            rendered = source_jpeg
+        rendered: bytes | None = None
+        if self._rich_labels is not None:
+            try:
+                rendered = self._render_fused_label_jpeg(
+                    source_jpeg,
+                    OverlaySelection(result, "exact", result.message_id),
+                    result.frame.timestamp_seconds,
+                    result.frame.source_frame_index,
+                )
+            except Exception:
+                LOGGER.warning("could not render fused labels on analysis frame")
+        if rendered is None:
+            enriched_jpeg = source_jpeg
+            if self._rich_labels is not None:
+                try:
+                    enriched_jpeg = self._render_rich_label_jpeg(
+                        source_jpeg,
+                        result.frame.timestamp_seconds,
+                        result.frame.source_frame_index,
+                    )
+                except Exception:
+                    LOGGER.warning("could not render rich labels on analysis frame")
+            try:
+                rendered = _render_analysis_jpeg(
+                    enriched_jpeg,
+                    result,
+                    quality=self.settings.overlay_jpeg_quality,
+                )
+            except (cv2.error, TypeError, ValueError):
+                LOGGER.warning("could not render analysis overlay")
+                rendered = enriched_jpeg
         self.frames.publish(
             FramePacket(
                 jpeg=rendered,
@@ -1154,6 +1303,27 @@ class HarnessRuntime:
             self._delivery.submit(payload)
 
     def _on_timeline_result(self, result: AnalysisResult) -> None:
+        coordinator = self._rich_labels
+        if (
+            coordinator is not None
+            and result.analysis_kind not in INDEPENDENT_FACE_ANALYSIS_KINDS
+        ):
+            with self._state_lock:
+                session_id = self._active_rich_session_id
+            if session_id == result.stream_session_id:
+                try:
+                    rich_selection = coordinator.select(
+                        session_id,
+                        result.frame.timestamp_seconds,
+                        frame_sequence=result.frame.source_frame_index,
+                    )
+                    self._overlay_fusion.plan(
+                        result,
+                        rich_selection.objects,
+                        association_message_id=result.message_id,
+                    )
+                except Exception:
+                    LOGGER.warning("could not prime event-to-rich association")
         self._delayed_overlay.submit_result(result)
 
     def _on_display_frame(
@@ -1163,8 +1333,22 @@ class HarnessRuntime:
         frame_sequence: int,
     ) -> None:
         observed_at = _utc_now()
+        source_jpeg = bytes(jpeg)
+        if self._rich_labels is not None:
+            with self._state_lock:
+                session_id = self._active_rich_session_id
+            if session_id is not None:
+                try:
+                    self._rich_labels.submit(
+                        source_jpeg,
+                        stream_session_id=session_id,
+                        frame_sequence=int(frame_sequence),
+                        timestamp_seconds=float(media_timestamp),
+                    )
+                except Exception:
+                    LOGGER.warning("could not queue frame for rich labeling")
         packet = FramePacket(
-            jpeg=bytes(jpeg),
+            jpeg=source_jpeg,
             media_timestamp=float(media_timestamp),
             frame_sequence=int(frame_sequence),
             observed_at=observed_at,
@@ -1180,6 +1364,115 @@ class HarnessRuntime:
             last_media_timestamp=round(float(media_timestamp), 3),
             last_frame_sequence=int(frame_sequence),
         )
+
+    def _render_rich_label_jpeg(
+        self,
+        jpeg: bytes,
+        media_timestamp: float,
+        frame_sequence: int,
+    ) -> bytes:
+        coordinator = self._rich_labels
+        if coordinator is None:
+            return jpeg
+        with self._state_lock:
+            session_id = self._active_rich_session_id
+        if session_id is None:
+            return jpeg
+        selection = coordinator.select(
+            session_id,
+            float(media_timestamp),
+            frame_sequence=int(frame_sequence),
+        )
+        if not selection.objects:
+            return jpeg
+        encoded = np.frombuffer(jpeg, dtype=np.uint8)
+        image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("rich-label frame did not contain a valid JPEG")
+        rendered = draw_rich_overlay(image, selection.objects)
+        ok, output = cv2.imencode(
+            ".jpg",
+            rendered,
+            [cv2.IMWRITE_JPEG_QUALITY, self.settings.overlay_jpeg_quality],
+        )
+        if not ok:
+            raise ValueError("could not encode rich-label JPEG")
+        return output.tobytes()
+
+    def _render_fused_label_jpeg(
+        self,
+        jpeg: bytes,
+        overlay_selection: OverlaySelection,
+        media_timestamp: float,
+        frame_sequence: int,
+    ) -> bytes:
+        """Render Rich and Event annotations together with one JPEG codec pass."""
+
+        coordinator = self._rich_labels
+        analysis = overlay_selection.analysis
+        rich_objects = ()
+        if coordinator is not None:
+            with self._state_lock:
+                session_id = self._active_rich_session_id
+            if session_id is not None and (
+                analysis is None or analysis.stream_session_id == session_id
+            ):
+                rich_selection = coordinator.select(
+                    session_id,
+                    float(media_timestamp),
+                    frame_sequence=int(frame_sequence),
+                )
+                rich_objects = rich_selection.objects
+
+        if not rich_objects and analysis is None:
+            return jpeg
+
+        encoded = np.frombuffer(jpeg, dtype=np.uint8)
+        image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError("fused-label frame did not contain a valid JPEG")
+
+        if analysis is None:
+            rendered = draw_rich_overlay(image, rich_objects)
+        elif analysis.analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS:
+            rendered = (
+                draw_rich_overlay(image, rich_objects) if rich_objects else image
+            )
+            rendered = _draw_analysis_overlay(rendered, analysis)
+        else:
+            plan = self._overlay_fusion.plan(
+                analysis,
+                rich_objects,
+                association_message_id=(
+                    overlay_selection.left_message_id or analysis.message_id
+                ),
+            )
+            rendered = draw_rich_overlay(
+                image,
+                rich_objects,
+                alerts_by_track_id=plan.alerts_by_track_id(),
+            )
+            fallback_ids = set(plan.unmatched_event_object_ids)
+            fallback_objects = tuple(
+                item for item in analysis.objects if item.object_id in fallback_ids
+            )
+            rendered = draw_event_rich_overlay(
+                rendered,
+                fallback_objects,
+                alerts_by_object_id=plan.alerts_by_unmatched_object_id(),
+            )
+            arguments = _analysis_overlay_arguments(analysis)
+            arguments["objects"] = ()
+            rendered = draw_overlay(rendered, **arguments)
+
+        ok, output = cv2.imencode(
+            ".jpg",
+            rendered,
+            [cv2.IMWRITE_JPEG_QUALITY, self.settings.overlay_jpeg_quality],
+        )
+        if not ok:
+            raise ValueError("could not encode fused-label JPEG")
+        return output.tobytes()
 
     def _on_pipeline_state(self, state: dict[str, Any]) -> None:
         values: dict[str, Any] = {"pipeline": public_safe_value(copy.deepcopy(state))}
@@ -1214,6 +1507,22 @@ def _render_analysis_jpeg(
     image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("display callback did not contain a valid JPEG")
+    rendered = _draw_analysis_overlay(image, analysis)
+    ok, output = cv2.imencode(
+        ".jpg",
+        rendered,
+        [cv2.IMWRITE_JPEG_QUALITY, quality],
+    )
+    if not ok:
+        raise ValueError("could not encode annotated JPEG")
+    return output.tobytes()
+
+
+def _draw_analysis_overlay(image: Any, analysis: AnalysisResult) -> Any:
+    return draw_overlay(image, **_analysis_overlay_arguments(analysis))
+
+
+def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
     if analysis.analysis_kind == "face_recognition":
         detected_judgments = tuple(
             judgment for judgment in analysis.judgments if judgment.detected
@@ -1272,23 +1581,14 @@ def _render_analysis_jpeg(
                 default=0.0,
             )
             description = "No target events detected."
-    rendered = draw_overlay(
-        image,
-        event_label=event_label,
-        detected=detected,
-        confidence=confidence,
-        description=description,
-        objects=objects,
-        analysis_kind=analysis.analysis_kind,
-    )
-    ok, output = cv2.imencode(
-        ".jpg",
-        rendered,
-        [cv2.IMWRITE_JPEG_QUALITY, quality],
-    )
-    if not ok:
-        raise ValueError("could not encode annotated JPEG")
-    return output.tobytes()
+    return {
+        "event_label": event_label,
+        "detected": detected,
+        "confidence": confidence,
+        "description": description,
+        "objects": objects,
+        "analysis_kind": analysis.analysis_kind,
+    }
 
 
 def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
@@ -1713,6 +2013,13 @@ def create_app(
     @application.get("/v1/results/latest")
     async def latest_result(request: Request) -> JSONResponse:
         return _latest_result_response(_runtime(request))
+
+    @application.get("/v1/rich-labels/latest")
+    async def latest_rich_labels(request: Request) -> JSONResponse:
+        payload = _runtime(request).latest_rich_labels()
+        if payload is None:
+            raise HTTPException(status_code=404, detail="no rich labels yet")
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     @application.get("/v1/results/events")
     async def result_events(

@@ -28,10 +28,28 @@ display:
   jpeg_quality: 70
   # End-to-end completion can exceed raw model latency while concurrent
   # results are applied. Leave enough headroom before publishing each frame.
-  delay_seconds: 3.0
+  delay_seconds: 2.5
   # Maximum gap for motion interpolation. Beyond it, hold the last bbox on
   # every frame until a new keyframe explicitly updates or clears the state.
   bbox_max_gap_seconds: 0.8
+
+rich_labeling:
+  # Optional isolated PaddleX/PaddleDetection worker. Keep disabled unless the
+  # sidecar is running; event/VLM inference remains fail-open and independent.
+  enabled: false
+  endpoint: http://rich-label-worker:8091/v1/labels
+  # CPU demo inference can briefly cross 0.8s on the first hot request. The
+  # coordinator is latest-only and fail-open, so 2s adds startup headroom
+  # without delaying the video/VLM path or changing GPU throughput.
+  timeout_seconds: 2.0
+  # The delayed 15 FPS compositor interpolates stable track boxes between these
+  # lower-cost local keyframes.
+  max_fps: 7.5
+  history_size: 128
+  # Interpolate matching tracks across normal local CPU inference gaps.
+  max_interpolation_gap_seconds: 2.0
+  # Bound stale boxes only when no later rich-label keyframe is known.
+  max_hold_seconds: 2.0
 
 sliding_window:
   # Classify the newest frame every 0.4s with no window-collection delay:
@@ -101,10 +119,11 @@ inference:
     bbox_2d must tightly enclose the object in the NEWEST frame and use the
     top-left-origin relative 0..1000 xyxy coordinate grid.
 
-    If detected=true, include at least one valid object.
-    For events involving a person and an item, such as smoking or holding a
-    weapon, return separate tight boxes for both the person and the item. Never
-    merge them or omit either one. If detected=false, use "objects": [].
+    If detected=true, include at least one valid target object. For fight and
+    fall, return only the involved person's tight body box or boxes. For
+    smoking, return only the cigarette, cigar, pipe, or e-cigarette box; do not
+    return the smoker's person box. For weapon, return only the weapon box; do
+    not return the holder's person box. If detected=false, use "objects": [].
   multi_event_prompt: |-
     Evaluate exactly these four safety events in the NEWEST (last) frame:
     fight, smoking, fall, and weapon. Use earlier frames only as temporal
@@ -145,8 +164,10 @@ inference:
     object must be {"label":"...","confidence":0.0-1.0,
     "bbox_2d":[x1,y1,x2,y2]}. bbox_2d must tightly enclose that relevant
     entity in the NEWEST frame on the top-left-origin 0..1000 xyxy grid.
-    Every detected=true event requires at least one object. For an event
-    involving a person and an item, return separate tight boxes for both.
+    Every detected=true event requires at least one target object. For fight
+    and fall, return only the involved person's tight body box or boxes. For
+    smoking, return only the smoking item box, not the smoker. For weapon,
+    return only the weapon box, not the holder.
     Every detected=false event must use "objects": [].
   request_parameters:
     temperature: 0.0
@@ -177,6 +198,8 @@ face:
   model_root: .models/insightface
   allow_model_download: true
   provider: CPUExecutionProvider
+  # auto uses full cadence on accelerated providers and single-flight on CPU.
+  live_scheduler: auto
   det_size: 640
   threshold: 0.4
   # Live safety detection is fail-open for distant faces. The current 1280px

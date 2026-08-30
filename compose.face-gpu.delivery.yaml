@@ -1,0 +1,13 @@
+services:
+  harness:
+    image: goodvision-harness:2026.08.30-face-gpu-cu128.1
+    pull_policy: never
+    environment:
+      FACE_PROVIDER: CUDAExecutionProvider
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
