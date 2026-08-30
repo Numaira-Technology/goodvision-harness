@@ -24,7 +24,7 @@ that warmup. These runtime defaults remain fixed:
 - the same frame is resized to 320 px, JPEG quality 75, for the single remote
   safety request;
 - display output: 15 FPS, 720 px maximum image side, JPEG quality 70, delayed
-  3.0 seconds so most completed 2.5 FPS analysis keyframes can be interpolated;
+  2.5 seconds so most completed 2.5 FPS analysis keyframes can be interpolated;
 - one-frame windows with stride 1 and six concurrent model requests;
 - `max_tokens=1200`, no API retry, and a fixed validated model route with
   route fallback disabled;
@@ -603,7 +603,7 @@ multipart JPEG in `GET /v1/video/stream.mjpeg` carry
 exact evidence feed remains at model-result cadence.
 
 For the display path, the container separately buffers the continuous source
-frames for 3.0 seconds. Results at 2.5 FPS act as bbox keyframes on the same
+frames for 2.5 seconds. Results at 2.5 FPS act as bbox keyframes on the same
 media timeline. Between two compatible keyframes, the service linearly moves
 the box. If the next result is late or a sampled request is dropped, the last
 analyzed state is latched onto every display frame; only a later keyframe may

@@ -46,7 +46,7 @@ class DisplaySettings:
     fps: float = 15.0
     max_image_side: int = 720
     jpeg_quality: int = 70
-    delay_seconds: float = 3.0
+    delay_seconds: float = 2.5
     bbox_max_gap_seconds: float = 0.8
 
 
@@ -242,7 +242,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             maximum=100,
         ),
         delay_seconds=_non_negative_float(
-            display_section.get("delay_seconds", 3.0),
+            display_section.get("delay_seconds", 2.5),
             "display.delay_seconds",
         ),
         bbox_max_gap_seconds=_positive_float(

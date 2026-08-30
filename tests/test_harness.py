@@ -175,7 +175,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.display.jpeg_quality,
         config.display.delay_seconds,
         config.display.bbox_max_gap_seconds,
-    ) == (15.0, 720, 70, 3.0, 0.8)
+    ) == (15.0, 720, 70, 2.5, 0.8)
     assert (
         config.sliding_window.size_frames,
         config.sliding_window.stride_frames,
@@ -915,7 +915,7 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert info["annotated_output"] == {
         "output_fps": 15.0,
         "max_image_side": 720,
-        "buffer_delay_seconds": 3.0,
+        "buffer_delay_seconds": 2.5,
         "bbox_max_gap_seconds": 0.8,
     }
     assert info["configured_stream"] is True
