@@ -8,8 +8,13 @@ from urllib.error import HTTPError
 import numpy as np
 import pytest
 
-import goodvision_harness.openrouter as transport_module
+import goodvision_harness.aiclub as transport_module
 import goodvision_harness.overlay as overlay_module
+from goodvision_harness.aiclub import (
+    AIClubClient,
+    AIClubError,
+    AIClubSettings,
+)
 from goodvision_harness.contracts import (
     AnalysisResult,
     EventJudgment,
@@ -18,16 +23,13 @@ from goodvision_harness.contracts import (
     NormalizedBBox,
     PUBLIC_MODEL_NAME,
 )
-from goodvision_harness.openrouter import (
-    OpenRouterClient,
-    OpenRouterError,
-    OpenRouterSettings,
-)
 from goodvision_harness.privacy import public_safe_value, redact_public_text
 from goodvision_harness.vision_result import VisionResult
 
 
 PRIVATE_MARKERS = (
+    "aiclub",
+    "zimaocloud",
     "openrouter",
     "qwen",
     "coreweave",
@@ -39,6 +41,7 @@ PRIVATE_MARKERS = (
     "dmlexecutionprovider",
 )
 PRIVATE_TEXT = (
+    "AIClub https://aiclub.zimaocloud.com qwen3.5-plus "
     "OpenRouter https://openrouter.ai qwen/qwen3.5-35b-a3b CoreWeave DeepInfra "
     "InsightFace buffalo_l onnxruntime CPUExecutionProvider DmlExecutionProvider"
 )
@@ -89,7 +92,7 @@ def test_serialized_result_records_never_emit_private_model_details() -> None:
                 attributes={"engine_note": PRIVATE_TEXT},
             ),
         ),
-        model_name="qwen/qwen3.5-35b-a3b",
+        model_name="qwen3.5-plus",
         model_latency_seconds=0.2,
     )
     vision = VisionResult(
@@ -152,7 +155,7 @@ def test_provider_error_body_and_network_exception_are_not_echoed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     error = HTTPError(
-        "https://openrouter.ai/api/v1/chat/completions",
+        "https://aiclub.zimaocloud.com/model/openApi/v1/chat/completions",
         500,
         "failed",
         {},
@@ -163,12 +166,12 @@ def test_provider_error_body_and_network_exception_are_not_echoed(
         raise error
 
     monkeypatch.setattr(transport_module, "urlopen", fail)
-    client = OpenRouterClient(
-        OpenRouterSettings(max_retries=0),
+    client = AIClubClient(
+        AIClubSettings(max_retries=0),
         api_key="not-a-real-key",
     )
 
-    with pytest.raises(OpenRouterError) as raised:
+    with pytest.raises(AIClubError) as raised:
         client.chat_completion(model="private-model", messages=[{"role": "user"}])
 
     assert str(raised.value) == "model API returned HTTP 500"

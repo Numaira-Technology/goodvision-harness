@@ -11,11 +11,11 @@ import pytest
 from goodvision_harness.config import load_config
 from goodvision_harness.contracts import PUBLIC_MODEL_NAME
 from goodvision_harness.grounding import (
+    AIClubGroundingClient,
     DryRunGroundingClient,
     FACE_REFERENCE_ANALYSIS_KIND,
     REFERENCE_MEMORY_ANALYSIS_KIND,
     GroundingResponse,
-    OpenRouterGroundingClient,
     build_grounding_messages,
     parse_grounded_classification,
 )
@@ -236,7 +236,7 @@ def test_qwen_client_applies_the_memory_allowlist() -> None:
     assert response.classification is None
     assert response.error is not None
     assert response.error == "analysis request failed"
-    assert config.inference.model == "qwen/qwen3-vl-8b-instruct"
+    assert config.inference.model == "qwen3.5-plus"
     assert transport.calls[0]["model"] == config.inference.model
     assert transport.calls[0]["model"] != PUBLIC_MODEL_NAME
     assert transport.calls[0]["messages"][1]["content"][0]["text"].startswith(
@@ -297,7 +297,7 @@ def test_grounding_memory_preserves_boxes_and_sets_distinct_analysis_kind(
             }
         )
     )
-    client = OpenRouterGroundingClient(
+    client = AIClubGroundingClient(
         config.inference,
         transport,  # type: ignore[arg-type]
         _memory_context(purpose=purpose),
@@ -394,7 +394,7 @@ def test_streaming_session_preserves_grounded_memory_metadata() -> None:
             }
         )
     )
-    client = OpenRouterGroundingClient(
+    client = AIClubGroundingClient(
         config.inference,
         transport,  # type: ignore[arg-type]
         _memory_context(),

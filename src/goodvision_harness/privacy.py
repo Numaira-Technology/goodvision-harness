@@ -18,6 +18,8 @@ PUBLIC_FACE_ERROR = "local face analysis failed"
 _PRIVATE_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
+        r"https?://aiclub\.zimaocloud\.com(?:/[^\s\"']*)?",
+        r"\bai[\s_-]*club\b",
         r"https?://(?:www\.)?openrouter\.ai(?:/[^\s\"']*)?",
         r"\bopen[\s_-]*router\b(?:\.ai)?",
         r"\bqwen(?:[\w./:+-]*)?\b",

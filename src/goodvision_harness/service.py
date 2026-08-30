@@ -144,18 +144,19 @@ class HarnessRuntime:
         self.dry_run = dry_run
         self.autostart = autostart
         api_key_env = (
-            config.openrouter.api_key_env
+            config.aiclub.api_key_env
             if config is not None
-            else "MODEL_API_KEY"
+            else "AICLUB_API_KEY"
         )
         self._environment_api_key = (
             os.environ.get(api_key_env, "").strip()
+            # Backward-compatible reads for existing deployments. These
+            # legacy names are never emitted by the service.
             or os.environ.get("MODEL_API_KEY", "").strip()
-            # Backward-compatible read only. The legacy name is never emitted.
             or os.environ.get("OPENROUTER_API_KEY", "").strip()
             or None
         )
-        self._openrouter_api_key = (
+        self._aiclub_api_key = (
             self._persisted_api_key or self._environment_api_key
         )
         self.settings = config.service if config is not None else ServiceSettings()
@@ -326,7 +327,7 @@ class HarnessRuntime:
             "stream_frame_crop": self.config.stream.frame_crop,
             "dry_run": self.dry_run,
             "autostart": self.autostart,
-            "api_key_present": bool(self._openrouter_api_key),
+            "api_key_present": bool(self._aiclub_api_key),
             "api_key_persisted": bool(self._persisted_api_key),
             "storage_error": self._deployment_error,
         }
@@ -408,7 +409,7 @@ class HarnessRuntime:
             elif clear_api_key:
                 self._deployment_store.delete_api_key()
                 self._persisted_api_key = None
-            self._openrouter_api_key = (
+            self._aiclub_api_key = (
                 self._persisted_api_key or self._environment_api_key
             )
             self._deployment_error = None
@@ -446,7 +447,7 @@ class HarnessRuntime:
                 "stride_frames": self.config.sliding_window.stride_frames,
             },
             "max_concurrent_requests": self.config.runtime.max_concurrent_requests,
-            "api_key_present": bool(self._openrouter_api_key),
+            "api_key_present": bool(self._aiclub_api_key),
             "dry_run": self.dry_run,
             "configured_stream": bool(stream_url),
             "configured_stream_protocol": protocol,
@@ -795,14 +796,14 @@ class HarnessRuntime:
                     )
                 client = build_selected_features_grounding_client(
                     session_config.inference,
-                    session_config.openrouter,
+                    session_config.aiclub,
                     features=selected_features,
                     stranger_client=face_runtime,
                     safety_max_image_side=self.config.video.max_image_side,
                     safety_jpeg_quality=self.config.video.jpeg_quality,
                     face_live_scheduler=face_live_scheduler,
                     dry_run=use_dry_run,
-                    api_key=self._openrouter_api_key,
+                    api_key=self._aiclub_api_key,
                 )
             else:
                 session_config = self.config
@@ -813,10 +814,10 @@ class HarnessRuntime:
                     )
                 client = build_grounding_client(
                     session_config.inference,
-                    session_config.openrouter,
+                    session_config.aiclub,
                     memory_context=session_config.memory,
                     dry_run=use_dry_run,
-                    api_key=self._openrouter_api_key,
+                    api_key=self._aiclub_api_key,
                 )
             generation = self._generation + 1
             callbacks = SessionCallbacks(

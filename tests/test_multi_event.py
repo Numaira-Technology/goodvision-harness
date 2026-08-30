@@ -398,7 +398,7 @@ def test_selected_features_drop_busy_face_samples_without_building_a_queue() -> 
         ]
         busy_responses = [future.result(timeout=2.0) for future in busy]
 
-        # All OpenRouter-shaped safety branches complete while the one face
+        # All remote safety branches complete while the one face
         # sample is still blocked; no caller queues behind the face runtime.
         assert stranger.calls == [0]
         assert len(safety.windows) == 6

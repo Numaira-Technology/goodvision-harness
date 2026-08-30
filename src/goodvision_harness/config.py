@@ -12,7 +12,7 @@ from typing import Any
 import yaml
 from dotenv import find_dotenv, load_dotenv
 
-from .openrouter import OpenRouterSettings
+from .aiclub import AIClubSettings
 from .reference_memory import MemoryContext, load_memory_context
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
@@ -139,7 +139,7 @@ class HarnessConfig:
     display: DisplaySettings
     rich_labeling: RichLabelSettings
     sliding_window: SlidingWindowSettings
-    openrouter: OpenRouterSettings
+    aiclub: AIClubSettings
     inference: InferenceSettings
     memory: MemoryContext | None
     face: FaceSettings
@@ -165,7 +165,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     display_section = _mapping_section(raw, "display")
     rich_label_section = _mapping_section(raw, "rich_labeling")
     window_section = _mapping_section(raw, "sliding_window")
-    openrouter_section = _mapping_section(raw, "openrouter")
+    aiclub_section = _mapping_section(raw, "aiclub")
     inference_section = _mapping_section(raw, "inference")
     memory_section = _mapping_section(raw, "memory")
     face_section = _mapping_section(raw, "face")
@@ -468,7 +468,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         display=display,
         rich_labeling=rich_labeling,
         sliding_window=sliding_window,
-        openrouter=OpenRouterSettings.from_mapping(openrouter_section),
+        aiclub=AIClubSettings.from_mapping(aiclub_section),
         inference=inference,
         memory=memory,
         face=face,

@@ -116,7 +116,7 @@ def build_window_messages(
     prompt: str,
     memory_context: MemoryContext | None = None,
 ) -> list[dict[str, Any]]:
-    """Return OpenRouter chat messages with optional memory and live JPEGs.
+    """Return OpenAI-compatible chat messages with optional memory and live JPEGs.
 
     The configurable prompt may contain the literal placeholders ``{event}`` and
     ``{window_label}``. JPEG frames are embedded as base64 data URLs so local

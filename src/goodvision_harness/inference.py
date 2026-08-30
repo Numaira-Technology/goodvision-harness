@@ -13,8 +13,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .aiclub import AIClubClient, AIClubError, AIClubSettings
 from .config import InferenceSettings
-from .openrouter import OpenRouterClient, OpenRouterError, OpenRouterSettings
 from .prompt import (
     BinaryClassification,
     build_window_messages,
@@ -62,7 +62,7 @@ class QwenWindowClient:
     def __init__(
         self,
         settings: InferenceSettings,
-        transport: OpenRouterClient,
+        transport: AIClubClient,
         memory_context: MemoryContext | None = None,
     ) -> None:
         self.settings = settings
@@ -84,7 +84,7 @@ class QwenWindowClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-        except (OpenRouterError, ValueError):
+        except (AIClubError, ValueError):
             return WindowResponse(
                 window=window,
                 classification=None,
@@ -169,7 +169,7 @@ class DryRunWindowClient:
 
 def build_client(
     settings: InferenceSettings,
-    openrouter: OpenRouterSettings,
+    aiclub: AIClubSettings,
     *,
     memory_context: MemoryContext | None = None,
     dry_run: bool = False,
@@ -180,6 +180,6 @@ def build_client(
         return DryRunWindowClient(settings, memory_context)
     return QwenWindowClient(
         settings,
-        OpenRouterClient(openrouter),
+        AIClubClient(aiclub),
         memory_context,
     )

@@ -152,7 +152,7 @@ The two containers share the device rather than receiving exclusive GPUs.
 Benchmark face-only and face-plus-rich loads on the customer host before
 acceptance. `FACE_LIVE_SCHEDULER=auto` keeps CPU InsightFace single-flight, but
 uses full sampling for DirectML or CUDA: every admitted mixed-detector request
-runs its own face branch while the OpenRouter safety branches retain their
+runs its own face branch while the AIClub safety branches retain their
 configured concurrency. Operators can force `full` for an experiment or
 `single_flight` as a bounded-backlog fallback.
 
@@ -255,7 +255,7 @@ On the GoodVision server (`192.168.20.168`):
 
 ```bash
 cp .env.example .env
-# The robot WHEP URL is already configured; add the real MODEL_API_KEY.
+# The robot WHEP URL is already configured; add the real AICLUB_API_KEY.
 docker compose up --build -d
 docker compose ps
 ```
@@ -264,6 +264,9 @@ For normal fixed-five mode, the demo configuration may initialize authorized
 local face files in the Compose `face-models` volume on first use. Alternatively,
 pre-populate `/models/models/<configured-profile>/`. `HARNESS_DRY_RUN=true` does
 not need them.
+
+The default model route uses AIClub with `qwen3.5-plus`; the API endpoint
+remains configurable without changing the streaming pipeline.
 
 The default source is the robot's LAN WHEP endpoint:
 
@@ -636,8 +639,8 @@ when replay guarantees matter.
 prompt, the fixed-four `multi_event_prompt`, concurrency, readiness windows,
 the `display.delay_seconds` / `display.bbox_max_gap_seconds` compositor timing,
 overlay JPEG quality, and optional webhook behavior. The
-validated API route remains fixed and route fallback is disabled. The API retry
-count remains zero so a failed live request is not replayed as a stale result.
+validated AIClub route remains fixed. The API retry count remains zero so a
+failed live request is not replayed as a stale result.
 Persisted console settings override environment values; otherwise the generic
 stream variable takes precedence over the legacy RTSP variable:
 
@@ -645,7 +648,7 @@ stream variable takes precedence over the legacy RTSP variable:
 | --- | --- |
 | `HARNESS_STREAM_URL` | Primary RTSP/RTMP/WHEP input URL. |
 | `RTSP_URL` | Deprecated compatibility fallback when `HARNESS_STREAM_URL` is empty. |
-| `MODEL_API_KEY` | Model API credential. |
+| `AICLUB_API_KEY` | AIClub API credential. |
 | `HARNESS_DRY_RUN` | Disable external inference and emit deterministic results. |
 | `HARNESS_AUTOSTART` | Start the configured network stream when the service starts; set false for local camera testing. |
 | `HARNESS_SOURCE_ID` | Stable customer-facing source identifier. |

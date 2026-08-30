@@ -15,9 +15,9 @@ from typing import Any, Protocol
 import cv2
 import numpy as np
 
+from .aiclub import AIClubClient, AIClubError, AIClubSettings
 from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
-from .openrouter import OpenRouterClient, OpenRouterError, OpenRouterSettings
 from .privacy import PUBLIC_ANALYSIS_ERROR, PUBLIC_FACE_ERROR
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
@@ -621,11 +621,11 @@ def _memory_analysis_kind(memory_context: MemoryContext | None) -> str:
     return REFERENCE_MEMORY_ANALYSIS_KIND
 
 
-class OpenRouterGroundingClient:
+class AIClubGroundingClient:
     def __init__(
         self,
         settings: InferenceSettings,
-        transport: OpenRouterClient,
+        transport: AIClubClient,
         memory_context: MemoryContext | None = None,
     ) -> None:
         self.settings = settings
@@ -647,7 +647,7 @@ class OpenRouterGroundingClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-        except (OpenRouterError, ValueError):
+        except (AIClubError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
@@ -737,13 +737,13 @@ class DryRunGroundingClient:
         )
 
 
-class OpenRouterMultiGroundingClient:
+class AIClubMultiGroundingClient:
     """Run one Qwen request for all four visual safety event labels."""
 
     def __init__(
         self,
         settings: InferenceSettings,
-        transport: OpenRouterClient,
+        transport: AIClubClient,
         event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
     ) -> None:
         labels = tuple(event_labels)
@@ -788,7 +788,7 @@ class OpenRouterMultiGroundingClient:
                 **request_parameters,
             )
             text = self._transport.assistant_text(response)
-        except (OpenRouterError, ValueError):
+        except (AIClubError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
@@ -1003,7 +1003,7 @@ class SelectedFeaturesGroundingClient:
         self._safety_jpeg_quality = safety_jpeg_quality
         self.face_live_scheduler = face_live_scheduler
         # InsightFace owns one inference session protected by a model lock.  The
-        # outer live pipeline can have several OpenRouter windows in flight, but
+        # outer live pipeline can have several AIClub windows in flight, but
         # queueing every one of those windows at the face-model lock turns a
         # single CPU inference into many seconds of stale backlog.  CPU mode
         # therefore admits at most one live face branch per selected-features
@@ -1085,7 +1085,7 @@ class SelectedFeaturesGroundingClient:
         elif self._safety_client is not None and self._stranger_client is not None:
             # Face inference is already running for a nearby frame. Dropping
             # this face branch keeps the live path latest-first without copying
-            # an old bbox onto a different frame. OpenRouter remains fully
+            # an old bbox onto a different frame. AIClub remains fully
             # concurrent and its complete safety result is still delivered.
             assert resized_window is not None
             try:
@@ -1224,7 +1224,7 @@ class FixedFiveGroundingClient(SelectedFeaturesGroundingClient):
 
 def build_grounding_client(
     settings: InferenceSettings,
-    openrouter_settings: OpenRouterSettings,
+    aiclub_settings: AIClubSettings,
     *,
     memory_context: MemoryContext | None = None,
     dry_run: bool = False,
@@ -1232,16 +1232,16 @@ def build_grounding_client(
 ) -> GroundingClient:
     if dry_run:
         return DryRunGroundingClient(settings, memory_context)
-    return OpenRouterGroundingClient(
+    return AIClubGroundingClient(
         settings,
-        OpenRouterClient(openrouter_settings, api_key=api_key),
+        AIClubClient(aiclub_settings, api_key=api_key),
         memory_context,
     )
 
 
 def build_selected_features_grounding_client(
     settings: InferenceSettings,
-    openrouter_settings: OpenRouterSettings,
+    aiclub_settings: AIClubSettings,
     *,
     features: tuple[str, ...],
     stranger_client: GroundingClient | None = None,
@@ -1274,9 +1274,9 @@ def build_selected_features_grounding_client(
         if dry_run:
             safety_client = DryRunMultiGroundingClient(settings, safety_labels)
         else:
-            safety_client = OpenRouterMultiGroundingClient(
+            safety_client = AIClubMultiGroundingClient(
                 settings,
-                OpenRouterClient(openrouter_settings, api_key=api_key),
+                AIClubClient(aiclub_settings, api_key=api_key),
                 safety_labels,
             )
     if include_stranger:
@@ -1304,7 +1304,7 @@ def build_selected_features_grounding_client(
 
 def build_fixed_five_grounding_client(
     settings: InferenceSettings,
-    openrouter_settings: OpenRouterSettings,
+    aiclub_settings: AIClubSettings,
     *,
     stranger_client: GroundingClient,
     safety_max_image_side: int = 320,
@@ -1322,9 +1322,9 @@ def build_fixed_five_grounding_client(
             stranger_client.settings
         )
     else:
-        safety_client = OpenRouterMultiGroundingClient(
+        safety_client = AIClubMultiGroundingClient(
             settings,
-            OpenRouterClient(openrouter_settings, api_key=api_key),
+            AIClubClient(aiclub_settings, api_key=api_key),
         )
     return FixedFiveGroundingClient(
         safety_client,

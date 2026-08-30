@@ -771,7 +771,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     client = build_client(
         config.inference,
-        config.openrouter,
+        config.aiclub,
         memory_context=config.memory,
         dry_run=args.dry_run,
     )
