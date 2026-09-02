@@ -8,6 +8,10 @@
 | 主服务 | `goodvision-harness:2026.09.02-full-gpu.2` | 五能力判断、人脸识别、陌生人照片、JSON/SSE、视频与叠框 |
 | 感知服务 | `goodvision-rich-label-worker:2026.09.02-full-gpu.2` | 人物/物品检测、会话内跟踪、异步行人属性 |
 
+上述 `.2` 为已导出的历史镜像，不包含后续源码新增的推理路由选择功能。
+运行 `.2` 时请以其随包原说明和配置为准，不能通过添加环境变量获得新功能。
+下述可选路由覆盖仅供后续已确认支持该功能的新源码镜像使用。
+
 ## 1. 前提与模型
 
 宿主机须具有兼容的 GPU 驱动和容器 GPU 运行环境，并允许两个服务访问 GPU。
@@ -53,6 +57,11 @@ docker compose --env-file .env -f compose.full-gpu.delivery.yaml config --quiet
 推理凭据可在控制台保存，或通过 `INFERENCE_API_KEY` 提供。若旧部署的凭据仅存在
 旧环境变量中、未保存到控制台，请把原凭据值填入这个中性变量；不要将实际凭据
 写入交付示例。视频采集选项使用 `VIDEO_CAPTURE_OPTIONS`，示例保留原默认值。
+
+支持路由选择的新镜像可用 `INFERENCE_PROVIDER`、`INFERENCE_MODEL` 和
+`INFERENCE_ENDPOINT` 分别覆盖服务路由、模型和完整推理 URL；留空时使用配置默认值。
+修改后需重启对应服务。实际选择值应由部署人员按所用版本确认，不随公开示例提供；
+在历史 `.2` 镜像上应保持这三个字段为空。
 
 保留项目名 `goodvision-harness` 及三个持久卷，不执行 `down -v`、volume prune，
 不要清空模型、已知人脸、陌生人照片或部署设置。升级前应备份现场持久数据。

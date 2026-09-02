@@ -405,7 +405,17 @@ def test_full_gpu_delivery_reserves_one_gpu_without_vendor_selector() -> None:
 def test_full_gpu_delivery_uses_neutral_credentials_and_model_profiles() -> None:
     services = _load_delivery()["services"]
     harness = services["harness"]["environment"]
-    assert harness["INFERENCE_API_KEY"] == "${INFERENCE_API_KEY:-}"
+    for key in (
+        "INFERENCE_PROVIDER",
+        "INFERENCE_MODEL",
+        "INFERENCE_ENDPOINT",
+        "INFERENCE_API_KEY",
+    ):
+        assert harness[key] == "${" + key + ":-}"
+    assert not any(
+        key in harness
+        for key in ("AICLUB_API_KEY", "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY")
+    )
     assert harness["VIDEO_CAPTURE_OPTIONS"] == (
         "${VIDEO_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}"
     )
@@ -425,12 +435,8 @@ def test_neutral_delivery_configuration_preserves_analysis_settings() -> None:
         (ROOT / "config.delivery.yaml").read_text(encoding="utf-8")
     )
     expected = deepcopy(source)
-    inference_service = expected.pop("aiclub")
-    inference_service.pop("endpoint")
-    inference_service.pop("api_key_env")
-    expected["inference_service"] = inference_service
-    expected["inference"].pop("model")
-    expected["inference"]["profile"] = "standard"
+    expected["inference_service"].pop("provider")
+    expected["inference_service"].pop("providers")
     expected["face"].pop("model_name")
     expected["face"].pop("provider")
     expected["face"].update(

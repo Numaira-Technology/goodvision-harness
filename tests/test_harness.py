@@ -188,10 +188,12 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.sliding_window.include_partial_final_window,
     ) == (1, 1, False)
     assert config.runtime.max_concurrent_requests == 6
-    assert config.aiclub.max_retries == 0
-    assert config.aiclub.api_key_env == "AICLUB_API_KEY"
+    assert config.model_api.max_retries == 0
+    assert config.model_api.api_key_env == "AICLUB_API_KEY"
+    assert config.model_api.provider == "aiclub"
+    assert config.aiclub is config.model_api
     # Branding is applied only at public serialization boundaries; the
-    # provider request must continue using the validated AIClub route.
+    # provider requests use the selected route's actual model identifier.
     assert config.inference.model == "qwen3.5-plus"
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900
@@ -1334,14 +1336,16 @@ def neutral_profile_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
     for key in (
         "FACE_PROVIDER", "FACE_ACCELERATOR", "INFERENCE_API_KEY", "AICLUB_API_KEY",
+        "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "MODEL_API_KEY",
+        "INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT",
     ):
         monkeypatch.delenv(key, raising=False)
     data = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-    connection = data.pop("aiclub")
-    connection.pop("endpoint")
-    connection.pop("api_key_env")
+    connection = data.pop("inference_service")
+    for key in ("endpoint", "api_key_env", "provider", "providers"):
+        connection.pop(key, None)
     data["inference_service"] = connection
-    data["inference"].pop("model")
+    data["inference"].pop("model", None)
     data["inference"]["profile"] = "standard"
     data["face"].pop("model_name")
     data["face"].pop("provider", None)
@@ -1360,6 +1364,7 @@ def test_neutral_profiles_preserve_actual_engines(neutral_profile_config: Path) 
     assert current.aiclub.api_key_env == "INFERENCE_API_KEY"
     assert current.aiclub.endpoint == AIClubSettings().endpoint
     assert current.aiclub.max_retries == 0
+    assert current.model_api is current.aiclub
 
 
 def test_new_accelerator_environment_wins_over_legacy(

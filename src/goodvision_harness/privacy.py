@@ -26,6 +26,10 @@ _IDENTIFIER_FIELDS = frozenset({
 _IDENTIFIER_LIST_FIELDS = frozenset({
     "object_ids", "memory_ids", "matched_memory_ids",
 })
+_IMPLEMENTATION_FIELDS = frozenset({
+    "engine", "provider", "backend", "model", "model_name",
+    "execution_provider", "execution_providers",
+})
 
 _PRIVATE_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
@@ -64,6 +68,42 @@ _PRIVATE_PATTERNS = tuple(
     )
 )
 
+# These tokens can also be names, physical objects, animals, or customer IDs.
+# Keep the strict vocabulary above for diagnostic and release-file audits;
+# ordinary result data needs evidence that a token denotes an implementation.
+_DOMAIN_TERM = re.compile(
+    r"^(torch|pandas|timm|claude|gemini|google|amazon|azure|aws|baidu|"
+    r"alibaba|tencent|huawei|microsoft|buffalo|antelope)(.*)$",
+    re.IGNORECASE,
+)
+_IMPLEMENTATION_FORM = re.compile(
+    r"[./:](?=[a-z0-9_])|(?:error|exception|warning)(?:[:_-].*)?$|"
+    r"(?:claude|gemini)[-_/]?(?:\d|(?:sonnet|opus|haiku|flash|pro)(?:[-_/]|$))|"
+    r"(?:torch|pandas|timm)[-_v]?\d|"
+    r"torch(?:vision|audio|text|data|metrics|script|_dynamo|_inductor)|"
+    r"(?:googleapis|amazonaws|microsoftonline)|"
+    r"[-_](?:api|sdk|client|backend|runtime|provider|engine|model|key|version)"
+    r"(?:[-_]|$)|(?:api|sdk)(?:key|client|error|exception)$|"
+    r"^buffalo[_-]|^antelopev\d",
+    re.IGNORECASE,
+)
+_IMPLEMENTATION_CONTEXT = re.compile(
+    r"(?<![a-z0-9])(?:"
+    r"(?:from|import)\s+(?:torch|pandas|timm)(?:\.[\w.]+)?|"
+    r"(?:torch|pandas|timm)\s+(?:backend|framework|library|module|runtime)|"
+    r"(?:claude|gemini)\s+(?:model|api|sdk)|"
+    r"(?:google|amazon|azure|aws|baidu|alibaba|tencent|huawei|microsoft)"
+    r"\s+(?:cloud|api|sdk))\b",
+    re.IGNORECASE,
+)
+
+
+def _redact_data_match(match: re.Match[str], fallback: str) -> str:
+    token = match.group()
+    if _DOMAIN_TERM.fullmatch(token) and not _IMPLEMENTATION_FORM.search(token):
+        return token
+    return fallback
+
 
 def contains_private_implementation_detail(value: object) -> bool:
     """Return whether text contains a known private engine/provider marker."""
@@ -73,11 +113,13 @@ def contains_private_implementation_detail(value: object) -> bool:
 
 
 def redact_public_text(value: object, *, fallback: str = "analysis engine") -> str:
-    """Redact known implementation identifiers from otherwise useful text."""
+    """Redact implementation details while preserving ordinary domain values."""
 
-    rendered = str(value)
+    rendered = _IMPLEMENTATION_CONTEXT.sub(lambda _: fallback, str(value))
     for pattern in _PRIVATE_PATTERNS:
-        rendered = pattern.sub(fallback, rendered)
+        rendered = pattern.sub(
+            lambda match: _redact_data_match(match, fallback), rendered,
+        )
     return rendered
 
 
@@ -91,6 +133,25 @@ def public_error_message(
     return fallback
 
 
+def _public_implementation_value(value: Any) -> Any:
+    """Strictly project explicit engine metadata, not ordinary result data."""
+
+    if isinstance(value, str):
+        for pattern in _PRIVATE_PATTERNS:
+            value = pattern.sub("analysis engine", value)
+        return value
+    if isinstance(value, Mapping):
+        return {
+            _public_implementation_value(str(key)): _public_implementation_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(_public_implementation_value(item) for item in value)
+    if isinstance(value, list):
+        return [_public_implementation_value(item) for item in value]
+    return value
+
+
 def _public_field_value(key: object, value: Any) -> Any:
     if key in _IDENTIFIER_FIELDS and isinstance(value, str):
         return value
@@ -100,6 +161,8 @@ def _public_field_value(key: object, value: Any) -> Any:
         and all(isinstance(item, str) for item in value)
     ):
         return tuple(value) if isinstance(value, tuple) else list(value)
+    if key in _IMPLEMENTATION_FIELDS:
+        return _public_implementation_value(value)
     return public_safe_value(value)
 
 

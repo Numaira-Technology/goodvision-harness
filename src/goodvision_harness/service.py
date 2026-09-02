@@ -47,6 +47,7 @@ from .grounding import (
     build_grounding_client,
     build_selected_features_grounding_client,
 )
+from .model_api import ModelAPISettings, environment_api_key
 from .overlay import draw_event_rich_overlay, draw_overlay, draw_rich_overlay
 from .overlay_fusion import OverlayFusionMatcher
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
@@ -117,6 +118,8 @@ class HarnessRuntime:
         deployment_store: DeploymentSettingsStore | None = None,
         rich_label_coordinator: RichLabelCoordinator | None = None,
     ) -> None:
+        model_api = config.model_api if config is not None else ModelAPISettings()
+        self._inference_provider = model_api.provider
         self._deployment_store = deployment_store
         self._deployment_settings: DeploymentSettings | None = None
         self._deployment_error: str | None = None
@@ -124,7 +127,9 @@ class HarnessRuntime:
         if deployment_store is not None:
             try:
                 self._deployment_settings = deployment_store.load()
-                self._persisted_api_key = deployment_store.load_api_key()
+                self._persisted_api_key = deployment_store.load_api_key(
+                    provider=self._inference_provider,
+                )
             except Exception:
                 LOGGER.error("could not load persistent deployment settings")
                 self._deployment_error = "persistent settings could not be loaded"
@@ -147,21 +152,7 @@ class HarnessRuntime:
         self.config_error = config_error
         self.dry_run = dry_run
         self.autostart = autostart
-        api_key_env = (
-            config.aiclub.api_key_env
-            if config is not None
-            else "AICLUB_API_KEY"
-        )
-        self._environment_api_key = (
-            os.environ.get("INFERENCE_API_KEY", "").strip()
-            or os.environ.get(api_key_env, "").strip()
-            # Backward-compatible reads for existing deployments. These
-            # legacy names are never emitted by the service.
-            or os.environ.get("AICLUB_API_KEY", "").strip()
-            or os.environ.get("MODEL_API_KEY", "").strip()
-            or os.environ.get("OPENROUTER_API_KEY", "").strip()
-            or None
-        )
+        self._environment_api_key = environment_api_key(model_api) or None
         self._aiclub_api_key = (
             self._persisted_api_key or self._environment_api_key
         )
@@ -410,10 +401,14 @@ class HarnessRuntime:
                 self.dry_run = settings.dry_run
                 self.autostart = settings.autostart
             if rendered_key is not None:
-                self._deployment_store.save_api_key(rendered_key)
+                self._deployment_store.save_api_key(
+                    rendered_key, provider=self._inference_provider,
+                )
                 self._persisted_api_key = rendered_key
             elif clear_api_key:
-                self._deployment_store.delete_api_key()
+                self._deployment_store.delete_api_key(
+                    provider=self._inference_provider,
+                )
                 self._persisted_api_key = None
             self._aiclub_api_key = (
                 self._persisted_api_key or self._environment_api_key
@@ -802,7 +797,7 @@ class HarnessRuntime:
                     )
                 client = build_selected_features_grounding_client(
                     session_config.inference,
-                    session_config.aiclub,
+                    session_config.model_api,
                     features=selected_features,
                     stranger_client=face_runtime,
                     safety_max_image_side=self.config.video.max_image_side,
@@ -820,7 +815,7 @@ class HarnessRuntime:
                     )
                 client = build_grounding_client(
                     session_config.inference,
-                    session_config.aiclub,
+                    session_config.model_api,
                     memory_context=session_config.memory,
                     dry_run=use_dry_run,
                     api_key=self._aiclub_api_key,
