@@ -323,6 +323,7 @@ class _PendingFrame:
     frame_sequence: int
     timestamp_seconds: float
     generation: int
+    enqueued_at: float
 
 
 class RichLabelCoordinator:
@@ -389,6 +390,10 @@ class RichLabelCoordinator:
             "resets": 0,
             "last_error": None,
             "last_latency_seconds": None,
+            "last_queue_seconds": None,
+            "last_total_latency_seconds": None,
+            "last_attempt_frame_sequence": None,
+            "last_attempt_succeeded": None,
             "last_frame_sequence": None,
         }
 
@@ -436,6 +441,7 @@ class RichLabelCoordinator:
                 frame_sequence=sequence,
                 timestamp_seconds=timestamp,
                 generation=self._generation,
+                enqueued_at=self._clock(),
             )
             self._stats["submitted"] += 1
             self._ensure_started_locked()
@@ -464,6 +470,11 @@ class RichLabelCoordinator:
             self._last_started_at = None
             self._stats["resets"] += 1
             self._stats["last_error"] = None
+            self._stats["last_latency_seconds"] = None
+            self._stats["last_queue_seconds"] = None
+            self._stats["last_total_latency_seconds"] = None
+            self._stats["last_attempt_frame_sequence"] = None
+            self._stats["last_attempt_succeeded"] = None
             self._stats["last_frame_sequence"] = None
             self._condition.notify_all()
 
@@ -586,26 +597,38 @@ class RichLabelCoordinator:
                     _matching_snapshot(snapshot, item)
                 except Exception as exc:  # fail open at the video boundary
                     error = exc
-                latency = max(0.0, self._clock() - started_at)
+                completed_at = self._clock()
+                latency = max(0.0, completed_at - started_at)
                 with self._condition:
                     self._in_flight = False
-                    self._stats["last_latency_seconds"] = round(latency, 6)
                     if (
                         item.generation != self._generation
                         or item.stream_session_id != self._stream_session_id
                         or self._closed
                     ):
                         self._stats["stale_results"] += 1
-                    elif error is not None:
-                        LOGGER.warning("rich-label inference failed")
-                        self._stats["failed"] += 1
-                        self._stats["last_error"] = "rich-label inference failed"
                     else:
-                        assert snapshot is not None
-                        self._insert_snapshot_locked(snapshot)
-                        self._stats["succeeded"] += 1
-                        self._stats["last_error"] = None
-                        self._stats["last_frame_sequence"] = snapshot.frame_sequence
+                        # Local queue and completion timing excludes display
+                        # buffering; it cannot isolate provider-side queue time.
+                        self._stats["last_latency_seconds"] = round(latency, 6)
+                        self._stats["last_queue_seconds"] = round(
+                            max(0.0, started_at - item.enqueued_at), 6,
+                        )
+                        self._stats["last_total_latency_seconds"] = round(
+                            max(0.0, completed_at - item.enqueued_at), 6,
+                        )
+                        self._stats["last_attempt_frame_sequence"] = item.frame_sequence
+                        self._stats["last_attempt_succeeded"] = error is None
+                        if error is not None:
+                            LOGGER.warning("rich-label inference failed")
+                            self._stats["failed"] += 1
+                            self._stats["last_error"] = "rich-label inference failed"
+                        else:
+                            assert snapshot is not None
+                            self._insert_snapshot_locked(snapshot)
+                            self._stats["succeeded"] += 1
+                            self._stats["last_error"] = None
+                            self._stats["last_frame_sequence"] = snapshot.frame_sequence
                     self._condition.notify_all()
         finally:
             self._close_client()

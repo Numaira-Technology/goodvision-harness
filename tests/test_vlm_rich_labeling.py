@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import cv2
+import jsonschema
 import numpy as np
 import pytest
 
@@ -673,6 +674,93 @@ def test_parallel_reuses_pool_and_frame_key_and_restores_crop_coordinates(
     assert pools[0].loop.is_closed()
 
 
+def _merge_person(x1: int, x2: int, color: str) -> Any:
+    return vlm.parse_rich_annotation(json.dumps({"o": [[
+        "p", x1, 100, x2, 900, {"uc": color},
+    ]]}))[0]
+
+
+@pytest.mark.parametrize("side,x1,x2", [
+    ("left", 510, 590), ("right", 454, 541),
+])
+def test_crop_merge_keeps_unmatched_person_across_center(
+    side: str, x1: int, x2: int,
+) -> None:
+    person = _merge_person(x1, x2, "brown")
+    result = vlm._merge_crop_people(
+        [person] if side == "left" else [], [person] if side == "right" else [],
+    )
+    assert result == [person]
+
+
+def test_crop_merge_matches_true_duplicate_and_preserves_chosen_metadata() -> None:
+    left = _merge_person(400, 600, "blue")
+    right = _merge_person(400, 600, "red")
+    result = vlm._merge_crop_people([left], [right])
+    assert result == [right]
+    assert result[0].bbox.x1 == 0.4
+    assert result[0].attributes["upper_color"] == "red"
+    assert result[0].confidence is None
+
+
+def test_crop_merge_retains_adjacent_people_and_same_crop_duplicates() -> None:
+    left = _merge_person(350, 480, "blue")
+    right = _merge_person(460, 600, "red")
+    assert vlm._merge_crop_people([left], [right]) == [left, right]
+    assert vlm._merge_crop_people([left, left], []) == [left, left]
+
+
+def test_crop_merge_pairs_once_and_prefers_highest_overlap() -> None:
+    left = _merge_person(400, 600, "blue")
+    near = _merge_person(410, 610, "gray")
+    exact = _merge_person(400, 600, "red")
+    assert vlm._merge_crop_people([left], [near, exact]) == [exact, near]
+
+
+def test_crop_merge_iou_threshold_is_inclusive() -> None:
+    left = _merge_person(250, 750, "blue")
+    half_overlap = _merge_person(250, 500, "red")
+    below_half = _merge_person(250, 495, "gray")
+    assert len(vlm._merge_crop_people([left], [half_overlap])) == 1
+    assert vlm._merge_crop_people([left], [below_half]) == [left, below_half]
+
+
+def test_parallel_restores_and_keeps_right_only_person_left_of_center(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    async def stream(_client: Any, **_kwargs: Any) -> Any:
+        index = len(calls)
+        calls.append(index)
+        return _stream_reply([
+            ["p", 90, 0, 235, 288, {"a": "a", "d": "b", "uc": "brown"}],
+        ] if index == 1 else [])
+
+    monkeypatch.setattr(vlm.httpx, "AsyncClient", _AsyncPool)
+    monkeypatch.setattr(vlm, "complete_stream", stream)
+    client = vlm.VLMRichLabelClient(
+        AIClubSettings(), model="vlm", api_key="test", wire_format="compact",
+        execution_mode="parallel", structured_output=True,
+    )
+    try:
+        snapshot = client.infer(
+            _jpeg(), stream_session_id="test", frame_sequence=1, timestamp_seconds=1,
+        )
+        person, = snapshot.objects
+        assert person.track_id == "P0001"
+        assert person.bbox.x1 == pytest.approx(0.454)
+        assert person.bbox.x2 == pytest.approx(0.541)
+        assert (person.bbox.x1 + person.bbox.x2) / 2 == pytest.approx(0.4975)
+        assert person.bbox.y1 == 0
+        assert person.bbox.y2 == 0.288
+        assert person.attributes["estimated_age_range"] == "18-60"
+        assert person.attributes["estimated_direction"] == "Back"
+        assert person.attributes["upper_color"] == "brown"
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize("failure", ["invalid", "cancelled", "timeout"])
 def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
     monkeypatch: pytest.MonkeyPatch, failure: str,
@@ -1003,3 +1091,116 @@ def test_concurrent_close_at_frame_completion_returns_and_closes_pool_once(
     assert pools[0].loop.is_closed()
     assert not client._part_tasks
     assert not observed
+
+
+@pytest.mark.parametrize("scope", ["all", "people", "items"])
+def test_compact_strict_schema_accepts_its_scope_and_null_unknowns(scope: str) -> None:
+    response_format = vlm.build_compact_rich_annotation_response_format(scope)
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    jsonschema.Draft202012Validator.check_schema(schema)
+    person = ["p", 100, 100, 400, 900, {
+        "a": "a", "g": "m", "d": "s", "s": "l", "b": None,
+        "uc": "white", "lc": None, "ls": ["tr"], "gl": 1, "ht": 0,
+    }]
+    items = [["chair", 500, 400, 900, 1000], ["desk", 0, 500, 400, 900, {"c": None}]]
+    rows = [person] if scope == "people" else items if scope == "items" else [person, *items]
+    jsonschema.validate({"o": rows}, schema)
+    jsonschema.validate({"o": []}, schema)
+    assert len(vlm.parse_rich_annotation(json.dumps({"o": rows}))) == len(rows)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"o": [rows[0]] * (9 if scope == "items" else 13)}, schema)
+
+
+@pytest.mark.parametrize("row", [
+    ["p", 100, 100, 400, {"a": "a"}],
+    ["p", 100, 100, 400, 900],
+    ["p", 100, 100, 400, 900, {"a": "a"}, {"a": "o"}],
+    ["p", 100, 100, 400, 900, None, {"a": "a"}],
+    ["p", [100, 100, 400, 900], {"a": "a"}],
+    ["p", 100.5, 100, 400, 900, {}],
+    ["p", True, 100, 400, 900, {}],
+    ["p", 100, 100, 1001, 900, {}],
+    ["p", 100, 100, 400, 900, {"a": "adult"}],
+    ["p", 100, 100, 400, 900, {"ls": "tr"}],
+    ["p", 100, 100, 400, 900, {"ls": ["pants"]}],
+    ["p", 100, 100, 400, 900, {"gl": "yes"}],
+    ["p", 100, 100, 400, 900, {"extra": "ignored"}],
+])
+@pytest.mark.parametrize("scope", ["people", "all"])
+def test_compact_schema_rejects_missing_boxes_double_attributes_and_bad_values(
+    scope: str, row: list[Any],
+) -> None:
+    schema = vlm.build_compact_rich_annotation_response_format(scope)["json_schema"]["schema"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"o": [row]}, schema)
+
+
+def test_compact_schema_keeps_local_positive_area_validation() -> None:
+    schema = vlm.build_compact_rich_annotation_response_format("people")["json_schema"]["schema"]
+    payload = {"o": [["p", 400, 100, 100, 900, {}]]}
+    jsonschema.validate(payload, schema)  # Bounds alone cannot compare x1 and x2.
+    with pytest.raises(RichLabelProtocolError, match="positive area"):
+        vlm.parse_rich_annotation(json.dumps(payload))
+
+
+@pytest.mark.parametrize("scope", ["all", "people", "items"])
+def test_single_structured_compact_request_uses_matching_scope_schema(
+    monkeypatch: pytest.MonkeyPatch, scope: str,
+) -> None:
+    captured = []
+
+    def post(_client: Any, payload: Any) -> Any:
+        captured.append(payload)
+        return _stream_reply([])
+
+    monkeypatch.setattr(AIClubClient, "_post_json", post)
+    client = vlm.VLMRichLabelClient(
+        AIClubSettings(), model="vlm", api_key="test", scope=scope,
+        wire_format="compact", structured_output=True,
+        request_parameters={"response_format": {"type": "json_object"}, "temperature": 0.7},
+    )
+    client.infer(_jpeg(), stream_session_id="test", frame_sequence=1, timestamp_seconds=1)
+    assert captured[0]["response_format"] == vlm.build_compact_rich_annotation_response_format(scope)
+    assert captured[0]["temperature"] == 0.7
+    assert client.request_parameters["response_format"] == {"type": "json_object"}
+    client.close()
+
+
+def test_parallel_structured_requests_use_people_people_items_schemas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = []
+
+    async def stream(_client: Any, **kwargs: Any) -> Any:
+        captured.append(kwargs["request_parameters"])
+        return _stream_reply([])
+
+    monkeypatch.setattr(vlm.httpx, "AsyncClient", _AsyncPool)
+    monkeypatch.setattr(vlm, "complete_stream", stream)
+    client = vlm.VLMRichLabelClient(
+        AIClubSettings(), model="vlm", api_key="test",
+        wire_format="compact", execution_mode="parallel", structured_output=True,
+        request_parameters={"response_format": {"type": "json_object"}},
+    )
+    try:
+        client.infer(_jpeg(), stream_session_id="test", frame_sequence=1, timestamp_seconds=1)
+        assert [params["response_format"] for params in captured] == [
+            vlm.build_compact_rich_annotation_response_format(scope)
+            for scope in ("people", "people", "items")
+        ]
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("kwargs,exception", [
+    ({"structured_output": True}, ValueError),
+    ({"structured_output": "true", "wire_format": "compact"}, TypeError),
+    ({"structured_output": 1, "wire_format": "compact"}, TypeError),
+])
+def test_invalid_structured_output_options_are_rejected(
+    kwargs: dict[str, Any], exception: type[Exception],
+) -> None:
+    with pytest.raises(exception):
+        vlm.VLMRichLabelClient(AIClubSettings(), model="vlm", **kwargs)

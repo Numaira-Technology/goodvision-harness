@@ -493,9 +493,18 @@ def test_delayed_composer_composes_rich_only_frames_without_analysis() -> None:
         composer.close()
 
 
-def test_delayed_composer_falls_back_to_event_when_compose_fails() -> None:
+@pytest.mark.parametrize("with_analysis", (True, False))
+def test_delayed_composer_falls_back_to_original_frame_when_compose_fails(
+    with_analysis: bool,
+) -> None:
     published: list[FramePacket] = []
     published_event = threading.Event()
+    rendered_sources: list[bytes] = []
+
+    def render_event(jpeg: bytes, analysis: AnalysisResult) -> bytes:
+        assert analysis.message_id == "event"
+        rendered_sources.append(jpeg)
+        return jpeg + b"-event"
 
     def broken_compose(
         jpeg: bytes,
@@ -510,28 +519,36 @@ def test_delayed_composer_falls_back_to_event_when_compose_fails() -> None:
         delay_seconds=0.01,
         max_gap_seconds=0.2,
         output_fps=15.0,
-        render=lambda jpeg, analysis: jpeg + b"-event",
+        render=render_event,
         publish=lambda packet: (
             published.append(packet),
             published_event.set(),
         ),
-        enrich=lambda jpeg, timestamp, sequence: jpeg + b"-rich",
+        enrich=lambda jpeg, timestamp, sequence: pytest.fail(
+            "failed fusion must not enrich before drawing event boxes"
+        ),
         compose=broken_compose,
     )
     try:
-        assert composer.submit_result(
-            _result(
-                timestamp=0.0,
-                frame_index=0,
-                message_id="event",
-                bbox=(0.1, 0.1, 0.3, 0.3),
+        if with_analysis:
+            assert composer.submit_result(
+                _result(
+                    timestamp=0.0,
+                    frame_index=0,
+                    message_id="event",
+                    bbox=(0.1, 0.1, 0.3, 0.3),
+                )
             )
-        )
         composer.submit_frame(_packet(0, 0.0))
 
         assert published_event.wait(1.0)
-        assert published[0].jpeg == b"jpeg-rich-event"
-        assert published[0].annotation_mode == "exact"
+        assert len(published) == 1
+        assert rendered_sources == ([b"jpeg"] if with_analysis else [])
+        assert published[0].jpeg == (b"jpeg-event" if with_analysis else b"jpeg")
+        assert published[0].annotation_mode == ("exact" if with_analysis else "none")
+        assert published[0].frame_sequence == 0
+        assert published[0].media_timestamp == 0.0
+        assert composer.stats()["frames_published"] == 1
         assert composer.stats()["composition_render_errors"] == 1
 
         composer.reset()

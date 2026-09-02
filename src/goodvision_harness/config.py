@@ -62,6 +62,7 @@ class RichLabelSettings:
     vlm_max_image_side: int = 1280
     vlm_wire_format: str = "objects"
     vlm_execution_mode: str = "single"
+    vlm_structured_output: bool = False
     vlm_request_parameters: Mapping[str, Any] = field(default_factory=dict)
     endpoint: str = "http://rich-label-worker:8091/v1/labels"
     timeout_seconds: float = 2.0
@@ -294,6 +295,12 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         raise ValueError("rich_labeling.vlm_execution_mode must be single or parallel")
     if rich_execution_mode == "parallel" and rich_wire_format != "compact":
         raise ValueError("parallel rich labeling requires vlm_wire_format: compact")
+    rich_structured_output = _bool(
+        rich_label_section.get("vlm_structured_output", False),
+        "rich_labeling.vlm_structured_output",
+    )
+    if rich_structured_output and rich_wire_format != "compact":
+        raise ValueError("structured rich labeling requires vlm_wire_format: compact")
     rich_label_endpoint = (
         os.environ.get("RICH_LABEL_ENDPOINT", "").strip()
         or _required_string(
@@ -317,6 +324,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         model=rich_label_model,
         vlm_wire_format=rich_wire_format,
         vlm_execution_mode=rich_execution_mode,
+        vlm_structured_output=rich_structured_output,
         vlm_max_tokens=_positive_int(
             rich_label_section.get("vlm_max_tokens", 4096),
             "rich_labeling.vlm_max_tokens",

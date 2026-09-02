@@ -86,6 +86,58 @@ COMPACT_ENUM_ALIASES = {
 }
 
 
+def build_compact_rich_annotation_response_format(scope: str = "all") -> dict[str, Any]:
+    """Constrain compact row structure; local box and attribute checks still apply."""
+
+    _validate_compact_scope(scope, None)
+    attributes = {
+        key: {"enum": [*codes, None]}
+        for key, codes in COMPACT_ENUM_CODES.items() if key != "ls"
+    }
+    attributes["ls"] = {
+        "type": ["array", "null"], "maxItems": len(COMPACT_ENUM_CODES["ls"]),
+        "items": {"enum": list(COMPACT_ENUM_CODES["ls"])},
+    }
+    color = {"type": ["string", "null"], "minLength": 1, "maxLength": 24}
+    attributes.update({key: dict(color) for key in ("uc", "lc", "c")})
+    attributes.update({key: {"enum": [0, 1, None]} for key in ("gl", "ht", "bt", "ho")})
+    coordinate = {"type": "integer", "minimum": 0, "maximum": 1000}
+    person_row = {
+        "type": "array", "minItems": 6, "maxItems": 6, "items": False,
+        "prefixItems": [
+            {"const": "p"}, *[dict(coordinate) for _ in range(4)],
+            {"type": ["object", "null"], "properties": attributes,
+             "additionalProperties": False},
+        ],
+    }
+    item_row = {
+        "type": "array", "minItems": 5, "maxItems": 6, "items": False,
+        "prefixItems": [
+            {"type": "string", "minLength": 1, "maxLength": 64},
+            *[dict(coordinate) for _ in range(4)],
+            {"type": ["object", "null"], "properties": {"c": dict(color)},
+             "additionalProperties": False},
+        ],
+    }
+    if scope == "all":
+        # In a mixed response, a person must not use the shorter item variant.
+        item_row["prefixItems"][0]["not"] = {"enum": ["p", "person", "pedestrian"]}
+    row = person_row if scope == "people" else item_row if scope == "items" else {
+        "anyOf": [person_row, item_row],
+    }
+    schema = {
+        "type": "object", "required": ["o"], "additionalProperties": False,
+        "properties": {"o": {
+            "type": "array", "maxItems": 8 if scope == "items" else COMPACT_MAX_OBJECTS,
+            "items": row,
+        }},
+    }
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": f"rich_{scope}", "strict": True, "schema": schema},
+    }
+
+
 def build_rich_annotation_messages(jpeg_bytes: bytes) -> list[dict[str, Any]]:
     """Describe only this frame; never mix the event detector's risk prompt in."""
 
@@ -429,6 +481,36 @@ def _iou(left: NormalizedBBox, right: NormalizedBBox) -> float:
     return intersection / union
 
 
+def _merge_crop_people(
+    left: list[RichLabelObject], right: list[RichLabelObject],
+) -> list[RichLabelObject]:
+    """Deduplicate opposite-crop detections without discarding unmatched people."""
+
+    pairs = []
+    for left_index, left_item in enumerate(left):
+        for right_index, right_item in enumerate(right):
+            overlap = _iou(left_item.bbox, right_item.bbox)
+            if overlap >= 0.5 or math.isclose(overlap, 0.5, rel_tol=0.0, abs_tol=1e-12):
+                pairs.append((-overlap, left_index, right_index))
+    representatives: dict[int, RichLabelObject] = {}
+    matched_right: set[int] = set()
+    for _overlap, left_index, right_index in sorted(pairs):
+        if left_index in representatives or right_index in matched_right:
+            continue
+        left_item, right_item = left[left_index], right[right_index]
+        left_owns = (left_item.bbox.x1 + left_item.bbox.x2) / 2 < 0.5
+        right_owns = (right_item.bbox.x1 + right_item.bbox.x2) / 2 >= 0.5
+        # Ownership only chooses between matching observations. It never drops
+        # a detection merely because the other crop should have seen it.
+        representatives[left_index] = (
+            right_item if right_owns and not left_owns else left_item
+        )
+        matched_right.add(right_index)
+    return [representatives.get(index, item) for index, item in enumerate(left)] + [
+        item for index, item in enumerate(right) if index not in matched_right
+    ]
+
+
 class _RichTask(asyncio.Task[Any]):
     """Track cancellation, including gather propagation, on Python 3.10+."""
 
@@ -470,6 +552,7 @@ class VLMRichLabelClient:
         scope: str = "all",
         person_region: tuple[float, float] | None = None,
         execution_mode: str = "single",
+        structured_output: bool = False,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("rich annotation model must not be empty")
@@ -485,6 +568,11 @@ class VLMRichLabelClient:
         if wire_format not in ("objects", "compact"):
             raise ValueError("rich annotation wire_format must be objects or compact")
         self.wire_format = wire_format
+        if not isinstance(structured_output, bool):
+            raise TypeError("rich annotation structured_output must be boolean")
+        if structured_output and wire_format != "compact":
+            raise ValueError("structured rich annotation requires compact wire_format")
+        self.structured_output = structured_output
         self.person_region = _validate_compact_scope(scope, person_region)
         if wire_format != "compact" and scope != "all":
             raise ValueError("scoped rich annotation requires compact wire_format")
@@ -575,7 +663,7 @@ class VLMRichLabelClient:
             image, max_image_side=self.max_image_side, quality=85,
         )
         client = AIClubClient(self.settings, api_key=key)
-        parameters = {"temperature": 0.0, **self.request_parameters}
+        parameters = self._request_parameters(self.scope)
         messages = (
             build_compact_rich_annotation_messages(
                 encoded, scope=self.scope, person_region=self.person_region,
@@ -597,6 +685,12 @@ class VLMRichLabelClient:
         if choices and choices[0].get("finish_reason") == "length":
             raise RichLabelProtocolError("rich annotation response was truncated")
         return parse_rich_annotation(client.assistant_text(response))
+
+    def _request_parameters(self, scope: str) -> dict[str, Any]:
+        parameters = {"temperature": 0.0, **self.request_parameters}
+        if self.structured_output:
+            parameters["response_format"] = build_compact_rich_annotation_response_format(scope)
+        return parameters
 
     def _infer_parallel(
         self, image: np.ndarray, key: str, started: float,
@@ -675,7 +769,7 @@ class VLMRichLabelClient:
                 self._http_client, settings=self.settings, model=self.model,
                 messages=messages, api_key=key, deadline_seconds=remaining,
                 request_parameters={
-                    "temperature": 0.0, **self.request_parameters,
+                    **self._request_parameters("items" if name == "items" else "people"),
                     "max_tokens": self.max_tokens,
                 },
             )
@@ -701,7 +795,9 @@ class VLMRichLabelClient:
             await asyncio.gather(*tasks, return_exceptions=True)
             self._part_tasks.difference_update(tasks)
 
-        people = []
+        crop_people: dict[str, list[RichLabelObject]] = {
+            "people_left": [], "people_right": [],
+        }
         items = []
         parts = {}
         for (name, _messages, offset, scale), (objects, response) in zip(requests, results):
@@ -716,9 +812,8 @@ class VLMRichLabelClient:
                     item.bbox, x1=offset + item.bbox.x1 * scale,
                     x2=offset + item.bbox.x2 * scale,
                 )
-                is_left = (bbox.x1 + bbox.x2) / 2 < 0.5
-                if is_left == (name == "people_left"):
-                    people.append(replace(item, bbox=bbox))
+                crop_people[name].append(replace(item, bbox=bbox))
+        people = _merge_crop_people(crop_people["people_left"], crop_people["people_right"])
         if len(people) > COMPACT_MAX_OBJECTS:
             raise RichLabelProtocolError("parallel rich annotation has too many people")
         merged = tuple(people + items[:min(8, COMPACT_MAX_OBJECTS - len(people))])

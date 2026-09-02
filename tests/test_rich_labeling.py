@@ -463,6 +463,197 @@ def test_coordinator_is_single_worker_and_keeps_only_latest_waiting_frame() -> N
     assert client.closed == 1
 
 
+class _ControlledClock:
+    def __init__(self) -> None:
+        self._now = 100.0
+        self._lock = threading.Lock()
+
+    def __call__(self) -> float:
+        with self._lock:
+            return self._now
+
+    def advance(self, seconds: float) -> None:
+        with self._lock:
+            self._now += seconds
+
+
+class _TimingClient:
+    def __init__(self, call_count: int) -> None:
+        self.calls: list[int] = []
+        self.started = [threading.Event() for _ in range(call_count)]
+        self.release = [threading.Event() for _ in range(call_count)]
+
+    def infer(
+        self,
+        _jpeg_bytes: bytes,
+        *,
+        stream_session_id: str,
+        frame_sequence: int,
+        timestamp_seconds: float,
+    ) -> RichLabelSnapshot:
+        index = len(self.calls)
+        self.calls.append(frame_sequence)
+        self.started[index].set()
+        assert self.release[index].wait(2.0)
+        return _snapshot(
+            frame_sequence, timestamp_seconds, session_id=stream_session_id,
+        )
+
+
+def test_coordinator_times_local_queue_from_latest_replacement() -> None:
+    clock = _ControlledClock()
+    client = _TimingClient(2)
+    coordinator = RichLabelCoordinator(client, max_fps=10_000, clock=clock)
+    try:
+        assert coordinator.submit(
+            b"first", stream_session_id="session-1",
+            frame_sequence=1, timestamp_seconds=0.1,
+        )
+        assert client.started[0].wait(1.0)
+        clock.advance(1.0)
+        assert coordinator.submit(
+            b"replaced", stream_session_id="session-1",
+            frame_sequence=2, timestamp_seconds=0.2,
+        )
+        clock.advance(2.0)
+        assert coordinator.submit(
+            b"latest", stream_session_id="session-1",
+            frame_sequence=3, timestamp_seconds=0.3,
+        )
+        clock.advance(3.0)
+        client.release[0].set()
+        assert client.started[1].wait(1.0)
+
+        first_stats = coordinator.stats()
+        assert first_stats["last_queue_seconds"] == 0.0
+        assert first_stats["last_latency_seconds"] == 6.0
+        assert first_stats["last_total_latency_seconds"] == 6.0
+
+        clock.advance(4.0)
+        client.release[1].set()
+        assert coordinator.wait_until_idle()
+        stats = coordinator.stats()
+        assert client.calls == [1, 3]
+        assert stats["replaced"] == 1
+        assert stats["last_frame_sequence"] == 3
+        assert stats["last_queue_seconds"] == 3.0
+        assert stats["last_latency_seconds"] == 4.0
+        assert stats["last_total_latency_seconds"] == 7.0
+    finally:
+        for release in client.release:
+            release.set()
+        coordinator.close()
+
+
+def test_coordinator_reset_clears_timing_and_ignores_old_completion() -> None:
+    clock = _ControlledClock()
+    client = _TimingClient(3)
+    coordinator = RichLabelCoordinator(client, max_fps=10_000, clock=clock)
+    timing_fields = (
+        "last_queue_seconds", "last_latency_seconds", "last_total_latency_seconds",
+        "last_attempt_frame_sequence", "last_attempt_succeeded",
+    )
+    try:
+        assert coordinator.submit(
+            b"completed", stream_session_id="old-session",
+            frame_sequence=1, timestamp_seconds=0.1,
+        )
+        assert client.started[0].wait(1.0)
+        clock.advance(2.0)
+        client.release[0].set()
+        assert coordinator.wait_until_idle()
+        assert coordinator.stats()["last_total_latency_seconds"] == 2.0
+
+        clock.advance(2.0)
+        assert coordinator.submit(
+            b"old", stream_session_id="old-session",
+            frame_sequence=2, timestamp_seconds=0.2,
+        )
+        assert client.started[1].wait(1.0)
+        clock.advance(1.0)
+        coordinator.reset("new-session")
+        assert all(coordinator.stats()[field] is None for field in timing_fields)
+
+        clock.advance(1.0)
+        assert coordinator.submit(
+            b"new", stream_session_id="new-session",
+            frame_sequence=3, timestamp_seconds=0.3,
+        )
+        clock.advance(4.0)
+        client.release[1].set()
+        assert client.started[2].wait(1.0)
+        stats = coordinator.stats()
+        assert stats["stale_results"] == 1
+        assert all(stats[field] is None for field in timing_fields)
+
+        clock.advance(3.0)
+        client.release[2].set()
+        assert coordinator.wait_until_idle()
+        stats = coordinator.stats()
+        assert stats["stream_session_id"] == "new-session"
+        assert stats["last_frame_sequence"] == 3
+        assert stats["last_queue_seconds"] == 4.0
+        assert stats["last_latency_seconds"] == 3.0
+        assert stats["last_total_latency_seconds"] == 7.0
+        assert stats["last_attempt_frame_sequence"] == 3
+        assert stats["last_attempt_succeeded"] is True
+    finally:
+        for release in client.release:
+            release.set()
+        coordinator.close()
+
+
+def test_coordinator_failed_attempt_timing_keeps_last_successful_frame() -> None:
+    class Client(_TimingClient):
+        def infer(self, *args: Any, **kwargs: Any) -> RichLabelSnapshot:
+            snapshot = super().infer(*args, **kwargs)
+            if snapshot.frame_sequence == 2:
+                raise httpx.ConnectError("offline")
+            return snapshot
+
+    clock = _ControlledClock()
+    client = Client(2)
+    coordinator = RichLabelCoordinator(client, max_fps=10_000, clock=clock)
+    try:
+        initial_stats = coordinator.stats()
+        assert initial_stats["last_attempt_frame_sequence"] is None
+        assert initial_stats["last_attempt_succeeded"] is None
+        assert coordinator.submit(
+            b"good", stream_session_id="session-1",
+            frame_sequence=1, timestamp_seconds=0.1,
+        )
+        assert client.started[0].wait(1.0)
+        clock.advance(1.0)
+        assert coordinator.submit(
+            b"bad", stream_session_id="session-1",
+            frame_sequence=2, timestamp_seconds=0.2,
+        )
+        clock.advance(2.0)
+        client.release[0].set()
+        assert client.started[1].wait(1.0)
+        good_stats = coordinator.stats()
+        assert good_stats["last_attempt_frame_sequence"] == 1
+        assert good_stats["last_attempt_succeeded"] is True
+        assert good_stats["last_total_latency_seconds"] == 3.0
+
+        clock.advance(4.0)
+        client.release[1].set()
+        assert coordinator.wait_until_idle()
+        stats = coordinator.stats()
+        assert stats["last_attempt_frame_sequence"] == 2
+        assert stats["last_attempt_succeeded"] is False
+        assert stats["last_queue_seconds"] == 2.0
+        assert stats["last_latency_seconds"] == 4.0
+        assert stats["last_total_latency_seconds"] == 6.0
+        assert stats["last_frame_sequence"] == 1
+        assert stats["succeeded"] == stats["failed"] == 1
+        assert coordinator.latest().frame_sequence == 1
+    finally:
+        for release in client.release:
+            release.set()
+        coordinator.close()
+
+
 def test_coordinator_rate_limits_request_start_times() -> None:
     started: list[float] = []
 

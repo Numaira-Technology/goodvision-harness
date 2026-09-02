@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from goodvision_harness.model_api import ModelAPISettings
+from goodvision_harness import vlm_rich_labeling as vlm
 from tools import vlm_rich_latency as latency
 
 
@@ -140,6 +141,89 @@ def test_aggregates_sse_and_separates_content_timing(
     assert "fake-key-never-save" not in saved
     assert "do-not-save" not in saved
     assert "Authorization" not in saved
+
+
+@pytest.mark.parametrize("protocol", ["http11", "http2"])
+def test_request_body_timing_measures_client_write_without_saving_trace_info(
+    monkeypatch: pytest.MonkeyPatch, protocol: str,
+) -> None:
+    clock = [10.0]
+    monkeypatch.setattr(latency, "time", SimpleNamespace(perf_counter=lambda: clock[0]))
+
+    class TimedChunks(_Chunks):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            clock[0] = 11.5
+            async for chunk in super().__aiter__():
+                yield chunk
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        trace = request.extensions["trace"]
+        private_info = {
+            "request": request, "body": b"private-trace-body",
+            "headers": {"Authorization": "private-trace-key"},
+        }
+        for name, moment in (
+            ("connection.connect_tcp.started", 10.125),
+            ("connection.connect_tcp.complete", 10.25),
+            ("connection.start_tls.started", 10.25),
+            ("connection.start_tls.complete", 10.375),
+            (f"{protocol}.send_request_body.started", 10.5),
+            (f"{protocol}.send_request_body.complete", 10.75),
+        ):
+            clock[0] = moment
+            await trace(name, private_info)
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"},
+            stream=TimedChunks([
+                (0, _event("{}", "stop")), (0, b"data: [DONE]\n\n"),
+            ]),
+        )
+
+    monkeypatch.setattr(
+        latency, "_http_client",
+        lambda deadline: httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    result = latency.probe_rich_latency(**_kwargs(
+        messages=[{"role": "user", "content": "private-request-content"}],
+    ))
+    metrics = result["metrics"]
+    assert metrics["status"] == "success"
+    assert metrics["request_body_send_seconds"] == 0.25
+    assert metrics["request_body_complete_seconds"] == 0.75
+    assert metrics["first_content_token_seconds"] == 1.5
+    assert metrics["first_content_after_request_body_seconds"] == 0.75
+    assert metrics["connection_ready_seconds"] == 0.375
+    assert metrics["tcp_connect_seconds"] == metrics["tls_handshake_seconds"] == 0.125
+    saved = json.dumps(result)
+    for private in (
+        "private-trace-body", "private-trace-key", "private-request-content",
+        "fake-key-never-save", "Authorization",
+    ):
+        assert private not in saved
+
+
+@pytest.mark.parametrize("phases", [(), ("started",), ("complete",), ("started", "failed")])
+def test_request_body_metrics_are_absent_without_completed_write_trace(
+    monkeypatch: pytest.MonkeyPatch, phases: tuple[str, ...],
+) -> None:
+    async def handle(request: httpx.Request) -> httpx.Response:
+        for phase in phases:
+            await request.extensions["trace"](f"http11.send_request_body.{phase}", {})
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"},
+            stream=_Chunks([(0, _event("{}", "stop")), (0, b"data: [DONE]\n\n")]),
+        )
+
+    monkeypatch.setattr(
+        latency, "_http_client",
+        lambda deadline: httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    result = latency.probe_rich_latency(**_kwargs())
+    assert result["metrics"]["status"] == "success"
+    assert not {
+        "request_body_send_seconds", "request_body_complete_seconds",
+        "first_content_after_request_body_seconds",
+    }.intersection(result["metrics"])
 
 
 @pytest.mark.parametrize(("chunks", "category"), [
@@ -349,3 +433,60 @@ def test_cli_rejects_parallel_mode_before_reading_image(
     assert "tools/vlm_rich_smoke.py" in error
     assert "complete parallel rich annotation result" in error
     assert not output.exists()
+
+
+@pytest.mark.parametrize(("wire_format", "structured", "uses_schema"), [
+    ("compact", True, True),
+    ("compact", False, False),
+    ("compact", None, False),
+    ("objects", True, False),
+])
+def test_cli_compact_structured_output_uses_production_response_format(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    wire_format: str, structured: bool | None, uses_schema: bool,
+) -> None:
+    rich = SimpleNamespace(
+        model=None, vlm_wire_format=wire_format, vlm_max_tokens=600,
+        vlm_request_parameters={"response_format": {"type": "json_object"}},
+    )
+    if structured is not None:
+        rich.vlm_structured_output = structured
+    config = SimpleNamespace(
+        aiclub=ModelAPISettings(provider="openrouter"), rich_labeling=rich,
+        inference=SimpleNamespace(model="test-model"),
+    )
+    args = SimpleNamespace(
+        execute=False, samples=1, deadline_seconds=20, output_dir=tmp_path,
+        expected_endpoint=config.aiclub.endpoint,
+    )
+    schema = {
+        "type": "json_schema",
+        "json_schema": {"name": "fixture", "strict": True, "schema": {"type": "object"}},
+    }
+    scopes: list[str] = []
+    captured: list[dict[str, Any]] = []
+
+    def build_schema(scope: str = "all") -> dict[str, Any]:
+        scopes.append(scope)
+        return schema
+
+    async def probe(**kwargs: Any) -> dict[str, Any]:
+        captured.append(kwargs)
+        return {"metrics": {"status": "not_run", "api_requests": 0}}
+
+    monkeypatch.setattr(
+        vlm, "build_compact_rich_annotation_response_format", build_schema,
+    )
+    monkeypatch.setattr(latency, "probe_rich_latency_async", probe)
+    assert asyncio.run(latency._run_cli_samples(
+        args, config, [{"role": "user", "content": "fixture"}],
+    )) == 0
+    parameters = captured[0]["request_parameters"]
+    assert parameters["max_tokens"] == 600
+    assert parameters["response_format"] == (
+        schema if uses_schema else {"type": "json_object"}
+    )
+    assert scopes == (["all"] if uses_schema else [])
+    assert config.rich_labeling.vlm_request_parameters == {
+        "response_format": {"type": "json_object"},
+    }

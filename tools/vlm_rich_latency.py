@@ -94,12 +94,13 @@ async def _collect(
 ) -> None:
     phase_starts: dict[str, float] = {}
     trace_seen = False
+    request_body_completed_at: float | None = None
 
     def elapsed() -> float:
         return round(time.perf_counter() - started, 6)
 
     async def trace(name: str, _info: Mapping[str, Any]) -> None:
-        nonlocal trace_seen
+        nonlocal trace_seen, request_body_completed_at
         trace_seen = True
         # Never retain trace info: it can contain sockets, URLs, or exceptions.
         for phase, metric in (
@@ -111,6 +112,20 @@ async def _collect(
             elif name.endswith(f".{phase}.complete") and phase in phase_starts:
                 metrics[metric] = round(time.perf_counter() - phase_starts[phase], 6)
                 metrics["connection_ready_seconds"] = elapsed()
+        if name in {"http11.send_request_body.started", "http2.send_request_body.started"}:
+            phase_starts["request_body"] = time.perf_counter()
+        elif (
+            name in {"http11.send_request_body.complete", "http2.send_request_body.complete"}
+            and "request_body" in phase_starts
+        ):
+            # This is the client's write phase, not proof of server receipt.
+            request_body_completed_at = time.perf_counter()
+            metrics["request_body_send_seconds"] = round(
+                request_body_completed_at - phase_starts["request_body"], 6,
+            )
+            metrics["request_body_complete_seconds"] = round(
+                request_body_completed_at - started, 6,
+            )
 
     headers = dict(settings.extra_headers)
     headers.update({"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
@@ -178,7 +193,15 @@ async def _collect(
                         if content is not None and not isinstance(content, str):
                             raise _StreamFailure("invalid_content_delta")
                         if content:
-                            metrics.setdefault("first_content_token_seconds", elapsed())
+                            if "first_content_token_seconds" not in metrics:
+                                first_content_at = time.perf_counter()
+                                metrics["first_content_token_seconds"] = round(
+                                    first_content_at - started, 6,
+                                )
+                                if request_body_completed_at is not None:
+                                    metrics["first_content_after_request_body_seconds"] = round(
+                                        first_content_at - request_body_completed_at, 6,
+                                    )
                             message["content"] += content
                         finish = choice.get("finish_reason")
                         if finish is not None:
@@ -209,6 +232,10 @@ async def probe_rich_latency_async(
 
     A supplied http_client stays open and excludes its earlier setup from request
     timing. Otherwise client construction is included and separately measured.
+    Request-body metrics measure HTTPX's client-side write phase, not server
+    receipt. Time from that write completing to first content includes network
+    and server work; it is not a measurement of pure server queueing. These
+    optional metrics are absent when the corresponding trace events are missing.
     """
     if settings.endpoint != expected_endpoint:
         raise ValueError("endpoint does not exactly match expected_endpoint")
@@ -286,6 +313,21 @@ def probe_rich_latency(**kwargs: Any) -> dict[str, Any]:
 async def _run_cli_samples(
     args: argparse.Namespace, config: Any, messages: Sequence[Mapping[str, Any]],
 ) -> int:
+    parameters = {
+        **config.rich_labeling.vlm_request_parameters,
+        "max_tokens": config.rich_labeling.vlm_max_tokens,
+    }
+    if (
+        config.rich_labeling.vlm_wire_format == "compact"
+        and getattr(config.rich_labeling, "vlm_structured_output", False)
+    ):
+        from goodvision_harness.vlm_rich_labeling import (
+            build_compact_rich_annotation_response_format,
+        )
+
+        parameters["response_format"] = build_compact_rich_annotation_response_format(
+            scope="all",
+        )
     async with AsyncExitStack() as stack:
         client = None
         initial_setup_seconds = 0.0
@@ -298,10 +340,7 @@ async def _run_cli_samples(
                 settings=config.aiclub,
                 model=config.rich_labeling.model or config.inference.model,
                 messages=messages,
-                request_parameters={
-                    **config.rich_labeling.vlm_request_parameters,
-                    "max_tokens": config.rich_labeling.vlm_max_tokens,
-                },
+                request_parameters=parameters,
                 expected_endpoint=args.expected_endpoint,
                 deadline_seconds=args.deadline_seconds, execute=args.execute,
                 http_client=client,

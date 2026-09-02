@@ -186,6 +186,7 @@ class HarnessRuntime:
                     max_image_side=rich.vlm_max_image_side,
                     wire_format=rich.vlm_wire_format,
                     execution_mode=rich.vlm_execution_mode,
+                    structured_output=rich.vlm_structured_output,
                     request_parameters=rich.vlm_request_parameters,
                     dry_run=self._rich_annotation_dry_run,
                 )
@@ -1284,25 +1285,17 @@ class HarnessRuntime:
             except Exception:
                 LOGGER.warning("could not render fused labels on analysis frame")
         if rendered is None:
-            enriched_jpeg = source_jpeg
-            if self._rich_labels is not None:
-                try:
-                    enriched_jpeg = self._render_rich_label_jpeg(
-                        source_jpeg,
-                        result.frame.timestamp_seconds,
-                        result.frame.source_frame_index,
-                    )
-                except Exception:
-                    LOGGER.warning("could not render rich labels on analysis frame")
+            # A failed fusion must not draw unassociated rich and event boxes
+            # in succession. Preserve the event on the original source frame.
             try:
                 rendered = _render_analysis_jpeg(
-                    enriched_jpeg,
+                    source_jpeg,
                     result,
                     quality=self.settings.overlay_jpeg_quality,
                 )
             except (cv2.error, TypeError, ValueError):
                 LOGGER.warning("could not render analysis overlay")
-                rendered = enriched_jpeg
+                rendered = source_jpeg
         self.frames.publish(
             FramePacket(
                 jpeg=rendered,

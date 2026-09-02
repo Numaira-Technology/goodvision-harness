@@ -195,17 +195,27 @@ by a compact selection of direction, clothing, bag, and accessory hints.
 `config.vlm-rich.yaml` enables the `vlm` rich-label backend on this experimental
 branch. It inherits the selected model API and provider route, including the
 OpenRouter route pinned to DeepInfra. The VLM returns person/object boxes and
-the same appearance-attribute vocabulary as Paddle; the existing rich-label
-tracker and renderer consume the result. The safety-event request is separate.
+the same appearance-attribute vocabulary as Paddle through the existing
+rich-label snapshot interface, coordinator, box fusion, and renderer. The VLM
+assigns local spatial track IDs. The safety-event request is separate, but both
+results use the same source frame timeline and final box compositor. Matched
+alerts attach to the rich box; a fusion error falls back to events on the
+original frame instead of drawing two independent box layers.
 
 The default experiment uses one request per sampled rich-label frame.
 `rich_labeling.vlm_wire_format: compact` requests shorter JSON rows and expands
 them locally into the existing annotation protocol. With that format,
 `rich_labeling.vlm_execution_mode: parallel` enables three simultaneous requests:
 two overlapping person crops and one full-frame object request. Crop coordinates
-are mapped back locally, and all three responses must validate before a frame
-is published. This mode reuses its connection pool and applies one timeout to
+are mapped back locally. Opposite-crop duplicates are matched one-to-one by
+IoU, while unmatched people from either crop are retained. All three responses
+must validate before a rich snapshot is published. This mode reuses its
+connection pool and applies one timeout to
 the entire frame; it makes three paid API requests per frame, with no retry.
+`rich_labeling.vlm_structured_output: true` additionally requests a strict JSON
+schema for compact responses. Each person must have one complete box paired
+with one attribute object. The selected provider must support this schema;
+local coordinate and attribute validation still applies to every response.
 
 The latency target is **2.5 seconds for the complete, valid frame result**.
 Neither first-token latency nor a fast object-only response meets that target.
@@ -216,12 +226,21 @@ while latency work is in progress; a buffer is not an inference-speed fix.
 `tools/vlm_rich_smoke.py` measures the complete configured path and saves boxes,
 overlays, actual API-request counts, and timings. `tools/vlm_rich_latency.py`
 diagnoses a single request using streaming, recording first-content-token,
-completion, and connection timings. Both require an explicit input image;
+completion, connection, and request-body write timings. Body-write completion
+is a client-side observation, not proof of server receipt or a measure of server
+queue time. Coordinator status separately reports `last_queue_seconds`,
+`last_latency_seconds` (inference), and `last_total_latency_seconds` (submission
+through inference completion); none includes the configured display buffer.
+`last_attempt_frame_sequence` and `last_attempt_succeeded` identify the attempt
+these timings describe, while `last_frame_sequence` remains the last success.
+Both tools require an explicit input image;
 the latency diagnostic requires `--execute` to make a real API request.
 With `--save-model-response`, the smoke tool also preserves each completed
 parallel response before annotation parsing, so a malformed response remains
 available for diagnosis even when its frame fails validation. Early failure
 timings do not count toward the complete-frame latency target.
+See [the latency and shared-frame audit](VLM_RICH_AUDIT.md) for measured results,
+comparison limits, and the remaining quality and timing checks.
 
 PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
 itself grant rights to every pretrained weight or its training data. Before
