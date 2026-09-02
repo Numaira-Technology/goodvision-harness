@@ -11,6 +11,13 @@ from uuid import uuid4
 
 
 SETTINGS_SCHEMA_VERSION = 1
+# Stable, neutral names keep each route's credentials independent. The original
+# record belongs to the default route so existing deployments remain usable.
+_API_KEY_FILENAMES = {
+    "aiclub": "model-api-key",
+    "openrouter": "model-api-key-2",
+    "dashscope": "model-api-key-3",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +75,22 @@ class DeploymentSettingsStore:
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
         )
 
-    def load_api_key(self) -> str | None:
+    def _provider_api_key_path(self, provider: str) -> Path:
+        try:
+            filename = _API_KEY_FILENAMES[provider]
+        except KeyError as exc:
+            raise ValueError("unsupported inference provider") from exc
+        return self.path.with_name(filename)
+
+    def load_api_key(self, *, provider: str = "aiclub") -> str | None:
+        key_path = self._provider_api_key_path(provider)
         with self._lock:
-            if self.api_key_path.exists():
-                value = self.api_key_path.read_text(encoding="utf-8").strip()
-                self._legacy_api_key_path.unlink(missing_ok=True)
+            if key_path.exists():
+                value = key_path.read_text(encoding="utf-8").strip()
+                if provider == "aiclub":
+                    self._legacy_api_key_path.unlink(missing_ok=True)
                 return value or None
-            if not self._legacy_api_key_path.exists():
+            if provider != "aiclub" or not self._legacy_api_key_path.exists():
                 return None
             # One-time migration keeps the secret while removing the old
             # provider-branded record from persistent storage.
@@ -84,19 +100,24 @@ class DeploymentSettingsStore:
             self._legacy_api_key_path.unlink(missing_ok=True)
         return value or None
 
-    def save_api_key(self, api_key: str) -> None:
+    def save_api_key(self, api_key: str, *, provider: str = "aiclub") -> None:
+        key_path = self._provider_api_key_path(provider)
         rendered = api_key.strip()
         if not rendered:
             raise ValueError("API key must not be empty")
-        self._atomic_write(self.api_key_path, rendered + "\n")
+        self._atomic_write(key_path, rendered + "\n")
         with self._lock:
-            self._legacy_api_key_path.unlink(missing_ok=True)
+            if provider == "aiclub":
+                self._legacy_api_key_path.unlink(missing_ok=True)
 
-    def delete_api_key(self) -> bool:
+    def delete_api_key(self, *, provider: str = "aiclub") -> bool:
+        key_path = self._provider_api_key_path(provider)
         with self._lock:
-            existed = self.api_key_path.exists() or self._legacy_api_key_path.exists()
-            self.api_key_path.unlink(missing_ok=True)
-            self._legacy_api_key_path.unlink(missing_ok=True)
+            existed = key_path.exists()
+            key_path.unlink(missing_ok=True)
+            if provider == "aiclub":
+                existed = existed or self._legacy_api_key_path.exists()
+                self._legacy_api_key_path.unlink(missing_ok=True)
             return existed
 
     def _atomic_write(self, destination: Path, content: str) -> None:

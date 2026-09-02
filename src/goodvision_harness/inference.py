@@ -13,14 +13,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .aiclub import AIClubClient, AIClubError, AIClubSettings
 from .config import InferenceSettings
+from .model_api import ModelAPIClient, ModelAPIError, ModelAPISettings
+from .privacy import PUBLIC_ANALYSIS_ERROR
 from .prompt import (
     BinaryClassification,
     build_window_messages,
     parse_binary_classification,
 )
-from .privacy import PUBLIC_ANALYSIS_ERROR
 from .reference_memory import MemoryContext
 from .sliding_window import FrameWindow
 
@@ -62,7 +62,7 @@ class QwenWindowClient:
     def __init__(
         self,
         settings: InferenceSettings,
-        transport: AIClubClient,
+        transport: ModelAPIClient,
         memory_context: MemoryContext | None = None,
     ) -> None:
         self.settings = settings
@@ -84,7 +84,7 @@ class QwenWindowClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-        except (AIClubError, ValueError):
+        except (ModelAPIError, ValueError):
             return WindowResponse(
                 window=window,
                 classification=None,
@@ -169,7 +169,7 @@ class DryRunWindowClient:
 
 def build_client(
     settings: InferenceSettings,
-    aiclub: AIClubSettings,
+    aiclub: ModelAPISettings,
     *,
     memory_context: MemoryContext | None = None,
     dry_run: bool = False,
@@ -180,6 +180,6 @@ def build_client(
         return DryRunWindowClient(settings, memory_context)
     return QwenWindowClient(
         settings,
-        AIClubClient(aiclub),
+        ModelAPIClient(aiclub),
         memory_context,
     )

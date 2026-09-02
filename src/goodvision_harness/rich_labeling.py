@@ -597,12 +597,9 @@ class RichLabelCoordinator:
                     ):
                         self._stats["stale_results"] += 1
                     elif error is not None:
-                        LOGGER.warning(
-                            "rich-label inference failed: %s",
-                            type(error).__name__,
-                        )
+                        LOGGER.warning("rich-label inference failed")
                         self._stats["failed"] += 1
-                        self._stats["last_error"] = type(error).__name__
+                        self._stats["last_error"] = "rich-label inference failed"
                     else:
                         assert snapshot is not None
                         self._insert_snapshot_locked(snapshot)

@@ -182,10 +182,12 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.sliding_window.include_partial_final_window,
     ) == (1, 1, False)
     assert config.runtime.max_concurrent_requests == 6
-    assert config.aiclub.max_retries == 0
-    assert config.aiclub.api_key_env == "AICLUB_API_KEY"
+    assert config.model_api.max_retries == 0
+    assert config.model_api.api_key_env == "AICLUB_API_KEY"
+    assert config.model_api.provider == "aiclub"
+    assert config.aiclub is config.model_api
     # Branding is applied only at public serialization boundaries; the
-    # provider request must continue using the validated AIClub route.
+    # provider requests use the selected route's actual model identifier.
     assert config.inference.model == "qwen3.5-plus"
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900

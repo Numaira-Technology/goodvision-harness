@@ -18,21 +18,75 @@ PUBLIC_FACE_ERROR = "local face analysis failed"
 _PRIVATE_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
+        # Remove the whole vendor URL, not just its recognizable substring.
+        r"https?://[^\s\"'<>]*(?:paddle|bcebos|huggingface|hf\.co|modelscope|"
+        r"nvidia|openai|anthropic|deepseek|qwen|aliyun|dashscope|jsdelivr|"
+        r"googleapis|fastapi|onnx|opencv|insightface)[^\s\"'<>]*",
         r"https?://aiclub\.zimaocloud\.com(?:/[^\s\"']*)?",
-        r"\bai[\s_-]*club\b",
+        r"(?<![a-z0-9])ai[\s_-]*club[\w.+:/-]*",
         r"https?://(?:www\.)?openrouter\.ai(?:/[^\s\"']*)?",
-        r"\bopen[\s_-]*router\b(?:\.ai)?",
-        r"\bqwen(?:[\w./:+-]*)?\b",
-        r"\bcoreweave\b",
-        r"\bdeepinfra\b",
-        r"\binsight[\s_-]*face\b",
+        r"(?<![a-z0-9])open[\s_-]*router[\w.+:/-]*",
+        r"(?<![a-z0-9])qwen[\w./:+-]*",
+        r"(?<![a-z0-9])(?:coreweave|deepinfra)[\w.+:/-]*",
+        r"(?<![a-z0-9])insight[\s_-]*face[\w.+:/-]*",
         r"\bbuffalo(?:[_-][\w.-]+)?\b",
         r"\bantelope(?:v\d+)?\b",
         r"\bonnx(?:runtime)?(?:-gpu)?\b",
         r"\b(?:cpu|cuda|dml)executionprovider\b",
         r"\bfaceanalysis\b",
+        # Include suffixed exception/module identifiers and model variants.
+        r"(?<![a-z0-9])paddle[\w.+:/-]*",
+        r"(?<![a-z0-9])(?:pp[\s_-]*)?(?:yolo[e]?|lcnet|picodet)[\w.+:/-]*",
+        r"(?<![a-z0-9])(?:nvidia|tensorrt|cudnn|cublas|cufft|curand|"
+        r"nvjitlink|cuda|directml|onednn|mkl)[\w.+:/-]*",
+        r"(?<![a-z0-9])(?:openai|anthropic|claude|deepseek|gemini|"
+        r"hugging[\s_-]*face|modelscope|ollama|dashscope)[\w.+:/-]*",
+        r"(?<![a-z0-9])(?:opencv|ffmpeg|libav|fastapi|starlette|pydantic|"
+        r"uvicorn|swagger|redoc|jsdelivr|httpx|aiohttp|aiortc|pyyaml|"
+        r"numpy|scipy|scikit[\s_-]*\w*|"
+        r"pandas|matplotlib|faiss|pytorch|torch|tensorflow|timm|"
+        r"onnxruntime|onnx)[\w.+:/-]*",
+        r"(?<![a-z0-9])(?:zimaocloud|bcebos|baidu|alibaba|aliyun|"
+        r"tencent|huawei|microsoft|google|azure|amazon|aws)[\w.+:/-]*",
+        r"飞桨|通义千问|通义|千问|英伟达|百度|阿里云|腾讯云|华为云",
     )
 )
+
+# These tokens can also be names, physical objects, animals, or customer IDs.
+# Keep the strict vocabulary above for diagnostic and release-file audits;
+# ordinary result data needs evidence that a token denotes an implementation.
+_DOMAIN_TERM = re.compile(
+    r"^(torch|pandas|timm|claude|gemini|google|amazon|azure|aws|baidu|"
+    r"alibaba|tencent|huawei|microsoft|buffalo|antelope)(.*)$",
+    re.IGNORECASE,
+)
+_IMPLEMENTATION_FORM = re.compile(
+    r"[./:](?=[a-z0-9_])|(?:error|exception|warning)(?:[:_-].*)?$|"
+    r"(?:claude|gemini)[-_/]?(?:\d|(?:sonnet|opus|haiku|flash|pro)(?:[-_/]|$))|"
+    r"(?:torch|pandas|timm)[-_v]?\d|"
+    r"torch(?:vision|audio|text|data|metrics|script|_dynamo|_inductor)|"
+    r"(?:googleapis|amazonaws|microsoftonline)|"
+    r"[-_](?:api|sdk|client|backend|runtime|provider|engine|model|key|version)"
+    r"(?:[-_]|$)|(?:api|sdk)(?:key|client|error|exception)$|"
+    r"^buffalo[_-]|^antelopev\d",
+    re.IGNORECASE,
+)
+_IMPLEMENTATION_CONTEXT = re.compile(
+    r"(?<![a-z0-9])(?:"
+    r"(?:from|import)\s+(?:torch|pandas|timm)(?:\.[\w.]+)?|"
+    r"(?:torch|pandas|timm)\s+(?:backend|framework|library|module|runtime)|"
+    r"(?:claude|gemini)\s+(?:model|api|sdk)|"
+    r"(?:google|amazon|azure|aws|baidu|alibaba|tencent|huawei|microsoft)"
+    r"\s+(?:cloud|api|sdk))\b",
+    re.IGNORECASE,
+)
+
+
+def _redact_data_match(match: re.Match[str], fallback: str) -> str:
+    token = match.group()
+    if _DOMAIN_TERM.fullmatch(token) and not _IMPLEMENTATION_FORM.search(token):
+        return token
+    return fallback
 
 
 def contains_private_implementation_detail(value: object) -> bool:
@@ -43,11 +97,13 @@ def contains_private_implementation_detail(value: object) -> bool:
 
 
 def redact_public_text(value: object, *, fallback: str = "analysis engine") -> str:
-    """Redact known implementation identifiers from otherwise useful text."""
+    """Redact implementation details while preserving ordinary domain values."""
 
-    rendered = str(value)
+    rendered = _IMPLEMENTATION_CONTEXT.sub(lambda _: fallback, str(value))
     for pattern in _PRIVATE_PATTERNS:
-        rendered = pattern.sub(fallback, rendered)
+        rendered = pattern.sub(
+            lambda match: _redact_data_match(match, fallback), rendered,
+        )
     return rendered
 
 

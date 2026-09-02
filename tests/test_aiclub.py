@@ -7,7 +7,7 @@ from urllib.request import Request
 
 import pytest
 
-import goodvision_harness.aiclub as aiclub_module
+import goodvision_harness.model_api as model_api_module
 from goodvision_harness.aiclub import (
     DEFAULT_AICLUB_ENDPOINT,
     AIClubClient,
@@ -53,15 +53,17 @@ def test_settings_defaults_target_aiclub() -> None:
 
 
 def test_settings_reject_invalid_endpoint_and_key_name() -> None:
-    with pytest.raises(ValueError, match="aiclub.endpoint"):
+    with pytest.raises(ValueError, match="inference_service.endpoint"):
         AIClubSettings(endpoint="ftp://example.com/chat")
-    with pytest.raises(ValueError, match="aiclub.api_key_env"):
+    with pytest.raises(ValueError, match="inference_service.api_key_env"):
         AIClubSettings(api_key_env=" ")
 
 
 def test_api_key_helpers_use_configured_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    for name in ("INFERENCE_API_KEY", "MODEL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AICLUB_API_KEY", "test-key")
     assert api_key_present(AIClubSettings())
     monkeypatch.setenv("AICLUB_API_KEY", "")
@@ -83,7 +85,7 @@ def test_chat_completion_posts_openai_compatible_json(
             {"choices": [{"message": {"content": "  hello  "}}]}
         )
 
-    monkeypatch.setattr(aiclub_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(model_api_module, "urlopen", fake_urlopen)
     client = AIClubClient(settings, api_key="test-key")
     response = client.chat_completion(
         model="qwen3.5-plus",
@@ -143,8 +145,8 @@ def test_retryable_http_error_is_retried(
             raise _http_error(429, {"error": {"message": "slow down"}})
         return _FakeResponse({"choices": [{"message": {"content": "ok"}}]})
 
-    monkeypatch.setattr(aiclub_module, "urlopen", fake_urlopen)
-    monkeypatch.setattr(aiclub_module.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(model_api_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(model_api_module.time, "sleep", lambda _delay: None)
     client = AIClubClient(
         AIClubSettings(max_retries=1, retry_backoff_seconds=0.0),
         api_key="test-key",

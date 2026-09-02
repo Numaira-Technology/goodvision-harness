@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> None:
         host=args.host or config.server.host,
         port=args.port or config.server.port,
         log_level="info",
+        server_header=False,
     )
 
 

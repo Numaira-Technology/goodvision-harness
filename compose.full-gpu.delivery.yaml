@@ -1,0 +1,104 @@
+name: goodvision-harness
+
+services:
+  harness:
+    image: goodvision-harness:2026.09.02-full-gpu.2
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${HARNESS_BIND_ADDRESS:-127.0.0.1}:${HARNESS_PORT:-8080}:8080"
+    environment:
+      HARNESS_CONFIG: /app/config.yaml
+      HARNESS_DEPLOYMENT_SETTINGS_PATH: /data/deployment-settings.json
+      HARNESS_HOST: 0.0.0.0
+      HARNESS_PORT: 8080
+      HARNESS_STREAM_URL: "${HARNESS_STREAM_URL:-}"
+      RTSP_URL: "${RTSP_URL:-}"
+      # Safe first boot. Settings saved in the console remain authoritative.
+      HARNESS_DRY_RUN: "true"
+      HARNESS_AUTOSTART: "true"
+      HARNESS_SOURCE_ID: "${HARNESS_SOURCE_ID:-external-camera}"
+      VIDEO_CAPTURE_OPTIONS: "${VIDEO_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}"
+      INFERENCE_PROVIDER: "${INFERENCE_PROVIDER:-}"
+      INFERENCE_MODEL: "${INFERENCE_MODEL:-}"
+      INFERENCE_ENDPOINT: "${INFERENCE_ENDPOINT:-}"
+      INFERENCE_API_KEY: "${INFERENCE_API_KEY:-}"
+      RESULT_WEBHOOK_URL: "${RESULT_WEBHOOK_URL:-}"
+      HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
+      FACE_MODEL_ROOT: /models
+      FACE_GALLERY_PATH: /data/face-gallery.json
+      FACE_ACCELERATOR: gpu
+      FACE_LIVE_SCHEDULER: "${FACE_LIVE_SCHEDULER:-auto}"
+      # This full deployment always enables its bundled perception service, even
+      # when an existing .env still contains the old disabled setting.
+      RICH_LABEL_ENABLED: "true"
+      RICH_LABEL_ENDPOINT: http://rich-label-worker:8091/v1/labels
+    depends_on:
+      rich-label-worker:
+        # Model warmup must not prevent access to the deployment console.
+        # Real GPU inference and both models still require the separate check.
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config.delivery.yaml:/app/config.yaml:ro
+      - face-models:/models
+      - face-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 90s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - count: 1
+              capabilities: [gpu]
+
+  rich-label-worker:
+    image: goodvision-rich-label-worker:2026.09.02-full-gpu.2
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    environment:
+      RICH_DEVICE: gpu:0
+      RICH_DETECTOR_PROFILE: "${RICH_DETECTOR_PROFILE:-accurate}"
+      RICH_ATTRIBUTE_PROFILE: "${RICH_ATTRIBUTE_PROFILE:-standard}"
+      RICH_DETECTION_THRESHOLD: "${RICH_DETECTION_THRESHOLD:-0.45}"
+      RICH_TRACK_VISIBLE_IDLE_FRAMES: "${RICH_TRACK_VISIBLE_IDLE_FRAMES:-1}"
+      RICH_ATTRIBUTE_INTERVAL_FRAMES: "${RICH_ATTRIBUTE_INTERVAL_FRAMES:-10}"
+      RICH_ATTRIBUTE_RETRY_SECONDS: "${RICH_ATTRIBUTE_RETRY_SECONDS:-60}"
+      RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS: "${RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS:-5}"
+      RICH_DETECTOR_MODEL_DIR: "${RICH_DETECTOR_MODEL_DIR:-}"
+      RICH_ATTRIBUTE_MODEL_DIR: "${RICH_ATTRIBUTE_MODEL_DIR:-}"
+    volumes:
+      - rich-models:/models
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - count: 1
+              capabilities: [gpu]
+
+volumes:
+  face-models:
+  face-data:
+  rich-models:
