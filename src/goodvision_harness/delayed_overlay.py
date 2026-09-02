@@ -300,7 +300,11 @@ class DelayedOverlayComposer:
                             and not self._closed
                         ):
                             self._stats["composition_render_errors"] += 1
-                    rendered, mode = self._render_legacy(buffered, selection)
+                    # A failed fusion cannot safely deduplicate rich/event boxes.
+                    # Preserve event evidence on the original frame instead.
+                    rendered, mode = self._render_legacy(
+                        buffered, selection, include_enrichment=False,
+                    )
             else:
                 rendered, mode = self._render_legacy(buffered, selection)
 
@@ -342,11 +346,13 @@ class DelayedOverlayComposer:
         self,
         buffered: _BufferedFrame,
         selection: OverlaySelection,
+        *,
+        include_enrichment: bool = True,
     ) -> tuple[bytes, str]:
-        """Render the original two-stage path as compatibility and fail-open."""
+        """Render legacy events, optionally with compatibility enrichment."""
 
         rendered = buffered.packet.jpeg
-        if self._enrich is not None:
+        if include_enrichment and self._enrich is not None:
             try:
                 rendered = self._enrich(
                     rendered,

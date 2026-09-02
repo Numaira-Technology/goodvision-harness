@@ -6,6 +6,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from goodvision_harness import service as service_module
@@ -411,6 +412,64 @@ def test_exact_analysis_frame_falls_back_to_event_when_rich_select_fails(
         assert [item.object_id for item in captured_objects[0]] == ["event-person"]
         _, published = runtime.frames.latest() or (0, None)
         assert published is not None
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize("event_render_fails", [False, True])
+def test_exact_analysis_fusion_failure_preserves_original_frame_fallback(
+    monkeypatch: Any,
+    event_render_fails: bool,
+) -> None:
+    coordinator = _RichCoordinator()
+    runtime = _runtime(coordinator)
+    source = _jpeg()
+    event_inputs: list[bytes] = []
+    event_objects: list[tuple[GroundedObject, ...]] = []
+    rich_calls: list[Any] = []
+    original_render = service_module._render_analysis_jpeg
+
+    def fail_fusion(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("fusion unavailable")
+
+    def capture_rich(image: Any, *args: Any, **kwargs: Any) -> Any:
+        rich_calls.append(image)
+        return image.copy()
+
+    def capture_event(image: Any, **kwargs: Any) -> Any:
+        event_objects.append(tuple(kwargs["objects"]))
+        return image.copy()
+
+    def capture_render(jpeg: bytes, *args: Any, **kwargs: Any) -> bytes:
+        event_inputs.append(jpeg)
+        if event_render_fails:
+            raise ValueError("event renderer unavailable")
+        return original_render(jpeg, *args, **kwargs)
+
+    monkeypatch.setattr(runtime._overlay_fusion, "plan", fail_fusion)
+    monkeypatch.setattr(service_module, "draw_rich_overlay", capture_rich)
+    monkeypatch.setattr(service_module, "draw_overlay", capture_event)
+    monkeypatch.setattr(service_module, "_render_analysis_jpeg", capture_render)
+    try:
+        result = _analysis()
+        runtime._on_analysis_frame(result, source)
+
+        assert event_inputs == [source]
+        assert rich_calls == []
+        if event_render_fails:
+            assert event_objects == []
+        else:
+            assert len(event_objects) == 1
+            assert [item.object_id for item in event_objects[0]] == ["event-person"]
+            assert event_objects[0][0].bbox == result.objects[0].bbox
+        version, published = runtime.frames.latest() or (0, None)
+        assert version == 1
+        assert published is not None
+        assert published.frame_sequence == result.frame.source_frame_index
+        assert published.media_timestamp == result.frame.timestamp_seconds
+        assert published.analysis_message_id == result.message_id
+        if event_render_fails:
+            assert published.jpeg == source
     finally:
         runtime.stop()
 
