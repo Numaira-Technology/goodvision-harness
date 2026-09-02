@@ -184,6 +184,8 @@ class HarnessRuntime:
                     api_key=lambda: self._aiclub_api_key,
                     max_tokens=rich.vlm_max_tokens,
                     max_image_side=rich.vlm_max_image_side,
+                    wire_format=rich.vlm_wire_format,
+                    execution_mode=rich.vlm_execution_mode,
                     request_parameters=rich.vlm_request_parameters,
                     dry_run=self._rich_annotation_dry_run,
                 )

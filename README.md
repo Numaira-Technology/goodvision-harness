@@ -190,6 +190,35 @@ male-presenting results) instead of treating PaddleX's positive-label list as a
 complete classification. The HUD shows age and gender estimates first, followed
 by a compact selection of direction, clothing, bag, and accessory hints.
 
+### Experimental VLM rich annotation
+
+`config.vlm-rich.yaml` enables the `vlm` rich-label backend on this experimental
+branch. It inherits the selected model API and provider route, including the
+OpenRouter route pinned to DeepInfra. The VLM returns person/object boxes and
+the same appearance-attribute vocabulary as Paddle; the existing rich-label
+tracker and renderer consume the result. The safety-event request is separate.
+
+The default experiment uses one request per sampled rich-label frame.
+`rich_labeling.vlm_wire_format: compact` requests shorter JSON rows and expands
+them locally into the existing annotation protocol. With that format,
+`rich_labeling.vlm_execution_mode: parallel` enables three simultaneous requests:
+two overlapping person crops and one full-frame object request. Crop coordinates
+are mapped back locally, and all three responses must validate before a frame
+is published. This mode reuses its connection pool and applies one timeout to
+the entire frame; it makes three paid API requests per frame, with no retry.
+
+The latency target is **2.5 seconds for the complete, valid frame result**.
+Neither first-token latency nor a fast object-only response meets that target.
+Parallel mode is experimental and has not yet met this target in a validated
+live test. The existing experiment's 25-second display buffer remains unchanged
+while latency work is in progress; a buffer is not an inference-speed fix.
+
+`tools/vlm_rich_smoke.py` measures the complete configured path and saves boxes,
+overlays, actual API-request counts, and timings. `tools/vlm_rich_latency.py`
+diagnoses a single request using streaming, recording first-content-token,
+completion, and connection timings. Both require an explicit input image;
+the latency diagnostic requires `--execute` to make a real API request.
+
 PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
 itself grant rights to every pretrained weight or its training data. Before
 customer or commercial use, confirm the license and redistribution terms for

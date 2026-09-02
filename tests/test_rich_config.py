@@ -31,6 +31,8 @@ def test_rich_labeling_defaults_are_safe_and_disabled(
     assert settings.model is None
     assert settings.vlm_max_tokens == 4096
     assert settings.vlm_max_image_side == 1280
+    assert settings.vlm_wire_format == "objects"
+    assert settings.vlm_execution_mode == "single"
     assert settings.endpoint == "http://rich-label-worker:8091/v1/labels"
     assert settings.max_fps == 7.5
     assert settings.max_interpolation_gap_seconds == 2.0
@@ -55,6 +57,9 @@ def test_rich_labeling_environment_overrides_connection_and_backend(
     ("field", "value", "message"),
     [
         ("backend", "unsupported", "backend must be paddle or vlm"),
+        ("vlm_wire_format", "unsupported", "vlm_wire_format must be objects or compact"),
+        ("vlm_execution_mode", "unsupported", "vlm_execution_mode must be single or parallel"),
+        ("vlm_execution_mode", "parallel", "requires vlm_wire_format: compact"),
         ("model", 42, "model must be a string or null"),
         ("vlm_max_tokens", 0, "positive integer"),
         ("vlm_max_tokens", True, "positive integer"),
@@ -99,6 +104,8 @@ def test_rich_labeling_vlm_model_and_limits_from_yaml(
         model=" annotation-model ",
         vlm_max_tokens=8192,
         vlm_max_image_side=960,
+        vlm_wire_format="compact",
+        vlm_execution_mode="parallel",
     )
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
@@ -109,6 +116,8 @@ def test_rich_labeling_vlm_model_and_limits_from_yaml(
     assert settings.model == "annotation-model"
     assert settings.vlm_max_tokens == 8192
     assert settings.vlm_max_image_side == 960
+    assert settings.vlm_wire_format == "compact"
+    assert settings.vlm_execution_mode == "parallel"
 
 
 def test_rich_labeling_invalid_environment_backend_is_rejected(

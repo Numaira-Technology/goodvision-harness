@@ -174,7 +174,9 @@ def _request_route(parameters: Mapping[str, Any]) -> dict[str, Any]:
     return route
 
 
-def _response_diagnostic(response: Mapping[str, Any]) -> dict[str, Any]:
+def _response_diagnostic(
+    response: Mapping[str, Any], *, include_parts: bool = True,
+) -> dict[str, Any]:
     """Select response content without copying transport or request metadata."""
     try:
         assistant_text = AIClubClient.assistant_text(response)
@@ -207,6 +209,27 @@ def _response_diagnostic(response: Mapping[str, Any]) -> dict[str, Any]:
     provider = _provider_name(response.get("provider"))
     if provider is not None:
         diagnostic["provider"] = provider
+    response_id = _provider_name(response.get("id"))
+    if response_id is not None:
+        diagnostic["id"] = response_id
+    timing = response.get("_timing")
+    if isinstance(timing, Mapping):
+        diagnostic["timing"] = {
+            name: value for name in (
+                "response_headers_seconds", "first_content_token_seconds",
+                "complete_seconds", "response_eof_seconds", "elapsed_seconds",
+                "max_part_seconds",
+            )
+            if isinstance(value := timing.get(name), (int, float))
+            and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+        }
+    parts = response.get("parts")
+    if include_parts and isinstance(parts, Mapping):
+        diagnostic["parts"] = {
+            name: _response_diagnostic(part, include_parts=False)
+            for name in ("people_left", "people_right", "items")
+            if isinstance(part := parts.get(name), Mapping)
+        }
     return diagnostic
 
 
@@ -271,6 +294,8 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
         model=config.rich_labeling.model or config.inference.model,
         max_tokens=config.rich_labeling.vlm_max_tokens,
         max_image_side=config.rich_labeling.vlm_max_image_side,
+        wire_format=config.rich_labeling.vlm_wire_format,
+        execution_mode=config.rich_labeling.vlm_execution_mode,
         request_parameters=config.rich_labeling.vlm_request_parameters,
         dry_run=arguments.dry_run,
         response_observer=observe_response,
@@ -285,6 +310,8 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
         "endpoint": settings.endpoint,
         "model": config.rich_labeling.model or config.inference.model,
         "selected_provider": settings.provider,
+        "wire_format": config.rich_labeling.vlm_wire_format,
+        "execution_mode": config.rich_labeling.vlm_execution_mode,
         "request_route": _request_route(config.rich_labeling.vlm_request_parameters),
         "status": "success",
         "requested_samples": 1 if arguments.image else arguments.samples,
@@ -310,6 +337,7 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
             }
             requests.append(request)
             request_started = time.perf_counter()
+            calls_before = client.api_requests
             try:
                 snapshot = client.infer(
                     jpeg,
@@ -324,10 +352,12 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
                 metrics.update(failure)
                 break
             finally:
+                request["api_requests"] = client.api_requests - calls_before
                 request["latency_ms"] = round(
                     (time.perf_counter() - request_started) * 1000, 2
                 )
             request.update(status="success", object_count=len(snapshot.objects))
+            request["within_2_5_seconds"] = request["latency_ms"] <= 2500
             snapshots.append(snapshot.as_dict())
             labels.update(item.label for item in snapshot.objects)
             rendered = draw_rich_overlay(frame, snapshot.objects)
@@ -346,7 +376,7 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
         metrics.update(
             attempted_samples=len(requests),
             successful_samples=len(snapshots),
-            api_requests=0 if arguments.dry_run else len(requests),
+            api_requests=sum(request.get("api_requests", 0) for request in requests),
             elapsed_seconds=round(time.perf_counter() - started, 3),
             mean_latency_ms=(
                 round(sum(latencies) / len(latencies), 2) if latencies else None

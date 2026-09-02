@@ -18,6 +18,7 @@ from goodvision_harness.aiclub import (
     AIClubSettings,
 )
 from goodvision_harness.config import RichLabelSettings, StreamSettings, VideoSettings
+from goodvision_harness import vlm_rich_labeling as vlm
 from tools import vlm_rich_smoke as smoke
 
 
@@ -29,6 +30,7 @@ def isolated_config_and_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     # Prevent accidental .env loading or external calls if a test omits its mocks.
     monkeypatch.setattr(smoke, "load_config", unexpected)
     monkeypatch.setattr(AIClubClient, "_post_json", unexpected)
+    monkeypatch.setattr(vlm, "complete_stream", unexpected)
     for name in (
         "INFERENCE_API_KEY", "MODEL_API_KEY", "AICLUB_API_KEY",
         "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY",
@@ -68,6 +70,57 @@ def _reply(text: str = '{"objects": []}', finish: str = "stop") -> dict[str, Any
         "choices": [{"message": {"content": text}, "finish_reason": finish}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     }
+
+
+def test_parallel_smoke_counts_three_calls_and_preserves_safe_part_timings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    arguments = _arguments(monkeypatch, tmp_path, "--save-model-response")
+    config = _config()
+    config.rich_labeling = replace(
+        config.rich_labeling, vlm_wire_format="compact", vlm_execution_mode="parallel",
+    )
+    monkeypatch.setattr(smoke, "load_config", lambda _: config)
+
+    class OfflinePool:
+        def __init__(self, **kwargs: Any) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(vlm.httpx, "AsyncClient", OfflinePool)
+    sent: list[dict[str, Any]] = []
+
+    async def complete(_client: Any, **kwargs: Any) -> dict[str, Any]:
+        sent.append(kwargs)
+        response = _reply('{"o":[]}')
+        response.update(
+            id=f"gen-{len(sent)}", provider="DeepInfra",
+            _timing={"elapsed_seconds": 1.2, "first_content_token_seconds": 0.3,
+                     "api_key": "private-value"},
+            request={"api_key": "private-value"},
+        )
+        return response
+
+    monkeypatch.setattr(vlm, "complete_stream", complete)
+    metrics = smoke.run_smoke(arguments)
+    assert metrics["status"] == "success"
+    assert metrics["execution_mode"] == "parallel"
+    assert metrics["wire_format"] == "compact"
+    assert metrics["api_requests"] == 3
+    assert metrics["requests"][0]["api_requests"] == 3
+    assert metrics["requests"][0]["within_2_5_seconds"] is True
+    assert len(sent) == 3
+    text = (arguments.output_dir / "response-001.json").read_text(encoding="utf-8")
+    diagnostic = json.loads(text)
+    assert set(diagnostic["parts"]) == {"people_left", "people_right", "items"}
+    assert diagnostic["parts"]["people_left"]["id"] == "gen-1"
+    assert diagnostic["parts"]["items"]["timing"] == {
+        "elapsed_seconds": 1.2, "first_content_token_seconds": 0.3,
+    }
+    assert "private-value" not in text
+    assert "test-secret-never-persist" not in text
 
 
 def test_expected_endpoint_defaults_to_exact_aiclub_destination() -> None:

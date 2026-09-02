@@ -60,6 +60,8 @@ class RichLabelSettings:
     model: str | None = None
     vlm_max_tokens: int = 4096
     vlm_max_image_side: int = 1280
+    vlm_wire_format: str = "objects"
+    vlm_execution_mode: str = "single"
     vlm_request_parameters: Mapping[str, Any] = field(default_factory=dict)
     endpoint: str = "http://rich-label-worker:8091/v1/labels"
     timeout_seconds: float = 2.0
@@ -278,6 +280,20 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         raise TypeError("rich_labeling.model must be a string or null")
     if rich_label_model is not None:
         rich_label_model = rich_label_model.strip() or None
+    rich_wire_format = _required_string(
+        rich_label_section.get("vlm_wire_format", "objects"),
+        "rich_labeling.vlm_wire_format",
+    ).lower()
+    if rich_wire_format not in {"objects", "compact"}:
+        raise ValueError("rich_labeling.vlm_wire_format must be objects or compact")
+    rich_execution_mode = _required_string(
+        rich_label_section.get("vlm_execution_mode", "single"),
+        "rich_labeling.vlm_execution_mode",
+    ).lower()
+    if rich_execution_mode not in {"single", "parallel"}:
+        raise ValueError("rich_labeling.vlm_execution_mode must be single or parallel")
+    if rich_execution_mode == "parallel" and rich_wire_format != "compact":
+        raise ValueError("parallel rich labeling requires vlm_wire_format: compact")
     rich_label_endpoint = (
         os.environ.get("RICH_LABEL_ENDPOINT", "").strip()
         or _required_string(
@@ -299,6 +315,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         enabled=rich_label_enabled,
         backend=rich_label_backend,
         model=rich_label_model,
+        vlm_wire_format=rich_wire_format,
+        vlm_execution_mode=rich_execution_mode,
         vlm_max_tokens=_positive_int(
             rich_label_section.get("vlm_max_tokens", 4096),
             "rich_labeling.vlm_max_tokens",
