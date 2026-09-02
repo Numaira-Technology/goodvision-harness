@@ -2,7 +2,7 @@ name: goodvision-harness
 
 services:
   harness:
-    image: goodvision-harness:2026.08.28-face-distance.1
+    image: goodvision-harness:2026.09.02-five-capability-api.1
     pull_policy: never
     init: true
     restart: unless-stopped
@@ -28,6 +28,7 @@ services:
       FACE_MODEL_ROOT: /models
       FACE_GALLERY_PATH: /data/face-gallery.json
       FACE_PROVIDER: "${FACE_PROVIDER:-CPUExecutionProvider}"
+      FACE_LIVE_SCHEDULER: "${FACE_LIVE_SCHEDULER:-auto}"
       # Point this at an independently deployed Paddle rich-label worker.
       RICH_LABEL_ENABLED: "${RICH_LABEL_ENABLED:-false}"
       RICH_LABEL_ENDPOINT: "${RICH_LABEL_ENDPOINT:-http://rich-label-worker:8091/v1/labels}"

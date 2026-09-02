@@ -6,7 +6,14 @@ build-backend = "setuptools.build_meta"
 name = "goodvision-harness"
 version = "0.1.0"
 description = "Independent WebRTC/WHEP video analysis and delivery harness"
-readme = "README.md"
+readme = { content-type = "text/markdown", text = """
+# GoodVision
+
+Live video analysis with five safety capabilities, local face matching, object
+tracking, pedestrian attributes, JSON event delivery, and annotated video.
+Deployment settings and public interfaces are documented in the supplied guide.
+Runtime components retain their original license and attribution files.
+""" }
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115,<1",

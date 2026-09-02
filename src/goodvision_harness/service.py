@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator, Callable, Collection
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import timezone
+from html import escape
 from pathlib import Path
 from threading import RLock
 from typing import Annotated, Any
@@ -23,7 +24,10 @@ import cv2
 import numpy as np
 import uvicorn
 from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.websockets import WebSocketDisconnect
 
 from .config import (
@@ -149,9 +153,11 @@ class HarnessRuntime:
             else "AICLUB_API_KEY"
         )
         self._environment_api_key = (
-            os.environ.get(api_key_env, "").strip()
+            os.environ.get("INFERENCE_API_KEY", "").strip()
+            or os.environ.get(api_key_env, "").strip()
             # Backward-compatible reads for existing deployments. These
             # legacy names are never emitted by the service.
+            or os.environ.get("AICLUB_API_KEY", "").strip()
             or os.environ.get("MODEL_API_KEY", "").strip()
             or os.environ.get("OPENROUTER_API_KEY", "").strip()
             or None
@@ -346,7 +352,7 @@ class HarnessRuntime:
         }
         unknown = sorted(set(payload) - allowed)
         if unknown:
-            raise ValueError(f"unknown deployment setting: {unknown[0]}")
+            raise ValueError("unknown deployment setting")
         with self._control_lock:
             if self._session is not None and self._session.running:
                 raise RuntimeError("stop the active session before saving settings")
@@ -669,7 +675,7 @@ class HarnessRuntime:
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
         if mode not in {CAMERA_MODE, STREAM_MODE}:
-            raise ValueError(f"unsupported input mode: {mode}")
+            raise ValueError("unsupported input mode")
 
         selected_analysis = str(analysis_mode).strip().lower()
         if selected_analysis not in ANALYSIS_MODES:
@@ -1608,10 +1614,54 @@ def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
         feature for feature in rendered if feature not in DETECTION_EVENT_LABELS
     )
     if unsupported:
-        raise ValueError(f"unsupported feature: {unsupported[0]}")
+        raise ValueError("unsupported feature")
     return tuple(
         feature for feature in DETECTION_EVENT_LABELS if feature in rendered
     )
+
+
+def _api_reference_html(schema: dict[str, Any]) -> str:
+    """Render a self-contained customer reference without external assets."""
+
+    rows: list[str] = []
+    for path, operations in schema.get("paths", {}).items():
+        for method, operation in operations.items():
+            if method.lower() not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            summary = operation.get("summary", "")
+            rows.append(
+                "<tr><td><strong>"
+                + escape(method.upper())
+                + "</strong></td><td><code>"
+                + escape(redact_public_text(path))
+                + "</code></td><td>"
+                + escape(redact_public_text(summary))
+                + "</td></tr>"
+            )
+    return """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Goodvision API Reference</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;color:#17202e;line-height:1.6}
+h1{margin-bottom:8px}a{color:#1558b0}table{width:100%;border-collapse:collapse;margin:24px 0}
+th,td{text-align:left;padding:10px;border-bottom:1px solid #dbe1e8;vertical-align:top}
+code{overflow-wrap:anywhere}th{background:#f4f6f8}nav{display:flex;gap:20px;flex-wrap:wrap}
+</style></head><body><h1>Goodvision API Reference</h1>
+<p>Live detection, evidence retrieval, video output, and service controls.</p>
+<nav><a href="/">Control console</a><a href="/openapi.json">Machine-readable API specification</a></nav>
+<h2>Response formats</h2>
+<p>Result snapshots use JSON. Result event streams use Server-Sent Events.
+Video snapshots use JPEG; continuous video uses multipart MJPEG.
+The machine-readable specification describes parameters, request bodies, and response codes.</p>
+<h2>HTTP endpoints</h2><table><thead><tr><th>Method</th><th>Path</th><th>Operation</th></tr></thead><tbody>
+""" + "".join(rows) + """</tbody></table>
+<h2>Live control</h2><p><code>/ws</code> provides the live control connection.
+Use the console to manage the selected detection features and video source.</p>
+<h2>Operational notes</h2><p>A result or image endpoint returns 404 until matching data is available.
+Stopping a session does not delete enrolled identities or stored evidence.
+Protect deployment and enrollment controls using your deployment's access policy.</p>
+</body></html>"""
 
 
 def create_app(
@@ -1633,7 +1683,50 @@ def create_app(
         title="Goodvision Streaming Harness",
         version="1.0.0",
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        swagger_ui_oauth2_redirect_url=None,
     )
+
+    @application.exception_handler(StarletteHTTPException)
+    async def public_http_error(
+        _request: Request, exc: StarletteHTTPException
+    ) -> Response:
+        if exc.status_code < 200 or exc.status_code in {204, 205, 304}:
+            return Response(status_code=exc.status_code, headers=exc.headers)
+        return JSONResponse(
+            {"detail": public_safe_value(jsonable_encoder(exc.detail))},
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
+    @application.exception_handler(RequestValidationError)
+    async def public_validation_error(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # Keep the validation contract and location without reflecting request
+        # bodies, query values, or exception objects into public responses.
+        errors = []
+        for item in exc.errors():
+            error = dict(item)
+            if "input" in error:
+                error["input"] = "[redacted]"
+            errors.append(error)
+        return JSONResponse(
+            public_safe_value(jsonable_encoder({"detail": errors})),
+            status_code=422,
+        )
+
+    @application.get("/docs", response_class=HTMLResponse, include_in_schema=False)
+    @application.get("/redoc", response_class=HTMLResponse, include_in_schema=False)
+    async def api_reference() -> HTMLResponse:
+        return HTMLResponse(
+            _api_reference_html(application.openapi()),
+            headers={
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+                "Cache-Control": "no-store",
+            },
+        )
 
     @application.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index() -> str:
@@ -1792,9 +1885,7 @@ def create_app(
                         await websocket.send_json(
                             {
                                 "type": "error",
-                                "message": redact_public_text(
-                                    f"unknown command: {command!r}"
-                                ),
+                                "message": "unknown command",
                             }
                         )
                     continue
@@ -2351,11 +2442,20 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def main() -> None:
+    capture_options = os.environ.get("VIDEO_CAPTURE_OPTIONS")
+    if capture_options is not None:
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = capture_options
     host = os.environ.get("HARNESS_HOST", "0.0.0.0")
     port = int(os.environ.get("HARNESS_PORT", "8080"))
     # MJPEG/SSE clients are intentionally long-lived. Bound their shutdown so
     # Docker can continue into application cleanup instead of waiting forever.
-    uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=10)
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        timeout_graceful_shutdown=10,
+        server_header=False,
+    )
 
 
 app = create_app()

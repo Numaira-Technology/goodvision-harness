@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import builtins
 import importlib
+import importlib.util
 import json
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import cv2
@@ -738,6 +741,14 @@ def test_face_gpu_image_and_compose_are_isolated_from_cpu_delivery() -> None:
     assert ".[face-gpu,webrtc]" in gpu_dockerfile
     assert "FACE_PROVIDER=CUDAExecutionProvider" in gpu_dockerfile
     assert "face_gpu_smoke.py" in gpu_dockerfile
+    assert "FROM python:3.11-slim AS runtime" in gpu_dockerfile
+    assert "FROM runtime AS customer" in gpu_dockerfile
+    assert gpu_dockerfile.rstrip().endswith("FROM runtime AS development")
+    assert "python tools/face_gpu_smoke.py --runtime" in gpu_dockerfile
+    assert "/opt/goodvision/internal/face_check.py --runtime" in gpu_dockerfile
+    assert "COPY tools/customer_check.py ./tools/check_runtime.py" in gpu_dockerfile
+    assert "COPY tools/customer_check.py ./tools/check_face.py" in gpu_dockerfile
+    assert "runtime_check.py" not in gpu_dockerfile
     for overlay in (dev_overlay, delivery_overlay):
         assert "FACE_PROVIDER: CUDAExecutionProvider" in overlay
         assert "capabilities: [gpu]" in overlay
@@ -767,3 +778,161 @@ def test_config_rejects_invalid_values(
 def test_config_rejects_non_boolean_model_download_opt_in(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="true or false"):
         _config(tmp_path, allow_model_download="yes")
+
+
+# Runtime-only dependency audits never load model weights.
+FACE_RUNTIME_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "face_gpu_smoke.py"
+ORT_EXCEPTION = "insightface 1.0.1 requires onnxruntime, which is not installed."
+CV_EXCEPTION = "insightface 1.0.1 requires opencv-python, which is not installed."
+VALID_OUTPUT = f"{ORT_EXCEPTION}\n{CV_EXCEPTION}\n"
+
+
+def _load_runtime_check() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "tested_face_gpu_smoke", FACE_RUNTIME_SCRIPT
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def runtime_check() -> ModuleType:
+    return _load_runtime_check()
+
+
+def test_runtime_check_import_does_not_import_inference_libraries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+    inference_modules = {"cv2", "insightface", "numpy", "onnxruntime"}
+
+    def guarded_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name.split(".", 1)[0] in inference_modules:
+            raise AssertionError(
+                f"unexpected import while loading audit helper: {name}"
+            )
+        return original_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as context:
+        context.setattr(builtins, "__import__", guarded_import)
+        module = _load_runtime_check()
+    assert callable(module.validate_dependency_audit)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        VALID_OUTPUT,
+        f"{CV_EXCEPTION}\n{ORT_EXCEPTION}",
+        f"\n  {ORT_EXCEPTION}\r\n\t{CV_EXCEPTION}  \r\n\n",
+    ],
+    ids=["declared-order", "reverse-order", "blank-lines-and-whitespace"],
+)
+def test_dependency_audit_accepts_only_the_two_declared_exceptions(
+    runtime_check: ModuleType, output: str,
+) -> None:
+    assert runtime_check.validate_dependency_audit(1, output) is None
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "\n  \n",
+        ORT_EXCEPTION,
+        CV_EXCEPTION,
+        f"{ORT_EXCEPTION}\n{ORT_EXCEPTION}",
+        f"{CV_EXCEPTION}\n{CV_EXCEPTION}",
+        VALID_OUTPUT + ORT_EXCEPTION,
+        VALID_OUTPUT + CV_EXCEPTION,
+        VALID_OUTPUT
+        + "some-package 1.0 requires missing-package, which is not installed.",
+        "unknown dependency error",
+        "No broken requirements found.",
+        f"{ORT_EXCEPTION}\n"
+        "insightface 1.0.0 requires opencv-python, which is not installed.",
+        f"{ORT_EXCEPTION}\n"
+        "insightface 1.0.1 requires opencv-python>=6, which is not installed.",
+    ],
+    ids=[
+        "empty", "whitespace-only", "missing-opencv", "missing-ort",
+        "duplicate-ort-only", "duplicate-opencv-only", "extra-duplicate-ort",
+        "extra-duplicate-opencv", "extra-unrelated-error", "unknown-error",
+        "unexpected-clean-check", "changed-insightface-version",
+        "changed-dependency-requirement",
+    ],
+)
+def test_dependency_audit_rejects_missing_extra_duplicate_or_unknown_lines(
+    runtime_check: ModuleType, output: str,
+) -> None:
+    with pytest.raises(RuntimeError, match="Unexpected dependency audit result"):
+        runtime_check.validate_dependency_audit(1, output)
+
+
+@pytest.mark.parametrize("returncode", [0, -1, 2, 127, 137])
+def test_dependency_audit_rejects_wrong_returncode_even_with_expected_lines(
+    runtime_check: ModuleType, returncode: int,
+) -> None:
+    with pytest.raises(RuntimeError, match="Unexpected dependency audit result"):
+        runtime_check.validate_dependency_audit(returncode, VALID_OUTPUT)
+
+
+def test_face_runtime_mode_audits_packages_without_starting_models(
+    runtime_check: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        runtime_check.metadata, "version", runtime_check.EXPECTED_VERSIONS.__getitem__
+    )
+
+    def absent(_name: str) -> None:
+        raise runtime_check.metadata.PackageNotFoundError
+
+    def no_models() -> None:
+        raise AssertionError("runtime audit must not start face models")
+
+    monkeypatch.setattr(runtime_check.metadata, "distribution", absent)
+    monkeypatch.setattr(runtime_check, "check_models", no_models)
+    monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace(
+        __version__="4.14.0", IMREAD_COLOR=1,
+        imencode=lambda *_args: (True, b"synthetic-jpeg"),
+        imdecode=lambda *_args: SimpleNamespace(shape=(32, 32, 3)),
+    ))
+    monkeypatch.setitem(sys.modules, "insightface", SimpleNamespace(
+        app=SimpleNamespace(FaceAnalysis=object),
+    ))
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(
+        __version__="1.26.0",
+        get_available_providers=lambda: ["CUDAExecutionProvider"],
+    ))
+    monkeypatch.setattr(runtime_check.subprocess, "run", lambda *_args, **_kwargs: (
+        SimpleNamespace(returncode=1, stdout=VALID_OUTPUT, stderr="")
+    ))
+
+    assert runtime_check.main(["--runtime"]) == 0
+    assert json.loads(capsys.readouterr().out)["real_gpu_inference_tested"] is False
+
+
+def test_face_default_mode_still_runs_real_model_check(
+    runtime_check: ModuleType, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(runtime_check, "check_models", lambda: calls.append("models"))
+    monkeypatch.setattr(runtime_check, "check_runtime", lambda: calls.append("runtime"))
+    assert runtime_check.main([]) == 0
+    assert calls == ["models"]
+
+
+def test_face_validation_failures_return_nonzero_without_raw_exception(
+    runtime_check: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail() -> None:
+        raise RuntimeError("private provider failure")
+
+    monkeypatch.setattr(runtime_check, "check_runtime", fail)
+    assert runtime_check.main(["--runtime"]) == 1
+    assert capsys.readouterr().out == "ERROR face validation failed\n"
+    assert runtime_check.main(["--unexpected"]) == 2

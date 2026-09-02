@@ -1,8 +1,8 @@
 services:
   rich-label-worker:
     build:
-      context: ./workers/paddle_rich_label
-      dockerfile: Dockerfile.gpu
+      context: .
+      dockerfile: workers/paddle_rich_label/Dockerfile.gpu
     image: goodvision-rich-label-worker:demo-gpu-cu129
     environment:
       # One reserved GPU is exposed as gpu:0 inside this container.

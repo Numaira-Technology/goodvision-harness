@@ -5,8 +5,11 @@ import json
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
+import httpx
 import numpy as np
 import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 import goodvision_harness.aiclub as transport_module
 import goodvision_harness.overlay as overlay_module
@@ -16,14 +19,21 @@ from goodvision_harness.aiclub import (
     AIClubSettings,
 )
 from goodvision_harness.contracts import (
+    PUBLIC_MODEL_NAME,
     AnalysisResult,
     EventJudgment,
     FrameReference,
     GroundedObject,
     NormalizedBBox,
-    PUBLIC_MODEL_NAME,
 )
-from goodvision_harness.privacy import public_safe_value, redact_public_text
+from goodvision_harness.delivery import WebhookDelivery
+from goodvision_harness.privacy import (
+    contains_private_implementation_detail,
+    public_safe_value,
+    redact_public_text,
+)
+from goodvision_harness.result_bus import ResultBus
+from goodvision_harness.service import HarnessRuntime, create_app
 from goodvision_harness.vision_result import VisionResult
 
 
@@ -39,11 +49,20 @@ PRIVATE_MARKERS = (
     "onnxruntime",
     "cpuexecutionprovider",
     "dmlexecutionprovider",
+    "paddle",
+    "pp-yoloe",
+    "pp-lcnet",
+    "picodet",
+    "nvidia",
+    "opencv",
+    "huggingface",
 )
 PRIVATE_TEXT = (
     "AIClub https://aiclub.zimaocloud.com qwen3.5-plus "
     "OpenRouter https://openrouter.ai qwen/qwen3.5-35b-a3b CoreWeave DeepInfra "
     "InsightFace buffalo_l onnxruntime CPUExecutionProvider DmlExecutionProvider"
+    " PaddleX PaddleRuntimeError PP-YOLOE_plus-L PP-LCNet_x1_0_pedestrian_attribute"
+    " PicoDet-S NVIDIA OpenCV https://huggingface.co/example/model"
 )
 
 
@@ -177,3 +196,203 @@ def test_provider_error_body_and_network_exception_are_not_echoed(
     assert str(raised.value) == "model API returned HTTP 500"
     _assert_public(str(raised.value))
     _assert_public(redact_public_text(PRIVATE_TEXT))
+
+
+@pytest.mark.parametrize("marker", [
+    "Paddle", "PaddleX", "paddlepaddle-gpu", "PaddleDetection",
+    "PaddleRuntimeError", "PP-YOLOE_plus-L", "PP-LCNet_x1_0_pedestrian_attribute",
+    "PicoDet-S", "InsightFaceError", "OpenRouterError", "AIClubError",
+    "qwen3.5-plus", "使用Qwen模型", "NVIDIA", "CUDAExecutionProvider", "cuDNN",
+    "TensorRT", "OpenCV", "FFmpeg", "FastAPI", "Uvicorn", "Swagger", "ReDoc",
+    "OpenAI", "Anthropic", "DeepSeek", "HuggingFace", "ModelScope", "ONNXRuntimeError",
+    "https://paddle-model-ecology.bj.bcebos.com/model.tar",
+    "https://huggingface.co/team/model/file", "飞桨", "通义千问", "英伟达",
+])
+def test_all_known_runtime_markers_are_removed(marker: str) -> None:
+    assert contains_private_implementation_detail(marker)
+    result = redact_public_text(marker)
+    assert not contains_private_implementation_detail(result)
+    assert marker not in result
+
+
+def test_nested_metadata_and_keys_are_safe() -> None:
+    source = {"PaddleRuntimeError": [{"engine": "PaddleX", "model": "PP-YOLOE_plus-L"}]}
+    result = public_safe_value(source)
+    assert not contains_private_implementation_detail(json.dumps(result))
+    assert source["PaddleRuntimeError"][0]["engine"] == "PaddleX"
+
+
+def test_product_contract_and_common_video_words_are_unchanged() -> None:
+    text = (
+        "numaira-beta-fast person bottle track_id frame_sequence "
+        "JPEG GPU CPU HTTP JSON OpenAPI"
+    )
+    assert redact_public_text(text) == text
+
+
+def test_validation_keeps_error_contract_without_echoing_input() -> None:
+    client = TestClient(create_app())
+    response = client.get("/v1/results/events", params={"after": PRIVATE_TEXT})
+    assert response.status_code == 422
+    error = response.json()["detail"][0]
+    assert error["loc"] == ["query", "after"]
+    assert error["type"] == "int_parsing"
+    assert error["input"] == "[redacted]"
+    assert isinstance(error["msg"], str)
+    _assert_public(response.json())
+
+
+def test_http_exception_detail_is_projected_and_status_and_headers_remain() -> None:
+    app = create_app()
+
+    @app.get("/audit-error")
+    async def audit_error() -> None:
+        raise HTTPException(
+            409, detail={"reason": PRIVATE_TEXT}, headers={"Retry-After": "5"}
+        )
+
+    response = TestClient(app).get("/audit-error")
+    assert response.status_code == 409
+    assert response.headers["retry-after"] == "5"
+    assert "reason" in response.json()["detail"]
+    _assert_public(response.json())
+
+
+def test_result_bus_projects_public_records_without_mutating_caller() -> None:
+    payload = {
+        "message_id": "observation-1",
+        "description": PRIVATE_TEXT,
+        "nested": [PRIVATE_TEXT],
+    }
+    bus = ResultBus()
+    published = bus.publish(payload)
+    _assert_public(published.payload)
+    _assert_public(bus.latest().payload)
+    _assert_public(bus.records_after(0)[0].payload)
+    assert payload["description"] == PRIVATE_TEXT
+
+
+def test_webhook_projects_payload_and_preserves_matching_idempotency() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    delivery = WebhookDelivery(
+        "http://receiver.test/events", transport=httpx.MockTransport(handler)
+    )
+    message_ids = ["Qwen-event-1", "Qwen-event-2"]
+    delivery.start()
+    try:
+        for message_id in message_ids:
+            assert delivery.submit({
+                "message_id": message_id, "description": PRIVATE_TEXT,
+            })
+        assert delivery.flush(timeout_seconds=2)
+    finally:
+        delivery.close()
+    assert len(requests) == 2
+    for request, message_id in zip(requests, message_ids, strict=True):
+        payload = json.loads(request.content)
+        assert request.headers["idempotency-key"] == payload["message_id"] == message_id
+        _assert_public(payload["description"])
+    assert delivery.stats()["delivered"] == 2
+
+
+def test_public_projection_preserves_business_identifiers_and_reference_lists() -> None:
+    identifiers = {
+        "message_id": "Paddle-event-1",
+        "observation_id": "Paddle-event-1",
+        "source_id": "azure-camera-1",
+        "stream_session_id": "Qwen-session-1",
+        "object_id": "NVIDIA-object-1",
+        "track_id": "OpenRouter-track-1",
+        "person_id": "claude",
+        "stranger_id": "Paddle-stranger-1",
+        "memory_id": "Qwen-memory-1",
+        "analysis_message_id": "Paddle-event-1",
+        "next_analysis_message_id": "Paddle-event-2",
+        "association_message_id": "Paddle-event-1",
+    }
+    source = {
+        **identifiers,
+        "attributes": {"person_id": "claude", "engine": PRIVATE_TEXT},
+        "model": {"id": "Qwen", "name": PRIVATE_TEXT},
+        "description": PRIVATE_TEXT,
+    }
+    projected = public_safe_value(source)
+    assert all(projected[key] == value for key, value in identifiers.items())
+    assert projected["attributes"]["person_id"] == "claude"
+    _assert_public(projected["attributes"]["engine"])
+    _assert_public(projected["model"])
+    _assert_public(projected["description"])
+    for field in ("object_ids", "memory_ids", "matched_memory_ids"):
+        for values in (["Paddle-1", "Paddle-2"], ("Paddle-1", "Paddle-2")):
+            result = public_safe_value({field: values})[field]
+            assert result == values
+            assert type(result) is type(values)
+            if isinstance(values, list):
+                assert result is not values
+
+
+def test_identifier_fields_do_not_bypass_nested_metadata_redaction() -> None:
+    invalid_identifiers = {
+        "person_id": {"engine": PRIVATE_TEXT},
+        "object_ids": [{"provider": PRIVATE_TEXT}, PRIVATE_TEXT],
+    }
+    _assert_public(public_safe_value(invalid_identifiers))
+
+
+def test_face_gallery_business_identifiers_round_trip_through_http() -> None:
+    people: dict[str, SimpleNamespace] = {}
+
+    def enroll(person_id: str, name: str, _image: bytes) -> SimpleNamespace:
+        person = SimpleNamespace(person_id=person_id, name=name, sample_count=1)
+        people[person_id] = person
+        return person
+
+    face = SimpleNamespace(
+        enroll=enroll,
+        list_people=lambda: tuple(people.values()),
+        delete_person=lambda person_id: people.pop(person_id, None) is not None,
+    )
+    # Exercise the real public endpoints with a memory-only gallery adapter;
+    # construction deliberately avoids model setup, environment, and storage.
+    runtime = object.__new__(HarnessRuntime)
+    runtime._ensure_face_runtime = lambda: face
+    app = create_app()
+    app.state.runtime = runtime
+    client = TestClient(app)
+    identifiers = ("claude", "claude-2")
+    for person_id in identifiers:
+        response = client.post(
+            f"/v1/faces/gallery/{person_id}",
+            params={"name": "Staff member"},
+            content=b"memory-only adapter fixture",
+        )
+        assert response.status_code == 200
+        assert response.json()["person"]["person_id"] == person_id
+    gallery = client.get("/v1/faces/gallery").json()
+    assert {person["person_id"] for person in gallery["people"]} == set(identifiers)
+    for person in gallery["people"]:
+        response = client.delete(f"/v1/faces/gallery/{person['person_id']}")
+        assert response.status_code == 200
+        assert response.json() == {"deleted": True, "person_id": person["person_id"]}
+    assert client.get("/v1/faces/gallery").json()["people"] == []
+
+
+def test_public_result_bus_keeps_distinct_source_identifiers() -> None:
+    bus = ResultBus()
+    source_ids = ("azure-camera-1", "azure-camera-2")
+    for index, source_id in enumerate(source_ids):
+        bus.publish({
+            "message_id": f"Paddle-event-{index}",
+            "source_id": source_id,
+            "description": PRIVATE_TEXT,
+        })
+    records = bus.records_after(0)
+    assert tuple(record.payload["source_id"] for record in records) == source_ids
+    assert len({record.payload["message_id"] for record in records}) == 2
+    for record in records:
+        _assert_public(record.payload["description"])

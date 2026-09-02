@@ -248,8 +248,12 @@ when the receiver is also on the host.
 ## Deploy
 
 For a prebuilt image-tar delivery with no source tree on the customer server,
-use `compose.delivery.yaml` and follow [DEPLOY.md](DEPLOY.md). The regular
-`compose.yaml` remains the developer build path.
+follow [DEPLOY.md](DEPLOY.md) and use `compose.full-gpu.delivery.yaml` for the
+complete customer GPU package. [API_DELIVERY.md](API_DELIVERY.md) is the public
+interface contract. The regular `compose.yaml` remains the developer build path;
+the older `compose.delivery.yaml` and delivery overlays remain available for
+their historical CPU/separate-image releases and must not be mixed into the
+current full package.
 
 On the GoodVision server (`192.168.20.168`):
 
@@ -771,6 +775,99 @@ flow is allowed.
 The old PR's process-local upload store is intentionally not duplicated: the
 main face path already has persistent enroll/list/delete APIs and UI through
 FaceGallery, while remote fallback references remain deployment configuration.
+
+## Customer release builds
+
+The two GPU Dockerfiles each define `runtime`, `customer`, and `development`
+targets. The final `development` target is still the default, retaining the
+existing developer entrypoints; CPU Dockerfiles and the local CPU/hybrid demo
+path are unchanged. `compose.gpu.yaml` now builds its worker from the repository
+root so the explicit customer target can use the shared process gateway.
+
+Customer targets build the current source and dependencies from the public base
+image. They do not require a product image from an earlier local delivery. From
+the repository root, use distinct candidate tags while validating changes:
+
+```bash
+docker build --platform linux/amd64 -f Dockerfile.face-gpu --target customer -t goodvision-harness:consolidation-test .
+docker build --platform linux/amd64 -f workers/paddle_rich_label/Dockerfile.gpu --target customer -t goodvision-rich-label-worker:consolidation-test .
+```
+
+The corresponding developer checks use `--target development` with different
+test tags. A clean dependency build needs network access and substantial free
+disk space. Recipe/static checks and tests using previously installed dependency
+layers do not prove that a fresh full GPU build has completed; record which
+validation was actually performed. Dependency version ranges also mean a clean
+build is not a promise of byte-for-byte reproducibility.
+
+The already-exported `dist/goodvision-full-2026.09.02-gpu.2` is an immutable
+historical release and does not acquire subsequent source/consolidation fixes.
+Never rebuild its labels or overwrite its files as part of source verification.
+For a new release, choose new product tags/archive names and update the version
+references in the delivery Compose, DEPLOY guide, bundle-audit constants and
+corresponding contract tests before staging or publishing it.
+
+### Customer-facing boundary
+
+Neutral names apply to the supported UI, API, event/webhook output, deployment
+materials, default service logs and supplied check entrypoints. Known engine,
+model and provider markers are handled by the shared `privacy.py` helpers; errors
+must not expose upstream exception text or echo private input. The customer
+process gateway also handles native stdout/stderr while preserving exit status
+and shutdown behavior. A single `tools/customer_check.py` selects its check mode
+from the installed filename and enters that gateway.
+
+Business identifiers (for example person, source and message IDs) remain exact,
+even when customer-supplied text resembles a brand. They are correlation/CRUD
+keys, not implementation metadata; redacting them would break lookups or merge
+distinct records.
+
+This is not removal of working dependencies or a promise against image
+inspection. Preserve upstream licenses, copyright notices and metadata. Runtime
+internals, required dependency files and historical image layers may retain
+implementation names; directly invoking internal tools bypasses the supported
+customer-output boundary. Model authorization remains separate from code
+packaging, and no real keys, model weights, photographs or galleries belong in a
+release staging directory.
+
+### Release staging and verification
+
+Keep one deployment source, `DEPLOY.md`, in the repository. Copy it as
+`FULL_DEPLOY.md` inside the bundle to retain the existing external file contract.
+Use a new staging directory and copy only these reviewed sources:
+
+| Repository source | Customer bundle destination |
+| --- | --- |
+| `DEPLOY.md` | `FULL_DEPLOY.md` |
+| `API_DELIVERY.md` | Same name |
+| `compose.full-gpu.delivery.yaml` | Same name |
+| `.env.full-gpu.delivery.example` | Same name |
+| `config.delivery.yaml` | Same name |
+| `schemas/analysis-result-v1.schema.json` | Same path |
+| `tools/customer_check.py` | `tools/check_runtime.py`, `tools/check_face.py`, `tools/check_perception.py` |
+
+Add a reviewed `RELEASE.md` recording the exact candidate versions, completed
+checks and unverified boundaries. Run
+`python tools/audit_customer_bundle.py <new-bundle-directory> --without-archive`
+before adding the archive. Export only the two selected product tags into that
+directory, then rerun the audit without `--without-archive`. It requires exactly
+11 files: ten customer text files and the one image archive. It checks neutral
+names and the archive's image tags, not image-layer contents or dependency
+licenses. No separate file-checksum artifact is part of the release contract.
+
+Before publishing, run the full unit suite and isolated image protocol check
+with the candidate image tags:
+
+```powershell
+pwsh -NoProfile -File tools/run_full_delivery_smoke.ps1 -HarnessImage goodvision-harness:consolidation-test -WorkerImage goodvision-rich-label-worker:consolidation-test
+```
+
+The smoke uses disposable resources, not production sessions or data volumes.
+Reload the new archive and repeat the checks against its selected tags. Synthetic
+protocol tests and `--runtime` dependency checks do not establish actual GPU or
+model correctness. Real face/detection/attribute inference, authorized-video
+results, evidence photos and performance still require the target-host checks
+in the delivery guide. Do not restart the local demo merely to validate a release.
 
 ## Verification
 

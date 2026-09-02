@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from .privacy import public_safe_value
+
 
 @dataclass(frozen=True, slots=True)
 class ResultRecord:
@@ -34,7 +36,7 @@ class ResultBus:
             self._cursor += 1
             record = ResultRecord(
                 cursor=self._cursor,
-                payload=copy.deepcopy(dict(payload)),
+                payload=public_safe_value(copy.deepcopy(dict(payload))),
             )
             self._history.append(record)
             self._condition.notify_all()

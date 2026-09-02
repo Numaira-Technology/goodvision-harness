@@ -1,7 +1,12 @@
 .git
 .gitignore
+.agents
+.codex
+.audit*
+.worktrees
 .env
 .venv
+.venv-directml
 __pycache__
 *.pyc
 *.pyo
@@ -23,6 +28,9 @@ personal
 *.avi
 *.mkv
 *.webm
+*.jpg
+*.jpeg
+*.png
 logs
 output
 .models
