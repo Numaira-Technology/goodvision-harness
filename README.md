@@ -18,7 +18,7 @@ It does not run one process or one LLM call per feature. Omitting `features`
 keeps the original fixed-five result. Before a real multi-event
 or face-only session accepts its first frame, the service loads the local engine and
 runs one blank inference to remove its first-frame cold start; dry-run skips
-that warmup. These runtime defaults remain fixed:
+that warmup. The default runtime settings are:
 
 - source/face sampling: 2.5 FPS, 1280 px maximum image side, JPEG quality 90;
 - the same frame is resized to 320 px, JPEG quality 75, for the single remote
@@ -26,8 +26,8 @@ that warmup. These runtime defaults remain fixed:
 - display output: 15 FPS, 720 px maximum image side, JPEG quality 70, delayed
   2.5 seconds so most completed 2.5 FPS analysis keyframes can be interpolated;
 - one-frame windows with stride 1 and six concurrent model requests;
-- `max_tokens=1200`, no API retry, and a fixed validated model route with
-  route fallback disabled;
+- `max_tokens=1200`, no API retry, and one explicitly selected model route
+  with automatic route fallback disabled;
 - one multi-label, high-recall safety prompt that independently evaluates
   `fight`, `smoking`, `fall`, and `weapon` and permits simultaneous positives.
 
@@ -152,7 +152,7 @@ The two containers share the device rather than receiving exclusive GPUs.
 Benchmark face-only and face-plus-rich loads on the customer host before
 acceptance. `FACE_LIVE_SCHEDULER=auto` keeps CPU InsightFace single-flight, but
 uses full sampling for DirectML or CUDA: every admitted mixed-detector request
-runs its own face branch while the AIClub safety branches retain their
+runs its own face branch while the remote safety branches retain their
 configured concurrency. Operators can force `full` for an experiment or
 `single_flight` as a bounded-backlog fallback.
 
@@ -255,7 +255,7 @@ On the GoodVision server (`192.168.20.168`):
 
 ```bash
 cp .env.example .env
-# The robot WHEP URL is already configured; add the real AICLUB_API_KEY.
+# The robot WHEP URL is configured; set the selected inference route's API key.
 docker compose up --build -d
 docker compose ps
 ```
@@ -265,8 +265,9 @@ local face files in the Compose `face-models` volume on first use. Alternatively
 pre-populate `/models/models/<configured-profile>/`. `HARNESS_DRY_RUN=true` does
 not need them.
 
-The default model route uses AIClub with `qwen3.5-plus`; the API endpoint
-remains configurable without changing the streaming pipeline.
+The default model route uses AIClub with `qwen3.5-plus`. Set
+`INFERENCE_PROVIDER` to switch to OpenRouter or DashScope; model and endpoint
+overrides use the same streaming pipeline. See the configuration examples below.
 
 The default source is the robot's LAN WHEP endpoint:
 
@@ -638,8 +639,8 @@ when replay guarantees matter.
 `config.yaml` controls sampling, model selection, the legacy single-event
 prompt, the fixed-four `multi_event_prompt`, concurrency, readiness windows,
 the `display.delay_seconds` / `display.bbox_max_gap_seconds` compositor timing,
-overlay JPEG quality, and optional webhook behavior. The
-validated AIClub route remains fixed. The API retry count remains zero so a
+overlay JPEG quality, and optional webhook behavior. Inference routes are
+configured under `inference_service`. The API retry count remains zero so a
 failed live request is not replayed as a stale result.
 Persisted console settings override environment values; otherwise the generic
 stream variable takes precedence over the legacy RTSP variable:
@@ -648,7 +649,13 @@ stream variable takes precedence over the legacy RTSP variable:
 | --- | --- |
 | `HARNESS_STREAM_URL` | Primary RTSP/RTMP/WHEP input URL. |
 | `RTSP_URL` | Deprecated compatibility fallback when `HARNESS_STREAM_URL` is empty. |
-| `AICLUB_API_KEY` | AIClub API credential. |
+| `INFERENCE_PROVIDER` | Route: `aiclub` (default), `openrouter`, or `dashscope`. |
+| `INFERENCE_MODEL` | Optional model override for the selected route. Empty uses its configured default. |
+| `INFERENCE_ENDPOINT` | Optional complete chat-completions URL override for the selected route. |
+| `INFERENCE_API_KEY` | Optional shared credential override, ahead of provider-specific environment keys. |
+| `AICLUB_API_KEY` | AIClub credential, used only when that route is selected. |
+| `OPENROUTER_API_KEY` | OpenRouter credential, used only when that route is selected. |
+| `DASHSCOPE_API_KEY` | DashScope credential, used only when that route is selected. |
 | `HARNESS_DRY_RUN` | Disable external inference and emit deterministic results. |
 | `HARNESS_AUTOSTART` | Start the configured network stream when the service starts; set false for local camera testing. |
 | `HARNESS_SOURCE_ID` | Stable customer-facing source identifier. |
@@ -664,6 +671,71 @@ stream variable takes precedence over the legacy RTSP variable:
 | `RICH_LABEL_ENDPOINT` | Rich-label worker inference URL. |
 
 Do not commit `.env`, RTSP credentials, or LLM API keys.
+
+### 切换 AI 渠道和模型
+
+把各渠道的密钥保存在本机未纳入 Git 的 `.env` 中。切换时只需修改
+`INFERENCE_PROVIDER`，再重启服务：
+
+```dotenv
+INFERENCE_PROVIDER=openrouter
+AICLUB_API_KEY=
+OPENROUTER_API_KEY=填入该渠道的密钥
+DASHSCOPE_API_KEY=
+INFERENCE_MODEL=
+INFERENCE_ENDPOINT=
+INFERENCE_API_KEY=
+```
+
+| `INFERENCE_PROVIDER` | 默认模型 | 使用的渠道密钥 |
+| --- | --- | --- |
+| `aiclub` | `qwen3.5-plus` | `AICLUB_API_KEY` |
+| `openrouter` | `qwen/qwen3.5-35b-a3b` | `OPENROUTER_API_KEY` |
+| `dashscope` | `qwen3.5-plus` | `DASHSCOPE_API_KEY` |
+
+例如，将 `INFERENCE_PROVIDER=dashscope` 即可改走 DashScope。测试其他模型时，
+设置 `INFERENCE_MODEL` 为该渠道支持的模型 ID；留空则恢复该渠道的默认模型。
+三个渠道的默认模型并不完全相同。比较线路速度时，应选择各渠道都支持的同一模型，
+并保持输入、提示词和请求参数一致。可用模型见
+[OpenRouter 模型页](https://openrouter.ai/qwen/qwen3.5-35b-a3b)。
+若要使用自定义网关、区域或工作空间地址，可设置完整 URL；DashScope 地址格式见
+[官方兼容接口文档](https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions)：
+
+```dotenv
+INFERENCE_ENDPOINT=https://gateway.example/v1/chat/completions
+```
+
+切换渠道时，清空不再需要的 `INFERENCE_MODEL`、`INFERENCE_ENDPOINT` 和
+`INFERENCE_API_KEY` 覆盖值，避免沿用上一次测试的设置。部署控制台保存的密钥优先于
+环境变量，且只用于保存时对应的渠道；使用独立渠道环境密钥时，保持
+`INFERENCE_API_KEY` 为空。
+
+Compose 部署修改 `.env` 后执行 `docker compose up -d --force-recreate harness`。
+普通交付部署使用 `docker compose -f compose.delivery.yaml up -d --force-recreate harness`；
+完整 GPU 交付把文件名替换为 `compose.full-gpu.delivery.yaml`。本地运行则重启 Harness 进程。
+
+也可以在 `config.yaml` 的 `inference_service.provider` 中选择默认渠道。
+各渠道的模型、完整 `endpoint`、`api_key_env` 和专用请求参数放在
+`inference_service.providers.<渠道>` 下，例如：
+
+```yaml
+inference_service:
+  provider: openrouter
+  providers:
+    openrouter:
+      model: qwen/qwen3.5-35b-a3b
+      request_parameters:
+        reasoning:
+          enabled: false
+    dashscope:
+      model: qwen3.5-plus
+      request_parameters:
+        enable_thinking: false
+```
+
+`INFERENCE_PROVIDER`、`INFERENCE_MODEL` 和 `INFERENCE_ENDPOINT` 环境变量优先于
+配置文件。`inference.request_parameters` 保存各渠道通用参数（如温度和输出长度）；
+选中渠道的 `request_parameters` 覆盖同名通用参数，其余渠道的专用参数不会发送。
 
 ## Local development
 

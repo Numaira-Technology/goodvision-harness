@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from goodvision_harness import config as config_module
 from goodvision_harness import service as service_module
 from goodvision_harness.config import load_config
 from goodvision_harness.delivery import WebhookDelivery
@@ -29,11 +30,17 @@ def _assert_public(value: object) -> None:
     assert not any(marker in rendered for marker in PRIVATE_MARKERS)
 
 
+@pytest.fixture(autouse=True)
+def ignore_local_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
+
+
 @pytest.fixture
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY",
-        "OPENROUTER_API_KEY", "LEGACY_CUSTOM_KEY", "HARNESS_STREAM_URL", "RTSP_URL",
+        "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "INFERENCE_PROVIDER",
+        "INFERENCE_MODEL", "LEGACY_CUSTOM_KEY", "HARNESS_STREAM_URL", "RTSP_URL",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
@@ -173,7 +180,9 @@ def test_rich_failure_does_not_publish_exception_class_or_text(caplog: pytest.Lo
         coordinator.close()
 
 
-@pytest.mark.parametrize("legacy", ("AICLUB_API_KEY", "MODEL_API_KEY", "OPENROUTER_API_KEY", "LEGACY_CUSTOM_KEY"))
+@pytest.mark.parametrize(
+    "legacy", ("AICLUB_API_KEY", "MODEL_API_KEY", "LEGACY_CUSTOM_KEY"),
+)
 def test_neutral_credentials_take_precedence_and_legacy_still_works(
     clean_environment: None, monkeypatch: pytest.MonkeyPatch, legacy: str
 ) -> None:
@@ -184,6 +193,38 @@ def test_neutral_credentials_take_precedence_and_legacy_still_works(
     assert HarnessRuntime(config)._aiclub_api_key == "legacy-fixture"
     monkeypatch.setenv("INFERENCE_API_KEY", "neutral-fixture")
     assert HarnessRuntime(config)._aiclub_api_key == "neutral-fixture"
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_name"),
+    [
+        ("aiclub", "AICLUB_API_KEY"),
+        ("openrouter", "OPENROUTER_API_KEY"),
+        ("dashscope", "DASHSCOPE_API_KEY"),
+    ],
+)
+def test_runtime_uses_only_the_selected_provider_credentials(
+    clean_environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    key_name: str,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", provider)
+    for name in ("AICLUB_API_KEY", "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY"):
+        monkeypatch.setenv(name, f"secret-for-{name}")
+    config = load_config(ROOT / "config.yaml")
+
+    runtime = HarnessRuntime(config)
+    assert runtime._aiclub_api_key == f"secret-for-{key_name}"
+    _assert_public(runtime.ui_info())
+
+    monkeypatch.delenv(key_name)
+    missing = HarnessRuntime(config)
+    assert missing._aiclub_api_key is None
+    assert missing.deployment_settings()["api_key_present"] is False
+
+    monkeypatch.setenv("INFERENCE_API_KEY", "explicit-current-route-key")
+    assert HarnessRuntime(config)._aiclub_api_key == "explicit-current-route-key"
 
 
 def test_saved_credentials_keep_precedence_over_environment(

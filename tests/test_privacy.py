@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 import numpy as np
 import pytest
 
-import goodvision_harness.aiclub as transport_module
+import goodvision_harness.model_api as transport_module
 import goodvision_harness.overlay as overlay_module
 from goodvision_harness.aiclub import (
     AIClubClient,
