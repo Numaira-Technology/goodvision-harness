@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -24,7 +24,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml ./
 COPY src ./src
 # ORT 1.26 is the final CUDA 12.8/cuDNN 9 PyPI line before the default wheel
 # changes to CUDA 13. The cuda/cudnn extras vendor user-space libraries; the
@@ -35,14 +35,13 @@ RUN python -m pip install --no-cache-dir --timeout 120 --retries 5 '.[face-gpu,w
 # server/GPU usage. They overwrite the same Python modules as our variants.
 # Remove both copies before reinstalling exactly one provider of each module.
 # Keep upstream metadata intact and audit its two known name-only exceptions.
-COPY tools/face_gpu_runtime_check.py ./tools/face_gpu_runtime_check.py
+COPY tools/face_gpu_smoke.py ./tools/face_gpu_smoke.py
 RUN python -m pip uninstall -y onnxruntime onnxruntime-gpu opencv-python opencv-python-headless \
     && python -m pip install --no-cache-dir --timeout 120 --retries 5 --no-deps \
         onnxruntime-gpu==1.26.0 opencv-python-headless==4.14.0.94 \
-    && python tools/face_gpu_runtime_check.py
+    && python tools/face_gpu_smoke.py --runtime
 
 COPY config.yaml ./config.yaml
-COPY tools/face_gpu_smoke.py ./tools/face_gpu_smoke.py
 
 RUN groupadd --system --gid 10001 harness \
     && useradd --system --uid 10001 --gid harness --home-dir /nonexistent harness \
@@ -58,3 +57,31 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=120s --retries=4 \
   CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=2).read()"]
 
 CMD ["goodvision-harness"]
+
+# The customer target is built from source and this Dockerfile's dependencies;
+# no previously exported product image is required on a clean checkout.
+FROM runtime AS customer
+USER root
+WORKDIR /app
+# Only redundant product-development files are removed from the runtime view.
+# Installed dependencies, their metadata and original notices stay intact.
+RUN rm -rf /app/src \
+    && rm -f /app/pyproject.toml /app/tools/face_gpu_smoke.py
+COPY config.delivery.yaml ./config.yaml
+COPY config.delivery.yaml /usr/local/lib/python3.11/site-packages/goodvision_harness/config.yaml
+COPY tools/runtime_gateway.py /opt/goodvision/runtime_gateway.py
+COPY src/goodvision_harness/privacy.py /opt/goodvision/public_privacy.py
+COPY tools/face_gpu_smoke.py /opt/goodvision/internal/face_check.py
+COPY tools/customer_check.py ./tools/check_runtime.py
+COPY tools/customer_check.py ./tools/check_face.py
+ENV GOODVISION_COMPONENT=main \
+    FACE_ACCELERATOR=gpu \
+    FACE_PROVIDER=""
+RUN python /opt/goodvision/internal/face_check.py --runtime \
+    && chown -R 10001:10001 /app /opt/goodvision
+USER 10001:10001
+ENTRYPOINT []
+CMD ["python", "/opt/goodvision/runtime_gateway.py", "serve"]
+
+# Preserve the original development image as the implicit build target.
+FROM runtime AS development

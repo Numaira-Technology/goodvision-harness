@@ -1,6 +1,8 @@
 .env
 .venv/
 .venv-directml/
+.worktrees/
+.audit*/
 __pycache__/
 *.py[cod]
 *.egg-info/

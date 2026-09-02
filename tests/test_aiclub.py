@@ -176,3 +176,15 @@ def test_build_client_uses_aiclub_transport(
 
     assert isinstance(client, QwenWindowClient)
     assert isinstance(client._transport, AIClubClient)
+
+
+def test_neutral_credentials_take_priority_and_legacy_still_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AICLUB_API_KEY", "old-test-key")
+    monkeypatch.setenv("INFERENCE_API_KEY", "new-test-key")
+    settings = AIClubSettings(api_key_env="INFERENCE_API_KEY")
+    assert AIClubClient(settings)._api_key == "new-test-key"
+    monkeypatch.delenv("INFERENCE_API_KEY")
+    assert api_key_present(settings)
+    assert AIClubClient(settings)._api_key == "old-test-key"

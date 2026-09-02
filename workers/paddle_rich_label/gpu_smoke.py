@@ -2,10 +2,38 @@
 
 from __future__ import annotations
 
+import importlib.metadata as metadata
 import json
 import os
+import subprocess
+import sys
 from collections.abc import Mapping
 from typing import Any
+
+
+def check_runtime() -> dict[str, Any]:
+    """Audit installed packages without importing the inference backend."""
+
+    for name, expected in {"paddlepaddle-gpu": "3.3.0", "paddlex": "3.7.2"}.items():
+        if metadata.version(name) != expected:
+            raise RuntimeError("unexpected perception runtime dependency version")
+    try:
+        metadata.distribution("paddlepaddle")
+    except metadata.PackageNotFoundError:
+        pass
+    else:
+        raise RuntimeError("conflicting perception runtime distributions")
+    import cv2
+
+    if not cv2.__version__.startswith("4.10."):
+        raise RuntimeError("unexpected image runtime version")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "--no-cache-dir", "check"],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    if result.returncode or result.stderr.strip():
+        raise RuntimeError("perception runtime dependency validation failed")
+    return {"ok": True, "runtime": "ready"}
 
 
 def _run_checks() -> dict[str, Any]:
@@ -59,9 +87,13 @@ def _run_checks() -> dict[str, Any]:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args not in ([], ["--runtime"]):
+        print(json.dumps({"ok": False, "error": "invalid validation request"}))
+        return 2
     try:
-        result = _run_checks()
+        result = check_runtime() if args else _run_checks()
     except Exception:
         print(json.dumps({
             "ok": False,

@@ -386,7 +386,7 @@ def test_mixed_legacy_and_service_settings_preserve_precedence(
     assert neutral.endpoint == "https://service.example/v1/chat/completions"
     assert neutral.timeout_seconds == 20
     assert neutral.max_retries == 2
-    assert neutral.api_key_env == "INFERENCE_API_KEY"
+    assert neutral.api_key_env == "AICLUB_API_KEY"
 
     service["api_key_env"] = "CUSTOM_MODEL_KEY"
     config_path.write_text(yaml.safe_dump(data), encoding="utf-8")

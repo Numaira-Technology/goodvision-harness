@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 import goodvision_harness.config as config_module
@@ -16,6 +18,7 @@ from goodvision_harness.deployment_settings import (
     DeploymentSettingsStore,
 )
 from goodvision_harness.grounding import DryRunGroundingClient
+from goodvision_harness.privacy import contains_private_implementation_detail
 from goodvision_harness.service import HarnessRuntime, create_app
 
 
@@ -434,3 +437,129 @@ def test_persisted_api_key_is_injected_without_changing_model_route(
     assert captured["model"] != "numaira-beta-fast"
     assert captured["endpoint"] == config.model_api.endpoint
     assert captured["provider"] == provider
+
+
+@pytest.fixture
+def public_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
+    for name in (
+        "INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY",
+        "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "INFERENCE_PROVIDER",
+        "INFERENCE_MODEL", "INFERENCE_ENDPOINT", "LEGACY_CUSTOM_KEY",
+        "HARNESS_STREAM_URL", "RTSP_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.setenv("HARNESS_DRY_RUN", "true")
+
+
+def test_control_errors_do_not_reflect_arbitrary_commands(
+    public_settings_environment: None,
+    tmp_path: Path,
+) -> None:
+    runtime = HarnessRuntime(
+        load_config(ROOT / "config.yaml"),
+        deployment_store=DeploymentSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(create_app(lambda: runtime)) as client:
+        invalid_setting = client.put(
+            "/v1/deployment/settings", json={"PaddleX OpenRouter invalid setting": True}
+        )
+        assert invalid_setting.status_code == 400
+        assert invalid_setting.json() == {"detail": "unknown deployment setting"}
+        with client.websocket_connect("/ws") as websocket:
+            assert websocket.receive_json()["type"] == "hello"
+            websocket.send_json({"type": "PaddleX OpenRouter invalid setting"})
+            assert websocket.receive_json() == {
+                "type": "error", "message": "unknown command",
+            }
+            websocket.send_json({
+                "type": "start",
+                "mode": "camera",
+                "features": ["PaddleX OpenRouter invalid setting"],
+            })
+            assert websocket.receive_json() == {
+                "type": "error", "message": "unsupported feature",
+            }
+
+
+@pytest.mark.parametrize("legacy", (
+    "AICLUB_API_KEY", "MODEL_API_KEY", "OPENROUTER_API_KEY", "LEGACY_CUSTOM_KEY",
+))
+def test_neutral_credentials_take_precedence_and_legacy_still_works(
+    public_settings_environment: None, monkeypatch: pytest.MonkeyPatch, legacy: str
+) -> None:
+    if legacy == "OPENROUTER_API_KEY":
+        monkeypatch.setenv("INFERENCE_PROVIDER", "openrouter")
+    config = load_config(ROOT / "config.yaml")
+    if legacy == "LEGACY_CUSTOM_KEY":
+        config = replace(config, aiclub=replace(config.aiclub, api_key_env=legacy))
+    monkeypatch.setenv(legacy, "legacy-fixture")
+    assert HarnessRuntime(config)._aiclub_api_key == "legacy-fixture"
+    monkeypatch.setenv("INFERENCE_API_KEY", "neutral-fixture")
+    assert HarnessRuntime(config)._aiclub_api_key == "neutral-fixture"
+
+
+def test_saved_credentials_keep_precedence_over_environment(
+    public_settings_environment: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = DeploymentSettingsStore(tmp_path / "settings.json")
+    store.save_api_key("saved-fixture")
+    monkeypatch.setenv("INFERENCE_API_KEY", "neutral-fixture")
+    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"), deployment_store=store)
+    assert runtime._aiclub_api_key == "saved-fixture"
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_name"),
+    [
+        ("aiclub", "AICLUB_API_KEY"),
+        ("openrouter", "OPENROUTER_API_KEY"),
+        ("dashscope", "DASHSCOPE_API_KEY"),
+    ],
+)
+def test_runtime_uses_only_the_selected_provider_credentials(
+    public_settings_environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    key_name: str,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", provider)
+    for name in ("AICLUB_API_KEY", "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY"):
+        monkeypatch.setenv(name, f"secret-for-{name}")
+    config = load_config(ROOT / "config.yaml")
+
+    runtime = HarnessRuntime(config)
+    assert runtime._aiclub_api_key == f"secret-for-{key_name}"
+    assert not contains_private_implementation_detail(runtime.ui_info())
+
+    monkeypatch.delenv(key_name)
+    missing = HarnessRuntime(config)
+    assert missing._aiclub_api_key is None
+    assert missing.deployment_settings()["api_key_present"] is False
+
+    monkeypatch.setenv("INFERENCE_API_KEY", "explicit-current-route-key")
+    assert HarnessRuntime(config)._aiclub_api_key == "explicit-current-route-key"
+
+
+@pytest.mark.parametrize("filename", ["compose.yaml", "compose.delivery.yaml"])
+def test_compose_passes_route_overrides_and_independent_credentials(filename: str) -> None:
+    compose = yaml.safe_load((ROOT / filename).read_text(encoding="utf-8"))
+    environment = compose["services"]["harness"]["environment"]
+    for key in (
+        "INFERENCE_PROVIDER",
+        "INFERENCE_MODEL",
+        "INFERENCE_ENDPOINT",
+        "INFERENCE_API_KEY",
+        "AICLUB_API_KEY",
+        "OPENROUTER_API_KEY",
+        "DASHSCOPE_API_KEY",
+    ):
+        # Empty values must retain YAML/preset defaults, rather than fixing a route.
+        assert environment[key] == "${" + key + ":-}"
+
+
+def test_packaged_config_matches_repository_default() -> None:
+    assert (ROOT / "config.yaml").read_bytes() == (
+        ROOT / "src" / "goodvision_harness" / "config.yaml"
+    ).read_bytes()

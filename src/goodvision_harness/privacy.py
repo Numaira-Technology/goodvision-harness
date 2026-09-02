@@ -15,6 +15,22 @@ from typing import Any
 PUBLIC_ANALYSIS_ERROR = "analysis request failed"
 PUBLIC_FACE_ERROR = "local face analysis failed"
 
+# These values belong to the application's correlation/CRUD contract, not to
+# its implementation metadata. Customer-supplied identifiers can legitimately
+# contain any text; changing them would break lookups or merge distinct records.
+_IDENTIFIER_FIELDS = frozenset({
+    "message_id", "observation_id", "source_id", "stream_session_id",
+    "object_id", "track_id", "person_id", "stranger_id", "memory_id",
+    "analysis_message_id", "next_analysis_message_id", "association_message_id",
+})
+_IDENTIFIER_LIST_FIELDS = frozenset({
+    "object_ids", "memory_ids", "matched_memory_ids",
+})
+_IMPLEMENTATION_FIELDS = frozenset({
+    "engine", "provider", "backend", "model", "model_name",
+    "execution_provider", "execution_providers",
+})
+
 _PRIVATE_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -117,14 +133,47 @@ def public_error_message(
     return fallback
 
 
+def _public_implementation_value(value: Any) -> Any:
+    """Strictly project explicit engine metadata, not ordinary result data."""
+
+    if isinstance(value, str):
+        for pattern in _PRIVATE_PATTERNS:
+            value = pattern.sub("analysis engine", value)
+        return value
+    if isinstance(value, Mapping):
+        return {
+            _public_implementation_value(str(key)): _public_implementation_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(_public_implementation_value(item) for item in value)
+    if isinstance(value, list):
+        return [_public_implementation_value(item) for item in value]
+    return value
+
+
+def _public_field_value(key: object, value: Any) -> Any:
+    if key in _IDENTIFIER_FIELDS and isinstance(value, str):
+        return value
+    if (
+        key in _IDENTIFIER_LIST_FIELDS
+        and isinstance(value, (list, tuple))
+        and all(isinstance(item, str) for item in value)
+    ):
+        return tuple(value) if isinstance(value, tuple) else list(value)
+    if key in _IMPLEMENTATION_FIELDS:
+        return _public_implementation_value(value)
+    return public_safe_value(value)
+
+
 def public_safe_value(value: Any) -> Any:
-    """Recursively redact strings in JSON-shaped public records."""
+    """Redact implementation text without rewriting business identifiers."""
 
     if isinstance(value, str):
         return redact_public_text(value)
     if isinstance(value, Mapping):
         return {
-            redact_public_text(key): public_safe_value(item)
+            redact_public_text(key): _public_field_value(key, item)
             for key, item in value.items()
         }
     if isinstance(value, tuple):

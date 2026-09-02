@@ -49,7 +49,9 @@ def resolve_model_route(
     # Legacy or explicit route configurations retain the channel-specific name.
     shared_connection = dict(service)
     if "inference_service" in raw and "provider" not in service:
-        shared_connection.setdefault("api_key_env", "INFERENCE_API_KEY")
+        shared_connection.setdefault(
+            "api_key_env", legacy_route.get("api_key_env", "INFERENCE_API_KEY"),
+        )
     if provider != configured_provider:
         # Legacy neutral files may store their original channel's connection
         # directly in inference_service. Keep shared tuning, not that address
