@@ -121,6 +121,89 @@ def test_parallel_smoke_counts_three_calls_and_preserves_safe_part_timings(
     }
     assert "private-value" not in text
     assert "test-secret-never-persist" not in text
+    assert set(metrics["requests"][0]["part_response_files"]) == {
+        "people_left", "people_right", "items",
+    }
+    for name in ("people_left", "people_right", "items"):
+        part_text = (arguments.output_dir / f"response-001-{name}.json").read_text(
+            encoding="utf-8",
+        )
+        assert json.loads(part_text)["provider"] == "DeepInfra"
+        assert "private-value" not in part_text
+        assert "test-secret-never-persist" not in part_text
+
+
+@pytest.mark.parametrize("save_response", [False, True])
+def test_parallel_failure_preserves_only_returned_parts_when_opted_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, save_response: bool,
+) -> None:
+    arguments = _arguments(
+        monkeypatch, tmp_path, *(["--save-model-response"] if save_response else []),
+    )
+    config = _config()
+    config.rich_labeling = replace(
+        config.rich_labeling, vlm_wire_format="compact", vlm_execution_mode="parallel",
+    )
+    monkeypatch.setattr(smoke, "load_config", lambda _: config)
+
+    class OfflinePool:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(vlm.httpx, "AsyncClient", OfflinePool)
+    calls: list[int] = []
+    cancelled: list[bool] = []
+
+    async def complete(_client: Any, **kwargs: Any) -> dict[str, Any]:
+        import asyncio
+
+        call = len(calls)
+        calls.append(call)
+        if call == 2:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+        response = _reply('{"o":[]}' if call == 0 else "not JSON")
+        response.update(
+            id=f"gen-part-{call}", provider="DeepInfra",
+            _timing={"elapsed_seconds": 0.2, "api_key": "private-value"},
+            headers={"Authorization": "test-secret-never-persist"},
+            request={"api_key": "private-value"},
+            parts={"untrusted": {"api_key": "private-value"}},
+        )
+        return response
+
+    monkeypatch.setattr(vlm, "complete_stream", complete)
+    metrics = smoke.run_smoke(arguments)
+    assert metrics["status"] == "failure"
+    assert metrics["error_type"] == "RichLabelProtocolError"
+    assert metrics["successful_samples"] == 0
+    assert cancelled == [True]
+    assert not (arguments.output_dir / "response-001.json").exists()
+    assert not (arguments.output_dir / "response-001-items.json").exists()
+    if save_response:
+        assert set(metrics["requests"][0]["part_response_files"]) == {
+            "people_left", "people_right",
+        }
+        for name, content in (("people_left", '{"o":[]}'), ("people_right", "not JSON")):
+            path = arguments.output_dir / f"response-001-{name}.json"
+            part = json.loads(path.read_text(encoding="utf-8"))
+            assert part["assistant_text"] == content
+            assert part["provider"] == "DeepInfra"
+            assert part["timing"] == {"elapsed_seconds": 0.2}
+            assert "parts" not in part
+    else:
+        assert list(arguments.output_dir.glob("response-*.json")) == []
+        assert "part_response_files" not in metrics["requests"][0]
+    for path in arguments.output_dir.glob("*.json"):
+        saved = path.read_text(encoding="utf-8")
+        assert "test-secret-never-persist" not in saved
+        assert "private-value" not in saved
+        assert "Authorization" not in saved
 
 
 def test_expected_endpoint_defaults_to_exact_aiclub_destination() -> None:

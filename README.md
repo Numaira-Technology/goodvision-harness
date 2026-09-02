@@ -218,6 +218,10 @@ overlays, actual API-request counts, and timings. `tools/vlm_rich_latency.py`
 diagnoses a single request using streaming, recording first-content-token,
 completion, and connection timings. Both require an explicit input image;
 the latency diagnostic requires `--execute` to make a real API request.
+With `--save-model-response`, the smoke tool also preserves each completed
+parallel response before annotation parsing, so a malformed response remains
+available for diagnosis even when its frame fails validation. Early failure
+timings do not count toward the complete-frame latency target.
 
 PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
 itself grant rights to every pretrained weight or its training data. Before

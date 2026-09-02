@@ -289,6 +289,15 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
                 _response_diagnostic(response),
             )
 
+    def observe_part_response(part_name: str, response: Mapping[str, Any]) -> None:
+        if part_name not in ("people_left", "people_right", "items") or not requests:
+            return
+        filename = f"response-{len(requests):03d}-{part_name}.json"
+        _write_json(
+            output_dir / filename, _response_diagnostic(response, include_parts=False),
+        )
+        requests[-1].setdefault("part_response_files", {})[part_name] = filename
+
     client = VLMRichLabelClient(
         settings,
         model=config.rich_labeling.model or config.inference.model,
@@ -299,6 +308,9 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
         request_parameters=config.rich_labeling.vlm_request_parameters,
         dry_run=arguments.dry_run,
         response_observer=observe_response,
+        part_response_observer=(
+            observe_part_response if arguments.save_model_response else None
+        ),
     )
     frames = _sample_frames(arguments, config)
     snapshots: list[dict[str, object]] = []

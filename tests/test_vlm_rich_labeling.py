@@ -678,6 +678,7 @@ def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
     monkeypatch: pytest.MonkeyPatch, failure: str,
 ) -> None:
     observed = []
+    observed_parts = []
     completed = []
     calls = []
     phase = ["success"]
@@ -700,7 +701,9 @@ def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
                 if index == 1:
                     if failure == "cancelled":
                         raise asyncio.CancelledError()
-                    return {"choices": [{"message": {"content": "invalid"}}]}
+                    response = _stream_reply([])
+                    response["choices"][0]["message"]["content"] = "invalid"
+                    return response
             return _stream_reply([])
         finally:
             await asyncio.sleep(0)
@@ -712,6 +715,9 @@ def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
         AIClubSettings(timeout_seconds=0.2), model="vlm", api_key="key",
         wire_format="compact", execution_mode="parallel",
         response_observer=observed.append,
+        part_response_observer=lambda name, response: observed_parts.append(
+            (phase[0], name, response)
+        ),
     )
     try:
         original = client.infer(
@@ -727,6 +733,18 @@ def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
         assert len(observed) == 1
         assert sorted(i for p, i in completed if p == "failure") == [0, 1, 2]
         assert not client._part_tasks
+        failed_parts = {
+            name: response for part_phase, name, response in observed_parts
+            if part_phase == "failure"
+        }
+        if failure == "invalid":
+            assert set(failed_parts) == {"people_left", "people_right"}
+            assert AIClubClient.assistant_text(failed_parts["people_right"]) == "invalid"
+            assert failed_parts["people_right"]["choices"][0]["finish_reason"] == "stop"
+        elif failure == "cancelled":
+            assert set(failed_parts) == {"people_left"}
+        else:
+            assert not failed_parts
         phase[0] = "recovered"
         recovered = client.infer(
             _jpeg(), stream_session_id="test", frame_sequence=3, timestamp_seconds=3,
@@ -735,6 +753,9 @@ def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
         assert len(observed) == 2
         assert len(pool) == 1
         assert client.api_requests == 9
+        assert {
+            name for part_phase, name, _ in observed_parts if part_phase == "recovered"
+        } == {"people_left", "people_right", "items"}
     finally:
         client.close()
     assert pool[0].close_count == 1

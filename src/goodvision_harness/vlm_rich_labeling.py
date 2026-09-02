@@ -464,6 +464,7 @@ class VLMRichLabelClient:
         max_image_side: int = 1280,
         request_parameters: Mapping[str, Any] | None = None,
         response_observer: Callable[[Mapping[str, Any]], None] | None = None,
+        part_response_observer: Callable[[str, Mapping[str, Any]], None] | None = None,
         dry_run: Callable[[], bool] | bool = False,
         wire_format: str = "objects",
         scope: str = "all",
@@ -504,6 +505,7 @@ class VLMRichLabelClient:
             )
         self.request_parameters = json.loads(json.dumps(parameters, allow_nan=False))
         self._response_observer = response_observer
+        self._part_response_observer = part_response_observer
         self._api_key = api_key
         self._dry_run = dry_run
         self._previous: RichLabelSnapshot | None = None
@@ -661,7 +663,7 @@ class VLMRichLabelClient:
                     follow_redirects=False,
                 )
 
-        async def part(messages: list[dict[str, Any]]) -> tuple[Any, Any]:
+        async def part(name: str, messages: list[dict[str, Any]]) -> tuple[Any, Any]:
             remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 raise ModelAPIError("rich annotation exceeded its wall deadline")
@@ -677,12 +679,16 @@ class VLMRichLabelClient:
                     "max_tokens": self.max_tokens,
                 },
             )
+            # Diagnostic responses may be captured even when domain parsing
+            # fails; this never publishes a partial annotation snapshot.
+            if self._part_response_observer is not None:
+                self._part_response_observer(name, response)
             objects = parse_rich_annotation(AIClubClient.assistant_text(response))
             return objects, response
 
         tasks = [
-            _RichTask(part(messages), loop=asyncio.get_running_loop())
-            for _, messages, _, _ in requests
+            _RichTask(part(name, messages), loop=asyncio.get_running_loop())
+            for name, messages, _, _ in requests
         ]
         self._part_tasks.update(tasks)
         try:
