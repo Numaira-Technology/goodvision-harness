@@ -8,10 +8,11 @@ import math
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from uuid import uuid4
 
 import cv2
@@ -21,15 +22,25 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from goodvision_harness.aiclub import api_key_present  # noqa: E402
+from goodvision_harness.aiclub import (  # noqa: E402
+    DEFAULT_AICLUB_ENDPOINT,
+    AIClubClient,
+    AIClubError,
+    api_key_present,
+)
 from goodvision_harness.config import HarnessConfig, load_config  # noqa: E402
 from goodvision_harness.overlay import draw_rich_overlay  # noqa: E402
+from goodvision_harness.rich_labeling import RichLabelProtocolError  # noqa: E402
 from goodvision_harness.video_to_stream import (  # noqa: E402
     crop_frame,
     encode_jpeg,
     probe_video,
 )
 from goodvision_harness.vlm_rich_labeling import VLMRichLabelClient  # noqa: E402
+
+
+class EndpointMismatchError(ValueError):
+    """The loaded endpoint differs from the explicitly expected destination."""
 
 
 def _positive_integer(value: str) -> int:
@@ -64,6 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--config", type=Path, default=PROJECT_ROOT / "config.vlm-rich.yaml"
     )
     parser.add_argument(
+        "--expected-endpoint", default=DEFAULT_AICLUB_ENDPOINT,
+        help="require this exact API destination before reading media or making calls",
+    )
+    parser.add_argument(
         "--output-dir", type=Path, default=Path("output/vlm-rich-smoke"),
         help="an empty output directory (default: output/vlm-rich-smoke)",
     )
@@ -73,6 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run", action="store_true",
         help="exercise decoding and output files without making API requests",
+    )
+    parser.add_argument(
+        "--save-model-response", action="store_true",
+        help="save assistant text, finish reason, and token usage for parser diagnosis",
     )
     return parser
 
@@ -128,8 +147,64 @@ def _write_json(path: Path, value: Any) -> None:
     )
 
 
+def _response_diagnostic(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Select response content without copying transport or request metadata."""
+    try:
+        assistant_text = AIClubClient.assistant_text(response)
+    except (AIClubError, AttributeError, IndexError, KeyError, TypeError):
+        assistant_text = None
+    choices = response.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else {}
+    finish_reason = choice.get("finish_reason") if isinstance(choice, Mapping) else None
+    raw_usage = response.get("usage")
+    usage: dict[str, Any] = {}
+    if isinstance(raw_usage, Mapping):
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = raw_usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                usage[key] = value
+        for key in ("prompt_tokens_details", "completion_tokens_details"):
+            details = raw_usage.get(key)
+            if isinstance(details, Mapping):
+                usage[key] = {
+                    name: value for name, value in details.items()
+                    if isinstance(name, str) and name.endswith("_tokens")
+                    and isinstance(value, int) and not isinstance(value, bool)
+                    and value >= 0
+                }
+    return {
+        "assistant_text": assistant_text,
+        "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
+        "usage": usage,
+    }
+
+
+def _failure_diagnostic(exc: Exception) -> dict[str, Any]:
+    """Keep local validation reasons and safe transport categories only."""
+    diagnostic: dict[str, Any] = {
+        "status": "failure", "error_type": type(exc).__name__,
+    }
+    if isinstance(exc, RichLabelProtocolError):
+        diagnostic["error_reason"] = str(exc)
+    cause = exc.__cause__ or exc
+    if isinstance(cause, HTTPError):
+        if isinstance(cause.code, int) and not isinstance(cause.code, bool):
+            diagnostic["http_status"] = cause.code
+    elif isinstance(cause, TimeoutError):
+        diagnostic["error_category"] = "timeout"
+    elif isinstance(cause, URLError):
+        diagnostic["error_category"] = "network_error"
+        diagnostic["network_reason_type"] = type(cause.reason).__name__
+    return diagnostic
+
+
 def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
     config = load_config(arguments.config)
+    if config.aiclub.endpoint != arguments.expected_endpoint:
+        raise EndpointMismatchError(
+            "Configured API endpoint does not exactly match --expected-endpoint. "
+            "Stopped before reading media or making API requests."
+        )
     if config.rich_labeling.backend != "vlm":
         raise ValueError("the smoke config must select rich_labeling.backend: vlm")
     if not arguments.dry_run and not api_key_present(config.aiclub):
@@ -148,21 +223,32 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
         timeout_seconds=config.rich_labeling.timeout_seconds,
         max_retries=0,
     )
+    requests: list[dict[str, Any]] = []
+
+    def save_response(response: Mapping[str, Any]) -> None:
+        _write_json(
+            output_dir / f"response-{len(requests):03d}.json",
+            _response_diagnostic(response),
+        )
+
     client = VLMRichLabelClient(
         settings,
         model=config.rich_labeling.model or config.inference.model,
         max_tokens=config.rich_labeling.vlm_max_tokens,
         max_image_side=config.rich_labeling.vlm_max_image_side,
+        request_parameters=config.rich_labeling.vlm_request_parameters,
         dry_run=arguments.dry_run,
+        response_observer=save_response if arguments.save_model_response else None,
     )
     frames = _sample_frames(arguments, config)
     snapshots: list[dict[str, object]] = []
-    requests: list[dict[str, Any]] = []
     labels: Counter[str] = Counter()
     session_id = f"vlm-rich-smoke-{uuid4().hex}"
     metrics: dict[str, Any] = {
         "type": "vlm_rich_smoke",
         "dry_run": bool(arguments.dry_run),
+        "endpoint": settings.endpoint,
+        "model": config.rich_labeling.model or config.inference.model,
         "status": "success",
         "requested_samples": 1 if arguments.image else arguments.samples,
         "frame_crop": (
@@ -196,8 +282,9 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
                 )
             except Exception as exc:
                 # Do not persist raw provider exceptions, URLs, or credentials.
-                request.update(status="failure", error_type=type(exc).__name__)
-                metrics.update(status="failure", error_type=type(exc).__name__)
+                failure = _failure_diagnostic(exc)
+                request.update(failure)
+                metrics.update(failure)
                 break
             finally:
                 request["latency_ms"] = round(
@@ -214,7 +301,7 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
         if not requests:
             metrics.update(status="failure", error_type="NoSampledFrames")
     except Exception as exc:
-        metrics.update(status="failure", error_type=type(exc).__name__)
+        metrics.update(_failure_diagnostic(exc))
     finally:
         frames.close()
         client.close()
@@ -238,6 +325,9 @@ def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
         metrics = run_smoke(arguments)
+    except EndpointMismatchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except Exception as exc:
         print(
             f"Smoke setup failed ({type(exc).__name__}). Check the input file, config, "

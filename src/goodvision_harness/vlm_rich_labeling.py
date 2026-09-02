@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -70,28 +70,23 @@ def build_rich_annotation_messages(jpeg_bytes: bytes) -> list[dict[str, Any]]:
         }],
     }
     instructions = (
-        "Annotate the people and distinct visible objects in this single image. "
-        "Include people even when there is no safety event. Use concise lowercase "
-        "object names (person, chair, table, phone, bottle, backpack, car, etc.). "
-        "Do not label the whole scene, walls, floors, shadows, or imaginary objects. "
-        "Return only JSON with one top-level objects array, at most 64 objects; "
-        "use [] for an empty scene. Each object has label, bbox_2d, confidence, "
-        "attributes. bbox_2d is a tight [x1,y1,x2,y2] box on the relative "
-        "0..1000 grid with top-left origin; x2>x1 and y2>y1. Never use pixels "
-        "or a 0..1 grid. Include no track IDs, frame IDs, events, or timestamps. "
-        "For people, estimate only visible appearance, never identity. Age is "
-        "a broad appearance estimate and gender means visual presentation. "
-        "Direction means the side of the person's body visible to the camera. "
-        "Omit every attribute that is occluded, too small, or uncertain; do not "
-        "guess missing clothing, age, or gender. For non-person objects use "
-        "attributes {} or a short visible color. Person attribute enum values: "
+        "Return compact JSON for this image: {\"objects\":[...]}. "
+        "Include people even when there is no safety event. Prioritize people, "
+        "then prominent objects; at most 12 objects total. Ignore tiny desk "
+        "clutter, walls, floors, shadows. Clothing draped on a chair is not a "
+        "person. Use [] if empty. Each object has a lowercase label, "
+        "bbox_2d=[x1,y1,x2,y2] on the relative 0..1000 top-left-origin grid, "
+        "confidence in [0,1], and attributes. Tight visible boxes, x2>x1,y2>y1. "
+        "No IDs, timestamps, explanations or per-attribute confidence fields. "
+        "For people include only clearly visible attributes, omitting "
+        "uncertain/occluded details. Age is a broad appearance estimate; "
+        "gender is visual presentation, not identity. Direction is the visible "
+        "side of the body. Person attribute choices: "
         f"{json.dumps(ATTRIBUTE_ENUMS)}. "
-        f"Optional boolean attributes: {', '.join(BOOLEAN_ATTRIBUTES)}. "
+        f"Optional booleans: {', '.join(BOOLEAN_ATTRIBUTES)}. "
         f"lower_styles is an array from {json.dumps(LOWER_STYLES)}. "
-        "upper_color and lower_color are short visible color names. "
-        f"Optional confidence fields in [0,1]: {', '.join(CONFIDENCE_ATTRIBUTES)}. "
-        "lower_style_confidences may map a lower_styles value to [0,1]. "
-        "Do not copy the example's values; use only the supplied image. "
+        "upper_color/lower_color are short color names. Non-person attributes "
+        "are {} or {\"color\":\"...\"}. Do not copy example values. "
         f"Example structure: {json.dumps(contract)}"
     )
     return [
@@ -230,6 +225,8 @@ class VLMRichLabelClient:
         api_key: Callable[[], str | None] | str | None = None,
         max_tokens: int = 4096,
         max_image_side: int = 1280,
+        request_parameters: Mapping[str, Any] | None = None,
+        response_observer: Callable[[Mapping[str, Any]], None] | None = None,
         dry_run: Callable[[], bool] | bool = False,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
@@ -243,6 +240,17 @@ class VLMRichLabelClient:
         self.model = model
         self.max_tokens = max_tokens
         self.max_image_side = max_image_side
+        if request_parameters is not None and not isinstance(
+            request_parameters, Mapping,
+        ):
+            raise TypeError("rich annotation request_parameters must be a mapping")
+        parameters = dict(request_parameters or {})
+        if {"model", "messages", "max_tokens", "stream"}.intersection(parameters):
+            raise ValueError(
+                "rich annotation request_parameters overrides a fixed field"
+            )
+        self.request_parameters = json.loads(json.dumps(parameters, allow_nan=False))
+        self._response_observer = response_observer
         self._api_key = api_key
         self._dry_run = dry_run
         self._previous: RichLabelSnapshot | None = None
@@ -276,12 +284,15 @@ class VLMRichLabelClient:
         )
         key = self._api_key() if callable(self._api_key) else self._api_key
         client = AIClubClient(self.settings, api_key=key)
+        parameters = {"temperature": 0.0, **self.request_parameters}
         response = client.chat_completion(
             model=self.model,
             messages=build_rich_annotation_messages(encoded),
-            temperature=0.0,
             max_tokens=self.max_tokens,
+            **parameters,
         )
+        if self._response_observer is not None:
+            self._response_observer(response)
         # A length-truncated reply must not clear a previously valid scene.
         choices = response.get("choices", [])
         if choices and choices[0].get("finish_reason") == "length":

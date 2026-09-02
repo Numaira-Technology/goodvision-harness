@@ -415,6 +415,82 @@ def test_vlm_appearance_supports_color_only_and_safe_legacy_clothing() -> None:
     ) == ()
 
 
+def test_vlm_cards_keep_crowded_people_readable_and_preserve_source_boxes(
+    monkeypatch: Any,
+) -> None:
+    corners: list[tuple[int, int, int, int]] = []
+    cards: list[tuple[int, int, int, int]] = []
+    texts: list[str] = []
+    leaders: list[tuple[Any, Any]] = []
+    original_rectangle = overlay_module.cv2.rectangle
+    original_put_text = overlay_module.cv2.putText
+    original_line = overlay_module.cv2.line
+
+    def capture_corner(image: Any, bbox: Any, color: Any) -> None:
+        corners.append(bbox)
+
+    def capture_rectangle(
+        image: Any, start: Any, end: Any, color: Any, *args: Any, **kwargs: Any,
+    ) -> Any:
+        if color == (34, 39, 45):
+            cards.append((*start, *end))
+        return original_rectangle(image, start, end, color, *args, **kwargs)
+
+    def capture_text(image: Any, text: str, *args: Any, **kwargs: Any) -> Any:
+        texts.append(text)
+        return original_put_text(image, text, *args, **kwargs)
+
+    def capture_line(image: Any, start: Any, end: Any, *args: Any, **kwargs: Any) -> Any:
+        leaders.append((start, end))
+        return original_line(image, start, end, *args, **kwargs)
+
+    monkeypatch.setattr(overlay_module, "_draw_corner_bbox", capture_corner)
+    monkeypatch.setattr(overlay_module.cv2, "rectangle", capture_rectangle)
+    monkeypatch.setattr(overlay_module.cv2, "putText", capture_text)
+    monkeypatch.setattr(overlay_module.cv2, "line", capture_line)
+    people = [
+        SimpleNamespace(
+            label="person", track_id=f"P{index:04d}", confidence=0.95,
+            bbox=NormalizedBBox(left, 0.01, left + 0.085, 0.28),
+            attributes={
+                "annotation_source": "vlm", "estimated_age_range": "18-60",
+                "estimated_direction": "Back", "sleeve_type": "ShortSleeve",
+                "upper_color": "black", "lower_styles": ("Trousers",),
+            },
+        )
+        for index, left in enumerate((0.0, 0.25, 0.445, 0.61), start=1)
+    ]
+    chairs = [
+        SimpleNamespace(
+            label="office chair", track_id=f"O{index:04d}", confidence=0.9,
+            bbox=NormalizedBBox(left, 0.07, left + 0.1, 0.345),
+            attributes={"annotation_source": "vlm"},
+        )
+        for index, left in enumerate((0.0, 0.24, 0.44, 0.62), start=5)
+    ]
+    objects = chairs + people  # Persons must be allocated space first.
+    source = np.full((405, 720, 3), 80, dtype=np.uint8)
+
+    overlay_module.draw_rich_overlay(source, objects)
+
+    assert np.all(source == 80)
+    assert corners == [item.bbox.to_pixels(720, 405) for item in objects]
+    assert len(cards) == len(leaders) == len(objects)
+    person_titles = [index for index, text in enumerate(texts) if "PERSON" in text]
+    object_titles = [index for index, text in enumerate(texts) if "OFFICE CHAIR" in text]
+    assert len(person_titles) == len(object_titles) == 4
+    assert max(person_titles) < min(object_titles)
+    assert sum("BACK / SHORT SLEEVE / BLACK TOP / TROUSERS" == t for t in texts) == 4
+    for index, rect in enumerate(cards):
+        assert 0 <= rect[0] < rect[2] < 720
+        assert 0 <= rect[1] < rect[3] < 405
+        for other in cards[index + 1:]:
+            assert (
+                rect[2] < other[0] or other[2] < rect[0]
+                or rect[3] < other[1] or other[3] < rect[1]
+            )
+
+
 def test_rich_overlay_skips_bad_boxes_and_tolerates_bad_metadata() -> None:
     class BrokenBBox:
         def to_pixels(self, _width: int, _height: int) -> tuple[float, ...]:

@@ -196,3 +196,52 @@ def test_truncated_completion_is_rejected(monkeypatch: pytest.MonkeyPatch) -> No
         client.infer(
             _jpeg(), stream_session_id="live", frame_sequence=1, timestamp_seconds=0,
         )
+
+
+def test_response_observer_receives_result_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _reply([])
+    response["choices"][0]["finish_reason"] = "length"
+    observed: list[Any] = []
+    monkeypatch.setattr(AIClubClient, "_post_json", lambda *_: response)
+    client = vlm.VLMRichLabelClient(
+        AIClubSettings(), model="vlm", api_key="test",
+        response_observer=observed.append,
+    )
+    with pytest.raises(RichLabelProtocolError, match="truncated"):
+        client.infer(
+            _jpeg(), stream_session_id="live", frame_sequence=1, timestamp_seconds=0,
+        )
+    assert observed == [response]
+
+
+def test_configured_request_parameters_preserve_rich_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[Any] = []
+
+    def post(_client: Any, payload: Any) -> Any:
+        captured.append(payload)
+        return _reply([])
+
+    monkeypatch.setattr(AIClubClient, "_post_json", post)
+    client = vlm.VLMRichLabelClient(
+        AIClubSettings(), model="vlm", api_key="test", max_tokens=3000,
+        request_parameters={"response_format": {"type": "json_object"}},
+    )
+    client.infer(
+        _jpeg(), stream_session_id="live", frame_sequence=1, timestamp_seconds=0,
+    )
+    assert captured[0]["response_format"] == {"type": "json_object"}
+    assert captured[0]["model"] == "vlm"
+    assert captured[0]["max_tokens"] == 3000
+    assert len(captured[0]["messages"][1]["content"]) == 2
+
+
+@pytest.mark.parametrize("key", ["model", "messages", "max_tokens", "stream"])
+def test_request_parameters_cannot_replace_fixed_fields(key: str) -> None:
+    with pytest.raises(ValueError, match="fixed field"):
+        vlm.VLMRichLabelClient(
+            AIClubSettings(), model="vlm", request_parameters={key: "override"},
+        )

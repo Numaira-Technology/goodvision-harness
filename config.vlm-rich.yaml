@@ -26,9 +26,9 @@ display:
   fps: 15.0
   max_image_side: 720
   jpeg_quality: 70
-  # End-to-end completion can exceed raw model latency while concurrent
-  # results are applied. Leave enough headroom before publishing each frame.
-  delay_seconds: 8.0
+  # The first successful AIClub rich sample took 20.3s. Buffer this experiment
+  # long enough to place its labels on their source frames.
+  delay_seconds: 25.0
   # Maximum gap for motion interpolation. Beyond it, hold the last bbox on
   # every frame until a new keyframe explicitly updates or clears the state.
   bbox_max_gap_seconds: 0.8
@@ -41,14 +41,18 @@ rich_labeling:
   model: null
   # Used only if backend is changed back to paddle.
   endpoint: http://rich-label-worker:8091/v1/labels
-  timeout_seconds: 30.0
+  timeout_seconds: 90.0
   # One request at a time; superseded pending frames are dropped.
   max_fps: 1.0
   vlm_max_tokens: 4096
   vlm_max_image_side: 1280
+  vlm_request_parameters:
+    enable_thinking: false
+    response_format:
+      type: json_object
   history_size: 128
   max_interpolation_gap_seconds: 2.0
-  max_hold_seconds: 8.0
+  max_hold_seconds: 25.0
 
 sliding_window:
   # Classify the newest frame every 0.4s with no window-collection delay:
@@ -67,7 +71,7 @@ aiclub:
   extra_headers: {}
 
 inference:
-  # Fixed AIClub route; implementation identifiers are never public output.
+  # Use the same AIClub route and model as the existing event detectors.
   model: qwen3.5-plus
   event_label: smoking
   system_prompt: >-

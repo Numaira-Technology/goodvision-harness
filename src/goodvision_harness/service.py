@@ -30,6 +30,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.websockets import WebSocketDisconnect
 
+from .aiclub import AIClubSettings, environment_api_key
 from .config import (
     DEFAULT_CONFIG_PATH,
     DisplaySettings,
@@ -148,19 +149,13 @@ class HarnessRuntime:
         self.config_error = config_error
         self.dry_run = dry_run
         self.autostart = autostart
-        api_key_env = (
-            config.aiclub.api_key_env
-            if config is not None
-            else "AICLUB_API_KEY"
-        )
         self._environment_api_key = (
-            os.environ.get("INFERENCE_API_KEY", "").strip()
-            or os.environ.get(api_key_env, "").strip()
             # Backward-compatible reads for existing deployments. These
             # legacy names are never emitted by the service.
-            or os.environ.get("AICLUB_API_KEY", "").strip()
-            or os.environ.get("MODEL_API_KEY", "").strip()
-            or os.environ.get("OPENROUTER_API_KEY", "").strip()
+            environment_api_key(
+                config.aiclub if config is not None else AIClubSettings(),
+                legacy_delivery_aliases=True,
+            )
             or None
         )
         self._aiclub_api_key = (
@@ -193,6 +188,7 @@ class HarnessRuntime:
                     api_key=lambda: self._aiclub_api_key,
                     max_tokens=rich.vlm_max_tokens,
                     max_image_side=rich.vlm_max_image_side,
+                    request_parameters=rich.vlm_request_parameters,
                     dry_run=self._rich_annotation_dry_run,
                 )
             else:

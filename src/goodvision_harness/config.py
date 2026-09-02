@@ -59,6 +59,7 @@ class RichLabelSettings:
     model: str | None = None
     vlm_max_tokens: int = 4096
     vlm_max_image_side: int = 1280
+    vlm_request_parameters: Mapping[str, Any] = field(default_factory=dict)
     endpoint: str = "http://rich-label-worker:8091/v1/labels"
     timeout_seconds: float = 2.0
     max_fps: float = 7.5
@@ -305,6 +306,9 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         vlm_max_image_side=_positive_int(
             rich_label_section.get("vlm_max_image_side", 1280),
             "rich_labeling.vlm_max_image_side",
+        ),
+        vlm_request_parameters=dict(
+            _mapping_section(rich_label_section, "vlm_request_parameters")
         ),
         endpoint=rich_label_endpoint,
         timeout_seconds=_positive_float(

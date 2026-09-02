@@ -36,22 +36,26 @@ python -m goodvision_harness.service
 
 Rich annotation 通过上述独立配置开启，启用后随视频会话持续采样；它不会作为第六个事件塞入 `features`，也不生成警报事件。现有界面仍选择五种事件，Rich annotation 的框与属性显示在同一标注视频中。
 
-最新结构化结果位于 `GET /v1/rich-labels/latest`，运行状态位于 `GET /v1/status`。服务运行时新增的 rich annotation 请求独立处理，单次最多等待 30 秒；失败不会阻塞视频和事件能力。密钥通过部署面板更新时，rich annotation 也使用更新后的密钥。
+最新结构化结果位于 `GET /v1/rich-labels/latest`，运行状态位于 `GET /v1/status`。服务运行时新增的 rich annotation 请求独立处理，实验配置的请求超时为 90 秒；失败不会阻塞视频和事件能力。密钥通过部署面板更新时，rich annotation 也使用更新后的密钥。
 
 `config.vlm-rich.yaml` 的起始设置：
 
 - 最多每秒发起 1 次 rich annotation 请求，同一时刻只执行 1 次；正在等待处理的旧画面会被新画面替换。
 - 每张模型输入图片最长边 1280 像素，输出最多 4096 tokens。
-- 显示延迟 8 秒，框最长保留 8 秒，跨帧插值间隔最多 2 秒。
+- `vlm_request_parameters` 使用 `enable_thinking: false` 和 `response_format: {type: json_object}`。
+- 当前提示词优先标注人物，再选择主要物品，最多返回 12 个对象，以限制输出耗时。
+- 显示延迟 25 秒，框最长保留 25 秒，跨帧插值间隔最多 2 秒。
 
-这些是实验起点。实际请求频率受 API 延迟限制；8 秒显示延迟也不保证覆盖所有慢请求。观察少量样本的延迟和框位置后，再调整这些参数。
+这些是实验起点。实际请求频率受 API 延迟限制；25 秒显示延迟也不保证覆盖所有慢请求。这份配置适合验证功能，不代表实时性能；原来的普通配置不受影响。
+
+Qwen3.5-Plus 默认开启思考模式；直接 HTTP 请求中，关闭开关位于 JSON 顶层。阿里云为非思考模式提供 JSON Object 输出支持。本配置采用这些参数，AIClub 网关的实际表现以测试为准。[思考模式文档](https://www.alibabacloud.com/help/en/model-studio/deep-thinking)、[结构化输出文档](https://www.alibabacloud.com/help/en/model-studio/qwen-structured-output)。
 
 ## 少量样本检查
 
 图片已经是最终视角，不再套用 `stream.frame_crop`。下面只发起 1 次请求：
 
 ```powershell
-python tools/vlm_rich_smoke.py --image "D:\media\frame.jpg"
+python tools/vlm_rich_smoke.py --image "D:\media\frame.jpg" --save-model-response
 ```
 
 视频会先按实验配置裁剪，再依次取 0、2、4 秒附近的画面，最多请求 3 次：
@@ -62,12 +66,23 @@ python tools/vlm_rich_smoke.py --video "D:\media\sample.mp4" --samples 3 --inter
 
 可以通过 `--config` 选择修改后的实验配置，通过 `--output-dir` 为每次运行选择一个空目录。默认目录为 `output/vlm-rich-smoke`；已有结果不会被覆盖。
 
+测试脚本默认要求目标地址精确匹配 AIClub；配置被切换到其他平台时，会在读取图片和发起请求之前停止。调用目标写入本地 `metrics.json`，便于核对。请配置 `AICLUB_API_KEY`；不会用其他平台的密钥替代它。
+
 输出包括：
 
 - `snapshots.json`：每个成功样本的完整 rich-label 结果。
 - `metrics.json`：样本数、成功数、逐次请求耗时、平均耗时、标签计数和错误类型。
 - `annotated-001.jpg` 等：使用现有 rich overlay 绘制的边框和标签，供肉眼对照。
+- 使用 `--save-model-response` 时，额外保存 `response-001.json` 等模型回复文件，用于离线排查 JSON 格式与截断问题；只保存助手文本、结束原因和用量，不保存请求头或密钥。这些文件包含图片的文字标注，保存在 Git 忽略的输出目录中。
 
 工具依次请求、不做失败重试，首个请求失败后停止。实际样本数也可能因为视频结束而少于 `--samples`。它不记录密钥或原始服务错误。`--dry-run` 可只验证取帧及文件输出，不调用 API；这类输出不能用来判断标注质量。
 
 这是功能与延迟的少量样本检查。它不评估实时吞吐、连续跟踪准确率或完整视频的标注质量，也不构成 Paddle 与 VLM 的正式基准测试。
+
+## 2026-09-03 的 AIClub 实测
+
+目标地址已精确校验为 AIClub，模型为 `qwen3.5-plus`。使用已有的 720×405 办公室测试截图，精简提示词后的单次请求成功，耗时 **20.29 秒**，返回 **4 个人、5 把办公椅、1 个电脑机箱、1 张桌子、1 个饮水机**，共 12 个对象。人物返回了年龄段、性别外观、Back/Side、袖长、衣服颜色等字段。原先较长的完整属性提示词两次在约 61 秒后调用失败。
+
+成功回复的用量报告仍包含 123 个 reasoning tokens，因此不能认定网关已按预期关闭思考。人数与画面中的四人相符；被桌椅遮挡的下装属性仍需人工复核。单次耗时意味着当前无法达到每秒更新，且跨帧轨迹关联尚未通过真实视频验证。
+
+本地结果保存在 `output/vlm-rich-aiclub-office-compact/`：`metrics.json`、`snapshots.json`、`response-001.json` 和标注图片。`annotated-readable.jpg` 使用同一份真实结果重新绘制：优先放置人物属性卡，错开放置物品标签，并用连线指向原框。空间不足时保留全部框和 JSON，省略低优先级物品文字。私有图片与输出均不提交到 Git。

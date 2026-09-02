@@ -14,6 +14,7 @@ from goodvision_harness.aiclub import (
     AIClubError,
     AIClubSettings,
     api_key_present,
+    environment_api_key,
 )
 from goodvision_harness.config import InferenceSettings
 from goodvision_harness.inference import QwenWindowClient, build_client
@@ -68,6 +69,54 @@ def test_api_key_helpers_use_configured_environment(
     assert not api_key_present(AIClubSettings())
     with pytest.raises(AIClubError, match="AICLUB_API_KEY"):
         AIClubClient(AIClubSettings())
+
+
+@pytest.mark.parametrize("key_name", ["OPENROUTER_API_KEY", "CUSTOM_PROVIDER_KEY"])
+def test_explicit_provider_key_does_not_use_delivery_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+    key_name: str,
+) -> None:
+    for name in ("INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY"):
+        monkeypatch.setenv(name, "unrelated-provider-key")
+    monkeypatch.setenv(key_name, "selected-provider-key")
+    settings = AIClubSettings(
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        api_key_env=key_name,
+    )
+
+    assert environment_api_key(settings) == "selected-provider-key"
+    assert environment_api_key(settings, legacy_delivery_aliases=True) == (
+        "selected-provider-key"
+    )
+    assert AIClubClient(settings)._headers()["Authorization"] == (
+        "Bearer selected-provider-key"
+    )
+
+    monkeypatch.delenv(key_name)
+    assert not api_key_present(settings)
+    assert environment_api_key(settings, legacy_delivery_aliases=True) == ""
+    with pytest.raises(AIClubError, match=key_name):
+        AIClubClient(settings)
+
+
+@pytest.mark.parametrize("key_name", ["INFERENCE_API_KEY", "AICLUB_API_KEY"])
+def test_legacy_delivery_key_alias_order_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    key_name: str,
+) -> None:
+    names = (
+        "INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY", "OPENROUTER_API_KEY"
+    )
+    for name in names:
+        monkeypatch.setenv(name, f"test-{name}")
+    settings = AIClubSettings(api_key_env=key_name)
+
+    for name in names:
+        assert environment_api_key(settings, legacy_delivery_aliases=True) == (
+            f"test-{name}"
+        )
+        monkeypatch.delenv(name)
+    assert environment_api_key(settings, legacy_delivery_aliases=True) == ""
 
 
 def test_chat_completion_posts_openai_compatible_json(
