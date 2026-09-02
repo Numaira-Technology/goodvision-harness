@@ -223,24 +223,11 @@ Parallel mode is experimental and has not yet met this target in a validated
 live test. The existing experiment's 25-second display buffer remains unchanged
 while latency work is in progress; a buffer is not an inference-speed fix.
 
-`tools/vlm_rich_smoke.py` measures the complete configured path and saves boxes,
-overlays, actual API-request counts, and timings. `tools/vlm_rich_latency.py`
-diagnoses a single request using streaming, recording first-content-token,
-completion, connection, and request-body write timings. Body-write completion
-is a client-side observation, not proof of server receipt or a measure of server
-queue time. Coordinator status separately reports `last_queue_seconds`,
+Coordinator status reports `last_queue_seconds`,
 `last_latency_seconds` (inference), and `last_total_latency_seconds` (submission
 through inference completion); none includes the configured display buffer.
 `last_attempt_frame_sequence` and `last_attempt_succeeded` identify the attempt
 these timings describe, while `last_frame_sequence` remains the last success.
-Both tools require an explicit input image;
-the latency diagnostic requires `--execute` to make a real API request.
-With `--save-model-response`, the smoke tool also preserves each completed
-parallel response before annotation parsing, so a malformed response remains
-available for diagnosis even when its frame fails validation. Early failure
-timings do not count toward the complete-frame latency target.
-See [the latency and shared-frame audit](VLM_RICH_AUDIT.md) for measured results,
-comparison limits, and the remaining quality and timing checks.
 
 PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
 itself grant rights to every pretrained weight or its training data. Before
