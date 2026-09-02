@@ -12,7 +12,8 @@ from typing import Any
 import yaml
 from dotenv import find_dotenv, load_dotenv
 
-from .aiclub import AIClubSettings
+from .model_api import ModelAPISettings
+from .model_routing import resolve_model_route
 from .reference_memory import MemoryContext, load_memory_context
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
@@ -144,13 +145,19 @@ class HarnessConfig:
     display: DisplaySettings
     rich_labeling: RichLabelSettings
     sliding_window: SlidingWindowSettings
-    aiclub: AIClubSettings
+    aiclub: ModelAPISettings
     inference: InferenceSettings
     memory: MemoryContext | None
     face: FaceSettings
     runtime: RuntimeSettings
     server: ServerSettings
     service: ServiceSettings
+
+    @property
+    def model_api(self) -> ModelAPISettings:
+        """Selected transport; the aiclub field remains a compatibility alias."""
+
+        return self.aiclub
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
@@ -170,13 +177,6 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     display_section = _mapping_section(raw, "display")
     rich_label_section = _mapping_section(raw, "rich_labeling")
     window_section = _mapping_section(raw, "sliding_window")
-    aiclub_section = _mapping_section(raw, "aiclub")
-    if "inference_service" in raw:
-        aiclub_section = {
-            **aiclub_section,
-            "api_key_env": "INFERENCE_API_KEY",
-            **_mapping_section(raw, "inference_service"),
-        }
     inference_section = _mapping_section(raw, "inference")
     memory_section = _mapping_section(raw, "memory")
     face_section = _mapping_section(raw, "face")
@@ -307,8 +307,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             rich_label_section.get("vlm_max_image_side", 1280),
             "rich_labeling.vlm_max_image_side",
         ),
-        vlm_request_parameters=dict(
-            _mapping_section(rich_label_section, "vlm_request_parameters")
+        vlm_request_parameters=_rich_vlm_request_parameters(
+            raw, inference_section, rich_label_section
         ),
         endpoint=rich_label_endpoint,
         timeout_seconds=_positive_float(
@@ -342,14 +342,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         ),
     )
 
-    request_parameters = inference_section.get("request_parameters") or {}
-    if not isinstance(request_parameters, Mapping):
-        raise TypeError("inference.request_parameters must be a mapping")
-    model = (
-        _profile_model(inference_section["profile"], kind="inference")
-        if "profile" in inference_section
-        else str(inference_section.get("model", "")).strip()
-    )
+    model_api, model, request_parameters = resolve_model_route(raw, inference_section)
     event_label = str(inference_section.get("event_label", "")).strip()
     system_prompt = str(inference_section.get("system_prompt", "")).strip()
     prompt = str(inference_section.get("prompt", "")).strip()
@@ -379,7 +372,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     )
     face = FaceSettings(
         model_name=(
-            _profile_model(face_section["model_profile"], kind="face")
+            _face_profile_model(face_section["model_profile"])
             if "model_profile" in face_section
             else _required_string(
                 face_section.get("model_name", "buffalo_l"), "face.model_name"
@@ -510,7 +503,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         display=display,
         rich_labeling=rich_labeling,
         sliding_window=sliding_window,
-        aiclub=AIClubSettings.from_mapping(aiclub_section),
+        aiclub=model_api,
         inference=inference,
         memory=memory,
         face=face,
@@ -525,6 +518,41 @@ def _mapping_section(root: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     if not isinstance(section, Mapping):
         raise TypeError(f"{name} must be a YAML mapping")
     return section
+
+
+def _rich_vlm_request_parameters(
+    raw: Mapping[str, Any],
+    inference: Mapping[str, Any],
+    rich_labeling: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Share selected-route options while keeping annotation's output budget."""
+
+    overrides = _mapping_section(rich_labeling, "vlm_request_parameters")
+    fixed_fields = {"model", "messages", "max_tokens", "stream"}
+    error = (
+        "rich_labeling.vlm_request_parameters must not override "
+        "model, messages, max_tokens, or stream"
+    )
+    if fixed_fields.intersection(overrides):
+        raise ValueError(error)
+    # Resolve after combining so a channel switch also removes old route options
+    # from rich overrides. The selected profile wins, just as it does for events.
+    _, _, parameters = resolve_model_route(
+        raw,
+        {
+            **inference,
+            "request_parameters": {
+                **_mapping_section(inference, "request_parameters"),
+                **overrides,
+            },
+        },
+    )
+    # Event/profile max_tokens is inherited, not an annotation override.
+    # Explicit rich max_tokens was rejected above; vlm_max_tokens stays in charge.
+    parameters.pop("max_tokens", None)
+    if fixed_fields.intersection(parameters):
+        raise ValueError(error)
+    return parameters
 
 
 def _bool(value: Any, name: str) -> bool:
@@ -637,12 +665,12 @@ def _execution_provider(value: Any) -> str:
     return provider
 
 
-def _profile_model(value: Any, *, kind: str) -> str:
-    name = "inference.profile" if kind == "inference" else "face.model_profile"
+def _face_profile_model(value: Any) -> str:
+    name = "face.model_profile"
     profile = _required_string(value, name).lower()
     if profile != "standard":
         raise ValueError(f"{name} must be standard")
-    return "qwen3.5-plus" if kind == "inference" else "buffalo_l"
+    return "buffalo_l"
 
 
 def _face_provider(section: Mapping[str, Any]) -> str:

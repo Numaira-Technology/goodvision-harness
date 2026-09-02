@@ -12,17 +12,25 @@ from goodvision_harness.config import load_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture
-def neutral_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+@pytest.fixture(autouse=True)
+def _isolated_delivery_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
-    for key in ("FACE_PROVIDER", "FACE_ACCELERATOR", "INFERENCE_API_KEY", "AICLUB_API_KEY"):
+    for key in (
+        "FACE_PROVIDER", "FACE_ACCELERATOR", "INFERENCE_API_KEY", "AICLUB_API_KEY",
+        "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "MODEL_API_KEY",
+        "INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT",
+    ):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture
+def neutral_config(tmp_path: Path) -> Path:
     data = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-    connection = data.pop("aiclub")
-    connection.pop("endpoint")
-    connection.pop("api_key_env")
+    connection = data.pop("inference_service")
+    for key in ("endpoint", "api_key_env", "provider", "providers"):
+        connection.pop(key, None)
     data["inference_service"] = connection
-    data["inference"].pop("model")
+    data["inference"].pop("model", None)
     data["inference"]["profile"] = "standard"
     data["face"].pop("model_name")
     data["face"].pop("provider", None)
@@ -41,6 +49,8 @@ def test_neutral_profiles_preserve_actual_engines(neutral_config: Path) -> None:
     assert current.aiclub.api_key_env == "INFERENCE_API_KEY"
     assert current.aiclub.endpoint == AIClubSettings().endpoint
     assert current.aiclub.max_retries == 0
+    assert current.model_api is current.aiclub
+    assert current.model_api.provider == "aiclub"
 
 
 def test_new_accelerator_environment_wins_over_legacy(

@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from goodvision_harness.contracts import BBOX_COORDINATE_SYSTEM, NormalizedBBox
+from goodvision_harness.privacy import contains_private_implementation_detail
 from goodvision_harness.rich_labeling import (
     FRAME_SEQUENCE_HEADER,
     STREAM_SESSION_HEADER,
@@ -656,3 +657,31 @@ def test_coordinator_bounds_sorted_history_and_close_is_idempotent() -> None:
         frame_sequence=4,
         timestamp_seconds=0.4,
     )
+
+
+def test_rich_failure_does_not_publish_exception_class_or_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class PaddleRuntimeError(RuntimeError):
+        pass
+
+    class Client:
+        def infer(self, *_args: Any, **_kwargs: Any) -> None:
+            raise PaddleRuntimeError("PaddleX OpenRouter inference failure")
+
+    coordinator = RichLabelCoordinator(Client(), max_fps=10_000)
+    try:
+        assert coordinator.submit(
+            b"fixture", stream_session_id="session-1",
+            frame_sequence=1, timestamp_seconds=0,
+        )
+        assert coordinator.wait_until_idle()
+        assert coordinator.stats()["failed"] == 1
+        assert coordinator.stats()["state"] == "degraded"
+        assert coordinator.stats()["last_error"] == "rich-label inference failed"
+        assert not contains_private_implementation_detail(
+            json.dumps(coordinator.stats())
+        )
+        assert not contains_private_implementation_detail(caplog.text)
+    finally:
+        coordinator.close()

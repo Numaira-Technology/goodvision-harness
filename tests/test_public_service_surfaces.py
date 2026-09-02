@@ -36,6 +36,8 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY",
         "OPENROUTER_API_KEY", "LEGACY_CUSTOM_KEY", "HARNESS_STREAM_URL", "RTSP_URL",
+        "INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT",
+        "DASHSCOPE_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
@@ -132,8 +134,8 @@ def test_webhook_projects_payload_and_preserves_matching_idempotency() -> None:
     finally:
         delivery.close()
     payload = json.loads(requests[0].content)
-    assert requests[0].headers["idempotency-key"] == payload["message_id"]
-    _assert_public(payload)
+    assert requests[0].headers["idempotency-key"] == payload["message_id"] == "Qwen"
+    _assert_public(payload["description"])
     assert delivery.stats()["delivered"] == 1
 
 
@@ -176,7 +178,7 @@ def test_rich_failure_does_not_publish_exception_class_or_text(caplog: pytest.Lo
 
 
 @pytest.mark.parametrize(
-    "legacy", ("AICLUB_API_KEY", "MODEL_API_KEY", "OPENROUTER_API_KEY")
+    "legacy", ("AICLUB_API_KEY", "MODEL_API_KEY")
 )
 def test_neutral_credentials_take_precedence_and_legacy_still_works(
     clean_environment: None, monkeypatch: pytest.MonkeyPatch, legacy: str
@@ -188,17 +190,19 @@ def test_neutral_credentials_take_precedence_and_legacy_still_works(
     assert HarnessRuntime(config)._aiclub_api_key == "neutral-fixture"
 
 
-def test_explicit_provider_key_does_not_borrow_delivery_credentials(
+def test_explicit_provider_key_uses_neutral_override_but_not_another_provider(
     clean_environment: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = load_config(ROOT / "config.yaml")
     config = replace(
         config, aiclub=replace(config.aiclub, api_key_env="LEGACY_CUSTOM_KEY"),
     )
-    monkeypatch.setenv("INFERENCE_API_KEY", "other-provider-fixture")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "other-provider-fixture")
     assert HarnessRuntime(config)._aiclub_api_key is None
     monkeypatch.setenv("LEGACY_CUSTOM_KEY", "explicit-provider-fixture")
     assert HarnessRuntime(config)._aiclub_api_key == "explicit-provider-fixture"
+    monkeypatch.setenv("INFERENCE_API_KEY", "neutral-fixture")
+    assert HarnessRuntime(config)._aiclub_api_key == "neutral-fixture"
 
 
 def test_saved_credentials_keep_precedence_over_environment(

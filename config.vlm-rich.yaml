@@ -37,7 +37,7 @@ rich_labeling:
   # Additional VLM capability: use the existing chat-completions API directly.
   enabled: true
   backend: vlm
-  # null reuses inference.model; endpoint/key come from aiclub/inference_service.
+  # null reuses the selected inference model, endpoint, key, and provider route.
   model: null
   # Used only if backend is changed back to paddle.
   endpoint: http://rich-label-worker:8091/v1/labels
@@ -47,7 +47,6 @@ rich_labeling:
   vlm_max_tokens: 4096
   vlm_max_image_side: 1280
   vlm_request_parameters:
-    enable_thinking: false
     response_format:
       type: json_object
   history_size: 128
@@ -61,18 +60,36 @@ sliding_window:
   stride_frames: 1
   include_partial_final_window: false
 
-aiclub:
-  endpoint: https://aiclub.zimaocloud.com/model/openApi/v1/chat/completions
-  api_key_env: AICLUB_API_KEY
+inference_service:
+  # INFERENCE_PROVIDER can select aiclub, openrouter, or dashscope.
+  provider: openrouter
   timeout_seconds: 60.0
   # Avoid retrying provider errors into stale live results.
   max_retries: 0
   retry_backoff_seconds: 1.0
   extra_headers: {}
+  providers:
+    aiclub:
+      model: qwen3.5-plus
+      request_parameters:
+        enable_thinking: false
+    openrouter:
+      # Previously selected by the live visual-latency benchmark (4592cd8).
+      model: qwen/qwen3.5-35b-a3b
+      request_parameters:
+        reasoning:
+          effort: none
+        provider:
+          only: [deepinfra]
+          allow_fallbacks: false
+    dashscope:
+      model: qwen3.5-plus
+      request_parameters:
+        enable_thinking: false
 
 inference:
-  # Use the same AIClub route and model as the existing event detectors.
-  model: qwen3.5-plus
+  # Rich annotation and event detectors share the selected model and route.
+  profile: standard
   event_label: smoking
   system_prompt: >-
     You are a risk-sensitive multi-label safety-event perception module for

@@ -80,6 +80,32 @@ class _FakeFaceRuntime:
         raise AssertionError("this test does not submit a frame")
 
 
+@pytest.mark.parametrize("name", ["Claude", "Gemini", "Google", "Amazon"])
+def test_face_identity_round_trips_without_brand_redaction(
+    monkeypatch: pytest.MonkeyPatch, name: str,
+) -> None:
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.setenv("HARNESS_DRY_RUN", "true")
+    fake = _FakeFaceRuntime()
+    runtime = HarnessRuntime(
+        load_config(ROOT / "config.yaml"),
+        face_runtime=fake,  # type: ignore[arg-type]
+    )
+    with TestClient(create_app(lambda: runtime)) as client:
+        enrolled = client.post(
+            f"/v1/faces/gallery/{name}", params={"name": name}, content=_jpeg(),
+            headers={"Content-Type": "image/jpeg"},
+        )
+        assert enrolled.status_code == 200
+        identity = enrolled.json()["person"]
+        assert (identity["person_id"], identity["name"]) == (name, name)
+        gallery = client.get("/v1/faces/gallery").json()["people"]
+        assert any(person == identity for person in gallery)
+        deleted = client.delete(f"/v1/faces/gallery/{identity['person_id']}")
+        assert deleted.json() == {"deleted": True, "person_id": name}
+        assert name not in fake.people
+
+
 def test_face_gallery_http_surface_and_ui_info(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -100,12 +100,10 @@ def test_neutral_delivery_configuration_preserves_analysis_settings() -> None:
         (ROOT / "config.delivery.yaml").read_text(encoding="utf-8")
     )
     expected = deepcopy(source)
-    inference_service = expected.pop("aiclub")
-    inference_service.pop("endpoint")
-    inference_service.pop("api_key_env")
-    expected["inference_service"] = inference_service
-    expected["inference"].pop("model")
-    expected["inference"]["profile"] = "standard"
+    # The source already uses the neutral inference section. Customer delivery
+    # removes route selection metadata but retains the shared analysis settings.
+    expected["inference_service"].pop("provider")
+    expected["inference_service"].pop("providers")
     expected["face"].pop("model_name")
     expected["face"].pop("provider")
     expected["face"].update(

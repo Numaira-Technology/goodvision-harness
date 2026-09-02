@@ -56,6 +56,17 @@ def test_traceback_continuations_are_withheld_until_normal_logging_resumes(gatew
     assert project("processed frame 12") == "processed frame 12"
 
 
+def test_interleaved_normal_log_cannot_expose_later_stack_source(gateway: Any) -> None:
+    project = gateway.PublicLogFilter().project
+    assert project("Traceback (most recent call last):") == "ERROR diagnostic withheld"
+    assert project("INFO other thread ready") == "INFO other thread ready"
+    assert project("    hidden_internal_function('private parameter')") == (
+        "ERROR diagnostic withheld"
+    )
+    assert project("ValueError: private details") == "ERROR diagnostic withheld"
+    assert project("INFO service recovered") == "INFO service recovered"
+
+
 def test_native_stdout_and_stderr_are_combined_and_filtered(
     gateway: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -108,7 +119,9 @@ def test_check_mode_captures_everything_and_preserves_child_exit_code(
     assert record["status"] == ("passed" if returncode == 0 else "failed")
     assert "paddle" not in captured.out.lower()
     assert "insightface" not in captured.out.lower()
-    assert calls == [([sys.executable, str(gateway.CHECK_ROOT / "runtime_check.py")], False)]
+    assert calls == [([
+        sys.executable, str(gateway.CHECK_ROOT / "face_check.py"), "--runtime"
+    ], False)]
 
 
 def test_check_spawn_failure_never_reports_success(
@@ -147,14 +160,100 @@ def test_service_command_uses_fixed_component_entrypoint(
 def test_customer_wrapper_has_fixed_gateway_path_and_returns_failure(
     monkeypatch: pytest.MonkeyPatch, check: str,
 ) -> None:
-    path = ROOT / "tools" / "customer_checks" / f"check_{check}.py"
+    path = ROOT / "tools" / "customer_check.py"
     module = _load(path)
     calls: list[list[str]] = []
-    monkeypatch.setattr(module.subprocess, "call", lambda command: calls.append(command) or 23)
-    assert module.main() == 23
+    monkeypatch.setattr(module, "__file__", f"/app/tools/check_{check}.py")
+
+    def replace_process(executable: str, command: list[str]) -> None:
+        assert executable == sys.executable
+        calls.append(command)
+        raise SystemExit(23)
+
+    monkeypatch.setattr(module.os, "execv", replace_process)
+    with pytest.raises(SystemExit) as stopped:
+        module.main([])
+    assert stopped.value.code == 23
     assert calls == [[sys.executable, "/opt/goodvision/runtime_gateway.py", check]]
     text = path.read_text(encoding="utf-8").lower()
     assert not any(marker in text for marker in ("paddle", "insightface", "qwen", "openrouter", "onnx", "cuda"))
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [(FileNotFoundError("private details"), 127), (OSError("private details"), 126)],
+)
+def test_customer_launcher_spawn_errors_have_neutral_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    error: OSError, expected: int,
+) -> None:
+    module = _load(ROOT / "tools" / "customer_check.py")
+    monkeypatch.setattr(module, "__file__", "/app/tools/check_runtime.py")
+
+    def fail(*_args: Any) -> None:
+        raise error
+
+    monkeypatch.setattr(module.os, "execv", fail)
+    assert module.main([]) == expected
+    record = json.loads(capsys.readouterr().out)
+    assert record["status"] == "failed"
+    assert "private details" not in str(record)
+
+
+@pytest.mark.parametrize("component", ("main", "perception"))
+def test_runtime_check_selects_the_component_script_without_gpu_mode(
+    gateway: Any, component: str,
+) -> None:
+    script = "face" if component == "main" else "perception"
+    assert gateway._check_command(component, "runtime") == [
+        sys.executable, str(gateway.CHECK_ROOT / f"{script}_check.py"), "--runtime"
+    ]
+    assert gateway._check_command(component, script) == [
+        sys.executable, str(gateway.CHECK_ROOT / f"{script}_check.py")
+    ]
+
+
+def test_reader_start_failure_cleans_up_owned_child_and_restores_handlers(
+    gateway: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handlers = {signal.SIGTERM: signal.SIG_DFL, signal.SIGINT: signal.SIG_DFL}
+    forwarded: list[int] = []
+
+    class Process:
+        pid = 43210
+        stdout = io.BytesIO()
+        stopped = False
+
+        def poll(self) -> int | None:
+            return 0 if self.stopped else None
+
+        def wait(self, **_kwargs: Any) -> int:
+            assert self.stopped
+            return 0
+
+    class Reader:
+        def start(self) -> None:
+            raise RuntimeError("reader startup failed")
+
+        def join(self, **_kwargs: Any) -> None:
+            raise AssertionError("must not join a thread that never started")
+
+    process = Process()
+
+    def stop(_process: object, signum: int, **_kwargs: Any) -> None:
+        forwarded.append(signum)
+        process.stopped = True
+
+    monkeypatch.setattr(gateway.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(gateway.threading, "Thread", lambda **_kwargs: Reader())
+    monkeypatch.setattr(gateway.signal, "getsignal", lambda signum: handlers[signum])
+    monkeypatch.setattr(gateway.signal, "signal", lambda signum, handler: handlers.__setitem__(signum, handler))
+    monkeypatch.setattr(gateway, "_signal_owned_process", stop)
+    with pytest.raises(RuntimeError, match="reader startup failed"):
+        gateway.run_child(["owned-child"], publish_output=True)
+    assert forwarded[0] == signal.SIGTERM
+    assert process.stdout.closed
+    assert handlers == {signal.SIGTERM: signal.SIG_DFL, signal.SIGINT: signal.SIG_DFL}
 
 
 def test_signal_targets_only_the_created_process_group(gateway: Any, monkeypatch: pytest.MonkeyPatch) -> None:

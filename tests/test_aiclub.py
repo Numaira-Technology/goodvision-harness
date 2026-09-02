@@ -7,14 +7,13 @@ from urllib.request import Request
 
 import pytest
 
-import goodvision_harness.aiclub as aiclub_module
+import goodvision_harness.model_api as model_api_module
 from goodvision_harness.aiclub import (
     DEFAULT_AICLUB_ENDPOINT,
     AIClubClient,
     AIClubError,
     AIClubSettings,
     api_key_present,
-    environment_api_key,
 )
 from goodvision_harness.config import InferenceSettings
 from goodvision_harness.inference import QwenWindowClient, build_client
@@ -54,69 +53,23 @@ def test_settings_defaults_target_aiclub() -> None:
 
 
 def test_settings_reject_invalid_endpoint_and_key_name() -> None:
-    with pytest.raises(ValueError, match="aiclub.endpoint"):
+    with pytest.raises(ValueError, match="inference_service.endpoint"):
         AIClubSettings(endpoint="ftp://example.com/chat")
-    with pytest.raises(ValueError, match="aiclub.api_key_env"):
+    with pytest.raises(ValueError, match="inference_service.api_key_env"):
         AIClubSettings(api_key_env=" ")
 
 
 def test_api_key_helpers_use_configured_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    for name in ("INFERENCE_API_KEY", "MODEL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AICLUB_API_KEY", "test-key")
     assert api_key_present(AIClubSettings())
     monkeypatch.setenv("AICLUB_API_KEY", "")
     assert not api_key_present(AIClubSettings())
     with pytest.raises(AIClubError, match="AICLUB_API_KEY"):
         AIClubClient(AIClubSettings())
-
-
-@pytest.mark.parametrize("key_name", ["OPENROUTER_API_KEY", "CUSTOM_PROVIDER_KEY"])
-def test_explicit_provider_key_does_not_use_delivery_aliases(
-    monkeypatch: pytest.MonkeyPatch,
-    key_name: str,
-) -> None:
-    for name in ("INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY"):
-        monkeypatch.setenv(name, "unrelated-provider-key")
-    monkeypatch.setenv(key_name, "selected-provider-key")
-    settings = AIClubSettings(
-        endpoint="https://openrouter.ai/api/v1/chat/completions",
-        api_key_env=key_name,
-    )
-
-    assert environment_api_key(settings) == "selected-provider-key"
-    assert environment_api_key(settings, legacy_delivery_aliases=True) == (
-        "selected-provider-key"
-    )
-    assert AIClubClient(settings)._headers()["Authorization"] == (
-        "Bearer selected-provider-key"
-    )
-
-    monkeypatch.delenv(key_name)
-    assert not api_key_present(settings)
-    assert environment_api_key(settings, legacy_delivery_aliases=True) == ""
-    with pytest.raises(AIClubError, match=key_name):
-        AIClubClient(settings)
-
-
-@pytest.mark.parametrize("key_name", ["INFERENCE_API_KEY", "AICLUB_API_KEY"])
-def test_legacy_delivery_key_alias_order_is_preserved(
-    monkeypatch: pytest.MonkeyPatch,
-    key_name: str,
-) -> None:
-    names = (
-        "INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY", "OPENROUTER_API_KEY"
-    )
-    for name in names:
-        monkeypatch.setenv(name, f"test-{name}")
-    settings = AIClubSettings(api_key_env=key_name)
-
-    for name in names:
-        assert environment_api_key(settings, legacy_delivery_aliases=True) == (
-            f"test-{name}"
-        )
-        monkeypatch.delenv(name)
-    assert environment_api_key(settings, legacy_delivery_aliases=True) == ""
 
 
 def test_chat_completion_posts_openai_compatible_json(
@@ -132,7 +85,7 @@ def test_chat_completion_posts_openai_compatible_json(
             {"choices": [{"message": {"content": "  hello  "}}]}
         )
 
-    monkeypatch.setattr(aiclub_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(model_api_module, "urlopen", fake_urlopen)
     client = AIClubClient(settings, api_key="test-key")
     response = client.chat_completion(
         model="qwen3.5-plus",
@@ -192,8 +145,8 @@ def test_retryable_http_error_is_retried(
             raise _http_error(429, {"error": {"message": "slow down"}})
         return _FakeResponse({"choices": [{"message": {"content": "ok"}}]})
 
-    monkeypatch.setattr(aiclub_module, "urlopen", fake_urlopen)
-    monkeypatch.setattr(aiclub_module.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(model_api_module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(model_api_module.time, "sleep", lambda _delay: None)
     client = AIClubClient(
         AIClubSettings(max_retries=1, retry_backoff_seconds=0.0),
         api_key="test-key",
@@ -223,3 +176,15 @@ def test_build_client_uses_aiclub_transport(
 
     assert isinstance(client, QwenWindowClient)
     assert isinstance(client._transport, AIClubClient)
+
+
+def test_neutral_credentials_take_priority_and_legacy_still_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AICLUB_API_KEY", "old-test-key")
+    monkeypatch.setenv("INFERENCE_API_KEY", "new-test-key")
+    settings = AIClubSettings(api_key_env="INFERENCE_API_KEY")
+    assert AIClubClient(settings)._api_key == "new-test-key"
+    monkeypatch.delenv("INFERENCE_API_KEY")
+    assert api_key_present(settings)
+    assert AIClubClient(settings)._api_key == "old-test-key"

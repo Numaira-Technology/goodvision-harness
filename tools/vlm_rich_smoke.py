@@ -147,6 +147,33 @@ def _write_json(path: Path, value: Any) -> None:
     )
 
 
+def _provider_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    if not name or len(name) > 128 or not name.isprintable() or "://" in name:
+        return None
+    return name
+
+
+def _request_route(parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """Select upstream routing preferences without copying arbitrary parameters."""
+    provider = parameters.get("provider")
+    route: dict[str, Any] = {}
+    if isinstance(provider, Mapping):
+        for key in ("only", "order"):
+            values = provider.get(key)
+            if isinstance(values, (list, tuple)):
+                route[key] = [
+                    name for value in values
+                    if (name := _provider_name(value)) is not None
+                ]
+        for key in ("allow_fallbacks", "require_parameters"):
+            if isinstance(provider.get(key), bool):
+                route[key] = provider[key]
+    return route
+
+
 def _response_diagnostic(response: Mapping[str, Any]) -> dict[str, Any]:
     """Select response content without copying transport or request metadata."""
     try:
@@ -172,11 +199,15 @@ def _response_diagnostic(response: Mapping[str, Any]) -> dict[str, Any]:
                     and isinstance(value, int) and not isinstance(value, bool)
                     and value >= 0
                 }
-    return {
+    diagnostic = {
         "assistant_text": assistant_text,
         "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
         "usage": usage,
     }
+    provider = _provider_name(response.get("provider"))
+    if provider is not None:
+        diagnostic["provider"] = provider
+    return diagnostic
 
 
 def _failure_diagnostic(exc: Exception) -> dict[str, Any]:
@@ -225,11 +256,15 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
     )
     requests: list[dict[str, Any]] = []
 
-    def save_response(response: Mapping[str, Any]) -> None:
-        _write_json(
-            output_dir / f"response-{len(requests):03d}.json",
-            _response_diagnostic(response),
-        )
+    def observe_response(response: Mapping[str, Any]) -> None:
+        provider = _provider_name(response.get("provider"))
+        if provider is not None and requests:
+            requests[-1]["response_provider"] = provider
+        if arguments.save_model_response:
+            _write_json(
+                output_dir / f"response-{len(requests):03d}.json",
+                _response_diagnostic(response),
+            )
 
     client = VLMRichLabelClient(
         settings,
@@ -238,7 +273,7 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
         max_image_side=config.rich_labeling.vlm_max_image_side,
         request_parameters=config.rich_labeling.vlm_request_parameters,
         dry_run=arguments.dry_run,
-        response_observer=save_response if arguments.save_model_response else None,
+        response_observer=observe_response,
     )
     frames = _sample_frames(arguments, config)
     snapshots: list[dict[str, object]] = []
@@ -249,6 +284,8 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
         "dry_run": bool(arguments.dry_run),
         "endpoint": settings.endpoint,
         "model": config.rich_labeling.model or config.inference.model,
+        "selected_provider": settings.provider,
+        "request_route": _request_route(config.rich_labeling.vlm_request_parameters),
         "status": "success",
         "requested_samples": 1 if arguments.image else arguments.samples,
         "frame_crop": (
@@ -315,6 +352,10 @@ def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
                 round(sum(latencies) / len(latencies), 2) if latencies else None
             ),
             labels=dict(sorted(labels.items())),
+            response_providers=sorted({
+                request["response_provider"] for request in requests
+                if "response_provider" in request
+            }),
         )
         _write_json(output_dir / "snapshots.json", snapshots)
         _write_json(output_dir / "metrics.json", metrics)

@@ -10,6 +10,13 @@ from goodvision_harness.config import load_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_route_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **kwargs: "")
+    for name in ("INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_rich_labeling_defaults_are_safe_and_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -111,3 +118,148 @@ def test_rich_labeling_invalid_environment_backend_is_rejected(
 
     with pytest.raises(ValueError, match="backend must be paddle or vlm"):
         load_config(ROOT / "config.yaml")
+
+
+def _write_route_config(tmp_path: Path, payload: dict) -> Path:
+    config_path = tmp_path / "route-config.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return config_path
+
+
+def test_rich_vlm_inherits_selected_profile_with_its_own_output_budget(
+    tmp_path: Path,
+) -> None:
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    provider = {"only": ["deepinfra"], "allow_fallbacks": False}
+    payload["inference_service"] = {
+        "provider": "openrouter",
+        "providers": {
+            "openrouter": {
+                "model": "qwen/qwen3.5-35b-a3b",
+                "request_parameters": {
+                    "provider": provider,
+                    "reasoning": {"effort": "none"},
+                    "temperature": 0.1,
+                    "max_tokens": 777,
+                },
+            },
+        },
+    }
+    payload["inference"]["request_parameters"] = {
+        "temperature": 0.4, "max_tokens": 1200
+    }
+    payload["rich_labeling"].update(
+        backend="vlm",
+        vlm_max_tokens=8192,
+        vlm_request_parameters={
+            "temperature": 0.0,
+            "top_p": 0.8,
+            "reasoning": {"enabled": True},
+            "provider": {"only": ["coreweave"]},
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+    config = load_config(_write_route_config(tmp_path, payload))
+
+    assert config.model_api.provider == "openrouter"
+    assert config.inference.model == "qwen/qwen3.5-35b-a3b"
+    assert config.rich_labeling.model is None
+    assert config.rich_labeling.vlm_max_tokens == 8192
+    assert config.rich_labeling.vlm_request_parameters == {
+        "provider": provider,
+        "reasoning": {"effort": "none"},
+        "temperature": 0.1,
+        "top_p": 0.8,
+        "response_format": {"type": "json_object"},
+    }
+    assert config.inference.request_parameters["provider"] == provider
+    assert config.inference.request_parameters["reasoning"] == {"effort": "none"}
+    assert config.inference.request_parameters["max_tokens"] == 777
+    assert "top_p" not in config.inference.request_parameters
+
+
+def test_switching_to_aiclub_removes_old_rich_openrouter_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    payload["inference_service"] = {
+        "provider": "openrouter",
+        "providers": {
+            "openrouter": {
+                "model": "qwen/qwen3.5-35b-a3b",
+                "request_parameters": {
+                    "provider": {"only": ["deepinfra"], "allow_fallbacks": False},
+                    "reasoning": {"effort": "none"},
+                },
+            },
+            "aiclub": {
+                "model": "qwen3.5-plus",
+                "request_parameters": {"enable_thinking": False},
+            },
+        },
+    }
+    payload["inference"]["request_parameters"] = {
+        "temperature": 0.0,
+        "max_tokens": 1200,
+        "provider": {"only": ["deepinfra"]},
+        "reasoning": {"enabled": False},
+    }
+    payload["rich_labeling"]["vlm_request_parameters"] = {
+        "provider": {"only": ["coreweave"]},
+        "reasoning": {"enabled": True},
+        "enable_thinking": True,
+        "response_format": {"type": "json_object"},
+    }
+    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+
+    config = load_config(_write_route_config(tmp_path, payload))
+
+    assert config.model_api.provider == "aiclub"
+    assert config.inference.model == "qwen3.5-plus"
+    assert config.rich_labeling.vlm_request_parameters == {
+        "temperature": 0.0,
+        "enable_thinking": False,
+        "response_format": {"type": "json_object"},
+    }
+    assert "provider" not in config.inference.request_parameters
+    assert "reasoning" not in config.inference.request_parameters
+
+
+def test_switching_to_default_openrouter_inherits_default_reasoning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    payload["inference_service"] = {"provider": "aiclub"}
+    payload["inference"]["request_parameters"] = {
+        "temperature": 0.0, "max_tokens": 1200, "enable_thinking": False
+    }
+    payload["rich_labeling"]["vlm_request_parameters"] = {"enable_thinking": False}
+    monkeypatch.setenv("INFERENCE_PROVIDER", "openrouter")
+
+    config = load_config(_write_route_config(tmp_path, payload))
+
+    assert config.model_api.provider == "openrouter"
+    assert config.inference.model == "qwen/qwen3.5-35b-a3b"
+    assert config.rich_labeling.vlm_request_parameters == {
+        "temperature": 0.0, "reasoning": {"enabled": False}
+    }
+    assert config.inference.request_parameters["max_tokens"] == 1200
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("model", "other-model"), ("messages", []), ("max_tokens", 12), ("stream", False)],
+)
+def test_rich_vlm_explicit_fixed_fields_are_not_silently_filtered(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    payload["rich_labeling"]["vlm_request_parameters"] = {field: value}
+
+    with pytest.raises(ValueError, match="vlm_request_parameters must not override"):
+        load_config(_write_route_config(tmp_path, payload))

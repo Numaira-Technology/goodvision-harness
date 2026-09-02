@@ -15,9 +15,9 @@ from typing import Any, Protocol
 import cv2
 import numpy as np
 
-from .aiclub import AIClubClient, AIClubError, AIClubSettings
 from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
+from .model_api import ModelAPIClient, ModelAPIError, ModelAPISettings
 from .privacy import PUBLIC_ANALYSIS_ERROR, PUBLIC_FACE_ERROR
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
@@ -625,7 +625,7 @@ class AIClubGroundingClient:
     def __init__(
         self,
         settings: InferenceSettings,
-        transport: AIClubClient,
+        transport: ModelAPIClient,
         memory_context: MemoryContext | None = None,
     ) -> None:
         self.settings = settings
@@ -647,7 +647,7 @@ class AIClubGroundingClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-        except (AIClubError, ValueError):
+        except (ModelAPIError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
@@ -743,7 +743,7 @@ class AIClubMultiGroundingClient:
     def __init__(
         self,
         settings: InferenceSettings,
-        transport: AIClubClient,
+        transport: ModelAPIClient,
         event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
     ) -> None:
         labels = tuple(event_labels)
@@ -788,7 +788,7 @@ class AIClubMultiGroundingClient:
                 **request_parameters,
             )
             text = self._transport.assistant_text(response)
-        except (AIClubError, ValueError):
+        except (ModelAPIError, ValueError):
             return GroundingResponse(
                 window=window,
                 classification=None,
@@ -1003,7 +1003,7 @@ class SelectedFeaturesGroundingClient:
         self._safety_jpeg_quality = safety_jpeg_quality
         self.face_live_scheduler = face_live_scheduler
         # InsightFace owns one inference session protected by a model lock.  The
-        # outer live pipeline can have several AIClub windows in flight, but
+        # outer live pipeline can have several model API windows in flight, but
         # queueing every one of those windows at the face-model lock turns a
         # single CPU inference into many seconds of stale backlog.  CPU mode
         # therefore admits at most one live face branch per selected-features
@@ -1085,7 +1085,7 @@ class SelectedFeaturesGroundingClient:
         elif self._safety_client is not None and self._stranger_client is not None:
             # Face inference is already running for a nearby frame. Dropping
             # this face branch keeps the live path latest-first without copying
-            # an old bbox onto a different frame. AIClub remains fully
+            # an old bbox onto a different frame. Model inference remains fully
             # concurrent and its complete safety result is still delivered.
             assert resized_window is not None
             try:
@@ -1224,7 +1224,7 @@ class FixedFiveGroundingClient(SelectedFeaturesGroundingClient):
 
 def build_grounding_client(
     settings: InferenceSettings,
-    aiclub_settings: AIClubSettings,
+    aiclub_settings: ModelAPISettings,
     *,
     memory_context: MemoryContext | None = None,
     dry_run: bool = False,
@@ -1234,14 +1234,14 @@ def build_grounding_client(
         return DryRunGroundingClient(settings, memory_context)
     return AIClubGroundingClient(
         settings,
-        AIClubClient(aiclub_settings, api_key=api_key),
+        ModelAPIClient(aiclub_settings, api_key=api_key),
         memory_context,
     )
 
 
 def build_selected_features_grounding_client(
     settings: InferenceSettings,
-    aiclub_settings: AIClubSettings,
+    aiclub_settings: ModelAPISettings,
     *,
     features: tuple[str, ...],
     stranger_client: GroundingClient | None = None,
@@ -1276,7 +1276,7 @@ def build_selected_features_grounding_client(
         else:
             safety_client = AIClubMultiGroundingClient(
                 settings,
-                AIClubClient(aiclub_settings, api_key=api_key),
+                ModelAPIClient(aiclub_settings, api_key=api_key),
                 safety_labels,
             )
     if include_stranger:
@@ -1304,7 +1304,7 @@ def build_selected_features_grounding_client(
 
 def build_fixed_five_grounding_client(
     settings: InferenceSettings,
-    aiclub_settings: AIClubSettings,
+    aiclub_settings: ModelAPISettings,
     *,
     stranger_client: GroundingClient,
     safety_max_image_side: int = 320,
@@ -1324,7 +1324,7 @@ def build_fixed_five_grounding_client(
     else:
         safety_client = AIClubMultiGroundingClient(
             settings,
-            AIClubClient(aiclub_settings, api_key=api_key),
+            ModelAPIClient(aiclub_settings, api_key=api_key),
         )
     return FixedFiveGroundingClient(
         safety_client,

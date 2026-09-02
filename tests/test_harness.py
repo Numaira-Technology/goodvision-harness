@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import threading
 import time
 from concurrent.futures import Future
@@ -15,8 +16,12 @@ import httpx
 import jsonschema
 import numpy as np
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
+import goodvision_harness.config as config_module
+from goodvision_harness import service as service_module
+from goodvision_harness.aiclub import AIClubSettings, api_key_present
 from goodvision_harness.config import load_config
 from goodvision_harness.contracts import (
     PUBLIC_MODEL_NAME,
@@ -37,6 +42,7 @@ from goodvision_harness.grounding import (
 )
 from goodvision_harness.inference import DryRunWindowClient, WindowResponse
 from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
+from goodvision_harness.privacy import contains_private_implementation_detail
 from goodvision_harness.prompt import BinaryClassification
 from goodvision_harness.result_bus import FrameBus, FramePacket, ResultBus
 from goodvision_harness.service import (
@@ -182,10 +188,12 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.sliding_window.include_partial_final_window,
     ) == (1, 1, False)
     assert config.runtime.max_concurrent_requests == 6
-    assert config.aiclub.max_retries == 0
-    assert config.aiclub.api_key_env == "AICLUB_API_KEY"
+    assert config.model_api.max_retries == 0
+    assert config.model_api.api_key_env == "AICLUB_API_KEY"
+    assert config.model_api.provider == "aiclub"
+    assert config.aiclub is config.model_api
     # Branding is applied only at public serialization boundaries; the
-    # provider request must continue using the validated AIClub route.
+    # provider requests use the selected route's actual model identifier.
     assert config.inference.model == "qwen3.5-plus"
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900
@@ -1255,3 +1263,157 @@ def test_invalid_dry_run_env_degrades_without_crashing(
     assert status["pipeline_state"] == "configuration_error"
     assert status["last_error"] == "configuration error"
     assert "HARNESS_DRY_RUN" not in str(status)
+
+
+@pytest.mark.parametrize("path", ("/docs", "/redoc"))
+def test_api_reference_is_self_contained_and_preserves_specification(path: str) -> None:
+    client = TestClient(create_app())
+    response = client.get(path)
+    specification = client.get("/openapi.json")
+    assert response.status_code == specification.status_code == 200
+    text = response.text.lower()
+    assert "goodvision api reference" in text
+    assert "/v1/results/events" in text
+    assert "/v1/results/stranger/latest" in text
+    assert "/v1/faces/strangers/{stranger_id}/photo" in text
+    assert 'href="/openapi.json"' in text
+    assert not any(name in text for name in ("swagger", "redoc", "fastapi", "jsdelivr"))
+    assert not re.search(r'(?:src|href)\s*=\s*[\"\'](?:https?:)?//', text)
+    assert "<script" not in text
+    assert "default-src 'none'" in response.headers["content-security-policy"]
+    assert not contains_private_implementation_detail(specification.text)
+
+
+def test_webhook_network_failure_reports_failure_without_raw_exception() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("PaddleX OpenRouter network failure")
+
+    delivery = WebhookDelivery(
+        "http://receiver.test/events",
+        transport=httpx.MockTransport(handler),
+        max_retries=0,
+    )
+    delivery.start()
+    try:
+        assert delivery.submit({"message_id": "observation-1"})
+        assert delivery.flush(timeout_seconds=2)
+    finally:
+        delivery.close()
+    assert delivery.stats()["failed"] == 1
+    assert delivery.stats()["last_error"] == "webhook request failed"
+
+
+def test_service_launcher_hides_server_header_and_maps_capture_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        service_module.uvicorn, "run", lambda *_args, **kwargs: calls.append(kwargs)
+    )
+    monkeypatch.setenv("VIDEO_CAPTURE_OPTIONS", "neutral-options")
+    monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "legacy-options")
+    service_module.main()
+    assert calls[0]["server_header"] is False
+    assert (
+        service_module.os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "neutral-options"
+    )
+
+
+def test_service_launcher_keeps_legacy_capture_options_when_neutral_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service_module.uvicorn, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.delenv("VIDEO_CAPTURE_OPTIONS", raising=False)
+    monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "legacy-options")
+    service_module.main()
+    assert (
+        service_module.os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "legacy-options"
+    )
+
+
+@pytest.fixture
+def neutral_profile_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
+    for key in (
+        "FACE_PROVIDER", "FACE_ACCELERATOR", "INFERENCE_API_KEY", "AICLUB_API_KEY",
+        "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "MODEL_API_KEY",
+        "INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    data = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    connection = data.pop("inference_service")
+    for key in ("endpoint", "api_key_env", "provider", "providers"):
+        connection.pop(key, None)
+    data["inference_service"] = connection
+    data["inference"].pop("model", None)
+    data["inference"]["profile"] = "standard"
+    data["face"].pop("model_name")
+    data["face"].pop("provider", None)
+    data["face"]["model_profile"] = "standard"
+    data["face"]["accelerator"] = "gpu"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def test_neutral_profiles_preserve_actual_engines(neutral_profile_config: Path) -> None:
+    current = load_config(neutral_profile_config)
+    assert current.inference.model == "qwen3.5-plus"
+    assert current.face.model_name == "buffalo_l"
+    assert current.face.provider == "CUDAExecutionProvider"
+    assert current.aiclub.api_key_env == "INFERENCE_API_KEY"
+    assert current.aiclub.endpoint == AIClubSettings().endpoint
+    assert current.aiclub.max_retries == 0
+    assert current.model_api is current.aiclub
+
+
+def test_new_accelerator_environment_wins_over_legacy(
+    neutral_profile_config: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_PROVIDER", "CPUExecutionProvider")
+    monkeypatch.setenv("FACE_ACCELERATOR", "gpu")
+    assert load_config(neutral_profile_config).face.provider == "CUDAExecutionProvider"
+
+
+def test_legacy_accelerator_override_remains_supported(
+    neutral_profile_config: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FACE_PROVIDER", "DmlExecutionProvider")
+    assert load_config(neutral_profile_config).face.provider == "DmlExecutionProvider"
+
+
+@pytest.mark.parametrize("section,key", [
+    ("inference", "profile"), ("face", "model_profile"), ("face", "accelerator"),
+])
+def test_unknown_profile_fails_instead_of_changing_engine(
+    neutral_profile_config: Path, section: str, key: str,
+) -> None:
+    data = yaml.safe_load(neutral_profile_config.read_text(encoding="utf-8"))
+    data[section][key] = "unknown"
+    neutral_profile_config.write_text(yaml.safe_dump(data), encoding="utf-8")
+    with pytest.raises(ValueError, match=section):
+        load_config(neutral_profile_config)
+
+
+@pytest.mark.parametrize("new_key_env", (None, "OVERRIDE_FIXTURE_KEY"))
+def test_mixed_connection_settings_preserve_legacy_key_unless_explicitly_overridden(
+    neutral_profile_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    new_key_env: str | None,
+) -> None:
+    data = yaml.safe_load(neutral_profile_config.read_text(encoding="utf-8"))
+    data["aiclub"] = {
+        "endpoint": "https://receiver.invalid/v1/chat",
+        "api_key_env": "CUSTOM_FIXTURE_KEY",
+    }
+    data["inference_service"]["timeout_seconds"] = 15
+    expected_key = new_key_env or "CUSTOM_FIXTURE_KEY"
+    if new_key_env is not None:
+        data["inference_service"]["api_key_env"] = new_key_env
+    monkeypatch.setenv(expected_key, "synthetic-fixture")
+    neutral_profile_config.write_text(yaml.safe_dump(data), encoding="utf-8")
+    current = load_config(neutral_profile_config)
+    assert current.aiclub.endpoint == "https://receiver.invalid/v1/chat"
+    assert current.aiclub.timeout_seconds == 15
+    assert current.aiclub.api_key_env == expected_key
+    assert api_key_present(current.aiclub)

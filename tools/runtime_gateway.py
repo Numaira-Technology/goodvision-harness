@@ -15,17 +15,17 @@ from pathlib import Path
 
 try:
     from public_privacy import contains_private_implementation_detail
-except ImportError:
+except Exception:
     try:
         from goodvision_harness.privacy import contains_private_implementation_detail
-    except ImportError:
+    except Exception:
         # An incomplete installation must not expose unfiltered diagnostics.
         def contains_private_implementation_detail(_value: object) -> bool:
             return True
 
 
 CHECK_ROOT = Path("/opt/goodvision/internal")
-CHECKS = {name: f"{name}_check.py" for name in ("runtime", "face", "perception")}
+CHECKS = frozenset({"runtime", "face", "perception"})
 # Leave the application its normal session/persistence shutdown window, with
 # a small margin before the delivery container's 90-second stop deadline.
 STOP_GRACE_SECONDS = 85.0
@@ -59,11 +59,22 @@ class PublicLogFilter:
 
     def __init__(self) -> None:
         self._in_traceback = False
+        self._traceback_seen = False
 
     def project(self, line: str) -> str:
         line = _ANSI.sub("", line.rstrip("\r\n"))
         trace_line = bool(_TRACE_LINE.search(line))
         if trace_line:
+            self._in_traceback = True
+            self._traceback_seen = True
+        elif (
+            self._traceback_seen
+            and line[:1].isspace()
+            and line.strip()
+            and not _LOG_START.search(line)
+        ):
+            # Another thread's normal log may interrupt a stack dump. Its
+            # indented source/context lines must remain private afterwards.
             self._in_traceback = True
         elif self._in_traceback and _LOG_START.search(line):
             self._in_traceback = False
@@ -131,17 +142,9 @@ def run_child(command: list[str], *, publish_output: bool) -> int:
     options: dict[str, object] = {"start_new_session": True} if os.name == "posix" else {
         "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
     }
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        **options,
-    )
-    assert process.stdout is not None
     pending: queue.Queue[str | None] = queue.Queue(maxsize=256)
-    reader = threading.Thread(target=_read_output, args=(process.stdout, pending), daemon=True)
-    reader.start()
+    reader: threading.Thread | None = None
+    reader_started = False
     previous: dict[int, signal.Handlers] = {}
     interrupted: list[tuple[int, float]] = []
 
@@ -153,10 +156,23 @@ def run_child(command: list[str], *, publish_output: bool) -> int:
     output_done = False
     exited_at: float | None = None
     log_filter = PublicLogFilter()
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        **options,
+    )
     try:
+        assert process.stdout is not None
         for signum in (signal.SIGTERM, signal.SIGINT):
             previous[signum] = signal.getsignal(signum)
             signal.signal(signum, forward)
+        reader = threading.Thread(
+            target=_read_output, args=(process.stdout, pending), daemon=True
+        )
+        reader.start()
+        reader_started = True
         while True:
             if interrupted and time.monotonic() - interrupted[0][1] >= STOP_GRACE_SECONDS:
                 _signal_owned_process(process, interrupted[0][0], force=True)
@@ -190,8 +206,11 @@ def run_child(command: list[str], *, publish_output: bool) -> int:
         # immediate parent exited. The Linux delivery uses a dedicated group.
         if os.name == "posix":
             _signal_owned_process(process, signal.SIGTERM, force=True)
-        reader.join(timeout=2)
-        if not reader.is_alive():
+        if reader_started and reader is not None:
+            reader.join(timeout=2)
+        if process.stdout is not None and (
+            not reader_started or (reader is not None and not reader.is_alive())
+        ):
             process.stdout.close()
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -201,6 +220,12 @@ def _serve_command(component: str) -> list[str]:
     if component == "main":
         return ["goodvision-harness"]
     return [sys.executable, "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8091", "--no-server-header"]
+
+
+def _check_command(component: str, check: str) -> list[str]:
+    selected = ("face" if component == "main" else "perception") if check == "runtime" else check
+    command = [sys.executable, str(CHECK_ROOT / f"{selected}_check.py")]
+    return command + (["--runtime"] if check == "runtime" else [])
 
 
 def _check_record(check: str, returncode: int, message: str | None = None) -> None:
@@ -220,9 +245,11 @@ def main(argv: list[str] | None = None) -> int:
     if component not in {"main", "perception"}:
         _check_record(mode, 2, "runtime component is unavailable")
         return 2
-    command = _serve_command(component) if mode == "serve" else [
-        sys.executable, str(CHECK_ROOT / CHECKS[mode])
-    ]
+    supported_check = "face" if component == "main" else "perception"
+    if mode not in {"serve", "runtime", supported_check}:
+        _check_record(mode, 2, "check is unavailable for this component")
+        return 2
+    command = _serve_command(component) if mode == "serve" else _check_command(component, mode)
     try:
         returncode = run_child(command, publish_output=mode == "serve")
     except FileNotFoundError:

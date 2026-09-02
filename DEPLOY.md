@@ -1,156 +1,118 @@
-# GoodVision WebRTC 局域网部署
+# GoodVision 完整 GPU 功能部署
 
-本页对应不含 Paddle worker 的基础 CPU 包。需要包含 Paddle 检测、跟踪、
-行人属性及人脸 GPU 支持的完整版本，请使用
-[`FULL_DEPLOY.md`](FULL_DEPLOY.md) 和 `compose.full-gpu.delivery.yaml`。
+本入口面向已验证兼容的 Linux/amd64 GPU 服务器，同时部署主服务与感知服务。
+完整功能保留，客户配置使用功能名称和模型档位，无需指定底层实现。
 
-交付包包含已构建镜像、`compose.delivery.yaml`、环境示例和接口说明；服务器
-无需源码或现场构建。机器人 `192.168.20.199` 提供 WHEP/WebRTC，GoodVision
-服务器 `192.168.20.168` 在受保护局域网的 TCP 8080 提供输出。
+| 服务 | 镜像 | 功能 |
+| --- | --- | --- |
+| 主服务 | `goodvision-harness:2026.09.02-full-gpu.2` | 五能力判断、人脸识别、陌生人照片、JSON/SSE、视频与叠框 |
+| 感知服务 | `goodvision-rich-label-worker:2026.09.02-full-gpu.2` | 人物/物品检测、会话内跟踪、异步行人属性 |
 
-当前基础交付版本为 `goodvision-harness:2026.09.02-five-capability-api.1`，
-平台为 Linux/amd64，人脸识别使用 CPU。该版本包含五能力独立结果接口、
-陌生人证据照片接口以及原有通用 JSON 和视频接口，详见
-[`API_DELIVERY.md`](API_DELIVERY.md)。包内不包含真实 `.env`、API Key、
-客户人脸数据、模型权重或可选 GPU/富标签 worker 镜像。
+上述 `.2` 为已导出的历史镜像，不包含后续源码新增的推理路由选择功能。
+运行 `.2` 时请以其随包原说明和配置为准，不能通过添加环境变量获得新功能。
+下述可选路由覆盖仅供后续已确认支持该功能的新源码镜像使用。
 
-## 安装与升级
+## 1. 前提与模型
+
+宿主机须具有兼容的 GPU 驱动和容器 GPU 运行环境，并允许两个服务访问 GPU。
+两个服务使用同一张可用 GPU；资源声明不意味着各占用一整张卡。
+具体硬件兼容性须通过下述目标服务器自检确认。
+
+**本包包含程序与运行环境，不包含模型权重，不是断网开箱即用包。**
+真实推理需要以下已授权模型，模型文件应按相应档位准备：
+
+- 人脸标准模型包：人脸检测和识别。
+- 目标检测高精度模型包：人物与物品检测。
+- 属性标准模型包：行人属性分析。
+
+模型使用权限须单独确认；标准人脸模型包未经另行授权时仅限非商业研究，
+不能把镜像可运行视为已取得商业模型使用许可。
+
+已有模型优先沿用持久卷 `face-models`、`rich-models`，不要覆盖现场数据。
+感知服务默认使用 `RICH_DETECTOR_PROFILE=accurate` 和
+`RICH_ATTRIBUTE_PROFILE=standard`。可通过 `.env` 中的
+`RICH_DETECTOR_MODEL_DIR`、`RICH_ATTRIBUTE_MODEL_DIR` 指向容器内已预置模型目录。
+目录留空时使用选定档位的缓存，缺少模型时可能尝试下载；目录必须是容器内路径。
+
+人脸主程序是否允许下载由 `config.delivery.yaml` 的
+`face.allow_model_download` 决定。`FACE_ALLOW_MODEL_DOWNLOAD` 仅用于人脸自检，
+不能替代主程序配置。严格离线部署须预置模型、关闭模型下载并断网自检；
+若安全判断使用网络推理服务，仍须具备该服务的连通性，或另行部署已验证的内网服务。
+
+## 2. 加载与保留现场设置
+
+在完整交付包目录执行：
 
 ```bash
-docker load -i goodvision-harness-2026.09.02-five-capability-api.1.tar
-cp -n .env.delivery.example .env
+docker load -i goodvision-full-2026.09.02-gpu.2.tar
+cp -n .env.full-gpu.delivery.example .env
 chmod 600 .env
-docker compose --env-file .env -f compose.delivery.yaml config --quiet
-docker compose --env-file .env -f compose.delivery.yaml up -d --force-recreate
-docker compose --env-file .env -f compose.delivery.yaml ps
+docker compose --env-file .env -f compose.full-gpu.delivery.yaml config --quiet
 ```
 
-已有 `.env` 必须保留。升级时不要执行 `down -v`、`docker volume prune` 或修改
-Compose 顶层项目名，以保留 `goodvision-harness_face-data` 和
-`goodvision-harness_face-models`。
+已有 `.env` 必须保留。此入口固定启用人脸 GPU 加速与完整感知链路，不需要
+额外 profile 或叠加旧的 GPU 覆盖文件。`config.delivery.yaml` 挂载为主服务配置；
+不要把开发配置或旧包配置覆盖到该文件。
 
-## 可选 rich bbox worker
+推理凭据可在控制台保存，或通过 `INFERENCE_API_KEY` 提供。若旧部署的凭据仅存在
+旧环境变量中、未保存到控制台，请把原凭据值填入这个中性变量；不要将实际凭据
+写入交付示例。视频采集选项使用 `VIDEO_CAPTURE_OPTIONS`，示例保留原默认值。
 
-本次基础 CPU 离线包不包含下述可选镜像或其覆盖文件。仓库中的 GPU 交付
-覆盖文件仍引用独立的旧版本；不得把旧的 face-GPU 覆盖文件直接叠加到本次
-基础包，否则主服务会切回旧镜像。需要 GPU 时应另行封装、验收并同步版本。
+支持路由选择的新镜像可用 `INFERENCE_PROVIDER`、`INFERENCE_MODEL` 和
+`INFERENCE_ENDPOINT` 分别覆盖服务路由、模型和完整推理 URL；留空时使用配置默认值。
+修改后需重启对应服务。实际选择值应由部署人员按所用版本确认，不随公开示例提供；
+在历史 `.2` 镜像上应保持这三个字段为空。
 
-源码部署可用独立的 PaddleX/PaddleDetection sidecar。CPU 回退路径仍是：
+保留项目名 `goodvision-harness` 及三个持久卷，不执行 `down -v`、volume prune，
+不要清空模型、已知人脸、陌生人照片或部署设置。升级前应备份现场持久数据。
+
+## 3. 在目标 GPU 服务器先做真实自检
+
+先确认宿主机 GPU 可用，再运行随镜像提供的三个统一自检入口：
 
 ```bash
-docker compose --profile rich up --build
+docker compose --env-file .env -f compose.full-gpu.delivery.yaml run --rm --no-deps harness python tools/check_runtime.py
+docker compose --env-file .env -f compose.full-gpu.delivery.yaml run --rm --no-deps harness python tools/check_face.py
+docker compose --env-file .env -f compose.full-gpu.delivery.yaml run --rm --no-deps rich-label-worker python tools/check_perception.py
 ```
 
-它只为延迟展示流提供人物/物品跟踪框和外观属性，不参与也不阻塞 VLM 安全
-判断；worker 超时或不可用时 Harness 会继续输出 VLM 结果与原始视频。交付版
-`compose.delivery.yaml` 不内置 worker，若启用须单独交付兼容镜像、加入同一
-Docker 网络，并把 `RICH_LABEL_ENDPOINT` 指向其 `/v1/labels`。
+运行环境检查用于确认依赖组合可用；它不等于模型推理验收。人脸自检要求
+已授权权重存在，并验证人脸检测、识别实际使用 GPU；感知自检验证 GPU 运算、
+目标检测和属性分析。任一失败都应先解决，不能只以健康检查或容器启动作为验收依据。
 
-随源码提供的基础镜像固定 Paddle 3.2.2，默认使用低延迟的 `PicoDet-S`，以避开
-Paddle 3.3.x 已确认的 CPU oneDNN 回归。客户 RTX 5090 是 Blackwell `sm_120`，
-必须使用独立的 `Dockerfile.gpu` / `compose.gpu.yaml`：其中安装官方 Paddle GPU
-3.3.0 CUDA 12.9 包，默认用精度更高的 `PP-YOLOE_plus-L`，不启用 TensorRT/HPI。
-Linux 宿主机须安装 NVIDIA 570.26 或更新驱动（优先当前 production driver）和
-[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
+底层依赖的许可与原始归属声明保留在镜像内部；本包未修改或伪造这些声明。
+运行环境自检包含已知兼容性检查，不能替代真实视频效果和性能验收。
 
-源码部署在 5090 上的启用顺序：
+## 4. 启动完整服务
 
 ```bash
-nvidia-smi
-docker compose -f compose.yaml -f compose.gpu.yaml --profile rich build rich-label-worker
-docker compose -f compose.yaml -f compose.gpu.yaml --profile rich run --rm \
-  rich-label-worker python gpu_smoke.py
-docker compose -f compose.yaml -f compose.gpu.yaml --profile rich up -d
+docker compose --env-file .env -f compose.full-gpu.delivery.yaml up -d --force-recreate
+docker compose --env-file .env -f compose.full-gpu.delivery.yaml ps
 ```
 
-离线镜像交付则先加载两个 tar，保持 `RICH_LABEL_ENABLED=false`，用交付覆盖文件
-完成相同的实际 CUDA/模型自检：
+该命令同时启动主服务和感知服务。感知服务仅在内部网络的 8091 端口提供接口，
+外部通过主服务访问，默认端口为 8080。控制台可配置视频源和推理服务凭据。
+首次启动默认 `dry_run`；已有持久部署设置会保留原模式。真实五能力判断需
+切换为正式模式，不能将演示结果当成真实识别结果。
 
-```bash
-docker compose -f compose.delivery.yaml -f compose.rich-gpu.delivery.yaml \
-  --profile rich run --rm rich-label-worker python gpu_smoke.py
-```
+感知服务不可用时主服务仍可能输出安全判断和原视频，所以“视频能看”不等于
+完整链路已工作。输入一段获授权的含人视频后，应同时确认：
 
-自检会验证容器内 GPU 可见、执行 CUDA tensor 和 Paddle 官方检查，并实际加载
-检测与行人属性模型。首次启动可能下载模型，需预留外网、磁盘和启动时间，或把
-已授权模型预置到持久 volume。自检通过后再把 `.env` 的
-`RICH_LABEL_ENABLED=true` 并启动完整 Compose；`/health/live` 本身不能证明
-`sm_120` kernel 或模型推理成功。
+- `/v1/status` 中 `rich_labeling.succeeded > 0`，且没有持续错误。
+- `/v1/rich-labels/latest` 返回 200，存在跟踪对象，后续帧出现非空行人属性。
+- `/v1/video/annotated/stream.mjpeg` 中人物/物品跟踪框及属性正常。
+- 五能力 JSON/SSE 和陌生人照片接口按 [接口说明](API_DELIVERY.md) 工作。
 
-交付前可用 `tools/rich_label_benchmark.py` 对同一视频执行真实 HTTP worker 测速；
-它会输出 `metrics.json`、逐帧 `frames.jsonl` 和 `annotated.mp4`，用于核对超时、
-吞吐、框和 ID 连续性。冷启动会包含模型加载，热态指标应在短预热后另跑一次。
-本地 CPU 结果作为功能和降级基线；5090 上还须检查首帧、热态 p50/p95、吞吐、
-显存及至少 10 次冷启动。当前 7.5 FPS 目标的最低验收线为完整视频零失败、零
-429、吞吐不低于 7.5 FPS、p95 小于 133 ms，并对 CPU/GPU 同帧输出做抽样复核。
-`P...`/`O...` 仅为单次视频会话内的跟踪 ID，并非真实身份；年龄是区间估计，
-gender 是外观模型估计。PaddleX/PaddleDetection 源码为 Apache-2.0，但商用或
-随交付包分发前仍须逐一确认具体预训练权重及其训练数据的许可条件。
+感知服务的 `/health/ready` 只代表检测器就绪，不代表行人属性已成功。
+要求离线加载模型时，还须断开模型下载网络、重启两服务并重复上述验收。
 
-## 可选 InsightFace GPU 加速
+## 5. 构建验证与现场验收的区别
 
-基础 Harness 镜像安装 CPU 版 ONNX Runtime；服务器即使有 RTX 5090，也不会
-自动加速人脸识别。GPU 交付须额外加载 `Dockerfile.face-gpu` 构建的 Harness
-镜像，并叠加 `compose.face-gpu.delivery.yaml`。该镜像固定 ONNX Runtime GPU
-1.26（CUDA 12.8、cuDNN 9），避免 1.27 及以后默认 CUDA 13 wheel 带来的运行时
-漂移。
+构建机没有可用于本包的 GPU。本地可核对配置、镜像加载、运行环境及隔离的
+HTTP/视频程序链路，但不能验收真实 GPU 推理、模型效果或现场性能。
+本次已完成的验证以 `RELEASE.md` 为准；合成画面与测试模型只验证程序协议，
+不能替代上述真实模型自检，也不能代替授权现场视频验收。
 
-先在客户机执行真实模型自检，再启动服务：
-
-```bash
-docker compose -f compose.delivery.yaml -f compose.face-gpu.delivery.yaml \
-  run --rm harness python tools/face_gpu_smoke.py
-docker compose -f compose.delivery.yaml -f compose.face-gpu.delivery.yaml \
-  up -d --force-recreate
-```
-
-自检要求已授权的 detection/recognition 权重存在于 `face-models` volume；仅在
-许可覆盖的非商业测试中，才可临时增加
-`-e FACE_ALLOW_MODEL_DOWNLOAD=true`。Harness 会核对两条实际 ONNX Session 的
-首选 provider，CUDA 缺失或静默回落 CPU 时直接失败。若同时启用 Paddle rich
-worker，可再叠加 `compose.rich-gpu.delivery.yaml --profile rich`；两容器共享同一
-5090，应分别记录 face-only 与并跑时的热态 p50/p95、吞吐和显存。
-
-`FACE_LIVE_SCHEDULER=auto` 在 CPU provider 下保留 single-flight：混合检测继续
-保留 LLM 六并发，忙碌的人脸分支直接跳过；仅选陌生人时并发降为 1。在 DirectML
-或 CUDA provider 下，`auto` 会切换为 `full`，每个已接纳的混合检测请求都执行
-InsightFace，同时保留 LLM 配置并发。可显式设为 `single_flight` 做有界回退，或设为
-`full` 在 CPU 上进行完整频次的对照实验。
-
-## 输入与永久设置
-
-默认输入：
-
-```text
-webrtc+http://192.168.20.199:1985/rtc/v1/whep/?app=live&stream=livestream
-```
-
-机器人视频是 2560×720 左右双目拼接流。交付配置中的
-`stream.frame_crop: left_half` 会在任何缩放、模型推理和 bbox 坐标归一化之前
-取左眼 1280×720 画面，因此控制台、分析结果和标注输出共享同一坐标系。
-
-服务器和容器必须能到达机器人 TCP 1985，并能接收机器人配置的 WebRTC 媒体
-端口及局域网 ICE candidate。控制台可以永久保存视频地址、测试/正式模式、
-自动启动和模型 API Key。Key 不会由页面或 API 回显。
-
-永久设置位于 `/data/deployment-settings.json`，Key 位于
-`/data/model-api-key`，已知人员库同样位于 `face-data` volume；本地人脸分析
-文件位于独立的 `face-models` volume。
-
-## 局域网输出
-
-交付环境监听 `0.0.0.0:8080`：
-
-```text
-http://192.168.20.168:8080/v1/results/events
-http://192.168.20.168:8080/v1/results/latest
-http://192.168.20.168:8080/v1/video/annotated/stream.mjpeg
-```
-
-诊断端点为 `/health/live`、`/health/ready` 和 `/v1/status`。输入协议变更不会
-影响输出协议或路径。`/health/ready` 只有在收到新帧并产生分析结果后才返回
-200。
-
-控制台不得暴露到公网。请用服务器防火墙仅允许受信任局域网访问 TCP 8080，
-或使用带认证的 HTTPS 反向代理。Compose 已启用只读根文件系统、非 root
-用户、`no-new-privileges` 和日志轮转。
+接口路径与之前保持兼容。旧的 `http://192.168.1.50` 无端口地址仍需要现场
+80 端口映射；直接连接默认使用 `http://192.168.1.50:8080`。服务和控制台应仅
+对受信任网络开放。

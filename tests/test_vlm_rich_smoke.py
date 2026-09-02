@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,21 @@ from goodvision_harness.aiclub import (
 )
 from goodvision_harness.config import RichLabelSettings, StreamSettings, VideoSettings
 from tools import vlm_rich_smoke as smoke
+
+
+@pytest.fixture(autouse=True)
+def isolated_config_and_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("smoke tests must use mocked config and transport")
+
+    # Prevent accidental .env loading or external calls if a test omits its mocks.
+    monkeypatch.setattr(smoke, "load_config", unexpected)
+    monkeypatch.setattr(AIClubClient, "_post_json", unexpected)
+    for name in (
+        "INFERENCE_API_KEY", "MODEL_API_KEY", "AICLUB_API_KEY",
+        "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _config(endpoint: str = DEFAULT_AICLUB_ENDPOINT) -> SimpleNamespace:
@@ -174,7 +190,7 @@ def test_remote_failure_never_saves_raw_error_or_response(
     monkeypatch.setattr(AIClubClient, "_post_json", fail)
     metrics = smoke.run_smoke(arguments)
     assert metrics["status"] == "failure"
-    assert metrics["error_type"] == "AIClubError"
+    assert metrics["error_type"] == AIClubError.__name__
     assert "error_reason" not in metrics
     assert "error_reason" not in metrics["requests"][0]
     assert list(arguments.output_dir.glob("response-*.json")) == []
@@ -216,7 +232,7 @@ def test_transport_failure_records_safe_immediate_cause_details(
     monkeypatch.setattr(AIClubClient, "_post_json", fail)
     metrics = smoke.run_smoke(arguments)
     assert metrics["status"] == "failure"
-    assert metrics["error_type"] == "AIClubError"
+    assert metrics["error_type"] == AIClubError.__name__
     assert "error_reason" not in metrics
     for key, value in expected.items():
         assert metrics[key] == value
@@ -231,3 +247,50 @@ def test_transport_failure_records_safe_immediate_cause_details(
         saved = path.read_text(encoding="utf-8")
         assert "test-secret-never-persist" not in saved
         assert "private.example" not in saved
+
+
+@pytest.mark.parametrize("save_response", [False, True])
+def test_records_selected_route_and_returned_openrouter_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, save_response: bool,
+) -> None:
+    endpoint = "https://openrouter.ai/api/v1/chat/completions"
+    extra = ["--expected-endpoint", endpoint]
+    if save_response:
+        extra.append("--save-model-response")
+    arguments = _arguments(monkeypatch, tmp_path, *extra)
+    config = _config(endpoint)
+    config.aiclub = AIClubSettings(endpoint=endpoint, provider="openrouter")
+    route = {"only": ["DeepInfra"], "order": ["DeepInfra"], "allow_fallbacks": False}
+    secret = "test-secret-never-persist"
+    parameters = {
+        "provider": {**route, "api_key": secret, "headers": {"Authorization": secret}},
+        "enable_thinking": False,
+    }
+    config.rich_labeling = replace(
+        config.rich_labeling, vlm_request_parameters=parameters,
+    )
+    monkeypatch.setattr(smoke, "load_config", lambda _: config)
+    response = {**_reply(), "provider": "DeepInfra", "headers": {"secret": secret}}
+    sent: list[dict[str, Any]] = []
+
+    def post(_client: AIClubClient, payload: dict[str, Any]) -> dict[str, Any]:
+        sent.append(payload)
+        return response
+
+    monkeypatch.setattr(AIClubClient, "_post_json", post)
+    metrics = smoke.run_smoke(arguments)
+    assert metrics["status"] == "success"
+    assert metrics["selected_provider"] == "openrouter"
+    assert metrics["request_route"] == route
+    assert sent[0]["provider"]["only"] == ["DeepInfra"]
+    assert metrics["response_providers"] == ["DeepInfra"]
+    assert metrics["requests"][0]["response_provider"] == "DeepInfra"
+    response_path = arguments.output_dir / "response-001.json"
+    assert response_path.exists() is save_response
+    if save_response:
+        saved_response = json.loads(response_path.read_text(encoding="utf-8"))
+        assert saved_response["provider"] == "DeepInfra"
+    for path in arguments.output_dir.glob("*.json"):
+        saved = path.read_text(encoding="utf-8")
+        assert secret not in saved
+        assert "Authorization" not in saved

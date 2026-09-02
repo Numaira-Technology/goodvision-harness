@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
+import goodvision_harness.config as config_module
 import goodvision_harness.service as service_module
 from goodvision_harness.config import load_config
 from goodvision_harness.deployment_settings import (
@@ -15,10 +18,16 @@ from goodvision_harness.deployment_settings import (
     DeploymentSettingsStore,
 )
 from goodvision_harness.grounding import DryRunGroundingClient
+from goodvision_harness.privacy import contains_private_implementation_detail
 from goodvision_harness.service import HarnessRuntime, create_app
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def ignore_local_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
 
 
 def test_deployment_store_round_trip_and_write_only_key(tmp_path: Path) -> None:
@@ -58,6 +67,95 @@ def test_legacy_api_key_record_is_migrated_to_generic_name(tmp_path: Path) -> No
     assert store.api_key_path.name == "model-api-key"
     assert store.api_key_path.read_text(encoding="utf-8").strip() == "legacy-secret"
     assert not legacy.exists()
+
+
+def test_stored_api_keys_are_independent_for_each_provider(tmp_path: Path) -> None:
+    store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
+    providers = ("aiclub", "openrouter", "dashscope")
+    store.save_api_key("default-secret")
+    for provider in providers[1:]:
+        assert store.load_api_key(provider=provider) is None
+        assert store.delete_api_key(provider=provider) is False
+    assert store.load_api_key() == "default-secret"
+
+    for provider in providers:
+        store.save_api_key(f"secret-{provider}", provider=provider)
+    for provider in providers:
+        assert store.load_api_key(provider=provider) == f"secret-{provider}"
+
+    assert store.delete_api_key(provider="openrouter") is True
+    assert store.load_api_key(provider="openrouter") is None
+    assert store.load_api_key() == "secret-aiclub"
+    assert store.load_api_key(provider="dashscope") == "secret-dashscope"
+    assert all(
+        provider not in path.name
+        for path in tmp_path.iterdir()
+        for provider in providers
+    )
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "dashscope"])
+def test_other_providers_never_migrate_or_delete_legacy_credentials(
+    tmp_path: Path, provider: str,
+) -> None:
+    store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
+    legacy = tmp_path / "openrouter-api-key"
+    legacy.write_text("legacy-default-secret\n", encoding="utf-8")
+
+    assert store.load_api_key(provider=provider) is None
+    store.save_api_key("new-route-secret", provider=provider)
+    assert store.delete_api_key(provider=provider) is True
+    assert legacy.read_text(encoding="utf-8").strip() == "legacy-default-secret"
+    assert store.load_api_key() == "legacy-default-secret"
+
+
+@pytest.mark.parametrize("operation", ["load", "save", "delete"])
+def test_api_key_store_rejects_unknown_provider(
+    tmp_path: Path, operation: str,
+) -> None:
+    store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
+    with pytest.raises(ValueError, match="unsupported inference provider"):
+        if operation == "save":
+            store.save_api_key("secret", provider="../outside")
+        elif operation == "load":
+            store.load_api_key(provider="../outside")
+        else:
+            store.delete_api_key(provider="../outside")
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "dashscope"])
+def test_runtime_console_credentials_remain_scoped_across_route_switches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str,
+) -> None:
+    for name in (
+        "INFERENCE_API_KEY", "MODEL_API_KEY", "AICLUB_API_KEY",
+        "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
+    store.save_api_key("default-route-secret")
+    monkeypatch.setenv("INFERENCE_PROVIDER", provider)
+    config = load_config(ROOT / "config.yaml")
+    runtime = HarnessRuntime(config, deployment_store=store)
+    assert runtime._aiclub_api_key is None
+    assert runtime.deployment_settings()["api_key_persisted"] is False
+
+    public = runtime.update_deployment_settings({"api_key": "selected-route-secret"})
+    assert public["api_key_persisted"] is True
+    assert store.load_api_key(provider=provider) == "selected-route-secret"
+    restored = HarnessRuntime(config, deployment_store=store)
+    assert restored._aiclub_api_key == "selected-route-secret"
+
+    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    default = HarnessRuntime(load_config(ROOT / "config.yaml"), deployment_store=store)
+    assert default._aiclub_api_key == "default-route-secret"
+    restored.update_deployment_settings({"clear_api_key": True})
+    assert store.load_api_key(provider=provider) is None
+    assert store.load_api_key() == "default-route-secret"
+    rendered = json.dumps(public).lower()
+    assert "selected-route-secret" not in rendered
+    assert provider not in rendered
 
 
 def test_deployment_settings_api_persists_without_returning_secrets(
@@ -298,12 +396,15 @@ def test_deployment_settings_request_body_is_limited_to_64_kib(
     assert store.load_api_key() is None
 
 
+@pytest.mark.parametrize("provider", ["aiclub", "openrouter", "dashscope"])
 def test_persisted_api_key_is_injected_without_changing_model_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    provider: str,
 ) -> None:
     store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
-    store.save_api_key("persisted-provider-secret")
+    store.save_api_key("persisted-provider-secret", provider=provider)
+    monkeypatch.setenv("INFERENCE_PROVIDER", provider)
     config = load_config(ROOT / "config.yaml")
     assert config.stream.url == (
         "webrtc+http://192.168.20.199:1985/rtc/v1/whep/"
@@ -311,11 +412,12 @@ def test_persisted_api_key_is_injected_without_changing_model_route(
     )
     captured: dict[str, object] = {}
 
-    def fake_builder(settings, aiclub_settings, **kwargs):
+    def fake_builder(settings, model_api, **kwargs):
         captured.update(
             model=settings.model,
             api_key=kwargs.get("api_key"),
-            endpoint=aiclub_settings.endpoint,
+            endpoint=model_api.endpoint,
+            provider=model_api.provider,
         )
         return DryRunGroundingClient(settings, kwargs.get("memory_context"))
 
@@ -333,3 +435,131 @@ def test_persisted_api_key_is_injected_without_changing_model_route(
     assert captured["api_key"] == "persisted-provider-secret"
     assert captured["model"] == config.inference.model
     assert captured["model"] != "numaira-beta-fast"
+    assert captured["endpoint"] == config.model_api.endpoint
+    assert captured["provider"] == provider
+
+
+@pytest.fixture
+def public_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
+    for name in (
+        "INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY",
+        "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "INFERENCE_PROVIDER",
+        "INFERENCE_MODEL", "INFERENCE_ENDPOINT", "LEGACY_CUSTOM_KEY",
+        "HARNESS_STREAM_URL", "RTSP_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.setenv("HARNESS_DRY_RUN", "true")
+
+
+def test_control_errors_do_not_reflect_arbitrary_commands(
+    public_settings_environment: None,
+    tmp_path: Path,
+) -> None:
+    runtime = HarnessRuntime(
+        load_config(ROOT / "config.yaml"),
+        deployment_store=DeploymentSettingsStore(tmp_path / "settings.json"),
+    )
+    with TestClient(create_app(lambda: runtime)) as client:
+        invalid_setting = client.put(
+            "/v1/deployment/settings", json={"PaddleX OpenRouter invalid setting": True}
+        )
+        assert invalid_setting.status_code == 400
+        assert invalid_setting.json() == {"detail": "unknown deployment setting"}
+        with client.websocket_connect("/ws") as websocket:
+            assert websocket.receive_json()["type"] == "hello"
+            websocket.send_json({"type": "PaddleX OpenRouter invalid setting"})
+            assert websocket.receive_json() == {
+                "type": "error", "message": "unknown command",
+            }
+            websocket.send_json({
+                "type": "start",
+                "mode": "camera",
+                "features": ["PaddleX OpenRouter invalid setting"],
+            })
+            assert websocket.receive_json() == {
+                "type": "error", "message": "unsupported feature",
+            }
+
+
+@pytest.mark.parametrize("legacy", (
+    "AICLUB_API_KEY", "MODEL_API_KEY", "OPENROUTER_API_KEY", "LEGACY_CUSTOM_KEY",
+))
+def test_neutral_credentials_take_precedence_and_legacy_still_works(
+    public_settings_environment: None, monkeypatch: pytest.MonkeyPatch, legacy: str
+) -> None:
+    if legacy == "OPENROUTER_API_KEY":
+        monkeypatch.setenv("INFERENCE_PROVIDER", "openrouter")
+    config = load_config(ROOT / "config.yaml")
+    if legacy == "LEGACY_CUSTOM_KEY":
+        config = replace(config, aiclub=replace(config.aiclub, api_key_env=legacy))
+    monkeypatch.setenv(legacy, "legacy-fixture")
+    assert HarnessRuntime(config)._aiclub_api_key == "legacy-fixture"
+    monkeypatch.setenv("INFERENCE_API_KEY", "neutral-fixture")
+    assert HarnessRuntime(config)._aiclub_api_key == "neutral-fixture"
+
+
+def test_saved_credentials_keep_precedence_over_environment(
+    public_settings_environment: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = DeploymentSettingsStore(tmp_path / "settings.json")
+    store.save_api_key("saved-fixture")
+    monkeypatch.setenv("INFERENCE_API_KEY", "neutral-fixture")
+    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"), deployment_store=store)
+    assert runtime._aiclub_api_key == "saved-fixture"
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_name"),
+    [
+        ("aiclub", "AICLUB_API_KEY"),
+        ("openrouter", "OPENROUTER_API_KEY"),
+        ("dashscope", "DASHSCOPE_API_KEY"),
+    ],
+)
+def test_runtime_uses_only_the_selected_provider_credentials(
+    public_settings_environment: None,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    key_name: str,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", provider)
+    for name in ("AICLUB_API_KEY", "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY"):
+        monkeypatch.setenv(name, f"secret-for-{name}")
+    config = load_config(ROOT / "config.yaml")
+
+    runtime = HarnessRuntime(config)
+    assert runtime._aiclub_api_key == f"secret-for-{key_name}"
+    assert not contains_private_implementation_detail(runtime.ui_info())
+
+    monkeypatch.delenv(key_name)
+    missing = HarnessRuntime(config)
+    assert missing._aiclub_api_key is None
+    assert missing.deployment_settings()["api_key_present"] is False
+
+    monkeypatch.setenv("INFERENCE_API_KEY", "explicit-current-route-key")
+    assert HarnessRuntime(config)._aiclub_api_key == "explicit-current-route-key"
+
+
+@pytest.mark.parametrize("filename", ["compose.yaml", "compose.delivery.yaml"])
+def test_compose_passes_route_overrides_and_independent_credentials(filename: str) -> None:
+    compose = yaml.safe_load((ROOT / filename).read_text(encoding="utf-8"))
+    environment = compose["services"]["harness"]["environment"]
+    for key in (
+        "INFERENCE_PROVIDER",
+        "INFERENCE_MODEL",
+        "INFERENCE_ENDPOINT",
+        "INFERENCE_API_KEY",
+        "AICLUB_API_KEY",
+        "OPENROUTER_API_KEY",
+        "DASHSCOPE_API_KEY",
+    ):
+        # Empty values must retain YAML/preset defaults, rather than fixing a route.
+        assert environment[key] == "${" + key + ":-}"
+
+
+def test_packaged_config_matches_repository_default() -> None:
+    assert (ROOT / "config.yaml").read_bytes() == (
+        ROOT / "src" / "goodvision_harness" / "config.yaml"
+    ).read_bytes()

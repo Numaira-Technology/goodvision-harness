@@ -58,18 +58,30 @@ sliding_window:
   stride_frames: 1
   include_partial_final_window: false
 
-aiclub:
-  endpoint: https://aiclub.zimaocloud.com/model/openApi/v1/chat/completions
-  api_key_env: AICLUB_API_KEY
+inference_service:
+  # INFERENCE_PROVIDER selects a route without changing the pipeline.
+  provider: aiclub
   timeout_seconds: 60.0
   # Avoid retrying provider errors into stale live results.
   max_retries: 0
   retry_backoff_seconds: 1.0
   extra_headers: {}
+  providers:
+    aiclub:
+      model: qwen3.5-plus
+    openrouter:
+      model: qwen/qwen3.5-35b-a3b
+      request_parameters:
+        reasoning:
+          enabled: false
+    dashscope:
+      model: qwen3.5-plus
+      request_parameters:
+        enable_thinking: false
 
 inference:
-  # Fixed AIClub route; implementation identifiers are never public output.
-  model: qwen3.5-plus
+  # Public profile stays stable when changing provider or model.
+  profile: standard
   event_label: smoking
   system_prompt: >-
     You are a risk-sensitive multi-label safety-event perception module for
