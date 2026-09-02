@@ -1,14 +1,23 @@
 # GoodVision WebRTC 局域网部署
 
-交付包包含已构建镜像、`compose.delivery.yaml`、环境示例和校验清单；服务器
+本页对应不含 Paddle worker 的基础 CPU 包。需要包含 Paddle 检测、跟踪、
+行人属性及人脸 GPU 支持的完整版本，请使用
+[`FULL_DEPLOY.md`](FULL_DEPLOY.md) 和 `compose.full-gpu.delivery.yaml`。
+
+交付包包含已构建镜像、`compose.delivery.yaml`、环境示例和接口说明；服务器
 无需源码或现场构建。机器人 `192.168.20.199` 提供 WHEP/WebRTC，GoodVision
 服务器 `192.168.20.168` 在受保护局域网的 TCP 8080 提供输出。
+
+当前基础交付版本为 `goodvision-harness:2026.09.02-five-capability-api.1`，
+平台为 Linux/amd64，人脸识别使用 CPU。该版本包含五能力独立结果接口、
+陌生人证据照片接口以及原有通用 JSON 和视频接口，详见
+[`API_DELIVERY.md`](API_DELIVERY.md)。包内不包含真实 `.env`、API Key、
+客户人脸数据、模型权重或可选 GPU/富标签 worker 镜像。
 
 ## 安装与升级
 
 ```bash
-sha256sum -c SHA256SUMS
-docker load -i goodvision-harness-2026.08.28-face-distance.1.tar
+docker load -i goodvision-harness-2026.09.02-five-capability-api.1.tar
 cp -n .env.delivery.example .env
 chmod 600 .env
 docker compose --env-file .env -f compose.delivery.yaml config --quiet
@@ -21,6 +30,10 @@ Compose 顶层项目名，以保留 `goodvision-harness_face-data` 和
 `goodvision-harness_face-models`。
 
 ## 可选 rich bbox worker
+
+本次基础 CPU 离线包不包含下述可选镜像或其覆盖文件。仓库中的 GPU 交付
+覆盖文件仍引用独立的旧版本；不得把旧的 face-GPU 覆盖文件直接叠加到本次
+基础包，否则主服务会切回旧镜像。需要 GPU 时应另行封装、验收并同步版本。
 
 源码部署可用独立的 PaddleX/PaddleDetection sidecar。CPU 回退路径仍是：
 

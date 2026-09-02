@@ -166,6 +166,12 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     rich_label_section = _mapping_section(raw, "rich_labeling")
     window_section = _mapping_section(raw, "sliding_window")
     aiclub_section = _mapping_section(raw, "aiclub")
+    if "inference_service" in raw:
+        aiclub_section = {
+            **aiclub_section,
+            "api_key_env": "INFERENCE_API_KEY",
+            **_mapping_section(raw, "inference_service"),
+        }
     inference_section = _mapping_section(raw, "inference")
     memory_section = _mapping_section(raw, "memory")
     face_section = _mapping_section(raw, "face")
@@ -308,7 +314,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     request_parameters = inference_section.get("request_parameters") or {}
     if not isinstance(request_parameters, Mapping):
         raise TypeError("inference.request_parameters must be a mapping")
-    model = str(inference_section.get("model", "")).strip()
+    model = (
+        _profile_model(inference_section["profile"], kind="inference")
+        if "profile" in inference_section
+        else str(inference_section.get("model", "")).strip()
+    )
     event_label = str(inference_section.get("event_label", "")).strip()
     system_prompt = str(inference_section.get("system_prompt", "")).strip()
     prompt = str(inference_section.get("prompt", "")).strip()
@@ -337,8 +347,12 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         config_directory=config_path.parent,
     )
     face = FaceSettings(
-        model_name=_required_string(
-            face_section.get("model_name", "buffalo_l"), "face.model_name"
+        model_name=(
+            _profile_model(face_section["model_profile"], kind="face")
+            if "model_profile" in face_section
+            else _required_string(
+                face_section.get("model_name", "buffalo_l"), "face.model_name"
+            )
         ),
         model_root=_configured_path(
             os.environ.get("FACE_MODEL_ROOT")
@@ -350,10 +364,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             face_section.get("allow_model_download", False),
             "face.allow_model_download",
         ),
-        provider=_execution_provider(
-            os.environ.get("FACE_PROVIDER")
-            or face_section.get("provider", "CPUExecutionProvider")
-        ),
+        provider=_face_provider(face_section),
         live_scheduler=_face_live_scheduler(
             os.environ.get("FACE_LIVE_SCHEDULER")
             or face_section.get("live_scheduler", "auto")
@@ -593,6 +604,36 @@ def _execution_provider(value: Any) -> str:
             "or DmlExecutionProvider"
         )
     return provider
+
+
+def _profile_model(value: Any, *, kind: str) -> str:
+    name = "inference.profile" if kind == "inference" else "face.model_profile"
+    profile = _required_string(value, name).lower()
+    if profile != "standard":
+        raise ValueError(f"{name} must be standard")
+    return "qwen3.5-plus" if kind == "inference" else "buffalo_l"
+
+
+def _face_provider(section: Mapping[str, Any]) -> str:
+    # Explicit neutral environment takes precedence; preserve legacy settings
+    # for existing deployments and local experiments that have no new setting.
+    accelerator = os.environ.get("FACE_ACCELERATOR")
+    legacy_provider = os.environ.get("FACE_PROVIDER")
+    if not accelerator and legacy_provider:
+        return _execution_provider(legacy_provider)
+    if not accelerator:
+        accelerator = section.get("accelerator")
+    if accelerator is not None:
+        providers = {
+            "cpu": "CPUExecutionProvider",
+            "gpu": "CUDAExecutionProvider",
+            "windows-gpu": "DmlExecutionProvider",
+        }
+        key = _required_string(accelerator, "face.accelerator").lower()
+        if key not in providers:
+            raise ValueError("face.accelerator must be cpu, gpu, or windows-gpu")
+        return providers[key]
+    return _execution_provider(section.get("provider", "CPUExecutionProvider"))
 
 
 def _face_live_scheduler(value: Any) -> str:

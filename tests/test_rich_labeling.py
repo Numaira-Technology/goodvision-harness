@@ -594,7 +594,7 @@ def test_coordinator_fails_open_and_recovers_without_losing_last_good_state() ->
         stats = coordinator.stats()
         assert stats["succeeded"] == 1
         assert stats["failed"] == 1
-        assert stats["last_error"] == "ConnectError"
+        assert stats["last_error"] == "rich-label inference failed"
         assert stats["state"] == "degraded"
 
         client.fail = False

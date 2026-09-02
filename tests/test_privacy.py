@@ -39,11 +39,20 @@ PRIVATE_MARKERS = (
     "onnxruntime",
     "cpuexecutionprovider",
     "dmlexecutionprovider",
+    "paddle",
+    "pp-yoloe",
+    "pp-lcnet",
+    "picodet",
+    "nvidia",
+    "opencv",
+    "huggingface",
 )
 PRIVATE_TEXT = (
     "AIClub https://aiclub.zimaocloud.com qwen3.5-plus "
     "OpenRouter https://openrouter.ai qwen/qwen3.5-35b-a3b CoreWeave DeepInfra "
     "InsightFace buffalo_l onnxruntime CPUExecutionProvider DmlExecutionProvider"
+    " PaddleX PaddleRuntimeError PP-YOLOE_plus-L PP-LCNet_x1_0_pedestrian_attribute"
+    " PicoDet-S NVIDIA OpenCV https://huggingface.co/example/model"
 )
 
 

@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .privacy import public_safe_value
+
 _RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
@@ -90,11 +92,12 @@ class WebhookDelivery:
     def submit(self, payload: Mapping[str, Any]) -> bool:
         if self._closed:
             return False
-        message_id = str(payload.get("message_id", "")).strip()
+        safe_payload = public_safe_value(dict(payload))
+        message_id = str(safe_payload.get("message_id", "")).strip()
         if not message_id:
             raise ValueError("webhook payload requires message_id")
         body = json.dumps(
-            dict(payload),
+            safe_payload,
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -205,8 +208,8 @@ class WebhookDelivery:
                     return
                 last_error = f"webhook returned HTTP {response.status_code}"
                 retryable = response.status_code in _RETRYABLE_STATUS
-            except httpx.HTTPError as exc:
-                last_error = f"webhook request failed: {exc}"
+            except httpx.HTTPError:
+                last_error = "webhook request failed"
                 retryable = True
 
             if not retryable or attempt >= self.max_retries or self._stop.is_set():
