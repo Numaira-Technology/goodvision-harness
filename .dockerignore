@@ -1,5 +1,8 @@
 .git
 .gitignore
+.agents
+.codex
+.audit*
 .env
 .venv
 __pycache__

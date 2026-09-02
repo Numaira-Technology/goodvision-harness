@@ -1,0 +1,38 @@
+# The verified runtime is reusable; only product code is rebuilt here.
+# Its original runtime components and attribution files are retained unchanged.
+ARG RUNTIME_BASE=goodvision-harness:2026.09.02-full-face-gpu-cu128.1
+FROM ${RUNTIME_BASE} AS product-build
+USER root
+WORKDIR /build
+COPY pyproject.toml ./
+COPY tools/customer_project.md ./README.md
+COPY src ./src
+RUN python -m pip install --no-cache-dir --timeout 120 --retries 5 'setuptools>=69' \
+    && python -m pip install --no-cache-dir --no-deps --no-build-isolation .
+
+FROM ${RUNTIME_BASE} AS customer-runtime
+USER root
+WORKDIR /app
+COPY --from=product-build /usr/local/lib/python3.11/site-packages/goodvision_harness /usr/local/lib/python3.11/site-packages/goodvision_harness
+COPY --from=product-build /usr/local/lib/python3.11/site-packages/goodvision_harness-0.1.0.dist-info /usr/local/lib/python3.11/site-packages/goodvision_harness-0.1.0.dist-info
+# Remove redundant product-development material from the runtime view only.
+# Do not remove or alter the installed dependencies' notices or metadata.
+RUN rm -rf /app/src \
+    && rm -f /app/README.md /app/pyproject.toml \
+        /app/tools/face_gpu_smoke.py /app/tools/face_gpu_runtime_check.py
+COPY config.delivery.yaml ./config.yaml
+COPY config.delivery.yaml /usr/local/lib/python3.11/site-packages/goodvision_harness/config.yaml
+COPY tools/runtime_gateway.py /opt/goodvision/runtime_gateway.py
+COPY src/goodvision_harness/privacy.py /opt/goodvision/public_privacy.py
+COPY tools/face_gpu_runtime_check.py /opt/goodvision/internal/runtime_check.py
+COPY tools/face_gpu_smoke.py /opt/goodvision/internal/face_check.py
+COPY tools/customer_checks/check_runtime.py ./tools/check_runtime.py
+COPY tools/customer_checks/check_face.py ./tools/check_face.py
+ENV GOODVISION_COMPONENT=main \
+    FACE_ACCELERATOR=gpu \
+    FACE_PROVIDER=""
+RUN python /opt/goodvision/internal/runtime_check.py \
+    && chown -R 10001:10001 /app /opt/goodvision
+USER 10001:10001
+ENTRYPOINT []
+CMD ["python", "/opt/goodvision/runtime_gateway.py", "serve"]

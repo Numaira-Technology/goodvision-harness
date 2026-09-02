@@ -65,7 +65,18 @@ class AIClubSettings:
 def api_key_present(settings: AIClubSettings) -> bool:
     """True when the configured API-key environment variable is set."""
 
-    return bool(os.environ.get(settings.api_key_env, "").strip())
+    return bool(_environment_api_key(settings))
+
+
+def _environment_api_key(settings: AIClubSettings) -> str:
+    names = ["INFERENCE_API_KEY", settings.api_key_env]
+    if settings.api_key_env == "INFERENCE_API_KEY":
+        names.append(DEFAULT_AICLUB_API_KEY_ENV)
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
 
 
 class AIClubClient:
@@ -89,7 +100,7 @@ class AIClubClient:
         api_key: str | None = None,
     ) -> None:
         self.settings = settings
-        self._api_key = (api_key or os.environ.get(settings.api_key_env, "")).strip()
+        self._api_key = (api_key or _environment_api_key(settings)).strip()
         if not self._api_key:
             raise AIClubError(f"missing AIClub API key; set {settings.api_key_env}")
 

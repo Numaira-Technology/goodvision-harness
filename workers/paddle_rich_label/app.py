@@ -22,9 +22,42 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Response
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("goodvision.object_attributes")
 MAX_JPEG_BYTES = 8 * 1024 * 1024
 PERSON_LABELS = frozenset({"person", "pedestrian"})
+_DETECTOR_PROFILES = {
+    "balanced": "PicoDet-S",
+    "accurate": "PP-YOLOE_plus-L",
+}
+_ATTRIBUTE_PROFILES = {
+    "standard": "PP-LCNet_x1_0_pedestrian_attribute",
+}
+
+
+def _model_selection(
+    *,
+    profile_variable: str,
+    legacy_variable: str,
+    profiles: Mapping[str, str],
+    default_profile: str,
+    capability: str,
+) -> tuple[str, str]:
+    """Resolve a public profile while preserving existing private settings."""
+
+    profile = os.environ.get(profile_variable, "").strip().lower()
+    if profile:
+        if profile not in profiles:
+            # Never echo an unrecognized value: it may contain a private name.
+            raise ValueError(f"unsupported {capability} profile")
+        return profile, profiles[profile]
+    model_name = os.environ.get(legacy_variable, "").strip()
+    if not model_name:
+        return default_profile, profiles[default_profile]
+    selected_profile = next(
+        (name for name, model in profiles.items() if model == model_name),
+        "custom",
+    )
+    return selected_profile, model_name
 
 # PP-Human's pedestrian attribute model is trained against this fixed PA100K
 # layout. PaddleX normally filters the public classification result by a
@@ -210,15 +243,19 @@ class PaddleRichModels:
 
     def __init__(self) -> None:
         self.device = os.environ.get("RICH_DEVICE", "cpu").strip() or "cpu"
-        self.detector_name = (
-            os.environ.get("RICH_DETECTOR_MODEL", "PicoDet-S").strip()
-            or "PicoDet-S"
+        self.detector_profile, self.detector_name = _model_selection(
+            profile_variable="RICH_DETECTOR_PROFILE",
+            legacy_variable="RICH_DETECTOR_MODEL",
+            profiles=_DETECTOR_PROFILES,
+            default_profile="balanced",
+            capability="object detection",
         )
-        self.attribute_name = (
-            os.environ.get(
-                "RICH_ATTRIBUTE_MODEL", "PP-LCNet_x1_0_pedestrian_attribute"
-            ).strip()
-            or "PP-LCNet_x1_0_pedestrian_attribute"
+        self.attribute_profile, self.attribute_name = _model_selection(
+            profile_variable="RICH_ATTRIBUTE_PROFILE",
+            legacy_variable="RICH_ATTRIBUTE_MODEL",
+            profiles=_ATTRIBUTE_PROFILES,
+            default_profile="standard",
+            capability="pedestrian attribute",
         )
         self.detector_dir = os.environ.get("RICH_DETECTOR_MODEL_DIR", "").strip()
         self.attribute_dir = os.environ.get("RICH_ATTRIBUTE_MODEL_DIR", "").strip()
@@ -245,12 +282,13 @@ class PaddleRichModels:
                 return
             try:
                 from paddlex import create_model
-            except ImportError as exc:
-                raise RuntimeError("PaddleX is not installed in the worker") from exc
-            detector_kwargs = _model_kwargs(
-                self.detector_name, self.detector_dir, self.device
-            )
-            self._detector = create_model(**detector_kwargs)
+
+                detector_kwargs = _model_kwargs(
+                    self.detector_name, self.detector_dir, self.device
+                )
+                self._detector = create_model(**detector_kwargs)
+            except Exception:
+                raise RuntimeError("object detection engine is unavailable") from None
 
     def ensure_attribute_loaded(self) -> None:
         if self._attribute is not None:
@@ -260,12 +298,15 @@ class PaddleRichModels:
                 return
             try:
                 from paddlex import create_model
-            except ImportError as exc:
-                raise RuntimeError("PaddleX is not installed in the worker") from exc
-            attribute_kwargs = _model_kwargs(
-                self.attribute_name, self.attribute_dir, self.device
-            )
-            self._attribute = create_model(**attribute_kwargs)
+
+                attribute_kwargs = _model_kwargs(
+                    self.attribute_name, self.attribute_dir, self.device
+                )
+                self._attribute = create_model(**attribute_kwargs)
+            except Exception:
+                raise RuntimeError(
+                    "pedestrian attribute engine is unavailable"
+                ) from None
 
     def detect(self, image: np.ndarray[Any, Any]) -> tuple[Detection, ...]:
         self.ensure_detector_loaded()
@@ -503,23 +544,20 @@ class RichLabelEngine:
         attribute_thread = threading.Thread(
             target=self._run_attribute_job,
             args=(job,),
-            name="paddle-attribute-inference",
+            name="object-attribute-inference",
             daemon=True,
         )
         self._attribute_thread = attribute_thread
         try:
             attribute_thread.start()
-        except Exception as exc:
+        except Exception:
             self._attribute_in_flight = False
             self._attribute_thread = None
             self._attribute_retry_at = (
                 time.monotonic() + self._attribute_retry_seconds
             )
             self._attribute_idle.set()
-            LOGGER.warning(
-                "could not start pedestrian attribute inference: %s",
-                type(exc).__name__,
-            )
+            LOGGER.warning("could not start pedestrian attribute inference")
 
     def _run_attribute_job(self, job: _AttributeJob) -> None:
         attributes: tuple[dict[str, Any], ...] = ()
@@ -563,10 +601,7 @@ class RichLabelEngine:
                 self._attribute_idle.set()
 
         if error is not None:
-            LOGGER.warning(
-                "pedestrian attribute inference failed: %s",
-                type(error).__name__,
-            )
+            LOGGER.warning("pedestrian attribute inference failed")
 
 
 def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
@@ -574,15 +609,23 @@ def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
-        await asyncio.to_thread(selected_engine.warmup)
+        try:
+            await asyncio.to_thread(selected_engine.warmup)
+        except Exception:
+            LOGGER.error("object and attribute engine initialization failed")
+            raise RuntimeError(
+                "object and attribute engine initialization failed"
+            ) from None
         try:
             yield
         finally:
             selected_engine.close()
 
     application = FastAPI(
-        title="Goodvision Paddle rich-label worker",
+        title="Goodvision Object and Attribute Engine",
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
     )
     application.state.engine = selected_engine
 
@@ -645,11 +688,11 @@ def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
                 detail="inference busy",
                 headers={"Retry-After": "1"},
             ) from exc
-        except Exception as exc:
-            LOGGER.exception("rich-label inference failed")
+        except Exception:
+            LOGGER.error("object and attribute inference failed")
             raise HTTPException(
                 status_code=503, detail="inference unavailable"
-            ) from exc
+            ) from None
 
     return application
 
