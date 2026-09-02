@@ -343,6 +343,78 @@ def test_rich_appearance_excludes_garments_from_structured_and_fallback_values(
     )
 
 
+def test_vlm_rich_overlay_displays_clothing_colors_and_visible_side(
+    monkeypatch: Any,
+) -> None:
+    captured: list[str] = []
+    original_put_text = overlay_module.cv2.putText
+
+    def capture(image: Any, text: str, *args: Any, **kwargs: Any) -> Any:
+        captured.append(text)
+        return original_put_text(image, text, *args, **kwargs)
+
+    monkeypatch.setattr(overlay_module.cv2, "putText", capture)
+    person = _tracked_object("P0001")
+    person.attributes.update(
+        {
+            "annotation_source": "vlm",
+            "estimated_direction": "Side",
+            "upper_style": "UpperLogo",
+            "upper_color": "black",
+            "lower_styles": ("Trousers",),
+            "lower_color": "blue",
+        }
+    )
+
+    overlay_module.draw_rich_overlay(
+        np.zeros((280, 900, 3), dtype=np.uint8), [person]
+    )
+
+    assert captured[2] == "SIDE / BLACK TOP LOGO / BLUE TROUSERS"
+    assert len(captured) == 3
+    assert not contains_private_implementation_detail(" ".join(captured))
+
+
+def test_vlm_appearance_prefers_structured_values_and_filters_unknown_labels() -> None:
+    tokens = overlay_module._rich_appearance_tokens(
+        {
+            "annotation_source": "vlm",
+            "estimated_direction": "Front",
+            "wearing_glasses": True,
+            "wearing_hat": False,
+            "wearing_boots": True,
+            "sleeve_type": "LongSleeve",
+            "upper_style": "UpperStride",
+            "lower_styles": ("Trousers",),
+            "appearance_attributes": (
+                "Back", "Hat", "ShortSleeve", "UpperLogo", "Shorts",
+                "HandBag", "OpenRouter SECRET",
+            ),
+        }
+    )
+
+    assert tokens == (
+        "FRONT", "LONG SLEEVE", "STRIPED TOP", "TROUSERS", "HANDBAG",
+        "GLASSES", "BOOTS",
+    )
+
+
+def test_vlm_appearance_supports_color_only_and_safe_legacy_clothing() -> None:
+    tokens = overlay_module._rich_appearance_tokens(
+        {
+            "annotation_source": "vlm",
+            "upper_color": "dark-green",
+            "lower_color": "OpenRouter SECRET",
+            "appearance_attributes": ("Back", "ShortSleeve", "Skirt&Dress"),
+        }
+    )
+
+    assert tokens == ("BACK", "SHORT SLEEVE", "DARK GREEN TOP", "SKIRT/DRESS")
+    assert overlay_module._rich_appearance_tokens(
+        {"upper_color": "red", "lower_color": "blue"}
+    ) == ()
+
+
 def test_rich_overlay_skips_bad_boxes_and_tolerates_bad_metadata() -> None:
     class BrokenBBox:
         def to_pixels(self, _width: int, _height: int) -> tuple[float, ...]:

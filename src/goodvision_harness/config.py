@@ -52,9 +52,13 @@ class DisplaySettings:
 
 @dataclass(frozen=True, slots=True)
 class RichLabelSettings:
-    """Optional isolated local worker used for high-cadence visual labels."""
+    """Optional independent visual annotation worker or VLM API client."""
 
     enabled: bool = False
+    backend: str = "paddle"
+    model: str | None = None
+    vlm_max_tokens: int = 4096
+    vlm_max_image_side: int = 1280
     endpoint: str = "http://rich-label-worker:8091/v1/labels"
     timeout_seconds: float = 2.0
     max_fps: float = 7.5
@@ -260,6 +264,19 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         "RICH_LABEL_ENABLED",
         _bool(rich_label_section.get("enabled", False), "rich_labeling.enabled"),
     )
+    rich_label_backend = (
+        os.environ.get("RICH_LABEL_BACKEND", "").strip()
+        or _required_string(
+            rich_label_section.get("backend", "paddle"), "rich_labeling.backend"
+        )
+    ).lower()
+    if rich_label_backend not in {"paddle", "vlm"}:
+        raise ValueError("rich_labeling.backend must be paddle or vlm")
+    rich_label_model = rich_label_section.get("model")
+    if rich_label_model is not None and not isinstance(rich_label_model, str):
+        raise TypeError("rich_labeling.model must be a string or null")
+    if rich_label_model is not None:
+        rich_label_model = rich_label_model.strip() or None
     rich_label_endpoint = (
         os.environ.get("RICH_LABEL_ENDPOINT", "").strip()
         or _required_string(
@@ -279,6 +296,16 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         raise ValueError("rich_labeling.history_size must be at least 2")
     rich_labeling = RichLabelSettings(
         enabled=rich_label_enabled,
+        backend=rich_label_backend,
+        model=rich_label_model,
+        vlm_max_tokens=_positive_int(
+            rich_label_section.get("vlm_max_tokens", 4096),
+            "rich_labeling.vlm_max_tokens",
+        ),
+        vlm_max_image_side=_positive_int(
+            rich_label_section.get("vlm_max_image_side", 1280),
+            "rich_labeling.vlm_max_image_side",
+        ),
         endpoint=rich_label_endpoint,
         timeout_seconds=_positive_float(
             rich_label_section.get("timeout_seconds", 2.0),

@@ -62,13 +62,14 @@ from .reference_memory import (
     UNKNOWN_FACE_EVENT_LABEL,
 )
 from .result_bus import FrameBus, FramePacket, ResultBus
-from .rich_labeling import RichLabelCoordinator, RichLabelHTTPClient
+from .rich_labeling import RichLabelClient, RichLabelCoordinator, RichLabelHTTPClient
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
 from .visual_memory import (
     VisualMemoryRecord,
     VisualMemorySink,
 )
+from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
 
 LOGGER = logging.getLogger(__name__)
 MJPEG_BOUNDARY = "goodvision-frame"
@@ -175,15 +176,32 @@ class HarnessRuntime:
         self.annotated_frames = FrameBus()
         display = config.display if config is not None else DisplaySettings()
         self._display_settings = display
+        self._active_rich_session_id: str | None = None
         if rich_label_coordinator is not None:
             self._rich_labels = rich_label_coordinator
         elif config is not None and config.rich_labeling.enabled:
             rich = config.rich_labeling
-            self._rich_labels = RichLabelCoordinator(
-                RichLabelHTTPClient(
+            rich_client: RichLabelClient
+            if rich.backend == "vlm":
+                rich_client = VLMRichLabelClient(
+                    replace(
+                        config.aiclub,
+                        timeout_seconds=rich.timeout_seconds,
+                        max_retries=0,
+                    ),
+                    model=rich.model or config.inference.model,
+                    api_key=lambda: self._aiclub_api_key,
+                    max_tokens=rich.vlm_max_tokens,
+                    max_image_side=rich.vlm_max_image_side,
+                    dry_run=self._rich_annotation_dry_run,
+                )
+            else:
+                rich_client = RichLabelHTTPClient(
                     rich.endpoint,
                     timeout_seconds=rich.timeout_seconds,
-                ),
+                )
+            self._rich_labels = RichLabelCoordinator(
+                rich_client,
                 max_fps=rich.max_fps,
                 history_size=rich.history_size,
                 max_interpolation_gap_seconds=(
@@ -193,7 +211,6 @@ class HarnessRuntime:
             )
         else:
             self._rich_labels = None
-        self._active_rich_session_id: str | None = None
         self._overlay_fusion = OverlayFusionMatcher()
         self._annotated_output_fps = (
             max(display.fps, config.video.fps, config.face.sample_fps)
@@ -305,6 +322,13 @@ class HarnessRuntime:
             or os.environ.get("RTSP_URL", "").strip()
             or (self.config.stream.url or "")
         )
+
+    def _rich_annotation_dry_run(self) -> bool:
+        """Use the active session override, or the current deployment default."""
+
+        if self._active_rich_session_id is not None:
+            return bool(self._state["dry_run"])
+        return self.dry_run
 
     def deployment_settings(self) -> dict[str, Any]:
         """Return persistent deployment metadata without returning any secret."""
@@ -496,6 +520,7 @@ class HarnessRuntime:
             },
             "rich_labeling": {
                 "enabled": self._rich_labels is not None,
+                "capability": RICH_ANNOTATION_CAPABILITY,
                 "max_fps": self.config.rich_labeling.max_fps,
                 "track_identity": "session_scoped",
                 "age": "estimated_range",

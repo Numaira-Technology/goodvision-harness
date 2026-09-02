@@ -1,0 +1,262 @@
+"""Run a bounded VLM rich-label smoke check on local images or video samples."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+import time
+from collections import Counter
+from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import cv2
+import numpy as np
+
+# Use this checkout even when another worktree is installed in editable mode.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from goodvision_harness.aiclub import api_key_present  # noqa: E402
+from goodvision_harness.config import HarnessConfig, load_config  # noqa: E402
+from goodvision_harness.overlay import draw_rich_overlay  # noqa: E402
+from goodvision_harness.video_to_stream import (  # noqa: E402
+    crop_frame,
+    encode_jpeg,
+    probe_video,
+)
+from goodvision_harness.vlm_rich_labeling import VLMRichLabelClient  # noqa: E402
+
+
+def _positive_integer(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
+def _nonnegative_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("must be finite and non-negative")
+    return number
+
+
+def _positive_float(value: str) -> float:
+    number = _nonnegative_float(value)
+    if number == 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return number
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--image", type=Path, help="an already-cropped image")
+    source.add_argument(
+        "--video", type=Path, help="video cropped per stream.frame_crop"
+    )
+    parser.add_argument(
+        "--config", type=Path, default=PROJECT_ROOT / "config.vlm-rich.yaml"
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("output/vlm-rich-smoke"),
+        help="an empty output directory (default: output/vlm-rich-smoke)",
+    )
+    parser.add_argument("--samples", type=_positive_integer, default=3)
+    parser.add_argument("--interval-seconds", type=_positive_float, default=2.0)
+    parser.add_argument("--start-seconds", type=_nonnegative_float, default=0.0)
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="exercise decoding and output files without making API requests",
+    )
+    return parser
+
+
+def _sample_frames(
+    arguments: argparse.Namespace, config: HarnessConfig
+) -> Iterator[tuple[int, float, Any]]:
+    if arguments.image is not None:
+        # imdecode supports Unicode Windows paths through Python's file reader.
+        encoded = np.frombuffer(arguments.image.read_bytes(), dtype=np.uint8)
+        frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError("the image could not be decoded")
+        yield 0, 0.0, frame
+        return
+
+    info = probe_video(arguments.video)
+    if not math.isfinite(info.source_fps) or info.source_fps <= 0:
+        raise ValueError("the video must report a finite positive frame rate")
+    capture = cv2.VideoCapture(str(arguments.video))
+    if not capture.isOpened():
+        capture.release()
+        raise ValueError("the video could not be opened")
+    try:
+        previous_sequence = -1
+        for index in range(arguments.samples):
+            target_seconds = (
+                arguments.start_seconds + index * arguments.interval_seconds
+            )
+            sequence = round(target_seconds * info.source_fps)
+            if sequence >= info.frame_count:
+                break
+            if sequence == previous_sequence:
+                continue
+            if not capture.set(cv2.CAP_PROP_POS_FRAMES, sequence):
+                raise ValueError("the video does not support frame seeking")
+            ok, frame = capture.read()
+            if not ok:
+                raise ValueError("a requested video frame could not be decoded")
+            previous_sequence = sequence
+            yield (
+                sequence,
+                sequence / info.source_fps,
+                crop_frame(frame, mode=config.stream.frame_crop),
+            )
+    finally:
+        capture.release()
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.write_text(
+        json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
+def run_smoke(arguments: argparse.Namespace) -> dict[str, Any]:
+    config = load_config(arguments.config)
+    if config.rich_labeling.backend != "vlm":
+        raise ValueError("the smoke config must select rich_labeling.backend: vlm")
+    if not arguments.dry_run and not api_key_present(config.aiclub):
+        raise ValueError("set the configured inference API-key environment variable")
+    input_path = arguments.image or arguments.video
+    if not input_path.is_file():
+        raise ValueError("the input file does not exist")
+    output_dir = arguments.output_dir.resolve()
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError("choose an empty output directory to preserve previous runs")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Never retry a paid request in this smoke tool. --samples is an upper bound.
+    settings = replace(
+        config.aiclub,
+        timeout_seconds=config.rich_labeling.timeout_seconds,
+        max_retries=0,
+    )
+    client = VLMRichLabelClient(
+        settings,
+        model=config.rich_labeling.model or config.inference.model,
+        max_tokens=config.rich_labeling.vlm_max_tokens,
+        max_image_side=config.rich_labeling.vlm_max_image_side,
+        dry_run=arguments.dry_run,
+    )
+    frames = _sample_frames(arguments, config)
+    snapshots: list[dict[str, object]] = []
+    requests: list[dict[str, Any]] = []
+    labels: Counter[str] = Counter()
+    session_id = f"vlm-rich-smoke-{uuid4().hex}"
+    metrics: dict[str, Any] = {
+        "type": "vlm_rich_smoke",
+        "dry_run": bool(arguments.dry_run),
+        "status": "success",
+        "requested_samples": 1 if arguments.image else arguments.samples,
+        "frame_crop": (
+            "none (image already cropped)"
+            if arguments.image else config.stream.frame_crop
+        ),
+        "requests": requests,
+    }
+    started = time.perf_counter()
+    try:
+        for sequence, timestamp, frame in frames:
+            jpeg, width, height = encode_jpeg(
+                frame,
+                max_image_side=config.rich_labeling.vlm_max_image_side,
+                quality=config.video.jpeg_quality,
+            )
+            request: dict[str, Any] = {
+                "frame_sequence": sequence,
+                "timestamp_seconds": round(timestamp, 6),
+                "image_width": width,
+                "image_height": height,
+            }
+            requests.append(request)
+            request_started = time.perf_counter()
+            try:
+                snapshot = client.infer(
+                    jpeg,
+                    stream_session_id=session_id,
+                    frame_sequence=sequence,
+                    timestamp_seconds=timestamp,
+                )
+            except Exception as exc:
+                # Do not persist raw provider exceptions, URLs, or credentials.
+                request.update(status="failure", error_type=type(exc).__name__)
+                metrics.update(status="failure", error_type=type(exc).__name__)
+                break
+            finally:
+                request["latency_ms"] = round(
+                    (time.perf_counter() - request_started) * 1000, 2
+                )
+            request.update(status="success", object_count=len(snapshot.objects))
+            snapshots.append(snapshot.as_dict())
+            labels.update(item.label for item in snapshot.objects)
+            rendered = draw_rich_overlay(frame, snapshot.objects)
+            annotated, _, _ = encode_jpeg(
+                rendered, max_image_side=max(rendered.shape[:2]), quality=90
+            )
+            (output_dir / f"annotated-{len(snapshots):03d}.jpg").write_bytes(annotated)
+        if not requests:
+            metrics.update(status="failure", error_type="NoSampledFrames")
+    except Exception as exc:
+        metrics.update(status="failure", error_type=type(exc).__name__)
+    finally:
+        frames.close()
+        client.close()
+        latencies = [request["latency_ms"] for request in requests]
+        metrics.update(
+            attempted_samples=len(requests),
+            successful_samples=len(snapshots),
+            api_requests=0 if arguments.dry_run else len(requests),
+            elapsed_seconds=round(time.perf_counter() - started, 3),
+            mean_latency_ms=(
+                round(sum(latencies) / len(latencies), 2) if latencies else None
+            ),
+            labels=dict(sorted(labels.items())),
+        )
+        _write_json(output_dir / "snapshots.json", snapshots)
+        _write_json(output_dir / "metrics.json", metrics)
+    return metrics
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = build_parser().parse_args(argv)
+    try:
+        metrics = run_smoke(arguments)
+    except Exception as exc:
+        print(
+            f"Smoke setup failed ({type(exc).__name__}). Check the input file, config, "
+            "API-key environment, and empty output directory.",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"Saved {metrics['successful_samples']} sample(s) "
+        f"to {arguments.output_dir.resolve()} "
+        f"({metrics['status']}; API requests: {metrics['api_requests']})."
+    )
+    if metrics["status"] != "success":
+        print(
+            f"Failure type: {metrics['error_type']}; see metrics.json.", file=sys.stderr
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

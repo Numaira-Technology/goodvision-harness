@@ -38,6 +38,43 @@ _APPEARANCE_PRIORITY = (
     "holding",
     "bag",
 )
+_VLM_APPEARANCE_TOKENS = {
+    **_APPEARANCE_TOKENS,
+    "shortsleeve": ("sleeve", "SHORT SLEEVE"),
+    "longsleeve": ("sleeve", "LONG SLEEVE"),
+    "upperstride": ("upper", "STRIPED TOP"),
+    "upperstripe": ("upper", "STRIPED TOP"),
+    "upperlogo": ("upper", "TOP LOGO"),
+    "upperplaid": ("upper", "PLAID TOP"),
+    "uppersplice": ("upper", "MIXED TOP"),
+    "lowerstripe": ("lower", "STRIPED BOTTOM"),
+    "lowerpattern": ("lower", "PATTERNED BOTTOM"),
+    "longcoat": ("lower", "LONG COAT"),
+    "trousers": ("lower", "TROUSERS"),
+    "shorts": ("lower", "SHORTS"),
+    "skirtdress": ("lower", "SKIRT/DRESS"),
+    "glasses": ("glasses", "GLASSES"),
+    "hat": ("hat", "HAT"),
+    "boots": ("boots", "BOOTS"),
+}
+_VLM_APPEARANCE_PRIORITY = (
+    "direction",
+    "sleeve",
+    "upper",
+    "lower",
+    "holding",
+    "bag",
+    "glasses",
+    "hat",
+    "boots",
+)
+_GARMENT_COLORS = frozenset(
+    {
+        "beige", "black", "blue", "brown", "gold", "gray", "green", "grey",
+        "khaki", "maroon", "multicolor", "navy", "olive", "orange", "pink",
+        "purple", "red", "silver", "tan", "teal", "turquoise", "white", "yellow",
+    }
+)
 
 
 def draw_overlay(
@@ -499,27 +536,42 @@ def _attribute_items(value: Any) -> tuple[Any, ...]:
 
 
 def _rich_appearance_tokens(attributes: Mapping[str, Any]) -> tuple[str, ...]:
-    """Decode non-garment attributes without presenting clothing guesses."""
+    """Decode public appearance labels, with garment details for VLM output."""
 
     found: list[tuple[str, str]] = []
     covered: set[str] = set()
+    is_vlm = _mapping_value(attributes, "annotation_source") == "vlm"
+    tokens = _VLM_APPEARANCE_TOKENS if is_vlm else _APPEARANCE_TOKENS
+    priority = _VLM_APPEARANCE_PRIORITY if is_vlm else _APPEARANCE_PRIORITY
     fields = (
         ("estimated_direction", "direction"),
         ("bag_type", "bag"),
     )
+    if is_vlm:
+        fields += (
+            ("sleeve_type", "sleeve"),
+            ("upper_style", "upper"),
+            ("lower_styles", "lower"),
+        )
     for field, category in fields:
         if field not in attributes:
             continue
         covered.add(category)
         value = _mapping_value(attributes, field)
         for item in _attribute_items(value):
-            match = _APPEARANCE_TOKENS.get(_attribute_key(item))
+            match = tokens.get(_attribute_key(item))
             if match is not None and match[0] == category:
                 found.append(match)
 
     flags = (
         ("holding_object", "holding", "HOLDING ITEM"),
     )
+    if is_vlm:
+        flags += (
+            ("wearing_glasses", "glasses", "GLASSES"),
+            ("wearing_hat", "hat", "HAT"),
+            ("wearing_boots", "boots", "BOOTS"),
+        )
     for field, category, token in flags:
         if field in attributes:
             covered.add(category)
@@ -531,12 +583,41 @@ def _rich_appearance_tokens(attributes: Mapping[str, Any]) -> tuple[str, ...]:
         fallback, (str, bytes, bytearray)
     ):
         for item in fallback:
-            match = _APPEARANCE_TOKENS.get(_attribute_key(item))
+            match = tokens.get(_attribute_key(item))
             if match is not None and match[0] not in covered:
                 found.append(match)
 
-    found.sort(key=lambda item: _APPEARANCE_PRIORITY.index(item[0]))
+    if is_vlm:
+        for field, category, garment in (
+            ("upper_color", "upper", "TOP"),
+            ("lower_color", "lower", "BOTTOM"),
+        ):
+            color = _rich_garment_color(_mapping_value(attributes, field))
+            if not color:
+                continue
+            for index, (found_category, token) in enumerate(found):
+                if found_category == category:
+                    found[index] = (category, f"{color} {token}")
+                    break
+            else:
+                found.append((category, f"{color} {garment}"))
+
+    found.sort(key=lambda item: priority.index(item[0]))
     return tuple(dict.fromkeys(token for _category, token in found))
+
+
+def _rich_garment_color(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    words = _public_hud_text(value, limit=32).casefold().replace("-", " ").split()
+    allowed = _GARMENT_COLORS | {"light", "dark", "and", "/"}
+    if (
+        not 1 <= len(words) <= 4
+        or any(word not in allowed for word in words)
+        or not any(word in _GARMENT_COLORS for word in words)
+    ):
+        return ""
+    return " ".join(words).upper()
 
 
 def _rich_confidence(value: Any) -> str:

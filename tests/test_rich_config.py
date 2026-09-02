@@ -15,31 +15,44 @@ def test_rich_labeling_defaults_are_safe_and_disabled(
 ) -> None:
     monkeypatch.delenv("RICH_LABEL_ENABLED", raising=False)
     monkeypatch.delenv("RICH_LABEL_ENDPOINT", raising=False)
+    monkeypatch.delenv("RICH_LABEL_BACKEND", raising=False)
 
     settings = load_config(ROOT / "config.yaml").rich_labeling
 
     assert settings.enabled is False
+    assert settings.backend == "paddle"
+    assert settings.model is None
+    assert settings.vlm_max_tokens == 4096
+    assert settings.vlm_max_image_side == 1280
     assert settings.endpoint == "http://rich-label-worker:8091/v1/labels"
     assert settings.max_fps == 7.5
     assert settings.max_interpolation_gap_seconds == 2.0
     assert settings.max_hold_seconds == 2.0
 
 
-def test_rich_labeling_environment_overrides_connection_only(
+def test_rich_labeling_environment_overrides_connection_and_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RICH_LABEL_ENABLED", "true")
     monkeypatch.setenv("RICH_LABEL_ENDPOINT", "http://127.0.0.1:18091/v1/labels")
+    monkeypatch.setenv("RICH_LABEL_BACKEND", " VLM ")
 
     settings = load_config(ROOT / "config.yaml").rich_labeling
 
     assert settings.enabled is True
+    assert settings.backend == "vlm"
     assert settings.endpoint == "http://127.0.0.1:18091/v1/labels"
 
 
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
+        ("backend", "unsupported", "backend must be paddle or vlm"),
+        ("model", 42, "model must be a string or null"),
+        ("vlm_max_tokens", 0, "positive integer"),
+        ("vlm_max_tokens", True, "positive integer"),
+        ("vlm_max_image_side", 0, "positive integer"),
+        ("vlm_max_image_side", 1280.5, "positive integer"),
         ("endpoint", "file:///tmp/worker", "must use http or https"),
         ("timeout_seconds", 0, "positive number"),
         ("max_fps", 0, "positive number"),
@@ -58,6 +71,7 @@ def test_rich_labeling_config_validation_is_strict(
 ) -> None:
     monkeypatch.delenv("RICH_LABEL_ENABLED", raising=False)
     monkeypatch.delenv("RICH_LABEL_ENDPOINT", raising=False)
+    monkeypatch.delenv("RICH_LABEL_BACKEND", raising=False)
     payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     payload["rich_labeling"][field] = value
     config_path = tmp_path / "config.yaml"
@@ -65,3 +79,35 @@ def test_rich_labeling_config_validation_is_strict(
 
     with pytest.raises((TypeError, ValueError), match=message):
         load_config(config_path)
+
+
+def test_rich_labeling_vlm_model_and_limits_from_yaml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RICH_LABEL_BACKEND", raising=False)
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    payload["rich_labeling"].update(
+        backend="vlm",
+        model=" annotation-model ",
+        vlm_max_tokens=8192,
+        vlm_max_image_side=960,
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    settings = load_config(config_path).rich_labeling
+
+    assert settings.backend == "vlm"
+    assert settings.model == "annotation-model"
+    assert settings.vlm_max_tokens == 8192
+    assert settings.vlm_max_image_side == 960
+
+
+def test_rich_labeling_invalid_environment_backend_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RICH_LABEL_BACKEND", "unsupported")
+
+    with pytest.raises(ValueError, match="backend must be paddle or vlm"):
+        load_config(ROOT / "config.yaml")
