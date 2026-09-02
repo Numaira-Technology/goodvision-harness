@@ -52,6 +52,42 @@ _PRIVATE_PATTERNS = tuple(
     )
 )
 
+# These tokens can also be names, physical objects, animals, or customer IDs.
+# Keep the strict vocabulary above for diagnostic and release-file audits;
+# ordinary result data needs evidence that a token denotes an implementation.
+_DOMAIN_TERM = re.compile(
+    r"^(torch|pandas|timm|claude|gemini|google|amazon|azure|aws|baidu|"
+    r"alibaba|tencent|huawei|microsoft|buffalo|antelope)(.*)$",
+    re.IGNORECASE,
+)
+_IMPLEMENTATION_FORM = re.compile(
+    r"[./:](?=[a-z0-9_])|(?:error|exception|warning)(?:[:_-].*)?$|"
+    r"(?:claude|gemini)[-_/]?(?:\d|(?:sonnet|opus|haiku|flash|pro)(?:[-_/]|$))|"
+    r"(?:torch|pandas|timm)[-_v]?\d|"
+    r"torch(?:vision|audio|text|data|metrics|script|_dynamo|_inductor)|"
+    r"(?:googleapis|amazonaws|microsoftonline)|"
+    r"[-_](?:api|sdk|client|backend|runtime|provider|engine|model|key|version)"
+    r"(?:[-_]|$)|(?:api|sdk)(?:key|client|error|exception)$|"
+    r"^buffalo[_-]|^antelopev\d",
+    re.IGNORECASE,
+)
+_IMPLEMENTATION_CONTEXT = re.compile(
+    r"(?<![a-z0-9])(?:"
+    r"(?:from|import)\s+(?:torch|pandas|timm)(?:\.[\w.]+)?|"
+    r"(?:torch|pandas|timm)\s+(?:backend|framework|library|module|runtime)|"
+    r"(?:claude|gemini)\s+(?:model|api|sdk)|"
+    r"(?:google|amazon|azure|aws|baidu|alibaba|tencent|huawei|microsoft)"
+    r"\s+(?:cloud|api|sdk))\b",
+    re.IGNORECASE,
+)
+
+
+def _redact_data_match(match: re.Match[str], fallback: str) -> str:
+    token = match.group()
+    if _DOMAIN_TERM.fullmatch(token) and not _IMPLEMENTATION_FORM.search(token):
+        return token
+    return fallback
+
 
 def contains_private_implementation_detail(value: object) -> bool:
     """Return whether text contains a known private engine/provider marker."""
@@ -61,11 +97,13 @@ def contains_private_implementation_detail(value: object) -> bool:
 
 
 def redact_public_text(value: object, *, fallback: str = "analysis engine") -> str:
-    """Redact known implementation identifiers from otherwise useful text."""
+    """Redact implementation details while preserving ordinary domain values."""
 
-    rendered = str(value)
+    rendered = _IMPLEMENTATION_CONTEXT.sub(lambda _: fallback, str(value))
     for pattern in _PRIVATE_PATTERNS:
-        rendered = pattern.sub(fallback, rendered)
+        rendered = pattern.sub(
+            lambda match: _redact_data_match(match, fallback), rendered,
+        )
     return rendered
 
 
