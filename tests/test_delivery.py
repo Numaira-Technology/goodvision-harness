@@ -48,7 +48,7 @@ def _write_archive(
     if entries is None:
         entries = [{"RepoTags": [tag]} for tag in sorted(audit.EXPECTED_IMAGE_TAGS)]
     payload = json.dumps(entries).encode("utf-8")
-    with tarfile.open(directory / audit.ARCHIVE_NAME, "w") as archive:
+    with tarfile.open(directory / audit.ARCHIVE_NAME, "w:gz") as archive:
         # This content is deliberately private and must not be inspected by a
         # customer-file gate. The real release keeps original runtime notices.
         layer = b"Paddle InsightFace and original license notices inside a layer"
@@ -203,8 +203,8 @@ def test_text_only_mode_rejects_an_existing_archive_as_extra(bundle: Path) -> No
         ),
         (
             [
-                {"RepoTags": ["goodvision-harness:2026.09.02-full-gpu.2"]},
-                {"RepoTags": ["goodvision-harness:2026.09.02-full-gpu.2"]},
+                {"RepoTags": ["goodvision-harness:2026.09.03-full-gpu.1"]},
+                {"RepoTags": ["goodvision-harness:2026.09.03-full-gpu.1"]},
             ],
             "archive_image_tags_mismatch",
         ),
@@ -345,10 +345,10 @@ def test_full_gpu_delivery_starts_both_prebuilt_services_by_default() -> None:
     services = _load_delivery()["services"]
     assert set(services) == {"harness", "rich-label-worker"}
     assert services["harness"]["image"] == (
-        "goodvision-harness:2026.09.02-full-gpu.2"
+        "goodvision-harness:2026.09.03-full-gpu.1"
     )
     assert services["rich-label-worker"]["image"] == (
-        "goodvision-rich-label-worker:2026.09.02-full-gpu.2"
+        "goodvision-rich-label-worker:2026.09.03-full-gpu.1"
     )
     for service in services.values():
         assert "profiles" not in service
@@ -362,6 +362,10 @@ def test_full_gpu_settings_are_fixed_despite_old_environment(
     monkeypatch.setenv("RICH_LABEL_ENABLED", "false")
     monkeypatch.setenv("RICH_LABEL_ENDPOINT", "http://old-worker:8091/v1/labels")
     monkeypatch.setenv("FACE_PROVIDER", "CPUExecutionProvider")
+    monkeypatch.setenv("HARNESS_INFERENCE_PROFILE", "development")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    monkeypatch.setenv("INFERENCE_MODEL", "old-model")
+    monkeypatch.setenv("INFERENCE_ENDPOINT", "http://old-service/v1/chat/completions")
 
     environment = _load_delivery()["services"]["harness"]["environment"]
     # Literal values cannot be substituted by old .env or shell settings.
@@ -371,6 +375,11 @@ def test_full_gpu_settings_are_fixed_despite_old_environment(
     )
     assert environment["FACE_ACCELERATOR"] == "gpu"
     assert "FACE_PROVIDER" not in environment
+    assert environment["HARNESS_INFERENCE_PROFILE"] == "customer-standard"
+    assert not any(
+        key in environment
+        for key in ("INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT")
+    )
 
 
 def test_full_gpu_delivery_preserves_project_and_persistent_volumes() -> None:
@@ -405,13 +414,8 @@ def test_full_gpu_delivery_reserves_one_gpu_without_vendor_selector() -> None:
 def test_full_gpu_delivery_uses_neutral_credentials_and_model_profiles() -> None:
     services = _load_delivery()["services"]
     harness = services["harness"]["environment"]
-    for key in (
-        "INFERENCE_PROVIDER",
-        "INFERENCE_MODEL",
-        "INFERENCE_ENDPOINT",
-        "INFERENCE_API_KEY",
-    ):
-        assert harness[key] == "${" + key + ":-}"
+    assert harness["INFERENCE_API_KEY"] == "${INFERENCE_API_KEY:-}"
+    assert harness["HARNESS_INFERENCE_PROFILE"] == "customer-standard"
     assert not any(
         key in harness
         for key in ("AICLUB_API_KEY", "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY")
@@ -427,6 +431,10 @@ def test_full_gpu_delivery_uses_neutral_credentials_and_model_profiles() -> None
     assert "RICH_ATTRIBUTE_MODEL" not in worker
     for key in ("RICH_DETECTOR_MODEL_DIR", "RICH_ATTRIBUTE_MODEL_DIR"):
         assert worker[key] == "${" + key + ":-}"
+    example = (ROOT / ".env.full-gpu.delivery.example").read_text(encoding="utf-8")
+    assert not re.search(
+        r"(?m)^(?:INFERENCE_PROVIDER|INFERENCE_MODEL|INFERENCE_ENDPOINT)=", example
+    )
 
 
 def test_neutral_delivery_configuration_preserves_analysis_settings() -> None:
@@ -455,7 +463,9 @@ def test_neutral_delivery_configuration_preserves_analysis_settings() -> None:
         "config.delivery.yaml",
     ],
 )
-def test_customer_delivery_text_uses_neutral_implementation_names(filename: str) -> None:
+def test_customer_delivery_text_uses_neutral_implementation_names(
+    filename: str,
+) -> None:
     text = (ROOT / filename).read_text(encoding="utf-8")
     forbidden = re.compile(
         r"openrouter|qwen|insightface|paddle|picodet|buffalo|onnx|opencv|ffmpeg|"

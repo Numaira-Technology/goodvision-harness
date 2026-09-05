@@ -269,9 +269,10 @@ local face files in the Compose `face-models` volume on first use. Alternatively
 pre-populate `/models/models/<configured-profile>/`. `HARNESS_DRY_RUN=true` does
 not need them.
 
-The default model route uses AIClub with `qwen3.5-plus`. Set
+The development default model route uses AIClub with `qwen3.5-plus`. Set
 `INFERENCE_PROVIDER` to switch to OpenRouter or DashScope; model and endpoint
 overrides use the same streaming pipeline. See the configuration examples below.
+The full customer GPU package instead retains its fixed service preset.
 
 The default source is the robot's LAN WHEP endpoint:
 
@@ -678,7 +679,9 @@ Do not commit `.env`, RTSP credentials, or LLM API keys.
 
 ### 切换 AI 渠道和模型
 
-以下路由选择说明适用于包含该功能的当前源码构建或后续新版本镜像。
+以下路由选择说明适用于当前源码开发运行及 `development` 镜像。
+完整客户 GPU 包固定使用预设服务，按 [DEPLOY.md](DEPLOY.md) 部署；
+本节的渠道、模型及地址覆盖不适用于该客户包。
 已导出的 `.2` 及更早历史镜像不会因源码更新而增加此能力；使用这些历史版本时，
 应遵循其随包原说明和配置，不能只通过添加环境变量切换为新实现。
 
@@ -869,6 +872,15 @@ docker build --platform linux/amd64 -f Dockerfile.face-gpu --target customer -t 
 docker build --platform linux/amd64 -f workers/paddle_rich_label/Dockerfile.gpu --target customer -t goodvision-rich-label-worker:consolidation-test .
 ```
 
+The customer main image fixes `HARNESS_INFERENCE_PROFILE=customer-standard`.
+That internal preset retains OpenRouter, the DeepInfra backend only, and
+`qwen/qwen3.5-35b-a3b`, with fallback disabled. Delivery Compose does not forward
+provider, model or endpoint overrides; the development target keeps configurable
+routing. Customer configuration, API profiles and UI continue to use neutral
+feature names. Saved credentials are scoped to their service: do not silently
+reuse a previous service's key. Supply the preset's credential through the
+existing console or neutral `INFERENCE_API_KEY` when upgrading.
+
 The corresponding developer checks use `--target development` with different
 test tags. A clean dependency build needs network access and substantial free
 disk space. Recipe/static checks and tests using previously installed dependency
@@ -879,9 +891,14 @@ build is not a promise of byte-for-byte reproducibility.
 The already-exported `dist/goodvision-full-2026.09.02-gpu.2` is an immutable
 historical release and does not acquire subsequent source/consolidation fixes.
 Never rebuild its labels or overwrite its files as part of source verification.
-For a new release, choose new product tags/archive names and update the version
-references in the delivery Compose, DEPLOY guide, bundle-audit constants and
-corresponding contract tests before staging or publishing it.
+The current release uses `2026.09.03-full-gpu.1` for both product images and
+`dist/goodvision-full-2026.09.03-gpu.1` as its default staging directory. The same
+eleven-file bundle can be staged on another drive when space is limited; run
+the bundle audit against that actual directory. Its archive is
+`goodvision-full-2026.09.03-gpu.1.tar.gz`. For a later release, choose new product
+tags/archive names and update the version references in the delivery Compose,
+DEPLOY guide, bundle-audit constants, smoke defaults and corresponding contract
+tests before staging or publishing it.
 
 ### Customer-facing boundary
 
@@ -925,11 +942,17 @@ Use a new staging directory and copy only these reviewed sources:
 Add a reviewed `RELEASE.md` recording the exact candidate versions, completed
 checks and unverified boundaries. Run
 `python tools/audit_customer_bundle.py <new-bundle-directory> --without-archive`
-before adding the archive. Export only the two selected product tags into that
-directory, then rerun the audit without `--without-archive`. It requires exactly
-11 files: ten customer text files and the one image archive. It checks neutral
-names and the archive's image tags, not image-layer contents or dependency
-licenses. No separate file-checksum artifact is part of the release contract.
+before adding the archive. Export only the two selected product tags into one
+gzip-compressed image archive. Stream compression directly to the new `.tar.gz`
+file so a second, uncompressed archive does not consume the build disk. Use a
+binary-safe pipe or process API; do not pass archive bytes through PowerShell's
+text pipeline. `docker load -i` accepts this compressed archive directly.
+Then rerun the audit without `--without-archive`. It requires exactly 11 files:
+ten customer text files and the one compressed image archive. The audit reads
+that archive once as a stream and retains only its bounded image manifest,
+checking tags and duplicate manifests without extracting image layers. It checks
+neutral names and image tags, not image-layer contents or dependency licenses.
+No separate file-checksum artifact is part of the release contract.
 
 Before publishing, run the full unit suite and isolated image protocol check
 with the candidate image tags:
