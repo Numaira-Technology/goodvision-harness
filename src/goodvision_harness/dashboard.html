@@ -93,6 +93,23 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
     <div id="deployment-note" class="status deployment-note" role="status" aria-live="polite">Loading persistent settings...</div>
   </section>
 
+  <section class="panel control-panel" aria-labelledby="route-title">
+    <div class="deployment-head">
+      <div class="deployment-title">
+        <div class="section-title"><h2 id="route-title">线路测速</h2><span class="scope persistent">启动前检查</span></div>
+        <p class="note">线路分批检查，每条预热后测 3 次完整响应，以中位耗时选路。优先组低于 2.5 秒时优先，否则选择最快的可用线路。请等待全部线路完成。</p>
+        <p class="note">使用固定测试图发起真实请求，会产生少量 API 费用。结果用于选路，实际视频延迟还包含本地处理。</p>
+      </div>
+      <button id="route-check-button" class="btn primary" disabled>检查最快线路</button>
+    </div>
+    <div class="state-line" style="margin-top:12px"><strong id="route-selected">当前线路：读取中</strong></div>
+    <div id="route-note" class="status deployment-note" role="status" aria-live="polite">正在读取线路配置…</div>
+    <div class="scroll">
+      <table aria-label="线路测速结果"><thead><tr><th>线路</th><th>状态</th><th>成功次数</th><th>中位耗时</th><th>测量记录</th></tr></thead>
+      <tbody id="route-results"></tbody></table>
+    </div>
+  </section>
+
   <section class="panel control-panel">
     <div class="control-grid">
       <div class="control-block">
@@ -315,6 +332,7 @@ const detectionEvents=["fight","smoking","fall","weapon","stranger"];
 const cameraAllowed=window.isSecureContext||localHosts.has(location.hostname);
 const activeStates=new Set(["starting","running"]);
 const state={
+  routes:null,routeLoading:false,routeSubmitting:false,
   info:null,mode:"stream",sessionAnalysisMode:null,sessionFeatures:null,
   deployment:null,deploymentLoading:false,deploymentSaving:false,runOverridesDirty:false,
   gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
@@ -387,10 +405,12 @@ function selectedFeatures(){return featureInputs.filter(item=>item.checked).map(
 function visibleFeatures(){return state.running&&Array.isArray(state.sessionFeatures)?state.sessionFeatures:selectedFeatures()}
 function controls(){
   const busy=state.running||state.pending;
+  const routeBusy=state.routeSubmitting||state.routes&&state.routes.state==="running";
   const ready=state.mode==="camera"
     ?cameraAllowed&&cameraConfig()&&!!state.cameraStream
     :!!ui.streamUrl.value.trim()||configured();
-  ui.start.disabled=busy||!state.info||!ready||selectedFeatures().length===0;ui.stop.disabled=!busy;
+  ui.start.disabled=busy||routeBusy||!state.info||!ready||selectedFeatures().length===0;ui.stop.disabled=!busy;
+  $("route-check-button").disabled=busy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_probe;
   for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun])item.disabled=busy;
   for(const item of featureInputs)item.disabled=busy;
   ui.cameraButton.disabled=busy||!cameraAllowed||!cameraConfig();
@@ -399,7 +419,7 @@ function controls(){
   for(const item of [ui.personId,ui.personName,ui.personFile,ui.enroll])item.disabled=galleryBusy;
   for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy;
   const persistenceReady=state.deployment&&state.deployment.persistence_available===true;
-  const deploymentBusy=state.deploymentLoading||state.deploymentSaving;
+  const deploymentBusy=state.deploymentLoading||state.deploymentSaving||routeBusy;
   for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart])
     item.disabled=!persistenceReady||deploymentBusy;
   ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||busy;
@@ -631,6 +651,61 @@ async function responseError(response){
     const data=await response.json();
     return data.error||data.detail||data.message||("HTTP "+response.status)
   }catch(_){return "HTTP "+response.status}
+}
+
+function renderRoutes(){
+  const data=state.routes;if(!data)return;
+  $("route-selected").textContent="当前线路："+(data.selected_label||"默认线路")+
+    (data.selection_persisted?" · 已保存，重启后继续使用":"");
+  const labels={pending:"等待",warming:"预热中",testing:"测速中",complete:"可用",unavailable:"不可用"};
+  const body=$("route-results");body.replaceChildren();
+  let completed=0;
+  for(const result of data.results||[]){
+    const samples=result.samples||[];completed+=samples.length;
+    const row=document.createElement("tr");
+    const values=[result.label+(data.selected_id===result.id?" · 当前":""),
+      labels[result.state]||"等待",samples.filter(sample=>sample.ok).length+" / "+data.trials_per_route,
+      result.median_seconds===null?"—":number(result.median_seconds,3)+" 秒",
+      samples.length?samples.map(sample=>sample.ok?number(sample.seconds,3)+" 秒":
+        sample.error==="invalid_result"?"结果不完整":"请求失败").join(" / "):"—"];
+    for(const value of values){const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)}
+    body.appendChild(row)
+  }
+  const note=$("route-note");note.className="status deployment-note";
+  if(!data.supported)note.textContent="当前部署未启用线路测速。";
+  else if(data.state==="running")note.textContent="正在检查线路（"+completed+" / "+
+    ((data.results||[]).length*data.trials_per_route)+" 次）…完成后自动选路，再启动检测。";
+  else if(data.state==="complete")note.textContent=
+    (data.reason==="preferred_below_threshold"?"优先组达标，已选其中最快线路。":"已选择最快的可用线路。")+
+    "下次启动检测时生效。测速时间："+timeLabel(data.finished_at);
+  else if(data.state==="failed"){
+    note.className+=" error";note.textContent=data.error==="no_available_route"
+      ?"本次没有通过检查的线路，保留原选择。请检查网络或 API key 后重试。"
+      :"线路检查未完成，保留原选择。请重试。"
+  }else note.textContent=data.error?"上次保存的线路无法读取，请重新测速。":
+    "共 "+(data.results||[]).length+" 条候选线路；可在启动前手动检查，完成后自动选择并保存线路。";
+  controls()
+}
+async function loadRoutes(){
+  if(state.routeLoading||state.routeSubmitting)return;
+  state.routeLoading=true;
+  try{
+    const response=await fetch("/v1/deployment/routes",{cache:"no-store"});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    state.routes=await response.json();renderRoutes()
+  }catch(_){$("route-note").textContent="无法读取线路状态，请检查服务连接。"}
+  finally{state.routeLoading=false}
+}
+async function checkRoutes(){
+  if(state.running||state.pending||state.routeSubmitting)return;
+  state.routeSubmitting=true;controls();
+  $("route-note").textContent="正在启动线路测速…";
+  try{
+    const response=await fetch("/v1/deployment/routes/check",{method:"POST"});
+    if(!response.ok)throw new Error(await responseError(response));
+    state.routes=await response.json();renderRoutes()
+  }catch(_){$("route-note").textContent="无法开始测速。请确认检测已停止且 API key 已保存。"}
+  finally{state.routeSubmitting=false;controls()}
 }
 function sampleCount(person){
   if(Array.isArray(person.samples))return person.samples.length;
@@ -1140,6 +1215,7 @@ ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deployme
 ui.saveDeployment.onclick=saveDeploymentSettings;
 ui.resetDeployment.onclick=()=>loadDeploymentSettings(true);
 ui.clearApiKey.onclick=clearSavedApiKey;
+$("route-check-button").onclick=checkRoutes;
 ui.cameraMode.onclick=()=>mode("camera");ui.streamMode.onclick=()=>mode("stream");
 ui.cameraButton.onclick=camera;
 ui.streamUrl.oninput=()=>{state.runOverridesDirty=true;controls()};
@@ -1182,6 +1258,7 @@ window.addEventListener("beforeunload",()=>{
   if(state.ws)state.ws.close()
 });
 mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
+loadRoutes();setInterval(loadRoutes,1500);
 </script>
 </body>
 </html>

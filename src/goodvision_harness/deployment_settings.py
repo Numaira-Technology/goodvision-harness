@@ -135,3 +135,29 @@ class DeploymentSettingsStore:
                 os.replace(temporary, destination)
             finally:
                 temporary.unlink(missing_ok=True)
+
+    def load_model_route(self) -> str | None:
+        """Only an opaque catalog ID is persisted; never an arbitrary route."""
+        with self._lock:
+            path = self.path.with_name("selected-route.json")
+            if not path.exists():
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        from .route_probe import ROUTES_BY_ID
+
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ValueError("invalid saved route")
+        route_id = payload.get("route_id")
+        if not isinstance(route_id, str) or route_id not in ROUTES_BY_ID:
+            raise ValueError("invalid saved route")
+        return route_id
+
+    def save_model_route(self, route_id: str) -> None:
+        from .route_probe import ROUTES_BY_ID
+
+        if route_id not in ROUTES_BY_ID:
+            raise ValueError("invalid route")
+        self._atomic_write(
+            self.path.with_name("selected-route.json"),
+            json.dumps({"schema_version": 1, "route_id": route_id}) + "\n",
+        )
