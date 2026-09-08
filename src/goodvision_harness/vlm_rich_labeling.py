@@ -22,6 +22,8 @@ from .model_api import ModelAPIError, environment_api_key
 from .rich_labeling import RichLabelObject, RichLabelProtocolError, RichLabelSnapshot
 from .streaming_model_api import complete_stream
 from .video_to_stream import encode_jpeg
+from .vlm_transport import create_vlm_http_client
+from .vlm_validation import validate_complete_compact_annotation
 
 RICH_ANNOTATION_CAPABILITY = "rich_annotation"
 MAX_OBJECTS = 64
@@ -106,7 +108,8 @@ def build_compact_rich_annotation_response_format(scope: str = "all") -> dict[st
         "type": "array", "minItems": 6, "maxItems": 6, "items": False,
         "prefixItems": [
             {"const": "p"}, *[dict(coordinate) for _ in range(4)],
-            {"type": ["object", "null"], "properties": attributes,
+            {"type": "object", "properties": attributes,
+             "required": [key for key in COMPACT_ATTRIBUTE_NAMES if key != "c"],
              "additionalProperties": False},
         ],
     }
@@ -229,11 +232,14 @@ def build_compact_rich_annotation_messages(
     person_row = ["p", 100, 100, 500, 900, {
         "a": "a", "g": "m", "d": "s", "s": "s",
         "uc": "white", "lc": "black", "ls": ["tr"],
+        "b": "n", "us": None, "gl": None, "ht": 0, "bt": None, "ho": None,
     }]
     if region is not None:
         low, high = region
-        person_row[1] = low + (high - low) * 0.2
-        person_row[3] = low + (high - low) * 0.8
+        example_x1 = low + (high - low) * 0.2
+        example_x2 = low + (high - low) * 0.8
+        person_row[1] = int(example_x1) if example_x1.is_integer() else example_x1
+        person_row[3] = int(example_x2) if example_x2.is_integer() else example_x2
     item_row = ["chair", 600, 500, 900, 950]
     example = {"o": (
         [person_row] if scope == "people" else
@@ -244,15 +250,18 @@ def build_compact_rich_annotation_messages(
         'Complete valid example (structure only; do not copy values): '
         f'{json.dumps(example, separators=(",", ":"))}. '
         'Each row=[label,x1,y1,x2,y2,attributes], a JSON ARRAY, NOT an object. '
-        'Use exactly 5 values, or 6 with attributes: four separate coordinate '
-        'numbers, never a nested bbox array. Omit empty trailing attributes. '
+        'Use four separate coordinate numbers, never a nested bbox array. '
+        'Person rows require exactly 6 values including their attribute dictionary. '
+        'Other object rows have 5 values, or 6 with optional color attributes. '
         'Tight visible boxes, relative 0..1000 xyxy, top-left origin, x2>x1,y2>y1. '
     )
     if scope == "items":
         prompt += (
             'Only major non-person objects, at most 8 rows TOTAL. Never include '
             'people or their worn clothing. Skip tiny clutter and background '
-            'surfaces. Use short lowercase object names. Attributes: optional '
+            'surfaces. Include visible chairs, tables, screens, bags, appliances, '
+            'vehicles and other major objects. Use short lowercase object names. '
+            'Attributes: optional '
             '{"c":"color"}; unknown color omitted or null. '
         )
     else:
@@ -272,8 +281,12 @@ def build_compact_rich_annotation_messages(
                 'and the whole visible person box, even across the boundary. '
             )
         prompt += (
+            'Include visible people partially cut off by image edges or occluded; '
+            'box only their visible extent. '
             'Clothes on a chair are not a person. '
-            'Attributes are an optional dictionary: '
+            'Every person requires all 13 attribute keys: '
+            'a,g,d,s,uc,lc,b,us,ls,gl,ht,bt,ho. '
+            'Use null for an unknown or occluded value; never omit a key. '
             'a age appearance y:<18,a:18-60,o:>60; '
             'g gender presentation f:female,m:male; '
             'd visible body side f:front,s:side,b:back; '
@@ -283,15 +296,19 @@ def build_compact_rich_annotation_messages(
             'ls lower styles array st:stripe,pa:pattern,co:longcoat,'
             'tr:trousers,sh:shorts,sk:skirt/dress; '
             'gl glasses,ht hat,bt boots,ho holding object: 1=yes,0=no only if visible. '
-            'For each person include a,g,d,s,uc,lc,ls whenever observable; include '
-            'other attributes when clear. Unknown/occluded attributes: omit or null. '
+            'Use only these enum codes; sleeves and upper pattern have no n code. '
         )
         if scope == "all":
-            prompt += 'Other objects: optional c color. '
+            prompt += (
+                'Include visible major non-person objects whenever the 12-row '
+                'total leaves room, up to 8 objects: chairs, tables, screens, '
+                'bags, appliances, vehicles and other major objects. '
+                'Do not stop after people when major objects are visible. '
+                'Other objects: optional c color. '
+            )
     prompt += (
         'Empty result: {"o":[]}. '
-        'No identity guesses, IDs, scores, extra keys or explanations. '
-        'Keep the whole response brief, about 300-400 tokens when possible.'
+        'No identity guesses, IDs, scores, extra keys or explanations.'
     )
     return [
         {"role": "system", "content": (
@@ -305,6 +322,22 @@ def build_compact_rich_annotation_messages(
                 ).decode("ascii"),
             }},
         ]},
+    ]
+
+
+def _cacheable_annotation_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Place the explicit cache boundary before the frame's changing image."""
+
+    text_block, image_block = messages[1]["content"]
+    return [
+        messages[0],
+        {"role": "user", "content": [{
+            **text_block, "cache_control": {"type": "ephemeral"},
+        }]},
+        {"role": "assistant", "content": "Ready."},
+        {"role": "user", "content": [image_block]},
     ]
 
 
@@ -552,7 +585,13 @@ class VLMRichLabelClient:
         scope: str = "all",
         person_region: tuple[float, float] | None = None,
         execution_mode: str = "single",
+        parallel_strategy: str = "crops",
         structured_output: bool = False,
+        require_complete: bool = False,
+        prompt_cache: bool = False,
+        http2: bool = False,
+        trust_env: bool = True,
+        keepalive_expiry_seconds: float = 60.0,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("rich annotation model must not be empty")
@@ -573,6 +612,27 @@ class VLMRichLabelClient:
         if structured_output and wire_format != "compact":
             raise ValueError("structured rich annotation requires compact wire_format")
         self.structured_output = structured_output
+        if not isinstance(require_complete, bool):
+            raise TypeError("rich annotation require_complete must be boolean")
+        if require_complete and wire_format != "compact":
+            raise ValueError("complete rich annotation requires compact wire_format")
+        self.require_complete = require_complete
+        if not isinstance(prompt_cache, bool):
+            raise TypeError("rich annotation prompt_cache must be boolean")
+        self.prompt_cache = prompt_cache
+        for name, value in (("http2", http2), ("trust_env", trust_env)):
+            if not isinstance(value, bool):
+                raise TypeError(f"rich annotation {name} must be boolean")
+        if (
+            isinstance(keepalive_expiry_seconds, bool)
+            or not isinstance(keepalive_expiry_seconds, (int, float))
+            or not math.isfinite(keepalive_expiry_seconds)
+            or keepalive_expiry_seconds <= 0
+        ):
+            raise ValueError("rich annotation keepalive expiry must be finite and positive")
+        self.http2 = http2
+        self.trust_env = trust_env
+        self.keepalive_expiry_seconds = keepalive_expiry_seconds
         self.person_region = _validate_compact_scope(scope, person_region)
         if wire_format != "compact" and scope != "all":
             raise ValueError("scoped rich annotation requires compact wire_format")
@@ -582,6 +642,13 @@ class VLMRichLabelClient:
         if execution_mode == "parallel" and (wire_format != "compact" or scope != "all"):
             raise ValueError("parallel rich annotation requires compact format and all scope")
         self.execution_mode = execution_mode
+        if parallel_strategy not in ("crops", "full_frame"):
+            raise ValueError(
+                "rich annotation parallel_strategy must be crops or full_frame",
+            )
+        if parallel_strategy == "full_frame" and execution_mode != "parallel":
+            raise ValueError("full_frame strategy requires parallel execution_mode")
+        self.parallel_strategy = parallel_strategy
         if request_parameters is not None and not isinstance(
             request_parameters, Mapping,
         ):
@@ -639,31 +706,27 @@ class VLMRichLabelClient:
         if image is None:
             raise ValueError("rich annotation requires a decodable image")
         key = self._api_key() if callable(self._api_key) else self._api_key
-        if self.execution_mode == "parallel":
-            key = (key or environment_api_key(self.settings)).strip()
-            if not key:
-                raise ModelAPIError("rich annotation API key is missing")
-            objects, response = self._infer_parallel(image, key, started)
-            with self._state_lock:
-                if self._closed:
-                    raise ModelAPIError("rich annotation client is closed")
-                if self._response_observer is not None:
-                    self._response_observer(response)
-        else:
-            objects = self._infer_single(image, key)
+        key = (key or environment_api_key(self.settings)).strip()
+        if not key:
+            raise ModelAPIError("rich annotation API key is missing")
+        objects, response = self._infer_frame(image, key, started)
         with self._state_lock:
             if self._closed:
                 raise ModelAPIError("rich annotation client is closed")
+            if (
+                self.execution_mode == "parallel"
+                and self._response_observer is not None
+            ):
+                self._response_observer(response)
             return self._track(snapshot, objects)
 
-    def _infer_single(
-        self, image: np.ndarray, key: str | None,
-    ) -> tuple[RichLabelObject, ...]:
+    async def _single_frame(
+        self, image: np.ndarray, key: str, started: float,
+    ) -> tuple[tuple[RichLabelObject, ...], dict[str, Any]]:
+        deadline = started + self.settings.timeout_seconds
         encoded, _width, _height = encode_jpeg(
             image, max_image_side=self.max_image_side, quality=85,
         )
-        client = AIClubClient(self.settings, api_key=key)
-        parameters = self._request_parameters(self.scope)
         messages = (
             build_compact_rich_annotation_messages(
                 encoded, scope=self.scope, person_region=self.person_region,
@@ -671,20 +734,43 @@ class VLMRichLabelClient:
             if self.wire_format == "compact"
             else build_rich_annotation_messages(encoded)
         )
-        self.api_requests += 1
-        response = client.chat_completion(
-            model=self.model,
-            messages=messages,
-            max_tokens=self.max_tokens,
-            **parameters,
+        if self.prompt_cache:
+            messages = _cacheable_annotation_messages(messages)
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            raise ModelAPIError("rich annotation exceeded its wall deadline")
+        http_client = self._connection_pool()
+        parameters = {
+            **self._request_parameters(self.scope), "max_tokens": self.max_tokens,
+        }
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            raise ModelAPIError("rich annotation exceeded its wall deadline")
+        with self._state_lock:
+            if self._closed:
+                raise ModelAPIError("rich annotation client is closed")
+            self.api_requests += 1
+        response = await complete_stream(
+            http_client, settings=self.settings, model=self.model,
+            messages=messages, api_key=key, deadline_seconds=remaining,
+            request_parameters=parameters,
         )
-        if self._response_observer is not None:
-            self._response_observer(response)
+        with self._state_lock:
+            if self._closed:
+                raise ModelAPIError("rich annotation client is closed")
+            if self._response_observer is not None:
+                self._response_observer(response)
         # A length-truncated reply must not clear a previously valid scene.
         choices = response.get("choices", [])
         if choices and choices[0].get("finish_reason") == "length":
             raise RichLabelProtocolError("rich annotation response was truncated")
-        return parse_rich_annotation(client.assistant_text(response))
+        text = AIClubClient.assistant_text(response)
+        if self.require_complete:
+            validate_complete_compact_annotation(text, self.scope)
+        objects = parse_rich_annotation(text)
+        if time.perf_counter() >= deadline:
+            raise ModelAPIError("rich annotation exceeded its wall deadline")
+        return objects, response
 
     def _request_parameters(self, scope: str) -> dict[str, Any]:
         parameters = {"temperature": 0.0, **self.request_parameters}
@@ -692,7 +778,7 @@ class VLMRichLabelClient:
             parameters["response_format"] = build_compact_rich_annotation_response_format(scope)
         return parameters
 
-    def _infer_parallel(
+    def _infer_frame(
         self, image: np.ndarray, key: str, started: float,
     ) -> tuple[tuple[RichLabelObject, ...], dict[str, Any]]:
         with self._state_lock:
@@ -706,7 +792,12 @@ class VLMRichLabelClient:
             self._active = True
             self._owner_thread_id = threading.get_ident()
             self._close_done.clear()
-            self._frame_task = _RichTask(self._parallel_frame(image, key, started), loop=loop)
+            frame = (
+                self._parallel_frame(image, key, started)
+                if self.execution_mode == "parallel"
+                else self._single_frame(image, key, started)
+            )
+            self._frame_task = _RichTask(frame, loop=loop)
         try:
             return loop.run_until_complete(self._frame_task)
         except asyncio.CancelledError:
@@ -724,38 +815,65 @@ class VLMRichLabelClient:
             if must_close:
                 self._finish_close(loop)
 
+    def _connection_pool(self) -> httpx.AsyncClient:
+        """Keep connections and their owning event loop for subsequent frames."""
+
+        with self._state_lock:
+            if self._closed:
+                raise ModelAPIError("rich annotation client is closed")
+            if self._http_client is None:
+                self._http_client = create_vlm_http_client(
+                    http2=self.http2,
+                    trust_env=self.trust_env,
+                    keepalive_expiry=self.keepalive_expiry_seconds,
+                )
+            return self._http_client
+
     async def _parallel_frame(
         self, image: np.ndarray, key: str, started: float,
     ) -> tuple[tuple[RichLabelObject, ...], dict[str, Any]]:
         deadline = started + self.settings.timeout_seconds
         width = image.shape[1]
-        # Each half extends by 10% of the full width, preserving boundary people.
-        left_end = max(1, min(width, math.ceil(width * 0.6)))
-        right_start = max(0, min(width - 1, math.floor(width * 0.4)))
-        regions = (
-            ("people_left", image[:, :left_end], "people", 0, left_end),
-            ("people_right", image[:, right_start:], "people", right_start, width),
-            ("items", image, "items", 0, width),
-        )
-        requests = []
-        for name, crop, scope, x1, x2 in regions:
-            encoded, _width, _height = encode_jpeg(
-                crop, max_image_side=self.max_image_side, quality=85,
+        full_image_encoded = None
+        if self.parallel_strategy == "full_frame":
+            # Keep full scene context and divide only the requested output. All
+            # three calls share the same image bytes and full-frame coordinates.
+            full_image_encoded, _width, _height = encode_jpeg(
+                image, max_image_side=self.max_image_side, quality=85,
             )
-            requests.append((name, build_compact_rich_annotation_messages(
-                encoded, scope=scope,
-            ), x1 / width, (x2 - x1) / width))
+            regions = (
+                ("people_left", image, "people", 0, width, (0, 500)),
+                ("people_right", image, "people", 0, width, (500, 1000)),
+                ("items", image, "items", 0, width, None),
+            )
+        else:
+            # Each half extends by 10% of the full width to preserve boundaries.
+            left_end = max(1, min(width, math.ceil(width * 0.6)))
+            right_start = max(0, min(width - 1, math.floor(width * 0.4)))
+            regions = (
+                ("people_left", image[:, :left_end], "people", 0, left_end, None),
+                ("people_right", image[:, right_start:], "people", right_start, width,
+                 None),
+                ("items", image, "items", 0, width, None),
+            )
+        requests = []
+        for name, crop, scope, x1, x2, person_region in regions:
+            if full_image_encoded is None:
+                encoded, _width, _height = encode_jpeg(
+                    crop, max_image_side=self.max_image_side, quality=85,
+                )
+            else:
+                encoded = full_image_encoded
+            messages = build_compact_rich_annotation_messages(
+                encoded, scope=scope, person_region=person_region,
+            )
+            if self.prompt_cache:
+                messages = _cacheable_annotation_messages(messages)
+            requests.append((name, messages, x1 / width, (x2 - x1) / width))
         remaining = deadline - time.perf_counter()
         if not math.isfinite(remaining) or remaining <= 0:
             raise ModelAPIError("rich annotation exceeded its wall deadline")
-        with self._state_lock:
-            if self._closed:
-                raise ModelAPIError("rich annotation client is closed")
-            if self._http_client is None:
-                self._http_client = httpx.AsyncClient(
-                    limits=httpx.Limits(max_connections=3, max_keepalive_connections=3),
-                    follow_redirects=False,
-                )
+        http_client = self._connection_pool()
 
         async def part(name: str, messages: list[dict[str, Any]]) -> tuple[Any, Any]:
             remaining = deadline - time.perf_counter()
@@ -766,7 +884,7 @@ class VLMRichLabelClient:
                     raise ModelAPIError("rich annotation client is closed")
                 self.api_requests += 1
             response = await complete_stream(
-                self._http_client, settings=self.settings, model=self.model,
+                http_client, settings=self.settings, model=self.model,
                 messages=messages, api_key=key, deadline_seconds=remaining,
                 request_parameters={
                     **self._request_parameters("items" if name == "items" else "people"),
@@ -777,7 +895,12 @@ class VLMRichLabelClient:
             # fails; this never publishes a partial annotation snapshot.
             if self._part_response_observer is not None:
                 self._part_response_observer(name, response)
-            objects = parse_rich_annotation(AIClubClient.assistant_text(response))
+            text = AIClubClient.assistant_text(response)
+            if self.require_complete:
+                validate_complete_compact_annotation(
+                    text, "items" if name == "items" else "people",
+                )
+            objects = parse_rich_annotation(text)
             return objects, response
 
         tasks = [

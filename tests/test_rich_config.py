@@ -34,6 +34,7 @@ def test_rich_labeling_defaults_are_safe_and_disabled(
     assert settings.vlm_wire_format == "objects"
     assert settings.vlm_execution_mode == "single"
     assert settings.vlm_structured_output is False
+    assert settings.vlm_prompt_cache is False
     assert settings.endpoint == "http://rich-label-worker:8091/v1/labels"
     assert settings.max_fps == 7.5
     assert settings.max_interpolation_gap_seconds == 2.0
@@ -58,11 +59,15 @@ def test_rich_labeling_environment_overrides_connection_and_backend(
     ("field", "value", "message"),
     [
         ("backend", "unsupported", "backend must be paddle or vlm"),
-        ("vlm_wire_format", "unsupported", "vlm_wire_format must be objects or compact"),
-        ("vlm_execution_mode", "unsupported", "vlm_execution_mode must be single or parallel"),
+        ("vlm_wire_format", "unsupported",
+         "vlm_wire_format must be objects or compact"),
+        ("vlm_execution_mode", "unsupported",
+         "vlm_execution_mode must be single or parallel"),
         ("vlm_execution_mode", "parallel", "requires vlm_wire_format: compact"),
         ("vlm_structured_output", True, "requires vlm_wire_format: compact"),
         ("vlm_structured_output", "true", "must be true or false"),
+        ("vlm_prompt_cache", "true", "must be true or false"),
+        ("vlm_prompt_cache", 1, "must be true or false"),
         ("model", 42, "model must be a string or null"),
         ("vlm_max_tokens", 0, "positive integer"),
         ("vlm_max_tokens", True, "positive integer"),
@@ -110,6 +115,7 @@ def test_rich_labeling_vlm_model_and_limits_from_yaml(
         vlm_wire_format="compact",
         vlm_execution_mode="parallel",
         vlm_structured_output=True,
+        vlm_prompt_cache=True,
     )
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
@@ -123,6 +129,7 @@ def test_rich_labeling_vlm_model_and_limits_from_yaml(
     assert settings.vlm_wire_format == "compact"
     assert settings.vlm_execution_mode == "parallel"
     assert settings.vlm_structured_output is True
+    assert settings.vlm_prompt_cache is True
 
 
 def test_rich_labeling_invalid_environment_backend_is_rejected(
@@ -140,8 +147,34 @@ def _write_route_config(tmp_path: Path, payload: dict) -> Path:
     return config_path
 
 
+def test_neutral_customer_profile_preserves_distinct_rich_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    payload["inference_service"] = {"timeout_seconds": 8, "max_retries": 0}
+    rich_route = {"only": ["seed/fp8"], "allow_fallbacks": False}
+    payload["rich_labeling"].update(
+        backend="vlm", model="bytedance-seed/seed-2.0-mini",
+        vlm_request_parameters={
+            "provider": rich_route, "reasoning": {"enabled": False},
+        },
+    )
+    monkeypatch.setenv("HARNESS_INFERENCE_PROFILE", "customer-standard")
+    config = load_config(_write_route_config(tmp_path, payload))
+    assert config.model_api.provider == "openrouter"
+    assert config.inference.request_parameters["provider"] == {
+        "only": ["deepinfra"], "allow_fallbacks": False,
+    }
+    assert config.rich_labeling.vlm_request_parameters["provider"] == rich_route
+    assert config.rich_labeling.vlm_request_parameters["reasoning"] == {
+        "enabled": False,
+    }
+
+
+@pytest.mark.parametrize("rich_model", [None, "qwen/qwen3.5-35b-a3b"])
 def test_rich_vlm_inherits_selected_profile_with_its_own_output_budget(
     tmp_path: Path,
+    rich_model: str | None,
 ) -> None:
     payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     provider = {"only": ["deepinfra"], "allow_fallbacks": False}
@@ -164,6 +197,7 @@ def test_rich_vlm_inherits_selected_profile_with_its_own_output_budget(
     }
     payload["rich_labeling"].update(
         backend="vlm",
+        model=rich_model,
         vlm_max_tokens=8192,
         vlm_request_parameters={
             "temperature": 0.0,
@@ -178,7 +212,7 @@ def test_rich_vlm_inherits_selected_profile_with_its_own_output_budget(
 
     assert config.model_api.provider == "openrouter"
     assert config.inference.model == "qwen/qwen3.5-35b-a3b"
-    assert config.rich_labeling.model is None
+    assert config.rich_labeling.model == rich_model
     assert config.rich_labeling.vlm_max_tokens == 8192
     assert config.rich_labeling.vlm_request_parameters == {
         "provider": provider,
@@ -193,9 +227,50 @@ def test_rich_vlm_inherits_selected_profile_with_its_own_output_budget(
     assert "top_p" not in config.inference.request_parameters
 
 
+def test_distinct_rich_model_uses_its_provider_without_changing_event_route(
+    tmp_path: Path,
+) -> None:
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    event_parameters = {
+        "provider": {"only": ["deepinfra"], "allow_fallbacks": False},
+        "reasoning": {"effort": "none"},
+        "temperature": 0.1,
+        "max_tokens": 777,
+    }
+    payload["inference_service"] = {
+        "provider": "openrouter",
+        "providers": {"openrouter": {
+            "model": "qwen/qwen3.5-35b-a3b",
+            "request_parameters": event_parameters,
+        }},
+    }
+    payload["inference"]["request_parameters"] = {"temperature": 0.4}
+    rich_parameters = {
+        "provider": {"only": ["alibaba"], "allow_fallbacks": False},
+        "reasoning": {"enabled": False},
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"},
+    }
+    payload["rich_labeling"].update(
+        backend="vlm", model=" qwen/qwen3-vl-8b-instruct ",
+        vlm_max_tokens=2048, vlm_request_parameters=rich_parameters,
+    )
+
+    config = load_config(_write_route_config(tmp_path, payload))
+
+    assert config.model_api.provider == "openrouter"
+    assert config.rich_labeling.model == "qwen/qwen3-vl-8b-instruct"
+    assert config.rich_labeling.vlm_request_parameters == rich_parameters
+    assert config.rich_labeling.vlm_max_tokens == 2048
+    assert config.inference.model == "qwen/qwen3.5-35b-a3b"
+    assert config.inference.request_parameters == event_parameters
+
+
+@pytest.mark.parametrize("rich_model", [None, "qwen/qwen3-vl-8b-instruct"])
 def test_switching_to_aiclub_removes_old_rich_openrouter_options(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    rich_model: str | None,
 ) -> None:
     payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     payload["inference_service"] = {
@@ -220,6 +295,7 @@ def test_switching_to_aiclub_removes_old_rich_openrouter_options(
         "provider": {"only": ["deepinfra"]},
         "reasoning": {"enabled": False},
     }
+    payload["rich_labeling"]["model"] = rich_model
     payload["rich_labeling"]["vlm_request_parameters"] = {
         "provider": {"only": ["coreweave"]},
         "reasoning": {"enabled": True},
@@ -241,15 +317,18 @@ def test_switching_to_aiclub_removes_old_rich_openrouter_options(
     assert "reasoning" not in config.inference.request_parameters
 
 
+@pytest.mark.parametrize("rich_model", [None, "qwen3-vl-flash"])
 def test_switching_to_default_openrouter_inherits_default_reasoning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    rich_model: str | None,
 ) -> None:
     payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     payload["inference_service"] = {"provider": "aiclub"}
     payload["inference"]["request_parameters"] = {
         "temperature": 0.0, "max_tokens": 1200, "enable_thinking": False
     }
+    payload["rich_labeling"]["model"] = rich_model
     payload["rich_labeling"]["vlm_request_parameters"] = {"enable_thinking": False}
     monkeypatch.setenv("INFERENCE_PROVIDER", "openrouter")
 
@@ -267,12 +346,15 @@ def test_switching_to_default_openrouter_inherits_default_reasoning(
     ("field", "value"),
     [("model", "other-model"), ("messages", []), ("max_tokens", 12), ("stream", False)],
 )
+@pytest.mark.parametrize("rich_model", [None, "qwen/qwen3-vl-8b-instruct"])
 def test_rich_vlm_explicit_fixed_fields_are_not_silently_filtered(
     tmp_path: Path,
     field: str,
     value: object,
+    rich_model: str | None,
 ) -> None:
     payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    payload["rich_labeling"]["model"] = rich_model
     payload["rich_labeling"]["vlm_request_parameters"] = {field: value}
 
     with pytest.raises(ValueError, match="vlm_request_parameters must not override"):

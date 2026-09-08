@@ -66,6 +66,7 @@ async def _collect(
     api_key: str,
     deadline_seconds: float,
     started: float,
+    trace_transport: bool,
 ) -> dict[str, Any]:
     timing: dict[str, float] = {}
     response: dict[str, Any] = {
@@ -81,6 +82,46 @@ async def _collect(
     def elapsed() -> float:
         return round(time.perf_counter() - started, 6)
 
+    transport: dict[str, Any] = {"trace_enabled": trace_transport}
+    response["_transport"] = transport
+    phase_starts: dict[str, float] = {}
+    transport_phases = {
+        "connect_tcp": "connect_tcp_seconds",
+        "start_tls": "tls_seconds",
+        "send_request_headers": "request_headers_seconds",
+        "send_request_body": "request_body_seconds",
+        "receive_response_headers": "wait_response_headers_seconds",
+    }
+    if trace_transport:
+        transport["tcp_connect_count"] = 0
+        transport["trace_events_observed"] = False
+
+    async def trace(name: str, _info: dict[str, Any]) -> None:
+        # HTTPX trace info can contain URLs, credentials and remote headers.
+        # Inspect only a fixed allowlist of event names; never retain info.
+        parts = name.split(".")
+        if len(parts) != 3 or parts[0] not in {
+            "connection", "proxy", "http11", "http2",
+        }:
+            return
+        _source, phase, state = parts
+        metric = transport_phases.get(phase)
+        if metric is None or state not in {"started", "complete", "failed"}:
+            return
+        transport["trace_events_observed"] = True
+        identity = ".".join(parts[:2])
+        now = time.perf_counter()
+        if state == "started":
+            phase_starts[identity] = now
+        else:
+            phase_started = phase_starts.pop(identity, None)
+            if phase_started is not None:
+                timing[metric] = round(
+                    timing.get(metric, 0.0) + max(0.0, now - phase_started), 6,
+                )
+            if phase == "connect_tcp" and state == "complete":
+                transport["tcp_connect_count"] += 1
+
     headers = httpx.Headers(settings.extra_headers)
     headers.update({
         "Authorization": f"Bearer {api_key}",
@@ -90,8 +131,12 @@ async def _collect(
     async with client.stream(
         "POST", settings.endpoint, json=payload, headers=headers,
         timeout=httpx.Timeout(deadline_seconds), follow_redirects=False,
+        extensions={"trace": trace} if trace_transport else None,
     ) as stream:
         timing["response_headers_seconds"] = elapsed()
+        version = stream.extensions.get("http_version")
+        if version in (b"HTTP/1.0", b"HTTP/1.1", b"HTTP/2", b"HTTP/3"):
+            transport["http_version"] = version.decode("ascii")
         if stream.status_code != 200:
             raise ModelAPIError(f"model stream returned HTTP {stream.status_code}")
         media_type = stream.headers.get("content-type", "").split(";", 1)[0]
@@ -116,7 +161,7 @@ async def _collect(
                     raise ModelAPIError("model stream contains an invalid chunk")
                 if "error" in chunk:
                     raise ModelAPIError("model stream reported a remote error")
-                for field in ("id", "provider"):
+                for field in ("id", "provider", "service_tier"):
                     value = _safe_name(chunk.get(field))
                     if value is not None:
                         response[field] = value
@@ -136,7 +181,9 @@ async def _collect(
                     if content is not None and not isinstance(content, str):
                         raise ModelAPIError("model stream contains invalid content")
                     if content:
-                        timing.setdefault("first_content_token_seconds", elapsed())
+                        content_at = elapsed()
+                        timing.setdefault("first_content_token_seconds", content_at)
+                        timing["last_content_token_seconds"] = content_at
                         message["content"] += content
                     finish = choice.get("finish_reason")
                     if finish is not None:
@@ -145,6 +192,7 @@ async def _collect(
                                 "model stream has invalid finish reason"
                             )
                         choice_result["finish_reason"] = finish
+                        timing["finish_reason_seconds"] = elapsed()
         timing["response_eof_seconds"] = elapsed()
         if not done:
             raise ModelAPIError("model stream is missing DONE")
@@ -155,6 +203,15 @@ async def _collect(
         if not message["content"].strip():
             raise ModelAPIError("model stream contains no assistant content")
     timing["elapsed_seconds"] = elapsed()
+    timing["generation_seconds"] = round(
+        timing["last_content_token_seconds"] - timing["first_content_token_seconds"], 6,
+    )
+    timing["completion_tail_seconds"] = round(
+        timing["complete_seconds"] - timing["last_content_token_seconds"], 6,
+    )
+    timing["eof_tail_seconds"] = round(
+        timing["response_eof_seconds"] - timing["complete_seconds"], 6,
+    )
     return response
 
 
@@ -167,12 +224,19 @@ async def complete_stream(
     request_parameters: Mapping[str, Any] | None = None,
     api_key: str,
     deadline_seconds: float,
+    trace_transport: bool = False,
 ) -> dict[str, Any]:
     """Return a completed chat response or raise a safe ModelAPIError.
 
     The supplied client stays open. The wall deadline includes the final EOF,
     no retry is attempted, and external cancellation propagates unchanged after
     response cleanup. Response text still needs the caller's domain validation.
+
+    Generation timing measures client-observed content arrivals, including any
+    upstream buffering and network delay, not pure model decode. Optional HTTPX
+    phase timings retain no trace payloads. TCP connect includes DNS lookup;
+    proxy CONNECT phases may contribute to request/header timing. Missing phases
+    are unavailable, not zero; tcp_connect_count counts only this request's trace.
     """
 
     if (
@@ -187,6 +251,8 @@ async def complete_stream(
         raise ModelAPIError("model stream requires model and messages")
     if request_parameters is not None and not isinstance(request_parameters, Mapping):
         raise ModelAPIError("model stream parameters must be a mapping")
+    if not isinstance(trace_transport, bool):
+        raise ModelAPIError("model stream trace_transport must be boolean")
     parameters = dict(request_parameters or {})
     if {"model", "messages", "stream", "stream_options"} & parameters.keys():
         raise ModelAPIError("model stream parameters override a fixed field")
@@ -200,6 +266,7 @@ async def complete_stream(
             _collect(
                 client, settings=settings, payload=payload, api_key=api_key.strip(),
                 deadline_seconds=deadline_seconds, started=started,
+                trace_transport=trace_transport,
             ),
             timeout=deadline_seconds,
         )

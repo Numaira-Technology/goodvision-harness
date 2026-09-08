@@ -26,9 +26,9 @@ display:
   fps: 15.0
   max_image_side: 720
   jpeg_quality: 70
-  # The first successful AIClub rich sample took 20.3s. Buffer this experiment
-  # long enough to place its labels on their source frames.
-  delay_seconds: 25.0
+  # Bound the experimental rich request at 8s; reserve 2s for queue/display work.
+  # This buffer aligns labels and video; it does not reduce inference latency.
+  delay_seconds: 10.0
   # Maximum gap for motion interpolation. Beyond it, hold the last bbox on
   # every frame until a new keyframe explicitly updates or clears the state.
   bbox_max_gap_seconds: 0.8
@@ -37,21 +37,42 @@ rich_labeling:
   # Additional VLM capability: use the existing chat-completions API directly.
   enabled: true
   backend: vlm
-  # null reuses the selected inference model, endpoint, key, and provider route.
-  model: null
+  # Independent annotation model; the event model below stays unchanged.
+  # Keep an HK-supported Qwen model on Alibaba. The 2026-09-08 tests did not
+  # establish a complete, accurate <3s replacement; see the latency report.
+  model: qwen/qwen3.6-flash
   # Used only if backend is changed back to paddle.
   endpoint: http://rich-label-worker:8091/v1/labels
-  timeout_seconds: 90.0
+  timeout_seconds: 8.0
   # One request at a time; superseded pending frames are dropped.
   max_fps: 1.0
-  vlm_max_tokens: 4096
-  vlm_max_image_side: 1280
+  vlm_max_tokens: 1536
+  vlm_max_image_side: 720
+  vlm_wire_format: compact
+  vlm_execution_mode: single
+  # Available parallel experiments: crops or full_frame (requires parallel).
+  vlm_parallel_strategy: crops
+  vlm_structured_output: true
+  # Check every field locally even if an upstream ignores its JSON schema.
+  vlm_require_complete: true
+  # HTTP/2 is opt-in (install .[vlm]); A/B showed no consistent full-frame win.
+  vlm_http2: false
+  vlm_trust_env: true
+  vlm_keepalive_expiry_seconds: 60.0
+  # Optional: split fixed instructions from changing images for real prefix hits.
+  # Off by default: the tested cache layout changed recall and missed edge people.
+  vlm_prompt_cache: false
   vlm_request_parameters:
-    response_format:
-      type: json_object
+    reasoning:
+      enabled: false
+    provider:
+      # Explicit allowlist prevents routing to CoreWeave or Novita.
+      only: [alibaba]
+      allow_fallbacks: false
+      require_parameters: true
   history_size: 128
   max_interpolation_gap_seconds: 2.0
-  max_hold_seconds: 25.0
+  max_hold_seconds: 10.0
 
 sliding_window:
   # Classify the newest frame every 0.4s with no window-collection delay:
@@ -61,7 +82,8 @@ sliding_window:
   include_partial_final_window: false
 
 inference_service:
-  # INFERENCE_PROVIDER can select aiclub, openrouter, or dashscope.
+  # This experiment is configured for OpenRouter. Another channel also needs
+  # a compatible rich model ID, request parameters, and prompt-cache setting.
   provider: openrouter
   timeout_seconds: 60.0
   # Avoid retrying provider errors into stale live results.
@@ -88,7 +110,7 @@ inference_service:
         enable_thinking: false
 
 inference:
-  # Rich annotation and event detectors share the selected model and route.
+  # Event detection uses its selected route; rich annotation overrides its own.
   profile: standard
   event_label: smoking
   system_prompt: >-

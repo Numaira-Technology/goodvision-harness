@@ -202,7 +202,13 @@ class HarnessRuntime:
                     max_image_side=rich.vlm_max_image_side,
                     wire_format=rich.vlm_wire_format,
                     execution_mode=rich.vlm_execution_mode,
+                    parallel_strategy=rich.vlm_parallel_strategy,
                     structured_output=rich.vlm_structured_output,
+                    require_complete=rich.vlm_require_complete,
+                    prompt_cache=rich.vlm_prompt_cache,
+                    http2=rich.vlm_http2,
+                    trust_env=rich.vlm_trust_env,
+                    keepalive_expiry_seconds=rich.vlm_keepalive_expiry_seconds,
                     request_parameters=rich.vlm_request_parameters,
                     dry_run=self._rich_annotation_dry_run,
                 )

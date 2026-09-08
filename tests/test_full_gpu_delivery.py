@@ -20,10 +20,10 @@ def test_full_gpu_delivery_starts_both_prebuilt_services_by_default() -> None:
     services = _load_delivery()["services"]
     assert set(services) == {"harness", "rich-label-worker"}
     assert services["harness"]["image"] == (
-        "goodvision-harness:2026.09.02-full-gpu.2"
+        "goodvision-harness:2026.09.03-full-gpu.1"
     )
     assert services["rich-label-worker"]["image"] == (
-        "goodvision-rich-label-worker:2026.09.02-full-gpu.2"
+        "goodvision-rich-label-worker:2026.09.03-full-gpu.1"
     )
     for service in services.values():
         assert "profiles" not in service

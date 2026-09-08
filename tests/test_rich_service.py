@@ -513,10 +513,12 @@ def test_rich_label_queue_failure_does_not_interrupt_live_preview() -> None:
 
 @pytest.mark.parametrize("backend", ["paddle", "vlm"])
 @pytest.mark.parametrize("model", [None, "annotation-model"])
+@pytest.mark.parametrize("prompt_cache", [False, True])
 def test_runtime_selects_independent_rich_annotation_backend(
     monkeypatch: pytest.MonkeyPatch,
     backend: str,
     model: str | None,
+    prompt_cache: bool,
 ) -> None:
     config = load_config(ROOT / "config.yaml")
     config = replace(
@@ -529,6 +531,7 @@ def test_runtime_selects_independent_rich_annotation_backend(
             timeout_seconds=18,
             vlm_max_tokens=8192,
             vlm_max_image_side=960,
+            vlm_prompt_cache=prompt_cache,
         ),
     )
     created: list[tuple[str, Any, dict[str, Any]]] = []
@@ -555,6 +558,7 @@ def test_runtime_selects_independent_rich_annotation_backend(
             assert options["model"] == (model or config.inference.model)
             assert options["max_tokens"] == 8192
             assert options["max_image_side"] == 960
+            assert options["prompt_cache"] is prompt_cache
             assert callable(options["api_key"])
             assert callable(options["dry_run"])
         else:
