@@ -12,6 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import httpx
+
 
 DEFAULT_AICLUB_ENDPOINT = (
     "https://aiclub.zimaocloud.com/model/openApi/v1/chat/completions"
@@ -243,3 +245,47 @@ class ModelAPIClient:
             delay = self.settings.retry_backoff_seconds * (2**attempt)
         if delay:
             time.sleep(delay)
+
+
+class PooledModelAPIClient(ModelAPIClient):
+    """Shared, thread-safe verified HTTPS pool for route probes and live runs."""
+
+    def __init__(self, settings: ModelAPISettings, *, api_key: str | None = None):
+        super().__init__(settings, api_key=api_key)
+        self._http = httpx.Client(
+            http2=False, follow_redirects=False,
+            limits=httpx.Limits(
+                max_connections=6, max_keepalive_connections=6,
+                keepalive_expiry=120,
+            ),
+        )
+
+    def close(self) -> None:
+        self._http.close()
+
+    def _post_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        for attempt in range(self.settings.max_retries + 1):
+            try:
+                response = self._http.post(
+                    self.settings.endpoint, headers=self._headers(), json=payload,
+                    timeout=self.settings.timeout_seconds,
+                )
+            except httpx.RequestError as exc:
+                if attempt < self.settings.max_retries:
+                    self._sleep_before_retry(attempt, None)
+                    continue
+                raise ModelAPIError("model API request failed") from exc
+            if not 200 <= response.status_code < 300:
+                if (response.status_code in self._RETRYABLE_STATUSES
+                        and attempt < self.settings.max_retries):
+                    self._sleep_before_retry(attempt, response.headers.get("Retry-After"))
+                    continue
+                raise ModelAPIError(f"model API returned HTTP {response.status_code}")
+            try:
+                decoded = response.json()
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ModelAPIError("model API returned invalid JSON") from exc
+            if not isinstance(decoded, dict):
+                raise ModelAPIError("model API returned an invalid response")
+            return decoded
+        raise AssertionError("retry loop terminated unexpectedly")

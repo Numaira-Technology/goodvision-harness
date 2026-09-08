@@ -11,12 +11,13 @@ import struct
 import time
 import unicodedata
 from collections.abc import AsyncIterator, Callable, Collection
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import timezone
 from html import escape
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock, Thread
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -47,7 +48,12 @@ from .grounding import (
     build_grounding_client,
     build_selected_features_grounding_client,
 )
-from .model_api import ModelAPISettings, environment_api_key
+from .model_api import (
+    DEFAULT_OPENROUTER_ENDPOINT,
+    ModelAPISettings,
+    PooledModelAPIClient,
+    environment_api_key,
+)
 from .overlay import draw_event_rich_overlay, draw_overlay, draw_rich_overlay
 from .overlay_fusion import OverlayFusionMatcher
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
@@ -64,6 +70,16 @@ from .reference_memory import (
 )
 from .result_bus import FrameBus, FramePacket, ResultBus
 from .rich_labeling import RichLabelClient, RichLabelCoordinator, RichLabelHTTPClient
+from .route_probe import (
+    MAX_PROBE_CONCURRENCY,
+    PROBE_TRIALS,
+    ROUTES,
+    ROUTES_BY_ID,
+    choose_route,
+    empty_results,
+    finish_result,
+    probe_sample,
+)
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
 from .visual_memory import (
@@ -253,6 +269,38 @@ class HarnessRuntime:
         self._last_frame_monotonic: float | None = None
         self._last_result_monotonic: float | None = None
         self._closed = False
+        self._route_transport: PooledModelAPIClient | None = None
+        self._route_pool_enabled = False
+        self._route_probe_thread: Thread | None = None
+        self._route_probe_stop = Event()
+        self._selected_route_id: str | None = next((
+            route.id for route in ROUTES_BY_ID.values()
+            if config is not None and config.inference.model == route.model
+            and isinstance(config.inference.request_parameters.get("provider"), dict)
+            and config.inference.request_parameters.get("provider", {}).get("only")
+            == [route.provider]
+        ), None)
+        self._route_persisted = False
+        self._route_probe: dict[str, Any] = {
+            "state": "idle", "results": empty_results(), "reason": None,
+            "started_at": None, "finished_at": None, "error": None,
+        }
+        if self._route_probe_supported() and deployment_store is not None:
+            try:
+                saved_route = deployment_store.load_model_route()
+                if saved_route is not None:
+                    self.config = replace(
+                        self.config,
+                        inference=ROUTES_BY_ID[saved_route].inference(
+                            self.config.inference,
+                        ),
+                    )
+                    self._selected_route_id = saved_route
+                    self._route_persisted = True
+                    self._route_pool_enabled = True
+            except Exception:
+                LOGGER.error("could not load saved route selection")
+                self._route_probe["error"] = "saved_route_unavailable"
         self._state: dict[str, Any] = {
             "service_started_at": _utc_now(),
             "source_id": self.source_id,
@@ -325,6 +373,124 @@ class HarnessRuntime:
             return bool(self._state["dry_run"])
         return self.dry_run
 
+    def _route_probe_supported(self) -> bool:
+        return self.config is not None and (
+            self.config.model_api.provider == "openrouter"
+            and self.config.model_api.endpoint == DEFAULT_OPENROUTER_ENDPOINT
+        )
+
+    def route_probe_status(self) -> dict[str, Any]:
+        """Dedicated operator contract: opaque IDs, safe errors, and timings only."""
+        with self._control_lock:
+            supported = self._route_probe_supported()
+            active = self._session is not None and self._session.running
+            selected = self._selected_route_id if supported else None
+            return {
+                **copy.deepcopy(self._route_probe),
+                "supported": supported,
+                "can_probe": supported and bool(self._aiclub_api_key)
+                and not active and not self._closed
+                and self._route_probe["state"] != "running",
+                "selected_id": selected,
+                "selected_label": f"线路 {selected}" if selected else None,
+                "selection_persisted": self._route_persisted,
+                "trials_per_route": PROBE_TRIALS,
+                "threshold_seconds": 2.5,
+            }
+
+    def _pooled_transport(self) -> PooledModelAPIClient:
+        if self._route_transport is None:
+            self._route_transport = PooledModelAPIClient(
+                self.config.model_api, api_key=self._aiclub_api_key,
+            )
+        return self._route_transport
+
+    def start_route_probe(self) -> dict[str, Any]:
+        with self._control_lock:
+            if self._closed or not self._route_probe_supported():
+                raise ValueError("route checking is unavailable for this deployment")
+            if not self._aiclub_api_key:
+                raise ValueError("save an API key before checking routes")
+            if self._session is not None and self._session.running:
+                raise RuntimeError("stop the active session before checking routes")
+            if self._route_probe["state"] == "running":
+                raise RuntimeError("a route check is already running")
+            transport = self._pooled_transport()
+            transport.settings = replace(
+                self.config.model_api, max_retries=0,
+                timeout_seconds=min(20.0, self.config.model_api.timeout_seconds),
+            )
+            self._route_probe_stop.clear()
+            self._route_probe = {
+                "state": "running", "results": empty_results(), "reason": None,
+                "started_at": _utc_now(), "finished_at": None, "error": None,
+            }
+            self._route_probe_thread = Thread(
+                target=self._run_route_probe, name="route-check", daemon=True,
+            )
+            self._route_probe_thread.start()
+            return self.route_probe_status()
+
+    def _run_route_probe(self) -> None:
+        def check(index: int) -> None:
+            route = ROUTES[index]
+            with self._control_lock:
+                row = self._route_probe["results"][index]
+                row["state"] = "warming"
+            # One unscored request warms the connection and route before scoring.
+            if not self._route_probe_stop.is_set():
+                probe_sample(self._route_transport, self.config.inference, route, 0)
+            for trial in range(PROBE_TRIALS):
+                if self._route_probe_stop.is_set():
+                    return
+                with self._control_lock:
+                    row["state"] = "testing"
+                sample = probe_sample(
+                    self._route_transport, self.config.inference, route, trial + 1,
+                )
+                with self._control_lock:
+                    row["samples"].append(sample)
+            with self._control_lock:
+                finish_result(row)
+
+        try:
+            # Queue routes here, before timing, rather than inside the HTTP pool.
+            workers = min(MAX_PROBE_CONCURRENCY, len(ROUTES))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                list(executor.map(check, range(len(ROUTES))))
+            with self._control_lock:
+                if self._closed or self._route_probe_stop.is_set():
+                    self._route_probe["state"] = "cancelled"
+                    return
+                route_id, reason = choose_route(self._route_probe["results"])
+                if route_id is None:
+                    self._route_probe.update(state="failed", error=reason)
+                    return
+                # Save before changing the effective route; failure retains the old one.
+                if self._deployment_store is not None:
+                    self._deployment_store.save_model_route(route_id)
+                self.config = replace(
+                    self.config,
+                    inference=ROUTES_BY_ID[route_id].inference(self.config.inference),
+                )
+                self._selected_route_id = route_id
+                self._route_persisted = self._deployment_store is not None
+                self._route_pool_enabled = True
+                self._route_transport.settings = self.config.model_api
+                self._route_probe.update(state="complete", reason=reason)
+        except Exception:
+            LOGGER.error("route check could not complete")
+            with self._control_lock:
+                self._route_probe.update(state="failed", error="route_check_failed")
+        finally:
+            with self._control_lock:
+                self._route_probe["finished_at"] = _utc_now()
+                if self._route_transport is not None:
+                    self._route_transport.settings = self.config.model_api
+                    if self._closed:
+                        self._route_transport.close()
+                        self._route_transport = None
+
     def deployment_settings(self) -> dict[str, Any]:
         """Return persistent deployment metadata without returning any secret."""
 
@@ -375,6 +541,8 @@ class HarnessRuntime:
         with self._control_lock:
             if self._session is not None and self._session.running:
                 raise RuntimeError("stop the active session before saving settings")
+            if self._route_probe["state"] == "running":
+                raise RuntimeError("wait for the route check before saving settings")
 
             setting_fields = {"stream_url", "dry_run", "autostart"}
             settings: DeploymentSettings | None = None
@@ -441,6 +609,9 @@ class HarnessRuntime:
             self._aiclub_api_key = (
                 self._persisted_api_key or self._environment_api_key
             )
+            if (rendered_key is not None or clear_api_key) and self._route_transport:
+                self._route_transport.close()
+                self._route_transport = None
             self._deployment_error = None
             self._update_state(dry_run=self.dry_run)
         return self.deployment_settings()
@@ -733,6 +904,8 @@ class HarnessRuntime:
         with self._control_lock:
             if self._closed:
                 raise RuntimeError("harness service is stopping")
+            if self._route_probe["state"] == "running":
+                raise RuntimeError("wait for the route check before starting a session")
             if self._session is not None and self._session.running:
                 raise RuntimeError(
                     "a harness session is already running; stop it first"
@@ -834,6 +1007,12 @@ class HarnessRuntime:
                     face_live_scheduler=face_live_scheduler,
                     dry_run=use_dry_run,
                     api_key=self._aiclub_api_key,
+                    transport=(
+                        self._pooled_transport()
+                        if self._route_pool_enabled and not use_dry_run
+                        and any(item != "stranger" for item in selected_features)
+                        else None
+                    ),
                 )
             else:
                 session_config = self.config
@@ -848,6 +1027,10 @@ class HarnessRuntime:
                     memory_context=session_config.memory,
                     dry_run=use_dry_run,
                     api_key=self._aiclub_api_key,
+                    transport=(
+                        self._pooled_transport()
+                        if self._route_pool_enabled and not use_dry_run else None
+                    ),
                 )
             generation = self._generation + 1
             callbacks = SessionCallbacks(
@@ -1082,7 +1265,17 @@ class HarnessRuntime:
     def stop(self) -> None:
         with self._control_lock:
             self._closed = True
+            self._route_probe_stop.set()
         self.stop_session()
+        probe_thread = self._route_probe_thread
+        if probe_thread is not None:
+            probe_thread.join(timeout=1.0)
+        with self._control_lock:
+            if self._route_transport is not None and (
+                probe_thread is None or not probe_thread.is_alive()
+            ):
+                self._route_transport.close()
+                self._route_transport = None
         self._delayed_overlay.close(timeout_seconds=5.0)
         if self._rich_labels is not None:
             self._rich_labels.close(timeout_seconds=5.0)
@@ -1755,6 +1948,23 @@ def create_app(
     @application.get("/v1/deployment/settings")
     async def deployment_settings(request: Request) -> dict[str, Any]:
         return _runtime(request).deployment_settings()
+
+    @application.get("/v1/deployment/routes")
+    async def route_status(request: Request) -> dict[str, Any]:
+        return _runtime(request).route_probe_status()
+
+    @application.post("/v1/deployment/routes/check", status_code=202)
+    async def check_routes(request: Request) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(_runtime(request).start_route_probe)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail="could not start route check",
+            ) from exc
 
     @application.put("/v1/deployment/settings")
     async def update_deployment_settings(request: Request) -> dict[str, Any]:

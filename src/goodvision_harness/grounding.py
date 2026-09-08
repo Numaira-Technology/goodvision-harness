@@ -1229,12 +1229,13 @@ def build_grounding_client(
     memory_context: MemoryContext | None = None,
     dry_run: bool = False,
     api_key: str | None = None,
+    transport: ModelAPIClient | None = None,
 ) -> GroundingClient:
     if dry_run:
         return DryRunGroundingClient(settings, memory_context)
     return AIClubGroundingClient(
         settings,
-        ModelAPIClient(aiclub_settings, api_key=api_key),
+        transport or ModelAPIClient(aiclub_settings, api_key=api_key),
         memory_context,
     )
 
@@ -1250,6 +1251,7 @@ def build_selected_features_grounding_client(
     face_live_scheduler: str = "single_flight",
     dry_run: bool = False,
     api_key: str | None = None,
+    transport: ModelAPIClient | None = None,
 ) -> SelectedFeaturesGroundingClient:
     """Build one detector graph for an arbitrary non-empty feature subset."""
 
@@ -1276,7 +1278,7 @@ def build_selected_features_grounding_client(
         else:
             safety_client = AIClubMultiGroundingClient(
                 settings,
-                ModelAPIClient(aiclub_settings, api_key=api_key),
+                transport or ModelAPIClient(aiclub_settings, api_key=api_key),
                 safety_labels,
             )
     if include_stranger:
