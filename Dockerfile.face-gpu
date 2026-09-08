@@ -75,6 +75,7 @@ COPY tools/face_gpu_smoke.py /opt/goodvision/internal/face_check.py
 COPY tools/customer_check.py ./tools/check_runtime.py
 COPY tools/customer_check.py ./tools/check_face.py
 ENV GOODVISION_COMPONENT=main \
+    HARNESS_INFERENCE_PROFILE=customer-standard \
     FACE_ACCELERATOR=gpu \
     FACE_PROVIDER=""
 RUN python /opt/goodvision/internal/face_check.py --runtime \

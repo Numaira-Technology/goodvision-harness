@@ -31,11 +31,11 @@ TEXT_FILES = (
     "tools/check_face.py",
     "tools/check_perception.py",
 )
-ARCHIVE_NAME = "goodvision-full-2026.09.02-gpu.2.tar"
+ARCHIVE_NAME = "goodvision-full-2026.09.03-gpu.1.tar.gz"
 EXPECTED_IMAGE_TAGS = frozenset(
     {
-        "goodvision-harness:2026.09.02-full-gpu.2",
-        "goodvision-rich-label-worker:2026.09.02-full-gpu.2",
+        "goodvision-harness:2026.09.03-full-gpu.1",
+        "goodvision-rich-label-worker:2026.09.03-full-gpu.1",
     }
 )
 MAX_TEXT_BYTES = 4 * 1024 * 1024
@@ -134,33 +134,40 @@ def _inventory(
 def _check_archive(path: Path, report: dict[str, Any]) -> None:
     report["image_tag_check"] = {"status": "failed"}
     try:
-        # The release is an uncompressed outer tar. Seeking across its member
-        # headers does not scan or unpack the nested image-layer payloads.
-        with tarfile.open(path, mode="r:") as archive:
-            manifests = [
-                member for member in archive if member.name == "manifest.json"
-            ]
-            if len(manifests) != 1:
+        # Read the compressed archive once, retaining only the bounded manifest.
+        # Other payloads are skipped by the stream reader; layers are never
+        # extracted or loaded into memory. Continue after the first manifest so
+        # a later duplicate cannot pass the release gate.
+        payload: bytes | None = None
+        with tarfile.open(path, mode="r|*") as archive:
+            manifest_count = 0
+            for member in archive:
+                if member.name != "manifest.json":
+                    continue
+                manifest_count += 1
+                if manifest_count != 1:
+                    _issue(report, "archive_manifest_count", ARCHIVE_NAME)
+                    return
+                if not member.isfile():
+                    _issue(report, "archive_manifest_not_regular", ARCHIVE_NAME)
+                    return
+                if member.size > MAX_MANIFEST_BYTES:
+                    _issue(report, "archive_manifest_too_large", ARCHIVE_NAME)
+                    return
+                source = archive.extractfile(member)
+                if source is None:
+                    _issue(report, "archive_manifest_unreadable", ARCHIVE_NAME)
+                    return
+                with source:
+                    payload = source.read(MAX_MANIFEST_BYTES + 1)
+                if len(payload) > MAX_MANIFEST_BYTES:
+                    _issue(report, "archive_manifest_too_large", ARCHIVE_NAME)
+                    return
+            if manifest_count != 1 or payload is None:
                 _issue(report, "archive_manifest_count", ARCHIVE_NAME)
                 return
-            manifest = manifests[0]
-            if not manifest.isfile():
-                _issue(report, "archive_manifest_not_regular", ARCHIVE_NAME)
-                return
-            if manifest.size > MAX_MANIFEST_BYTES:
-                _issue(report, "archive_manifest_too_large", ARCHIVE_NAME)
-                return
-            source = archive.extractfile(manifest)
-            if source is None:
-                _issue(report, "archive_manifest_unreadable", ARCHIVE_NAME)
-                return
-            with source:
-                payload = source.read(MAX_MANIFEST_BYTES + 1)
-            if len(payload) > MAX_MANIFEST_BYTES:
-                _issue(report, "archive_manifest_too_large", ARCHIVE_NAME)
-                return
-            entries = json.loads(payload.decode("utf-8"))
-    except (OSError, tarfile.TarError, UnicodeDecodeError, ValueError):
+        entries = json.loads(payload.decode("utf-8"))
+    except (OSError, EOFError, tarfile.TarError, UnicodeDecodeError, ValueError):
         # Never echo manifest values, layer paths, or underlying error text.
         _issue(report, "archive_manifest_invalid", ARCHIVE_NAME)
         return
