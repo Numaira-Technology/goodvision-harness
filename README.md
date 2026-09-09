@@ -510,40 +510,41 @@ A result has the following shape:
     "height": 1080,
     "clock_source": "ingest_estimated"
   },
+  "description": "smoking: 一人将电子烟举到嘴边。 / A person holds an e-cigarette at the mouth.; stranger: 一张人脸与已知人员库不匹配。 / One face does not match the known-person gallery.",
   "judgments": [
     {
       "event_label": "fight",
       "detected": false,
       "confidence": 0.91,
-      "description": "No fighting cues are visible.",
+      "description": "未发现打架迹象。 / No fighting cues are visible.",
       "object_ids": []
     },
     {
       "event_label": "smoking",
       "detected": true,
       "confidence": 0.94,
-      "description": "A person holds an e-cigarette at the mouth.",
+      "description": "一人将电子烟举到嘴边。 / A person holds an e-cigarette at the mouth.",
       "object_ids": ["object-1", "object-2"]
     },
     {
       "event_label": "fall",
       "detected": false,
       "confidence": 0.88,
-      "description": "No fall is visible.",
+      "description": "未发现跌倒。 / No fall is visible.",
       "object_ids": []
     },
     {
       "event_label": "weapon",
       "detected": false,
       "confidence": 0.86,
-      "description": "No weapon cue is visible.",
+      "description": "未发现武器迹象。 / No weapon cue is visible.",
       "object_ids": []
     },
     {
       "event_label": "stranger",
       "detected": true,
       "confidence": 0.93,
-      "description": "One face does not match the known-person gallery.",
+      "description": "一张人脸与已知人员库不匹配。 / One face does not match the known-person gallery.",
       "object_ids": ["object-3"]
     }
   ],
@@ -597,6 +598,24 @@ A result has the following shape:
   }
 }
 ```
+
+Every emitted analysis result includes a required, non-empty top-level
+`description` for the frame identified by `frame`. It joins detected events as
+`event_label: description` in judgment order, separated by `; `. When no judgment
+has `detected=true`, it is `"无异常 / No anomalies detected"`. This is a summary of this result's analyzed
+events, generated without an extra model request. Event evidence is requested
+as a Simplified Chinese sentence followed by its English equivalent, separated
+by ` / `, in the same inference call. Local face and dry-run descriptions use
+the same bilingual format. The per-event `judgments[].description` field remains
+present, including negative evidence; JSON keys and event labels are unchanged.
+Feature-specific JSON and SSE endpoints preserve the full-frame `description`
+even when they filter `judgments` and `objects` to one capability.
+
+The console shows this text in **Overall description · 全画面描述** below the video,
+with the latest analyzed frame's index and timestamp. The card is also visible
+in fullscreen, ignores older results, and resets when the session changes or
+stops. Its text follows the latest analysis result; the annotated video retains
+its configured display delay.
 
 In `fixed_five_events` mode, `judgments` always has exactly these labels in
 this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`. Each status is

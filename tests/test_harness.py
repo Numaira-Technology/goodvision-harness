@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -18,6 +19,7 @@ import numpy as np
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 import goodvision_harness.config as config_module
 from goodvision_harness import service as service_module
@@ -33,6 +35,7 @@ from goodvision_harness.contracts import (
 )
 from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.grounding import (
+    BILINGUAL_DESCRIPTION_RULE,
     DETECTION_EVENT_LABELS,
     SAFETY_EVENT_LABELS,
     DryRunGroundingClient,
@@ -382,7 +385,10 @@ def test_model_prompt_has_one_bbox_append_and_dynamic_suffix() -> None:
         system_prompt=config.inference.system_prompt,
         prompt=config.inference.prompt,
     )
-    assert messages[0] == {"role": "system", "content": EXPECTED_SYSTEM_PROMPT}
+    assert messages[0] == {
+        "role": "system",
+        "content": f"{EXPECTED_SYSTEM_PROMPT}\n\n{BILINGUAL_DESCRIPTION_RULE}",
+    }
     prompt_text = messages[1]["content"][0]["text"]
     assert prompt_text == (
         f"{EXPECTED_PROMPT}\n\n{BBOX_PROMPT_APPEND}\n\n"
@@ -453,13 +459,19 @@ def test_grounded_dry_run_preserves_original_pattern_latency_and_confidence(
     positive = classifications[2]
     assert positive is not None
     assert positive.confidence == 0.896
-    assert positive.description == "Dry run: smoking visibly active in W2 · f0-f0."
+    assert positive.description == (
+        "演示帧W2 · f0-f0中检测到吸烟事件。 / "
+        "Dry run: smoking visibly active in W2 · f0-f0."
+    )
     assert len(positive.objects) == 1
     assert positive.objects[0].bbox == NormalizedBBox(0.18, 0.12, 0.72, 0.9)
     negative = classifications[1]
     assert negative is not None
     assert negative.confidence == 0.748
-    assert negative.description == "Dry run: smoking not visible in W1 · f0-f0."
+    assert negative.description == (
+        "演示帧W1 · f0-f0中未检测到吸烟事件。 / "
+        "Dry run: smoking not visible in W1 · f0-f0."
+    )
     assert negative.objects == ()
     assert all(response.raw_text is None for response in responses)
 
@@ -577,9 +589,16 @@ def test_qwen_bbox_is_normalized_and_validated() -> None:
         NormalizedBBox(0.8, 0.1, 0.2, 0.9)
 
 
-def test_analysis_result_matches_versioned_json_schema() -> None:
-    payload = _analysis_result().as_dict()
+@pytest.mark.parametrize(
+    ("detected", "description"),
+    [(True, "smoking: Visible event."), (False, "无异常 / No anomalies detected")],
+)
+def test_analysis_result_matches_versioned_json_schema(
+    detected: bool, description: str,
+) -> None:
+    payload = _analysis_result(detected=detected).as_dict()
     assert payload["model"]["name"] == PUBLIC_MODEL_NAME
+    assert payload["description"] == description
     schema = json.loads(
         (ROOT / "schemas" / "analysis-result-v1.schema.json").read_text(
             encoding="utf-8"
@@ -588,13 +607,80 @@ def test_analysis_result_matches_versioned_json_schema() -> None:
     jsonschema.Draft202012Validator.check_schema(schema)
     jsonschema.validate(payload, schema)
     invalid = json.loads(json.dumps(payload))
+    invalid["judgments"][0]["detected"] = True
     invalid["judgments"][0]["object_ids"] = []
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(invalid, schema)
-    assert payload["objects"][0]["bbox"]["coordinate_system"] == (
-        "source_normalized_xyxy"
-    )
+    if detected:
+        assert payload["objects"][0]["bbox"]["coordinate_system"] == (
+            "source_normalized_xyxy"
+        )
     assert payload["frame"]["width"] == 1920
+
+
+@pytest.mark.parametrize("description", ["", None, 42])
+def test_analysis_schema_requires_nonempty_frame_description(description: Any) -> None:
+    schema = json.loads(
+        (ROOT / "schemas" / "analysis-result-v1.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload = _analysis_result().as_dict()
+    del payload["description"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, schema)
+    payload["description"] = description
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, schema)
+
+
+def test_frame_description_summarizes_only_detected_events() -> None:
+    result = _analysis_result()
+    result = replace(
+        result,
+        judgments=(
+            replace(
+                result.judgments[0],
+                description="画面中有人吸烟。 / A person is smoking in the frame.",
+            ),
+            EventJudgment("fall", False, 0.98, "No fall is visible."),
+            EventJudgment(
+                "stranger", True, 0.9,
+                "画面中有陌生人。 / An unknown person is visible.", ("object-1",),
+            ),
+        ),
+    )
+
+    payload = result.as_dict()
+
+    assert payload["description"] == (
+        "smoking: 画面中有人吸烟。 / A person is smoking in the frame.; "
+        "stranger: 画面中有陌生人。 / An unknown person is visible."
+    )
+    assert payload["judgments"][1]["description"] == "No fall is visible."
+
+
+def test_frame_description_is_clear_with_only_known_people() -> None:
+    result = _analysis_result()
+    result = replace(
+        result,
+        analysis_kind="face_recognition",
+        judgments=(
+            EventJudgment(
+                "unknown_person", False, 0.99, "Only an authorized person is visible.",
+                matched_memory_ids=("alice",),
+            ),
+        ),
+        objects=(replace(result.objects[0], label="known_person"),),
+    )
+
+    payload = result.as_dict()
+
+    assert payload["objects"]
+    assert payload["description"] == "无异常 / No anomalies detected"
+    assert payload["judgments"][0]["description"] == (
+        "Only an authorized person is visible."
+    )
 
 
 def test_pipeline_emits_grounded_result_with_source_frame_mapping(
@@ -953,6 +1039,98 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert "private-camera.example" not in rendered
 
 
+@pytest.mark.parametrize("detected", (True, False))
+def test_overall_description_latest_is_correlated_and_compact(detected: bool) -> None:
+    stub = _StubRuntime()
+    app = create_app(lambda: stub)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        result = _analysis_result(detected=detected)
+        judgment = replace(
+            result.judgments[0],
+            description="有人吸烟。 / A person is smoking.",
+        )
+        payload = replace(result, judgments=(judgment,)).as_dict()
+        record = stub.results.publish(payload)
+        response = client.get("/v1/results/overall/latest")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/json"
+        assert response.headers["X-Result-Cursor"] == str(record.cursor)
+        assert response.headers["X-Result-Stream"] == stub.results.epoch
+        assert response.headers["Cache-Control"] == "no-store"
+        expected = {
+            key: value for key, value in payload.items()
+            if key not in {"judgments", "objects", "model", "analysis_kind"}
+        }
+        expected["type"] = "overall_description"
+        assert response.json() == expected
+        assert response.json()["description"] == (
+            "smoking: 有人吸烟。 / A person is smoking."
+            if detected else "无异常 / No anomalies detected"
+        )
+        assert client.get("/v1/results/latest").json() == payload
+        stub.results.reset()
+        assert client.get("/v1/results/overall/latest").status_code == 404
+        assert client.get("/v1/results/overall/events?after=-1").status_code == 422
+
+
+@pytest.mark.parametrize("resume", ("query", "header", "stale", "precedence"))
+def test_overall_description_sse_delivers_and_resumes(resume: str) -> None:
+    stub = _StubRuntime()
+    app = create_app(lambda: stub)  # type: ignore[arg-type]
+    app.state.runtime = stub
+    positive = _analysis_result().as_dict()
+    negative = replace(
+        _analysis_result(detected=False), message_id="message-2", sequence=2
+    ).as_dict()
+    stub.results.publish(positive)
+    stub.results.publish(negative)
+    headers = []
+    if resume in {"header", "stale", "precedence"}:
+        epoch = "old-stream" if resume == "stale" else stub.results.epoch
+        cursor = 2 if resume == "precedence" else 1
+        headers = [(b"last-event-id", f"{epoch}:{cursor}".encode())]
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    request = Request(
+        {"type": "http", "app": app, "headers": headers}, receive=receive
+    )
+    route = next(
+        route for route in app.routes
+        if route.path == "/v1/results/overall/events"
+    )
+
+    async def read_messages() -> list[str]:
+        response = await route.endpoint(
+            request, after=1 if resume in {"query", "precedence"} else 0
+        )
+        assert response.media_type == "text/event-stream"
+        assert response.headers["X-Accel-Buffering"] == "no"
+        chunks = []
+        try:
+            for _ in range(2 if resume == "stale" else 1):
+                chunk = await anext(response.body_iterator)
+                chunks.append(chunk.decode())
+        finally:
+            await response.body_iterator.aclose()
+        return chunks
+
+    chunks = asyncio.run(read_messages())
+    assert len(chunks) == (2 if resume == "stale" else 1)
+    for chunk, payload in zip(
+        chunks, [positive, negative] if resume == "stale" else [negative], strict=True
+    ):
+        assert "event: overall_description\n" in chunk
+        assert chunk.endswith("\n\n")
+        data = json.loads(chunk.split("data: ", 1)[1])
+        assert data["message_id"] == payload["message_id"]
+        assert data["description"] == payload["description"]
+        assert data["frame"] == payload["frame"]
+        assert data["type"] == "overall_description"
+        assert "judgments" not in data and "objects" not in data
+    assert chunks[-1].startswith(f"id: {stub.results.epoch}:2\n")
+
+
 def test_http_delivery_surface_and_degraded_liveness() -> None:
     stub = _StubRuntime()
     app = create_app(lambda: stub)  # type: ignore[arg-type]
@@ -963,10 +1141,12 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert latest.status_code == 200
         assert latest.json()["message_id"] == "message-1"
         assert latest.json()["model"]["name"] == PUBLIC_MODEL_NAME
+        assert latest.json()["description"] == "smoking: Visible event."
         assert latest.headers["X-Result-Stream"] == stub.results.epoch
         smoking = client.get("/v1/results/smoking/latest")
         assert smoking.status_code == 200
         assert smoking.headers["X-Result-Feature"] == "smoking"
+        assert smoking.json()["description"] == latest.json()["description"]
         assert [item["event_label"] for item in smoking.json()["judgments"]] == [
             "smoking"
         ]
@@ -1207,7 +1387,8 @@ def test_readiness_requires_video_and_successful_analysis() -> None:
         runtime.stop()
 
 
-def test_webhook_uses_stable_idempotency_and_hmac_signature() -> None:
+@pytest.mark.parametrize("detected", [True, False])
+def test_webhook_uses_stable_idempotency_and_hmac_signature(detected: bool) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1221,13 +1402,17 @@ def test_webhook_uses_stable_idempotency_and_hmac_signature() -> None:
         transport=httpx.MockTransport(handler),
     )
     delivery.start()
-    payload = _analysis_result().as_dict()
+    payload = _analysis_result(detected=detected).as_dict()
     assert delivery.submit(payload)
     assert delivery.flush(timeout_seconds=2.0)
     delivery.close()
 
     assert len(requests) == 1
     request = requests[0]
+    assert json.loads(request.content) == payload
+    assert json.loads(request.content)["description"] == (
+        "smoking: Visible event." if detected else "无异常 / No anomalies detected"
+    )
     assert request.headers["Idempotency-Key"] == payload["message_id"]
     expected = hmac.new(
         b"shared-secret",
