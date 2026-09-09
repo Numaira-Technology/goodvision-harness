@@ -488,13 +488,13 @@ ffplay http://127.0.0.1:8080/v1/video/live/stream.mjpeg
 ## Analysis result contract
 
 The canonical schema is
-[`schemas/analysis-result-v1.schema.json`](schemas/analysis-result-v1.schema.json).
+[`schemas/analysis-result-v2.schema.json`](schemas/analysis-result-v2.schema.json).
 A result has the following shape:
 
 ```json
 {
   "type": "analysis_result",
-  "schema_version": "1",
+  "schema_version": "2",
   "analysis_kind": "fixed_five_events",
   "message_id": "cb44b47c-332f-4947-971b-8297fc8c64db",
   "observation_id": "cb44b47c-332f-4947-971b-8297fc8c64db",
@@ -510,40 +510,43 @@ A result has the following shape:
     "height": 1080,
     "clock_source": "ingest_estimated"
   },
+  "description": "smoking: 一人将电子烟举到嘴边。 / A person holds an e-cigarette at the mouth.; stranger: 一张人脸与已知人员库不匹配。 / One face does not match the known-person gallery.",
+  "analysis_complete": true,
+  "missing_event_labels": [],
   "judgments": [
     {
       "event_label": "fight",
       "detected": false,
       "confidence": 0.91,
-      "description": "No fighting cues are visible.",
+      "description": "未发现打架迹象。 / No fighting cues are visible.",
       "object_ids": []
     },
     {
       "event_label": "smoking",
       "detected": true,
       "confidence": 0.94,
-      "description": "A person holds an e-cigarette at the mouth.",
+      "description": "一人将电子烟举到嘴边。 / A person holds an e-cigarette at the mouth.",
       "object_ids": ["object-1", "object-2"]
     },
     {
       "event_label": "fall",
       "detected": false,
       "confidence": 0.88,
-      "description": "No fall is visible.",
+      "description": "未发现跌倒。 / No fall is visible.",
       "object_ids": []
     },
     {
       "event_label": "weapon",
       "detected": false,
       "confidence": 0.86,
-      "description": "No weapon cue is visible.",
+      "description": "未发现武器迹象。 / No weapon cue is visible.",
       "object_ids": []
     },
     {
       "event_label": "stranger",
       "detected": true,
       "confidence": 0.93,
-      "description": "One face does not match the known-person gallery.",
+      "description": "一张人脸与已知人员库不匹配。 / One face does not match the known-person gallery.",
       "object_ids": ["object-3"]
     }
   ],
@@ -597,6 +600,35 @@ A result has the following shape:
   }
 }
 ```
+
+Every emitted analysis result includes a required, non-empty top-level
+`description` for the frame identified by `frame`. It joins detected events as
+`event_label: description` in judgment order, separated by `; `. When no judgment
+has `detected=true` and every enabled capability completed, it is
+`"无异常 / No anomalies detected"`. This is a summary of this result's analyzed
+events, generated without an extra model request. Event evidence is requested
+as a Simplified Chinese sentence followed by its English equivalent, separated
+by ` / `, in the same inference call. Local face and dry-run descriptions use
+the same bilingual format. The per-event `judgments[].description` field remains
+present, including negative evidence; JSON keys and event labels are unchanged.
+Feature-specific JSON and SSE endpoints preserve the full-frame `description`
+even when they filter `judgments` and `objects` to one capability.
+
+Results use schema version `2`; the original v1 schema remains unchanged for
+archived records. Strict consumers must adopt the v2 schema before upgrading
+the producer. The HTTP endpoint paths remain `/v1/...`.
+`analysis_complete` is false and `missing_event_labels` lists skipped or failed
+capabilities when a frame is only partially analyzed. Such descriptions state
+`Analysis incomplete` and retain any positive evidence, never reporting all-clear.
+Live model responses must pass Chinese / English format validation; a malformed
+or monolingual description fails that inference branch. This validates language
+structure, not semantic translation equivalence.
+
+The console shows this text in **Overall description · 全画面描述** below the video,
+with the latest analyzed frame's index and timestamp. The card is also visible
+in fullscreen, ignores older results, and resets when the session changes or
+stops. Its text follows the latest analysis result; the annotated video retains
+its configured display delay.
 
 In `fixed_five_events` mode, `judgments` always has exactly these labels in
 this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`. Each status is
@@ -942,7 +974,8 @@ Use a new staging directory and copy only these reviewed sources:
 | `compose.full-gpu.delivery.yaml` | Same name |
 | `.env.full-gpu.delivery.example` | Same name |
 | `config.delivery.yaml` | Same name |
-| `schemas/analysis-result-v1.schema.json` | Same path |
+| `schemas/analysis-result-v2.schema.json` | Same path |
+| `schemas/analysis-result-v1.schema.json` (historical contract) | Same path |
 | `tools/customer_check.py` | `tools/check_runtime.py`, `tools/check_face.py`, `tools/check_perception.py` |
 
 Add a reviewed `RELEASE.md` recording the exact candidate versions, completed
@@ -954,7 +987,7 @@ file so a second, uncompressed archive does not consume the build disk. Use a
 binary-safe pipe or process API; do not pass archive bytes through PowerShell's
 text pipeline. `docker load -i` accepts this compressed archive directly.
 Then rerun the audit without `--without-archive`. It requires exactly 11 files:
-ten customer text files and the one compressed image archive. The audit reads
+eleven customer text files and the one compressed image archive. The audit reads
 that archive once as a stream and retains only its bounded image manifest,
 checking tags and duplicate manifests without extracting image layers. It checks
 neutral names and image tags, not image-layer contents or dependency licenses.

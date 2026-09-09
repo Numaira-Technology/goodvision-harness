@@ -27,6 +27,7 @@ TEXT_FILES = (
     ".env.full-gpu.delivery.example",
     "config.delivery.yaml",
     "schemas/analysis-result-v1.schema.json",
+    "schemas/analysis-result-v2.schema.json",
     "tools/check_runtime.py",
     "tools/check_face.py",
     "tools/check_perception.py",
@@ -281,7 +282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--without-archive",
         action="store_true",
-        help="Require exactly the ten text files before the image tar is exported",
+        help="Require exactly the eleven text files before the image tar is exported",
     )
     args = parser.parse_args(argv)
     report = audit_bundle(args.directory, without_archive=args.without_archive)

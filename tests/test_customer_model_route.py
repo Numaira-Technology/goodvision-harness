@@ -101,7 +101,7 @@ def test_customer_requests_keep_the_delivery_route_despite_overrides(
     calls: list[Request] = []
     clear = {
         "detected": False, "confidence": 0.9,
-        "description": "No visible event.", "objects": [],
+        "description": "未发现异常事件。 / No visible event.", "objects": [],
     }
     labels = ("smoking",) if kind == "selected" else SAFETY_EVENT_LABELS
     content = (
@@ -243,7 +243,7 @@ def test_customer_console_credential_survives_restart_without_reusing_old_key(
         calls.append(request)
         return _Response({"events": [{
             "event_label": "smoking", "detected": False, "confidence": 0.9,
-            "description": "No visible event.", "objects": [],
+            "description": "未发现异常事件。 / No visible event.", "objects": [],
         }]})
 
     monkeypatch.setattr(model_api_module, "urlopen", capture)

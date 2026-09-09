@@ -25,6 +25,8 @@ from goodvision_harness.grounding import (
     FIXED_FIVE_ANALYSIS_KIND,
     SAFETY_EVENT_LABELS,
     SELECTED_FEATURES_ANALYSIS_KIND,
+    AIClubGroundingClient,
+    AIClubMultiGroundingClient,
     FixedFiveGroundingClient,
     GroundedClassification,
     GroundedEventClassification,
@@ -36,7 +38,6 @@ from goodvision_harness.grounding import (
 )
 from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -406,6 +407,7 @@ def test_selected_features_drop_busy_face_samples_without_building_a_queue() -> 
         for response in busy_responses:
             classification = response.classification
             assert isinstance(classification, MultiGroundedClassification)
+            assert classification.missing_event_labels == ("stranger",)
             assert [item.event_label for item in classification.judgments] == [
                 "smoking"
             ]
@@ -415,6 +417,7 @@ def test_selected_features_drop_busy_face_samples_without_building_a_queue() -> 
 
     primary_classification = primary_response.classification
     assert isinstance(primary_classification, MultiGroundedClassification)
+    assert primary_classification.missing_event_labels == ()
     assert [
         item.event_label for item in primary_classification.judgments
     ] == ["smoking", "stranger"]
@@ -595,6 +598,99 @@ def test_fixed_five_runs_safety_and_stranger_in_parallel_on_same_frame() -> None
         == stranger.windows[0].newest_frame.timestamp_seconds
     )
 
+@pytest.mark.parametrize(
+    "scenario", ("face_failure", "safety_failure", "busy", "disabled")
+)
+def test_partial_negative_results_never_report_all_clear(scenario: str) -> None:
+    config = load_config(ROOT / "config.yaml")
+    smoking = replace(
+        _safety_classification().judgments[1], detected=False, objects=(),
+        description="未发现吸烟。 / No smoking detected.",
+    )
+    safety = _StaticClient(config.inference, MultiGroundedClassification((smoking,)))
+    stranger = _StaticClient(config.inference, _stranger_classification(unknown=False))
+    if scenario == "face_failure":
+        stranger.classification = None
+    if scenario == "safety_failure":
+        safety.classification = None
+    client = SelectedFeaturesGroundingClient(
+        safety, None if scenario == "disabled" else stranger,
+        safety_event_labels=("smoking",), include_stranger=scenario != "disabled",
+    )
+    if scenario == "busy":
+        client._stranger_live_slot.acquire()
+    try:
+        window = _window()
+        response = client.classify_window(window)
+    finally:
+        if scenario == "busy":
+            client._stranger_live_slot.release()
+    emitted = []
+    session = StreamingSession.for_camera(
+        config, client, SessionCallbacks(on_analysis_result=emitted.append)
+    )
+    future: Future[Any] = Future()
+    future.set_result(response)
+    session._on_window_done(future, window)
+    assert len(emitted) == 1
+    payload = emitted[0].as_dict()
+    overall = service_module._overall_description_payload(payload)
+    expected_missing = (
+        [] if scenario == "disabled"
+        else ["smoking"] if scenario == "safety_failure" else ["stranger"]
+    )
+    for result in (payload, overall):
+        assert result["missing_event_labels"] == expected_missing
+        assert result["analysis_complete"] is (scenario == "disabled")
+        if expected_missing:
+            assert "Analysis incomplete" in result["description"]
+            assert "无异常" not in result["description"]
+            assert "No anomalies detected" not in result["description"]
+        else:
+            assert result["description"] == "无异常 / No anomalies detected"
+
+
+@pytest.mark.parametrize("multi", (True, False))
+@pytest.mark.parametrize("description,valid", (
+    ("No smoking detected.", False),
+    ("未发现吸烟。", False),
+    ("No smoking detected. / 未发现吸烟。", False),
+    ("未发现吸烟。 / ", False),
+    ("未发现吸烟。 / No smoking detected.", True),
+))
+def test_live_grounding_rejects_invalid_bilingual_descriptions(
+    multi: bool, description: str, valid: bool,
+) -> None:
+    class Transport:
+        def chat_completion(self, **kwargs: Any) -> dict:
+            return {}
+
+        def assistant_text(self, response: dict) -> str:
+            judgment = {
+                "detected": False, "confidence": 0.9,
+                "description": description, "objects": [],
+            }
+            return json.dumps(
+                {"events": [{"event_label": "smoking", **judgment}]}
+                if multi else judgment
+            )
+
+    settings = load_config(ROOT / "config.yaml").inference
+    client = (
+        AIClubMultiGroundingClient(settings, Transport(), event_labels=("smoking",))
+        if multi else AIClubGroundingClient(settings, Transport())
+    )
+    response = client.classify_window(_window())
+    assert response.ok is valid
+    if valid:
+        classification = response.classification
+        actual = classification.judgments[0] if multi else classification
+        assert actual.description == description
+    else:
+        assert response.classification is None
+        assert response.raw_text is None
+
+
 def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
     config = load_config(ROOT / "config.yaml")
     client = _combined_client(unknown=True)
@@ -625,6 +721,11 @@ def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
     assert payload["source_id"] == "camera-multi"
     assert payload["frame"]["source_frame_index"] == 42
     assert payload["frame"]["width"] == 1920
+    assert payload["description"] == (
+        "fight: A raised fist and forceful contact are visible.; "
+        "smoking: A cigarette is held at the mouth.; "
+        "stranger: One known and one unknown face are visible."
+    )
     assert [item["event_label"] for item in payload["judgments"]] == list(
         DETECTION_EVENT_LABELS
     )
@@ -650,6 +751,14 @@ def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
     )
     assert stranger_object["attributes"]["photo_url"].endswith("/photo")
     assert emitted_frames == [(result, window.newest_frame.presentation_jpeg_bytes)]
+
+    # Capability views keep the original frame summary, including when their
+    # own judgment is negative but other events were detected in the frame.
+    for feature in ("smoking", "fall"):
+        filtered = service_module._feature_result_payload(payload, feature)
+        assert filtered is not None
+        assert len(filtered["judgments"]) == 1
+        assert filtered["description"] == payload["description"]
 
 
 def test_renderer_passes_each_shared_positive_object_once(

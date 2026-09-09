@@ -285,7 +285,10 @@ def test_grounding_memory_preserves_boxes_and_sets_distinct_analysis_kind(
             {
                 "detected": True,
                 "confidence": 0.93,
-                "description": "An unknown face and Alice are visible.",
+                "description": (
+                    "画面中有一张未知人脸和 Alice。 / "
+                    "An unknown face and Alice are visible."
+                ),
                 "matched_memory_ids": ["alice"],
                 "objects": [
                     {
@@ -383,7 +386,10 @@ def test_streaming_session_preserves_grounded_memory_metadata() -> None:
             {
                 "detected": True,
                 "confidence": 0.93,
-                "description": "An unknown face and Alice are visible.",
+                "description": (
+                    "画面中有一张未知人脸和 Alice。 / "
+                    "An unknown face and Alice are visible."
+                ),
                 "matched_memory_ids": ["alice"],
                 "objects": [
                     {

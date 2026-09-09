@@ -10,7 +10,7 @@ from typing import Any
 
 from .privacy import public_safe_value
 
-ANALYSIS_RESULT_SCHEMA_VERSION = "1"
+ANALYSIS_RESULT_SCHEMA_VERSION = "2"
 BBOX_COORDINATE_SYSTEM = "source_normalized_xyxy"
 PUBLIC_MODEL_NAME = "numaira-beta-fast"
 
@@ -233,6 +233,7 @@ class AnalysisResult:
     model_name: str
     model_latency_seconds: float
     analysis_kind: str = "event"
+    missing_event_labels: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name, value in {
@@ -259,6 +260,31 @@ class AnalysisResult:
         referenced = {value for item in self.judgments for value in item.object_ids}
         if not referenced.issubset(object_ids):
             raise ValueError("judgments reference unknown objects")
+        labels = tuple(self.missing_event_labels)
+        for label in labels:
+            _required_text(label, "missing event label")
+        if len(set(labels)) != len(labels) or set(labels).intersection(
+            judgment.event_label for judgment in self.judgments
+        ):
+            raise ValueError("missing event labels must be unique and unevaluated")
+        object.__setattr__(self, "missing_event_labels", labels)
+
+    @property
+    def description(self) -> str:
+        """Summarize detected events across this frame's analysis result."""
+
+        summary = "; ".join(
+            f"{judgment.event_label}: {judgment.description}"
+            for judgment in self.judgments
+            if judgment.detected
+        )
+        if self.missing_event_labels:
+            incomplete = (
+                "分析未完成。部分能力暂无结果。 / "
+                "Analysis incomplete; some capabilities have no result."
+            )
+            return f"{summary}; {incomplete}" if summary else incomplete
+        return summary or "无异常 / No anomalies detected"
 
     def as_dict(self) -> dict[str, Any]:
         record = {
@@ -272,6 +298,9 @@ class AnalysisResult:
             "sequence": self.sequence,
             "emitted_at": self.emitted_at,
             "frame": self.frame.as_dict(),
+            "description": self.description,
+            "analysis_complete": not self.missing_event_labels,
+            "missing_event_labels": list(self.missing_event_labels),
             "judgments": [item.as_dict() for item in self.judgments],
             "objects": [item.as_dict() for item in self.objects],
             "model": {

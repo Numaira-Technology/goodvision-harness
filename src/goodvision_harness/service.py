@@ -1771,9 +1771,12 @@ def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
         "event_label": event_label,
         "detected": detected,
         "confidence": confidence,
-        "description": description,
+        "description": (
+            analysis.description if analysis.missing_event_labels else description
+        ),
         "objects": objects,
         "analysis_kind": analysis.analysis_kind,
+        "incomplete": bool(analysis.missing_event_labels),
     }
 
 
@@ -2316,6 +2319,19 @@ def create_app(
     ) -> StreamingResponse:
         return _result_events_response(request, _runtime(request), after=after)
 
+    @application.get("/v1/results/overall/latest")
+    async def latest_overall_description(request: Request) -> JSONResponse:
+        return _latest_result_response(_runtime(request), overall_only=True)
+
+    @application.get("/v1/results/overall/events")
+    async def overall_description_events(
+        request: Request,
+        after: int = Query(default=0, ge=0),
+    ) -> StreamingResponse:
+        return _result_events_response(
+            request, _runtime(request), after=after, overall_only=True
+        )
+
     def feature_latest_endpoint(
         feature: str,
     ) -> Callable[[Request], Any]:
@@ -2437,10 +2453,35 @@ def _feature_result_payload(
     return result
 
 
+def _overall_description_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project the shared result into a frame-correlated description response."""
+
+    return {
+        "type": "overall_description",
+        **{
+            key: payload[key]
+            for key in (
+                "schema_version",
+                "message_id",
+                "observation_id",
+                "source_id",
+                "stream_session_id",
+                "sequence",
+                "emitted_at",
+                "frame",
+                "description",
+                "analysis_complete",
+                "missing_event_labels",
+            )
+        },
+    }
+
+
 def _latest_result_response(
     runtime: HarnessRuntime,
     *,
     feature: str | None = None,
+    overall_only: bool = False,
 ) -> JSONResponse:
     record = runtime.results.latest()
     if record is None:
@@ -2454,6 +2495,8 @@ def _latest_result_response(
                 detail=f"no {feature} result in the latest analysis",
             )
         payload = selected
+    if overall_only:
+        payload = _overall_description_payload(payload)
     headers = {
         "Cache-Control": "no-store",
         "X-Result-Cursor": str(record.cursor),
@@ -2470,6 +2513,7 @@ def _result_events_response(
     *,
     after: int,
     feature: str | None = None,
+    overall_only: bool = False,
 ) -> StreamingResponse:
     header_cursor = request.headers.get("last-event-id")
     cursor = after
@@ -2503,15 +2547,20 @@ def _result_events_response(
                     if selected is None:
                         continue
                     payload = selected
+                if overall_only:
+                    payload = _overall_description_payload(payload)
                 data = json.dumps(
                     payload,
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
                 emitted = True
+                event_name = (
+                    "overall_description" if overall_only else "analysis_result"
+                )
                 yield (
                     f"id: {runtime.results.epoch}:{record.cursor}\n"
-                    f"event: analysis_result\ndata: {data}\n\n"
+                    f"event: {event_name}\ndata: {data}\n\n"
                 ).encode()
             if not emitted:
                 yield b": heartbeat\n\n"

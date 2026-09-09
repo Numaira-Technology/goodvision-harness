@@ -127,7 +127,7 @@ def test_live_builders_send_the_selected_route(
     calls: list[Request] = []
     clear = {
         "detected": False, "confidence": 0.9,
-        "description": "No visible event.", "objects": [],
+        "description": "未发现异常事件。 / No visible event.", "objects": [],
     }
     labels = ("smoking",) if kind == "selected" else SAFETY_EVENT_LABELS
     content = (
