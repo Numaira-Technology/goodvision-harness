@@ -341,19 +341,20 @@ def _load_delivery() -> dict[str, Any]:
     return yaml.safe_load(DELIVERY_PATH.read_text(encoding="utf-8"))
 
 
-def test_full_gpu_delivery_starts_both_prebuilt_services_by_default() -> None:
+def test_full_delivery_keeps_both_images_and_requires_gpu_profile_for_rich() -> None:
     services = _load_delivery()["services"]
     assert set(services) == {"harness", "rich-label-worker"}
     assert services["harness"]["image"] == (
-        "goodvision-harness:2026.09.03-full-gpu.1"
+        "goodvision-harness:2026.09.09-full.1"
     )
     assert services["rich-label-worker"]["image"] == (
-        "goodvision-rich-label-worker:2026.09.03-full-gpu.1"
+        "goodvision-rich-label-worker:2026.09.09-full.1"
     )
     for service in services.values():
-        assert "profiles" not in service
         assert "build" not in service
         assert service["pull_policy"] == "never"
+    assert "profiles" not in services["harness"]
+    assert services["rich-label-worker"]["profiles"] == ["gpu"]
 
 
 def test_full_gpu_settings_are_fixed_despite_old_environment(
@@ -369,11 +370,16 @@ def test_full_gpu_settings_are_fixed_despite_old_environment(
 
     environment = _load_delivery()["services"]["harness"]["environment"]
     # Literal values cannot be substituted by old .env or shell settings.
-    assert environment["RICH_LABEL_ENABLED"] == "true"
+    assert environment["RICH_LABEL_ENABLED"] == "false"
     assert environment["RICH_LABEL_ENDPOINT"] == (
         "http://rich-label-worker:8091/v1/labels"
     )
-    assert environment["FACE_ACCELERATOR"] == "gpu"
+    assert environment["FACE_ACCELERATOR"] == "cpu"
+    accelerated = yaml.safe_load(
+        (ROOT / "compose.full-gpu.accelerated.yaml").read_text(encoding="utf-8")
+    )["services"]["harness"]["environment"]
+    assert accelerated["FACE_ACCELERATOR"] == "gpu"
+    assert accelerated["RICH_LABEL_ENABLED"] == "true"
     assert "FACE_PROVIDER" not in environment
     assert environment["HARNESS_INFERENCE_PROFILE"] == "customer-standard"
     assert not any(
@@ -405,10 +411,15 @@ def test_full_gpu_worker_does_not_publish_host_ports() -> None:
     assert worker.get("network_mode") != "host"
 
 
-def test_full_gpu_delivery_reserves_one_gpu_without_vendor_selector() -> None:
+def test_full_delivery_reserves_devices_only_in_gpu_overlay() -> None:
     for service in _load_delivery()["services"].values():
+        assert "deploy" not in service
+    accelerated = yaml.safe_load(
+        (ROOT / "compose.full-gpu.accelerated.yaml").read_text(encoding="utf-8")
+    )
+    for service in accelerated["services"].values():
         devices = service["deploy"]["resources"]["reservations"]["devices"]
-        assert devices == [{"count": 1, "capabilities": ["gpu"]}]
+        assert devices == [{"driver": "nvidia", "count": 1, "capabilities": ["gpu"]}]
 
 
 def test_full_gpu_delivery_uses_neutral_credentials_and_model_profiles() -> None:

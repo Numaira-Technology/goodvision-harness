@@ -14,7 +14,6 @@ from urllib.request import Request, urlopen
 
 import httpx
 
-
 DEFAULT_AICLUB_ENDPOINT = (
     "https://aiclub.zimaocloud.com/model/openApi/v1/chat/completions"
 )
@@ -34,6 +33,28 @@ PROVIDER_DEFAULTS = {
 
 class ModelAPIError(RuntimeError):
     """Raised when the selected service cannot return a usable chat completion."""
+
+    _CODES = frozenset({
+        "request_failed", "timeout", "connection", "http_error",
+        "invalid_response", "empty_response",
+    })
+
+    def __init__(
+        self, message: str, *, code: str = "request_failed",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        # Only these bounded fields are suitable for diagnostic logs. Exception
+        # messages and causes can contain provider details or request secrets.
+        self.code = (
+            code if isinstance(code, str) and code in self._CODES else "request_failed"
+        )
+        self.status_code = (
+            status_code
+            if isinstance(status_code, int) and not isinstance(status_code, bool)
+            and 100 <= status_code <= 599
+            else None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +81,9 @@ class ModelAPISettings:
             object.__setattr__(self, "api_key_env", api_key_env)
         parsed = urlparse(self.endpoint)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("inference_service.endpoint must be an absolute HTTP(S) URL")
+            raise ValueError(
+                "inference_service.endpoint must be an absolute HTTP(S) URL"
+            )
         if not self.api_key_env.strip():
             raise ValueError("inference_service.api_key_env must not be empty")
         if self.timeout_seconds <= 0:
@@ -158,21 +181,40 @@ class ModelAPIClient:
             content = response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ModelAPIError(
-                "response did not contain an assistant message"
+                "response did not contain an assistant message",
+                code="invalid_response",
             ) from exc
 
         if isinstance(content, str):
-            return content.strip()
+            text = content.strip()
+            if text:
+                return text
+            raise ModelAPIError(
+                "assistant message did not contain text", code="empty_response"
+            )
+        if content is None:
+            raise ModelAPIError(
+                "assistant message did not contain text", code="empty_response"
+            )
         if isinstance(content, Sequence):
             parts = [
-                str(block.get("text", ""))
+                block.get("text", "")
                 for block in content
                 if isinstance(block, Mapping) and block.get("type") == "text"
             ]
+            if any(not isinstance(part, str) for part in parts):
+                raise ModelAPIError(
+                    "assistant message contained invalid text", code="invalid_response"
+                )
             text = "\n".join(part for part in parts if part).strip()
             if text:
                 return text
-        raise ModelAPIError("assistant message did not contain text")
+            raise ModelAPIError(
+                "assistant message did not contain text", code="empty_response"
+            )
+        raise ModelAPIError(
+            "assistant message did not contain text", code="invalid_response"
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -203,12 +245,21 @@ class ModelAPIClient:
                     request, timeout=self.settings.timeout_seconds
                 ) as response:
                     body = response.read()
+                if not body.strip():
+                    raise ModelAPIError(
+                        "model API returned an empty response", code="empty_response"
+                    )
                 try:
                     decoded = json.loads(body)
-                except json.JSONDecodeError as exc:
-                    raise ModelAPIError("model API returned invalid JSON") from exc
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise ModelAPIError(
+                        "model API returned invalid JSON", code="invalid_response"
+                    ) from exc
                 if not isinstance(decoded, dict):
-                    raise ModelAPIError("model API returned an invalid response")
+                    raise ModelAPIError(
+                        "model API returned an invalid response",
+                        code="invalid_response",
+                    )
                 return decoded
             except HTTPError as exc:
                 # Consume the provider body so the connection can be released,
@@ -224,13 +275,20 @@ class ModelAPIClient:
                     self._sleep_before_retry(attempt, retry_after)
                     continue
                 raise ModelAPIError(
-                    f"model API returned HTTP {int(exc.code)}"
+                    f"model API returned HTTP {int(exc.code)}",
+                    code="http_error", status_code=int(exc.code),
                 ) from exc
             except (URLError, TimeoutError, OSError) as exc:
                 if attempt < self.settings.max_retries:
                     self._sleep_before_retry(attempt, None)
                     continue
-                raise ModelAPIError("model API request failed") from exc
+                timed_out = isinstance(exc, TimeoutError) or (
+                    isinstance(exc, URLError) and isinstance(exc.reason, TimeoutError)
+                )
+                raise ModelAPIError(
+                    "model API request failed",
+                    code="timeout" if timed_out else "connection",
+                ) from exc
 
         raise AssertionError("retry loop terminated unexpectedly")
 
@@ -274,18 +332,37 @@ class PooledModelAPIClient(ModelAPIClient):
                 if attempt < self.settings.max_retries:
                     self._sleep_before_retry(attempt, None)
                     continue
-                raise ModelAPIError("model API request failed") from exc
+                raise ModelAPIError(
+                    "model API request failed",
+                    code=(
+                        "timeout" if isinstance(exc, httpx.TimeoutException)
+                        else "connection"
+                    ),
+                ) from exc
             if not 200 <= response.status_code < 300:
                 if (response.status_code in self._RETRYABLE_STATUSES
                         and attempt < self.settings.max_retries):
-                    self._sleep_before_retry(attempt, response.headers.get("Retry-After"))
+                    self._sleep_before_retry(
+                        attempt, response.headers.get("Retry-After")
+                    )
                     continue
-                raise ModelAPIError(f"model API returned HTTP {response.status_code}")
+                raise ModelAPIError(
+                    f"model API returned HTTP {response.status_code}",
+                    code="http_error", status_code=response.status_code,
+                )
+            if not response.content.strip():
+                raise ModelAPIError(
+                    "model API returned an empty response", code="empty_response"
+                )
             try:
                 decoded = response.json()
             except (ValueError, UnicodeDecodeError) as exc:
-                raise ModelAPIError("model API returned invalid JSON") from exc
+                raise ModelAPIError(
+                    "model API returned invalid JSON", code="invalid_response"
+                ) from exc
             if not isinstance(decoded, dict):
-                raise ModelAPIError("model API returned an invalid response")
+                raise ModelAPIError(
+                    "model API returned an invalid response", code="invalid_response"
+                )
             return decoded
         raise AssertionError("retry loop terminated unexpectedly")

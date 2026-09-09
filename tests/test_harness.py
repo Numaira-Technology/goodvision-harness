@@ -35,6 +35,7 @@ from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.grounding import (
     DETECTION_EVENT_LABELS,
     SAFETY_EVENT_LABELS,
+    SMOKING_EVIDENCE_RULE,
     DryRunGroundingClient,
     build_grounding_messages,
     build_multi_grounding_messages,
@@ -382,7 +383,10 @@ def test_model_prompt_has_one_bbox_append_and_dynamic_suffix() -> None:
         system_prompt=config.inference.system_prompt,
         prompt=config.inference.prompt,
     )
-    assert messages[0] == {"role": "system", "content": EXPECTED_SYSTEM_PROMPT}
+    assert messages[0] == {
+        "role": "system",
+        "content": f"{EXPECTED_SYSTEM_PROMPT}\n\n{SMOKING_EVIDENCE_RULE}",
+    }
     prompt_text = messages[1]["content"][0]["text"]
     assert prompt_text == (
         f"{EXPECTED_PROMPT}\n\n{BBOX_PROMPT_APPEND}\n\n"

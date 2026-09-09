@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -75,6 +76,225 @@ def _packet(sequence: int, timestamp: float) -> FramePacket:
         frame_sequence=sequence,
         observed_at="2026-08-27T00:00:00.000Z",
     )
+
+
+def _selected_features_result(
+    *,
+    timestamp: float,
+    frame_index: int,
+    message_id: str,
+    stranger: bool | None,
+    smoking: bool = False,
+    session_id: str = "session-1",
+) -> AnalysisResult:
+    result = _result(
+        timestamp=timestamp,
+        frame_index=frame_index,
+        message_id=message_id,
+        bbox=(0.6, 0.5, 0.7, 0.6) if smoking else None,
+        detected=smoking,
+    )
+    judgments = list(result.judgments)
+    objects = list(result.objects)
+    if stranger is not None:
+        object_id = "object-2" if smoking else "object-1"
+        judgments.append(EventJudgment(
+            event_label="stranger",
+            detected=stranger,
+            confidence=0.9 if stranger else 0.0,
+            description="Confirmed stranger." if stranger else "No stranger.",
+            object_ids=(object_id,) if stranger else (),
+        ))
+        if stranger:
+            objects.append(GroundedObject(
+                object_id=object_id,
+                label="unknown_person",
+                bbox=NormalizedBBox(0.2, 0.1, 0.3, 0.25),
+                confidence=0.9,
+                attributes={"status": "unknown", "person_track_id": "P0001"},
+            ))
+    return replace(
+        result,
+        stream_session_id=session_id,
+        analysis_kind="selected_features",
+        judgments=tuple(judgments),
+        objects=tuple(objects),
+    )
+
+
+def test_select_overlay_keeps_stranger_between_alternating_face_samples() -> None:
+    # Recorded live pattern: a busy face branch is omitted from safety results.
+    # Arrival may be out of order; the selector receives the sorted timeline.
+    records = [
+        _selected_features_result(
+            timestamp=timestamp,
+            frame_index=frame_index,
+            message_id=message_id,
+            stranger=stranger,
+        )
+        for timestamp, frame_index, message_id, stranger in (
+            (8.813, 127, "R15", None),
+            (7.625, 110, "R12", True),
+            (8.485, 122, "R14", True),
+            (8.032, 116, "R13", None),
+        )
+    ]
+    records.sort(key=lambda item: (
+        item.frame.timestamp_seconds, item.frame.source_frame_index,
+    ))
+
+    for record, expected_source in zip(
+        records, ("R12", "R12", "R14", "R14"), strict=True,
+    ):
+        selection = select_overlay(
+            records,
+            record.frame.timestamp_seconds,
+            frame_sequence=record.frame.source_frame_index,
+            max_gap_seconds=0.8,
+        )
+        assert selection.analysis is not None
+        stranger = next(
+            item for item in selection.analysis.judgments
+            if item.event_label == "stranger"
+        )
+        assert stranger.detected is True
+        objects = {item.object_id: item for item in selection.analysis.objects}
+        assert len(stranger.object_ids) == 1
+        face = objects[stranger.object_ids[0]]
+        assert face.label == "unknown_person"
+        assert face.attributes["person_track_id"] == "P0001"
+        if record.message_id != expected_source:
+            assert face.object_id == f"held-stranger-{expected_source}-object-1"
+            assert face.attributes["annotation_source_message_id"] == expected_source
+
+
+@pytest.mark.parametrize(
+    ("media_timestamp", "expected"), [(13.0, True), (13.001, False)],
+)
+def test_select_overlay_expires_missing_stranger_from_original_observation(
+    media_timestamp: float, expected: bool,
+) -> None:
+    positive = _selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="face", stranger=True,
+    )
+    skipped = _selected_features_result(
+        timestamp=12.8, frame_index=142, message_id="safety", stranger=None,
+    )
+
+    selection = select_overlay(
+        (positive, skipped), media_timestamp, max_gap_seconds=0.8,
+    )
+
+    assert selection.analysis is not None
+    active_strangers = [
+        item for item in selection.analysis.judgments
+        if item.event_label == "stranger" and item.detected
+    ]
+    assert bool(active_strangers) is expected
+    assert any(
+        item.label == "unknown_person" for item in selection.analysis.objects
+    ) is expected
+
+
+def test_select_overlay_negative_clears_stranger_and_prevents_revival() -> None:
+    positive = _selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="positive", stranger=True,
+    )
+    negative = _selected_features_result(
+        timestamp=10.4, frame_index=106, message_id="negative", stranger=False,
+    )
+    skipped = _selected_features_result(
+        timestamp=10.8, frame_index=112, message_id="skipped", stranger=None,
+        smoking=True,
+    )
+
+    for timestamp in (10.4, 10.8, 11.0):
+        selection = select_overlay(
+            (positive, negative, skipped), timestamp, max_gap_seconds=0.8,
+        )
+        assert selection.analysis is not None
+        assert not any(
+            item.event_label == "stranger" and item.detected
+            for item in selection.analysis.judgments
+        )
+        assert not any(
+            item.label == "unknown_person" for item in selection.analysis.objects
+        )
+
+
+def test_select_overlay_carried_stranger_preserves_safety_object_ids() -> None:
+    positive = _selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="face-source", stranger=True,
+    )
+    skipped = _selected_features_result(
+        timestamp=10.4, frame_index=106, message_id="safety", stranger=None,
+        smoking=True,
+    )
+
+    for timestamp in (10.4, 10.6):
+        selection = select_overlay(
+            (positive, skipped), timestamp, max_gap_seconds=0.8,
+        )
+        assert selection.analysis is not None
+        judgments = {
+            item.event_label: item for item in selection.analysis.judgments
+        }
+        objects = {item.object_id: item for item in selection.analysis.objects}
+        assert len(objects) == len(selection.analysis.objects) == 2
+        assert judgments["smoking"].object_ids == ("object-1",)
+        assert objects["object-1"].label == "cigarette"
+        expected_id = "held-stranger-face-source-object-1"
+        assert judgments["stranger"].object_ids == (expected_id,)
+        assert objects[expected_id].label == "unknown_person"
+        assert objects[expected_id].attributes["annotation_source_message_id"] == (
+            "face-source"
+        )
+    assert len(skipped.objects) == 1
+    assert len(skipped.judgments) == 1
+    assert "annotation_source_message_id" not in positive.objects[0].attributes
+
+
+@pytest.mark.parametrize("future_timestamp", [10.0, 10.4])
+def test_select_overlay_does_not_inherit_future_stranger(
+    future_timestamp: float,
+) -> None:
+    current = _selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="current", stranger=None,
+    )
+    future = _selected_features_result(
+        timestamp=future_timestamp, frame_index=102, message_id="future",
+        stranger=True,
+    )
+
+    selection = select_overlay(
+        (current, future), 10.0, frame_sequence=101, max_gap_seconds=0.8,
+    )
+
+    assert selection.analysis is not None
+    assert not any(
+        item.event_label == "stranger" for item in selection.analysis.judgments
+    )
+    assert selection.analysis.objects == ()
+
+
+def test_select_overlay_does_not_inherit_stranger_from_another_session() -> None:
+    previous = _selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="previous", stranger=True,
+        session_id="previous-session",
+    )
+    current = _selected_features_result(
+        timestamp=10.4, frame_index=106, message_id="current", stranger=None,
+        session_id="current-session",
+    )
+
+    selection = select_overlay((previous, current), 10.6, max_gap_seconds=0.8)
+
+    assert selection.analysis is not None
+    assert selection.analysis.stream_session_id == "current-session"
+    assert not any(
+        item.event_label == "stranger" for item in selection.analysis.judgments
+    )
+    assert selection.analysis.objects == ()
 
 
 def test_select_overlay_interpolates_compatible_sparse_boxes() -> None:

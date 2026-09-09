@@ -241,8 +241,10 @@ class OverlayFusionMatcher:
                 assignment_key = (event_index, alert.event_label)
                 cache_key = (
                     session_id,
-                    anchor_id,
-                    event_object.object_id,
+                    str(event_object.attributes.get(
+                        "annotation_source_message_id", anchor_id
+                    )),
+                    _association_object_id(event_object),
                     alert.event_label,
                 )
                 track_id = self._associations.get(cache_key)
@@ -309,8 +311,10 @@ class OverlayFusionMatcher:
             occupied.add(slot)
             cache_key = (
                 session_id,
-                anchor_id,
-                event_objects[event_index].object_id,
+                str(event_objects[event_index].attributes.get(
+                    "annotation_source_message_id", anchor_id
+                )),
+                _association_object_id(event_objects[event_index]),
                 event_label,
             )
             self._associations[cache_key] = rich_objects[rich_index].track_id
@@ -319,6 +323,14 @@ class OverlayFusionMatcher:
         while len(self._associations) > self._max_cached_associations:
             self._associations.popitem(last=False)
         return assignments
+
+
+def _association_object_id(item: GroundedObject) -> str:
+    anchor = item.attributes.get("annotation_source_message_id")
+    prefix = f"held-stranger-{anchor}-"
+    if anchor and item.object_id.startswith(prefix):
+        return item.object_id[len(prefix):]
+    return item.object_id
 
 
 def _event_alerts_by_object(

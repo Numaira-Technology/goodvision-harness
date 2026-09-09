@@ -12,6 +12,7 @@ from goodvision_harness.contracts import (
     NormalizedBBox,
 )
 from goodvision_harness.overlay_fusion import OverlayFusionMatcher
+from goodvision_harness.delayed_overlay import select_overlay
 from goodvision_harness.rich_labeling import RichLabelObject
 
 
@@ -79,6 +80,29 @@ def _analysis(
         model_name="model",
         model_latency_seconds=0.1,
     )
+
+
+def test_carried_stranger_reuses_original_association_after_person_moves() -> None:
+    matcher = OverlayFusionMatcher()
+    face = _analysis(
+        bbox=(0.25, 0.12, 0.35, 0.25), object_label="unknown_person",
+        alerts=(("stranger", 0.9),), message_id="face-source", object_id="object-1",
+    )
+    first = matcher.plan(face, (_rich("P1", (0.15, 0.1, 0.5, 0.9)),))
+    assert "P1" in first.alerts_by_track_id()
+    skipped = replace(
+        face, message_id="safety-only", objects=(),
+        frame=replace(face.frame, timestamp_seconds=1.4, source_frame_index=2),
+        judgments=(EventJudgment("smoking", False, 0.9, "No smoking."),),
+    )
+    selection = select_overlay([face, skipped], 1.4, max_gap_seconds=0.8)
+    assert selection.analysis is not None
+    moved = matcher.plan(
+        selection.analysis, (_rich("P1", (0.55, 0.1, 0.9, 0.9)),),
+        association_message_id=selection.left_message_id,
+    )
+    assert "P1" in moved.alerts_by_track_id()
+    assert moved.unmatched_event_object_ids == ()
 
 
 def _semantic_analysis() -> AnalysisResult:

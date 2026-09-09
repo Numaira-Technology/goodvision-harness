@@ -1,0 +1,50 @@
+# Reuse audited GPU dependencies; reinstall/copy every application component
+# from the current checkout. The ordinary GPU Dockerfiles build these runtimes
+# from dependency sources when a compatible local runtime is not available.
+ARG MAIN_RUNTIME=goodvision-harness:2026.09.03-full-gpu.1
+ARG WORKER_RUNTIME=goodvision-rich-label-worker:2026.09.03-full-gpu.1
+
+FROM ${MAIN_RUNTIME} AS harness
+USER root
+WORKDIR /app
+COPY pyproject.toml /tmp/goodvision-build/pyproject.toml
+COPY src /tmp/goodvision-build/src
+RUN python -m pip install --no-cache-dir --no-index --no-deps \
+      --no-build-isolation --force-reinstall /tmp/goodvision-build \
+    && rm -rf /tmp/goodvision-build
+COPY config.delivery.yaml /app/config.yaml
+COPY config.delivery.yaml /usr/local/lib/python3.11/site-packages/goodvision_harness/config.yaml
+COPY tools/runtime_gateway.py /opt/goodvision/runtime_gateway.py
+COPY src/goodvision_harness/privacy.py /opt/goodvision/public_privacy.py
+COPY tools/face_gpu_smoke.py /opt/goodvision/internal/face_check.py
+COPY tools/customer_check.py /app/tools/check_runtime.py
+COPY tools/customer_check.py /app/tools/check_face.py
+RUN python /opt/goodvision/internal/face_check.py --runtime \
+    && chown -R 10001:10001 /app /opt/goodvision
+ENV GOODVISION_COMPONENT=main \
+    HARNESS_INFERENCE_PROFILE=customer-standard \
+    FACE_ACCELERATOR=cpu \
+    FACE_PROVIDER="" \
+    RICH_LABEL_ENABLED=false
+LABEL org.opencontainers.image.version="2026.09.09-full.1"
+USER 10001:10001
+ENTRYPOINT []
+CMD ["python", "/opt/goodvision/runtime_gateway.py", "serve"]
+
+FROM ${WORKER_RUNTIME} AS worker
+USER root
+WORKDIR /worker
+COPY workers/paddle_rich_label/app.py /worker/app.py
+COPY tools/runtime_gateway.py /opt/goodvision/runtime_gateway.py
+COPY src/goodvision_harness/privacy.py /opt/goodvision/public_privacy.py
+COPY workers/paddle_rich_label/gpu_smoke.py /opt/goodvision/internal/perception_check.py
+COPY tools/customer_check.py /worker/tools/check_runtime.py
+COPY tools/customer_check.py /worker/tools/check_perception.py
+RUN python /opt/goodvision/internal/perception_check.py --runtime \
+    && chown -R 10002:10002 /worker /opt/goodvision
+ENV GOODVISION_COMPONENT=perception \
+    RICH_DEVICE=gpu:0
+LABEL org.opencontainers.image.version="2026.09.09-full.1"
+USER 10002:10002
+ENTRYPOINT []
+CMD ["python", "/opt/goodvision/runtime_gateway.py", "serve"]

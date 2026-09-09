@@ -1,0 +1,24 @@
+services:
+  harness:
+    environment:
+      FACE_ACCELERATOR: gpu
+      RICH_LABEL_ENABLED: "true"
+    depends_on:
+      rich-label-worker:
+        condition: service_started
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  rich-label-worker:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

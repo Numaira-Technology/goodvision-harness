@@ -24,6 +24,7 @@ from .contracts import AnalysisResult, GroundedObject, NormalizedBBox
 from .result_bus import FramePacket
 
 LOGGER = logging.getLogger(__name__)
+_STRANGER_ANNOTATION_HOLD_SECONDS = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +72,7 @@ def select_overlay(
     if position < 0:
         return OverlaySelection(None, "none")
 
-    left = results[position]
+    left = _carry_stranger_annotation(results, position, float(media_timestamp))
     left_timestamp = left.frame.timestamp_seconds
     age = max(0.0, float(media_timestamp) - left_timestamp)
     exact_sequence = (
@@ -81,7 +82,11 @@ def select_overlay(
     if abs(float(media_timestamp) - left_timestamp) <= 1e-6 and exact_sequence:
         return OverlaySelection(left, "exact", left.message_id)
 
-    right = results[position + 1] if position + 1 < len(results) else None
+    right = (
+        _carry_stranger_annotation(
+            results, position + 1, results[position + 1].frame.timestamp_seconds
+        ) if position + 1 < len(results) else None
+    )
     if right is None:
         return OverlaySelection(left, "held", left.message_id)
 
@@ -101,6 +106,54 @@ def select_overlay(
         left.message_id,
         right.message_id,
     )
+
+
+def _carry_stranger_annotation(
+    results: Sequence[AnalysisResult], position: int, timestamp: float
+) -> AnalysisResult:
+    """An omitted CPU face branch is not a negative identity observation.
+
+    This is display-only continuity. Published model results and evidence JPEGs
+    keep their original per-frame contract. Explicit face negatives always win.
+    """
+
+    current = results[position]
+    if any(item.event_label == "stranger" for item in current.judgments):
+        return current
+    for previous in reversed(results[:position]):
+        if previous.stream_session_id != current.stream_session_id:
+            break
+        if (
+            timestamp - previous.frame.timestamp_seconds
+            > _STRANGER_ANNOTATION_HOLD_SECONDS
+        ):
+            break
+        judgment = next(
+            (item for item in previous.judgments if item.event_label == "stranger"),
+            None,
+        )
+        if judgment is None:
+            continue
+        referenced = set(judgment.object_ids)
+        objects = tuple(
+            replace(
+                item,
+                object_id=f"held-stranger-{previous.message_id}-{item.object_id}",
+                attributes={
+                    **item.attributes,
+                    "annotation_source_message_id": previous.message_id,
+                },
+            )
+            for item in previous.objects if item.object_id in referenced
+        )
+        return replace(
+            current,
+            judgments=(*current.judgments, replace(
+                judgment, object_ids=tuple(item.object_id for item in objects)
+            )),
+            objects=(*current.objects, *objects),
+        )
+    return current
 
 
 class DelayedOverlayComposer:
@@ -381,7 +434,9 @@ class DelayedOverlayComposer:
         return rendered, mode
 
     def _prune_results_locked(self, media_timestamp: float) -> None:
-        cutoff = media_timestamp - self.max_gap_seconds
+        cutoff = media_timestamp - max(
+            self.max_gap_seconds, _STRANGER_ANNOTATION_HOLD_SECONDS
+        )
         while (
             len(self._results) > 2
             and self._results[1].frame.timestamp_seconds < cutoff

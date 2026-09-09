@@ -18,7 +18,13 @@ from goodvision_harness.contracts import (
     NormalizedBBox,
     PUBLIC_MODEL_NAME,
 )
-from goodvision_harness.face_recognition import GalleryPerson, StrangerCapture
+from goodvision_harness.face_recognition import (
+    FaceRecognitionRuntime,
+    FaceRecognitionSession,
+    FaceRecognizerConfig,
+    GalleryPerson,
+    StrangerCapture,
+)
 from goodvision_harness.reference_memory import MemoryContext, MemoryReference
 from goodvision_harness.service import (
     FACE_ENROLLMENT_MAX_BYTES,
@@ -257,6 +263,41 @@ def test_face_mode_reuses_streaming_session_with_face_settings(
             {"status": "warming", "last_error": "provider unavailable"}
         )
         assert runtime.status()["last_error"] == "analysis request failed"
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize("analysis_mode", ["face", "multi"])
+def test_live_sessions_isolate_face_history_and_bind_rich_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, analysis_mode: str,
+) -> None:
+    monkeypatch.delenv("RESULT_WEBHOOK_URL", raising=False)
+    face_runtime = FaceRecognitionRuntime(FaceRecognizerConfig(
+        gallery_path=tmp_path / "gallery.json",
+    ))
+    monkeypatch.setattr(face_runtime, "warmup", lambda: 0.0)
+    runtime = HarnessRuntime(
+        load_config(ROOT / "config.yaml"), face_runtime=face_runtime
+    )
+    clients = []
+    try:
+        for _ in range(2):
+            runtime.start_camera(
+                analysis_mode=analysis_mode,
+                features=["stranger"] if analysis_mode == "multi" else None,
+                dry_run=False,
+            )
+            assert runtime._session is not None
+            client = runtime._session.client
+            if analysis_mode == "multi":
+                client = client._stranger_client
+            assert isinstance(client, FaceRecognitionSession)
+            assert client.runtime is face_runtime
+            assert client._session_id == runtime._session.stream_session_id
+            clients.append(client)
+            runtime.stop_session()
+        assert clients[0] is not clients[1]
+        assert clients[0]._tracker is not clients[1]._tracker
     finally:
         runtime.stop()
 

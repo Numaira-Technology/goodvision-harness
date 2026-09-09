@@ -38,15 +38,14 @@ rich_labeling:
   # sidecar is running; event/VLM inference remains fail-open and independent.
   enabled: false
   endpoint: http://rich-label-worker:8091/v1/labels
-  # CPU demo inference can briefly cross 0.8s on the first hot request. The
-  # coordinator is latest-only and fail-open, so 2s adds startup headroom
-  # without delaying the video/VLM path or changing GPU throughput.
+  # Enabled requests still require the remote worker to confirm usable GPU
+  # inference. CPU, unavailable and legacy workers remain disabled.
   timeout_seconds: 2.0
   # The delayed 15 FPS compositor interpolates stable track boxes between these
   # lower-cost local keyframes.
   max_fps: 7.5
   history_size: 128
-  # Interpolate matching tracks across normal local CPU inference gaps.
+  # Interpolate matching tracks across normal inference gaps.
   max_interpolation_gap_seconds: 2.0
   # Bound stale boxes only when no later rich-label keyframe is known.
   max_hold_seconds: 2.0
@@ -247,8 +246,8 @@ face:
   live_scheduler: auto
   det_size: 640
   threshold: 0.4
-  # Live safety detection is fail-open for distant faces. The current 1280px
-  # analysis feed yields valid embeddings for faces down to roughly 20px.
+  # Small faces may positively match known people. Stranger alerts require
+  # reliable faces at least 60px wide/high and three consecutive live mismatches.
   min_face_size: 20
   # Keep enrollment stricter so low-detail samples cannot degrade the gallery.
   enrollment_min_face_size: 80

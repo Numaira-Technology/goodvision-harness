@@ -126,7 +126,8 @@ def test_rich_overlay_promotes_one_track_card_with_multiple_alerts(
     assert captured_text[0].startswith("P0007")
     assert captured_text[1] == "ALERT  FIGHT 91% / FALL 86% / STRANGER 88%"
     assert "AGE 25-34" in captured_text[2]
-    assert "GENDER MALE" in captured_text[2]
+    assert "GENDER" not in " ".join(captured_text)
+    assert "MALE" not in " ".join(captured_text)
     assert not contains_private_implementation_detail(" ".join(captured_text))
 
 
@@ -224,7 +225,8 @@ def test_rich_overlay_only_displays_supplied_sanitized_attributes(
     text = " ".join(captured)
     assert "P7" in text
     assert "25-34" in text
-    assert "FEMININE" in text
+    assert "FEMININE" not in text
+    assert "GENDER" not in text
     assert "BACKPACK" in text
     assert "#bag-2" in text
     assert "ADMIN" in text
@@ -234,7 +236,7 @@ def test_rich_overlay_only_displays_supplied_sanitized_attributes(
     assert "GENDER" not in " ".join(captured[2:])
 
 
-def test_rich_overlay_keeps_demographics_and_adds_compact_structured_appearance(
+def test_rich_overlay_keeps_age_and_appearance_without_displaying_gender(
     monkeypatch: Any,
 ) -> None:
     captured: list[str] = []
@@ -278,7 +280,8 @@ def test_rich_overlay_keeps_demographics_and_adds_compact_structured_appearance(
 
     assert len(captured) == 3
     assert "AGE 18-60" in captured[1]
-    assert "GENDER MALE" in captured[1]
+    assert "GENDER" not in " ".join(captured)
+    assert "MALE" not in " ".join(captured)
     assert "CONF 92%" in captured[1]
     assert "GLASSES" not in captured[2]
     assert "HOLDING ITEM" in captured[2]

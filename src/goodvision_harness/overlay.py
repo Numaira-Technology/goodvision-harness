@@ -466,17 +466,6 @@ def _rich_label_lines(
     )
     if age is not None:
         details.append(f"AGE {_public_hud_text(age, limit=24).upper()}")
-    gender = _first_scalar(
-        attributes,
-        ("estimated_gender", "gender_presentation", "gender"),
-    )
-    if gender is not None:
-        gender_text = _public_hud_text(gender, limit=24).upper()
-        gender_text = {
-            "FEMALE-PRESENTING": "FEMALE",
-            "MALE-PRESENTING": "MALE",
-        }.get(gender_text, gender_text)
-        details.append(f"GENDER {gender_text}")
     confidence = _rich_confidence(_object_value(item, "confidence"))
     if confidence:
         details.append(f"CONF {confidence}")

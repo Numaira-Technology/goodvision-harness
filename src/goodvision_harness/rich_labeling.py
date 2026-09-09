@@ -16,6 +16,7 @@ import math
 import threading
 import time
 from bisect import bisect_right
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
@@ -226,6 +227,19 @@ class RichLabelClient(Protocol):
     ) -> RichLabelSnapshot: ...
 
 
+class DeferredRichLabelHistory:
+    """Read history after GPU warmup without resetting a face session's tracks."""
+
+    def __init__(
+        self, coordinator: Callable[[], RichLabelCoordinator | None],
+    ) -> None:
+        self._coordinator = coordinator
+
+    def history(self) -> tuple[RichLabelSnapshot, ...]:
+        coordinator = self._coordinator()
+        return coordinator.history() if coordinator is not None else ()
+
+
 class RichLabelHTTPClient:
     """Synchronous raw-JPEG client for a PaddleDetection adapter service."""
 
@@ -247,6 +261,34 @@ class RichLabelHTTPClient:
         )
         self._lock = threading.Lock()
         self._closed = False
+
+    def gpu_ready(self) -> bool:
+        """Require the remote worker to confirm usable GPU inference.
+
+        The worker may live on another machine. Host graphics adapters or an
+        enabled configuration flag cannot establish its inference capability.
+        Old, unreachable, CPU-only and not-yet-ready workers remain disabled.
+        """
+
+        health_url = httpx.URL(self.endpoint_url).copy_with(
+            path="/health/ready", query=None, fragment=None,
+        )
+        try:
+            with self._lock:
+                if self._closed:
+                    return False
+                response = self._client.get(
+                    health_url, headers=self._headers, timeout=2.0,
+                )
+            response.raise_for_status()
+            payload = response.json()
+            return (
+                isinstance(payload, dict)
+                and payload.get("ready") is True
+                and payload.get("gpu_ready") is True
+            )
+        except (httpx.HTTPError, ValueError):
+            return False
 
     def infer(
         self,
@@ -373,6 +415,8 @@ class RichLabelCoordinator:
         self._stream_session_id: str | None = None
         self._pending: _PendingFrame | None = None
         self._history: list[RichLabelSnapshot] = []
+        self._successful_timings: deque[float] = deque(maxlen=10)
+        self._last_success_completed_at: float | None = None
         self._last_started_at: float | None = None
         self._thread: threading.Thread | None = None
         self._in_flight = False
@@ -466,6 +510,8 @@ class RichLabelCoordinator:
                 self._stats["replaced"] += 1
             self._pending = None
             self._history.clear()
+            self._successful_timings.clear()
+            self._last_success_completed_at = None
             self._stream_session_id = session_id
             self._last_started_at = None
             self._stats["resets"] += 1
@@ -493,11 +539,12 @@ class RichLabelCoordinator:
             if session_id != self._stream_session_id:
                 return RichLabelSelection(None, "none")
             history = tuple(self._history)
+            display_hold_seconds = self._display_hold_seconds_locked()
         return select_rich_labels(
             history,
             timestamp,
             max_gap_seconds=self.max_interpolation_gap_seconds,
-            max_hold_seconds=self.max_hold_seconds,
+            max_hold_seconds=display_hold_seconds,
             frame_sequence=frame_sequence,
         )
 
@@ -528,6 +575,9 @@ class RichLabelCoordinator:
                     "max_fps": self.max_fps,
                     "history_size": len(self._history),
                     "history_capacity": self.history_size,
+                    "display_hold_seconds": round(
+                        self._display_hold_seconds_locked(), 6
+                    ),
                     "stream_session_id": self._stream_session_id,
                     "pending": self._pending is not None,
                     "in_flight": self._in_flight,
@@ -625,6 +675,17 @@ class RichLabelCoordinator:
                             self._stats["last_error"] = "rich-label inference failed"
                         else:
                             assert snapshot is not None
+                            self._successful_timings.append(
+                                max(0.0, completed_at - item.enqueued_at)
+                            )
+                            if self._last_success_completed_at is not None:
+                                self._successful_timings.append(
+                                    max(
+                                        0.0,
+                                        completed_at - self._last_success_completed_at,
+                                    )
+                                )
+                            self._last_success_completed_at = completed_at
                             self._insert_snapshot_locked(snapshot)
                             self._stats["succeeded"] += 1
                             self._stats["last_error"] = None
@@ -663,6 +724,18 @@ class RichLabelCoordinator:
             self._history.insert(index, snapshot)
         if len(self._history) > self.history_size:
             del self._history[: len(self._history) - self.history_size]
+
+    def _display_hold_seconds_locked(self) -> float:
+        # CPU inference can take longer than the configured decorative hold.
+        # Cover both the last result's age on arrival and the next update's
+        # cadence. Only successful completions establish this display budget:
+        # repeated errors cannot keep stale boxes alive indefinitely.
+        # Raw history used for identity association is never extended here.
+        observed = max(self._successful_timings, default=0.0)
+        return min(
+            max(15.0, self.max_hold_seconds),
+            self.max_hold_seconds + 2.0 * observed,
+        )
 
     def _state_locked(self) -> str:
         if self._closed:

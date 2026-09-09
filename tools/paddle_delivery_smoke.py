@@ -32,7 +32,8 @@ import uvicorn
 
 NOTICE = (
     "SYNTHETIC PROTOCOL TEST ONLY: real worker code/HTTP; "
-    "no Paddle import, model download, GPU execution, or real-model inference."
+    "no Paddle import, model download, GPU execution, or real-model inference. "
+    "GPU readiness is simulated only for this isolated test fixture."
 )
 SESSION_HEADER = "X-Goodvision-Stream-Session-Id"
 FRAME_HEADER = "X-Goodvision-Frame-Sequence"
@@ -78,6 +79,9 @@ class SyntheticModels:
     def __init__(self, worker: ModuleType) -> None:
         self.worker = worker
         self.ready = False
+        # The --isolated fixture simulates the health contract so the harness's
+        # production GPU gate is exercised, never disabled or bypassed.
+        self.gpu_ready = False
         self.attribute_started = threading.Event()
         self.attribute_release = threading.Event()
         self.attribute_release.set()
@@ -86,6 +90,7 @@ class SyntheticModels:
 
     def ensure_detector_loaded(self) -> None:
         self.ready = True
+        self.gpu_ready = True
 
     def detect(self, image: Any) -> tuple[Any, ...]:
         self.detect_calls += 1
@@ -196,7 +201,12 @@ def self_test(
             threading.Event().wait(0.05)
         require(models.ready, "production lifespan did not warm up the detector")
         require(http(base_url, "/health/live")[0] == {"live": True}, "live health")
-        require(http(base_url, "/health/ready")[0] == {"ready": True}, "ready health")
+        require(
+            http(base_url, "/health/ready")[0] == {
+                "ready": True, "gpu_ready": True,
+            },
+            "synthetic ready/GPU capability health",
+        )
         passed("actual FastAPI lifespan and health routes")
 
         jpeg = make_jpeg()

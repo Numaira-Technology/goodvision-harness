@@ -25,6 +25,7 @@ from goodvision_harness.grounding import (
     FIXED_FIVE_ANALYSIS_KIND,
     SAFETY_EVENT_LABELS,
     SELECTED_FEATURES_ANALYSIS_KIND,
+    AIClubMultiGroundingClient,
     FixedFiveGroundingClient,
     GroundedClassification,
     GroundedEventClassification,
@@ -34,9 +35,9 @@ from goodvision_harness.grounding import (
     SelectedFeaturesGroundingClient,
     parse_multi_grounded_classification,
 )
+from goodvision_harness.model_api import ModelAPIClient, ModelAPIError
 from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -335,10 +336,71 @@ def test_selected_features_keep_successful_branch_when_other_branch_fails() -> N
     response = client.classify_window(_window())
 
     assert response.ok
+    assert response.completed_branches == ("safety",)
+    assert response.branch_errors == (("stranger", "request_failed"),)
     classification = response.classification
     assert isinstance(classification, MultiGroundedClassification)
     assert [item.event_label for item in classification.judgments] == ["smoking"]
     assert classification.analysis_kind == SELECTED_FEATURES_ANALYSIS_KIND
+
+
+@pytest.mark.parametrize("failure", ["timeout", "http_error", "invalid_response"])
+def test_partial_face_success_preserves_safety_failure_diagnostics(
+    failure: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+
+    class _Transport:
+        assistant_text = staticmethod(ModelAPIClient.assistant_text)
+
+        def chat_completion(self, **kwargs: Any) -> dict[str, Any]:
+            if failure == "invalid_response":
+                return {"choices": [{"message": {
+                    "content": "private response body, not classification JSON",
+                }}]}
+            raise ModelAPIError(
+                "private URL / secret / provider response",
+                code=failure,
+                status_code=429 if failure == "http_error" else None,
+            )
+
+    client = SelectedFeaturesGroundingClient(
+        AIClubMultiGroundingClient(settings, _Transport()),
+        _StaticClient(settings, _stranger_classification(unknown=True)),
+    )
+    response = client.classify_window(_window())
+    assert response.ok
+    assert response.completed_branches == ("stranger",)
+    assert response.branch_errors == (("safety", failure),)
+    assert [j.event_label for j in response.classification.judgments] == ["stranger"]
+    assert "branch=safety" in caplog.text
+    assert f"code={failure}" in caplog.text
+    assert "window=7" in caplog.text
+    assert "private" not in caplog.text
+    assert "secret" not in caplog.text
+    if failure == "http_error":
+        assert "http_status=429" in caplog.text
+
+
+def test_both_failed_branches_remain_distinct() -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+
+    class _FailingClient:
+        def __init__(self, code: str) -> None:
+            self.settings = settings
+            self.code = code
+
+        def classify_window(self, window: FrameWindow) -> GroundingResponse:
+            raise ModelAPIError("not public", code=self.code)
+
+    response = SelectedFeaturesGroundingClient(
+        _FailingClient("timeout"), _FailingClient("connection"),
+    ).classify_window(_window())
+    assert not response.ok
+    assert response.branch_errors == (
+        ("safety", "timeout"), ("stranger", "connection"),
+    )
+    assert response.completed_branches == ()
 
 
 def test_selected_features_drop_busy_face_samples_without_building_a_queue() -> None:
@@ -404,6 +466,8 @@ def test_selected_features_drop_busy_face_samples_without_building_a_queue() -> 
         assert len(safety.windows) == 6
         assert all(window.newest_frame.width == 320 for window in safety.windows)
         for response in busy_responses:
+            assert response.completed_branches == ("safety",)
+            assert response.branch_errors == ()
             classification = response.classification
             assert isinstance(classification, MultiGroundedClassification)
             assert [item.event_label for item in classification.judgments] == [
@@ -414,6 +478,8 @@ def test_selected_features_drop_busy_face_samples_without_building_a_queue() -> 
         primary_response = primary.result(timeout=2.0)
 
     primary_classification = primary_response.classification
+    assert primary_response.completed_branches == ("safety", "stranger")
+    assert primary_response.branch_errors == ()
     assert isinstance(primary_classification, MultiGroundedClassification)
     assert [
         item.event_label for item in primary_classification.judgments

@@ -14,6 +14,7 @@ from goodvision_harness.grounding import (
     SAFETY_EVENT_LABELS,
     AIClubGroundingClient,
     AIClubMultiGroundingClient,
+    build_grounding_messages,
 )
 from goodvision_harness.model_api import ModelAPIClient
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
@@ -92,6 +93,10 @@ def test_evidence_rules_reach_model_in_each_detection_path(
     system_text = request["messages"][0]["content"]
     assert "For smoking and fall" in system_text
     assert "take precedence over this high-recall preference" in system_text
+    if "smoking" in event_labels:
+        assert "Mandatory smoking evidence rule" in system_text
+        assert "One or two fingers held to the mouth" in system_text
+        assert "Never invent a concealed cigarette" in system_text
     content = request["messages"][1]["content"]
     assert sum(part["type"] == "image_url" for part in content) == 1
     prompt = content[0]["text"]
@@ -133,3 +138,82 @@ def test_single_and_multi_prompts_use_identical_event_evidence_rules() -> None:
         assert rule(settings.prompt, single_label) == rule(
             settings.multi_event_prompt, multi_label
         )
+
+
+@pytest.mark.parametrize(
+    ("legacy_single", "event_labels"),
+    [
+        (True, ("smoking",)),
+        (False, ("smoking",)),
+        (False, ("smoking", "fall")),
+        (False, SAFETY_EVENT_LABELS),
+    ],
+)
+def test_bare_finger_evidence_rule_overrides_stale_permissive_prompts(
+    legacy_single: bool, event_labels: tuple[str, ...]
+) -> None:
+    settings = replace(
+        load_config(ROOT / "config.yaml").inference,
+        system_prompt="Use a low detection threshold and prefer false positives.",
+        prompt="A hand near the mouth plausibly indicates smoking; choose true.",
+        multi_event_prompt="Prefer a low-confidence positive for ambiguous cues.",
+    )
+    negative = {
+        "detected": False,
+        "confidence": 0.95,
+        "description": "Two bare fingers touch the lips; no smoking item is visible.",
+        "objects": [],
+    }
+    transport = Mock(spec=ModelAPIClient)
+    transport.assistant_text.return_value = json.dumps(
+        negative if legacy_single else {
+            "events": [{"event_label": label, **negative} for label in event_labels]
+        }
+    )
+    client = (
+        AIClubGroundingClient(settings, transport)
+        if legacy_single
+        else AIClubMultiGroundingClient(settings, transport, event_labels)
+    )
+    window = FrameWindow(index=0, frames=(SampledFrame(
+        sample_index=0, source_frame_index=0, timestamp_seconds=0.0,
+        jpeg_bytes=b"test-frame", width=320, height=180,
+    ),))
+
+    response = client.classify_window(window)
+
+    assert response.error is None
+    assert response.classification is not None
+    assert response.classification.detected is False
+    assert response.classification.objects == ()
+    messages = transport.chat_completion.call_args.kwargs["messages"]
+    system_text = messages[0]["content"]
+    assert messages[0]["role"] == "system"
+    assert system_text.count("Mandatory smoking evidence rule") == 1
+    for required in (
+        "overrides any high-recall preference",
+        "detected=true requires BOTH an identifiable cigarette",
+        "visibly separate from the person's fingers",
+        "AND a visible action using, holding, or preparing that item",
+        "One or two fingers held to the mouth",
+        "skin, fingernails, or miming a puff are not smoking items",
+        "A pen, straw, food, or a generic small white/cylindrical object",
+        "cannot be distinguished from a finger or pen, use detected=false",
+        "not a low-confidence positive",
+        "Never invent a concealed cigarette or put a cigarette box on fingers",
+        "its distinguishing visual feature",
+    ):
+        assert required in system_text
+
+
+def test_smoking_evidence_rule_does_not_change_other_event_requests() -> None:
+    window = FrameWindow(index=0, frames=(SampledFrame(
+        sample_index=0, source_frame_index=0, timestamp_seconds=0.0,
+        jpeg_bytes=b"test-frame", width=320, height=180,
+    ),))
+    messages = build_grounding_messages(
+        window, event_label="fall", system_prompt="Existing fall policy",
+        prompt="Evaluate fall",
+    )
+
+    assert messages[0]["content"] == "Existing fall policy"

@@ -18,10 +18,10 @@ WORKDIR /worker
 COPY workers/paddle_rich_label/requirements.txt ./
 # RTX 5090 is Blackwell sm_120. Paddle's supported binary route for it is the
 # CUDA 12.9 (or 13.0) GPU wheel; keep this image independent from the CPU pin.
-RUN python -m pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir --timeout 120 --retries 5 \
       --index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/ \
       paddlepaddle-gpu==3.3.0 \
-    && python -m pip install --no-cache-dir -r requirements.txt
+    && python -m pip install --no-cache-dir --timeout 120 --retries 5 -r requirements.txt
 
 # libcuda.so.1 is injected by the NVIDIA runtime and is intentionally absent
 # while building on a CPU-only host. Validate package versions and the wheel's

@@ -1,21 +1,23 @@
 # 内部线路对应表与实测记录
 
-内部维护资料，不复制到客户界面、公开 API、事件 JSON 或交付说明中。公开部分仅展示线路代号、状态和耗时。已有代号不得重用来指向其他 provider/model 组合。
+内部维护资料，不复制到客户界面、公开 API、事件 JSON 或交付说明中。公开部分仅展示线路代号、状态和耗时。内部持久化代号不得重用来指向其他 provider/model 组合；公开编号与内部代号分别维护。
 
 ## 当前保留的 8 条线路
 
 2026-09-08 从 44 条候选中按完整响应成功率和中位耗时筛选，排除复测失败的线路；按用户最新要求移除 Novita 和 CoreWeave，使用后续排名中的 B、F 补位。当前 8 条覆盖 3 个 provider、6 个 Qwen 版本，均为 Alibaba、DeepInfra 或 Parasail。以下耗时来自全量初测；最后一节记录移除 provider 后的八条复测。
 
-| 代号 | Provider / endpoint slug | 模型 | 35B 优先组 | 中位耗时（秒） | 三次计分耗时（秒） |
-|---|---|---|---|---:|---|
-| C | Alibaba / `alibaba` | `qwen/qwen3-vl-8b-instruct` | 否 | 1.188 | 1.219 / 1.187 / 1.188 |
-| D | Alibaba / `alibaba` | `qwen/qwen3.5-35b-a3b` | 是 | 1.579 | 1.579 / 1.563 / 1.625 |
-| AA | Alibaba / `alibaba` | `qwen/qwen3-vl-30b-a3b-instruct` | 否 | 1.687 | 1.734 / 1.579 / 1.687 |
-| AE | DeepInfra / `deepinfra/fp4` | `qwen/qwen3.5-122b-a10b` | 否 | 1.718 | 1.766 / 1.718 / 1.391 |
-| G | Parasail / `parasail/fp8` | `qwen/qwen3.6-35b-a3b` | 是 | 2.141 | 3.219 / 2.141 / 1.390 |
-| K | Alibaba / `alibaba` | `qwen/qwen3.5-27b` | 否 | 2.219 | 2.156 / 2.219 / 3.469 |
-| B | Parasail / `parasail/fp8` | `qwen/qwen3.5-35b-a3b` | 是 | 2.672 | 2.469 / 2.703 / 2.672 |
-| F | DeepInfra / `deepinfra/fp8` | `qwen/qwen3.6-35b-a3b` | 是 | 2.859 | 2.359 / 3.016 / 2.859 |
+2026-09-09 按当前列表顺序重新编制公开编号 A–H。控制台与 `/v1/deployment/routes` 的 `id`、`label`、`selected_id`、`selected_label` 使用公开编号；保存的内部代号保持不变，已有选择不会因编号相同而切换到其他模型。下文历史记录均使用内部代号。
+
+| 公开编号 | 内部代号 | Provider / endpoint slug | 模型 | 35B 优先组 | 中位耗时（秒） | 三次计分耗时（秒） |
+|---|---|---|---|---|---:|---|
+| A | C | Alibaba / `alibaba` | `qwen/qwen3-vl-8b-instruct` | 否 | 1.188 | 1.219 / 1.187 / 1.188 |
+| B | D | Alibaba / `alibaba` | `qwen/qwen3.5-35b-a3b` | 是 | 1.579 | 1.579 / 1.563 / 1.625 |
+| C | AA | Alibaba / `alibaba` | `qwen/qwen3-vl-30b-a3b-instruct` | 否 | 1.687 | 1.734 / 1.579 / 1.687 |
+| D | AE | DeepInfra / `deepinfra/fp4` | `qwen/qwen3.5-122b-a10b` | 否 | 1.718 | 1.766 / 1.718 / 1.391 |
+| E | G | Parasail / `parasail/fp8` | `qwen/qwen3.6-35b-a3b` | 是 | 2.141 | 3.219 / 2.141 / 1.390 |
+| F | K | Alibaba / `alibaba` | `qwen/qwen3.5-27b` | 否 | 2.219 | 2.156 / 2.219 / 3.469 |
+| G | B | Parasail / `parasail/fp8` | `qwen/qwen3.5-35b-a3b` | 是 | 2.672 | 2.469 / 2.703 / 2.672 |
+| H | F | DeepInfra / `deepinfra/fp8` | `qwen/qwen3.6-35b-a3b` | 是 | 2.859 | 2.359 / 3.016 / 2.859 |
 
 历史全量测试曾选 H（1.516 秒），现已按用户要求禁用。I 初测最快（1.078 秒），但首次八条复测出现请求失败，继续排除。H、AB 被 B、F 替代；被移除 provider 的全部历史代号 H、R、L、S、AB、AG、AK 均不能选中、保存、恢复或通过线路对象发起请求。原始复测保存在 tmp/qwen-route-expansion-20260908/results-shortlist-first.json。
 
@@ -38,7 +40,7 @@
 3. 否则选择所有合格线路中最快者。全部失败或无法保存时保留原选择。
 4. 只对表中 8 条线路进行日常测速；允许的历史代号可恢复已有配置，被明确移除 provider 的历史代号禁止恢复。测速与检测运行互斥。
 
-选择以代号保存在数据目录 selected-route.json；重启后保留线路并清空测速进度。没有持久化目录时仅在当前进程有效。加载时由内部白名单解析，文件不能注入任意模型、provider 或 endpoint。
+选择以内部代号保存在数据目录 selected-route.json；重启后保留线路并清空测速进度。没有持久化目录时仅在当前进程有效。加载时由内部白名单解析，文件不能注入任意模型、provider 或 endpoint。仍在使用当前八条以外的允许历史配置时，界面显示“默认线路”，重新测速后显示所选的 A–H 编号。
 
 GET /v1/deployment/routes 返回 8 条不含实现名称的候选；POST /v1/deployment/routes/check 返回 202 后轮询 GET。接口不接收任意 provider/model 或图像，响应仅含代号、状态、耗时和通用错误码。
 
