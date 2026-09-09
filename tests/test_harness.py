@@ -66,6 +66,9 @@ EXPECTED_SYSTEM_PROMPT = (
     "partial events. Use a deliberately low detection threshold and prefer "
     "false positives over false negatives. Do not require certainty or a "
     "textbook-complete event. Evaluate every requested event independently. "
+    "For smoking and fall, the event-specific minimum evidence requirements "
+    "and negative examples take precedence over this high-recall preference. "
+    "A low-confidence guess cannot replace the required evidence. "
     "Answer with a single JSON object - no markdown, no extra text."
 )
 EXPECTED_PROMPT = (
@@ -82,20 +85,34 @@ and a negative, choose detected=true; lower confidence may express the
 uncertainty. Use detected=false only when there is no meaningful visible
 cue for the event or the evidence clearly indicates an unrelated activity.
 
+For smoking and fall, apply the minimum evidence requirements below
+before the high-recall preference. If those requirements are not met,
+use detected=false, not a low-confidence positive.
+
 Event-specific sensitivity examples:
-- Smoking: detected=true when a person holds, handles, carries, or has a
-  cigarette, cigar, pipe, or e-cigarette in their hand or mouth; moves it
-  toward the mouth; takes it out or prepares it; appears to reach for or
-  use a lighter with it; or visibly puffs or emits smoke/vapor. The item
-  may be lit or unlit. Do not require a flame, glowing tip, inhalation,
-  exhalation, or visible smoke. An unattended item with no person
-  interacting with it is not sufficient by itself.
+- Smoking: detected=true requires an identifiable cigarette, cigar,
+  pipe, or e-cigarette at least partially visible in the NEWEST frame and
+  held, handled, carried, or used by a person. The item may be lit or unlit;
+  a flame, glowing tip, inhalation, exhalation, or visible smoke is not
+  required. An unattended item alone is insufficient.
+  A hand near or covering the mouth, coughing, yawning, wiping the face,
+  eating, or drinking is insufficient without an identifiable smoking
+  item. A generic small white object alone is not enough to identify it
+  as a cigarette. Do not invent a hidden item, smoke, or a bounding box.
+  For a positive, name the visible smoking item in the description;
+  do not use a hand-to-mouth gesture alone as evidence.
 - Fighting: detected=true for striking or kicking, pushing, grabbing,
   wrestling, aggressive lunging or chasing, raised fists, an attack
   posture, or an apparently imminent attack. Do not require visible impact.
-- Falling: detected=true for loss of balance, stumbling, uncontrolled
-  downward motion, collapse, being in the process of falling, or being
-  newly or abnormally on the ground. Do not require seeing the full impact.
+- Falling: detected=true requires visible evidence of loss of balance
+  or support, uncontrolled descent, or collapse. A stable, supported
+  squat or crouch, kneeling, bending to pick something up, or normal
+  sitting or lying is not a fall. Low body height, a forward lean, or
+  being on the ground alone is insufficient. A person can fall from any
+  posture, including a squat, when loss of support or collapse is visible.
+  With only one frame, do not invent downward motion or a before/after
+  transition. The full impact is not required. For a positive, describe
+  the visible loss of balance, loss of support, or collapse evidence.
 
 Respond with only this JSON object:
 """

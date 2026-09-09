@@ -28,8 +28,14 @@ that warmup. The default runtime settings are:
 - one-frame windows with stride 1 and six concurrent model requests;
 - `max_tokens=1200`, no API retry, and one explicitly selected model route
   with automatic route fallback disabled;
-- one multi-label, high-recall safety prompt that independently evaluates
-  `fight`, `smoking`, `fall`, and `weapon` and permits simultaneous positives.
+- one multi-label safety prompt that independently evaluates `fight`,
+  `smoking`, `fall`, and `weapon` and permits simultaneous positives.
+  Minimum visual-evidence rules for `fall`/`smoking` override the general
+  high-recall preference: stable supported crouching and empty-hand-to-mouth
+  gestures are not sufficient. These prompt-only changes keep the original
+  one-frame, 320 px safety input and do not change Paddle or face recognition.
+  They may also miss subtle falls or small/occluded smoking items; validate
+  both false positives and missed positives on fixed test recordings.
 
 The original headless CLI keeps its prior event and result protocol. Browser
 testing now uses one unified page, based on the familiar original Demo UI.
