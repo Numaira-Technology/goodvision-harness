@@ -50,6 +50,7 @@ def draw_overlay(
     objects: Sequence[Any],
     stale: bool = False,
     analysis_kind: str = "event",
+    incomplete: bool = False,
 ) -> Any:
     """Return a copy of ``bgr`` with a compact verdict and normalized boxes."""
 
@@ -63,11 +64,12 @@ def draw_overlay(
             description=description,
             objects=objects,
             stale=stale,
+            incomplete=incomplete,
         )
 
     positive = bool(detected) and not stale
     color = (40, 40, 220) if positive else (55, 180, 70)
-    if stale:
+    if stale or (incomplete and not positive):
         color = (90, 150, 220)
 
     for item in objects if positive else ():
@@ -91,6 +93,8 @@ def draw_overlay(
         else redact_public_text(event_label).upper()
     )
     state = "STALE" if stale else (positive_label if detected else "CLEAR")
+    if incomplete and not detected and not stale:
+        state = "INCOMPLETE"
     title = f"{state}  {float(confidence):.2f}"
     _text_with_background(rendered, title[:100], (12, 28), color, scale=0.7)
     if description:
@@ -645,6 +649,7 @@ def _draw_face_overlay(
     description: str,
     objects: Sequence[Any],
     stale: bool,
+    incomplete: bool = False,
 ) -> Any:
     height, width = rendered.shape[:2]
     colors = {
@@ -691,6 +696,8 @@ def _draw_face_overlay(
         state, color = "STALE", (90, 150, 220)
     elif detected or "unknown" in statuses:
         state, color = "UNKNOWN", colors["unknown"]
+    elif incomplete:
+        state, color = "INCOMPLETE", (90, 150, 220)
     elif not statuses:
         state, color = "NO FACE", colors["unusable"]
     elif all(status == "unusable" for status in statuses):

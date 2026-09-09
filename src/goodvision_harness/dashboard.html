@@ -1128,19 +1128,22 @@ function analysis(result){
   if(result.analysis_kind==="face_recognition"){analysisFace(result);return}
   const judgments=Array.isArray(result.judgments)?result.judgments:[];if(!judgments.length)return;
   const active=judgments.filter(judgment=>judgment&&judgment.detected===true),yes=active.length>0;
+  const incomplete=result.analysis_complete===false;
   const ids=[...new Set(active.flatMap(judgment=>Array.isArray(judgment.object_ids)?judgment.object_ids:[]))];
   const memoryIds=[...new Set(active.flatMap(judgment=>
     Array.isArray(judgment.matched_memory_ids)?judgment.matched_memory_ids:[]))];
   const positiveLabels=active.map(judgment=>result.analysis_kind==="face_reference_match"?"UNKNOWN":
     String(judgment.event_label||"DETECTED").toUpperCase());
-  ui.decision.className="decision "+(yes?"detected":"clear");
-  ui.verdict.textContent=yes?positiveLabels.join(" + "):"CLEAR";
+  ui.decision.className="decision "+(yes?"detected":incomplete?"warming":"clear");
+  ui.verdict.textContent=yes?positiveLabels.join(" + "):incomplete?"INCOMPLETE":"CLEAR";
   ui.confidence.textContent=yes
     ?active.length+" of "+judgments.length+" events detected"
-    :"All "+judgments.length+" events clear";
+    :incomplete?"Waiting for results from all selected features.":"All "+judgments.length+" events clear";
   ui.description.textContent=(yes
     ?active.map(judgment=>String(judgment.event_label||"event")+": "+(judgment.description||"Detected.")).join(" | ")
-    :"No target events detected.")+(memoryIds.length?" | known: "+memoryIds.join(", "):"");
+    :incomplete?"Analysis incomplete.":"No target events detected.")+
+    (yes&&incomplete?" | Analysis incomplete.":"")+
+    (memoryIds.length?" | known: "+memoryIds.join(", "):"");
   const frame=result.frame||{},model=result.model||{};
   ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
     " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.length+" bbox"+(ids.length===1?"":"es")+
@@ -1152,10 +1155,14 @@ function analysis(result){
 function analysisFace(result){
   const summary=summarizeFaces(result),frame=result.frame||{},model=result.model||{};
   ui.decision.className="decision "+summary.decisionClass;ui.verdict.textContent=summary.verdict;
+  if(result.analysis_complete===false&&summary.decisionClass!=="detected"){
+    ui.decision.className="decision warming";ui.verdict.textContent="INCOMPLETE"
+  }
   const threshold=Number(state.info&&state.info.face&&state.info.face.threshold);
   ui.confidence.textContent=(Number.isFinite(summary.best)?"best match "+summary.best.toFixed(3):"no match score")+
     (Number.isFinite(threshold)?" | threshold "+threshold.toFixed(3):"");
-  ui.description.textContent=summary.description;
+  ui.description.textContent=result.analysis_complete===false
+    ?"Analysis incomplete. "+summary.description:summary.description;
   ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
     " | video "+number(frame.timestamp_seconds,3)+"s | "+summary.objects.length+" face"+
     (summary.objects.length===1?"":"s")+" | model "+number(model.latency_seconds,2)+"s";

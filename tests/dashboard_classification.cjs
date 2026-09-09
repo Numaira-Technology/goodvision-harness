@@ -49,7 +49,7 @@ function dashboard(){
   `,context);
   return {app:context.app,context,element:id=>document.getElementById(id),
     status:event=>document.getElementById("event-statuses").children
-      .find(item=>item.dataset.eventLabel===event)?.children[1].textContent};
+      .find(item=>item.children[0].textContent===event)?.children[1].textContent};
 }
 
 function result(timestamp,values,{session="session-1",frame=Math.round(timestamp*10)}={}){
@@ -71,6 +71,30 @@ test("overall description displays the latest frame text",()=>{
   view.app.analysis({...result(1.4,clear),description:"无异常 / No anomalies detected"});
   assert.equal(view.element("overall-description").textContent,"无异常 / No anomalies detected");
   assert.equal(view.element("overall-description-meta").textContent,"Frame 14 · 1.400s");
+});
+
+test("incomplete negative results render pending and complete results restore clear",()=>{
+  const view=dashboard();
+  view.app.analysis({...result(1,clear),analysis_complete:false,
+    missing_event_labels:["stranger"],description:"分析未完成。 / Analysis incomplete."});
+  assert.equal(view.element("verdict").textContent,"INCOMPLETE");
+  assert.equal(view.element("decision").className,"decision warming");
+  assert.doesNotMatch(view.element("confidence").textContent,/events clear/);
+  assert.doesNotMatch(view.element("description").textContent,/No target events detected/);
+  assert.equal(view.status("stranger"),"WAITING");
+  view.app.analysis({...result(2,{...clear,stranger:false}),analysis_complete:true,
+    missing_event_labels:[],description:"无异常 / No anomalies detected"});
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+  assert.equal(view.element("decision").className,"decision clear");
+});
+
+test("incomplete results retain positive alerts",()=>{
+  const view=dashboard();
+  view.app.analysis({...result(1,{...clear,smoking:true}),analysis_complete:false,
+    missing_event_labels:["stranger"],description:"吸烟。 / Smoking. Analysis incomplete."});
+  assert.equal(view.element("verdict").textContent,"SMOKING");
+  assert.equal(view.element("decision").className,"decision detected");
+  assert.match(view.element("description").textContent,/Analysis incomplete/);
 });
 
 test("overall description ignores older frames and results from other sessions",()=>{

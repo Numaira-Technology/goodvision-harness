@@ -634,6 +634,46 @@ def test_analysis_schema_requires_nonempty_frame_description(description: Any) -
         jsonschema.validate(payload, schema)
 
 
+@pytest.mark.parametrize("complete,missing,valid", (
+    (True, [], True), (False, ["stranger"], True),
+    (True, ["stranger"], False), (False, [], False),
+))
+def test_v2_schema_enforces_completeness_consistency(
+    complete: bool, missing: list[str], valid: bool,
+) -> None:
+    payload = _analysis_result(detected=False).as_dict()
+    payload.update(analysis_complete=complete, missing_event_labels=missing)
+    schema = json.loads(
+        (ROOT / "schemas" / "analysis-result-v2.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert jsonschema.Draft202012Validator(schema).is_valid(payload) is valid
+
+
+@pytest.mark.parametrize("detected", (False, True))
+def test_video_overlay_does_not_report_partial_results_as_clear(
+    monkeypatch: pytest.MonkeyPatch, detected: bool,
+) -> None:
+    import goodvision_harness.overlay as overlay_module
+
+    captions = []
+    monkeypatch.setattr(
+        overlay_module, "_text_with_background",
+        lambda image, text, *args, **kwargs: captions.append(text),
+    )
+    partial = replace(
+        _analysis_result(detected=detected), missing_event_labels=("stranger",)
+    )
+    service_module._draw_analysis_overlay(
+        np.zeros((100, 200, 3), dtype=np.uint8), partial
+    )
+    assert not any(text.startswith("CLEAR") for text in captions)
+    assert any(
+        text.startswith("SMOKING" if detected else "INCOMPLETE") for text in captions
+    )
+
+
 def test_historical_v1_records_keep_the_original_contract() -> None:
     historical = _analysis_result().as_dict()
     historical["schema_version"] = "1"

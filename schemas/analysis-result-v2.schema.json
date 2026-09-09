@@ -265,5 +265,30 @@
         "minLength": 1
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "analysis_complete": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "missing_event_labels": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "missing_event_labels": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
 }

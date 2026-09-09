@@ -1771,9 +1771,12 @@ def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
         "event_label": event_label,
         "detected": detected,
         "confidence": confidence,
-        "description": description,
+        "description": (
+            analysis.description if analysis.missing_event_labels else description
+        ),
         "objects": objects,
         "analysis_kind": analysis.analysis_kind,
+        "incomplete": bool(analysis.missing_event_labels),
     }
 
 
