@@ -497,7 +497,8 @@ def test_old_attribute_task_cannot_update_an_expired_track() -> None:
 
     models.show_person = False
     empty = None
-    for frame_sequence in range(2, engine.tracker.max_idle_frames + 3):
+    expiry_frame = int(engine.tracker.max_idle_seconds * 10) + 3
+    for frame_sequence in range(2, expiry_frame):
         empty = engine.infer(
             np.zeros((100, 120, 3), dtype=np.uint8),
             stream_session_id="same-session",
@@ -515,8 +516,8 @@ def test_old_attribute_task_cannot_update_an_expired_track() -> None:
     replacement = engine.infer(
         np.zeros((100, 120, 3), dtype=np.uint8),
         stream_session_id="same-session",
-        frame_sequence=engine.tracker.max_idle_frames + 3,
-        timestamp_seconds=(engine.tracker.max_idle_frames + 3) / 10,
+        frame_sequence=expiry_frame,
+        timestamp_seconds=expiry_frame / 10,
     )
     assert replacement["objects"][0]["track_id"] == "P0002"
     assert replacement["objects"][0]["attributes"] == {}

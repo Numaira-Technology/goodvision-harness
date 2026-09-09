@@ -145,37 +145,37 @@ SSE 保留通用结果流的游标和续传规则：支持 `?after=<非负整数
 `Last-Event-ID` 请求头，显式非零 `after` 优先；仅可续传内存中仍保留的结果。
 无新结果时发送 `: heartbeat` 注释。该流随分析结果更新，并非按原视频帧率推送。
 
-## 陌生人证据照片
+## 连续事件与视频证据
 
-先调用 `GET /v1/faces/strangers` 获取已保留的陌生人列表，返回示例：
+即时识别的 JSON/SSE 与现有逐帧结果保持不变。后台按人物和事件类型整理连续事件；
+停 1 秒后继续吸烟可沿用同一事件编号，但暂停帧的即时识别仍为阴性。
 
-```json
-{
-  "count": 1,
-  "strangers": [
-    {
-      "stranger_id": "stranger-00000000000000000000000000000001",
-      "photo_available": true,
-      "photo_url": "/v1/faces/strangers/stranger-00000000000000000000000000000001/photo"
-    }
-  ]
-}
-```
+| GET 接口 | 用途 |
+| --- | --- |
+| `/v1/events` | 连续事件列表，按事件、人物、会话、源时间或 `message_id` 查询 |
+| `/v1/events/stream` | 事件创建、修订、合并/拆分及视频状态 SSE |
+| `/v1/events/{event_id}` | 当前事件详情，自动解析合并后的编号 |
+| `/v1/events/{event_id}/video` | 当前可用视频，支持 Range；`?revision=N` 读取固定版本 |
 
-在 `photo_available=true` 时，使用 `BASE + photo_url` 下载照片：
+每个事件默认保存首次有效阳性前 1 秒、后 2 秒的约 3 秒 MP4，5 FPS、最长边 720。
+视频状态与事件状态分别返回：先有事件，视频随后完成；断流或源边界会标记实际截短。
+迟到结果可能更正首次触发时间并生成新视频版本。读取 `evidence.available.url`
+播放已经可用的具体版本；新版生成时不要把旧片段当成新版。
 
-`GET /v1/faces/strangers/{stranger_id}/photo`
+事件的 `subject_id` 表示会话内人物轨迹，`person_id` 表示录入身份；`object_id` 只在当前分析消息内有效。原 AnalysisResult v2 可在对象 `attributes`
+中补充人物关联；事件编号尚未建立时，后续用 `/v1/events?message_id=...` 查询。
 
-上面的 ID 仅为格式示例；实际请求应直接使用列表返回的 `photo_url`，不要自行
-编造 ID。
+事件流发送 `event_change`，一次携带受影响 `events` 和 `aliases`。客户端原子
+更新这些记录。列表支持 `limit` / `before`，用响应中的 `epoch:cursor` 连接事件流；
+收到 `reset` 后重新读取列表。已删除或不存在的事件返回 404。视频未就绪返回
+202，生成失败且无可用版本返回 503。
 
-成功返回 `image/jpeg`，响应头包含 `X-Stranger-Id`；照片不存在时返回 `404`。
-陌生人结果对象的 `attributes` 中也可能直接包含 `stranger_id` 和 `photo_url`。
+默认保留 7 天且总量上限 10 GiB；清理范围包含事件、视频与关联索引。
+完整字段、时间规则、修订机制、配置和迁移说明见 [事件证据说明](EVENT_EVIDENCE.md)。
 
-照片是保留的人脸裁剪图，不是每次事件的全帧截图，也不是逐事件照片归档；同一
-陌生人可能复用已有照片。真实照片生成要求正式模式 `dry_run=false`、启用
-`stranger` 能力、已授权的人脸检测与识别模型正常工作，并实际检出未知人员。
-留存失败时仍可能有告警，所以不能假定每条告警都必有照片。
+旧 `/v1/faces/strangers` 和 `/v1/faces/strangers/{stranger_id}/photo`
+统一返回 **410 Gone**，包含 `stranger_photos_removed` 与 `/v1/events` 迁移提示。
+停止保存陌生人照片与陌生人特征库，已有旧文件不自动删除。
 
 ## 视频与精确证据帧
 
@@ -214,7 +214,7 @@ SSE 保留通用结果流的游标和续传规则：支持 `?after=<非负整数
 
 只开陌生人检测时，将 `features` 改成 `["stranger"]`。`features` 仅适用于
 `analysis_mode="multi"`，必须为非空、无重复的受支持能力数组；省略时启用
-全部五个能力。改为 `dry_run=true` 可验证演示链路，但不会生成真实陌生人照片。
+全部五个能力。改为 `dry_run=true` 可验证演示链路，可生成合成输入的视频证据，不代表真实模型效果。
 
 `POST /v1/sessions/stop` 无需请求体，返回 `{"stopped": true}` 或
 `{"stopped": false}`。同一实例同时只允许一个运行中的 Session；如已有会话，

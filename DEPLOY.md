@@ -9,7 +9,7 @@ Windows Docker Desktop 使用 Linux 容器模式，启动命令可写为 `py -3 
 
 | 服务 | 镜像 | 功能 |
 | --- | --- | --- |
-| 主服务 | `goodvision-harness:2026.09.09-full.1` | 五能力判断、人脸识别、陌生人照片、JSON/SSE、视频与叠框 |
+| 主服务 | `goodvision-harness:2026.09.09-full.1` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
 | 感知服务 | `goodvision-rich-label-worker:2026.09.09-full.1` | 人物/物品检测、会话内跟踪、异步行人属性 |
 
 控制台保留当前 8 个模型 **A–H** 的选择与保存。吸烟判断要求可辨认烟具和可见互动；
@@ -58,7 +58,7 @@ GPU 镜像和组件始终保留在完整交付包中。感知服务运行在另�
 `INFERENCE_API_KEY`。首次安装默认测试模式；已有持久设置继续使用原模式。
 
 项目名保持 `goodvision-harness`，继续使用 `face-models`、`face-data`、`rich-models`
-三个持久卷。升级时保留模型、已知人脸、陌生人照片与部署设置，不执行 `down -v`。
+三个持久卷。升级时保留模型、已知人脸、连续事件视频证据与部署设置，不执行 `down -v`。
 
 ## 3. GPU 模式自检
 
@@ -86,8 +86,26 @@ GPU 感知服务首次加载模型期间，主服务继续运行。感知服务�
 - `/v1/rich-labels/latest` 返回跟踪对象和后续帧的行人属性。
 - `/v1/video/annotated/stream.mjpeg` 中人物/物品跟踪框与属性正常，性别不显示。
 - 模型 A–H 可切换，陌生人标注连续，手指靠近嘴部不会单独成为吸烟证据。
-- 五能力 JSON/SSE 和陌生人照片接口按 [接口说明](API_DELIVERY.md) 工作。
+- 五能力 JSON/SSE 和连续事件视频证据接口按 [接口说明](API_DELIVERY.md) 工作。
 
 无 GPU 模式下，感知标注不启用是预期状态；应验收主服务、人脸识别、五能力接口与
 连续视频。构建与合成测试不能替代目标服务器的真实 GPU 推理、视频效果和性能验收。
 本版已完成的验证记录以 `RELEASE.md` 为准。
+
+
+## 连续事件与证据存储
+
+即时识别保持原采样与发布节奏，后台事件归并和视频编码不阻塞当前结果。
+事件列表与视频接口见 [事件证据说明](EVENT_EVIDENCE.md)。默认每个连续事件
+保留首次阳性前1秒后2秒的5 FPS MP4，保留7天且总量不超过10 GiB。
+
+容器使用现有 `/data/event-evidence` 持久目录；Windows 默认在已知人脸库旁的
+`event-evidence` 子目录，可用 `EVENT_EVIDENCE_DIRECTORY` 覆盖。需要可执行的
+H.264 编码器；交付自检应实际生成、下载并解码视频。
+
+GPU detector-only `/health/tracking` 就绪即可开启 `/v1/tracks`，与属性及界面
+标注开关独立。无GPU时保持现有模型人物框/本地人脸位置追踪，不增加必需服务。
+
+旧陌生人照片接口返回410。旧 `face-gallery-strangers.json` 和 `stranger-captures/`
+不再加载或写入；确认备份后可由运维清理。保留 `face-gallery.json`、模型和部署
+设置，不能通过删除持久卷来升级。归档状态和录制失败计数见 `/v1/status`。

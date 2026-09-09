@@ -35,6 +35,7 @@ from goodvision_harness.contracts import (
 )
 from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.grounding import (
+    ACTOR_ASSOCIATION_RULE,
     BILINGUAL_DESCRIPTION_RULE,
     DETECTION_EVENT_LABELS,
     SAFETY_EVENT_LABELS,
@@ -400,6 +401,7 @@ def test_model_prompt_has_one_bbox_append_and_dynamic_suffix() -> None:
         "Window: W7 · f9-f9\n"
         "Sample timestamps: f9=1.250s\n"
         "The JPEG images follow in chronological order."
+        f"\n\n{ACTOR_ASSOCIATION_RULE}"
     )
     assert prompt_text.count("For the delivery contract") == 1
     assert prompt_text.count('"bbox_2d"') == 1

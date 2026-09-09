@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from dotenv import find_dotenv, load_dotenv
 
+from .event_archive import EventArchiveSettings
 from .model_api import ModelAPISettings
 from .model_routing import resolve_model_route
 from .reference_memory import MemoryContext, load_memory_context
@@ -62,6 +63,7 @@ class RichLabelSettings:
     history_size: int = 128
     max_interpolation_gap_seconds: float = 2.0
     max_hold_seconds: float = 2.0
+    tracking_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +149,7 @@ class HarnessConfig:
     runtime: RuntimeSettings
     server: ServerSettings
     service: ServiceSettings
+    events: EventArchiveSettings = field(default_factory=EventArchiveSettings)
 
     @property
     def model_api(self) -> ModelAPISettings:
@@ -178,6 +181,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     runtime_section = _mapping_section(raw, "runtime")
     server_section = _mapping_section(raw, "server")
     service_section = _mapping_section(raw, "service")
+    event_section = _mapping_section(raw, "events")
 
     default_video_value = input_section.get("default_video")
     default_video = None
@@ -279,6 +283,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         raise ValueError("rich_labeling.history_size must be at least 2")
     rich_labeling = RichLabelSettings(
         enabled=rich_label_enabled,
+        tracking_enabled=_environment_bool(
+            "PERSON_TRACKING_ENABLED",
+            _bool(rich_label_section.get("tracking_enabled", True),
+                  "rich_labeling.tracking_enabled"),
+        ),
         endpoint=rich_label_endpoint,
         timeout_seconds=_positive_float(
             rich_label_section.get("timeout_seconds", 2.0),
@@ -464,6 +473,49 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         webhook=webhook,
     )
 
+    event_defaults = EventArchiveSettings()
+    event_values: dict[str, Any] = {}
+    for key in (
+        "clip_seconds", "fps", "buffer_seconds", "retention_days",
+        "revision_seconds", "negative_gap_seconds", "unknown_timeout_seconds",
+        "encoder_timeout_seconds",
+    ):
+        event_values[key] = _positive_float(
+            event_section.get(key, getattr(event_defaults, key)), f"events.{key}"
+        )
+    for key in (
+        "max_image_side", "buffer_max_bytes", "max_storage_bytes", "queue_size",
+    ):
+        event_values[key] = _positive_int(
+            event_section.get(key, getattr(event_defaults, key)), f"events.{key}"
+        )
+    event_values["pre_roll_seconds"] = _non_negative_float(
+        event_section.get("pre_roll_seconds", 1.0), "events.pre_roll_seconds"
+    )
+    event_values["jpeg_quality"] = _bounded_int(
+        event_section.get("jpeg_quality", 70), "events.jpeg_quality", minimum=1,
+        maximum=100,
+    )
+    event_values["ffmpeg_path"] = _required_string(
+        os.environ.get("EVENT_FFMPEG_PATH")
+        or event_section.get("ffmpeg_path", "ffmpeg"),
+        "events.ffmpeg_path",
+    )
+    event_directory = os.environ.get("EVENT_EVIDENCE_DIRECTORY") or event_section.get(
+        "directory"
+    )
+    event_values["directory"] = (
+        _configured_path(
+            event_directory, config_path=config_path, name="events.directory",
+        )
+        if event_directory else face.gallery_path.parent / "event-evidence"
+    )
+    if event_values["pre_roll_seconds"] >= event_values["clip_seconds"]:
+        raise ValueError("events.pre_roll_seconds must be shorter than clip_seconds")
+    if event_values["buffer_seconds"] < event_values["clip_seconds"]:
+        raise ValueError("events.buffer_seconds must cover clip_seconds")
+    events = EventArchiveSettings(**event_values)
+
     return HarnessConfig(
         path=config_path,
         default_video=default_video,
@@ -479,6 +531,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         runtime=runtime,
         server=server,
         service=service,
+        events=events,
     )
 
 

@@ -42,6 +42,8 @@ from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
 from .delayed_overlay import DelayedOverlayComposer, DisplayAnalysis, OverlaySelection
 from .delivery import WebhookDelivery
 from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
+from .event_archive import EventArchive
+from .event_routes import install_event_routes
 from .face_recognition import (
     FaceRecognitionRuntime,
     FaceRecognitionSession,
@@ -196,6 +198,10 @@ class HarnessRuntime:
         self._rich_requested = rich_label_coordinator is not None or (
             config is not None and config.rich_labeling.enabled
         )
+        self._tracking_requested = self._rich_requested or (
+            config is not None and config.rich_labeling.tracking_enabled
+        )
+        self._events: EventArchive | None = None
         self._rich_probe_thread: Thread | None = None
         self._rich_probe_stop = Event()
         if rich_label_coordinator is not None:
@@ -204,6 +210,7 @@ class HarnessRuntime:
             rich = config.rich_labeling
             rich_client = RichLabelHTTPClient(
                 rich.endpoint, timeout_seconds=rich.timeout_seconds,
+                mode="tracks", include_attributes=self._rich_requested,
             )
             if rich_client.gpu_ready():
                 self._rich_labels = RichLabelCoordinator(
@@ -214,6 +221,7 @@ class HarnessRuntime:
                         rich.max_interpolation_gap_seconds
                     ),
                     max_hold_seconds=rich.max_hold_seconds,
+                    on_snapshot=self._on_tracking_snapshot,
                 )
             else:
                 rich_client.close()
@@ -333,7 +341,9 @@ class HarnessRuntime:
             "memory_enabled": memory_sink is not None,
             "memory_records_accepted": 0,
             "memory_records_dropped": 0,
-            "rich_labeling_enabled": self._rich_labels is not None,
+            "rich_labeling_enabled": (
+                self._rich_requested and self._rich_labels is not None
+            ),
             "pipeline": None,
         }
 
@@ -690,7 +700,7 @@ class HarnessRuntime:
                 ),
             },
             "rich_labeling": {
-                "enabled": self._rich_labels is not None,
+                "enabled": self._rich_requested and self._rich_labels is not None,
                 "max_fps": self.config.rich_labeling.max_fps,
                 "track_identity": "session_scoped",
                 "age": "estimated_range",
@@ -732,16 +742,28 @@ class HarnessRuntime:
         assert isinstance(safe, dict)
         return safe
 
-    def stranger_captures(self) -> dict[str, Any]:
-        captures = self._ensure_face_runtime().list_strangers()
-        records = [capture.as_dict() for capture in captures]
-        result = {"count": len(records), "strangers": records}
-        safe = public_safe_value(result)
-        assert isinstance(safe, dict)
-        return safe
+    def event_archive(self) -> EventArchive:
+        """Open persistence outside the frame/inference path, once per service."""
+        with self._control_lock:
+            if self._events is None:
+                if self.config is None or self._closed:
+                    raise RuntimeError("event archive unavailable")
+                self._events = EventArchive(self.config.events)
+            return self._events
 
-    def stranger_photo(self, stranger_id: str) -> bytes | None:
-        return self._ensure_face_runtime().stranger_photo(stranger_id)
+    def _on_tracking_snapshot(self, snapshot: Any) -> None:
+        with self._state_lock:
+            session = self._session
+            if (
+                session is None
+                or snapshot.stream_session_id != session.stream_session_id
+            ):
+                return
+            registry = session.person_registry
+        registry.observe_snapshot(snapshot)
+        if session.archive is not None:
+            for corrected in registry.drain_reassociated_results():
+                session.archive.submit_result(corrected)
 
     def enroll_face(
         self,
@@ -750,6 +772,11 @@ class HarnessRuntime:
         image_bytes: bytes,
     ) -> dict[str, Any]:
         person = self._ensure_face_runtime().enroll(person_id, name, image_bytes)
+        with self._state_lock:
+            session = self._session
+        registry = getattr(session, "person_registry", None)
+        if registry is not None:
+            registry.allow_person(person_id)
         result = {
             "ready": True,
             "person": {
@@ -764,7 +791,14 @@ class HarnessRuntime:
         return safe
 
     def delete_face(self, person_id: str) -> bool:
-        return self._ensure_face_runtime().delete_person(person_id)
+        deleted = self._ensure_face_runtime().delete_person(person_id)
+        if deleted:
+            with self._state_lock:
+                session = self._session
+            registry = getattr(session, "person_registry", None)
+            if registry is not None:
+                registry.forget_person(person_id)
+        return deleted
 
     def _ensure_face_runtime(self) -> FaceRecognitionRuntime:
         if self.config is None:
@@ -819,7 +853,7 @@ class HarnessRuntime:
         with self._control_lock:
             if (
                 self._closed
-                or not self._rich_requested
+                or not self._tracking_requested
                 or self._rich_labels is not None
                 or self._rich_probe_thread is not None
             ):
@@ -832,9 +866,10 @@ class HarnessRuntime:
             self._rich_probe_thread.start()
 
     def _run_rich_readiness_probe(self) -> None:
-        while not self._rich_probe_stop.wait(RICH_READINESS_RETRY_SECONDS):
+        while not self._rich_probe_stop.is_set():
             if self._try_enable_rich_labels():
                 return
+            self._rich_probe_stop.wait(RICH_READINESS_RETRY_SECONDS)
 
     def _try_enable_rich_labels(self) -> bool:
         """Transfer a verified client to one coordinator, or retry later."""
@@ -842,13 +877,14 @@ class HarnessRuntime:
         with self._control_lock:
             if self._closed or self._rich_labels is not None:
                 return True
-            if self.config is None or not self._rich_requested:
+            if self.config is None or not self._tracking_requested:
                 return True
             rich = self.config.rich_labeling
         client = None
         try:
             client = RichLabelHTTPClient(
                 rich.endpoint, timeout_seconds=rich.timeout_seconds,
+                mode="tracks", include_attributes=self._rich_requested,
             )
             if not client.gpu_ready():
                 return False
@@ -865,12 +901,13 @@ class HarnessRuntime:
                         rich.max_interpolation_gap_seconds
                     ),
                     max_hold_seconds=rich.max_hold_seconds,
+                    on_snapshot=self._on_tracking_snapshot,
                 )
                 with self._state_lock:
                     coordinator.reset(self._active_rich_session_id)
                     self._rich_labels = coordinator
                     self._rich_disabled_reason = None
-                    self._state["rich_labeling_enabled"] = True
+                    self._state["rich_labeling_enabled"] = self._rich_requested
                 client = None  # The coordinator now owns and closes it.
             LOGGER.info("rich annotation enabled: remote GPU is ready")
             return True
@@ -1147,6 +1184,7 @@ class HarnessRuntime:
                     stream_url=stream_url,
                     whep_headers=session_config.stream.whep_headers,
                     source_id=self.source_id,
+                    archive=self.event_archive(),
                 )
             else:
                 session = StreamingSession.for_camera(
@@ -1154,12 +1192,13 @@ class HarnessRuntime:
                     client,
                     callbacks,
                     source_id=self.source_id,
+                    archive=self.event_archive(),
                 )
 
             if face_session is not None:
                 face_session.bind_rich_labels(
                     session.stream_session_id,
-                    self._rich_history if self._rich_requested else None,
+                    self._rich_history if self._tracking_requested else None,
                 )
 
             with self._state_lock:
@@ -1170,7 +1209,7 @@ class HarnessRuntime:
                 if self._rich_labels is not None:
                     self._rich_labels.reset(session.stream_session_id)
                 self._active_rich_session_id = (
-                    session.stream_session_id if self._rich_requested else None
+                    session.stream_session_id if self._tracking_requested else None
                 )
                 self._overlay_fusion.reset()
                 self._delayed_overlay.reset()
@@ -1365,6 +1404,8 @@ class HarnessRuntime:
             self._rich_labels.close(timeout_seconds=5.0)
         if self._delivery is not None:
             self._delivery.close(timeout_seconds=5.0)
+        if self._events is not None:
+            self._events.close(timeout=15.0)
         self._update_state(pipeline_state="stopped", ready=False)
 
     def push_camera_frame(
@@ -1438,7 +1479,13 @@ class HarnessRuntime:
             payload = copy.deepcopy(self._state)
             rich_labels = self._rich_labels
             rich_disabled_reason = self._rich_disabled_reason
-            payload["rich_labeling_enabled"] = rich_labels is not None
+            payload["rich_labeling_enabled"] = (
+                self._rich_requested and rich_labels is not None
+            )
+            payload["person_tracking_enabled"] = rich_labels is not None
+        payload["event_archive"] = (
+            self._events.status() if self._events else {"state": "idle"}
+        )
         payload["annotated_output"] = self._delayed_overlay.stats()
         payload["rich_labeling"] = (
             rich_labels.stats()
@@ -1461,7 +1508,7 @@ class HarnessRuntime:
     def latest_rich_labels(self) -> dict[str, Any] | None:
         """Return the latest worker snapshot without exposing worker internals."""
 
-        if self._rich_labels is None:
+        if self._rich_labels is None or not self._rich_requested:
             return None
         with self._state_lock:
             session_id = self._active_rich_session_id
@@ -1558,7 +1605,7 @@ class HarnessRuntime:
             )
             self._update_state(**{memory_key: int(self._state[memory_key]) + 1})
         rendered: bytes | None = None
-        if self._rich_labels is not None:
+        if self._rich_labels is not None and self._rich_requested:
             try:
                 rendered = self._render_fused_label_jpeg(
                     source_jpeg,
@@ -1612,6 +1659,7 @@ class HarnessRuntime:
         coordinator = self._rich_labels
         if (
             coordinator is not None
+            and self._rich_requested
             and result.analysis_kind not in INDEPENDENT_FACE_ANALYSIS_KINDS
         ):
             with self._state_lock:
@@ -1640,6 +1688,16 @@ class HarnessRuntime:
     ) -> None:
         observed_at = _utc_now()
         source_jpeg = bytes(jpeg)
+        # Browser frames bypass StreamingSession's source decoder. Preserve all
+        # presentation frames for evidence, not only the model samples.
+        session = self._session
+        if (
+            session is not None and getattr(session, "mode", None) == CAMERA_MODE
+            and getattr(session, "archive", None) is not None
+        ):
+            session.archive.submit_frame(
+                source_jpeg, media_timestamp, frame_sequence, session.stream_session_id,
+            )
         if self._rich_labels is not None:
             with self._state_lock:
                 session_id = self._active_rich_session_id
@@ -1960,22 +2018,29 @@ def _api_reference_html(schema: dict[str, Any]) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Goodvision API Reference</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;color:#17202e;line-height:1.6}
-h1{margin-bottom:8px}a{color:#1558b0}table{width:100%;border-collapse:collapse;margin:24px 0}
+body{font-family:system-ui,sans-serif;max-width:1100px;margin:40px auto;
+padding:0 20px;color:#17202e;line-height:1.6}
+h1{margin-bottom:8px}a{color:#1558b0}
+table{width:100%;border-collapse:collapse;margin:24px 0}
 th,td{text-align:left;padding:10px;border-bottom:1px solid #dbe1e8;vertical-align:top}
 code{overflow-wrap:anywhere}th{background:#f4f6f8}nav{display:flex;gap:20px;flex-wrap:wrap}
 </style></head><body><h1>Goodvision API Reference</h1>
 <p>Live detection, evidence retrieval, video output, and service controls.</p>
-<nav><a href="/">Control console</a><a href="/openapi.json">Machine-readable API specification</a></nav>
+<nav><a href="/">Control console</a>
+<a href="/openapi.json">Machine-readable API specification</a></nav>
 <h2>Response formats</h2>
 <p>Result snapshots use JSON. Result event streams use Server-Sent Events.
 Video snapshots use JPEG; continuous video uses multipart MJPEG.
-The machine-readable specification describes parameters, request bodies, and response codes.</p>
-<h2>HTTP endpoints</h2><table><thead><tr><th>Method</th><th>Path</th><th>Operation</th></tr></thead><tbody>
+Continuous event evidence uses versioned MP4 clips with Range support.
+The specification describes parameters, request bodies, and response codes.</p>
+<p>Analysis results remain immediate. Archive event revisions and video encoding
+run independently. Retired stranger photo endpoints return 410.</p>
+<h2>HTTP endpoints</h2><table><thead><tr>
+<th>Method</th><th>Path</th><th>Operation</th></tr></thead><tbody>
 """ + "".join(rows) + """</tbody></table>
 <h2>Live control</h2><p><code>/ws</code> provides the live control connection.
 Use the console to manage the selected detection features and video source.</p>
-<h2>Operational notes</h2><p>A result or image endpoint returns 404 until matching data is available.
+<h2>Operational notes</h2><p>Result and image endpoints return 404 before data exists.
 Stopping a session does not delete enrolled identities or stored evidence.
 Protect deployment and enrollment controls using your deployment's access policy.</p>
 </body></html>"""
@@ -2004,6 +2069,7 @@ def create_app(
         redoc_url=None,
         swagger_ui_oauth2_redirect_url=None,
     )
+    install_event_routes(application)
 
     @application.exception_handler(StarletteHTTPException)
     async def public_http_error(
@@ -2040,7 +2106,9 @@ def create_app(
         return HTMLResponse(
             _api_reference_html(application.openapi()),
             headers={
-                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'"
+                ),
                 "Cache-Control": "no-store",
             },
         )
@@ -2332,36 +2400,17 @@ def create_app(
 
     @application.get("/v1/faces/strangers")
     async def stranger_captures(request: Request) -> dict[str, Any]:
-        try:
-            return await asyncio.to_thread(_runtime(request).stranger_captures)
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
-            ) from exc
+        raise HTTPException(410, {
+            "code": "stranger_photos_removed", "events_url": "/v1/events",
+            "message": "Stranger photos were replaced by event video evidence.",
+        })
 
     @application.get("/v1/faces/strangers/{stranger_id}/photo")
     async def stranger_photo(stranger_id: str, request: Request) -> Response:
-        try:
-            photo = await asyncio.to_thread(
-                _runtime(request).stranger_photo,
-                stranger_id,
-            )
-        except (ValueError, RuntimeError) as exc:
-            raise HTTPException(
-                status_code=503 if isinstance(exc, RuntimeError) else 400,
-                detail=public_error_message(exc, fallback=PUBLIC_FACE_ERROR),
-            ) from exc
-        if photo is None:
-            raise HTTPException(status_code=404, detail="stranger photo not found")
-        return Response(
-            photo,
-            media_type="image/jpeg",
-            headers={
-                "Cache-Control": "no-store",
-                "X-Stranger-Id": stranger_id,
-            },
-        )
+        raise HTTPException(410, {
+            "code": "stranger_photos_removed", "events_url": "/v1/events",
+            "message": "Stranger photos were replaced by event video evidence.",
+        })
 
     @application.post("/v1/faces/gallery/{person_id}")
     async def enroll_face(

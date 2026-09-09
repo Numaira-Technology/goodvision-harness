@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
@@ -360,6 +361,8 @@ def test_face_gallery_business_identifiers_round_trip_through_http() -> None:
     # Exercise the real public endpoints with a memory-only gallery adapter;
     # construction deliberately avoids model setup, environment, and storage.
     runtime = object.__new__(HarnessRuntime)
+    runtime._state_lock = threading.RLock()
+    runtime._session = None
     runtime._ensure_face_runtime = lambda: face
     app = create_app()
     app.state.runtime = runtime

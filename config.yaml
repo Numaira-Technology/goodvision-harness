@@ -34,6 +34,8 @@ display:
   bbox_max_gap_seconds: 0.8
 
 rich_labeling:
+  # Independent optional GPU tracking; attributes/UI may remain off.
+  tracking_enabled: true
   # Optional isolated PaddleX/PaddleDetection worker. Keep disabled unless the
   # sidecar is running; event/VLM inference remains fail-open and independent.
   enabled: false
@@ -280,3 +282,22 @@ service:
     max_retries: 2
     retry_backoff_seconds: 0.5
     queue_size: 100
+
+
+# Background archive only: never delays current-frame analysis.
+events:
+  # Default directory: event-evidence beside face.gallery_path.
+  clip_seconds: 3.0
+  pre_roll_seconds: 1.0
+  fps: 5.0
+  max_image_side: 720
+  buffer_seconds: 90.0
+  buffer_max_bytes: 67108864
+  retention_days: 7.0
+  max_storage_bytes: 10737418240
+  revision_seconds: 65.0
+  negative_gap_seconds: 2.0
+  unknown_timeout_seconds: 5.0
+  queue_size: 512
+  encoder_timeout_seconds: 10.0
+  ffmpeg_path: ffmpeg

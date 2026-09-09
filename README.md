@@ -398,10 +398,9 @@ curl --fail-with-body -X POST --data-binary @person.jpg \
   'http://127.0.0.1:8080/v1/faces/gallery/person_01?name=Person%20One'
 curl --fail-with-body -X DELETE \
   http://127.0.0.1:8080/v1/faces/gallery/person_01
-# List captured strangers, then retrieve a returned stranger_id.
-curl http://127.0.0.1:8080/v1/faces/strangers
-curl --output stranger.jpg \
-  http://127.0.0.1:8080/v1/faces/strangers/stranger-ID/photo
+# List continuous events, then use a returned evidence.available.url.
+curl http://127.0.0.1:8080/v1/events
+curl --output event.mp4 http://127.0.0.1:8080/v1/events/EVENT_ID/video
 docker compose logs --tail=200 harness
 docker volume inspect goodvision-harness_face-models goodvision-harness_face-data
 docker compose exec harness sh -lc \
@@ -411,11 +410,10 @@ docker compose exec harness sh -lc \
 In Compose, authorized face weights belong under
 `/models/models/<configured-profile>/` in the persistent `face-models`
 volume, while the gallery is `/data/face-gallery.json` in the persistent
-`face-data` volume. Stranger embeddings and one representative face crop per
-ID are retained in `/data/face-gallery-strangers.json` and
-`/data/stranger-captures/` on that same volume. Repeated unknown faces whose
-embeddings meet the configured threshold reuse the same `stranger_id`; live
-result objects include that ID and its `photo_url`. `docker compose down` preserves both volumes;
+`face-data` volume. Continuous event metadata and short MP4 evidence live in
+`/data/event-evidence/`, with 7-day/10-GiB retention. Stranger crop and persistent
+stranger-embedding capture have been removed. See [event evidence](EVENT_EVIDENCE.md)
+for APIs, identity continuity, revisions and legacy-file cleanup. `docker compose down` preserves both volumes;
 `docker compose down -v` deletes them. Back up the gallery volume before
 destructive maintenance. Optional local-file initialization is for the declared
 demo only. A customer deployment
@@ -485,8 +483,8 @@ enabled for that session).
 | `GET /v1/status` | Sanitized source, pipeline, counters, and delivery state. |
 | `POST /v1/sessions/start` | Start one network-stream session; JSON accepts the optional `features` array. Browser cameras start over `/ws`. |
 | `POST /v1/sessions/stop` | Stop the active session. |
-| `GET /v1/faces/strangers` | List retained stranger IDs and their photo URLs. |
-| `GET /v1/faces/strangers/{stranger_id}/photo` | Return one retained face crop as `image/jpeg`. |
+| `GET /v1/events` | List persistent continuous events and available video evidence. |
+| `GET /v1/events/{event_id}/video` | Play available MP4 evidence with HTTP Range support. |
 | `GET /v1/results/latest` | Latest customer-facing analysis JSON. Returns 404 before the first result. |
 | `GET /v1/results/events` | Server-Sent Events stream of analysis JSON with bounded in-memory replay. |
 | `GET /v1/results/<feature>/latest` | Independent latest result for one of the five feature names. |
@@ -858,26 +856,19 @@ at `FACE_GALLERY_PATH`.
 `face.min_face_size` is the live-recognition floor in analysis-frame pixels.
 Small faces can positively match an enrolled person, but an unmatched face
 under 60 pixels, a low-confidence detection, or an extreme face angle is
-`unusable`, not evidence of a stranger. Live sessions require three consecutive
-reliable mismatches on the same track before raising an alert or retaining a
-stranger crop. Unclear or missing observations reset that confirmation count.
-After a stranger is confirmed, the same track can retain its label and existing
-capture for up to three seconds through unclear or missing faces. Without a
-recent body track, a missing face can be held for at most 1.5 seconds. A known
-match or a broken/ambiguous body track clears the retained stranger immediately.
-When CPU scheduling skips the face branch of a mixed result, the display keeps
-the latest stranger judgment for up to three seconds instead of treating the
-omission as a negative. An explicit negative clears it immediately; original
-per-frame JSON results remain unchanged.
+`unusable`, not evidence of a stranger. New unknown identities still require
+three reliable observations. A known identity remains attached to a reliable
+person trajectory through side views and ordinary mismatches; one contradictory
+frame cannot replace it. Source-time motion and one-to-one associations bridge
+brief gaps up to three seconds. Predicted boxes are not new evidence. Ambiguous
+crossings, prolonged absence and sustained identity conflicts require reconfirmation.
+No stranger photos or persistent stranger embeddings are created.
 
-Each live session keeps its own identity history. A confirmed name may be held
-for up to eight seconds through poor face observations, using an unambiguous
-face-box association or a recent, continuous Paddle person track. Track gaps,
-ambiguous people, deleted gallery identities, and new sessions prevent identity
-inheritance. `identity_source=track_history` and `identity_age_seconds` distinguish
-this temporary continuity from a fresh face match. A person first seen from
-behind or too far away remains unconfirmed until a usable face is visible.
-`face.enrollment_min_face_size` remains stricter to protect gallery sample quality.
+Each live session keeps its own identity history and stable `subject_id` values.
+`person_id` remains the enrolled identity. GPU detector tracking operates independently
+of optional attributes; non-GPU event requests may supply compact person locations.
+The immediate analysis result never waits for either sidecar or archive work.
+See [event evidence and continuity](EVENT_EVIDENCE.md) for exact behavior and APIs.
 
 The harness does not grant rights to third-party face-analysis files. For
 customer or commercial use, supply files whose license covers the intended use.

@@ -26,15 +26,22 @@ from uuid import uuid4
 
 from .config import DEFAULT_CONFIG_PATH, HarnessConfig, load_config
 from .contracts import (
+    PUBLIC_MODEL_NAME,
     AnalysisResult,
     EventJudgment,
     FrameReference,
     GroundedObject,
-    PUBLIC_MODEL_NAME,
 )
-from .grounding import GroundingClient, MultiGroundedClassification
-from .inference import WindowClient, WindowResponse, build_client
+from .event_archive import EventArchive
+from .grounding import (
+    GroundingClient,
+    MultiGroundedClassification,
+    build_grounding_client,
+    observation_bundle,
+)
+from .inference import WindowClient, WindowResponse
 from .organizer import ResultOrganizer
+from .person_registry import PersonRegistry
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
     public_error_message,
@@ -96,6 +103,7 @@ class StreamingSession:
         camera_source: PushSampledSource | None = None,
         source_id: str = "default",
         stream_session_id: str | None = None,
+        archive: EventArchive | None = None,
     ) -> None:
         if mode not in {FILE_MODE, CAMERA_MODE, STREAM_MODE}:
             raise ValueError(f"unknown session mode: {mode}")
@@ -113,6 +121,14 @@ class StreamingSession:
         self.camera_source = camera_source
         self.source_id = source_id.strip()
         self.stream_session_id = stream_session_id or str(uuid4())
+        self.archive = archive
+        self.person_registry = PersonRegistry(
+            stream_session_id=self.stream_session_id, source_id=self.source_id,
+        )
+        face_client = getattr(client, "_stranger_client", client)
+        bind_registry = getattr(face_client, "bind_person_registry", None)
+        if bind_registry is not None:
+            bind_registry(self.person_registry)
         memory_context = getattr(client, "memory_context", None)
         event_labels = tuple(getattr(client, "event_labels", ()))
         if event_labels:
@@ -150,12 +166,16 @@ class StreamingSession:
         start_seconds: float = 0.0,
         realtime: bool | None = None,
         source_id: str = "file",
+        archive: EventArchive | None = None,
     ) -> StreamingSession:
         use_realtime = config.video.realtime if realtime is None else realtime
         stream = VideoFileStream(
             video_path,
-            # The display stream must run at least as fast as model sampling.
-            display_fps=max(config.display.fps, config.video.fps),
+            # Keep source cadence sufficient for both inference and evidence.
+            display_fps=max(
+                config.display.fps, config.video.fps,
+                config.events.fps if archive is not None else 0,
+            ),
             playback_speed=config.video.playback_speed,
             start_seconds=start_seconds,
             realtime=use_realtime,
@@ -167,6 +187,7 @@ class StreamingSession:
             mode=FILE_MODE,
             video_stream=stream,
             source_id=source_id,
+            archive=archive,
         )
 
     @classmethod
@@ -179,10 +200,14 @@ class StreamingSession:
         stream_url: str,
         whep_headers: Mapping[str, str] | None = None,
         source_id: str = "camera",
+        archive: EventArchive | None = None,
     ) -> StreamingSession:
         stream = NetworkStreamAdapter(
             stream_url,
-            output_fps=max(config.display.fps, config.video.fps),
+            output_fps=max(
+                config.display.fps, config.video.fps,
+                config.events.fps if archive is not None else 0,
+            ),
             whep_headers=whep_headers,
         )
         return cls(
@@ -192,6 +217,7 @@ class StreamingSession:
             mode=STREAM_MODE,
             video_stream=stream,
             source_id=source_id,
+            archive=archive,
         )
 
     @classmethod
@@ -202,6 +228,7 @@ class StreamingSession:
         callbacks: SessionCallbacks,
         *,
         source_id: str = "camera",
+        archive: EventArchive | None = None,
     ) -> StreamingSession:
         return cls(
             config,
@@ -210,11 +237,14 @@ class StreamingSession:
             mode=CAMERA_MODE,
             camera_source=PushSampledSource(),
             source_id=source_id,
+            archive=archive,
         )
 
     def start(self) -> None:
         if self._thread is not None:
             raise RuntimeError("session already started")
+        if self.archive is not None:
+            self.archive.start_session(self.stream_session_id, self.source_id)
         self._thread = threading.Thread(
             target=self._run,
             name="streaming-session",
@@ -292,6 +322,8 @@ class StreamingSession:
         finally:
             self._emit_open = False
             executor.shutdown(wait=False, cancel_futures=True)
+            if self.archive is not None:
+                self.archive.end_session(self.stream_session_id, reason)
             if self.callbacks.on_end is not None:
                 self.callbacks.on_end(reason, error)
 
@@ -321,15 +353,21 @@ class StreamingSession:
                 ),
             )
             presentation_jpeg_bytes: bytes | None = None
-            if self.callbacks.on_display_frame is not None:
+            if self.callbacks.on_display_frame is not None or self.archive is not None:
                 presentation_jpeg_bytes, _, _ = encode_jpeg(
                     frame_bgr,
                     max_image_side=display.max_image_side,
                     quality=display.jpeg_quality,
                 )
-                self.callbacks.on_display_frame(
-                    presentation_jpeg_bytes, frame.timestamp_seconds, frame.index
-                )
+                if self.archive is not None:
+                    self.archive.submit_frame(
+                        presentation_jpeg_bytes, frame.timestamp_seconds, frame.index,
+                        self.stream_session_id,
+                    )
+                if self.callbacks.on_display_frame is not None:
+                    self.callbacks.on_display_frame(
+                        presentation_jpeg_bytes, frame.timestamp_seconds, frame.index
+                    )
 
             if frame.timestamp_seconds + 1e-9 < next_sample_time:
                 continue
@@ -379,6 +417,7 @@ class StreamingSession:
                     window, elapsed_seconds=self._elapsed()
                 )
                 self._emit(record, snapshot)
+                self._archive_window(window, "dropped")
                 return
             if self._stop.wait(0.02):
                 return
@@ -387,6 +426,7 @@ class StreamingSession:
             window, elapsed_seconds=self._elapsed()
         )
         self._emit(record, snapshot)
+        self._archive_window(window, "admitted")
         future = executor.submit(self.client.classify_window, window)
         with self._pending_lock:
             self._pending.add(future)
@@ -405,6 +445,7 @@ class StreamingSession:
 
     def _apply_window_future(self, future: Future[Any], window: FrameWindow) -> None:
         if future.cancelled():
+            self._archive_window(window, "cancelled")
             return
         exc = future.exception()
         if exc is not None:
@@ -444,6 +485,7 @@ class StreamingSession:
                     self.callbacks.on_analysis_frame is not None
                     or self.callbacks.on_analysis_result is not None
                     or self.callbacks.on_timeline_result is not None
+                    or self.archive is not None
                 ):
                     grounded_objects: tuple[GroundedObject, ...]
                     judgments: tuple[EventJudgment, ...] | None
@@ -567,6 +609,14 @@ class StreamingSession:
                                 classification, "analysis_kind", "event"
                             ),
                         )
+                        try:
+                            timeline_result = self.person_registry.prepare_analysis(
+                                timeline_result, observation_bundle(classification),
+                            )
+                        except Exception:
+                            LOGGER.warning(
+                                "could not associate observation with a person"
+                            )
                         if applied:
                             analysis_result = timeline_result
                             analysis_frame_jpeg = (
@@ -579,6 +629,27 @@ class StreamingSession:
                 analysis_result=analysis_result,
                 timeline_result=timeline_result,
                 analysis_frame_jpeg=analysis_frame_jpeg,
+            )
+            # Archive work is strictly downstream of the immediate result. These
+            # methods only enqueue; disk, replay and encoding never run here.
+            if self.archive is not None and self._emit_open:
+                if timeline_result is not None:
+                    accepted = self.archive.submit_result(
+                        timeline_result, window_id=window.index,
+                    )
+                    self._archive_window(window, "completed" if accepted else "dropped")
+                    for corrected in self.person_registry.drain_reassociated_results():
+                        self.archive.submit_result(corrected)
+                else:
+                    self._archive_window(window, "failed")
+
+    def _archive_window(self, window: FrameWindow, outcome: str) -> None:
+        if self.archive is not None:
+            self.archive.note_window(
+                self.stream_session_id, window.index, window.end_timestamp,
+                expected_labels=tuple(getattr(self.client, "event_labels", ()))
+                or (self.event_label,), outcome=outcome,
+                source_frame_index=window.newest_frame.source_frame_index,
             )
 
     def _has_pending(self) -> bool:
@@ -772,7 +843,7 @@ def _main(argv: list[str] | None = None) -> int:
             ),
         )
 
-    client = build_client(
+    client = build_grounding_client(
         config.inference,
         config.model_api,
         memory_context=config.memory,
@@ -783,6 +854,7 @@ def _main(argv: list[str] | None = None) -> int:
         on_end=on_end,
         on_vision_result=lambda result: emit(result.as_dict()),
     )
+    archive = EventArchive(config.events)
     if stream_url is not None:
         session = StreamingSession.for_stream(
             config,
@@ -790,6 +862,7 @@ def _main(argv: list[str] | None = None) -> int:
             callbacks,
             stream_url=stream_url,
             whep_headers=whep_headers,
+            archive=archive,
         )
     else:
         assert video is not None
@@ -800,6 +873,7 @@ def _main(argv: list[str] | None = None) -> int:
             video_path=video,
             start_seconds=args.start_seconds,
             realtime=False if args.no_realtime else None,
+            archive=archive,
         )
     try:
         session.start()
@@ -809,6 +883,7 @@ def _main(argv: list[str] | None = None) -> int:
         session.stop()
         done.wait(5.0)
     finally:
+        archive.close(timeout=15.0)
         if close_output:
             output.close()
     return 0

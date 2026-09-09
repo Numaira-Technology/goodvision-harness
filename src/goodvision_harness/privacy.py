@@ -22,9 +22,12 @@ _IDENTIFIER_FIELDS = frozenset({
     "message_id", "observation_id", "source_id", "stream_session_id",
     "object_id", "track_id", "person_id", "stranger_id", "memory_id",
     "analysis_message_id", "next_analysis_message_id", "association_message_id",
+    "subject_id", "event_id", "canonical_event_id", "requested_event_id",
+    "person_track_id", "face_track_id", "actor_id",
 })
 _IDENTIFIER_LIST_FIELDS = frozenset({
     "object_ids", "memory_ids", "matched_memory_ids",
+    "subject_ids", "event_ids", "person_track_ids", "actor_ids",
 })
 _IMPLEMENTATION_FIELDS = frozenset({
     "engine", "provider", "backend", "model", "model_name",

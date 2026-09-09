@@ -26,7 +26,6 @@ from goodvision_harness.face_recognition import (
 from goodvision_harness.rich_labeling import RichLabelObject, RichLabelSnapshot
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -296,74 +295,48 @@ def test_empty_gallery_marks_usable_face_unknown(
     assert "similarity" not in classification.objects[0].attributes
 
 
-def test_unknown_face_capture_persists_and_reuses_stranger_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    first_model = _FakeFaceAnalysis(
-        [
-            [_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.91)],
-            [_face((20, 20, 120, 130), (0.99, 0.01), detection_score=0.92)],
-        ]
-    )
-    restarted_model = _FakeFaceAnalysis(
-        [[_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.93)]]
-    )
-    models = iter((first_model, restarted_model))
-    monkeypatch.setattr(
-        face_module,
-        "_load_face_analysis",
-        lambda _config: next(models),
-    )
-    config = _config(tmp_path, min_face_size=20)
-    runtime = FaceRecognitionRuntime(config)
-
-    first = runtime.classify_window(_window(_jpeg(), index=0)).classification
-    second = runtime.classify_window(_window(_jpeg(), index=1)).classification
-    assert first is not None and second is not None
-    first_id = first.objects[0].attributes["stranger_id"]
-    assert second.objects[0].attributes["stranger_id"] == first_id
-    assert first.objects[0].attributes["photo_url"] == (
-        f"/v1/faces/strangers/{first_id}/photo"
-    )
-    captures = runtime.list_strangers()
-    assert [capture.stranger_id for capture in captures] == [first_id]
-    assert captures[0].photo_available is True
-    photo = runtime.stranger_photo(first_id)
-    assert photo is not None
-    decoded = cv2.imdecode(np.frombuffer(photo, dtype=np.uint8), cv2.IMREAD_COLOR)
-    assert decoded is not None
-    assert decoded.shape[:2] == (110, 100)
-    assert len(list((tmp_path / "stranger-captures").glob("*.jpg"))) == 1
-
-    restarted = FaceRecognitionRuntime(config)
-    after_restart = restarted.classify_window(_window(_jpeg())).classification
-    assert after_restart is not None
-    assert after_restart.objects[0].attributes["stranger_id"] == first_id
-
-
-def test_capture_write_failure_does_not_create_id_or_suppress_alert(
+def test_unknown_faces_do_not_create_photos_or_persistent_stranger_gallery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model = _FakeFaceAnalysis(
-        [[_face((20, 20, 120, 130), (1.0, 0.0), detection_score=0.91)]]
+        [[_face((20, 20, 120, 130), (1.0, 0.0))] for _ in range(2)]
     )
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: model)
+    config = _config(tmp_path)
+    legacy = config.gallery_path.with_name(f"{config.gallery_path.stem}-strangers.json")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("legacy malformed state must never be loaded", encoding="utf-8")
+    runtime = FaceRecognitionRuntime(config)
+    for index in range(2):
+        result = runtime.classify_window(_window(_jpeg(), index=index)).classification
+        assert result is not None and result.detected
+        assert "stranger_id" not in result.objects[0].attributes
+        assert "photo_url" not in result.objects[0].attributes
+    assert not (tmp_path / "stranger-captures").exists()
+    assert (
+        legacy.read_text(encoding="utf-8")
+        == "legacy malformed state must never be loaded"
+    )
+    assert not hasattr(runtime, "stranger_gallery")
 
-    def fail_write(_path: Path, _payload: bytes) -> None:
-        raise RuntimeError("disk unavailable")
 
-    monkeypatch.setattr(face_module, "_atomic_write_bytes", fail_write)
-    runtime = FaceRecognitionRuntime(_config(tmp_path, min_face_size=20))
+def test_unknown_classification_does_not_write_any_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _FakeFaceAnalysis([[_face((20, 20, 120, 130), (1.0, 0.0))]])
+    monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: model)
+    runtime = FaceRecognitionRuntime(_config(tmp_path))
 
-    classification = runtime.classify_window(_window(_jpeg())).classification
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("recognition attempted persistent enrollment")
 
-    assert classification is not None
-    assert classification.detected is True
-    assert classification.objects[0].attributes["status"] == "unknown"
-    assert "stranger_id" not in classification.objects[0].attributes
-    assert runtime.list_strangers() == ()
+    monkeypatch.setattr(runtime.gallery, "enroll", forbidden)
+    result = runtime.classify_window(_window(_jpeg())).classification
+    assert result is not None and result.detected
+    assert not list(tmp_path.rglob("*.jpg"))
+    assert not list(tmp_path.rglob("*-strangers.json"))
 
 
 @pytest.mark.parametrize(
@@ -400,15 +373,11 @@ def test_live_face_size_boundary_controls_alert_and_bbox(
     classification = response.classification
     assert classification is not None
     assert classification.detected is expected_detected
-    assert classification.event_object_indexes == (
-        (0,) if expected_detected else ()
-    )
+    assert classification.event_object_indexes == ((0,) if expected_detected else ())
     face = classification.objects[0]
     assert face.attributes["status"] == expected_status
     assert face.confidence == pytest.approx(0.86)
-    assert face.bbox.to_pixels(320, 160) == (
-        100, 30, 100 + face_width, 30 + face_width
-    )
+    assert face.bbox.to_pixels(320, 160) == (100, 30, 100 + face_width, 30 + face_width)
     if expected_detected:
         assert face.label == "unknown_person"
     else:
@@ -416,26 +385,29 @@ def test_live_face_size_boundary_controls_alert_and_bbox(
         assert face.attributes["reason"] == (
             "face_too_small" if face_width < 20 else "face_too_small_for_stranger"
         )
-        assert runtime.list_strangers() == ()
 
 
 def _timed_window(index: int) -> FrameWindow:
     frame = replace(
         _window(_jpeg()).newest_frame,
-        sample_index=index, source_frame_index=index * 10,
+        sample_index=index,
+        source_frame_index=index * 10,
         timestamp_seconds=index * 0.4,
     )
     return FrameWindow(index=index, frames=(frame,))
 
 
 def test_session_keeps_known_person_for_distant_and_low_quality_faces(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _FakeFaceAnalysis([
-        [_face((20, 20, 100, 100), (1.0, 0.0))],
-        [_face((30, 30, 85, 85), (0.0, 1.0))],
-        [_face((30, 30, 85, 85), (0.0, 1.0), detection_score=0.5)],
-    ])
+    app = _FakeFaceAnalysis(
+        [
+            [_face((20, 20, 100, 100), (1.0, 0.0))],
+            [_face((30, 30, 85, 85), (0.0, 1.0))],
+            [_face((30, 30, 85, 85), (0.0, 1.0), detection_score=0.5)],
+        ]
+    )
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
     runtime = FaceRecognitionRuntime(_config(tmp_path, min_face_size=20))
     runtime.gallery.enroll("alice", "Alice", (1.0, 0.0))
@@ -448,15 +420,13 @@ def test_session_keeps_known_person_for_distant_and_low_quality_faces(
         assert result.objects[0].attributes["identity_source"] == (
             "face_match" if index == 0 else "track_history"
         )
-    assert runtime.list_strangers() == ()
 
 
-def test_session_captures_only_after_consecutive_reliable_stranger_faces(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_session_confirms_only_after_consecutive_reliable_stranger_faces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _FakeFaceAnalysis([
-        [_face((20, 20, 100, 100), (0.0, 1.0))] for _ in range(3)
-    ])
+    app = _FakeFaceAnalysis([[_face((20, 20, 100, 100), (0.0, 1.0))] for _ in range(3)])
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
     runtime = FaceRecognitionRuntime(_config(tmp_path))
     session = FaceRecognitionSession(runtime)
@@ -464,31 +434,21 @@ def test_session_captures_only_after_consecutive_reliable_stranger_faces(
         result = session.classify_window(_timed_window(index)).classification
         assert result is not None
         assert result.detected is (index == 2)
-        assert len(runtime.list_strangers()) == (1 if index == 2 else 0)
-        assert ("stranger_id" in result.objects[0].attributes) is (index == 2)
 
 
 def test_session_keeps_stranger_annotation_through_poor_and_missing_faces(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _FakeFaceAnalysis([
-        *[[_face((20, 20, 100, 100), (0.0, 1.0))] for _ in range(3)],
-        [_face((30, 30, 85, 85), (0.0, 1.0), detection_score=0.5)],
-        [],
-    ])
+    app = _FakeFaceAnalysis(
+        [
+            *[[_face((20, 20, 100, 100), (0.0, 1.0))] for _ in range(3)],
+            [_face((30, 30, 85, 85), (0.0, 1.0), detection_score=0.5)],
+            [],
+        ]
+    )
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
     runtime = FaceRecognitionRuntime(_config(tmp_path))
-    original_identify = runtime._identify_stranger
-    capture_calls: list[tuple[float, float, float, float]] = []
-
-    def identify(
-        embedding: Any, image: np.ndarray[Any, Any],
-        pixel_bbox: tuple[float, float, float, float],
-    ) -> str:
-        capture_calls.append(pixel_bbox)
-        return original_identify(embedding, image, pixel_bbox)
-
-    monkeypatch.setattr(runtime, "_identify_stranger", identify)
     session = FaceRecognitionSession(runtime)
     results = [
         session.classify_window(_timed_window(index)).classification
@@ -498,7 +458,6 @@ def test_session_keeps_stranger_annotation_through_poor_and_missing_faces(
     assert all(result is not None for result in results)
     confirmed = results[2]
     assert confirmed is not None
-    stranger_id = confirmed.objects[0].attributes["stranger_id"]
     face_track_id = confirmed.objects[0].attributes["face_track_id"]
     for index in (3, 4):
         result = results[index]
@@ -507,32 +466,29 @@ def test_session_keeps_stranger_annotation_through_poor_and_missing_faces(
         assert len(result.objects) == 1
         assert result.objects[0].label == "unknown_person"
         attributes = result.objects[0].attributes
-        assert attributes["stranger_id"] == stranger_id
         assert attributes["face_track_id"] == face_track_id
-        assert attributes["photo_url"] == (
-            f"/v1/faces/strangers/{stranger_id}/photo"
-        )
         assert attributes["identity_source"] == "track_history"
         assert attributes["identity_age_seconds"] == pytest.approx(index * 0.4 - 0.8)
-    assert len(capture_calls) == 1
-    assert len(runtime.list_strangers()) == 1
-    assert len(list((tmp_path / "stranger-captures").glob("*.jpg"))) == 1
+    assert not (tmp_path / "stranger-captures").exists()
 
 
-def test_session_retained_stranger_does_not_use_another_faces_capture_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_session_retained_stranger_keeps_its_track_when_another_face_arrives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _FakeFaceAnalysis([
-        *[[_face((20, 20, 100, 100), (1.0, 0.0))] for _ in range(3)],
-        [_face((210, 20, 290, 100), (0.0, 1.0))],
-    ])
+    app = _FakeFaceAnalysis(
+        [
+            *[[_face((20, 20, 100, 100), (1.0, 0.0))] for _ in range(3)],
+            [_face((210, 20, 290, 100), (0.0, 1.0))],
+        ]
+    )
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
     runtime = FaceRecognitionRuntime(_config(tmp_path))
     session = FaceRecognitionSession(runtime)
     for index in range(3):
         confirmed = session.classify_window(_timed_window(index)).classification
     assert confirmed is not None
-    original_id = confirmed.objects[0].attributes["stranger_id"]
+    original_id = confirmed.objects[0].attributes["face_track_id"]
 
     result = session.classify_window(_timed_window(3)).classification
 
@@ -544,23 +500,28 @@ def test_session_retained_stranger_does_not_use_another_faces_capture_input(
     assert newcomer.attributes["unknown_confirmations"] == 1
     assert "stranger_id" not in newcomer.attributes
     assert retained.attributes["status"] == "unknown"
-    assert retained.attributes["stranger_id"] == original_id
+    assert retained.attributes["face_track_id"] == original_id
     assert retained.attributes["identity_source"] == "track_history"
     assert retained.bbox == confirmed.objects[0].bbox
-    assert len(runtime.list_strangers()) == 1
 
 
 def test_session_stranger_annotation_with_body_expires_after_three_seconds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _FakeFaceAnalysis([
-        *[[_face((20, 20, 100, 100), (1.0, 0.0))] for _ in range(3)],
-        *[[] for _ in range(8)],
-    ])
+    app = _FakeFaceAnalysis(
+        [
+            *[[_face((20, 20, 100, 100), (1.0, 0.0))] for _ in range(3)],
+            *[[] for _ in range(8)],
+        ]
+    )
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
     runtime = FaceRecognitionRuntime(_config(tmp_path))
     body = RichLabelObject(
-        "P0001", "person", NormalizedBBox(0, 0, 0.5, 1), confidence=0.9,
+        "P0001",
+        "person",
+        NormalizedBBox(0, 0, 0.5, 1),
+        confidence=0.9,
     )
     snapshots: list[RichLabelSnapshot] = []
     coordinator = SimpleNamespace(history=lambda: tuple(snapshots))
@@ -577,12 +538,13 @@ def test_session_stranger_annotation_with_body_expires_after_three_seconds(
         if index == 10:
             assert result.objects == ()
             assert result.event_object_indexes == ()
-    assert len(runtime.list_strangers()) == 1
 
 
 @pytest.mark.parametrize("kind", ["low_score", "extreme_angle", "invalid_landmarks"])
-def test_unreliable_face_never_creates_stranger_capture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str,
+def test_unreliable_face_never_creates_stranger_alert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
 ) -> None:
     face = _face((20, 20, 100, 100), (0.0, 1.0))
     if kind == "low_score":
@@ -597,11 +559,11 @@ def test_unreliable_face_never_creates_stranger_capture(
     result = runtime.classify_window(_timed_window(0)).classification
     assert result is not None and not result.detected
     assert result.objects[0].attributes["status"] == "unusable"
-    assert runtime.list_strangers() == ()
 
 
 def test_small_face_can_still_positively_match_enrolled_person(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _FakeFaceAnalysis([[_face((20, 20, 45, 45), (1.0, 0.0))]])
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
@@ -612,13 +574,16 @@ def test_small_face_can_still_positively_match_enrolled_person(
     assert result.objects[0].attributes["person_id"] == "alice"
 
 
-def test_session_uses_raw_body_history_and_breaks_on_intermediate_disappearance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_session_uses_raw_body_history_and_tolerates_brief_disappearance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _FakeFaceAnalysis([
-        [_face((20, 20, 100, 100), (1.0, 0.0))],
-        [_face((20, 20, 100, 100), (0.0, 1.0), detection_score=0.5)],
-    ])
+    app = _FakeFaceAnalysis(
+        [
+            [_face((20, 20, 100, 100), (1.0, 0.0))],
+            [_face((20, 20, 100, 100), (0.0, 1.0), detection_score=0.5)],
+        ]
+    )
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
     runtime = FaceRecognitionRuntime(_config(tmp_path))
     runtime.gallery.enroll("alice", "Alice", (1.0, 0.0))
@@ -632,31 +597,36 @@ def test_session_uses_raw_body_history_and_breaks_on_intermediate_disappearance(
     first = session.classify_window(_timed_window(0)).classification
     assert first is not None
     assert first.objects[0].attributes["person_track_id"] == "P0001"
-    snapshots.extend([
-        RichLabelSnapshot("session", 5, 0.2, ()),
-        RichLabelSnapshot("session", 10, 0.4, (body,)),
-    ])
+    snapshots.extend(
+        [
+            RichLabelSnapshot("session", 5, 0.2, ()),
+            RichLabelSnapshot("session", 10, 0.4, (body,)),
+        ]
+    )
     result = session.classify_window(_timed_window(1)).classification
     assert result is not None and not result.detected
-    assert result.objects[0].attributes["status"] == "unusable"
-    assert "person_id" not in result.objects[0].attributes
+    assert result.objects[0].attributes["status"] == "known"
+    assert result.objects[0].attributes["person_id"] == "alice"
 
 
 def test_new_session_shares_gallery_but_never_inherits_identity_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _FakeFaceAnalysis([
-        [_face((20, 20, 100, 100), (1.0, 0.0))],
-        [_face((20, 20, 100, 100), (0.0, 1.0), detection_score=0.5)],
-    ])
+    app = _FakeFaceAnalysis(
+        [
+            [_face((20, 20, 100, 100), (1.0, 0.0))],
+            [_face((20, 20, 100, 100), (0.0, 1.0), detection_score=0.5)],
+        ]
+    )
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
     runtime = FaceRecognitionRuntime(_config(tmp_path))
     runtime.gallery.enroll("alice", "Alice", (1.0, 0.0))
     first = FaceRecognitionSession(runtime)
     first.classify_window(_timed_window(0))
-    result = FaceRecognitionSession(runtime).classify_window(
-        _timed_window(0)
-    ).classification
+    result = (
+        FaceRecognitionSession(runtime).classify_window(_timed_window(0)).classification
+    )
     assert result is not None and not result.detected
     assert result.objects[0].attributes["status"] == "unusable"
     assert "person_id" not in result.objects[0].attributes
@@ -1036,7 +1006,9 @@ def test_config_rejects_non_boolean_model_download_opt_in(tmp_path: Path) -> Non
 
 
 # Runtime-only dependency audits never load model weights.
-FACE_RUNTIME_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "face_gpu_smoke.py"
+FACE_RUNTIME_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "tools" / "face_gpu_smoke.py"
+)
 ORT_EXCEPTION = "insightface 1.0.1 requires onnxruntime, which is not installed."
 CV_EXCEPTION = "insightface 1.0.1 requires opencv-python, which is not installed."
 VALID_OUTPUT = f"{ORT_EXCEPTION}\n{CV_EXCEPTION}\n"
@@ -1086,7 +1058,8 @@ def test_runtime_check_import_does_not_import_inference_libraries(
     ids=["declared-order", "reverse-order", "blank-lines-and-whitespace"],
 )
 def test_dependency_audit_accepts_only_the_two_declared_exceptions(
-    runtime_check: ModuleType, output: str,
+    runtime_check: ModuleType,
+    output: str,
 ) -> None:
     assert runtime_check.validate_dependency_audit(1, output) is None
 
@@ -1112,15 +1085,24 @@ def test_dependency_audit_accepts_only_the_two_declared_exceptions(
         "insightface 1.0.1 requires opencv-python>=6, which is not installed.",
     ],
     ids=[
-        "empty", "whitespace-only", "missing-opencv", "missing-ort",
-        "duplicate-ort-only", "duplicate-opencv-only", "extra-duplicate-ort",
-        "extra-duplicate-opencv", "extra-unrelated-error", "unknown-error",
-        "unexpected-clean-check", "changed-insightface-version",
+        "empty",
+        "whitespace-only",
+        "missing-opencv",
+        "missing-ort",
+        "duplicate-ort-only",
+        "duplicate-opencv-only",
+        "extra-duplicate-ort",
+        "extra-duplicate-opencv",
+        "extra-unrelated-error",
+        "unknown-error",
+        "unexpected-clean-check",
+        "changed-insightface-version",
         "changed-dependency-requirement",
     ],
 )
 def test_dependency_audit_rejects_missing_extra_duplicate_or_unknown_lines(
-    runtime_check: ModuleType, output: str,
+    runtime_check: ModuleType,
+    output: str,
 ) -> None:
     with pytest.raises(RuntimeError, match="Unexpected dependency audit result"):
         runtime_check.validate_dependency_audit(1, output)
@@ -1128,14 +1110,16 @@ def test_dependency_audit_rejects_missing_extra_duplicate_or_unknown_lines(
 
 @pytest.mark.parametrize("returncode", [0, -1, 2, 127, 137])
 def test_dependency_audit_rejects_wrong_returncode_even_with_expected_lines(
-    runtime_check: ModuleType, returncode: int,
+    runtime_check: ModuleType,
+    returncode: int,
 ) -> None:
     with pytest.raises(RuntimeError, match="Unexpected dependency audit result"):
         runtime_check.validate_dependency_audit(returncode, VALID_OUTPUT)
 
 
 def test_face_runtime_mode_audits_packages_without_starting_models(
-    runtime_check: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    runtime_check: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
@@ -1150,28 +1134,46 @@ def test_face_runtime_mode_audits_packages_without_starting_models(
 
     monkeypatch.setattr(runtime_check.metadata, "distribution", absent)
     monkeypatch.setattr(runtime_check, "check_models", no_models)
-    monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace(
-        __version__="4.14.0", IMREAD_COLOR=1,
-        imencode=lambda *_args: (True, b"synthetic-jpeg"),
-        imdecode=lambda *_args: SimpleNamespace(shape=(32, 32, 3)),
-    ))
-    monkeypatch.setitem(sys.modules, "insightface", SimpleNamespace(
-        app=SimpleNamespace(FaceAnalysis=object),
-    ))
-    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(
-        __version__="1.26.0",
-        get_available_providers=lambda: ["CUDAExecutionProvider"],
-    ))
-    monkeypatch.setattr(runtime_check.subprocess, "run", lambda *_args, **_kwargs: (
-        SimpleNamespace(returncode=1, stdout=VALID_OUTPUT, stderr="")
-    ))
+    monkeypatch.setitem(
+        sys.modules,
+        "cv2",
+        SimpleNamespace(
+            __version__="4.14.0",
+            IMREAD_COLOR=1,
+            imencode=lambda *_args: (True, b"synthetic-jpeg"),
+            imdecode=lambda *_args: SimpleNamespace(shape=(32, 32, 3)),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "insightface",
+        SimpleNamespace(
+            app=SimpleNamespace(FaceAnalysis=object),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            __version__="1.26.0",
+            get_available_providers=lambda: ["CUDAExecutionProvider"],
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_check.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout=VALID_OUTPUT, stderr=""
+        ),
+    )
 
     assert runtime_check.main(["--runtime"]) == 0
     assert json.loads(capsys.readouterr().out)["real_gpu_inference_tested"] is False
 
 
 def test_face_default_mode_still_runs_real_model_check(
-    runtime_check: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    runtime_check: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
     monkeypatch.setattr(runtime_check, "check_models", lambda: calls.append("models"))
@@ -1181,7 +1183,8 @@ def test_face_default_mode_still_runs_real_model_check(
 
 
 def test_face_validation_failures_return_nonzero_without_raw_exception(
-    runtime_check: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    runtime_check: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fail() -> None:

@@ -101,6 +101,10 @@ def test_gpu_configuration_does_not_advertise_unusable_acceleration(
         assert response.json() == {"ready": False, "gpu_ready": False}
         assert client.post("/v1/labels", content=b"unused").status_code == 503
         assert "private" not in response.text
+        tracking = client.get("/health/tracking")
+        detector_ok = failure in {"attributes", "empty_attributes"}
+        assert tracking.status_code == (200 if detector_ok else 503)
+        assert tracking.json() == {"ready": detector_ok, "gpu_ready": detector_ok}
     if failure in {
         "not_compiled", "no_device", "wrong_index", "kernel", "cpu_fallback",
     }:

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import jsonschema
 import numpy as np
 import pytest
 
@@ -139,6 +140,8 @@ def _stranger_classification(*, unknown: bool) -> GroundedClassification:
         confidence=0.97,
         attributes={
             "status": "known",
+            "subject_id": "subject-known-alice",
+            "subject_ids": ["subject-known-alice"],
             "person_id": "alice",
             "name": "Alice",
             "similarity": 0.94,
@@ -155,11 +158,8 @@ def _stranger_classification(*, unknown: bool) -> GroundedClassification:
                 attributes={
                     "status": "unknown",
                     "similarity": 0.18,
-                    "stranger_id": "stranger-0123456789abcdef0123456789abcdef",
-                    "photo_url": (
-                        "/v1/faces/strangers/"
-                        "stranger-0123456789abcdef0123456789abcdef/photo"
-                    ),
+                    "subject_id": "subject-unknown-1",
+                    "subject_ids": ["subject-unknown-1"],
                 },
             ),
         )
@@ -812,10 +812,18 @@ def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
     assert smoking_object["attributes"] == {"evidence": "at_mouth"}
     assert stranger_object["label"] == "unknown_person"
     assert stranger_object["attributes"]["status"] == "unknown"
-    assert stranger_object["attributes"]["stranger_id"] == (
-        "stranger-0123456789abcdef0123456789abcdef"
+    assert stranger_object["attributes"]["subject_id"] == "subject-unknown-1"
+    assert stranger_object["attributes"]["subject_ids"] == ["subject-unknown-1"]
+    assert "stranger_id" not in stranger_object["attributes"]
+    assert "photo_url" not in stranger_object["attributes"]
+    # Person association uses the existing open object-attributes extension.
+    # The version and top-level contract are unchanged.
+    assert payload["schema_version"] == "2"
+    assert "subject_id" not in payload
+    schema = json.loads(
+        (ROOT / "schemas/analysis-result-v2.schema.json").read_text(encoding="utf-8")
     )
-    assert stranger_object["attributes"]["photo_url"].endswith("/photo")
+    jsonschema.Draft202012Validator(schema).validate(payload)
     assert emitted_frames == [(result, window.newest_frame.presentation_jpeg_bytes)]
 
     # Capability views keep the original frame summary, including when their

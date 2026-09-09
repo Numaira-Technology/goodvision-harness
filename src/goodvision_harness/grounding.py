@@ -72,6 +72,7 @@ def _system_prompt_with_evidence_rules(
         return f"{system_prompt}\n\n{SMOKING_EVIDENCE_RULE}"
     return system_prompt
 
+
 BILINGUAL_DESCRIPTION_RULE = (
     "Every description must be a single bilingual string: one concise Simplified "
     "Chinese sentence, followed by ' / ', followed by its equivalent English "
@@ -80,9 +81,30 @@ BILINGUAL_DESCRIPTION_RULE = (
     "negative judgments and supersedes earlier monolingual description examples. "
     "Keep JSON keys, event_label values, object labels, and identifiers unchanged."
 )
+ACTOR_ASSOCIATION_RULE = (
+    "Additional optional tracking metadata, without changing any event verdict "
+    "or objects rule: add a top-level actors array with at most 8 clearly visible "
+    "people in the NEWEST LIVE image, including when every event is negative. "
+    "Prioritize event participants, then other clearly visible people. Each actor "
+    "has actor_id (a short ID local to this response, such as a1), confidence "
+    "(0..1), and a tight visible body bbox_2d on the same 0..1000 grid. "
+    "Do not invent people, names, stable tracking IDs, or hidden body extent. "
+    "An event object may additionally have actor_ids listing only these local "
+    "IDs for people visibly participating in or holding/using that object. "
+    "Use actor_ids=[] if ownership is uncertain; proximity alone is insufficient. "
+    "Keep smoking/weapon objects as item boxes; put body boxes only in actors. "
+    "Negative judgments still use objects=[] but may have top-level actors. "
+    "Prioritize complete event judgments and target boxes within the existing "
+    "output budget; omit auxiliary actors before omitting required event fields. "
+    "Do not describe actors in prose. Reference images are never live actors."
+)
 _EVENT_NAMES_ZH = {
-    "fight": "打架", "smoking": "吸烟", "fall": "跌倒", "weapon": "武器",
-    "stranger": "陌生人", "unknown_person": "陌生人",
+    "fight": "打架",
+    "smoking": "吸烟",
+    "fall": "跌倒",
+    "weapon": "武器",
+    "stranger": "陌生人",
+    "unknown_person": "陌生人",
 }
 
 
@@ -94,6 +116,10 @@ class ModelObject:
     bbox: NormalizedBBox
     confidence: float | None = None
     attributes: Mapping[str, Any] = field(default_factory=dict, hash=False)
+    # Private association data: never serialized into the legacy result objects.
+    actor_ids: tuple[str, ...] = ()
+    identity_embedding: tuple[float, ...] = field(default=(), repr=False, compare=False)
+    identity_quality: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -101,6 +127,35 @@ class ModelObject:
             "attributes",
             readonly_json_mapping(self.attributes, name="model object attributes"),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ModelActor:
+    """A response-local body observation, not a persistent identity."""
+
+    actor_id: str
+    bbox: NormalizedBBox
+    confidence: float = 1.0
+    matched_memory_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationBundle:
+    """Private observations accompanying one unchanged public analysis record."""
+
+    actors: tuple[ModelActor, ...] = ()
+    object_actor_ids: tuple[tuple[str, ...], ...] = ()
+    face_observations: tuple[ModelObject, ...] = ()
+
+
+def observation_bundle(classification: Any) -> ObservationBundle:
+    return ObservationBundle(
+        actors=tuple(getattr(classification, "actors", ())),
+        object_actor_ids=tuple(
+            item.actor_ids for item in getattr(classification, "objects", ())
+        ),
+        face_observations=tuple(getattr(classification, "face_observations", ())),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +167,8 @@ class GroundedClassification:
     analysis_kind: str = "event"
     event_object_indexes: tuple[int, ...] | None = None
     matched_memory_ids: tuple[str, ...] = ()
+    actors: tuple[ModelActor, ...] = ()
+    face_observations: tuple[ModelObject, ...] = ()
 
     def __post_init__(self) -> None:
         analysis_kind = str(self.analysis_kind).strip()
@@ -121,8 +178,7 @@ class GroundedClassification:
 
         memory_ids = tuple(self.matched_memory_ids)
         if any(
-            not isinstance(memory_id, str) or not memory_id
-            for memory_id in memory_ids
+            not isinstance(memory_id, str) or not memory_id for memory_id in memory_ids
         ):
             raise TypeError("matched_memory_ids must contain non-empty text")
         if len(set(memory_ids)) != len(memory_ids):
@@ -185,8 +241,7 @@ class GroundedEventClassification:
 
         memory_ids = tuple(self.matched_memory_ids)
         if any(
-            not isinstance(memory_id, str) or not memory_id
-            for memory_id in memory_ids
+            not isinstance(memory_id, str) or not memory_id for memory_id in memory_ids
         ):
             raise TypeError("matched_memory_ids must contain non-empty text")
         if len(set(memory_ids)) != len(memory_ids):
@@ -201,6 +256,8 @@ class MultiGroundedClassification:
     judgments: tuple[GroundedEventClassification, ...]
     analysis_kind: str = SAFETY_MULTI_ANALYSIS_KIND
     missing_event_labels: tuple[str, ...] = ()
+    actors: tuple[ModelActor, ...] = ()
+    face_observations: tuple[ModelObject, ...] = ()
 
     def __post_init__(self) -> None:
         judgments = tuple(self.judgments)
@@ -230,21 +287,16 @@ class MultiGroundedClassification:
 
     @property
     def description(self) -> str:
-        positives = tuple(
-            judgment for judgment in self.judgments if judgment.detected
-        )
+        positives = tuple(judgment for judgment in self.judgments if judgment.detected)
         if not positives:
             return "No target events detected."
         return "; ".join(
-            f"{judgment.event_label}: {judgment.description}"
-            for judgment in positives
+            f"{judgment.event_label}: {judgment.description}" for judgment in positives
         )
 
     @property
     def objects(self) -> tuple[ModelObject, ...]:
-        return tuple(
-            item for judgment in self.judgments for item in judgment.objects
-        )
+        return tuple(item for judgment in self.judgments for item in judgment.objects)
 
     @property
     def matched_memory_ids(self) -> tuple[str, ...]:
@@ -292,7 +344,11 @@ def _record_analysis_failure(
         status_code = error.status_code
     _LOGGER.warning(
         "analysis_failure branch=%s stage=%s window=%d code=%s http_status=%s",
-        branch, stage, window.index, code, status_code,
+        branch,
+        stage,
+        window.index,
+        code,
+        status_code,
     )
     return code
 
@@ -407,9 +463,7 @@ def _parse_model_objects(
                 object_confidence, f"{object_field}.confidence"
             )
             if not 0.0 <= parsed_object_confidence <= 1.0:
-                raise ValueError(
-                    f"{object_field}.confidence must be between 0 and 1"
-                )
+                raise ValueError(f"{object_field}.confidence must be between 0 and 1")
         attributes = raw_object.get("attributes", {})
         if not isinstance(attributes, Mapping):
             raise TypeError(f"{object_field}.attributes must be an object")
@@ -424,9 +478,71 @@ def _parse_model_objects(
                 ),
                 confidence=parsed_object_confidence,
                 attributes=attributes,
+                actor_ids=_actor_ids(raw_object.get("actor_ids")),
             )
         )
     return tuple(objects)
+
+
+def _actor_ids(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            item
+            for item in value[:8]
+            if isinstance(item, str) and item.strip() and len(item) <= 64
+        )
+    )
+
+
+def _parse_actors(
+    payload: Mapping[str, Any],
+    *,
+    allowed_memory_ids: Collection[str] | None = None,
+    allow_identity: bool = False,
+) -> tuple[ModelActor, ...]:
+    """Auxiliary metadata is fail-open; a bad actor cannot lose a real alert."""
+    raw = payload.get("actors", [])
+    if not isinstance(raw, list):
+        return ()
+    actors: dict[str, ModelActor] = {}
+    duplicates: set[str] = set()
+    for item in raw[:32]:
+        if not isinstance(item, Mapping):
+            continue
+        actor_id = item.get("actor_id")
+        if not isinstance(actor_id, str) or not actor_id.strip() or len(actor_id) > 64:
+            continue
+        if actor_id in actors:
+            duplicates.add(actor_id)
+            continue
+        try:
+            box = _parse_model_objects(
+                [
+                    {
+                        "label": "person",
+                        "bbox_2d": item.get("bbox_2d"),
+                        "confidence": item.get("confidence", 1.0),
+                    }
+                ]
+            )[0]
+        except (TypeError, ValueError):
+            continue
+        memory_id = item.get("matched_memory_id")
+        if not (
+            allow_identity
+            and isinstance(memory_id, str)
+            and memory_id in (allowed_memory_ids or ())
+        ):
+            memory_id = None
+        actors[actor_id] = ModelActor(
+            actor_id,
+            box.bbox,
+            box.confidence or 0.0,
+            memory_id,
+        )
+    return tuple(item for key, item in actors.items() if key not in duplicates)[:8]
 
 
 def _validate_bilingual_description(description: str) -> None:
@@ -482,6 +598,11 @@ def parse_grounded_classification(
         objects=objects,
         analysis_kind=analysis_kind,
         matched_memory_ids=matched_memory_ids,
+        actors=_parse_actors(
+            payload,
+            allowed_memory_ids=allowed_memory_ids,
+            allow_identity=analysis_kind == FACE_REFERENCE_ANALYSIS_KIND,
+        ),
     )
 
 
@@ -523,9 +644,7 @@ def parse_multi_grounded_classification(
         detected = raw_event.get("detected")
         if not isinstance(detected, bool):
             raise TypeError(f"{field_name}.detected must be true or false")
-        confidence = _number(
-            raw_event.get("confidence"), f"{field_name}.confidence"
-        )
+        confidence = _number(raw_event.get("confidence"), f"{field_name}.confidence")
         if not 0.0 <= confidence <= 1.0:
             raise ValueError(f"{field_name}.confidence must be between 0 and 1")
         description = raw_event.get("description")
@@ -553,6 +672,7 @@ def parse_multi_grounded_classification(
     return MultiGroundedClassification(
         judgments=tuple(parsed[label] for label in requested_labels),
         analysis_kind=analysis_kind,
+        actors=_parse_actors(payload),
     )
 
 
@@ -579,8 +699,7 @@ def build_grounding_messages(
         else window.frames
     )
     timestamps = ", ".join(
-        f"f{frame.sample_index}={frame.timestamp_seconds:.3f}s"
-        for frame in live_frames
+        f"f{frame.sample_index}={frame.timestamp_seconds:.3f}s" for frame in live_frames
     )
     if memory_context is None:
         text = (
@@ -620,6 +739,18 @@ def build_grounding_messages(
         )
         content = list(memory_context.prompt_prefix)
         content.append({"type": "text", "text": text})
+    actor_rule = ACTOR_ASSOCIATION_RULE
+    if (
+        memory_context is not None
+        and memory_context.purpose == FACE_RECOGNITION_PURPOSE
+    ):
+        actor_rule += (
+            " Only for this known-face reference task, an actor may include "
+            "matched_memory_id naming one supplied MEMORY_ID confidently matched "
+            "to that actor's currently visible face; otherwise omit it. Never "
+            "assign a global memory match to an actor without a visible face."
+        )
+    content[-1]["text"] += f"\n\n{actor_rule}"
     content.extend(
         {
             "type": "image_url",
@@ -635,7 +766,8 @@ def build_grounding_messages(
             "role": "system",
             "content": _system_prompt_with_evidence_rules(
                 system_prompt, (effective_event_label,)
-            ) + f"\n\n{BILINGUAL_DESCRIPTION_RULE}",
+            )
+            + f"\n\n{BILINGUAL_DESCRIPTION_RULE}",
         },
         {"role": "user", "content": content},
     ]
@@ -690,7 +822,7 @@ def build_multi_grounding_messages(
         f"Target safety events (exact order): {rendered_events}\n"
         f"Window: {window.label}\n"
         f"Sample timestamps: {timestamps}"
-        f"{contract_section}\n"
+        f"{contract_section}\n\n{ACTOR_ASSOCIATION_RULE}\n"
         "The live JPEG images follow in chronological order."
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
@@ -746,7 +878,10 @@ class AIClubGroundingClient:
             text = self._transport.assistant_text(response)
         except (ModelAPIError, ValueError) as exc:
             code = _record_analysis_failure(
-                window, branch="safety", stage="request", error=exc,
+                window,
+                branch="safety",
+                stage="request",
+                error=exc,
             )
             return GroundingResponse(
                 window=window,
@@ -770,7 +905,9 @@ class AIClubGroundingClient:
             )
         except (TypeError, ValueError):
             code = _record_analysis_failure(
-                window, branch="safety", stage="classification",
+                window,
+                branch="safety",
+                stage="classification",
                 code="invalid_response",
             )
             return GroundingResponse(
@@ -807,9 +944,7 @@ class DryRunGroundingClient:
         detected = window.index % 6 in {2, 3, 4}
         confidence = round(0.6 + (window.index * 37 % 100) / 250.0, 3)
         memory_ids = (
-            self.memory_context.memory_ids
-            if self.memory_context is not None
-            else ()
+            self.memory_context.memory_ids if self.memory_context is not None else ()
         )
         if self.memory_context is not None and not memory_ids:
             detected = False
@@ -824,6 +959,7 @@ class DryRunGroundingClient:
                     label="person",
                     bbox=NormalizedBBox(0.18, 0.12, 0.72, 0.9),
                     confidence=confidence,
+                    actor_ids=("a1",),
                 ),
             )
         classification = GroundedClassification(
@@ -843,6 +979,7 @@ class DryRunGroundingClient:
                 if self.memory_context is not None and window.index % 2 == 0
                 else ()
             ),
+            actors=(ModelActor("a1", NormalizedBBox(0.18, 0.12, 0.72, 0.9)),),
         )
         return GroundingResponse(
             window=window,
@@ -905,7 +1042,10 @@ class AIClubMultiGroundingClient:
             text = self._transport.assistant_text(response)
         except (ModelAPIError, ValueError) as exc:
             code = _record_analysis_failure(
-                window, branch="safety", stage="request", error=exc,
+                window,
+                branch="safety",
+                stage="request",
+                error=exc,
             )
             return GroundingResponse(
                 window=window,
@@ -925,7 +1065,9 @@ class AIClubMultiGroundingClient:
             )
         except (TypeError, ValueError):
             code = _record_analysis_failure(
-                window, branch="safety", stage="classification",
+                window,
+                branch="safety",
+                stage="classification",
                 code="invalid_response",
             )
             return GroundingResponse(
@@ -972,6 +1114,7 @@ class DryRunMultiGroundingClient:
                         bbox=NormalizedBBox(0.18, 0.12, 0.72, 0.9),
                         confidence=confidence,
                         attributes={"dry_run": True},
+                        actor_ids=("a1",),
                     ),
                 )
                 if detected
@@ -993,7 +1136,10 @@ class DryRunMultiGroundingClient:
             )
         return GroundingResponse(
             window=window,
-            classification=MultiGroundedClassification(tuple(judgments)),
+            classification=MultiGroundedClassification(
+                tuple(judgments),
+                actors=(ModelActor("a1", NormalizedBBox(0.18, 0.12, 0.72, 0.9)),),
+            ),
             latency_seconds=time.monotonic() - started,
         )
 
@@ -1114,9 +1260,7 @@ class SelectedFeaturesGroundingClient:
         if not 1 <= safety_jpeg_quality <= 100:
             raise ValueError("safety_jpeg_quality must be between 1 and 100")
         if face_live_scheduler not in {"full", "single_flight"}:
-            raise ValueError(
-                "face_live_scheduler must be full or single_flight"
-            )
+            raise ValueError("face_live_scheduler must be full or single_flight")
         selected_client = safety_client or stranger_client
         assert selected_client is not None
         self.settings = selected_client.settings
@@ -1166,7 +1310,9 @@ class SelectedFeaturesGroundingClient:
                 )
             except ValueError:
                 code = _record_analysis_failure(
-                    window, branch="safety", stage="input",
+                    window,
+                    branch="safety",
+                    stage="input",
                     code="invalid_response",
                 )
                 return GroundingResponse(
@@ -1224,17 +1370,13 @@ class SelectedFeaturesGroundingClient:
             # concurrent and its complete safety result is still delivered.
             assert resized_window is not None
             try:
-                safety_response = self._safety_client.classify_window(
-                    resized_window
-                )
+                safety_response = self._safety_client.classify_window(resized_window)
             except Exception as exc:
                 safety_error = exc
         elif self._safety_client is not None:
             assert resized_window is not None
             try:
-                safety_response = self._safety_client.classify_window(
-                    resized_window
-                )
+                safety_response = self._safety_client.classify_window(resized_window)
             except Exception as exc:
                 safety_error = exc
         else:
@@ -1256,8 +1398,7 @@ class SelectedFeaturesGroundingClient:
             )
             if isinstance(safety_classification, MultiGroundedClassification):
                 safety_labels = tuple(
-                    judgment.event_label
-                    for judgment in safety_classification.judgments
+                    judgment.event_label for judgment in safety_classification.judgments
                 )
                 if safety_labels == self._safety_event_labels:
                     judgments.extend(safety_classification.judgments)
@@ -1267,12 +1408,21 @@ class SelectedFeaturesGroundingClient:
             else:
                 safety_failed = True
             if safety_failed:
-                reported = dict(safety_response.branch_errors).get("safety") \
-                    if safety_response is not None else None
+                reported = (
+                    dict(safety_response.branch_errors).get("safety")
+                    if safety_response is not None
+                    else None
+                )
                 code = reported or _record_analysis_failure(
-                    window, branch="safety", stage="branch", error=safety_error,
-                    code=("invalid_response" if safety_classification is not None
-                          else "request_failed"),
+                    window,
+                    branch="safety",
+                    stage="branch",
+                    error=safety_error,
+                    code=(
+                        "invalid_response"
+                        if safety_classification is not None
+                        else "request_failed"
+                    ),
                 )
                 branch_errors.append(("safety", code))
 
@@ -1301,9 +1451,7 @@ class SelectedFeaturesGroundingClient:
                             confidence=face_classification.confidence,
                             description=face_classification.description,
                             objects=stranger_objects,
-                            matched_memory_ids=(
-                                face_classification.matched_memory_ids
-                            ),
+                            matched_memory_ids=(face_classification.matched_memory_ids),
                         )
                     )
                     completed_branches.append("stranger")
@@ -1311,15 +1459,19 @@ class SelectedFeaturesGroundingClient:
                     stranger_error = exc
             # No response/error means single-flight deliberately skipped this
             # sample. Do not report it as either healthy, failed, or clear.
-            if (
-                "stranger" not in completed_branches
-                and (stranger_response is not None or stranger_error is not None)
+            if "stranger" not in completed_branches and (
+                stranger_response is not None or stranger_error is not None
             ):
                 code = _record_analysis_failure(
-                    window, branch="stranger", stage="branch",
+                    window,
+                    branch="stranger",
+                    stage="branch",
                     error=stranger_error,
-                    code=("invalid_response" if face_classification is not None
-                          else "request_failed"),
+                    code=(
+                        "invalid_response"
+                        if face_classification is not None
+                        else "request_failed"
+                    ),
                 )
                 branch_errors.append(("stranger", code))
 
@@ -1329,18 +1481,35 @@ class SelectedFeaturesGroundingClient:
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                error=(
-                    PUBLIC_ANALYSIS_ERROR if safety_failed else PUBLIC_FACE_ERROR
-                ),
+                error=(PUBLIC_ANALYSIS_ERROR if safety_failed else PUBLIC_FACE_ERROR),
                 branch_errors=tuple(branch_errors),
             )
 
         try:
-            returned_labels = tuple(
-                judgment.event_label for judgment in judgments
-            )
+            returned_labels = tuple(judgment.event_label for judgment in judgments)
             classification = MultiGroundedClassification(
                 judgments=tuple(judgments),
+                actors=tuple(
+                    getattr(
+                        getattr(safety_response, "classification", None),
+                        "actors",
+                        (),
+                    )
+                ),
+                face_observations=tuple(
+                    getattr(
+                        getattr(stranger_response, "classification", None),
+                        "face_observations",
+                        (),
+                    )
+                )
+                or tuple(
+                    getattr(
+                        getattr(stranger_response, "classification", None),
+                        "objects",
+                        (),
+                    )
+                ),
                 missing_event_labels=tuple(
                     label for label in self.event_labels if label not in returned_labels
                 ),
@@ -1352,9 +1521,15 @@ class SelectedFeaturesGroundingClient:
             )
         except (TypeError, ValueError):
             branch_errors.extend(
-                (branch, _record_analysis_failure(
-                    window, branch=branch, stage="merge", code="invalid_response",
-                ))
+                (
+                    branch,
+                    _record_analysis_failure(
+                        window,
+                        branch=branch,
+                        stage="merge",
+                        code="invalid_response",
+                    ),
+                )
                 for branch in completed_branches
             )
             return GroundingResponse(

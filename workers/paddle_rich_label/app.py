@@ -117,6 +117,7 @@ class Track:
     velocity_x: float = 0.0
     velocity_y: float = 0.0
     motion_updates: int = 0
+    last_observed_timestamp_seconds: float | None = None
 
 
 class IoUTracker:
@@ -128,6 +129,7 @@ class IoUTracker:
         match_iou: float = 0.3,
         max_idle_frames: int = 20,
         visible_idle_frames: int = 1,
+        max_idle_seconds: float = 3.0,
     ) -> None:
         if not 0.0 < match_iou <= 1.0:
             raise ValueError("match_iou must be between 0 and 1")
@@ -135,9 +137,12 @@ class IoUTracker:
             raise ValueError("max_idle_frames must be positive")
         if visible_idle_frames < 0:
             raise ValueError("visible_idle_frames cannot be negative")
+        if not math.isfinite(max_idle_seconds) or max_idle_seconds <= 0:
+            raise ValueError("max_idle_seconds must be finite and positive")
         self.match_iou = float(match_iou)
         self.max_idle_frames = int(max_idle_frames)
         self.visible_idle_frames = int(visible_idle_frames)
+        self.max_idle_seconds = float(max_idle_seconds)
         self._tracks: dict[str, Track] = {}
         self._next_id = 1
         self._update_tick = 0
@@ -152,12 +157,23 @@ class IoUTracker:
         detections: Sequence[Detection],
         *,
         frame_sequence: int,
+        timestamp_seconds: float | None = None,
     ) -> tuple[Track, ...]:
+        if timestamp_seconds is not None and (
+            not math.isfinite(timestamp_seconds) or timestamp_seconds < 0
+        ):
+            raise ValueError("timestamp_seconds must be finite and non-negative")
         self._update_tick += 1
         self._tracks = {
             track_id: track
             for track_id, track in self._tracks.items()
-            if self._update_tick - track.last_update_tick <= self.max_idle_frames
+            if (
+                0 <= timestamp_seconds - track.last_observed_timestamp_seconds
+                <= self.max_idle_seconds
+                if timestamp_seconds is not None
+                and track.last_observed_timestamp_seconds is not None
+                else self._update_tick - track.last_update_tick <= self.max_idle_frames
+            )
         }
         candidates: list[tuple[float, float, float, str, int]] = []
         for track_id, track in self._tracks.items():
@@ -227,6 +243,7 @@ class IoUTracker:
                     last_update_tick=self._update_tick,
                 )
                 self._tracks[track_id] = track
+            track.last_observed_timestamp_seconds = timestamp_seconds
             current.append(track)
         visible = {track.track_id: track for track in current}
         for track_id, track in self._tracks.items():
@@ -267,6 +284,7 @@ class PaddleRichModels:
         self._attribute: Any | None = None
         self._lock = threading.Lock()
         self._gpu_ready = False
+        self._tracking_gpu_ready = False
 
     @property
     def ready(self) -> bool:
@@ -282,10 +300,23 @@ class PaddleRichModels:
 
         return self._gpu_ready
 
+    @property
+    def tracking_gpu_ready(self) -> bool:
+        """Detector-only GPU capability, independent of optional attributes."""
+
+        return self._tracking_gpu_ready
+
     def verify_gpu_execution(self) -> None:
         """Probe in the worker process; a remote worker may use a different host."""
 
+        self.verify_tracking_execution()
+        self.verify_attribute_execution()
+
+    def verify_tracking_execution(self) -> None:
+        """Verify the kernel and detector before enabling the tracking path."""
+
         self._gpu_ready = False
+        self._tracking_gpu_ready = False
         if self.device != "gpu" and not (
             self.device.startswith("gpu:")
             and self.device.removeprefix("gpu:").isdigit()
@@ -305,6 +336,16 @@ class PaddleRichModels:
                 return
             image = np.zeros((640, 640, 3), dtype=np.uint8)
             self.detect(image)
+        except Exception:
+            return
+        self._tracking_gpu_ready = True
+
+    def verify_attribute_execution(self) -> None:
+        self._gpu_ready = False
+        if not self._tracking_gpu_ready:
+            return
+        try:
+            image = np.zeros((640, 640, 3), dtype=np.uint8)
             attributes = self.attributes((image,))
             if len(attributes) != 1 or not attributes[0]:
                 return
@@ -458,6 +499,7 @@ class RichLabelEngine:
             maximum=60.0,
         )
         self._closed = False
+        self._last_source_key: tuple[float, int] | None = None
 
     @property
     def ready(self) -> bool:
@@ -466,6 +508,44 @@ class RichLabelEngine:
     @property
     def gpu_ready(self) -> bool:
         return self.ready and getattr(self.models, "gpu_ready", False) is True
+
+    @property
+    def tracking_gpu_ready(self) -> bool:
+        return self.ready and getattr(self.models, "tracking_gpu_ready", False) is True
+
+    def warmup_tracking(self) -> None:
+        verify = getattr(self.models, "verify_tracking_execution", None)
+        if callable(verify):
+            verify()
+
+    def warmup_attributes(self) -> None:
+        verify = getattr(self.models, "verify_attribute_execution", None)
+        if callable(verify):
+            verify()
+
+    def start_attribute_warmup(self) -> None:
+        """Keep optional model startup off the detector readiness path."""
+
+        def run() -> None:
+            try:
+                self.warmup_attributes()
+            except Exception:
+                LOGGER.warning("optional attribute capability probe failed")
+            finally:
+                with self._state_lock:
+                    self._attribute_in_flight = False
+                    self._attribute_thread = None
+                    self._attribute_idle.set()
+
+        with self._state_lock:
+            if self._closed or self._attribute_in_flight:
+                return
+            self._attribute_in_flight = True
+            self._attribute_idle.clear()
+            self._attribute_thread = threading.Thread(
+                target=run, name="attribute-capability-warmup", daemon=True,
+            )
+            self._attribute_thread.start()
 
     def warmup(self, *, require_gpu: bool = False) -> None:
         """Load the detector and verify any selected GPU before readiness."""
@@ -486,25 +566,35 @@ class RichLabelEngine:
         stream_session_id: str,
         frame_sequence: int,
         timestamp_seconds: float,
+        include_attributes: bool = True,
+        include_tracking_metadata: bool = False,
     ) -> dict[str, Any]:
         if not self._lock.acquire(blocking=False):
             raise RichLabelBusyError("rich-label inference is already running")
         try:
-            detections = self.models.detect(image)
             with self._state_lock:
                 if stream_session_id != self._session_id:
                     self.tracker.reset()
                     self._session_id = stream_session_id
                     self._session_generation += 1
+                    self._last_source_key = None
+                if self._last_source_key is not None and (
+                    timestamp_seconds < self._last_source_key[0]
+                    or frame_sequence <= self._last_source_key[1]
+                ):
+                    raise ValueError("source frame metadata must increase")
+            detections = self.models.detect(image)
+            with self._state_lock:
                 tracks = self.tracker.update(
                     detections,
                     frame_sequence=frame_sequence,
+                    timestamp_seconds=timestamp_seconds,
                 )
-                self._schedule_person_attributes_locked(
-                    image,
-                    tracks,
-                    frame_sequence,
-                )
+                self._last_source_key = (timestamp_seconds, frame_sequence)
+                if include_attributes:
+                    self._schedule_person_attributes_locked(
+                        image, tracks, frame_sequence,
+                    )
                 height, width = image.shape[:2]
                 return {
                     "stream_session_id": stream_session_id,
@@ -521,7 +611,25 @@ class RichLabelEngine:
                                 "x2": track.bbox[2] / width,
                                 "y2": track.bbox[3] / height,
                             },
-                            "attributes": dict(track.attributes),
+                            "attributes": (
+                                dict(track.attributes) if include_attributes else {}
+                            ),
+                            **({
+                                "observation_state": (
+                                    "observed"
+                                    if (
+                                        track.last_update_tick
+                                        == self.tracker._update_tick
+                                    )
+                                    else "predicted"
+                                ),
+                                "last_observed_timestamp_seconds": (
+                                    track.last_observed_timestamp_seconds
+                                ),
+                                "last_observed_frame_sequence": (
+                                    track.last_frame_sequence
+                                ),
+                            } if include_tracking_metadata else {}),
                         }
                         for track in tracks
                     ],
@@ -661,7 +769,9 @@ def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         try:
             if require_gpu:
-                await asyncio.to_thread(selected_engine.warmup, require_gpu=True)
+                await asyncio.to_thread(selected_engine.warmup_tracking)
+                if selected_engine.tracking_gpu_ready:
+                    selected_engine.start_attribute_warmup()
             else:
                 await asyncio.to_thread(selected_engine.warmup)
         except Exception:
@@ -697,9 +807,38 @@ def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
             status_code=status,
         )
 
+    @application.get("/health/tracking")
+    async def tracking_ready() -> Response:
+        is_ready = selected_engine.ready and (
+            not require_gpu or selected_engine.tracking_gpu_ready
+        )
+        return JSONResponse(
+            content={
+                "ready": is_ready, "gpu_ready": selected_engine.tracking_gpu_ready,
+            },
+            status_code=200 if is_ready else 503,
+        )
+
     @application.post("/v1/labels")
     async def labels(request: Request) -> dict[str, Any]:
-        if require_gpu and not selected_engine.gpu_ready:
+        return await infer_request(request, tracking=False, include_attributes=True)
+
+    @application.post("/v1/tracks")
+    async def tracks(
+        request: Request, include_attributes: bool = False,
+    ) -> dict[str, Any]:
+        return await infer_request(
+            request, tracking=True, include_attributes=include_attributes,
+        )
+
+    async def infer_request(
+        request: Request, *, tracking: bool, include_attributes: bool,
+    ) -> dict[str, Any]:
+        gpu_available = (
+            selected_engine.tracking_gpu_ready
+            if tracking else selected_engine.gpu_ready
+        )
+        if require_gpu and not gpu_available:
             raise HTTPException(status_code=503, detail="inference unavailable")
         session_id = _required_header(
             request,
@@ -738,6 +877,8 @@ def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
                 stream_session_id=session_id,
                 frame_sequence=frame_sequence,
                 timestamp_seconds=timestamp_seconds,
+                include_attributes=include_attributes,
+                include_tracking_metadata=tracking,
             )
         except RichLabelBusyError as exc:
             raise HTTPException(

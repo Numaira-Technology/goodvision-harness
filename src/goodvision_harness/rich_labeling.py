@@ -50,6 +50,9 @@ class RichLabelObject:
     bbox: NormalizedBBox
     confidence: float | None = None
     attributes: Mapping[str, Any] = field(default_factory=dict, hash=False)
+    observation_state: str | None = None
+    last_observed_timestamp_seconds: float | None = None
+    last_observed_frame_sequence: int | None = None
 
     def __post_init__(self) -> None:
         _required_text(self.track_id, "track_id")
@@ -58,6 +61,21 @@ class RichLabelObject:
             raise TypeError("bbox must be a NormalizedBBox")
         if self.confidence is not None:
             _unit_interval(self.confidence, "confidence")
+        if self.observation_state not in {None, "observed", "predicted"}:
+            raise ValueError("unsupported track observation state")
+        if self.last_observed_timestamp_seconds is not None:
+            _timestamp(self.last_observed_timestamp_seconds)
+        if self.last_observed_frame_sequence is not None:
+            _frame_sequence(self.last_observed_frame_sequence)
+        metadata = (
+            self.observation_state,
+            self.last_observed_timestamp_seconds,
+            self.last_observed_frame_sequence,
+        )
+        if any(value is not None for value in metadata) and any(
+            value is None for value in metadata
+        ):
+            raise ValueError("track observation metadata must be complete")
         object.__setattr__(
             self,
             "attributes",
@@ -73,6 +91,12 @@ class RichLabelObject:
         }
         if self.confidence is not None:
             record["confidence"] = round(float(self.confidence), 6)
+        if self.observation_state is not None:
+            record.update(
+                observation_state=self.observation_state,
+                last_observed_timestamp_seconds=self.last_observed_timestamp_seconds,
+                last_observed_frame_sequence=self.last_observed_frame_sequence,
+            )
         return record
 
     @classmethod
@@ -81,7 +105,10 @@ class RichLabelObject:
         _exact_keys(
             payload,
             required={"track_id", "label", "bbox"},
-            optional={"confidence", "attributes"},
+            optional={
+                "confidence", "attributes", "observation_state",
+                "last_observed_timestamp_seconds", "last_observed_frame_sequence",
+            },
             name="object",
         )
         bbox_payload = _strict_mapping(payload["bbox"], "object.bbox")
@@ -119,6 +146,20 @@ class RichLabelObject:
                     payload.get("attributes", {}),
                     "object.attributes",
                 ),
+                observation_state=(
+                    _strict_text(payload["observation_state"], "observation_state")
+                    if "observation_state" in payload else None
+                ),
+                last_observed_timestamp_seconds=(
+                    _strict_number(payload["last_observed_timestamp_seconds"],
+                                   "last_observed_timestamp_seconds")
+                    if "last_observed_timestamp_seconds" in payload else None
+                ),
+                last_observed_frame_sequence=(
+                    _strict_integer(payload["last_observed_frame_sequence"],
+                                    "last_observed_frame_sequence")
+                    if "last_observed_frame_sequence" in payload else None
+                ),
             )
         except (TypeError, ValueError) as exc:
             raise RichLabelProtocolError(f"invalid rich-label object: {exc}") from exc
@@ -144,6 +185,19 @@ class RichLabelSnapshot:
         track_ids = [item.track_id for item in self.objects]
         if len(track_ids) != len(set(track_ids)):
             raise ValueError("track_id values must be unique within a snapshot")
+        for item in self.objects:
+            if item.observation_state is None:
+                continue
+            if (
+                item.last_observed_timestamp_seconds > self.timestamp_seconds
+                or item.last_observed_frame_sequence > self.frame_sequence
+            ):
+                raise ValueError("track observation cannot come from a future frame")
+            if item.observation_state == "observed" and (
+                item.last_observed_timestamp_seconds != self.timestamp_seconds
+                or item.last_observed_frame_sequence != self.frame_sequence
+            ):
+                raise ValueError("observed track must reference the snapshot frame")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -250,8 +304,20 @@ class RichLabelHTTPClient:
         timeout_seconds: float = 2.0,
         headers: Mapping[str, str] | None = None,
         transport: httpx.BaseTransport | None = None,
+        mode: str = "labels",
+        include_attributes: bool = True,
     ) -> None:
         self.endpoint_url = _required_text(endpoint_url, "endpoint_url")
+        if mode not in {"labels", "tracks"}:
+            raise ValueError("mode must be labels or tracks")
+        if not isinstance(include_attributes, bool):
+            raise TypeError("include_attributes must be boolean")
+        self.mode = mode
+        self.include_attributes = include_attributes
+        if mode == "tracks":
+            self.endpoint_url = str(httpx.URL(self.endpoint_url).copy_with(
+                path="/v1/tracks", query=None, fragment=None,
+            ))
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
         self._headers = _http_headers(headers)
@@ -270,8 +336,18 @@ class RichLabelHTTPClient:
         Old, unreachable, CPU-only and not-yet-ready workers remain disabled.
         """
 
+        return self._ready(
+            "/health/tracking" if self.mode == "tracks" else "/health/ready"
+        )
+
+    def tracking_ready(self) -> bool:
+        """Check detector GPU readiness independently of pedestrian attributes."""
+
+        return self._ready("/health/tracking")
+
+    def _ready(self, path: str) -> bool:
         health_url = httpx.URL(self.endpoint_url).copy_with(
-            path="/health/ready", query=None, fragment=None,
+            path=path, query=None, fragment=None,
         )
         try:
             with self._lock:
@@ -316,8 +392,14 @@ class RichLabelHTTPClient:
         with self._lock:
             if self._closed:
                 raise RuntimeError("rich-label HTTP client is closed")
+            endpoint = self.endpoint_url
+            if self.mode == "tracks":
+                endpoint = str(httpx.URL(endpoint).copy_add_param(
+                    "include_attributes",
+                    "true" if self.include_attributes else "false",
+                ))
             response = self._client.post(
-                self.endpoint_url,
+                endpoint,
                 content=jpeg_bytes,
                 headers=request_headers,
             )
@@ -327,6 +409,10 @@ class RichLabelHTTPClient:
         if media_type != "application/json":
             raise RichLabelProtocolError("rich-label response is not application/json")
         snapshot = RichLabelSnapshot.from_dict(_strict_json(response.content))
+        if self.mode == "tracks" and any(
+            item.observation_state is None for item in snapshot.objects
+        ):
+            raise RichLabelProtocolError("tracking response lacks observation metadata")
         if snapshot.stream_session_id != session_id:
             raise RichLabelProtocolError(
                 "rich-label response belongs to another session"
@@ -386,6 +472,7 @@ class RichLabelCoordinator:
         max_interpolation_gap_seconds: float = 1.0,
         max_hold_seconds: float = 2.0,
         clock: Callable[[], float] = time.monotonic,
+        on_snapshot: Callable[[RichLabelSnapshot], None] | None = None,
     ) -> None:
         if not math.isfinite(max_fps) or max_fps <= 0:
             raise ValueError("max_fps must be finite and positive")
@@ -402,6 +489,8 @@ class RichLabelCoordinator:
             raise ValueError("max_hold_seconds must be positive")
         if not callable(clock):
             raise TypeError("clock must be callable")
+        if on_snapshot is not None and not callable(on_snapshot):
+            raise TypeError("on_snapshot must be callable")
         self.max_fps = float(max_fps)
         self.history_size = history_size
         self.max_interpolation_gap_seconds = float(
@@ -410,6 +499,7 @@ class RichLabelCoordinator:
         self.max_hold_seconds = float(max_hold_seconds)
         self._client = client
         self._clock = clock
+        self._on_snapshot = on_snapshot
         self._condition = threading.Condition()
         self._generation = 0
         self._stream_session_id: str | None = None
@@ -649,6 +739,7 @@ class RichLabelCoordinator:
                     error = exc
                 completed_at = self._clock()
                 latency = max(0.0, completed_at - started_at)
+                accepted = False
                 with self._condition:
                     self._in_flight = False
                     if (
@@ -690,7 +781,13 @@ class RichLabelCoordinator:
                             self._stats["succeeded"] += 1
                             self._stats["last_error"] = None
                             self._stats["last_frame_sequence"] = snapshot.frame_sequence
+                            accepted = True
                     self._condition.notify_all()
+                if accepted and self._on_snapshot is not None:
+                    try:
+                        self._on_snapshot(snapshot)
+                    except Exception:
+                        LOGGER.warning("tracking snapshot consumer failed")
         finally:
             self._close_client()
             with self._condition:
@@ -856,6 +953,8 @@ def _interpolate_snapshot(
     right_by_track = {item.track_id: item for item in right.objects}
     objects: list[RichLabelObject] = []
     for item in left.objects:
+        if item.observation_state is not None:
+            item = replace(item, observation_state="predicted")
         candidate = right_by_track.get(item.track_id)
         if candidate is None:
             objects.append(item)
