@@ -77,8 +77,14 @@ def _run_checks() -> dict[str, Any]:
         or not attributes[0]
     ):
         raise RuntimeError("pedestrian attribute validation failed")
+    # Exercise the production readiness probe as well as the standalone smoke
+    # paths. A configured GPU or a successful dependency check is insufficient.
+    models.verify_gpu_execution()
+    if models.gpu_ready is not True:
+        raise RuntimeError("accelerated readiness validation failed")
     return {
         "ok": True,
+        "gpu_ready": True,
         "acceleration": "ready",
         "object_detection": "ready",
         "pedestrian_attributes": "ready",

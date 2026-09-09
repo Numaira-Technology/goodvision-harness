@@ -118,6 +118,10 @@ ROUTES_BY_ID = {
 ROUTES = tuple(ROUTES_BY_ID[key] for key in (
     "C", "D", "AA", "AE", "G", "K", "B", "F",
 ))
+# Public numbering follows the current shortlist without reassigning persisted IDs.
+PUBLIC_ROUTE_IDS = {
+    route.id: chr(ord("A") + index) for index, route in enumerate(ROUTES)
+}
 
 
 def empty_results() -> list[dict[str, Any]]:

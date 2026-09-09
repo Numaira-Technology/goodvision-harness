@@ -39,10 +39,14 @@ from .config import (
     load_config,
 )
 from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
-from .delayed_overlay import DelayedOverlayComposer, OverlaySelection
+from .delayed_overlay import DelayedOverlayComposer, DisplayAnalysis, OverlaySelection
 from .delivery import WebhookDelivery
 from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
-from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
+from .face_recognition import (
+    FaceRecognitionRuntime,
+    FaceRecognitionSession,
+    FaceRecognizerConfig,
+)
 from .grounding import (
     DETECTION_EVENT_LABELS,
     build_grounding_client,
@@ -69,9 +73,15 @@ from .reference_memory import (
     UNKNOWN_FACE_EVENT_LABEL,
 )
 from .result_bus import FrameBus, FramePacket, ResultBus
+from .rich_labeling import (
+    DeferredRichLabelHistory,
+    RichLabelCoordinator,
+    RichLabelHTTPClient,
+)
 from .route_probe import (
     MAX_PROBE_CONCURRENCY,
     PROBE_TRIALS,
+    PUBLIC_ROUTE_IDS,
     ROUTES,
     ROUTES_BY_ID,
     choose_route,
@@ -79,7 +89,6 @@ from .route_probe import (
     finish_result,
     probe_sample,
 )
-from .rich_labeling import RichLabelCoordinator, RichLabelHTTPClient
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
 from .visual_memory import (
@@ -96,6 +105,7 @@ PERSON_FIELD_MAX_CHARS = 120
 FACE_ENROLLMENT_MAX_BYTES = 10_000_000
 DEPLOYMENT_VALUE_MAX_CHARS = 4096
 DEPLOYMENT_REQUEST_MAX_BYTES = 64 * 1024
+RICH_READINESS_RETRY_SECONDS = 5.0
 EVENT_ANALYSIS_MODE = "event"
 FACE_ANALYSIS_MODE = "face"
 MULTI_ANALYSIS_MODE = "multi"
@@ -182,24 +192,37 @@ class HarnessRuntime:
         self.annotated_frames = FrameBus()
         display = config.display if config is not None else DisplaySettings()
         self._display_settings = display
+        self._rich_disabled_reason: str | None = None
+        self._rich_requested = rich_label_coordinator is not None or (
+            config is not None and config.rich_labeling.enabled
+        )
+        self._rich_probe_thread: Thread | None = None
+        self._rich_probe_stop = Event()
         if rich_label_coordinator is not None:
             self._rich_labels = rich_label_coordinator
         elif config is not None and config.rich_labeling.enabled:
             rich = config.rich_labeling
-            self._rich_labels = RichLabelCoordinator(
-                RichLabelHTTPClient(
-                    rich.endpoint,
-                    timeout_seconds=rich.timeout_seconds,
-                ),
-                max_fps=rich.max_fps,
-                history_size=rich.history_size,
-                max_interpolation_gap_seconds=(
-                    rich.max_interpolation_gap_seconds
-                ),
-                max_hold_seconds=rich.max_hold_seconds,
+            rich_client = RichLabelHTTPClient(
+                rich.endpoint, timeout_seconds=rich.timeout_seconds,
             )
+            if rich_client.gpu_ready():
+                self._rich_labels = RichLabelCoordinator(
+                    rich_client,
+                    max_fps=rich.max_fps,
+                    history_size=rich.history_size,
+                    max_interpolation_gap_seconds=(
+                        rich.max_interpolation_gap_seconds
+                    ),
+                    max_hold_seconds=rich.max_hold_seconds,
+                )
+            else:
+                rich_client.close()
+                self._rich_labels = None
+                self._rich_disabled_reason = "gpu_required"
+                LOGGER.info("rich annotation disabled: usable GPU required")
         else:
             self._rich_labels = None
+        self._rich_history = DeferredRichLabelHistory(lambda: self._rich_labels)
         self._active_rich_session_id: str | None = None
         self._overlay_fusion = OverlayFusionMatcher()
         self._annotated_output_fps = (
@@ -219,12 +242,12 @@ class HarnessRuntime:
             publish=self.annotated_frames.publish,
             enrich=(
                 self._render_rich_label_jpeg
-                if self._rich_labels is not None
+                if self._rich_requested
                 else None
             ),
             compose=(
                 self._render_fused_label_jpeg
-                if self._rich_labels is not None
+                if self._rich_requested
                 else None
             ),
         )
@@ -356,9 +379,15 @@ class HarnessRuntime:
         with self._control_lock:
             supported = self._route_probe_supported()
             active = self._session is not None and self._session.running
-            selected = self._selected_route_id if supported else None
+            selected = (
+                PUBLIC_ROUTE_IDS.get(self._selected_route_id) if supported else None
+            )
+            probe = copy.deepcopy(self._route_probe)
+            for row in probe["results"]:
+                row["id"] = PUBLIC_ROUTE_IDS[row["id"]]
+                row["label"] = f"线路 {row['id']}"
             return {
-                **copy.deepcopy(self._route_probe),
+                **probe,
                 "supported": supported,
                 "can_probe": supported and bool(self._aiclub_api_key)
                 and not active and not self._closed
@@ -763,6 +792,7 @@ class HarnessRuntime:
 
         if self.config is None or self.config_error is not None:
             return
+        self._ensure_rich_readiness_probe()
         try:
             with self._control_lock:
                 self._ensure_delivery()
@@ -782,6 +812,74 @@ class HarnessRuntime:
                 last_error=PUBLIC_ANALYSIS_ERROR,
                 ready=False,
             )
+
+    def _ensure_rich_readiness_probe(self) -> None:
+        """Retry optional GPU warmup without blocking video or status requests."""
+
+        with self._control_lock:
+            if (
+                self._closed
+                or not self._rich_requested
+                or self._rich_labels is not None
+                or self._rich_probe_thread is not None
+            ):
+                return
+            self._rich_probe_thread = Thread(
+                target=self._run_rich_readiness_probe,
+                name="rich-readiness",
+                daemon=True,
+            )
+            self._rich_probe_thread.start()
+
+    def _run_rich_readiness_probe(self) -> None:
+        while not self._rich_probe_stop.wait(RICH_READINESS_RETRY_SECONDS):
+            if self._try_enable_rich_labels():
+                return
+
+    def _try_enable_rich_labels(self) -> bool:
+        """Transfer a verified client to one coordinator, or retry later."""
+
+        with self._control_lock:
+            if self._closed or self._rich_labels is not None:
+                return True
+            if self.config is None or not self._rich_requested:
+                return True
+            rich = self.config.rich_labeling
+        client = None
+        try:
+            client = RichLabelHTTPClient(
+                rich.endpoint, timeout_seconds=rich.timeout_seconds,
+            )
+            if not client.gpu_ready():
+                return False
+            # Network I/O never holds either lifecycle lock. The active session
+            # or shutdown state may have changed while the worker warmed up.
+            with self._control_lock:
+                if self._closed or self._rich_labels is not None:
+                    return True
+                coordinator = RichLabelCoordinator(
+                    client,
+                    max_fps=rich.max_fps,
+                    history_size=rich.history_size,
+                    max_interpolation_gap_seconds=(
+                        rich.max_interpolation_gap_seconds
+                    ),
+                    max_hold_seconds=rich.max_hold_seconds,
+                )
+                with self._state_lock:
+                    coordinator.reset(self._active_rich_session_id)
+                    self._rich_labels = coordinator
+                    self._rich_disabled_reason = None
+                    self._state["rich_labeling_enabled"] = True
+                client = None  # The coordinator now owns and closes it.
+            LOGGER.info("rich annotation enabled: remote GPU is ready")
+            return True
+        except Exception:
+            LOGGER.warning("rich annotation GPU readiness check failed")
+            return False
+        finally:
+            if client is not None:
+                client.close()
 
     def start_stream(
         self,
@@ -840,6 +938,7 @@ class HarnessRuntime:
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
+        self._ensure_rich_readiness_probe()
         if mode not in {CAMERA_MODE, STREAM_MODE}:
             raise ValueError("unsupported input mode")
 
@@ -883,6 +982,7 @@ class HarnessRuntime:
                 )
             self._ensure_delivery()
 
+            face_session = None
             if selected_analysis == FACE_ANALYSIS_MODE:
                 face_runtime = self._ensure_face_runtime()
                 warmup_seconds = face_runtime.warmup()
@@ -919,7 +1019,9 @@ class HarnessRuntime:
                         else self.config.runtime
                     ),
                 )
-                client = face_runtime
+                if isinstance(face_runtime, FaceRecognitionRuntime):
+                    face_session = FaceRecognitionSession(face_runtime)
+                client = face_session or face_runtime
             elif selected_analysis == MULTI_ANALYSIS_MODE:
                 face = self.config.face
                 face_live_scheduler = _resolved_face_live_scheduler(
@@ -935,6 +1037,8 @@ class HarnessRuntime:
                         LOGGER.info(
                             "warmed local face analysis in %.3fs", warmup_seconds
                         )
+                    if isinstance(face_runtime, FaceRecognitionRuntime):
+                        face_session = FaceRecognitionSession(face_runtime)
                 session_config = self.config
                 if include_stranger:
                     session_config = replace(
@@ -972,7 +1076,7 @@ class HarnessRuntime:
                     session_config.inference,
                     session_config.model_api,
                     features=selected_features,
-                    stranger_client=face_runtime,
+                    stranger_client=face_session or face_runtime,
                     safety_max_image_side=self.config.video.max_image_side,
                     safety_jpeg_quality=self.config.video.jpeg_quality,
                     face_live_scheduler=face_live_scheduler,
@@ -1052,6 +1156,12 @@ class HarnessRuntime:
                     source_id=self.source_id,
                 )
 
+            if face_session is not None:
+                face_session.bind_rich_labels(
+                    session.stream_session_id,
+                    self._rich_history if self._rich_requested else None,
+                )
+
             with self._state_lock:
                 self._generation = generation
                 # Reset the compositor before its public bus. A frame already
@@ -1059,9 +1169,9 @@ class HarnessRuntime:
                 # the new generation cannot leak an old session frame.
                 if self._rich_labels is not None:
                     self._rich_labels.reset(session.stream_session_id)
-                    self._active_rich_session_id = session.stream_session_id
-                else:
-                    self._active_rich_session_id = None
+                self._active_rich_session_id = (
+                    session.stream_session_id if self._rich_requested else None
+                )
                 self._overlay_fusion.reset()
                 self._delayed_overlay.reset()
                 self.annotated_frames.reset()
@@ -1237,7 +1347,10 @@ class HarnessRuntime:
         with self._control_lock:
             self._closed = True
             self._route_probe_stop.set()
+            self._rich_probe_stop.set()
         self.stop_session()
+        if self._rich_probe_thread is not None:
+            self._rich_probe_thread.join(timeout=3.0)
         probe_thread = self._route_probe_thread
         if probe_thread is not None:
             probe_thread.join(timeout=1.0)
@@ -1323,11 +1436,18 @@ class HarnessRuntime:
     def status(self) -> dict[str, Any]:
         with self._state_lock:
             payload = copy.deepcopy(self._state)
+            rich_labels = self._rich_labels
+            rich_disabled_reason = self._rich_disabled_reason
+            payload["rich_labeling_enabled"] = rich_labels is not None
         payload["annotated_output"] = self._delayed_overlay.stats()
         payload["rich_labeling"] = (
-            self._rich_labels.stats()
-            if self._rich_labels is not None
-            else {"state": "disabled"}
+            rich_labels.stats()
+            if rich_labels is not None
+            else {
+                "state": "disabled",
+                **({"disabled_reason": rich_disabled_reason}
+                   if rich_disabled_reason else {}),
+            }
         )
         ready, reason = self.readiness()
         payload["ready"] = ready
@@ -1661,11 +1781,25 @@ class HarnessRuntime:
         return output.tobytes()
 
     def _on_pipeline_state(self, state: dict[str, Any]) -> None:
-        values: dict[str, Any] = {"pipeline": public_safe_value(copy.deepcopy(state))}
-        pipeline_error = state.get("last_error")
-        if pipeline_error:
-            values["last_error"] = public_error_message(pipeline_error)
-        self._update_state(**values)
+        with self._state_lock:
+            current = self._state.get("pipeline") or {}
+            revision = state.get("revision")
+            previous_revision = current.get("revision")
+            if (
+                type(revision) is int
+                and type(previous_revision) is int
+                and revision <= previous_revision
+            ):
+                return
+            values: dict[str, Any] = {
+                "pipeline": public_safe_value(copy.deepcopy(state))
+            }
+            if "last_error" in state:
+                pipeline_error = state["last_error"]
+                values["last_error"] = (
+                    public_error_message(pipeline_error) if pipeline_error else None
+                )
+            self._update_state(**values)
 
     def _on_end(self, reason: str, error: str | None) -> None:
         next_state = "error" if error else "ended"
@@ -1685,7 +1819,7 @@ class HarnessRuntime:
 
 def _render_analysis_jpeg(
     jpeg: bytes,
-    analysis: AnalysisResult,
+    analysis: DisplayAnalysis,
     *,
     quality: int,
 ) -> bytes:
@@ -1704,11 +1838,11 @@ def _render_analysis_jpeg(
     return output.tobytes()
 
 
-def _draw_analysis_overlay(image: Any, analysis: AnalysisResult) -> Any:
+def _draw_analysis_overlay(image: Any, analysis: DisplayAnalysis) -> Any:
     return draw_overlay(image, **_analysis_overlay_arguments(analysis))
 
 
-def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
+def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
     if analysis.analysis_kind == "face_recognition":
         detected_judgments = tuple(
             judgment for judgment in analysis.judgments if judgment.detected

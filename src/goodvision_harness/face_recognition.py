@@ -18,7 +18,7 @@ import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -28,18 +28,21 @@ import numpy as np
 
 from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox
+from .face_tracking import FaceIdentityTracker
 from .grounding import (
     GroundedClassification,
     GroundingResponse,
     ModelObject,
 )
 from .reference_memory import UNKNOWN_FACE_EVENT_LABEL
+from .rich_labeling import RichLabelCoordinator, RichLabelSnapshot
 from .sliding_window import FrameWindow
 
 __all__ = [
     "FaceGallery",
     "FaceMatch",
     "FaceRecognitionRuntime",
+    "FaceRecognitionSession",
     "FaceRecognizerConfig",
     "GalleryPerson",
     "StrangerCapture",
@@ -512,6 +515,15 @@ class FaceRecognitionRuntime:
                 raise RuntimeError("could not read stranger photo") from exc
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
+        return self._classify_window(window)
+
+    def _classify_window(
+        self,
+        window: FrameWindow,
+        *,
+        tracker: FaceIdentityTracker | None = None,
+        snapshot: RichLabelSnapshot | None = None,
+    ) -> GroundingResponse:
         started = time.monotonic()
         try:
             image = _decode_image(window.newest_frame.jpeg_bytes)
@@ -526,6 +538,7 @@ class FaceRecognitionRuntime:
         faces = self._infer(image, operation="classification")
         height, width = image.shape[:2]
         objects: list[ModelObject] = []
+        capture_inputs: list[tuple[Any, tuple[float, float, float, float]]] = []
         event_indexes: list[int] = []
         counts = {"known": 0, "unknown": 0, "unusable": 0}
 
@@ -537,6 +550,7 @@ class FaceRecognitionRuntime:
             face_width = x2 - x1
             face_height = y2 - y1
             detection_score = _detection_score(face)
+            embedding = None
             attributes: dict[str, Any] = {
                 "detection_score": detection_score,
                 "face_width": round(face_width, 3),
@@ -544,10 +558,15 @@ class FaceRecognitionRuntime:
                 "threshold": float(self.config.threshold),
             }
 
+            quality_reason = _face_quality_reason(face, pixel_bbox, detection_score)
             if min(face_width, face_height) < self.config.min_face_size:
                 status = "unusable"
                 label = "unusable_face"
                 attributes["reason"] = "face_too_small"
+            elif quality_reason is not None:
+                status = "unusable"
+                label = "unusable_face"
+                attributes["reason"] = quality_reason
             else:
                 embedding = _face_embedding(face)
                 if embedding is None:
@@ -564,26 +583,18 @@ class FaceRecognitionRuntime:
                         attributes["person_id"] = match.person_id
                         attributes["name"] = match.name
                     else:
-                        status = "unknown"
-                        label = UNKNOWN_FACE_EVENT_LABEL
-                        try:
-                            stranger_id = self._identify_stranger(
-                                embedding,
-                                image,
-                                pixel_bbox,
-                            )
-                        except Exception:
-                            # Retention is best effort: a full or temporarily
-                            # unavailable data volume must not suppress alerts.
-                            LOGGER.warning("could not retain stranger face capture")
+                        # Small faces can still positively match a gallery
+                        # sample, but a weak embedding is not proof of a stranger.
+                        if min(face_width, face_height) < 60:
+                            status = "unusable"
+                            label = "unusable_face"
+                            attributes["reason"] = "face_too_small_for_stranger"
                         else:
-                            attributes["stranger_id"] = stranger_id
-                            attributes["photo_url"] = (
-                                f"/v1/faces/strangers/{stranger_id}/photo"
-                            )
+                            status = "unknown"
+                            label = UNKNOWN_FACE_EVENT_LABEL
 
             attributes["status"] = status
-            object_index = len(objects)
+            capture_inputs.append((embedding, pixel_bbox))
             objects.append(
                 ModelObject(
                     label=label,
@@ -597,9 +608,46 @@ class FaceRecognitionRuntime:
                     attributes=attributes,
                 )
             )
+        if tracker is not None:
+            objects = list(tracker.resolve(
+                objects,
+                timestamp=window.end_timestamp,
+                frame_sequence=window.newest_frame.source_frame_index,
+                people={person.person_id: person.name for person in self.list_people()},
+                snapshot=snapshot,
+            ))
+        for object_index, item in enumerate(objects):
+            status = str(item.attributes["status"])
             counts[status] += 1
             if status == "unknown":
                 event_indexes.append(object_index)
+                if (
+                    item.attributes.get("identity_source") == "track_history"
+                    or (tracker is not None and item.attributes.get("stranger_id"))
+                ):
+                    # Tracking is not a fresh face observation: reuse its capture
+                    # and never crop a missing face or another person's pixels.
+                    continue
+                embedding, pixel_bbox = capture_inputs[object_index]
+                try:
+                    stranger_id = self._identify_stranger(embedding, image, pixel_bbox)
+                except Exception:
+                    # Retention is best effort and must not suppress real alerts.
+                    LOGGER.warning("could not retain stranger face capture")
+                else:
+                    objects[object_index] = ModelObject(
+                        label=item.label, bbox=item.bbox, confidence=item.confidence,
+                        attributes={
+                            **item.attributes,
+                            "stranger_id": stranger_id,
+                            "photo_url": f"/v1/faces/strangers/{stranger_id}/photo",
+                        },
+                    )
+                    if tracker is not None:
+                        tracker.remember_stranger(
+                            str(item.attributes.get("face_track_id", "")),
+                            objects[object_index].attributes,
+                        )
 
         event_confidences = [
             objects[index].confidence
@@ -701,6 +749,98 @@ class FaceRecognitionRuntime:
             return False
         x1, y1, x2, y2 = bbox
         return min(x2 - x1, y2 - y1) >= minimum
+
+
+class FaceRecognitionSession:
+    """Share model/gallery resources while keeping recognition history isolated."""
+
+    def __init__(self, runtime: FaceRecognitionRuntime) -> None:
+        self.runtime = runtime
+        self.settings = runtime.settings
+        self._tracker = FaceIdentityTracker()
+        self._lock = threading.Lock()
+        self._session_id: str | None = None
+        self._rich_labels: RichLabelCoordinator | None = None
+        self._last_rich_sequence = -1
+        self._last_source_sequence = -1
+
+    def bind_rich_labels(
+        self, session_id: str, coordinator: RichLabelCoordinator | None
+    ) -> None:
+        with self._lock:
+            self._session_id = session_id
+            self._rich_labels = coordinator
+            self._tracker = FaceIdentityTracker()
+            self._last_rich_sequence = -1
+            self._last_source_sequence = -1
+
+    def classify_window(self, window: FrameWindow) -> GroundingResponse:
+        with self._lock:
+            snapshot = None
+            if self._rich_labels is not None:
+                # Raw completed frames only: the display selector may hold or
+                # interpolate boxes past the useful lifetime of identity evidence.
+                candidates = [
+                    item for item in self._rich_labels.history()
+                    if item.stream_session_id == self._session_id
+                    and item.frame_sequence <= window.newest_frame.source_frame_index
+                    and item.timestamp_seconds <= window.end_timestamp
+                ]
+                snapshot = max(
+                    candidates, key=lambda item: item.timestamp_seconds, default=None
+                )
+                if (
+                    snapshot is not None
+                    and window.end_timestamp - snapshot.timestamp_seconds <= 0.75
+                    and (
+                        window.newest_frame.source_frame_index
+                        > self._last_source_sequence
+                    )
+                ):
+                    if self._last_rich_sequence >= 0:
+                        # A person disappearing between face samples breaks
+                        # continuity even if the worker later reuses the ID.
+                        stable_ids = {item.track_id for item in snapshot.objects}
+                        for candidate in candidates:
+                            if candidate.frame_sequence > self._last_rich_sequence:
+                                stable_ids.intersection_update(
+                                    item.track_id for item in candidate.objects
+                                )
+                        snapshot = replace(snapshot, objects=tuple(
+                            item for item in snapshot.objects
+                            if item.track_id in stable_ids
+                        ))
+                    self._last_rich_sequence = snapshot.frame_sequence
+                    self._last_source_sequence = window.newest_frame.source_frame_index
+            return self.runtime._classify_window(
+                window, tracker=self._tracker, snapshot=snapshot
+            )
+
+
+def _face_quality_reason(
+    face: Any,
+    bbox: tuple[float, float, float, float],
+    detection_score: float | None,
+) -> str | None:
+    if detection_score is None or detection_score < 0.65:
+        return "low_detection_confidence"
+    landmarks = _face_value(face, "kps")
+    if landmarks is not None:
+        try:
+            points = np.asarray(landmarks, dtype=np.float64)
+        except (TypeError, ValueError):
+            return "invalid_face_landmarks"
+        if points.shape != (5, 2) or not np.all(np.isfinite(points)):
+            return "invalid_face_landmarks"
+        # A collapsed eye span or a nose outside both eyes indicates an extreme
+        # profile/false face. Ordinary side views still reach gallery matching.
+        eye_span = float(np.linalg.norm(points[1] - points[0]))
+        eye_center = (points[0] + points[1]) * 0.5
+        if eye_span < (bbox[2] - bbox[0]) * 0.15 or (
+            abs(float(points[2, 0] - eye_center[0])) > eye_span * 0.8
+        ):
+            return "extreme_face_angle"
+    return None
 
 
 def _load_face_analysis(config: FaceRecognizerConfig) -> Any:

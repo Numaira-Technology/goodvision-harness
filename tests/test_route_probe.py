@@ -129,11 +129,18 @@ def test_console_selection_is_private_persisted_and_used_by_live_requests(
         assert client.post("/v1/deployment/routes/check").status_code == 202
         data = wait_for_probe(runtime)
         assert data["state"] == "complete"
-        assert data["selected_id"] == "D"
+        assert data["selected_id"] == "B"
+        assert data["selected_label"] == "线路 B"
         assert data["selection_persisted"] is True
         public = client.get("/v1/deployment/routes").json()
         assert len(public["results"]) == 8
-        assert "A" not in {row["id"] for row in public["results"]}
+        assert [row["id"] for row in public["results"]] == list("ABCDEFGH")
+        assert [row["label"] for row in public["results"]] == [
+            f"线路 {letter}" for letter in "ABCDEFGH"
+        ]
+        assert public["results"][0]["median_seconds"] == 1.0
+        assert public["results"][1]["median_seconds"] == 2.0
+        assert runtime._route_probe["results"][0]["id"] == "C"
         assert not contains_private_implementation_detail(public)
         assert "secret-for-test-only" not in json.dumps(public)
         for route in ROUTE_CATALOG:
@@ -150,7 +157,7 @@ def test_console_selection_is_private_persisted_and_used_by_live_requests(
         assert client.post("/v1/deployment/routes/check").status_code == 409
     restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
     try:
-        assert restored.route_probe_status()["selected_id"] == "D"
+        assert restored.route_probe_status()["selected_id"] == "B"
         assert restored._route_pool_enabled is True
     finally:
         restored.stop()
@@ -179,7 +186,8 @@ def test_check_blocks_duplicate_start_and_credential_change(runtime, monkeypatch
         release.set()
     data = wait_for_probe(runtime)
     assert data["state"] == "failed"
-    assert data["selected_id"] == "A"
+    assert data["selected_id"] is None
+    assert runtime._selected_route_id == "A"
     assert runtime._deployment_store.load_model_route() is None
 
 
@@ -193,7 +201,8 @@ def test_failed_save_retains_previous_selection(runtime, monkeypatch):
     runtime.start_route_probe()
     data = wait_for_probe(runtime)
     assert data["state"] == "failed"
-    assert data["selected_id"] == "A"
+    assert data["selected_id"] is None
+    assert runtime._selected_route_id == "A"
     assert "internal vendor secret" not in json.dumps(data)
 
 
@@ -202,21 +211,35 @@ def test_invalid_saved_route_is_not_applied(runtime):
     path.write_text(json.dumps({"schema_version": 1, "route_id": "arbitrary/model"}))
     restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
     try:
-        assert restored.route_probe_status()["selected_id"] == "A"
+        assert restored.route_probe_status()["selected_id"] is None
+        assert restored._selected_route_id == "A"
         assert restored.route_probe_status()["error"] == "saved_route_unavailable"
     finally:
         restored.stop()
 
 
-def test_expanded_route_is_restored_and_used_without_upstream_fallback(runtime):
-    runtime._deployment_store.save_model_route("AA")
+@pytest.mark.parametrize(("stored_id", "public_id"), [
+    ("C", "A"), ("D", "B"), ("AA", "C"), ("AE", "D"),
+    ("G", "E"), ("K", "F"), ("B", "G"), ("F", "H"),
+])
+def test_renumbered_route_preserves_saved_model_and_provider(
+    runtime, stored_id, public_id,
+):
+    runtime._deployment_store.save_model_route(stored_id)
+    saved_path = runtime._deployment_store.path.with_name("selected-route.json")
+    saved = saved_path.read_bytes()
     restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
     try:
-        assert restored.route_probe_status()["selected_id"] == "AA"
-        assert restored.config.inference.model == "qwen/qwen3-vl-30b-a3b-instruct"
+        status = restored.route_probe_status()
+        assert status["selected_id"] == public_id
+        assert status["selected_label"] == f"线路 {public_id}"
+        assert status["selection_persisted"] is True
+        route = ROUTES_BY_ID[stored_id]
+        assert restored.config.inference.model == route.model
         assert restored.config.inference.request_parameters["provider"] == {
-            "only": ["alibaba"], "allow_fallbacks": False,
+            "only": [route.provider], "allow_fallbacks": False,
         }
+        assert saved_path.read_bytes() == saved
     finally:
         restored.stop()
 
@@ -226,7 +249,7 @@ def test_removed_provider_routes_cannot_be_selected_saved_restored_or_called(
     runtime, route_id,
 ):
     assert route_id not in ROUTES_BY_ID
-    assert route_id not in {row["id"] for row in runtime.route_probe_status()["results"]}
+    assert route_id not in {route.id for route in ROUTES}
     assert choose_route(results(**{route_id: 0.1, "C": 1.0}))[0] == "C"
     with pytest.raises(ValueError):
         runtime._deployment_store.save_model_route(route_id)
@@ -234,7 +257,8 @@ def test_removed_provider_routes_cannot_be_selected_saved_restored_or_called(
     path.write_text(json.dumps({"schema_version": 1, "route_id": route_id}))
     restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
     try:
-        assert restored.route_probe_status()["selected_id"] == "A"
+        assert restored.route_probe_status()["selected_id"] is None
+        assert restored._selected_route_id == "A"
         assert restored.route_probe_status()["error"] == "saved_route_unavailable"
         assert restored.config.inference.request_parameters["provider"]["only"] == ["deepinfra"]
     finally:

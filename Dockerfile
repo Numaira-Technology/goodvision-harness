@@ -9,7 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HARNESS_DRY_RUN=true \
     HARNESS_AUTOSTART=true \
     HARNESS_HOST=0.0.0.0 \
-    HARNESS_PORT=8080
+    HARNESS_PORT=8080 \
+    HARNESS_INFERENCE_PROFILE=customer-standard \
+    FACE_PROVIDER=CPUExecutionProvider \
+    RICH_LABEL_ENABLED=false
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
@@ -25,6 +28,13 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN python -m pip install --no-cache-dir '.[face,webrtc]'
+
+# InsightFace also requests GUI OpenCV; both distributions overwrite cv2.
+# Ship one server variant so dependency updates cannot silently select OpenCV 5.
+# Preserve upstream package metadata, including its GUI-name-only dependency.
+RUN python -m pip uninstall -y opencv-python opencv-python-headless \
+    && python -m pip install --no-cache-dir --no-deps opencv-python-headless==4.14.0.94 \
+    && python -c "import cv2; assert cv2.__version__.startswith('4.14.')"
 
 COPY config.yaml ./config.yaml
 

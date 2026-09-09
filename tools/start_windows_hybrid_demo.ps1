@@ -3,11 +3,7 @@ param(
     [string]$PythonPath = "",
     [ValidateRange(1, 65535)]
     [int]$HarnessPort = 8082,
-    [ValidateRange(1, 65535)]
-    [int]$RichPort = 8091,
-    [ValidateRange(1, 3600)]
-    [int]$RichReadyTimeoutSeconds = 900,
-    [switch]$NoRichBuild
+    [string]$RichEndpoint = ""
 )
 
 Set-StrictMode -Version Latest
@@ -23,13 +19,6 @@ if (-not [System.IO.Path]::IsPathRooted($PythonPath)) {
 if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
     throw "DirectML Python was not found at '$PythonPath'. Follow WINDOWS_HYBRID.md first."
 }
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw "Docker was not found. Docker Desktop must be running for the CPU Paddle worker."
-}
-if ($HarnessPort -eq $RichPort) {
-    throw "HarnessPort and RichPort must be different."
-}
-
 $providerJson = & $PythonPath -c "import json, onnxruntime as ort; print(json.dumps(ort.get_available_providers()))"
 if ($LASTEXITCODE -ne 0) {
     throw "Could not import the DirectML ONNX Runtime environment."
@@ -40,7 +29,6 @@ if (-not ($providerJson -match 'DmlExecutionProvider')) {
 Write-Host "InsightFace provider check: $providerJson"
 
 $experimentEnvironmentNames = @(
-    "RICH_HOST_PORT",
     "HARNESS_CONFIG",
     "HARNESS_DEPLOYMENT_SETTINGS_PATH",
     "HARNESS_AUTOSTART",
@@ -63,49 +51,24 @@ foreach ($name in $experimentEnvironmentNames) {
 }
 
 try {
-    $env:RICH_HOST_PORT = [string]$RichPort
-    $composeArgs = @(
-        "compose",
-        "-f", (Join-Path $repoRoot "compose.yaml"),
-        "-f", (Join-Path $repoRoot "compose.rich-cpu-host.yaml"),
-        "--profile", "rich"
-    )
-    if (-not $NoRichBuild) {
-        & docker @composeArgs build rich-label-worker
-        if ($LASTEXITCODE -ne 0) {
-            throw "The CPU Paddle worker image could not be built."
-        }
-    }
-    $upArgs = @("up", "-d")
-    if ($NoRichBuild) {
-        $upArgs += "--no-build"
-    }
-    $upArgs += "rich-label-worker"
-    & docker @composeArgs @upArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "The CPU Paddle worker could not be started."
-    }
-
-    $richReadyUrl = "http://127.0.0.1:$RichPort/health/ready"
-    $deadline = [DateTime]::UtcNow.AddSeconds($RichReadyTimeoutSeconds)
     $richReady = $false
-    Write-Host "Waiting for the complete CPU Paddle worker at $richReadyUrl ..."
-    while ([DateTime]::UtcNow -lt $deadline) {
+    if ($RichEndpoint) {
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $richReadyUrl -TimeoutSec 3
-            if ($response.StatusCode -eq 200) {
+            $endpointUri = [Uri]$RichEndpoint
+            if (-not $endpointUri.IsAbsoluteUri -or $endpointUri.Scheme -notin @("http", "https")) {
+                throw "The optional rich endpoint must be an HTTP URL."
+            }
+            $richReadyUrl = [Uri]::new($endpointUri, "/health/ready").AbsoluteUri
+            $capability = Invoke-RestMethod -Uri $richReadyUrl -TimeoutSec 3
+            $gpuProperty = $capability.PSObject.Properties["gpu_ready"]
+            if ($null -ne $gpuProperty -and $gpuProperty.Value -is [bool] -and $gpuProperty.Value) {
                 $richReady = $true
-                break
             }
         }
         catch {
-            # Model download/warmup and transient connection failures are expected.
+            # Optional annotation must not delay or prevent face/event testing.
+            $richReady = $false
         }
-        Start-Sleep -Seconds 2
-    }
-    if (-not $richReady) {
-        & docker @composeArgs logs --tail 80 rich-label-worker
-        throw "The CPU Paddle worker did not become ready within $RichReadyTimeoutSeconds seconds."
     }
 
     $modelRoot = Join-Path $repoRoot ".models\insightface"
@@ -124,13 +87,22 @@ try {
     $env:FACE_GALLERY_PATH = $galleryPath
     $env:FACE_PROVIDER = "DmlExecutionProvider"
     $env:FACE_LIVE_SCHEDULER = "full"
-    $env:RICH_LABEL_ENABLED = "true"
-    $env:RICH_LABEL_ENDPOINT = "http://127.0.0.1:$RichPort/v1/labels"
+    $env:RICH_LABEL_ENABLED = "false"
+    $env:RICH_LABEL_ENDPOINT = ""
+    if ($richReady) {
+        $env:RICH_LABEL_ENABLED = "true"
+        $env:RICH_LABEL_ENDPOINT = $RichEndpoint
+    }
 
-    Write-Host "CPU Paddle worker: ready"
+    if ($richReady) {
+        Write-Host "Rich annotation: verified external GPU worker"
+    }
+    else {
+        Write-Host "Rich annotation: disabled (no verified GPU worker)"
+    }
     Write-Host "InsightFace: DmlExecutionProvider, full live schedule"
     Write-Host "Open http://127.0.0.1:$HarnessPort/ and choose Camera."
-    Write-Host "Press Ctrl+C to stop the native Harness; the Paddle container stays warm."
+    Write-Host "Press Ctrl+C to stop the native Harness."
 
     Push-Location $repoRoot
     try {

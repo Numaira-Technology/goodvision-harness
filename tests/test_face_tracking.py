@@ -1,0 +1,598 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+
+import pytest
+
+from goodvision_harness.contracts import NormalizedBBox
+from goodvision_harness.face_tracking import FaceIdentityTracker
+from goodvision_harness.grounding import ModelObject
+from goodvision_harness.rich_labeling import RichLabelObject, RichLabelSnapshot
+
+
+PEOPLE = {"alice": "Alice", "bob": "Bob"}
+FACE = NormalizedBBox(0.20, 0.10, 0.30, 0.20)
+FAR_FACE = NormalizedBBox(0.60, 0.10, 0.70, 0.20)
+BODY = NormalizedBBox(0.10, 0.05, 0.80, 0.95)
+
+
+def _face(
+    status: str,
+    bbox: NormalizedBBox = FACE,
+    *,
+    person_id: str = "alice",
+) -> ModelObject:
+    attributes: dict[str, object] = {"status": status}
+    if status == "known":
+        attributes.update(person_id=person_id, name=PEOPLE[person_id])
+    elif status == "unusable":
+        attributes["reason"] = "face_too_small"
+    return ModelObject(
+        label={
+            "known": "known_person",
+            "unknown": "unknown_person",
+            "unusable": "unusable_face",
+        }[status],
+        bbox=bbox,
+        confidence=0.9,
+        attributes=attributes,
+    )
+
+
+def _snapshot(
+    timestamp: float,
+    sequence: int,
+    bodies: Sequence[tuple[str, NormalizedBBox]] = (("P0001", BODY),),
+) -> RichLabelSnapshot:
+    return RichLabelSnapshot(
+        stream_session_id="test-session",
+        timestamp_seconds=timestamp,
+        frame_sequence=sequence,
+        objects=tuple(
+            RichLabelObject(track_id=track_id, label="person", bbox=bbox)
+            for track_id, bbox in bodies
+        ),
+    )
+
+
+def _resolve(
+    tracker: FaceIdentityTracker,
+    objects: Sequence[ModelObject],
+    timestamp: float,
+    sequence: int,
+    *,
+    people: Mapping[str, str] = PEOPLE,
+    snapshot: RichLabelSnapshot | None = None,
+) -> tuple[ModelObject, ...]:
+    return tracker.resolve(
+        objects,
+        timestamp=timestamp,
+        frame_sequence=sequence,
+        people=people,
+        snapshot=snapshot,
+    )
+
+
+def test_known_identity_survives_poor_face_without_body_tracking() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0.0, 0)
+
+    observed = _resolve(tracker, [_face("unusable")], 0.4, 1)[0]
+
+    assert observed.label == "known_person"
+    assert observed.attributes["status"] == "known"
+    assert observed.attributes["person_id"] == "alice"
+    assert observed.attributes["identity_source"] == "track_history"
+    assert observed.attributes["identity_age_seconds"] == pytest.approx(0.4)
+
+
+def test_repeated_poor_faces_do_not_extend_last_verified_identity() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0.0, 0)
+    for sequence in range(1, 21):
+        observed = _resolve(
+            tracker, [_face("unusable")], sequence * 0.4, sequence,
+        )[0]
+        assert observed.attributes["status"] == "known"
+
+    expired = _resolve(tracker, [_face("unusable")], 8.4, 21)[0]
+
+    assert expired.attributes["status"] == "unusable"
+    assert "person_id" not in expired.attributes
+
+
+def test_body_continuity_allows_face_to_move_after_brief_back_view() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(
+        tracker, [_face("known")], 0.0, 0, snapshot=_snapshot(0.0, 0),
+    )
+    for sequence in range(1, 6):
+        timestamp = sequence * 0.4
+        assert _resolve(
+            tracker, [], timestamp, sequence,
+            snapshot=_snapshot(timestamp, sequence),
+        ) == ()
+
+    observed = _resolve(
+        tracker, [_face("unusable", FAR_FACE)], 2.4, 6,
+        snapshot=_snapshot(2.4, 6),
+    )[0]
+
+    assert observed.attributes["status"] == "known"
+    assert observed.attributes["person_id"] == "alice"
+    assert observed.attributes["person_track_id"] == "P0001"
+
+
+def test_no_body_and_long_face_absence_require_new_identity_evidence() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0.0, 0)
+
+    observed = _resolve(tracker, [_face("unusable")], 1.6, 1)[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert "person_id" not in observed.attributes
+
+
+def test_empty_body_snapshot_clears_identity_before_same_track_reappears() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(
+        tracker, [_face("known")], 0.0, 0, snapshot=_snapshot(0.0, 0),
+    )
+    _resolve(tracker, [], 0.4, 1, snapshot=_snapshot(0.4, 1, ()))
+
+    observed = _resolve(
+        tracker, [_face("unusable")], 0.8, 2, snapshot=_snapshot(0.8, 2),
+    )[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert "person_id" not in observed.attributes
+
+
+def test_changed_body_track_does_not_inherit_overlapping_face_identity() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(
+        tracker, [_face("known")], 0.0, 0, snapshot=_snapshot(0.0, 0),
+    )
+
+    observed = _resolve(
+        tracker, [_face("unusable")], 0.4, 1,
+        snapshot=_snapshot(0.4, 1, (("P0002", BODY),)),
+    )[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert "person_id" not in observed.attributes
+
+
+def test_same_body_id_with_discontinuous_geometry_does_not_inherit() -> None:
+    tracker = FaceIdentityTracker()
+    left_body = NormalizedBBox(0.10, 0.05, 0.40, 0.95)
+    right_body = NormalizedBBox(0.55, 0.05, 0.90, 0.95)
+    _resolve(
+        tracker, [_face("known")], 0.0, 0,
+        snapshot=_snapshot(0.0, 0, (("P0001", left_body),)),
+    )
+
+    observed = _resolve(
+        tracker, [_face("unusable", FAR_FACE)], 0.4, 1,
+        snapshot=_snapshot(0.4, 1, (("P0001", right_body),)),
+    )[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert "person_id" not in observed.attributes
+
+
+@pytest.mark.parametrize(
+    ("snapshot_timestamp", "snapshot_sequence"),
+    [(0.0, 0), (1.1, 1), (1.0, 2)],
+)
+def test_stale_or_future_body_snapshot_cannot_supply_continuity(
+    snapshot_timestamp: float,
+    snapshot_sequence: int,
+) -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(
+        tracker, [_face("known")], 0.0, 0, snapshot=_snapshot(0.0, 0),
+    )
+
+    observed = _resolve(
+        tracker, [_face("unusable", FAR_FACE)], 1.0, 1,
+        snapshot=_snapshot(snapshot_timestamp, snapshot_sequence),
+    )[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert "person_id" not in observed.attributes
+
+
+def test_overlapping_bodies_make_face_identity_association_ambiguous() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(
+        tracker, [_face("known")], 0.0, 0, snapshot=_snapshot(0.0, 0),
+    )
+
+    observed = _resolve(
+        tracker, [_face("unusable")], 0.4, 1,
+        snapshot=_snapshot(0.4, 1, (("P0001", BODY), ("P0002", BODY))),
+    )[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert "person_id" not in observed.attributes
+
+
+def test_two_faces_cannot_inherit_the_same_known_identity() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0.0, 0)
+    nearby_face = NormalizedBBox(0.21, 0.10, 0.31, 0.20)
+
+    observed = _resolve(
+        tracker, [_face("unusable"), _face("unusable", nearby_face)], 0.4, 1,
+    )
+
+    assert len(observed) == 2
+    assert all(item.attributes["status"] == "unusable" for item in observed)
+    assert all("person_id" not in item.attributes for item in observed)
+
+
+def test_distinct_people_retain_independent_identity_histories() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(
+        tracker, [_face("known"), _face("known", FAR_FACE, person_id="bob")],
+        0.0, 0,
+    )
+
+    observed = _resolve(
+        tracker, [_face("unusable", FAR_FACE), _face("unusable")], 0.4, 1,
+    )
+
+    assert [item.attributes["person_id"] for item in observed] == ["bob", "alice"]
+
+
+def test_clear_match_to_another_person_immediately_replaces_history() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0.0, 0)
+
+    replacement = _resolve(
+        tracker, [_face("known", person_id="bob")], 0.4, 1,
+    )[0]
+    retained = _resolve(tracker, [_face("unusable")], 0.8, 2)[0]
+
+    assert replacement.attributes["person_id"] == "bob"
+    assert replacement.attributes["identity_source"] == "face_match"
+    assert retained.attributes["person_id"] == "bob"
+
+
+@pytest.mark.parametrize("initial_status", [None, "known"])
+def test_clear_unknown_requires_three_consecutive_observations(
+    initial_status: str | None,
+) -> None:
+    tracker = FaceIdentityTracker()
+    if initial_status is not None:
+        _resolve(tracker, [_face(initial_status)], 0.0, 0)
+
+    observed = [
+        _resolve(tracker, [_face("unknown")], sequence * 0.4, sequence)[0]
+        for sequence in range(1, 4)
+    ]
+
+    assert [item.attributes["status"] for item in observed] == [
+        "unusable", "unusable", "unknown",
+    ]
+    assert [item.attributes["unknown_confirmations"] for item in observed] == [1, 2, 3]
+    assert observed[-1].label == "unknown_person"
+    assert "person_id" not in observed[-1].attributes
+    after_unknown = _resolve(tracker, [_face("unusable")], 1.6, 4)[0]
+    assert after_unknown.attributes["status"] == "unknown"
+    assert after_unknown.attributes["identity_source"] == "track_history"
+    assert after_unknown.attributes["identity_age_seconds"] == pytest.approx(0.4)
+
+
+def test_poor_observation_breaks_unknown_confirmation_sequence() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("unknown")], 0.0, 0)
+    _resolve(tracker, [_face("unknown")], 0.4, 1)
+    _resolve(tracker, [_face("unusable")], 0.8, 2)
+
+    observed = _resolve(tracker, [_face("unknown")], 1.2, 3)[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert observed.attributes["unknown_confirmations"] == 1
+
+
+@pytest.mark.parametrize("with_body", [False, True])
+def test_absent_face_breaks_unknown_confirmation_sequence(with_body: bool) -> None:
+    tracker = FaceIdentityTracker()
+    for sequence in range(2):
+        timestamp = sequence * 0.4
+        _resolve(
+            tracker, [_face("unknown")], timestamp, sequence,
+            snapshot=_snapshot(timestamp, sequence) if with_body else None,
+        )
+    _resolve(
+        tracker, [], 0.8, 2,
+        snapshot=_snapshot(0.8, 2) if with_body else None,
+    )
+
+    observed = _resolve(
+        tracker, [_face("unknown")], 1.2, 3,
+        snapshot=_snapshot(1.2, 3) if with_body else None,
+    )[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert observed.attributes["unknown_confirmations"] == 1
+
+
+def test_unknown_confirmations_are_not_shared_between_distinct_faces() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("unknown")], 0.0, 0)
+    _resolve(tracker, [_face("unknown")], 0.4, 1)
+
+    observed = _resolve(tracker, [_face("unknown", FAR_FACE)], 0.8, 2)[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert observed.attributes["unknown_confirmations"] == 1
+
+
+@pytest.mark.parametrize(("timestamp", "sequence"), [(0.0, 2), (0.8, 0), (0.4, 1)])
+def test_late_or_duplicate_frames_do_not_mutate_current_identity(
+    timestamp: float,
+    sequence: int,
+) -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known", person_id="bob")], 0.4, 1)
+
+    late = _resolve(tracker, [_face("known")], timestamp, sequence)[0]
+    current = _resolve(tracker, [_face("unusable")], 1.2, 3)[0]
+
+    assert late.attributes["person_id"] == "alice"
+    assert current.attributes["person_id"] == "bob"
+
+
+def test_late_unknown_does_not_advance_confirmation_count() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("unknown")], 0.0, 0)
+    _resolve(tracker, [_face("unknown")], 0.4, 1)
+
+    late = _resolve(tracker, [_face("unknown")], 0.0, 0)[0]
+    current = _resolve(tracker, [_face("unknown")], 0.8, 2)[0]
+
+    assert late.attributes["status"] == "unusable"
+    assert late.attributes["reason"] == "out_of_order_frame"
+    assert current.attributes["unknown_confirmations"] == 3
+    assert current.attributes["status"] == "unknown"
+
+
+def test_deleting_gallery_identity_immediately_invalidates_history() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0.0, 0)
+
+    observed = _resolve(
+        tracker, [_face("unusable")], 0.4, 1, people={"bob": "Bob"},
+    )[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert "person_id" not in observed.attributes
+
+
+def test_retained_identity_uses_current_gallery_name() -> None:
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0.0, 0)
+
+    observed = _resolve(
+        tracker, [_face("unusable")], 0.4, 1, people={"alice": "Updated name"},
+    )[0]
+
+    assert observed.attributes["name"] == "Updated name"
+
+
+def test_new_session_tracker_does_not_inherit_body_id_or_identity() -> None:
+    previous = FaceIdentityTracker()
+    _resolve(
+        previous, [_face("known")], 0.0, 0, snapshot=_snapshot(0.0, 0),
+    )
+
+    current = FaceIdentityTracker()
+    observed = _resolve(
+        current, [_face("unusable")], 0.4, 1, snapshot=_snapshot(0.4, 1),
+    )[0]
+
+    assert observed.attributes["status"] == "unusable"
+    assert "person_id" not in observed.attributes
+
+
+def _confirmed_stranger(
+    tracker: FaceIdentityTracker, *, with_body: bool = False,
+) -> ModelObject:
+    for sequence in range(3):
+        timestamp = sequence * 0.4
+        observed = _resolve(
+            tracker, [_face("unknown")], timestamp, sequence,
+            snapshot=_snapshot(timestamp, sequence) if with_body else None,
+        )[0]
+    assert observed.attributes["status"] == "unknown"
+    tracker.remember_stranger(str(observed.attributes["face_track_id"]), {
+        "stranger_id": "stranger-alice",
+        "photo_url": "/v1/faces/strangers/stranger-alice/photo",
+    })
+    return observed
+
+
+def test_confirmed_stranger_survives_poor_face_with_same_capture() -> None:
+    tracker = FaceIdentityTracker()
+    confirmed = _confirmed_stranger(tracker)
+
+    retained = _resolve(tracker, [_face("unusable")], 1.2, 3)[0]
+    reliable_again = _resolve(tracker, [_face("unknown")], 1.6, 4)[0]
+
+    for observed in (retained, reliable_again):
+        assert observed.label == "unknown_person"
+        assert observed.attributes["status"] == "unknown"
+        assert observed.attributes["face_track_id"] == (
+            confirmed.attributes["face_track_id"]
+        )
+        assert observed.attributes["stranger_id"] == "stranger-alice"
+        assert observed.attributes["photo_url"] == (
+            "/v1/faces/strangers/stranger-alice/photo"
+        )
+    assert retained.attributes["identity_source"] == "track_history"
+    assert retained.attributes["identity_age_seconds"] == pytest.approx(0.4)
+
+
+def test_repeated_poor_faces_do_not_extend_confirmed_stranger_lifetime() -> None:
+    tracker = FaceIdentityTracker()
+    _confirmed_stranger(tracker)
+
+    for sequence in range(3, 10):
+        timestamp = sequence * 0.4
+        observed = _resolve(tracker, [_face("unusable")], timestamp, sequence)[0]
+        assert observed.attributes["status"] == "unknown"
+        assert observed.attributes["identity_age_seconds"] == pytest.approx(
+            timestamp - 0.8
+        )
+
+    expired = _resolve(tracker, [_face("unusable")], 4.0, 10)[0]
+    assert expired.attributes["status"] == "unusable"
+    assert "stranger_id" not in expired.attributes
+    assert "photo_url" not in expired.attributes
+    pending = _resolve(tracker, [_face("unknown")], 4.4, 11)[0]
+    assert pending.attributes["status"] == "unusable"
+    assert pending.attributes["unknown_confirmations"] == 1
+
+
+def test_missing_face_without_body_expires_after_1_5_seconds() -> None:
+    tracker = FaceIdentityTracker()
+    confirmed = _confirmed_stranger(tracker)
+
+    for sequence in range(3, 6):
+        timestamp = sequence * 0.4
+        observed = _resolve(tracker, [], timestamp, sequence)
+        assert len(observed) == 1
+        assert observed[0].bbox == FACE
+        assert observed[0].attributes["face_track_id"] == (
+            confirmed.attributes["face_track_id"]
+        )
+        assert observed[0].attributes["stranger_id"] == "stranger-alice"
+        assert observed[0].attributes["identity_source"] == "track_history"
+    assert _resolve(tracker, [], 2.4, 6) == ()
+
+
+def test_missing_face_follows_body_and_expires_without_new_evidence() -> None:
+    tracker = FaceIdentityTracker()
+    _confirmed_stranger(tracker, with_body=True)
+    moved_body = NormalizedBBox(0.15, 0.075, 0.85, 0.975)
+
+    for sequence in range(3, 10):
+        timestamp = sequence * 0.4
+        observed = _resolve(
+            tracker, [], timestamp, sequence,
+            snapshot=_snapshot(timestamp, sequence, (("P0001", moved_body),)),
+        )
+        assert len(observed) == 1
+        assert observed[0].label == "unknown_person"
+        assert observed[0].attributes["person_track_id"] == "P0001"
+        assert observed[0].attributes["identity_age_seconds"] == pytest.approx(
+            timestamp - 0.8
+        )
+        assert observed[0].bbox.x1 == pytest.approx(FACE.x1 + 0.05)
+        assert observed[0].bbox.y1 == pytest.approx(FACE.y1 + 0.025)
+        assert observed[0].bbox.x2 == pytest.approx(FACE.x2 + 0.05)
+        assert observed[0].bbox.y2 == pytest.approx(FACE.y2 + 0.025)
+    assert _resolve(
+        tracker, [], 4.0, 10,
+        snapshot=_snapshot(4.0, 10, (("P0001", moved_body),)),
+    ) == ()
+
+
+@pytest.mark.parametrize("with_body", [False, True])
+def test_unconfirmed_stranger_does_not_emit_annotation_for_missing_face(
+    with_body: bool,
+) -> None:
+    tracker = FaceIdentityTracker()
+    for sequence in range(2):
+        timestamp = sequence * 0.4
+        _resolve(
+            tracker, [_face("unknown")], timestamp, sequence,
+            snapshot=_snapshot(timestamp, sequence) if with_body else None,
+        )
+
+    assert _resolve(
+        tracker, [], 0.8, 2,
+        snapshot=_snapshot(0.8, 2) if with_body else None,
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "bodies",
+    [
+        (),
+        (("P0002", BODY),),
+        (("P0001", NormalizedBBox(0.85, 0.05, 0.99, 0.95)),),
+        (("P0001", BODY), ("P0002", BODY)),
+    ],
+    ids=["disappeared", "new-id", "jumped", "ambiguous"],
+)
+def test_confirmed_stranger_history_is_dropped_when_body_continuity_breaks(
+    bodies: Sequence[tuple[str, NormalizedBBox]],
+) -> None:
+    tracker = FaceIdentityTracker()
+    _confirmed_stranger(tracker, with_body=True)
+
+    assert _resolve(
+        tracker, [], 1.2, 3, snapshot=_snapshot(1.2, 3, bodies),
+    ) == ()
+    returning = _resolve(
+        tracker, [_face("unknown")], 1.6, 4, snapshot=_snapshot(1.6, 4),
+    )[0]
+    assert returning.attributes["status"] == "unusable"
+    assert returning.attributes["unknown_confirmations"] == 1
+    assert "stranger_id" not in returning.attributes
+
+
+def test_known_match_immediately_clears_retained_stranger_capture() -> None:
+    tracker = FaceIdentityTracker()
+    _confirmed_stranger(tracker)
+
+    known = _resolve(tracker, [_face("known")], 1.2, 3)[0]
+    retained = _resolve(tracker, [_face("unusable")], 1.6, 4)[0]
+
+    for observed in (known, retained):
+        assert observed.attributes["status"] == "known"
+        assert observed.attributes["person_id"] == "alice"
+        assert "stranger_id" not in observed.attributes
+        assert "photo_url" not in observed.attributes
+
+
+def test_strangers_keep_independent_capture_ids_when_face_order_changes() -> None:
+    tracker = FaceIdentityTracker()
+    for sequence in range(3):
+        confirmed = _resolve(
+            tracker, [_face("unknown"), _face("unknown", FAR_FACE)],
+            sequence * 0.4, sequence,
+        )
+    first_id, second_id = [str(item.attributes["face_track_id"]) for item in confirmed]
+    assert first_id != second_id
+    tracker.remember_stranger(first_id, {"stranger_id": "stranger-first"})
+    tracker.remember_stranger(second_id, {"stranger_id": "stranger-second"})
+
+    observed = _resolve(
+        tracker, [_face("unusable", FAR_FACE), _face("unusable")], 1.2, 3,
+    )
+
+    assert [item.attributes["stranger_id"] for item in observed] == [
+        "stranger-second", "stranger-first",
+    ]
+    assert [item.attributes["face_track_id"] for item in observed] == [
+        second_id, first_id,
+    ]
+
+
+def test_ambiguous_faces_do_not_duplicate_retained_stranger() -> None:
+    tracker = FaceIdentityTracker()
+    _confirmed_stranger(tracker)
+    nearby_face = NormalizedBBox(0.21, 0.10, 0.31, 0.20)
+
+    observed = _resolve(
+        tracker, [_face("unusable"), _face("unusable", nearby_face)], 1.2, 3,
+    )
+
+    assert len(observed) == 2
+    assert all(item.attributes["status"] == "unusable" for item in observed)
+    assert all("stranger_id" not in item.attributes for item in observed)

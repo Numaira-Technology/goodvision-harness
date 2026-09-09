@@ -15,7 +15,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from threading import RLock
 
-from .contracts import AnalysisResult, GroundedObject, NormalizedBBox
+from .contracts import GroundedObject, NormalizedBBox
+from .delayed_overlay import DisplayAnalysis
 from .rich_labeling import RichLabelObject
 
 _PERSON_LABELS = frozenset(
@@ -130,7 +131,7 @@ class OverlayFusionMatcher:
 
     def plan(
         self,
-        analysis: AnalysisResult,
+        analysis: DisplayAnalysis,
         rich_objects: Sequence[RichLabelObject],
         *,
         association_message_id: str | None = None,
@@ -241,8 +242,10 @@ class OverlayFusionMatcher:
                 assignment_key = (event_index, alert.event_label)
                 cache_key = (
                     session_id,
-                    anchor_id,
-                    event_object.object_id,
+                    str(event_object.attributes.get(
+                        "annotation_source_message_id", anchor_id
+                    )),
+                    _association_object_id(event_object),
                     alert.event_label,
                 )
                 track_id = self._associations.get(cache_key)
@@ -309,8 +312,10 @@ class OverlayFusionMatcher:
             occupied.add(slot)
             cache_key = (
                 session_id,
-                anchor_id,
-                event_objects[event_index].object_id,
+                str(event_objects[event_index].attributes.get(
+                    "annotation_source_message_id", anchor_id
+                )),
+                _association_object_id(event_objects[event_index]),
                 event_label,
             )
             self._associations[cache_key] = rich_objects[rich_index].track_id
@@ -321,8 +326,16 @@ class OverlayFusionMatcher:
         return assignments
 
 
+def _association_object_id(item: GroundedObject) -> str:
+    anchor = item.attributes.get("annotation_source_message_id")
+    prefix = f"held-stranger-{anchor}-"
+    if anchor and item.object_id.startswith(prefix):
+        return item.object_id[len(prefix):]
+    return item.object_id
+
+
 def _event_alerts_by_object(
-    analysis: AnalysisResult,
+    analysis: DisplayAnalysis,
 ) -> dict[str, tuple[RichAlert, ...]]:
     objects_by_id = {item.object_id: item for item in analysis.objects}
     alerts: dict[str, list[RichAlert]] = {}

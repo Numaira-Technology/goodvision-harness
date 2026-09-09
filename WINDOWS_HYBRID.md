@@ -1,15 +1,14 @@
 # Windows non-NVIDIA GPU experiment
 
-This experiment runs the complete Harness natively on Windows so InsightFace
-can use the laptop GPU through ONNX Runtime DirectML. The complete Paddle rich
-label worker stays in its normal Linux Docker container on CPU. Browser camera
-frames enter the native Harness at `http://127.0.0.1:8082`; no camera device is
-passed into Docker.
+This experiment runs the Harness natively on Windows so InsightFace can use
+the laptop GPU through ONNX Runtime DirectML. Rich annotation is disabled
+unless an external GPU worker is explicitly supplied and verified. Browser
+camera frames enter the native Harness at `http://127.0.0.1:8082`.
 
 This path is only for non-NVIDIA Windows GPUs. An NVIDIA Linux/Windows host
 should use the existing CUDA overlays so InsightFace and Paddle can both use
-CUDA. Paddle's supported GPU packages do not use DirectML, which is why it
-remains on CPU here.
+CUDA. DirectML availability for InsightFace does not enable Paddle rich
+annotation. No CPU rich worker is started by this launcher.
 
 ## 1. Create an isolated DirectML environment
 
@@ -34,15 +33,14 @@ precondition, not a valid GPU benchmark.
 
 ## 2. Start the hybrid demo
 
-Docker Desktop must be running. The script builds and starts only the CPU
-Paddle worker, waits for its real model warmup to finish, and then starts the
-native Harness with these fixed experiment settings:
+The script starts the native Harness directly. Docker Desktop is not required.
+The default experiment settings are:
 
 - `FACE_PROVIDER=DmlExecutionProvider`;
 - `FACE_LIVE_SCHEDULER=full`, so every admitted analysis window runs current
   InsightFace inference instead of the CPU single-flight sampling policy;
-- `RICH_LABEL_ENABLED=true`, with the complete CPU worker reached through a
-  loopback-only port;
+- `RICH_LABEL_ENABLED=false`; face recognition and selected event detection
+  remain available;
 - `HARNESS_DRY_RUN=false` and `HARNESS_AUTOSTART=false` for a live local camera
   run.
 
@@ -58,24 +56,25 @@ directories. The launcher deliberately reuses the existing authorized test
 pack at `.models/insightface/models/buffalo_l` instead of downloading a second
 copy.
 
-On later runs, skip the Docker image build while retaining the real worker
-warmup/readiness check:
+To use an already running NVIDIA GPU rich worker, pass its inference endpoint:
 
 ```powershell
-.\tools\start_windows_hybrid_demo.ps1 -NoRichBuild
+.\tools\start_windows_hybrid_demo.ps1 -RichEndpoint "http://127.0.0.1:8091/v1/labels"
 ```
 
-If ports are occupied, use `-HarnessPort` and `-RichPort`. To stop the retained
-CPU worker after the experiment:
+Rich annotation is enabled only when `/health/ready` returns a successful
+response with the JSON boolean `gpu_ready: true`. The launcher checks once,
+with a three-second timeout. An unavailable worker or a worker without GPU
+readiness leaves rich annotation disabled and continues the face/event demo.
+The launcher does not build or start that external worker.
 
-```powershell
-$env:RICH_HOST_PORT = "8091"
-docker compose -f compose.yaml -f compose.rich-cpu-host.yaml --profile rich stop rich-label-worker
-```
+If the Harness port is occupied, use `-HarnessPort`. The former `-RichPort`,
+`-RichReadyTimeoutSeconds`, and `-NoRichBuild` options are no longer used;
+`-RichEndpoint` replaces the local worker startup path.
 
 Do not compare only the overall result latency. Record the same camera scene
 and feature set for CPU and DirectML, then compare face inference p50/p90,
-fresh stranger results per minute, VLM latency, Paddle latency, failures, and
-dropped windows. The DirectML result answers whether moving InsightFace off the
-CPU removes local contention; it does not substitute for the RTX 5090 CUDA
-smoke and performance test.
+fresh stranger results per minute, VLM latency, failures, and dropped windows.
+Keep rich annotation disabled in both runs, or use the same external GPU worker
+for both. The DirectML result does not substitute for the RTX 5090 CUDA smoke
+and performance test.

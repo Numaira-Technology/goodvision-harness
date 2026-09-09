@@ -23,6 +23,11 @@ if TYPE_CHECKING:
 # Decision lifecycle: warming (no result yet) -> live (newest window applied).
 STATUS_WARMING = "warming"
 STATUS_LIVE = "live"
+_BRANCHES = frozenset({"safety", "stranger"})
+_ERROR_CODES = frozenset({
+    "request_failed", "timeout", "connection", "http_error",
+    "invalid_response", "empty_response",
+})
 
 
 class ResultOrganizer:
@@ -36,6 +41,7 @@ class ResultOrganizer:
         self._status = STATUS_WARMING
         self._decision: dict[str, Any] | None = None
         self._last_error: str | None = None
+        self._branch_health: dict[str, tuple[int, str | None]] = {}
         self._counts = {
             "submitted": 0,
             "completed": 0,
@@ -74,15 +80,15 @@ class ResultOrganizer:
         window = response.window
         with self._lock:
             classification = response.classification
+            self._update_branch_health_locked(response)
             if classification is None:
                 self._counts["failed"] += 1
-                self._last_error = PUBLIC_ANALYSIS_ERROR
                 record = self._window_record(
                     window,
                     state="failed",
                     elapsed_seconds=elapsed_seconds,
                     latency_seconds=response.latency_seconds,
-                    error=self._last_error,
+                    error=PUBLIC_ANALYSIS_ERROR,
                     applied=False,
                 )
                 return record, self._snapshot_locked()
@@ -123,6 +129,64 @@ class ResultOrganizer:
             )
             return record, self._snapshot_locked()
 
+    def _update_branch_health_locked(
+        self, response: WindowResponse | GroundingResponse,
+    ) -> None:
+        """Only newer evidence for the same branch can change its health.
+
+        A skipped branch supplies no evidence of either failure or recovery.
+        Health has its own ordering because a partial decision may be newer
+        than the response that finally resolves another branch's error.
+        """
+
+        index = response.window.index
+        completed = {
+            branch for branch in getattr(response, "completed_branches", ())
+            if branch in _BRANCHES
+        }
+        errors = {
+            branch if branch in _BRANCHES else "generic": (
+                code if code in _ERROR_CODES else "request_failed"
+            )
+            for branch, code in getattr(response, "branch_errors", ())
+        }
+        if completed or errors:
+            updates: dict[str, str | None] = {
+                branch: None for branch in completed
+            }
+            updates.update(errors)
+            if not errors and self._is_complete_response(response):
+                # Unexpected future exceptions use the legacy generic error.
+                # A partial face-only result cannot resolve such a failure.
+                updates["generic"] = None
+        elif response.classification is None or response.error:
+            updates = {"generic": "request_failed"}
+        else:
+            updates = {"generic": None} if self._is_complete_response(response) else {}
+        for branch, code in updates.items():
+            previous_index = self._branch_health.get(branch, (-1, None))[0]
+            if index > previous_index:
+                self._branch_health[branch] = (index, code)
+        self._last_error = (
+            PUBLIC_ANALYSIS_ERROR
+            if any(code is not None for _, code in self._branch_health.values())
+            else None
+        )
+
+    def _is_complete_response(
+        self, response: WindowResponse | GroundingResponse,
+    ) -> bool:
+        classification = response.classification
+        if classification is None or response.error:
+            return False
+        judgments = getattr(classification, "judgments", None)
+        if judgments is None:
+            return True
+        expected = {
+            label.strip() for label in self.event_label.split(",") if label.strip()
+        }
+        return expected <= {judgment.event_label for judgment in judgments}
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return self._snapshot_locked()
@@ -140,6 +204,11 @@ class ResultOrganizer:
             "status": self._status,
             "decision": dict(self._decision) if self._decision else None,
             "last_error": self._last_error,
+            "branch_errors": {
+                branch: code
+                for branch, (_, code) in sorted(self._branch_health.items())
+                if code is not None
+            },
             "counts": counts,
         }
         return snapshot

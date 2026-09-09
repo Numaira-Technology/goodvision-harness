@@ -2,7 +2,7 @@ name: goodvision-harness
 
 services:
   harness:
-    image: goodvision-harness:2026.09.03-full-gpu.1
+    image: goodvision-harness:2026.09.09-full.1
     pull_policy: never
     init: true
     restart: unless-stopped
@@ -27,17 +27,12 @@ services:
       HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
       FACE_MODEL_ROOT: /models
       FACE_GALLERY_PATH: /data/face-gallery.json
-      FACE_ACCELERATOR: gpu
+      FACE_ACCELERATOR: cpu
       FACE_LIVE_SCHEDULER: "${FACE_LIVE_SCHEDULER:-auto}"
-      # This full deployment always enables its bundled perception service, even
-      # when an existing .env still contains the old disabled setting.
-      RICH_LABEL_ENABLED: "true"
+      # The full image keeps GPU components; the launcher enables them only
+      # after a successful device probe through the accelerated overlay.
+      RICH_LABEL_ENABLED: "false"
       RICH_LABEL_ENDPOINT: http://rich-label-worker:8091/v1/labels
-    depends_on:
-      rich-label-worker:
-        # Model warmup must not prevent access to the deployment console.
-        # Real GPU inference and both models still require the separate check.
-        condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -55,15 +50,9 @@ services:
         max-size: "10m"
         max-file: "5"
     stop_grace_period: 90s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - count: 1
-              capabilities: [gpu]
-
   rich-label-worker:
-    image: goodvision-rich-label-worker:2026.09.03-full-gpu.1
+    profiles: [gpu]
+    image: goodvision-rich-label-worker:2026.09.09-full.1
     pull_policy: never
     init: true
     restart: unless-stopped
@@ -90,13 +79,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - count: 1
-              capabilities: [gpu]
-
 volumes:
   face-models:
   face-data:

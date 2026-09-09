@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import math
 import re
 import threading
@@ -38,6 +39,38 @@ SAFETY_EVENT_LABELS = ("fight", "smoking", "fall", "weapon")
 STRANGER_EVENT_LABEL = "stranger"
 DETECTION_EVENT_LABELS = (*SAFETY_EVENT_LABELS, STRANGER_EVENT_LABEL)
 MIN_MULTI_EVENT_MAX_TOKENS = 1024
+_LOGGER = logging.getLogger(__name__)
+
+# Enforce the smoking evidence floor when building the actual request, including
+# deployments that still supply an older, deliberately permissive prompt.
+SMOKING_EVIDENCE_RULE = (
+    "Mandatory smoking evidence rule (overrides any high-recall preference, "
+    "low threshold, ambiguous-positive instruction, or smoking example): "
+    "detected=true requires BOTH an identifiable cigarette, cigar, smoking pipe, "
+    "or e-cigarette visibly separate from the person's fingers in the NEWEST "
+    "frame AND a visible action using, holding, or preparing that item. The item "
+    "may be lit or unlit; smoke is not required. One or two fingers held to the "
+    "mouth, pinched fingers, a bare hand, skin, fingernails, or miming a puff "
+    "are not smoking items and must produce detected=false when no actual "
+    "smoking item is identifiable. A pen, straw, food, or a generic small "
+    "white/cylindrical object near the lips is insufficient. First distinguish "
+    "the item from fingers and ordinary objects using its visible physical "
+    "features; posture or context cannot establish what the object is. If the "
+    "item is hidden, too small, blurred, or cannot be distinguished from a "
+    "finger or pen, use detected=false and objects=[], not a low-confidence "
+    "positive. Never invent a concealed cigarette or put a cigarette box on "
+    "fingers. For a positive, the description must name the visible item, "
+    "its distinguishing visual feature, and the person's visible interaction; "
+    "return only the actual smoking item's tight box."
+)
+
+
+def _system_prompt_with_evidence_rules(
+    system_prompt: str, event_labels: Collection[str]
+) -> str:
+    if "smoking" in {label.strip().casefold() for label in event_labels}:
+        return f"{system_prompt}\n\n{SMOKING_EVIDENCE_RULE}"
+    return system_prompt
 
 BILINGUAL_DESCRIPTION_RULE = (
     "Every description must be a single bilingual string: one concise Simplified "
@@ -233,10 +266,35 @@ class GroundingResponse:
     response_id: str | None = None
     usage: Mapping[str, Any] | None = None
     error: str | None = None
+    # A missing CPU face sample is neither a failure nor a negative judgment.
+    # Health is tracked independently so partial success cannot hide an outage.
+    branch_errors: tuple[tuple[str, str], ...] = ()
+    completed_branches: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
         return self.classification is not None
+
+
+def _record_analysis_failure(
+    window: FrameWindow,
+    *,
+    branch: str,
+    stage: str,
+    error: Exception | None = None,
+    code: str = "request_failed",
+) -> str:
+    """Log only bounded diagnostics, never provider text or camera data."""
+
+    status_code = None
+    if isinstance(error, ModelAPIError):
+        code = error.code
+        status_code = error.status_code
+    _LOGGER.warning(
+        "analysis_failure branch=%s stage=%s window=%d code=%s http_status=%s",
+        branch, stage, window.index, code, status_code,
+    )
+    return code
 
 
 class GroundingClient(Protocol):
@@ -575,7 +633,9 @@ def build_grounding_messages(
     return [
         {
             "role": "system",
-            "content": f"{system_prompt}\n\n{BILINGUAL_DESCRIPTION_RULE}",
+            "content": _system_prompt_with_evidence_rules(
+                system_prompt, (effective_event_label,)
+            ) + f"\n\n{BILINGUAL_DESCRIPTION_RULE}",
         },
         {"role": "user", "content": content},
     ]
@@ -602,7 +662,8 @@ def build_multi_grounding_messages(
         for frame in window.frames
     )
     system_text = (
-        f"{system_prompt}\n{BILINGUAL_DESCRIPTION_RULE}\n"
+        f"{_system_prompt_with_evidence_rules(system_prompt, event_labels)}\n"
+        f"{BILINGUAL_DESCRIPTION_RULE}\n"
         "For this request, independently judge every fixed "
         "safety event and allow multiple simultaneous positives."
     )
@@ -683,13 +744,17 @@ class AIClubGroundingClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-        except (ModelAPIError, ValueError):
+        except (ModelAPIError, ValueError) as exc:
+            code = _record_analysis_failure(
+                window, branch="safety", stage="request", error=exc,
+            )
             return GroundingResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
                 error=PUBLIC_ANALYSIS_ERROR,
+                branch_errors=(("safety", code),),
             )
         latency = time.monotonic() - started
         try:
@@ -704,18 +769,24 @@ class AIClubGroundingClient:
                 require_bilingual=True,
             )
         except (TypeError, ValueError):
+            code = _record_analysis_failure(
+                window, branch="safety", stage="classification",
+                code="invalid_response",
+            )
             return GroundingResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=latency,
                 error=PUBLIC_ANALYSIS_ERROR,
+                branch_errors=(("safety", code),),
             )
         return GroundingResponse(
             window=window,
             classification=classification,
             raw_text=None,
             latency_seconds=latency,
+            completed_branches=("safety",),
         )
 
 
@@ -832,13 +903,17 @@ class AIClubMultiGroundingClient:
                 **request_parameters,
             )
             text = self._transport.assistant_text(response)
-        except (ModelAPIError, ValueError):
+        except (ModelAPIError, ValueError) as exc:
+            code = _record_analysis_failure(
+                window, branch="safety", stage="request", error=exc,
+            )
             return GroundingResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
                 error=PUBLIC_ANALYSIS_ERROR,
+                branch_errors=(("safety", code),),
             )
 
         latency = time.monotonic() - started
@@ -849,18 +924,24 @@ class AIClubMultiGroundingClient:
                 require_bilingual=True,
             )
         except (TypeError, ValueError):
+            code = _record_analysis_failure(
+                window, branch="safety", stage="classification",
+                code="invalid_response",
+            )
             return GroundingResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=latency,
                 error=PUBLIC_ANALYSIS_ERROR,
+                branch_errors=(("safety", code),),
             )
         return GroundingResponse(
             window=window,
             classification=classification,
             raw_text=None,
             latency_seconds=latency,
+            completed_branches=("safety",),
         )
 
 
@@ -1084,11 +1165,16 @@ class SelectedFeaturesGroundingClient:
                     jpeg_quality=self._safety_jpeg_quality,
                 )
             except ValueError:
+                code = _record_analysis_failure(
+                    window, branch="safety", stage="input",
+                    code="invalid_response",
+                )
                 return GroundingResponse(
                     window=window,
                     classification=None,
                     latency_seconds=time.monotonic() - started,
                     error=PUBLIC_ANALYSIS_ERROR,
+                    branch_errors=(("safety", code),),
                 )
 
         safety_response: GroundingResponse | None = None
@@ -1159,6 +1245,8 @@ class SelectedFeaturesGroundingClient:
                 stranger_error = exc
 
         judgments: list[GroundedEventClassification] = []
+        branch_errors: list[tuple[str, str]] = []
+        completed_branches: list[str] = []
         safety_failed = False
         if self._safety_client is not None:
             safety_classification = (
@@ -1173,10 +1261,20 @@ class SelectedFeaturesGroundingClient:
                 )
                 if safety_labels == self._safety_event_labels:
                     judgments.extend(safety_classification.judgments)
+                    completed_branches.append("safety")
                 else:
                     safety_failed = True
             else:
                 safety_failed = True
+            if safety_failed:
+                reported = dict(safety_response.branch_errors).get("safety") \
+                    if safety_response is not None else None
+                code = reported or _record_analysis_failure(
+                    window, branch="safety", stage="branch", error=safety_error,
+                    code=("invalid_response" if safety_classification is not None
+                          else "request_failed"),
+                )
+                branch_errors.append(("safety", code))
 
         if self._stranger_client is not None:
             face_classification = (
@@ -1185,17 +1283,17 @@ class SelectedFeaturesGroundingClient:
                 else None
             )
             if isinstance(face_classification, GroundedClassification):
-                indexes = face_classification.event_object_indexes
-                if indexes is None:
-                    indexes = (
-                        tuple(range(len(face_classification.objects)))
-                        if face_classification.detected
-                        else ()
-                    )
-                stranger_objects = tuple(
-                    face_classification.objects[index] for index in indexes
-                )
                 try:
+                    indexes = face_classification.event_object_indexes
+                    if indexes is None:
+                        indexes = (
+                            tuple(range(len(face_classification.objects)))
+                            if face_classification.detected
+                            else ()
+                        )
+                    stranger_objects = tuple(
+                        face_classification.objects[index] for index in indexes
+                    )
                     judgments.append(
                         GroundedEventClassification(
                             event_label=STRANGER_EVENT_LABEL,
@@ -1208,8 +1306,22 @@ class SelectedFeaturesGroundingClient:
                             ),
                         )
                     )
-                except (TypeError, ValueError, IndexError):
-                    pass
+                    completed_branches.append("stranger")
+                except (TypeError, ValueError, IndexError) as exc:
+                    stranger_error = exc
+            # No response/error means single-flight deliberately skipped this
+            # sample. Do not report it as either healthy, failed, or clear.
+            if (
+                "stranger" not in completed_branches
+                and (stranger_response is not None or stranger_error is not None)
+            ):
+                code = _record_analysis_failure(
+                    window, branch="stranger", stage="branch",
+                    error=stranger_error,
+                    code=("invalid_response" if face_classification is not None
+                          else "request_failed"),
+                )
+                branch_errors.append(("stranger", code))
 
         if not judgments:
             return GroundingResponse(
@@ -1220,6 +1332,7 @@ class SelectedFeaturesGroundingClient:
                 error=(
                     PUBLIC_ANALYSIS_ERROR if safety_failed else PUBLIC_FACE_ERROR
                 ),
+                branch_errors=tuple(branch_errors),
             )
 
         try:
@@ -1238,18 +1351,27 @@ class SelectedFeaturesGroundingClient:
                 ),
             )
         except (TypeError, ValueError):
+            branch_errors.extend(
+                (branch, _record_analysis_failure(
+                    window, branch=branch, stage="merge", code="invalid_response",
+                ))
+                for branch in completed_branches
+            )
             return GroundingResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
                 error=PUBLIC_FACE_ERROR,
+                branch_errors=tuple(branch_errors),
             )
         return GroundingResponse(
             window=window,
             classification=classification,
             raw_text=None,
             latency_seconds=time.monotonic() - started,
+            branch_errors=tuple(branch_errors),
+            completed_branches=tuple(completed_branches),
         )
 
 

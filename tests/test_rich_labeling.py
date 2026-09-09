@@ -500,6 +500,248 @@ class _TimingClient:
         )
 
 
+class _CadenceClient:
+    def __init__(self, clock: _ControlledClock, *, duration: float) -> None:
+        self.clock = clock
+        self.duration = duration
+        self.fail = False
+        self.visible = True
+
+    def infer(
+        self,
+        _jpeg_bytes: bytes,
+        *,
+        stream_session_id: str,
+        frame_sequence: int,
+        timestamp_seconds: float,
+    ) -> RichLabelSnapshot:
+        self.clock.advance(self.duration)
+        if self.fail:
+            raise httpx.ReadTimeout("unavailable")
+        return _snapshot(
+            frame_sequence,
+            timestamp_seconds,
+            *((_object(),) if self.visible else ()),
+            session_id=stream_session_id,
+        )
+
+
+def _complete_rich_sample(
+    coordinator: RichLabelCoordinator,
+    *,
+    sequence: int,
+    timestamp: float,
+    session_id: str = "session-1",
+) -> None:
+    assert coordinator.submit(
+        b"frame", stream_session_id=session_id,
+        frame_sequence=sequence, timestamp_seconds=timestamp,
+    )
+    assert coordinator.wait_until_idle()
+
+
+def test_coordinator_holds_slow_detector_tail_without_changing_evidence() -> None:
+    clock = _ControlledClock()
+    client = _CadenceClient(clock, duration=4.0)
+    coordinator = RichLabelCoordinator(
+        client, clock=clock, max_fps=10_000, max_hold_seconds=2.0,
+    )
+    try:
+        _complete_rich_sample(coordinator, sequence=1, timestamp=0.0)
+        evidence = coordinator.latest()
+        assert evidence is not None
+        original = evidence.as_dict()
+
+        # Two 4 s inferences with 2.5 s display delay leave the old source box
+        # 5.5 s old just before the next result can arrive.
+        for timestamp in (2.001, 4.0, 5.5, 10.0):
+            display = coordinator.select("session-1", timestamp)
+            assert display.mode == "held"
+            assert display.objects == evidence.objects
+        assert coordinator.select("session-1", 10.001).objects == ()
+        assert coordinator.history() == (evidence,)
+        assert coordinator.latest() is evidence
+        assert evidence.as_dict() == original
+        assert evidence.timestamp_seconds == 0.0
+    finally:
+        coordinator.close()
+
+
+def test_coordinator_uses_successful_completion_gaps_for_display_continuity() -> None:
+    clock = _ControlledClock()
+    client = _CadenceClient(clock, duration=0.25)
+    coordinator = RichLabelCoordinator(
+        client, clock=clock, max_fps=10_000, max_hold_seconds=2.0,
+    )
+    try:
+        _complete_rich_sample(coordinator, sequence=1, timestamp=0.0)
+        clock.advance(4.0)
+        _complete_rich_sample(coordinator, sequence=2, timestamp=4.25)
+        latest = coordinator.latest()
+        assert latest is not None
+
+        # Computation is fast, but successive successful completions were
+        # 4.25 s apart. The display must cover that actual update cadence.
+        assert coordinator.select("session-1", 4.25 + 8.0).objects == latest.objects
+        assert coordinator.select("session-1", 4.25 + 10.5).objects == latest.objects
+        assert coordinator.select("session-1", 4.25 + 10.501).objects == ()
+    finally:
+        coordinator.close()
+
+
+def test_coordinator_failures_do_not_extend_or_refresh_display_hold() -> None:
+    clock = _ControlledClock()
+    client = _CadenceClient(clock, duration=2.0)
+    coordinator = RichLabelCoordinator(
+        client, clock=clock, max_fps=10_000, max_hold_seconds=2.0,
+    )
+    try:
+        _complete_rich_sample(coordinator, sequence=1, timestamp=0.0)
+        evidence = coordinator.latest()
+        assert evidence is not None
+        assert coordinator.select("session-1", 5.9).objects == evidence.objects
+        client.fail = True
+        client.duration = 10.0
+
+        for sequence in range(2, 5):
+            _complete_rich_sample(
+                coordinator, sequence=sequence, timestamp=float(sequence * 3),
+            )
+            assert coordinator.latest() is evidence
+            assert coordinator.select("session-1", 6.001).objects == ()
+            assert coordinator.history() == (evidence,)
+        assert coordinator.stats()["failed"] == 3
+    finally:
+        coordinator.close()
+
+
+def test_coordinator_adaptive_display_hold_has_fifteen_second_cap() -> None:
+    clock = _ControlledClock()
+    client = _CadenceClient(clock, duration=20.0)
+    coordinator = RichLabelCoordinator(
+        client, clock=clock, max_fps=10_000, max_hold_seconds=2.0,
+    )
+    try:
+        _complete_rich_sample(coordinator, sequence=1, timestamp=0.0)
+
+        assert coordinator.select("session-1", 15.0).objects
+        assert coordinator.select("session-1", 15.001).objects == ()
+        assert coordinator.select("session-1", 50.0).objects == ()
+    finally:
+        coordinator.close()
+
+
+def test_coordinator_empty_success_clears_held_rich_labels_immediately() -> None:
+    clock = _ControlledClock()
+    client = _CadenceClient(clock, duration=4.0)
+    coordinator = RichLabelCoordinator(
+        client, clock=clock, max_fps=10_000, max_hold_seconds=2.0,
+    )
+    try:
+        _complete_rich_sample(coordinator, sequence=1, timestamp=0.0)
+        assert coordinator.select("session-1", 5.5).objects
+        client.visible = False
+        _complete_rich_sample(coordinator, sequence=2, timestamp=6.0)
+
+        assert coordinator.select("session-1", 5.999).objects
+        assert coordinator.select("session-1", 6.0).objects == ()
+        assert coordinator.select("session-1", 7.0).objects == ()
+        assert coordinator.latest() is not None
+        assert coordinator.latest().objects == ()
+    finally:
+        coordinator.close()
+
+
+def test_coordinator_reset_discards_previous_session_adaptive_display_hold() -> None:
+    clock = _ControlledClock()
+    client = _CadenceClient(clock, duration=20.0)
+    coordinator = RichLabelCoordinator(
+        client, clock=clock, max_fps=10_000, max_hold_seconds=2.0,
+    )
+    try:
+        _complete_rich_sample(coordinator, sequence=1, timestamp=0.0)
+        assert coordinator.select("session-1", 15.0).objects
+        coordinator.reset("new-session")
+        assert coordinator.history() == ()
+        assert coordinator.select("session-1", 1.0).objects == ()
+        assert coordinator.select("new-session", 1.0).objects == ()
+        client.duration = 0.1
+        _complete_rich_sample(
+            coordinator, sequence=1, timestamp=0.0, session_id="new-session",
+        )
+
+        assert coordinator.select("new-session", 2.2).objects
+        assert coordinator.select("new-session", 2.201).objects == ()
+        assert coordinator.select("session-1", 2.0).objects == ()
+    finally:
+        coordinator.close()
+
+
+def test_coordinator_display_hold_recovers_after_recent_fast_completions() -> None:
+    clock = _ControlledClock()
+    client = _CadenceClient(clock, duration=20.0)
+    coordinator = RichLabelCoordinator(
+        client, clock=clock, max_fps=10_000, max_hold_seconds=2.0,
+    )
+    try:
+        _complete_rich_sample(coordinator, sequence=1, timestamp=0.0)
+        assert coordinator.select("session-1", 15.0).objects
+        client.duration = 0.1
+        for sequence in range(2, 8):
+            _complete_rich_sample(
+                coordinator, sequence=sequence, timestamp=float(sequence),
+            )
+
+        assert coordinator.select("session-1", 7.0 + 2.2).objects
+        assert coordinator.select("session-1", 7.0 + 2.201).objects == ()
+    finally:
+        coordinator.close()
+
+
+def test_coordinator_stale_completion_cannot_expand_new_session_display_hold() -> None:
+    class Client(_TimingClient):
+        def infer(self, *args: Any, **kwargs: Any) -> RichLabelSnapshot:
+            snapshot = super().infer(*args, **kwargs)
+            return _snapshot(
+                snapshot.frame_sequence, snapshot.timestamp_seconds, _object(),
+                session_id=snapshot.stream_session_id,
+            )
+
+    clock = _ControlledClock()
+    client = Client(2)
+    coordinator = RichLabelCoordinator(
+        client, clock=clock, max_fps=10_000, max_hold_seconds=2.0,
+    )
+    try:
+        assert coordinator.submit(
+            b"old", stream_session_id="old-session",
+            frame_sequence=1, timestamp_seconds=0.0,
+        )
+        assert client.started[0].wait(1.0)
+        coordinator.reset("new-session")
+        clock.advance(20.0)
+        client.release[0].set()
+        assert coordinator.wait_until_idle()
+        assert coordinator.history() == ()
+        assert coordinator.stats()["stale_results"] == 1
+
+        assert coordinator.submit(
+            b"new", stream_session_id="new-session",
+            frame_sequence=1, timestamp_seconds=0.0,
+        )
+        assert client.started[1].wait(1.0)
+        clock.advance(0.1)
+        client.release[1].set()
+        assert coordinator.wait_until_idle()
+
+        assert coordinator.select("new-session", 2.2).objects
+        assert coordinator.select("new-session", 2.201).objects == ()
+    finally:
+        for release in client.release:
+            release.set()
+        coordinator.close()
+
+
 def test_coordinator_times_local_queue_from_latest_replacement() -> None:
     clock = _ControlledClock()
     client = _TimingClient(2)

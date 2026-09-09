@@ -21,6 +21,7 @@ from typing import Any
 import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 
 LOGGER = logging.getLogger("goodvision.object_attributes")
 MAX_JPEG_BYTES = 8 * 1024 * 1024
@@ -265,6 +266,7 @@ class PaddleRichModels:
         self._detector: Any | None = None
         self._attribute: Any | None = None
         self._lock = threading.Lock()
+        self._gpu_ready = False
 
     @property
     def ready(self) -> bool:
@@ -273,6 +275,44 @@ class PaddleRichModels:
     @property
     def attributes_ready(self) -> bool:
         return self._attribute is not None
+
+    @property
+    def gpu_ready(self) -> bool:
+        """True only after the selected GPU and both model paths have executed."""
+
+        return self._gpu_ready
+
+    def verify_gpu_execution(self) -> None:
+        """Probe in the worker process; a remote worker may use a different host."""
+
+        self._gpu_ready = False
+        if self.device != "gpu" and not (
+            self.device.startswith("gpu:")
+            and self.device.removeprefix("gpu:").isdigit()
+        ):
+            return
+        device_index = 0 if self.device == "gpu" else int(self.device.split(":")[1])
+        try:
+            import paddle
+
+            if not paddle.device.is_compiled_with_cuda():
+                return
+            if paddle.device.cuda.device_count() <= device_index:
+                return
+            probe = paddle.to_tensor([1.0], place=paddle.CUDAPlace(device_index))
+            result = probe + 1.0
+            if not result.place.is_gpu_place() or float(result.numpy()[0]) != 2.0:
+                return
+            image = np.zeros((640, 640, 3), dtype=np.uint8)
+            self.detect(image)
+            attributes = self.attributes((image,))
+            if len(attributes) != 1 or not attributes[0]:
+                return
+        except Exception:
+            # Neither a requested GPU nor installed drivers prove that the
+            # runtime can execute. Keep CPU fallback out of the capability.
+            return
+        self._gpu_ready = True
 
     def ensure_detector_loaded(self) -> None:
         if self._detector is not None:
@@ -423,9 +463,18 @@ class RichLabelEngine:
     def ready(self) -> bool:
         return self.models.ready
 
-    def warmup(self) -> None:
-        """Load the detector before the HTTP service advertises readiness."""
+    @property
+    def gpu_ready(self) -> bool:
+        return self.ready and getattr(self.models, "gpu_ready", False) is True
 
+    def warmup(self, *, require_gpu: bool = False) -> None:
+        """Load the detector and verify any selected GPU before readiness."""
+
+        if require_gpu:
+            verify_gpu = getattr(self.models, "verify_gpu_execution", None)
+            if callable(verify_gpu):
+                verify_gpu()
+            return
         ensure_loaded = getattr(self.models, "ensure_detector_loaded", None)
         if callable(ensure_loaded):
             ensure_loaded()
@@ -605,12 +654,16 @@ class RichLabelEngine:
 
 
 def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
+    require_gpu = engine is None
     selected_engine = engine or RichLabelEngine()
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         try:
-            await asyncio.to_thread(selected_engine.warmup)
+            if require_gpu:
+                await asyncio.to_thread(selected_engine.warmup, require_gpu=True)
+            else:
+                await asyncio.to_thread(selected_engine.warmup)
         except Exception:
             LOGGER.error("object and attribute engine initialization failed")
             raise RuntimeError(
@@ -635,15 +688,19 @@ def create_app(engine: RichLabelEngine | None = None) -> FastAPI:
 
     @application.get("/health/ready")
     async def ready() -> Response:
-        status = 200 if selected_engine.ready else 503
-        return Response(
-            content=(b'{"ready":true}' if status == 200 else b'{"ready":false}'),
-            media_type="application/json",
+        is_ready = selected_engine.ready and (
+            not require_gpu or selected_engine.gpu_ready
+        )
+        status = 200 if is_ready else 503
+        return JSONResponse(
+            content={"ready": status == 200, "gpu_ready": selected_engine.gpu_ready},
             status_code=status,
         )
 
     @application.post("/v1/labels")
     async def labels(request: Request) -> dict[str, Any]:
+        if require_gpu and not selected_engine.gpu_ready:
+            raise HTTPException(status_code=503, detail="inference unavailable")
         session_id = _required_header(
             request,
             "x-goodvision-stream-session-id",

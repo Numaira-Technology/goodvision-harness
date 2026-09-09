@@ -38,6 +38,7 @@ from goodvision_harness.grounding import (
     BILINGUAL_DESCRIPTION_RULE,
     DETECTION_EVENT_LABELS,
     SAFETY_EVENT_LABELS,
+    SMOKING_EVIDENCE_RULE,
     DryRunGroundingClient,
     build_grounding_messages,
     build_multi_grounding_messages,
@@ -387,7 +388,10 @@ def test_model_prompt_has_one_bbox_append_and_dynamic_suffix() -> None:
     )
     assert messages[0] == {
         "role": "system",
-        "content": f"{EXPECTED_SYSTEM_PROMPT}\n\n{BILINGUAL_DESCRIPTION_RULE}",
+        "content": (
+            f"{EXPECTED_SYSTEM_PROMPT}\n\n{SMOKING_EVIDENCE_RULE}"
+            f"\n\n{BILINGUAL_DESCRIPTION_RULE}"
+        ),
     }
     prompt_text = messages[1]["content"][0]["text"]
     assert prompt_text == (

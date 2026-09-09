@@ -46,26 +46,26 @@ modes; the page lets the operator select any non-empty feature combination.
 
 ## Optional rich video labels
 
-Rich person/object labels are an optional local sidecar, not part of the VLM
-request. The harness samples source JPEGs to an isolated PaddleX/PaddleDetection
+Rich person/object labels require a usable GPU on their worker. Without one,
+rich annotation is disabled; event analysis and face recognition continue.
+The harness samples source JPEGs to an isolated PaddleX/PaddleDetection
 worker, keeps only the newest pending request, and uses its tracked boxes as
 keyframes for the delayed display compositor. The normal safety VLM still sees
 the original frame and its event boxes are drawn as the alert layer. A missing,
 slow, or failed rich-label worker therefore drops only the decorative labels;
 it does not block VLM analysis or the raw video path.
 
-The reference Compose profile runs the CPU worker with PicoDet-S object
-detection and PP-LCNet pedestrian attributes. PicoDet-S is the low-latency
-CPU default:
+`RICH_LABEL_ENABLED=true` requests rich annotation, but the Harness enables it
+only after the worker's `/health/ready` reports both `ready=true` and
+`gpu_ready=true`. The worker checks GPU execution before loading its models;
+CPU mode stays disabled and cannot accept inference requests. Missing capability
+information or an unreachable worker also leaves rich annotation disabled.
+Start the GPU worker before the Harness; restart the Harness after changing the
+worker's GPU availability. `/v1/status` reports `disabled_reason=gpu_required`
+when GPU readiness was not confirmed. No CPU fallback is used.
 
-```bash
-cp .env.example .env
-# Set RICH_LABEL_ENABLED=true in .env.
-docker compose --profile rich up --build
-```
-
-For the customer's RTX 5090, use the separate CUDA 12.9 overlay. It keeps the
-CPU image unchanged and selects `PP-YOLOE_plus-L` as the provisional
+For the customer's RTX 5090, use the separate CUDA 12.9 overlay. It selects
+`PP-YOLOE_plus-L` as the provisional
 higher-accuracy default. Build it, run the real CUDA/model smoke check, and only
 then start the services:
 
@@ -80,9 +80,9 @@ The principal settings are:
 
 | Variable | Meaning |
 | --- | --- |
-| `RICH_LABEL_ENABLED` | Enables submission to and rendering from the optional worker. Default: `false`. |
+| `RICH_LABEL_ENABLED` | Requests the optional worker; usable GPU readiness is also required. Default: `false`. |
 | `RICH_LABEL_ENDPOINT` | Worker inference URL. Compose default: `http://rich-label-worker:8091/v1/labels`. |
-| `RICH_DEVICE` | Paddle device requested by the worker. The base image uses `cpu`; the GPU overlay fixes its single reserved device to `gpu:0`. |
+| `RICH_DEVICE` | GPU device requested by the worker. The GPU overlay reserves `gpu:0`; `cpu` leaves rich annotation disabled. |
 | `RICH_DETECTOR_MODEL` | PaddleX detector name used by the CPU image. Default: `PicoDet-S`. |
 | `RICH_GPU_DETECTOR_MODEL` | Detector used by the GPU overlays. Provisional RTX 5090 default: `PP-YOLOE_plus-L`. |
 | `RICH_ATTRIBUTE_MODEL` | PaddleX pedestrian-attribute model name. Default: `PP-LCNet_x1_0_pedestrian_attribute`. |
@@ -93,13 +93,21 @@ The principal settings are:
 | `RICH_ATTRIBUTE_SHUTDOWN_TIMEOUT_SECONDS` | Bounded drain time for an in-flight attribute task. Default: `5`. |
 | `RICH_DETECTOR_MODEL_DIR` / `RICH_ATTRIBUTE_MODEL_DIR` | Optional paths to pre-provisioned, authorized model directories. |
 
-`rich_labeling.max_fps`, timeout, history size, interpolation gap, and bounded
-tail hold remain in `config.yaml`. The worker's first model-backed start can be
+`rich_labeling.max_fps`, timeout, history size, interpolation gap, and base
+tail hold remain in `config.yaml`. Display holding also accounts for recent
+successful inference latency and completion intervals, with an adaptive ceiling
+of 15 seconds (or the configured base hold if it is larger). This keeps
+labels visible between successful results. Failed attempts do not extend the
+window; an empty detector snapshot clears labels immediately. Raw snapshots
+used for identity matching retain their original timestamps and age limits.
+The effective window is exposed as `rich_labeling.display_hold_seconds` in
+`/v1/status`. Set the inference request timeout long enough for the actual
+worker cadence; a timeout shorter than inference leaves abandoned work and
+causes subsequent busy responses. The worker's first model-backed start can be
 slow while PaddleX
 downloads model files into the persistent `rich-models` volume; allow outbound
 HTTPS, disk space, and readiness headroom, or pre-provision both model
-directories. The CPU image pins Paddle 3.2.2 because Paddle 3.3.x has a
-confirmed CPU oneDNN regression for affected detectors. `Dockerfile.gpu` is an
+directories. `Dockerfile.gpu` is an
 independent Paddle 3.3.0 CUDA 12.9 image: that is Paddle's current supported
 binary route for the RTX 5090's Blackwell `sm_120` architecture (see Paddle's
 [GPU architecture table](https://www.paddlepaddle.org.cn/documentation/docs/zh/install/Tables.html)). It deliberately
@@ -114,8 +122,7 @@ installed versions and verifies that the wheel metadata contains architecture
 `120`. The NVIDIA runtime supplies `libcuda.so.1` only when the container is
 started with GPU access, so `gpu_smoke.py` intentionally performs the real
 Paddle import there. It fails unless a GPU is visible and then runs a CUDA
-tensor, Paddle's own check, the detector, and the attribute model. A local CPU
-video benchmark therefore remains the functional/fallback baseline; actual
+tensor, Paddle's own check, the detector, and the attribute model. Actual
 5090 latency, VRAM, cold starts, and restart stability must pass on the customer
 host before enabling `RICH_LABEL_ENABLED`.
 
@@ -254,9 +261,12 @@ when the receiver is also on the host.
 ## Deploy
 
 For a prebuilt image-tar delivery with no source tree on the customer server,
-follow [DEPLOY.md](DEPLOY.md) and use `compose.full-gpu.delivery.yaml` for the
-complete customer GPU package. [API_DELIVERY.md](API_DELIVERY.md) is the public
-interface contract. The regular `compose.yaml` remains the developer build path;
+follow [DEPLOY.md](DEPLOY.md) and run the supplied `start_delivery.py` for the
+complete package. Both current images include their GPU components; the launcher
+enables the rich worker only when a usable GPU is available. The source-tree
+equivalent is `python tools/start_delivery.py`.
+[API_DELIVERY.md](API_DELIVERY.md) is the public interface contract.
+The regular source-tree `compose.yaml` remains the developer build path;
 the older `compose.delivery.yaml` and delivery overlays remain available for
 their historical CPU/separate-image releases and must not be mixed into the
 current full package.
@@ -313,6 +323,20 @@ delayed annotation stream, and the complete JSON result together. A link under
 the player opens the exact 2.5 FPS evidence stream for debugging and audit.
 Leave the network URL blank to use `HARNESS_STREAM_URL`, or enter a different
 RTSP/RTMP/WHEP URL for that run.
+
+Event and stranger analysis run concurrently on the same admitted sample when
+the face worker is available. In CPU single-flight mode, samples arriving while
+face inference is busy still receive event analysis, with no stranger judgment
+for that sample. The live classification cards retain each feature's latest
+valid result; the per-frame log marks incomplete coverage as `PARTIAL` and lists
+the features not analyzed. Only complete negative coverage is logged as `CLEAR`.
+
+Runtime errors track event and face branches independently. A newer successful
+result clears only that branch's error; an older response or a skipped branch
+cannot claim recovery. The console distinguishes timeout, connection, service,
+empty-response and invalid-response errors. Server warnings retain the branch,
+window index, fixed failure code and HTTP status without storing provider text,
+credentials or camera images.
 
 A browser can use its local camera from `localhost`. When the page is opened
 remotely from `192.168.1.50`, browsers normally require HTTPS/WSS before they
@@ -718,8 +742,8 @@ Do not commit `.env`, RTSP credentials, or LLM API keys.
 ### 切换 AI 渠道和模型
 
 以下路由选择说明适用于当前源码开发运行及 `development` 镜像。
-完整客户 GPU 包固定使用预设服务，按 [DEPLOY.md](DEPLOY.md) 部署；
-本节的渠道、模型及地址覆盖不适用于该客户包。
+完整交付包按 [DEPLOY.md](DEPLOY.md) 部署，控制台可选择并保存当前 A–H 八个模型。
+本节的任意渠道、模型及地址环境覆盖不适用于该交付包。
 已导出的 `.2` 及更早历史镜像不会因源码更新而增加此能力；使用这些历史版本时，
 应遵循其随包原说明和配置，不能只通过添加环境变量切换为新实现。
 
@@ -831,10 +855,29 @@ in the test UI. Install compatible detection and recognition weights under
 download. The harness does not bundle models; the known-person gallery persists
 at `FACE_GALLERY_PATH`.
 
-`face.min_face_size` is the live-recognition floor in source-frame pixels. It is
-kept low enough for distant safety detections, while
-`face.enrollment_min_face_size` remains stricter so low-detail registration
-photos cannot degrade the known-person gallery.
+`face.min_face_size` is the live-recognition floor in analysis-frame pixels.
+Small faces can positively match an enrolled person, but an unmatched face
+under 60 pixels, a low-confidence detection, or an extreme face angle is
+`unusable`, not evidence of a stranger. Live sessions require three consecutive
+reliable mismatches on the same track before raising an alert or retaining a
+stranger crop. Unclear or missing observations reset that confirmation count.
+After a stranger is confirmed, the same track can retain its label and existing
+capture for up to three seconds through unclear or missing faces. Without a
+recent body track, a missing face can be held for at most 1.5 seconds. A known
+match or a broken/ambiguous body track clears the retained stranger immediately.
+When CPU scheduling skips the face branch of a mixed result, the display keeps
+the latest stranger judgment for up to three seconds instead of treating the
+omission as a negative. An explicit negative clears it immediately; original
+per-frame JSON results remain unchanged.
+
+Each live session keeps its own identity history. A confirmed name may be held
+for up to eight seconds through poor face observations, using an unambiguous
+face-box association or a recent, continuous Paddle person track. Track gaps,
+ambiguous people, deleted gallery identities, and new sessions prevent identity
+inheritance. `identity_source=track_history` and `identity_age_seconds` distinguish
+this temporary continuity from a fresh face match. A person first seen from
+behind or too far away remains unconfirmed until a usable face is visible.
+`face.enrollment_min_face_size` remains stricter to protect gallery sample quality.
 
 The harness does not grant rights to third-party face-analysis files. For
 customer or commercial use, supply files whose license covers the intended use.
@@ -926,17 +969,15 @@ layers do not prove that a fresh full GPU build has completed; record which
 validation was actually performed. Dependency version ranges also mean a clean
 build is not a promise of byte-for-byte reproducibility.
 
-The already-exported `dist/goodvision-full-2026.09.02-gpu.2` is an immutable
-historical release and does not acquire subsequent source/consolidation fixes.
-Never rebuild its labels or overwrite its files as part of source verification.
-The current release uses `2026.09.03-full-gpu.1` for both product images and
-`dist/goodvision-full-2026.09.03-gpu.1` as its default staging directory. The same
-eleven-file bundle can be staged on another drive when space is limited; run
-the bundle audit against that actual directory. Its archive is
-`goodvision-full-2026.09.03-gpu.1.tar.gz`. For a later release, choose new product
-tags/archive names and update the version references in the delivery Compose,
-DEPLOY guide, bundle-audit constants, smoke defaults and corresponding contract
-tests before staging or publishing it.
+The current release uses `2026.09.09-full.1` for both product images and
+`dist/goodvision-full-2026.09.09.1` as its staging directory. Its archive is
+`goodvision-full-2026.09.09.1.tar.gz`. `Dockerfile.release` can reuse the audited
+GPU dependencies while reinstalling every main application file and replacing
+the worker and runtime entrypoints from the current checkout. Source hashes
+verify the resulting application files; dependency checks verify the inherited
+runtime. The full GPU Dockerfiles remain the path for rebuilding dependencies.
+Use new product tags and archive names for each later release, and update the
+launcher, Compose files, deployment guide, exporter, smoke defaults and tests.
 
 ### Customer-facing boundary
 
@@ -963,41 +1004,36 @@ release staging directory.
 
 ### Release staging and verification
 
-Keep one deployment source, `DEPLOY.md`, in the repository. Copy it as
-`FULL_DEPLOY.md` inside the bundle to retain the existing external file contract.
-Use a new staging directory and copy only these reviewed sources:
+Keep one deployment source, `DEPLOY.md`, in the repository. Use a new staging
+directory and copy these reviewed sources:
 
 | Repository source | Customer bundle destination |
 | --- | --- |
-| `DEPLOY.md` | `FULL_DEPLOY.md` |
+| `DEPLOY.md` | Same name |
 | `API_DELIVERY.md` | Same name |
-| `compose.full-gpu.delivery.yaml` | Same name |
-| `.env.full-gpu.delivery.example` | Same name |
+| `compose.full-gpu.delivery.yaml` | `compose.yaml` |
+| `compose.full-gpu.accelerated.yaml` | `compose.gpu.yaml` |
+| `.env.full-gpu.delivery.example` | `.env.example` |
 | `config.delivery.yaml` | Same name |
+| `tools/start_delivery.py` | `start_delivery.py` |
 | `schemas/analysis-result-v2.schema.json` | Same path |
 | `schemas/analysis-result-v1.schema.json` (historical contract) | Same path |
-| `tools/customer_check.py` | `tools/check_runtime.py`, `tools/check_face.py`, `tools/check_perception.py` |
 
 Add a reviewed `RELEASE.md` recording the exact candidate versions, completed
-checks and unverified boundaries. Run
-`python tools/audit_customer_bundle.py <new-bundle-directory> --without-archive`
-before adding the archive. Export only the two selected product tags into one
-gzip-compressed image archive. Stream compression directly to the new `.tar.gz`
-file so a second, uncompressed archive does not consume the build disk. Use a
-binary-safe pipe or process API; do not pass archive bytes through PowerShell's
-text pipeline. `docker load -i` accepts this compressed archive directly.
-Then rerun the audit without `--without-archive`. It requires exactly 11 files:
-eleven customer text files and the one compressed image archive. The audit reads
-that archive once as a stream and retains only its bounded image manifest,
-checking tags and duplicate manifests without extracting image layers. It checks
-neutral names and image tags, not image-layer contents or dependency licenses.
-No separate file-checksum artifact is part of the release contract.
+checks and unverified boundaries, plus `SOURCE_HASHES.json` for the application
+files verified inside both images. Export with
+`python tools/export_full_delivery.py <new-bundle-directory>`.
+The exporter streams exactly the two current image tags through a binary-safe
+gzip pipe, verifies the complete stream and manifest, and writes `IMAGES.json`
+and `SHA256SUMS.txt`. `docker load -i` accepts the compressed archive directly.
+The fixed eleven-file audit in `tools/audit_customer_bundle.py` describes the
+historical 2026.09.03 bundle; it is not the current release inventory.
 
 Before publishing, run the full unit suite and isolated image protocol check
 with the candidate image tags:
 
 ```powershell
-pwsh -NoProfile -File tools/run_full_delivery_smoke.ps1 -HarnessImage goodvision-harness:consolidation-test -WorkerImage goodvision-rich-label-worker:consolidation-test
+pwsh -NoProfile -File tools/run_full_delivery_smoke.ps1 -HarnessImage goodvision-harness:2026.09.09-full.1 -WorkerImage goodvision-rich-label-worker:2026.09.09-full.1
 ```
 
 The smoke uses disposable resources, not production sessions or data volumes.

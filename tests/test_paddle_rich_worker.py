@@ -16,12 +16,12 @@ from fastapi.testclient import TestClient
 
 from workers.paddle_rich_label import gpu_smoke
 from workers.paddle_rich_label.app import (
+    _PEDESTRIAN_ATTRIBUTE_LABELS,
     Detection,
     IoUTracker,
     PaddleRichModels,
     RichLabelBusyError,
     RichLabelEngine,
-    _PEDESTRIAN_ATTRIBUTE_LABELS,
     _model_kwargs,
     _pedestrian_attributes,
     create_app,
@@ -1159,7 +1159,9 @@ def test_worker_public_metadata_and_health_are_neutral() -> None:
         assert client.get("/docs").status_code == 404
         assert client.get("/redoc").status_code == 404
         assert client.get("/health/live").json() == {"live": True}
-        assert client.get("/health/ready").json() == {"ready": True}
+        assert client.get("/health/ready").json() == {
+            "ready": True, "gpu_ready": False,
+        }
         assert "paddle" not in schema.text.lower()
 
 
@@ -1229,6 +1231,11 @@ def _install_smoke_backends(
 
     class _SmokeModels:
         device = "cpu"
+        gpu_ready = False
+
+        def verify_gpu_execution(self) -> None:
+            record("readiness_probe")
+            self.gpu_ready = failure != "gpu_not_ready"
 
         def detect(self, _image: Any) -> tuple[Any, ...]:
             assert self.device == "gpu:0"
@@ -1276,6 +1283,7 @@ def test_gpu_smoke_checks_real_execution_paths_but_reports_neutral_metadata(
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "ok": True,
+        "gpu_ready": True,
         "acceleration": "ready",
         "object_detection": "ready",
         "pedestrian_attributes": "ready",
@@ -1285,6 +1293,7 @@ def test_gpu_smoke_checks_real_execution_paths_but_reports_neutral_metadata(
     assert calls == [
         "compiled", "devices", "set_device", "properties", "architecture",
         "tensor", "runtime_check", "detect", "attributes",
+        "readiness_probe",
     ]
 
 
@@ -1293,6 +1302,7 @@ def test_gpu_smoke_checks_real_execution_paths_but_reports_neutral_metadata(
     [
         "compiled_false", "no_device", "set_device", "tensor_value",
         "runtime_check", "detect", "attributes", "empty_attributes",
+        "readiness_probe", "gpu_not_ready",
     ],
 )
 def test_gpu_smoke_never_reports_success_when_a_required_check_fails(

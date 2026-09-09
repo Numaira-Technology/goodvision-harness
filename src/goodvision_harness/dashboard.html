@@ -206,6 +206,7 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
         Full-cadence source frames are delayed and server-rendered with bbox interpolation.
         <a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.
       </div>
+      <div id="rich-annotation-status" class="note annotation-note" aria-live="polite" hidden></div>
     </section>
 
     <section id="classification-panel" class="panel stack classification-panel">
@@ -270,7 +271,7 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
         <h2>Known people gallery</h2>
         <div class="gallery-head-actions"><span id="gallery-summary">Loading...</span><button id="refresh-gallery-button" class="btn">Refresh</button></div>
       </div>
-      <div class="note">Used by the stranger detector. Upload one clear face image; any usable face not enrolled here is reported as a stranger.</div>
+      <div class="note">Used by the stranger detector. Upload one clear face image. Clear unmatched faces require repeated confirmation; distant or unclear faces may remain unconfirmed.</div>
       <div class="face-fields">
         <label class="field"><span>Person ID</span><input id="person-id" type="text" spellcheck="false" placeholder="alice"></label>
         <label class="field"><span>Display name</span><input id="person-name" type="text" spellcheck="false" placeholder="Alice"></label>
@@ -289,9 +290,10 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
 
   <section class="panel log">
     <div class="head"><h2>Live result log</h2><span id="result-count">0 results</span></div>
+    <div class="note">Each row shows this frame's observations. PARTIAL means some selected features were not analyzed in that frame.</div>
     <div class="scroll">
       <table>
-        <thead><tr><th>Result</th><th>Video time</th><th>Verdict</th><th>Conf.</th><th>Latency</th><th>Bboxes</th><th>Description</th></tr></thead>
+        <thead><tr><th>Result</th><th>Video time</th><th>Frame verdict</th><th>Conf.</th><th>Latency</th><th>Bboxes</th><th>Description</th></tr></thead>
         <tbody id="log-body"></tbody>
       </table>
     </div>
@@ -318,7 +320,8 @@ const ui={
   gallerySummary:$("gallery-summary"),personId:$("person-id"),personName:$("person-name"),
   personFile:$("person-file"),enroll:$("enroll-button"),galleryNote:$("gallery-note"),
   galleryBody:$("gallery-body"),refreshGallery:$("refresh-gallery-button"),eyebrow:$("decision-eyebrow"),
-  annotationNote:$("annotation-note"),streamMeta:$("stream-meta"),runtimeError:$("runtime-error"),
+  annotationNote:$("annotation-note"),richAnnotationStatus:$("rich-annotation-status"),
+  streamMeta:$("stream-meta"),runtimeError:$("runtime-error"),
   connectionOrb:$("connection-orb"),connectionState:$("connection-state"),
   connectionDetail:$("connection-detail"),controlChannel:$("control-channel"),sseChannel:$("sse-channel"),
   outputChannel:$("output-channel"),lastUpdate:$("last-update"),
@@ -348,7 +351,8 @@ const state={
   deployment:null,deploymentLoading:false,deploymentSaving:false,runOverridesDirty:false,
   gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
   ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,count:0,
-  activeAnnotationId:null,annotationTimer:null,overlayCollapsed:false,overallResult:null
+  activeAnnotationId:null,annotationTimer:null,overlayCollapsed:false,overallResult:null,
+  classificationJudgments:new Map(),classificationResult:null,runtimeErrorMessage:""
 };
 function number(value,digits){const n=Number(value);return Number.isFinite(n)?n.toFixed(digits):"-"}
 function say(text,error=false){ui.statusLine.textContent=text;ui.statusLine.className="status"+(error?" error":"")}
@@ -466,6 +470,11 @@ function updateAnnotatedOutput(output){
   ui.annotatedNote.textContent=annotatedOutputText(value)+(mode!=="none"?" · "+mode:" · no frame yet");
   setChannel(ui.outputChannel,"Annotated output · "+stateLabel.toLowerCase(),value.state==="running"?"good":"warn")
 }
+function updateRichAnnotationStatus(rich){
+  const disabled=rich&&rich.disabled_reason==="gpu_required";
+  ui.richAnnotationStatus.hidden=!disabled;
+  ui.richAnnotationStatus.textContent=disabled?"Rich annotation disabled: GPU required":""
+}
 function updateAnalysisUi(){
   const settings=cameraSettings()||{};
   const features=visibleFeatures();
@@ -483,6 +492,7 @@ function updateAnalysisUi(){
     annotatedOutputText(output)+". Every display frame keeps the last bbox until a keyframe updates or clears it; compatible keyframes are interpolated. "+
     '<a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.';
   if(!state.running&&!state.pending){
+    resetClassification();
     ui.decision.className="decision warming";ui.verdict.textContent="READY";
     ui.confidence.textContent="";
     ui.description.textContent=features.length
@@ -998,7 +1008,8 @@ function message(data){
     state.pending=false;state.running=true;state.sessionMode=data.mode||state.mode;
     state.sessionAnalysisMode=data.analysis_mode||"multi";
     state.sessionFeatures=Array.isArray(data.features)?data.features:detectionEvents;
-    state.sessionId=data.stream_session_id||data.session_id||null;
+    const sessionId=data.stream_session_id||data.session_id||null;
+    if(sessionId!==state.sessionId){state.sessionId=sessionId;reset()}
     openFeed();
     if(state.sessionMode==="camera")startSampler();
     say("Live | "+(state.sessionMode==="camera"?"browser camera":"network stream")+
@@ -1037,6 +1048,7 @@ async function stop(){
 }
 function reset(){
   resetOverallDescription();
+  resetClassification();
   state.count=0;ui.resultCount.textContent="0 results";ui.logBody.replaceChildren();
   ui.resultJson.textContent="Waiting for the first analysis result...";ui.decision.className="decision warming";
   ui.verdict.textContent="WARMING";ui.confidence.textContent="";
@@ -1044,7 +1056,26 @@ function reset(){
   ui.meta.textContent="";resetAnnotations();renderEventStatuses([])
 }
 
+function runtimeErrorText(data){
+  const pipeline=data.pipeline&&typeof data.pipeline==="object"?data.pipeline:{};
+  const errors=pipeline.branch_errors&&typeof pipeline.branch_errors==="object"
+    &&!Array.isArray(pipeline.branch_errors)?pipeline.branch_errors:{};
+  const branches={safety:"Event analysis",stranger:"Face analysis",analysis:"Analysis"};
+  const reasons={request_failed:"request failed",timeout:"timed out",connection:"connection failed",
+    http_error:"service returned an error",invalid_response:"returned an invalid result",
+    empty_response:"returned no result"};
+  const messages=[];
+  for(const [branch,code] of Object.entries(errors)){
+    if(code===null||code===undefined||code==="")continue;
+    const label=Object.prototype.hasOwnProperty.call(branches,branch)?branches[branch]:"Analysis";
+    const reason=typeof code==="string"&&Object.prototype.hasOwnProperty.call(reasons,code)
+      ?reasons[code]:"request failed";
+    messages.push(label+" "+reason)
+  }
+  return messages.length?[...new Set(messages)].join(" | "):String(data.last_error||"").trim()
+}
 function updateRuntimeSummary(data){
+  updateRichAnnotationStatus(data.rich_labeling);
   const pipeline=String(data.pipeline_state||"unknown"),active=activeStates.has(pipeline);
   const inputMode=String(data.input_mode||""),stream=data.stream&&typeof data.stream==="object"?data.stream:{};
   const protocol=String(stream.protocol||"").toUpperCase();
@@ -1056,7 +1087,7 @@ function updateRuntimeSummary(data){
   ui.lastFrameNote.textContent=data.last_frame_at?"Last frame · "+timeLabel(data.last_frame_at):"No frame received";
   ui.lastResultNote.textContent=data.last_result_at?"Last result · "+timeLabel(data.last_result_at):"No result yet";
   setChannel(ui.lastUpdate,"Status · "+new Date().toLocaleTimeString(),data.ready===true?"good":"warn");
-  const error=String(data.last_error||"").trim();
+  const error=runtimeErrorText(data);
   ui.runtimeError.hidden=!error;ui.runtimeError.textContent=error?"Runtime error · "+error:"";
   if(error||pipeline==="error"||pipeline==="configuration_error"){
     setConnection("Attention required",error||("Runtime state: "+pipeline),"bad")
@@ -1073,14 +1104,18 @@ function updateRuntimeSummary(data){
 async function status(){
   try{
     const response=await fetch("/v1/status",{cache:"no-store"}),data=await response.json();
+    const previousError=state.runtimeErrorMessage,error=runtimeErrorText(data);
+    state.runtimeErrorMessage=error;
     ui.statusJson.textContent=JSON.stringify(data,null,2);updateAnnotatedOutput(data.annotated_output);updateRuntimeSummary(data);
     const active=activeStates.has(data.pipeline_state);
     if(active){
-      if(data.stream_session_id&&data.stream_session_id!==state.sessionId)resetOverallDescription();
-      state.running=true;state.pending=false;state.sessionId=data.stream_session_id||state.sessionId;
+      const sessionId=data.stream_session_id||state.sessionId,changedSession=sessionId!==state.sessionId;
+      state.running=true;state.pending=false;state.sessionId=sessionId;
       state.sessionAnalysisMode=data.analysis_mode||state.sessionAnalysisMode||"multi";
       state.sessionFeatures=Array.isArray(data.features)?data.features:
-        (Array.isArray(data.event_labels)?data.event_labels:detectionEvents);updateAnalysisUi();
+        (Array.isArray(data.event_labels)?data.event_labels:detectionEvents);
+      if(changedSession)reset();
+      updateAnalysisUi();
       state.sessionMode=data.input_mode||data.mode||(data.stream?"stream":state.sessionMode)||"stream";
       if(state.sessionMode==="stream"){
         state.mode="stream";ui.streamMode.classList.add("active");ui.cameraMode.classList.remove("active");
@@ -1094,7 +1129,9 @@ async function status(){
       resetOverallDescription();
       state.running=false;state.sessionAnalysisMode=null;state.sessionFeatures=null;stopSampler();closeFeed();updateAnalysisUi()
     }
-    if(data.last_error)say("Analysis error: "+data.last_error,true);controls()
+    if(error)say(error,true);
+    else if(previousError&&!active&&!state.pending)say("No active session. Choose a source to start detection.");
+    controls()
   }catch(error){
     ui.service.textContent="unreachable";ui.sourceChip.textContent="unknown";ui.readinessChip.textContent="unreachable";
     ui.statusJson.textContent=String(error);setConnection("Service unreachable","GET /v1/status failed: "+error.message,"bad");
@@ -1127,30 +1164,66 @@ function analysis(result){
   renderOverallDescription(result);
   if(result.analysis_kind==="face_recognition"){analysisFace(result);return}
   const judgments=Array.isArray(result.judgments)?result.judgments:[];if(!judgments.length)return;
+  mergeClassification(result);renderClassification();clearAnnotation();
+  const ids=new Set(judgments.filter(judgment=>judgment&&judgment.detected===true)
+    .flatMap(judgment=>Array.isArray(judgment.object_ids)?judgment.object_ids:[]));
+  // Evidence and the log remain the original per-frame result, never the held display state.
+  log(result,judgments,ids.size)
+}
+function resetClassification(){
+  state.classificationJudgments.clear();state.classificationResult=null
+}
+function mergeClassification(result){
+  // Like delayed_overlay.select_overlay, missing inference branches do not mean CLEAR.
+  // Keep SSE's current timing; this state is not a synchronization clock for delayed video.
+  if(!state.classificationResult||compareClassificationFrames(result,state.classificationResult)>=0)
+    state.classificationResult=result;
+  for(const judgment of result.judgments){
+    const key=canonicalEventLabel(judgment&&judgment.event_label);
+    if(!visibleFeatures().includes(key)||typeof judgment.detected!=="boolean")continue;
+    const previous=state.classificationJudgments.get(key);
+    if(!previous||compareClassificationFrames(result,previous.result)>=0)
+      state.classificationJudgments.set(key,{judgment:{...judgment,event_label:key},result})
+  }
+}
+function renderClassification(){
+  const result=state.classificationResult;if(!result)return;
+  const features=visibleFeatures(),latestTimestamp=Number((result.frame||{}).timestamp_seconds)||0;
+  const entries=features.map(key=>state.classificationJudgments.get(key)).filter(entry=>{
+    if(!entry)return false;
+    // The face branch may skip CPU samples. Match the video's three-second carry
+    // across newer keyframes, while keeping the current keyframe during an inference stall.
+    return entry.judgment.event_label!=="stranger"||
+      latestTimestamp-(Number((entry.result.frame||{}).timestamp_seconds)||0)<=3
+  });
+  const judgments=entries.map(entry=>entry.judgment),pending=features.length-judgments.length;
   const active=judgments.filter(judgment=>judgment&&judgment.detected===true),yes=active.length>0;
   const incomplete=result.analysis_complete===false;
-  const ids=[...new Set(active.flatMap(judgment=>Array.isArray(judgment.object_ids)?judgment.object_ids:[]))];
+  const ids=new Set(entries.filter(entry=>entry.judgment.detected===true).flatMap(entry=>
+    (Array.isArray(entry.judgment.object_ids)?entry.judgment.object_ids:[])
+      .map(id=>String(entry.result.message_id||entry.result.sequence)+":"+id)));
   const memoryIds=[...new Set(active.flatMap(judgment=>
     Array.isArray(judgment.matched_memory_ids)?judgment.matched_memory_ids:[]))];
   const positiveLabels=active.map(judgment=>result.analysis_kind==="face_reference_match"?"UNKNOWN":
     String(judgment.event_label||"DETECTED").toUpperCase());
-  ui.decision.className="decision "+(yes?"detected":incomplete?"warming":"clear");
-  ui.verdict.textContent=yes?positiveLabels.join(" + "):incomplete?"INCOMPLETE":"CLEAR";
+  ui.decision.className="decision "+(yes?"detected":incomplete||pending?"warming":"clear");
+  ui.verdict.textContent=yes?positiveLabels.join(" + "):incomplete?"INCOMPLETE":pending?"WAITING":"CLEAR";
   ui.confidence.textContent=yes
-    ?active.length+" of "+judgments.length+" events detected"
-    :incomplete?"Waiting for results from all selected features.":"All "+judgments.length+" events clear";
+    ?active.length+" of "+features.length+" events detected"+(pending?" | "+pending+" pending":"")
+    :incomplete?"Waiting for results from all selected features."
+      :pending?judgments.length+" events clear | "+pending+" pending":"All "+judgments.length+" events clear";
   ui.description.textContent=(yes
     ?active.map(judgment=>String(judgment.event_label||"event")+": "+(judgment.description||"Detected.")).join(" | ")
-    :incomplete?"Analysis incomplete.":"No target events detected.")+
+    :incomplete?"Analysis incomplete.":pending?"Waiting for results from all selected features.":"No target events detected.")+
     (yes&&incomplete?" | Analysis incomplete.":"")+
     (memoryIds.length?" | known: "+memoryIds.join(", "):"");
   const frame=result.frame||{},model=result.model||{};
   ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
-    " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.length+" bbox"+(ids.length===1?"":"es")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.size+" bbox"+(ids.size===1?"":"es")+
     (memoryIds.length?" | "+memoryIds.length+" known reference"+(memoryIds.length===1?"":"s"):"")+
     " | model "+number(model.latency_seconds,2)+"s";
-  ui.analysisChipLabel.textContent="events";ui.event.textContent=judgments.length+" selected";ui.eventStatuses.hidden=false;
-  renderEventStatuses(judgments);clearAnnotation();log(result,judgments,ids.length)
+  ui.analysisChipLabel.textContent="events";ui.event.textContent=features.length+" selected";ui.eventStatuses.hidden=false;
+  renderEventStatuses(judgments)
 }
 function analysisFace(result){
   const summary=summarizeFaces(result),frame=result.frame||{},model=result.model||{};
@@ -1185,14 +1258,19 @@ function renderEventStatuses(judgments){
     ?"Face diagnostics | "+(stranger.detected===true?"STRANGER ALERT":"CLEAR")+" | "+
       (stranger.description||"No face diagnostic details.")
     :visibleFeatures().includes("stranger")
-      ?"Face diagnostics | waiting for the first analyzed frame."
+      ?"Face diagnostics | "+(state.classificationJudgments.has("stranger")
+        ?"waiting for a fresh face observation.":"waiting for the first analyzed frame.")
       :"Face diagnostics | stranger detection is not enabled.";
   ui.faceDiagnosticSummary.className="face-diagnostic"+(stranger&&stranger.detected===true?" error":"");
-  ui.eventStatuses.replaceChildren();
+  const existing=new Map([...ui.eventStatuses.children].map(item=>[item.dataset.eventLabel,item]));
+  const items=[];
   for(const eventLabel of visibleFeatures()){
-    const judgment=indexed.get(eventLabel),item=document.createElement("div");
+    const judgment=indexed.get(eventLabel),item=existing.get(eventLabel)||document.createElement("div");
+    if(!item.children.length){
+      item.dataset.eventLabel=eventLabel;item.append(document.createElement("span"),document.createElement("span"))
+    }
     item.className="event-state";
-    const name=document.createElement("span"),status=document.createElement("span");
+    const [name,status]=item.children;
     name.textContent=eventLabel;
     if(!judgment){item.classList.add("pending");status.textContent="WAITING"}
     else{
@@ -1200,29 +1278,36 @@ function renderEventStatuses(judgments){
       if(detected)item.classList.add("detected");
       status.textContent=(detected?"ALERT ":"CLEAR ")+number(Number(judgment.confidence)*100,1)+"%"
     }
-    item.append(name,status);ui.eventStatuses.appendChild(item)
+    items.push(item)
   }
+  if(items.length!==ui.eventStatuses.children.length||items.some((item,index)=>item!==ui.eventStatuses.children[index]))
+    ui.eventStatuses.replaceChildren(...items)
 }
 function log(result,judgments,boxes){
   state.count++;ui.resultCount.textContent=state.count+(state.count===1?" result":" results");
   const frame=result.frame||{},model=result.model||{},row=document.createElement("tr");
-  const active=judgments.filter(judgment=>judgment&&judgment.detected===true);
+  const evaluated=judgments.filter(judgment=>judgment&&typeof judgment.detected==="boolean");
+  const observed=new Set(evaluated.map(judgment=>canonicalEventLabel(judgment.event_label)));
+  const missing=visibleFeatures().filter(eventLabel=>!observed.has(eventLabel));
+  const active=evaluated.filter(judgment=>judgment.detected===true);
   const positiveLabels=active.map(judgment=>result.analysis_kind==="face_reference_match"?"UNKNOWN":
     String(judgment.event_label||"DETECTED").toUpperCase());
-  const confidences=(active.length?active:judgments).map(judgment=>Number(judgment.confidence)).filter(Number.isFinite);
+  const confidences=(active.length?active:evaluated).map(judgment=>Number(judgment.confidence)).filter(Number.isFinite);
   const aggregateConfidence=confidences.length
     ?(active.length?Math.max(...confidences):Math.min(...confidences)):null;
-  const description=active.length
+  const description=(active.length
     ?active.map(judgment=>String(judgment.event_label||"event")+": "+(judgment.description||"Detected.")).join(" | ")
-    :"No target events detected.";
+    :missing.length?(evaluated.length?"Clear in this frame: "+[...observed].join(", ")+".":"No completed feature judgment in this frame.")
+      :"All selected events clear in this frame.")+
+    (missing.length?" | Not analyzed in this frame: "+missing.join(", ")+".":"");
   const values=["R"+(result.sequence||"-")+" | f"+(frame.source_frame_index??"-"),
-    number(frame.timestamp_seconds,3)+"s",active.length?positiveLabels.join(" + "):"CLEAR",
+    number(frame.timestamp_seconds,3)+"s",active.length?positiveLabels.join(" + "):missing.length?"PARTIAL":"CLEAR",
     aggregateConfidence===null?"-":number(aggregateConfidence,3),number(model.latency_seconds,2)+"s",String(boxes),
     description];
   values.forEach((value,index)=>{
     const cell=document.createElement("td");
     if(index===2){
-      const pill=document.createElement("span");pill.className="pill "+(active.length?"yes":"no");
+      const pill=document.createElement("span");pill.className="pill "+(active.length?"yes":missing.length?"neutral":"no");
       pill.textContent=value;cell.appendChild(pill)
     }else cell.textContent=value;
     row.appendChild(cell)
