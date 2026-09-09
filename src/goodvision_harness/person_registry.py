@@ -51,6 +51,7 @@ class _Subject:
     memory_candidate: str | None = None
     memory_confirmations: int = 0
     memory_frame: tuple[float, int] = (-1.0, -1)
+    association_uncertain: bool = False
 
 
 class PersonRegistry:
@@ -224,6 +225,8 @@ class PersonRegistry:
         assignments: dict[str, str] = {}
         proposals: dict[str, _Subject | None] = {}
         disputed: set[str] = set()
+        uncertain_observations: set[str] = set()
+        uncertain_candidates: dict[str, set[str]] = {}
         for local_id, box, _confidence in observations:
             scores: list[tuple[float, _Subject]] = []
             for subject in candidates:
@@ -238,6 +241,11 @@ class PersonRegistry:
                     else _face_body_score(subject.bbox, box)
                 )
                 if score is not None:
+                    if subject.association_uncertain:
+                        uncertain_candidates.setdefault(subject.subject_id, set()).add(
+                            local_id
+                        )
+                        continue
                     scores.append((score, subject))
             scores.sort(key=lambda item: item[0], reverse=True)
             proposals[local_id] = (
@@ -246,21 +254,43 @@ class PersonRegistry:
                 else None
             )
             if scores and proposals[local_id] is None:
+                uncertain_observations.add(local_id)
                 disputed.update(item.subject_id for _, item in scores[:2])
         counts = Counter(
             item.subject_id for item in proposals.values() if item is not None
         )
         disputed.update(key for key, count in counts.items() if count > 1)
+        # Carry uncertainty across a close crossing while multiple current
+        # people are reachable from one reset track. Simply forgetting the
+        # previous dispute after one frame lets sparse observations exchange
+        # identities once both new tracks have zero velocity again.
+        for possible in uncertain_candidates.values():
+            if len(possible) > 1:
+                uncertain_observations.update(possible)
+        disputed.update(
+            proposals[local_id].subject_id
+            for local_id in uncertain_observations
+            if proposals[local_id] is not None
+        )
         if disputed:
             self._face_tracker.forget_bodies(disputed)
             for subject_id in disputed:
                 self._subjects.pop(subject_id, None)
         for local_id, box, _confidence in observations:
             subject = proposals[local_id]
+            if local_id in uncertain_observations:
+                subject = None
             if subject is not None and subject.subject_id in disputed:
+                uncertain_observations.add(local_id)
                 subject = None
             if subject is None:
                 subject = self._new_subject(box, timestamp)
+                # A crossing can reset both tracks while their boxes still
+                # overlap. Their new IDs lack a reliable direction: reusing
+                # those IDs by next-frame IoU would swap the two identities.
+                # Keep this observation addressable in history, but require
+                # a fresh association after the ambiguous observation.
+                subject.association_uncertain = local_id in uncertain_observations
             else:
                 gap = timestamp - subject.seen_at
                 if gap > 0 and subject.kind == "body":

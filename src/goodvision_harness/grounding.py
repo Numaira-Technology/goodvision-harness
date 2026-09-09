@@ -545,8 +545,19 @@ def _parse_actors(
     return tuple(item for key, item in actors.items() if key not in duplicates)[:8]
 
 
-def _validate_bilingual_description(description: str) -> None:
+def _normalize_bilingual_description(description: str) -> str:
     chinese, separator, english = description.partition(" / ")
+    # Some valid model judgments return both translations in reverse order.
+    # Reorder text locally; never discard an immediate verdict or issue a
+    # second inference request merely to correct this presentation detail.
+    if (
+        separator
+        and description.count(" / ") == 1
+        and re.search(r"[A-Za-z]", chinese)
+        and not re.search(r"[\u3400-\u9fff]", chinese)
+        and re.search(r"[\u3400-\u9fff]", english)
+    ):
+        chinese, english = english, chinese
     if (
         not separator
         or not re.search(r"[\u3400-\u9fff]", chinese)
@@ -554,6 +565,7 @@ def _validate_bilingual_description(description: str) -> None:
         or re.search(r"[\u3400-\u9fff]", english)
     ):
         raise ValueError("description must use Chinese / English format")
+    return f"{chinese.strip()} / {english.strip()}"
 
 
 def parse_grounded_classification(
@@ -582,7 +594,7 @@ def parse_grounded_classification(
     if not isinstance(description, str) or not description.strip():
         raise TypeError("description must be non-empty text")
     if require_bilingual:
-        _validate_bilingual_description(description)
+        description = _normalize_bilingual_description(description)
     matched_memory_ids = _matched_memory_ids(
         payload,
         allowed_memory_ids=allowed_memory_ids,
@@ -651,7 +663,7 @@ def parse_multi_grounded_classification(
         if not isinstance(description, str) or not description.strip():
             raise TypeError(f"{field_name}.description must be non-empty text")
         if require_bilingual:
-            _validate_bilingual_description(description)
+            description = _normalize_bilingual_description(description)
         objects = _parse_model_objects(
             raw_event.get("objects", []),
             field_name=f"{field_name}.objects",

@@ -162,7 +162,7 @@ class FaceIdentityTracker:
                 if body_id is not None and track.body_id is not None:
                     score = 1.0 if body_id == track.body_id else 0.0
                 else:
-                    score = _iou(item.bbox, track.bbox)
+                    score = _face_geometry_score(item.bbox, track.bbox)
                 if score >= 0.3:
                     scores.append((score, index))
             scores.sort(reverse=True)
@@ -444,6 +444,27 @@ def _iou(left: NormalizedBBox, right: NormalizedBBox) -> float:
         - intersection
     )
     return intersection / union if union else 0.0
+
+
+def _face_geometry_score(current: NormalizedBBox, previous: NormalizedBBox) -> float:
+    """Face-only overlap is insufficient across abrupt scale/shape changes.
+
+    A reliable shared body track takes precedence in the caller. Without that
+    evidence, require plausible adjacent face dimensions before carrying an
+    identity. Gradual approach remains valid because each step is compared.
+    """
+    width_ratio = (current.x2 - current.x1) / (previous.x2 - previous.x1)
+    height_ratio = (current.y2 - current.y1) / (previous.y2 - previous.y1)
+    area_ratio = width_ratio * height_ratio
+    # Equivalent isotropic edge change is limited to 1.5x in either direction;
+    # moderate head rotation may change one dimension more than the other.
+    if (
+        not 1.0 / 2.25 - 1e-9 <= area_ratio <= 2.25 + 1e-9
+        or not 0.5 <= width_ratio <= 2.0
+        or not 0.5 <= height_ratio <= 2.0
+    ):
+        return 0.0
+    return _iou(current, previous)
 
 
 def _body_for_face(

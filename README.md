@@ -869,6 +869,9 @@ Each live session keeps its own identity history and stable `subject_id` values.
 of optional attributes; non-GPU event requests may supply compact person locations.
 The immediate analysis result never waits for either sidecar or archive work.
 See [event evidence and continuity](EVENT_EVIDENCE.md) for exact behavior and APIs.
+The [low-resolution validation report](LOW_RESOLUTION_VALIDATION.md) records real
+CPU face and public-media model results, actor-output latency, observed misses,
+crossing tradeoffs, and separately tested video-evidence behavior.
 
 The harness does not grant rights to third-party face-analysis files. For
 customer or commercial use, supply files whose license covers the intended use.

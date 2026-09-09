@@ -86,6 +86,13 @@ H.264/yuv420p MP4, no audio. Source images are retained independently of the
 smaller inference images. Real source gaps or beginning/end truncation are
 reported as partial clips, with actual timestamps and duration.
 
+The 5 FPS setting controls playback cadence; repeated output frames are not new
+source observations. A real, contiguous successor source frame can prove coverage
+up to the requested end (including for a 1 FPS source). Without that boundary,
+evidence stays short and never extends across a source outage. H.264 dimensions
+are rounded down to even sizes; small sources are not enlarged except for the
+encoder's minimum two-pixel dimension.
+
 `evidence.revision` and `evidence.status` describe the requested video;
 `evidence.requested_window` describes the target interval. `evidence.available`
 describes the already playable revision, including its URL and actual interval.

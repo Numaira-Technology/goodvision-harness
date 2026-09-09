@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+import tempfile
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,11 +54,7 @@ class FrameRing:
         self, start: float, end: float, anchor: float, fps: float
     ) -> tuple[list[EvidenceFrame], str | None]:
         """Select one contiguous real segment; never bridge a source outage."""
-        candidates = [
-            frame
-            for frame in self.frames
-            if start - 1e-6 <= frame.timestamp_seconds < end - 1e-6
-        ]
+        candidates = self.window_frames(start, end)
         if not candidates:
             return [], "source_frames_unavailable"
         groups: list[list[EvidenceFrame]] = [[]]
@@ -83,18 +80,47 @@ class FrameRing:
             reason = "post_roll_unavailable"
         return selected, reason
 
+    def window_frames(self, start: float, end: float) -> list[EvidenceFrame]:
+        """Include one successor as proof of elapsed source-frame coverage.
+
+        A 1 fps source needs the actual frame at t=3 to prove that its frame at
+        t=2 covers the tail of [0,3). The successor itself is not displayed in
+        that clip. Without it, the encoder retains the conservative short tail.
+        """
+        selected: list[EvidenceFrame] = []
+        for frame in self.frames:
+            if frame.timestamp_seconds < start - 1e-6:
+                continue
+            if frame.timestamp_seconds >= end - 1e-6:
+                if selected:
+                    selected.append(frame)
+                break
+            selected.append(frame)
+        return selected
+
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    temporary: Path | None = None
     try:
-        with temporary.open("x", encoding="utf-8") as handle:
+        # A temporary name must not turn a valid Windows destination into an
+        # over-MAX_PATH filename. NamedTemporaryFile uses exclusive creation.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=".",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
             json.dump(payload, handle, ensure_ascii=False, allow_nan=False)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def stage_clip(
@@ -103,21 +129,26 @@ def stage_clip(
     """Publish a recovery manifest only after all selected JPEGs are durable."""
     directory.mkdir(parents=True, exist_ok=True)
     records = []
+    boundary = None
     for index, frame in enumerate(frames):
         filename = f"{index:04d}.jpg"
         with (directory / filename).open("wb") as handle:
             handle.write(frame.jpeg)
             handle.flush()
             os.fsync(handle.fileno())
-        records.append(
-            {
-                "filename": filename,
-                "timestamp_seconds": frame.timestamp_seconds,
-                "source_frame_index": frame.source_frame_index,
-            }
-        )
+        record = {
+            "filename": filename,
+            "timestamp_seconds": frame.timestamp_seconds,
+            "source_frame_index": frame.source_frame_index,
+        }
+        if frame.timestamp_seconds >= metadata["requested_end_seconds"] - 1e-6:
+            boundary = record
+        else:
+            records.append(record)
     manifest = directory / "manifest.json"
-    atomic_json(manifest, {**metadata, "frames": records})
+    atomic_json(
+        manifest, {**metadata, "frames": records, "coverage_boundary": boundary}
+    )
     return manifest
 
 
@@ -138,6 +169,26 @@ def encode_staged_clip(
     first = float(records[0]["timestamp_seconds"])
     last = float(records[-1]["timestamp_seconds"])
     end = min(float(metadata["requested_end_seconds"]), last + 1.0 / fps)
+    boundary = metadata.get("coverage_boundary")
+    if boundary:
+        boundary_time = float(boundary["timestamp_seconds"])
+        boundary_filename = str(boundary["filename"])
+        max_gap = max(1.0, 2.5 / fps)
+        if (
+            math.isfinite(boundary_time)
+            and 0 < boundary_time - last <= max_gap + 1e-6
+            and Path(boundary_filename).name == boundary_filename
+            and boundary_filename.endswith(".jpg")
+        ):
+            boundary_image = cv2.imdecode(
+                np.frombuffer(
+                    (manifest_path.parent / boundary_filename).read_bytes(), np.uint8
+                ),
+                cv2.IMREAD_COLOR,
+            )
+            if boundary_image is None:
+                raise ValueError("invalid_source_frame")
+            end = min(float(metadata["requested_end_seconds"]), boundary_time)
     count = max(1, math.ceil((end - first) * fps - 1e-6))
     selected = []
     cursor = 0
@@ -174,7 +225,7 @@ def encode_staged_clip(
             raise ValueError("invalid_source_frame")
         encoded_frames.append(jpeg.tobytes())
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.stem}.{uuid4().hex}.tmp.mp4")
+    temporary = destination.with_name(f".e-{uuid4().hex}.tmp.mp4")
     command = [
         ffmpeg_path,
         "-hide_banner",

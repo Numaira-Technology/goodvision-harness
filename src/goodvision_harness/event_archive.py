@@ -556,7 +556,11 @@ class EventArchive:
                     failure_reason="stored_video_missing",
                     available=None,
                 )
-        for temporary in (root / "videos").glob(".event-*.tmp.mp4"):
+        temporary_videos = [
+            *(root / "videos").glob(".event-*.tmp.mp4"),
+            *(root / "videos").glob(".e-*.tmp.mp4"),
+        ]
+        for temporary in temporary_videos:
             if temporary.resolve().is_relative_to((root / "videos").resolve()):
                 temporary.unlink(missing_ok=True)
         for stage in (root / "staging").glob("event-*"):
@@ -632,10 +636,20 @@ class EventArchive:
                                     window["timestamp"] - self.settings.pre_roll_seconds
                                 )
                                 end = start + self.settings.clip_seconds
-                                if start <= frame.timestamp_seconds < end and (
-                                    not pinned
-                                    or frame.timestamp_seconds
-                                    > pinned[-1].timestamp_seconds
+                                if (
+                                    start <= frame.timestamp_seconds
+                                    and (
+                                        frame.timestamp_seconds < end
+                                        or (
+                                            pinned
+                                            and pinned[-1].timestamp_seconds < end
+                                        )
+                                    )
+                                    and (
+                                        not pinned
+                                        or frame.timestamp_seconds
+                                        > pinned[-1].timestamp_seconds
+                                    )
                                 ):
                                     pinned.append(frame)
                             self._trim_buffers()
@@ -710,11 +724,7 @@ class EventArchive:
         if previous is None and payload["outcome"] in {"admitted", "submitted"}:
             start = payload["timestamp"] - self.settings.pre_roll_seconds
             end = start + self.settings.clip_seconds
-            session.pins[payload["window_id"]] = [
-                frame
-                for frame in session.ring.frames
-                if start <= frame.timestamp_seconds < end
-            ]
+            session.pins[payload["window_id"]] = session.ring.window_frames(start, end)
         if payload["outcome"] in {"failed", "dropped", "cancelled"}:
             for label in payload["labels"]:
                 key = f"window:{payload['session_id']}:{payload['window_id']}:{label}"

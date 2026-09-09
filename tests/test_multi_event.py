@@ -720,7 +720,7 @@ def test_partial_negative_results_never_report_all_clear(scenario: str) -> None:
 @pytest.mark.parametrize("description,valid", (
     ("No smoking detected.", False),
     ("未发现吸烟。", False),
-    ("No smoking detected. / 未发现吸烟。", False),
+    ("No smoking detected. / 未发现吸烟。", True),
     ("未发现吸烟。 / ", False),
     ("未发现吸烟。 / No smoking detected.", True),
 ))
@@ -751,7 +751,7 @@ def test_live_grounding_rejects_invalid_bilingual_descriptions(
     if valid:
         classification = response.classification
         actual = classification.judgments[0] if multi else classification
-        assert actual.description == description
+        assert actual.description == "未发现吸烟。 / No smoking detected."
     else:
         assert response.classification is None
         assert response.raw_text is None

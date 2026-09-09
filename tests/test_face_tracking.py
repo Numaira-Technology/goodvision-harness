@@ -761,3 +761,75 @@ def test_unusable_observation_breaks_conflicting_identity_confirmation() -> None
             tracker, [_face("known", person_id="bob")], sequence * 0.4, sequence
         )[0]
         assert current.attributes["person_id"] == "alice"
+
+
+@pytest.mark.parametrize("scale", [0.6, 1.6, 2.0])
+def test_abrupt_face_scale_change_cannot_inherit_identity_without_body(scale) -> None:
+    tracker = FaceIdentityTracker()
+    first = _resolve(tracker, [_face("known")], 0, 0)[0]
+    half = 0.05 * scale
+    changed = NormalizedBBox(0.25 - half, 0.15 - half, 0.25 + half, 0.15 + half)
+    current = _resolve(tracker, [_face("unknown", changed)], 0.4, 1)[0]
+    assert current.attributes["status"] == "unusable"
+    assert "person_id" not in current.attributes
+    assert current.attributes["face_track_id"] != first.attributes["face_track_id"]
+
+
+@pytest.mark.parametrize(
+    "control_box",
+    [
+        (0.3433422, 0.2153531, 0.6547684, 0.7004456),
+        (0.3448998, 0.2208400, 0.6564789, 0.6983201),
+        (0.3479972, 0.2239379, 0.6646481, 0.6964636),
+        (0.3482744, 0.2292196, 0.6557488, 0.6945011),
+        (0.3445552, 0.2296647, 0.6603707, 0.6959354),
+        (0.3461619, 0.2356177, 0.6686591, 0.6946286),
+    ],
+)
+def test_real_sample_hard_cut_does_not_inherit_face_only_identity(control_box) -> None:
+    # Actual detector boxes: OpenCV extra David video at 5s and face/100032540_1.
+    # Original/320/160/96/64/32 inputs vary the detector's normalized box.
+    # The different person overlaps enough to pass the previous IoU-only
+    # check. This is a hard-cut stress case, not an accuracy benchmark.
+    david = NormalizedBBox(0.4823766, 0.2744443, 0.6549603, 0.6114651)
+    other = NormalizedBBox(*control_box)
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known", david)], 0, 0)
+    current = _resolve(tracker, [_face("unknown", other)], 1, 1)[0]
+    assert current.attributes["status"] == "unusable"
+    assert "person_id" not in current.attributes
+
+
+def test_gradual_approach_and_brief_occlusion_preserve_face_only_identity() -> None:
+    tracker = FaceIdentityTracker()
+    first = _resolve(tracker, [_face("known")], 0, 0)[0]
+    for index in range(1, 9):
+        half = 0.05 * 1.09**index
+        box = NormalizedBBox(0.25 - half, 0.15 - half, 0.25 + half, 0.15 + half)
+        current = _resolve(tracker, [_face("unusable", box)], index * 0.2, index)[0]
+        assert current.attributes["person_id"] == "alice"
+        assert current.attributes["face_track_id"] == first.attributes["face_track_id"]
+    assert _resolve(tracker, [], 2, 9) == ()
+    current = _resolve(tracker, [_face("unusable", box)], 2.5, 10)[0]
+    assert current.attributes["person_id"] == "alice"
+
+
+def test_position_jump_breaks_face_identity_but_shared_body_handles_scale_change() -> (
+    None
+):
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0, 0)
+    moved = _resolve(tracker, [_face("unusable", FAR_FACE)], 0.4, 1)[0]
+    assert "person_id" not in moved.attributes
+
+    tracker = FaceIdentityTracker()
+    _resolve(tracker, [_face("known")], 0, 0, snapshot=_snapshot(0, 0))
+    large = NormalizedBBox(0.15, 0.05, 0.35, 0.25)
+    current = _resolve(
+        tracker,
+        [_face("unusable", large)],
+        0.4,
+        1,
+        snapshot=_snapshot(0.4, 1),
+    )[0]
+    assert current.attributes["person_id"] == "alice"
