@@ -66,7 +66,7 @@ def test_partial_success_and_non_finite_latency_cannot_win():
 def completion():
     return {"choices": [{"message": {"content": json.dumps({"events": [
         {"event_label": label, "detected": False, "confidence": 0.9,
-         "description": "No visible event.", "objects": []}
+         "description": "未发现异常事件。 / No visible event.", "objects": []}
         for label in ("fight", "smoking", "fall", "weapon")
     ]})}}]}
 

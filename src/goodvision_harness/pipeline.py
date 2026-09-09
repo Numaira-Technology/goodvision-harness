@@ -557,6 +557,9 @@ class StreamingSession:
                                 height=frame_height,
                             ),
                             judgments=judgments,
+                            missing_event_labels=getattr(
+                                classification, "missing_event_labels", ()
+                            ),
                             objects=grounded_objects,
                             model_name=PUBLIC_MODEL_NAME,
                             model_latency_seconds=response.latency_seconds,

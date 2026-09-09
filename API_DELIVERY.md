@@ -14,6 +14,12 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 
 ## 通用 JSON 与五能力独立 JSON
 
+当前完整分析结果使用 `schema_version: "2"`，契约文件为
+`schemas/analysis-result-v2.schema.json`。新增的描述及完成状态属于 v2；
+原 `schemas/analysis-result-v1.schema.json` 保持不变，供历史 v1 结果校验。
+下述 HTTP 路径保持 `/v1/...`，路径版本不等于返回 JSON 的 schema 版本。
+使用严格 v1 校验器的接入方需先支持 v2，再升级程序。
+
 之前提供的通用接口继续保留：
 
 - `GET /v1/results/latest`：最新一条完整分析结果，返回 `application/json`。
@@ -37,12 +43,19 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 每条分析结果新增顶层 `description`，与 `frame`、`judgments` 同级，描述
 `frame` 对应画面在本次分析中检出的事件。存在 `detected=true` 的判断时，按
 `judgments` 顺序拼接这些判断的 `event_label: description`，以 `; ` 分隔；
-全部未检出时固定返回 `"无异常 / No anomalies detected"`。原有 `judgments[].description` 继续保留，
+已启用能力全部完成且未检出时返回 `"无异常 / No anomalies detected"`。
+原有 `judgments[].description` 继续保留，
 表示各事件的判断依据。描述采用“简体中文 / English”双语格式，两种语言
 表达相同的画面证据，由同一次识别请求生成，不增加翻译请求；本地人脸识别
 和演示模式也采用双语描述。独立能力接口保留完整结果的全帧 `description`，即使
 该接口过滤后的 `judgments` 只有一个未检出的事件，也可能在顶层描述中看到
 其他能力检出的事件。完整帧描述可通过 `result.description` 读取。
+
+`analysis_complete` 表示已启用能力是否全部完成；`missing_event_labels` 列出
+未完成的能力。人脸检测因忙碌跳帧或某个推理分支失败时，仍输出已完成的判断，
+但整体描述会附带“分析未完成 / Analysis incomplete”，不会报告全帧无异常。
+模型输出须通过中文、分隔符 ` / `、英文的格式校验；不符合格式时该推理
+分支按失败处理，不将单语文本当作合规的双语结果发布。格式校验不验证翻译语义。
 
 SSE 的 `Content-Type` 为 `text/event-stream`，每条消息以空行结束，结构如下：
 
@@ -80,7 +93,7 @@ data: <一条完整分析结果 JSON>
 ```json
 {
   "type": "overall_description",
-  "schema_version": "1",
+  "schema_version": "2",
   "message_id": "message-1",
   "observation_id": "message-1",
   "source_id": "external-camera",
@@ -95,6 +108,8 @@ data: <一条完整分析结果 JSON>
     "height": 1080,
     "clock_source": "ingest_estimated"
   },
+  "analysis_complete": true,
+  "missing_event_labels": [],
   "description": "无异常 / No anomalies detected"
 }
 ```
@@ -105,9 +120,12 @@ data: <一条完整分析结果 JSON>
 分析帧的信息。接口省略 `judgments`、`objects`、`model` 和 `analysis_kind`。
 客户端可用 `message_id` 与五能力结果、精确证据帧关联。
 
-`description` 为“简体中文 / English”双语字符串；没有检出事件时固定为
+`description` 为“简体中文 / English”双语字符串；全部已启用能力完成且未检出时为
 `"无异常 / No anomalies detected"`，有事件时例如
 `"smoking: 有人吸烟。 / A person is smoking."`。
+精简结果也保留 `analysis_complete` 和 `missing_event_labels`，可区分检测完成
+与部分完成；后者描述为“分析未完成。部分能力暂无结果。 / Analysis incomplete;
+some capabilities have no result.”，若已有阳性事件则同时保留其描述。
 尚未产生分析结果时，`latest` 返回 `404`，不会把“尚无结果”当作“无异常”。
 成功响应包含 `Cache-Control: no-store`、`X-Result-Cursor` 和 `X-Result-Stream`。
 

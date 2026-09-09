@@ -70,11 +70,11 @@ def _codes(report: dict[str, Any]) -> set[str]:
     return {issue["code"] for issue in report["issues"]}
 
 
-def test_text_only_audit_accepts_exact_ten_neutral_files(bundle: Path) -> None:
+def test_text_only_audit_accepts_exact_eleven_neutral_files(bundle: Path) -> None:
     report = audit.audit_bundle(bundle, without_archive=True)
     assert report["ok"] is True
     assert report["scope"] == "customer-facing files and image tags"
-    assert report["expected_text_files"] == report["checked_text_files"] == 10
+    assert report["expected_text_files"] == report["checked_text_files"] == 11
     assert report["image_tag_check"] == {"status": "not_checked"}
     assert any("not claim" in item for item in report["limitations"])
 
@@ -85,7 +85,7 @@ def test_release_audit_accepts_exact_tags_without_scanning_image_layers(
     _write_archive(bundle)
     report = audit.audit_bundle(bundle)
     assert report["ok"] is True
-    assert report["checked_text_files"] == 10
+    assert report["checked_text_files"] == 11
     assert report["image_tag_check"] == {
         "status": "passed",
         "tags": sorted(audit.EXPECTED_IMAGE_TAGS),

@@ -52,7 +52,7 @@ def test_evidence_rules_reach_model_in_each_detection_path(
     negative = {
         "detected": False,
         "confidence": 0.9,
-        "description": "No target evidence visible.",
+        "description": "未发现目标证据。 / No target evidence visible.",
         "objects": [],
     }
     payload = negative if legacy_single else {

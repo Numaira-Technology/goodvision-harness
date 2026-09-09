@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import re
 import threading
 import time
 from collections.abc import Collection, Mapping
@@ -166,6 +167,7 @@ class MultiGroundedClassification:
 
     judgments: tuple[GroundedEventClassification, ...]
     analysis_kind: str = SAFETY_MULTI_ANALYSIS_KIND
+    missing_event_labels: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         judgments = tuple(self.judgments)
@@ -369,11 +371,23 @@ def _parse_model_objects(
     return tuple(objects)
 
 
+def _validate_bilingual_description(description: str) -> None:
+    chinese, separator, english = description.partition(" / ")
+    if (
+        not separator
+        or not re.search(r"[\u3400-\u9fff]", chinese)
+        or not re.search(r"[A-Za-z]", english)
+        or re.search(r"[\u3400-\u9fff]", english)
+    ):
+        raise ValueError("description must use Chinese / English format")
+
+
 def parse_grounded_classification(
     text: str,
     *,
     allowed_memory_ids: Collection[str] | None = None,
     analysis_kind: str = "event",
+    require_bilingual: bool = False,
 ) -> GroundedClassification:
     """Parse event judgment and Qwen-relative 2D boxes.
 
@@ -393,6 +407,8 @@ def parse_grounded_classification(
         raise ValueError("confidence must be between 0 and 1")
     if not isinstance(description, str) or not description.strip():
         raise TypeError("description must be non-empty text")
+    if require_bilingual:
+        _validate_bilingual_description(description)
     matched_memory_ids = _matched_memory_ids(
         payload,
         allowed_memory_ids=allowed_memory_ids,
@@ -416,6 +432,7 @@ def parse_multi_grounded_classification(
     *,
     event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
     analysis_kind: str = SAFETY_MULTI_ANALYSIS_KIND,
+    require_bilingual: bool = False,
 ) -> MultiGroundedClassification:
     """Parse one strict grounded judgment for every requested event label."""
 
@@ -456,6 +473,8 @@ def parse_multi_grounded_classification(
         description = raw_event.get("description")
         if not isinstance(description, str) or not description.strip():
             raise TypeError(f"{field_name}.description must be non-empty text")
+        if require_bilingual:
+            _validate_bilingual_description(description)
         objects = _parse_model_objects(
             raw_event.get("objects", []),
             field_name=f"{field_name}.objects",
@@ -682,6 +701,7 @@ class AIClubGroundingClient:
                     else None
                 ),
                 analysis_kind=_memory_analysis_kind(self.memory_context),
+                require_bilingual=True,
             )
         except (TypeError, ValueError):
             return GroundingResponse(
@@ -826,6 +846,7 @@ class AIClubMultiGroundingClient:
             classification = parse_multi_grounded_classification(
                 text,
                 event_labels=self.event_labels,
+                require_bilingual=True,
             )
         except (TypeError, ValueError):
             return GroundingResponse(
@@ -1207,6 +1228,9 @@ class SelectedFeaturesGroundingClient:
             )
             classification = MultiGroundedClassification(
                 judgments=tuple(judgments),
+                missing_event_labels=tuple(
+                    label for label in self.event_labels if label not in returned_labels
+                ),
                 analysis_kind=(
                     FIXED_FIVE_ANALYSIS_KIND
                     if returned_labels == DETECTION_EVENT_LABELS

@@ -2467,6 +2467,8 @@ def _overall_description_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "emitted_at",
                 "frame",
                 "description",
+                "analysis_complete",
+                "missing_event_labels",
             )
         },
     }

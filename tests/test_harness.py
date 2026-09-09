@@ -600,7 +600,7 @@ def test_analysis_result_matches_versioned_json_schema(
     assert payload["model"]["name"] == PUBLIC_MODEL_NAME
     assert payload["description"] == description
     schema = json.loads(
-        (ROOT / "schemas" / "analysis-result-v1.schema.json").read_text(
+        (ROOT / "schemas" / "analysis-result-v2.schema.json").read_text(
             encoding="utf-8"
         )
     )
@@ -621,7 +621,7 @@ def test_analysis_result_matches_versioned_json_schema(
 @pytest.mark.parametrize("description", ["", None, 42])
 def test_analysis_schema_requires_nonempty_frame_description(description: Any) -> None:
     schema = json.loads(
-        (ROOT / "schemas" / "analysis-result-v1.schema.json").read_text(
+        (ROOT / "schemas" / "analysis-result-v2.schema.json").read_text(
             encoding="utf-8"
         )
     )
@@ -632,6 +632,21 @@ def test_analysis_schema_requires_nonempty_frame_description(description: Any) -
     payload["description"] = description
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(payload, schema)
+
+
+def test_historical_v1_records_keep_the_original_contract() -> None:
+    historical = _analysis_result().as_dict()
+    historical["schema_version"] = "1"
+    for key in ("description", "analysis_complete", "missing_event_labels"):
+        historical.pop(key)
+    schema = json.loads(
+        (ROOT / "schemas" / "analysis-result-v1.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    jsonschema.validate(historical, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(_analysis_result().as_dict(), schema)
 
 
 def test_frame_description_summarizes_only_detected_events() -> None:
@@ -1040,11 +1055,17 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
 
 
 @pytest.mark.parametrize("detected", (True, False))
-def test_overall_description_latest_is_correlated_and_compact(detected: bool) -> None:
+@pytest.mark.parametrize("partial", (True, False))
+def test_overall_description_latest_is_correlated_and_compact(
+    detected: bool, partial: bool,
+) -> None:
     stub = _StubRuntime()
     app = create_app(lambda: stub)  # type: ignore[arg-type]
     with TestClient(app) as client:
-        result = _analysis_result(detected=detected)
+        result = replace(
+            _analysis_result(detected=detected),
+            missing_event_labels=("stranger",) if partial else (),
+        )
         judgment = replace(
             result.judgments[0],
             description="有人吸烟。 / A person is smoking.",
@@ -1063,10 +1084,14 @@ def test_overall_description_latest_is_correlated_and_compact(detected: bool) ->
         }
         expected["type"] = "overall_description"
         assert response.json() == expected
-        assert response.json()["description"] == (
-            "smoking: 有人吸烟。 / A person is smoking."
-            if detected else "无异常 / No anomalies detected"
-        )
+        if partial:
+            assert "Analysis incomplete" in response.json()["description"]
+            assert "No anomalies detected" not in response.json()["description"]
+        else:
+            assert response.json()["description"] == (
+                "smoking: 有人吸烟。 / A person is smoking."
+                if detected else "无异常 / No anomalies detected"
+            )
         assert client.get("/v1/results/latest").json() == payload
         stub.results.reset()
         assert client.get("/v1/results/overall/latest").status_code == 404
@@ -1080,7 +1105,8 @@ def test_overall_description_sse_delivers_and_resumes(resume: str) -> None:
     app.state.runtime = stub
     positive = _analysis_result().as_dict()
     negative = replace(
-        _analysis_result(detected=False), message_id="message-2", sequence=2
+        _analysis_result(detected=False), message_id="message-2", sequence=2,
+        missing_event_labels=("stranger",),
     ).as_dict()
     stub.results.publish(positive)
     stub.results.publish(negative)
@@ -1125,6 +1151,8 @@ def test_overall_description_sse_delivers_and_resumes(resume: str) -> None:
         data = json.loads(chunk.split("data: ", 1)[1])
         assert data["message_id"] == payload["message_id"]
         assert data["description"] == payload["description"]
+        assert data["analysis_complete"] == payload["analysis_complete"]
+        assert data["missing_event_labels"] == payload["missing_event_labels"]
         assert data["frame"] == payload["frame"]
         assert data["type"] == "overall_description"
         assert "judgments" not in data and "objects" not in data
