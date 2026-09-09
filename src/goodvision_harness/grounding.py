@@ -322,10 +322,111 @@ class GroundingResponse:
     # Health is tracked independently so partial success cannot hide an outage.
     branch_errors: tuple[tuple[str, str], ...] = ()
     completed_branches: tuple[str, ...] = ()
+    # Bounded local runtime diagnostics, never part of the public v2 result.
+    face_diagnostics: Mapping[str, Any] | None = field(default=None, repr=False)
 
     @property
     def ok(self) -> bool:
         return self.classification is not None
+
+
+_FACE_DIAGNOSTIC_REASONS = frozenset(
+    {
+        "face_too_small",
+        "face_too_small_for_stranger",
+        "low_detection_confidence",
+        "invalid_face_landmarks",
+        "extreme_face_angle",
+        "embedding_unavailable",
+        "ambiguous_gallery_match",
+        "identity_unconfirmed",
+        "identity_removed",
+        "out_of_order_frame",
+    }
+)
+_FACE_DIAGNOSTIC_LIMIT = 8
+
+
+def build_face_diagnostics(
+    raw_objects: tuple[ModelObject, ...] | None,
+    stabilized_objects: tuple[ModelObject, ...],
+) -> dict[str, Any]:
+    """Keep observation quality separate from the identity confirmation state.
+
+    Raw observations must be captured before tracking: a tracker can append a
+    briefly held identity even when the current detector found no face. Legacy
+    clients without that information explicitly report it as unavailable.
+    Names, identifiers, embeddings and arbitrary attributes are never copied.
+    """
+
+    def status(item: ModelObject) -> str:
+        value = item.attributes.get("status")
+        return value if value in ("known", "unknown", "unusable") else "other"
+
+    def reason(item: ModelObject) -> str:
+        value = item.attributes.get("reason")
+        if value is None:
+            return "none"
+        return (
+            value
+            if isinstance(value, str) and value in _FACE_DIAGNOSTIC_REASONS
+            else "other"
+        )
+
+    def counts(items: tuple[ModelObject, ...]) -> dict[str, int]:
+        result = dict.fromkeys(("known", "unknown", "unusable", "other"), 0)
+        for item in items:
+            result[status(item)] += 1
+        return result
+
+    def summaries(items: tuple[ModelObject, ...]) -> list[dict[str, Any]]:
+        result = []
+        for item in items[:_FACE_DIAGNOSTIC_LIMIT]:
+            entry: dict[str, Any] = {
+                "bbox": [item.bbox.x1, item.bbox.y1, item.bbox.x2, item.bbox.y2],
+                "status": status(item),
+                "reason": reason(item),
+            }
+            for key, maximum in (
+                ("face_width", 1_000_000),
+                ("face_height", 1_000_000),
+                ("detection_score", 1),
+                ("unknown_confirmations", 1_000_000),
+            ):
+                value = item.attributes.get(key)
+                if (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and 0 <= value <= maximum
+                    and math.isfinite(value)
+                ):
+                    entry[key] = value
+            source = item.attributes.get("identity_source")
+            if source in ("face_match", "track_history"):
+                entry["identity_source"] = source
+            result.append(entry)
+        return result
+
+    reason_counts: dict[str, int] = {}
+    for item in stabilized_objects:
+        key = reason(item)
+        reason_counts[key] = reason_counts.get(key, 0) + 1
+    return {
+        "state": (
+            "unavailable" if raw_objects is None else "faces" if raw_objects
+            else "no_faces"
+        ),
+        "raw_observations_available": raw_objects is not None,
+        "detected_face_count": None if raw_objects is None else len(raw_objects),
+        "face_count": len(stabilized_objects),
+        "raw_status_counts": None if raw_objects is None else counts(raw_objects),
+        "stable_status_counts": counts(stabilized_objects),
+        "reason_counts": reason_counts,
+        "raw_faces": None if raw_objects is None else summaries(raw_objects),
+        "faces": summaries(stabilized_objects),
+        "truncated": max(len(raw_objects or ()), len(stabilized_objects))
+        > _FACE_DIAGNOSTIC_LIMIT,
+    }
 
 
 def _record_analysis_failure(
@@ -1298,6 +1399,71 @@ class SelectedFeaturesGroundingClient:
         # measured without silently reducing stranger sampling.
         self._stranger_live_slot = threading.Lock()
 
+    @property
+    def independent_live_branches(self) -> bool:
+        """The live pipeline may schedule each selected detector separately."""
+
+        return self._safety_client is not None and self._stranger_client is not None
+
+    def classify_safety_window(self, window: FrameWindow) -> GroundingResponse:
+        """Run only safety; the outer pipeline owns concurrency and freshness."""
+
+        if self._safety_client is None:
+            raise ValueError("safety branch is not selected")
+        started = time.monotonic()
+        try:
+            resized_window = _safety_window(
+                window,
+                max_image_side=self._safety_max_image_side,
+                jpeg_quality=self._safety_jpeg_quality,
+            )
+        except (ValueError, cv2.error):
+            code = _record_analysis_failure(
+                window, branch="safety", stage="input", code="invalid_response"
+            )
+            return GroundingResponse(
+                window=window,
+                classification=None,
+                latency_seconds=time.monotonic() - started,
+                error=PUBLIC_ANALYSIS_ERROR,
+                branch_errors=(("safety", code),),
+            )
+        response = None
+        error = None
+        try:
+            response = self._safety_client.classify_window(resized_window)
+        except Exception as exc:
+            error = exc
+        return self._merge_responses(
+            window,
+            started=started,
+            include_safety=True,
+            include_stranger=False,
+            safety_response=response,
+            safety_error=error,
+        )
+
+    def classify_stranger_window(self, window: FrameWindow) -> GroundingResponse:
+        """Run local faces on the original image, without a remote-model slot."""
+
+        if self._stranger_client is None:
+            raise ValueError("stranger branch is not selected")
+        started = time.monotonic()
+        response = None
+        error = None
+        try:
+            response = self._stranger_client.classify_window(window)
+        except Exception as exc:
+            error = exc
+        return self._merge_responses(
+            window,
+            started=started,
+            include_safety=False,
+            include_stranger=True,
+            stranger_response=response,
+            stranger_error=error,
+        )
+
     def _classify_stranger_with_slot(
         self,
         window: FrameWindow,
@@ -1398,11 +1564,41 @@ class SelectedFeaturesGroundingClient:
             except Exception as exc:
                 stranger_error = exc
 
+        return self._merge_responses(
+            window,
+            started=started,
+            include_safety=self._safety_client is not None,
+            include_stranger=self._stranger_client is not None,
+            safety_response=safety_response,
+            stranger_response=stranger_response,
+            safety_error=safety_error,
+            stranger_error=stranger_error,
+            allow_missing_stranger=True,
+        )
+
+    def _merge_responses(
+        self,
+        window: FrameWindow,
+        *,
+        started: float,
+        include_safety: bool,
+        include_stranger: bool,
+        safety_response: GroundingResponse | None = None,
+        stranger_response: GroundingResponse | None = None,
+        safety_error: Exception | None = None,
+        stranger_error: Exception | None = None,
+        allow_missing_stranger: bool = False,
+    ) -> GroundingResponse:
+        """Share validation for synchronous and independently completed branches."""
+
         judgments: list[GroundedEventClassification] = []
         branch_errors: list[tuple[str, str]] = []
         completed_branches: list[str] = []
         safety_failed = False
-        if self._safety_client is not None:
+        face_diagnostics = None
+        actors: tuple[ModelActor, ...] = ()
+        face_observations: tuple[ModelObject, ...] = ()
+        if include_safety:
             safety_classification = (
                 safety_response.classification
                 if safety_error is None and safety_response is not None
@@ -1415,6 +1611,7 @@ class SelectedFeaturesGroundingClient:
                 if safety_labels == self._safety_event_labels:
                     judgments.extend(safety_classification.judgments)
                     completed_branches.append("safety")
+                    actors = safety_classification.actors
                 else:
                     safety_failed = True
             else:
@@ -1438,7 +1635,7 @@ class SelectedFeaturesGroundingClient:
                 )
                 branch_errors.append(("safety", code))
 
-        if self._stranger_client is not None:
+        if include_stranger:
             face_classification = (
                 stranger_response.classification
                 if stranger_error is None and stranger_response is not None
@@ -1467,14 +1664,31 @@ class SelectedFeaturesGroundingClient:
                         )
                     )
                     completed_branches.append("stranger")
+                    face_observations = (
+                        face_classification.face_observations
+                        or face_classification.objects
+                    )
+                    assert stranger_response is not None
+                    face_diagnostics = stranger_response.face_diagnostics
+                    if face_diagnostics is None:
+                        face_diagnostics = build_face_diagnostics(
+                            None, face_observations
+                        )
                 except (TypeError, ValueError, IndexError) as exc:
                     stranger_error = exc
             # No response/error means single-flight deliberately skipped this
             # sample. Do not report it as either healthy, failed, or clear.
             if "stranger" not in completed_branches and (
-                stranger_response is not None or stranger_error is not None
+                not allow_missing_stranger
+                or stranger_response is not None
+                or stranger_error is not None
             ):
-                code = _record_analysis_failure(
+                reported = (
+                    dict(stranger_response.branch_errors).get("stranger")
+                    if stranger_response is not None
+                    else None
+                )
+                code = reported or _record_analysis_failure(
                     window,
                     branch="stranger",
                     stage="branch",
@@ -1501,27 +1715,8 @@ class SelectedFeaturesGroundingClient:
             returned_labels = tuple(judgment.event_label for judgment in judgments)
             classification = MultiGroundedClassification(
                 judgments=tuple(judgments),
-                actors=tuple(
-                    getattr(
-                        getattr(safety_response, "classification", None),
-                        "actors",
-                        (),
-                    )
-                ),
-                face_observations=tuple(
-                    getattr(
-                        getattr(stranger_response, "classification", None),
-                        "face_observations",
-                        (),
-                    )
-                )
-                or tuple(
-                    getattr(
-                        getattr(stranger_response, "classification", None),
-                        "objects",
-                        (),
-                    )
-                ),
+                actors=tuple(actors),
+                face_observations=tuple(face_observations),
                 missing_event_labels=tuple(
                     label for label in self.event_labels if label not in returned_labels
                 ),
@@ -1549,7 +1744,11 @@ class SelectedFeaturesGroundingClient:
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
-                error=PUBLIC_FACE_ERROR,
+                error=(
+                    PUBLIC_ANALYSIS_ERROR
+                    if include_safety and not include_stranger
+                    else PUBLIC_FACE_ERROR
+                ),
                 branch_errors=tuple(branch_errors),
             )
         return GroundingResponse(
@@ -1559,6 +1758,7 @@ class SelectedFeaturesGroundingClient:
             latency_seconds=time.monotonic() - started,
             branch_errors=tuple(branch_errors),
             completed_branches=tuple(completed_branches),
+            face_diagnostics=face_diagnostics,
         )
 
 

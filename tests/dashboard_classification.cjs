@@ -273,14 +273,14 @@ test("rich status does not invent GPU restrictions or display unknown internal r
   }
 });
 
-test("v2 partial frames preserve held alerts but never turn held negatives into all-clear",()=>{
+test("v2 partial frame evidence stays incomplete while the capability overview uses recent branches",()=>{
   for(const stranger of [true,false]){
     const view=dashboard();
     view.app.analysis({...result(1,{...clear,stranger}),analysis_complete:true,missing_event_labels:[]});
     const description="分析未完成。部分能力暂无结果。 / Analysis incomplete; some capabilities have no result.";
     view.app.analysis({...result(1.4,clear),analysis_complete:false,missing_event_labels:["stranger"],description});
-    assert.equal(view.element("verdict").textContent,stranger?"STRANGER":"INCOMPLETE");
-    assert.match(view.element("description").textContent,/Analysis incomplete/);
+    assert.equal(view.element("verdict").textContent,stranger?"STRANGER":"CLEAR");
+    assert.doesNotMatch(view.element("description").textContent,/Analysis incomplete/);
     assert.equal(view.element("overall-description").textContent,description);
     assert.equal(JSON.parse(view.element("result-json").textContent).judgments.length,4);
     assert.equal(view.element("log-body").children[0].children[2].children[0].textContent,"PARTIAL");
@@ -353,4 +353,57 @@ test("missing overall description is unavailable and session reset clears the ol
   view.app.message({type:"ended",reason:"stopped"});
   assert.equal(view.element("overall-description").textContent,"等待当前帧分析… / Waiting for frame analysis…");
   assert.equal(view.app.state.overallResult,null);
+});
+
+test("independent partial branches make the capability overview ready without changing JSON",()=>{
+  const view=dashboard();
+  const safety={...result(2,clear),analysis_complete:false,missing_event_labels:["stranger"]};
+  const face={...result(1.8,{stranger:false}),analysis_complete:false,
+    missing_event_labels:Object.keys(clear)};
+  view.app.analysis(safety);
+  assert.equal(view.element("verdict").textContent,"INCOMPLETE");
+  view.app.analysis(face);
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+  assert.equal(view.element("confidence").textContent,"All 5 events clear");
+  assert.doesNotMatch(view.element("description").textContent,/incomplete/i);
+  assert.match(view.element("decision-meta").textContent,/video 2\.000s/);
+  assert.deepEqual(JSON.parse(view.element("result-json").textContent),face);
+  assert.equal(view.element("log-body").children[0].children[2].children[0].textContent,"PARTIAL");
+});
+
+test("a newly delivered face branch alerts behind a newer safety frame immediately",()=>{
+  const view=dashboard();
+  view.app.analysis({...result(2,{...clear,smoking:true}),analysis_complete:false,
+    missing_event_labels:["stranger"]});
+  const face={...result(1.8,{stranger:true}),analysis_complete:false,
+    missing_event_labels:Object.keys(clear)};
+  view.app.analysis(face);
+  assert.equal(view.element("verdict").textContent,"SMOKING + STRANGER");
+  assert.doesNotMatch(view.element("description").textContent,/incomplete/i);
+  assert.deepEqual(JSON.parse(view.element("result-json").textContent),face);
+  view.app.analysis({...result(2.4,clear),analysis_complete:false,missing_event_labels:["stranger"]});
+  assert.equal(view.element("verdict").textContent,"STRANGER");
+  view.app.analysis({...result(2.2,{...clear,smoking:true}),analysis_complete:false,
+    missing_event_labels:["stranger"]});
+  assert.equal(view.element("verdict").textContent,"STRANGER");
+  assert.equal(view.status("smoking"),"CLEAR 90.0%");
+  assert.equal(view.status("stranger"),"ALERT 90.0%");
+});
+
+test("independent branch overview becomes pending again after face expiry or session reset",()=>{
+  const view=dashboard();
+  view.app.analysis({...result(1,{stranger:false}),analysis_complete:false,
+    missing_event_labels:Object.keys(clear)});
+  view.app.analysis({...result(2,clear),analysis_complete:false,missing_event_labels:["stranger"]});
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+  view.app.analysis({...result(4.1,clear),analysis_complete:false,missing_event_labels:["stranger"]});
+  assert.equal(view.element("verdict").textContent,"INCOMPLETE");
+  assert.equal(view.status("stranger"),"WAITING");
+  view.app.message({type:"session",stream_session_id:"session-2",mode:"stream",
+    features:[...Object.keys(clear),"stranger"]});
+  view.app.analysis({...result(0,clear,{session:"session-2"}),analysis_complete:false,
+    missing_event_labels:["stranger"]});
+  assert.equal(view.element("verdict").textContent,"INCOMPLETE");
+  view.app.analysis(result(4.2,{stranger:true}));
+  assert.equal(view.status("stranger"),"WAITING");
 });

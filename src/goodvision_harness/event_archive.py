@@ -1011,7 +1011,10 @@ class EventArchive:
         session_id = result["stream_session_id"]
         timestamp = float(result["frame"]["timestamp_seconds"])
         session = self._session(session_id, result.get("source_id", ""))
-        window = session.windows.get(str(window_id)) if window_id is not None else None
+        explicit_window = (
+            session.windows.get(str(window_id)) if window_id is not None else None
+        )
+        window = explicit_window
         if window is None:
             window = next(
                 (
@@ -1160,6 +1163,17 @@ class EventArchive:
                 }
         for value in result.get("missing_event_labels", []):
             label = _label(value)
+            # A partial branch response can list the other branch as missing.
+            # Its independently registered request owns that uncertainty; do
+            # not let it erase a real negative from the other branch. Only an
+            # explicit known window establishes this scope. Timestamp fallback
+            # is ambiguous when both branches sampled the same source frame.
+            if (
+                explicit_window is not None
+                and explicit_window["labels"]
+                and label not in explicit_window["labels"]
+            ):
+                continue
             key = f"{message_id}:unknown:{label}"
             self._observations[key] = {
                 "key": key,

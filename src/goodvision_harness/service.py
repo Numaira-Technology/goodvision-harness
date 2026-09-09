@@ -1604,6 +1604,15 @@ class HarnessRuntime:
                 "memory_records_accepted" if accepted else "memory_records_dropped"
             )
             self._update_state(**{memory_key: int(self._state[memory_key]) + 1})
+        latest = self.frames.latest()
+        if latest is not None:
+            _, packet = latest
+            if (
+                result.frame.timestamp_seconds, result.frame.source_frame_index
+            ) < (packet.media_timestamp, packet.frame_sequence):
+                # An independently completed branch retains its exact frame for
+                # memory and the private timeline, but cannot rewind the preview.
+                return
         rendered: bytes | None = None
         if self._rich_labels is not None and self._rich_requested:
             try:
@@ -2666,9 +2675,12 @@ def _latest_result_response(
     feature: str | None = None,
     overall_only: bool = False,
 ) -> JSONResponse:
-    record = runtime.results.latest()
+    record = runtime.results.latest(feature=feature)
     if record is None:
-        raise HTTPException(status_code=404, detail="no analysis result yet")
+        raise HTTPException(
+            status_code=404,
+            detail=f"no {feature} result yet" if feature else "no analysis result yet",
+        )
     payload = record.payload
     if feature is not None:
         selected = _feature_result_payload(payload, feature)

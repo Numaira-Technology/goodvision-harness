@@ -1327,40 +1327,67 @@ def test_browser_camera_dry_run_delivers_raw_and_correlated_bbox_output(
             owner=owner,
         )
 
-        result_record = None
+        feature_records = {}
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
-            for record in runtime.results.records_after(0):
-                if record.payload["frame"]["source_frame_index"] == 2:
-                    result_record = record
-                    break
-            if result_record is not None:
+            feature_records = {
+                label: runtime.results.latest(feature=label)
+                for label in DETECTION_EVENT_LABELS
+            }
+            if all(
+                record is not None
+                and record.payload["frame"]["source_frame_index"] == 2
+                for record in feature_records.values()
+            ):
                 break
             time.sleep(0.01)
 
-        assert result_record is not None
-        result = result_record.payload
-        assert result["type"] == "analysis_result"
-        assert result["analysis_kind"] == "fixed_five_events"
-        assert result["frame"]["source_frame_index"] == 2
-        assert result["frame"]["width"] == 200
-        assert result["frame"]["height"] == 100
-        assert [item["event_label"] for item in result["judgments"]] == list(
-            DETECTION_EVENT_LABELS
-        )
-        assert len(result["judgments"]) == 5
-        detected = [
-            item["event_label"] for item in result["judgments"] if item["detected"]
-        ]
-        assert detected == ["smoking", "stranger"]
-        assert all(
-            item["object_ids"] == []
-            for item in result["judgments"]
-            if not item["detected"]
-        )
-        assert result["objects"][0]["bbox"]["coordinate_system"] == (
-            "source_normalized_xyxy"
-        )
+        assert all(record is not None for record in feature_records.values())
+        source_results = {
+            record.payload["message_id"]: record.payload
+            for record in runtime.results.records_after(0)
+            if record.payload["frame"]["source_frame_index"] == 2
+        }
+        assert len(source_results) == 2
+        assert len({
+            payload["frame"]["timestamp_seconds"]
+            for payload in source_results.values()
+        }) == 1
+        schema = json.loads((
+            ROOT / "schemas/analysis-result-v2.schema.json"
+        ).read_text(encoding="utf-8"))
+        observed = {}
+        for payload in source_results.values():
+            jsonschema.validate(payload, schema)
+            assert payload["analysis_kind"] == "selected_features"
+            assert payload["frame"]["width"] == 200
+            assert payload["frame"]["height"] == 100
+            labels = [item["event_label"] for item in payload["judgments"]]
+            assert labels in [list(SAFETY_EVENT_LABELS), ["stranger"]]
+            assert payload["analysis_complete"] is False
+            assert set(payload["missing_event_labels"]) == (
+                set(DETECTION_EVENT_LABELS) - set(labels)
+            )
+            objects = {item["object_id"]: item for item in payload["objects"]}
+            for item in payload["judgments"]:
+                observed[item["event_label"]] = item
+                if not item["detected"]:
+                    assert item["object_ids"] == []
+                else:
+                    assert item["object_ids"]
+                    for object_id in item["object_ids"]:
+                        assert objects[object_id]["bbox"]["coordinate_system"] == (
+                            "source_normalized_xyxy"
+                        )
+        assert set(observed) == set(DETECTION_EVENT_LABELS)
+        assert {label for label, item in observed.items() if item["detected"]} == {
+            "smoking", "stranger",
+        }
+        for label, record in feature_records.items():
+            assert record.payload == source_results[record.payload["message_id"]]
+            projection = service_module._feature_result_payload(record.payload, label)
+            assert projection["frame"]["source_frame_index"] == 2
+            assert projection["judgments"] == [observed[label]]
 
         raw_update = runtime.preview_frames.latest()
         assert raw_update is not None
@@ -1377,8 +1404,14 @@ def test_browser_camera_dry_run_delivers_raw_and_correlated_bbox_output(
         annotated_update = runtime.frames.latest()
         assert annotated_update is not None
         _, annotated_packet = annotated_update
-        assert annotated_packet.analysis_message_id == result["message_id"]
-        assert annotated_packet.frame_sequence == result["frame"][
+        linked_result = source_results[annotated_packet.analysis_message_id]
+        assert annotated_packet.analysis_message_id == (
+            runtime.results.latest().payload["message_id"]
+        )
+        assert round(annotated_packet.media_timestamp, 3) == linked_result["frame"][
+            "timestamp_seconds"
+        ]
+        assert annotated_packet.frame_sequence == linked_result["frame"][
             "source_frame_index"
         ]
         assert cv2.imdecode(

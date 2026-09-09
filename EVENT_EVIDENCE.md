@@ -4,6 +4,15 @@ The analysis JSON/SSE and webhook remain immediate, per-observation outputs.
 An archive event remaining active does **not** mean the current frame is positive.
 Recording, identity sidecars and archive revisions never wait in the inference path.
 
+Mixed sessions schedule local faces and remote safety in independent bounded pools.
+Each completed branch publishes its own AnalysisResult v2 message immediately;
+another branch appearing in `missing_event_labels` does not imply a failure.
+Source times can interleave across branches. Freshness is enforced separately for
+safety and faces, and capability latest endpoints retain each capability's newest
+source observation. A smoking negative clears the current smoking judgment even
+while the face branch is busy. Each message keeps its original frame and identity
+time basis; older face boxes are never pasted onto a newer safety frame.
+
 ## People and continuity
 
 `subject_id` identifies a person track within one source/session. `person_id` is
@@ -64,6 +73,10 @@ with an observation-timeout reason. These intervals only govern the archive.
 
 Out-of-order results can revise the archive for up to 65 seconds after each
 window was submitted. Earlier pending windows are tracked separately by label.
+Mixed sessions register separate safety/stranger window identities, including
+their own dropped, failed and cancelled states. A face-only message listing
+safety as missing cannot interrupt safety's explicit negative interval, and vice
+versa. Reassociated observations retain their original branch/window scope.
 Once the closing boundary is resolved, the ended event can be finalized early.
 Late positives can merge episodes; late negatives can split them. Published
 observation anchors preserve identifiers where possible, with dynamic aliases
@@ -142,3 +155,6 @@ cards. Synthetic dry-run sessions can generate real playable clips of synthetic
 input. Such tests validate delivery and temporal behavior, not real-model accuracy.
 Validate actual identity switches, duplicate events and first-result/P95 latency
 on representative recordings on the target CPU and GPU deployments.
+See [stranger/LLM interoperability validation](STRANGER_LLM_INTEROP_VALIDATION.md)
+for the 8081 investigation and independent publication tests, and
+[low-resolution validation](LOW_RESOLUTION_VALIDATION.md) for real-model limits.

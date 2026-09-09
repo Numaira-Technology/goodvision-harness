@@ -109,3 +109,10 @@ GPU detector-only `/health/tracking` 就绪即可开启 `/v1/tracks`，与属性
 旧陌生人照片接口返回410。旧 `face-gallery-strangers.json` 和 `stranger-captures/`
 不再加载或写入；确认备份后可由运维清理。保留 `face-gallery.json`、模型和部署
 设置，不能通过删除持久卷来升级。归档状态和录制失败计数见 `/v1/status`。
+
+混合会话的人脸与事件模型独立完成、独立发布；消费通用 SSE 时按能力判断源帧先后，
+不能用较新的吸烟帧丢弃尚未收到的人脸结果。各能力的 `latest` 接口可分别读取当前
+观测，缺失不表示阴性。诊断时查看 `/v1/status` 的 `pipeline.branches`：两支各有
+完成/跳过计数，人脸的 `last_completion.face` 区分尺寸/质量不足与身份尚待确认。
+部署验收应在占满远程请求名额时检查人脸仍能进展，并在人脸慢响应时检查吸烟阳转阴
+能及时发布；说明见 [接口文档](API_DELIVERY.md) 与 [联合验证](STRANGER_LLM_INTEROP_VALIDATION.md)。

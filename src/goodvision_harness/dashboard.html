@@ -238,7 +238,7 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
     <div class="metrics">
       <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
       <div class="metric"><span class="metric-label">Results published</span><strong id="published-result-count" class="metric-value">0</strong><span id="last-result-note" class="metric-note">No result yet</span></div>
-      <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Correlated 1:1 with results</span></div>
+      <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Each image identifies its source result</span></div>
       <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">Waiting for delayed frames</span></div>
     </div>
     <div class="endpoint-grid" aria-label="Output and API shortcuts">
@@ -1214,7 +1214,9 @@ function renderClassification(){
   });
   const judgments=entries.map(entry=>entry.judgment),pending=features.length-judgments.length;
   const active=judgments.filter(judgment=>judgment&&judgment.detected===true),yes=active.length>0;
-  const incomplete=result.analysis_complete===false;
+  // Independent branch observations remain partial in the original JSON.
+  // The capability overview is ready once every selected feature has a result.
+  const incomplete=result.analysis_complete===false&&pending>0;
   const ids=new Set(entries.filter(entry=>entry.judgment.detected===true).flatMap(entry=>
     (Array.isArray(entry.judgment.object_ids)?entry.judgment.object_ids:[])
       .map(id=>String(entry.result.message_id||entry.result.sequence)+":"+id)));

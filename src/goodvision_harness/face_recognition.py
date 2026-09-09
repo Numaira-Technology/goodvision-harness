@@ -33,6 +33,7 @@ from .grounding import (
     GroundedClassification,
     GroundingResponse,
     ModelObject,
+    build_face_diagnostics,
 )
 from .reference_memory import UNKNOWN_FACE_EVENT_LABEL
 from .rich_labeling import RichLabelCoordinator, RichLabelSnapshot
@@ -584,6 +585,9 @@ class FaceRecognitionRuntime:
                     ),
                 )
             )
+        # Capture actual observations before identity confirmation/holding can
+        # change their status or append a face from recent track history.
+        raw_objects = tuple(objects)
         if tracker is not None:
             resolve = getattr(tracker, "resolve_faces", None) or tracker.resolve
             objects = list(
@@ -632,6 +636,7 @@ class FaceRecognitionRuntime:
             window=window,
             classification=classification,
             latency_seconds=time.monotonic() - started,
+            face_diagnostics=build_face_diagnostics(raw_objects, tuple(objects)),
         )
 
     def _ensure_model(self) -> Any:

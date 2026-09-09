@@ -102,13 +102,32 @@ def check_stream_headers(response: httpx.Response, content_type: str) -> None:
 def check_result(payload: dict, feature: str | None = None) -> None:
     check_public(json.dumps(payload, ensure_ascii=False))
     require(payload.get("type") == "analysis_result", "wrong result type")
-    require(payload.get("analysis_kind") == "fixed_five_events", "analysis kind")
+    require(payload.get("schema_version") == "2", "analysis schema version")
+    require(
+        payload.get("analysis_kind") in {"selected_features", "fixed_five_events"},
+        "analysis kind",
+    )
     require(bool(payload.get("message_id")), "missing analysis message ID")
     frame = payload.get("frame", {})
     require((frame.get("width"), frame.get("height")) == (WIDTH, HEIGHT), "frame size")
+    require(0 <= frame.get("source_frame_index", -1) < 65, "source frame index")
+    require(frame.get("timestamp_seconds", -1) >= 0, "source timestamp")
     judgments = payload.get("judgments", [])
-    expected = [feature] if feature else list(FEATURES)
-    require([item.get("event_label") for item in judgments] == expected, "event labels")
+    labels = [item.get("event_label") for item in judgments]
+    allowed = (
+        [[feature]] if feature
+        else [list(FEATURES[:-1]), ["stranger"], list(FEATURES)]
+    )
+    require(labels in allowed, "event labels")
+    missing = payload.get("missing_event_labels")
+    require(isinstance(missing, list), "missing event labels")
+    require(len(missing) == len(set(missing)), "duplicate missing event labels")
+    require(set(missing) <= set(FEATURES) - set(labels), "invalid missing event labels")
+    require(
+        payload.get("analysis_complete") is (not missing), "completion state mismatch",
+    )
+    if not feature:
+        require(set(missing) == set(FEATURES) - set(labels), "omitted capability")
     objects = payload.get("objects", [])
     object_ids = {item["object_id"] for item in objects}
     selected_ids = set()
@@ -118,6 +137,7 @@ def check_result(payload: dict, feature: str | None = None) -> None:
         ids = set(judgment.get("object_ids", []))
         require(ids <= object_ids, "judgment references a missing object")
         require(not judgment["detected"] or bool(ids), "positive event has no evidence")
+        require(judgment["detected"] or not ids, "negative event has evidence objects")
         selected_ids.update(ids)
     if feature:
         require(object_ids == selected_ids, f"{feature}: unrelated objects leaked")
@@ -139,8 +159,27 @@ def check_jpeg(data: bytes) -> None:
     require(decoded.shape[:2] == (HEIGHT, WIDTH), "decoded JPEG dimensions")
 
 
-async def check_sse(client: httpx.AsyncClient, root: str, feature: str | None) -> None:
+def check_projection(source: dict, projected: dict, feature: str) -> None:
+    selected = [item for item in source["judgments"] if item["event_label"] == feature]
+    require(len(selected) == 1, "feature absent from source observation")
+    ids = set(selected[0]["object_ids"])
+    expected = {
+        **source,
+        "judgments": selected,
+        "objects": [item for item in source["objects"] if item["object_id"] in ids],
+    }
+    require(
+        projected == expected, "feature result changed its original frame or fields",
+    )
+
+
+async def check_sse(
+    client: httpx.AsyncClient, root: str, feature: str | None,
+    *, through_cursor: int = 0,
+) -> dict[str, dict]:
     detected_features: set[str] = set()
+    records: dict[str, dict] = {}
+    previous_cursor = 0
     async with client.stream("GET", root + "/events") as response:
         check_stream_headers(response, "text/event-stream")
         if feature:
@@ -162,13 +201,19 @@ async def check_sse(client: httpx.AsyncClient, root: str, feature: str | None) -
                 )
                 payload = json.loads(line[6:])
                 check_result(payload, feature)
+                cursor = int(event_id.rsplit(":", 1)[1])
+                require(cursor > previous_cursor, "SSE cursor did not increase")
+                previous_cursor = cursor
+                records[payload["message_id"]] = payload
                 detected_features.update(
                     item["event_label"]
                     for item in payload["judgments"]
                     if item["detected"]
                 )
-                if feature or detected_features == set(FEATURES):
-                    return
+                if cursor >= through_cursor and (
+                    feature or detected_features == set(FEATURES)
+                ):
+                    return records
     raise RuntimeError(f"{root}/events: missing synthetic results")
 
 
@@ -330,20 +375,43 @@ async def positive_checks(
     if with_rich:
         await check_rich(client, session["stream_session_id"])
 
+    latest_results = {}
+    through_cursor = 0
     for index, root in enumerate(RESULT_ROOTS):
         feature = None if index == 0 else FEATURES[index - 1]
         response = await request(client, root + "/latest")
         check_result(response.json(), feature)
+        latest_results[root] = response.json()
         require(response.headers.get("cache-control") == "no-store", "JSON caching")
         require(int(response.headers.get("x-result-cursor", "0")) > 0, "result cursor")
+        through_cursor = max(through_cursor, int(response.headers["x-result-cursor"]))
         require(bool(response.headers.get("x-result-stream")), "result stream marker")
         if feature:
             require(
                 response.headers.get("x-result-feature") == feature,
                 "feature header",
             )
-        await asyncio.wait_for(check_sse(client, root, feature), timeout=TIMEOUT)
-    passed("6 latest JSON + 6 SSE; all five synthetic event types and filtered objects")
+    originals = await asyncio.wait_for(
+        check_sse(client, RESULT_ROOTS[0], None, through_cursor=through_cursor),
+        timeout=TIMEOUT,
+    )
+    global_latest = latest_results[RESULT_ROOTS[0]]
+    require(
+        global_latest == originals[global_latest["message_id"]],
+        "global latest changed the original observation",
+    )
+    for feature, root in zip(FEATURES, RESULT_ROOTS[1:], strict=True):
+        projected = latest_results[root]
+        check_projection(originals[projected["message_id"]], projected, feature)
+        stream = await asyncio.wait_for(
+            check_sse(client, root, feature), timeout=TIMEOUT,
+        )
+        for message_id, payload in stream.items():
+            check_projection(originals[message_id], payload, feature)
+    passed(
+        "6 latest JSON + 6 SSE; independent partials, all five synthetic events, "
+        "exact source frames and filtered objects"
+    )
 
     for root in VIDEO_ROOTS:
         response = await request(client, root + "/latest.jpg")
@@ -400,8 +468,12 @@ async def positive_checks(
     )
     detail = (await request(client, "/v1/events/" + candidates[0]["event_id"])).json()
     require(detail["event_id"] == candidates[0]["event_id"], "event detail ID")
+    positive_result = next(
+        item for item in originals.values()
+        if any(judgment["detected"] for judgment in item["judgments"])
+    )
     associated = await client.get(
-        "/v1/events", params={"message_id": result["message_id"]}
+        "/v1/events", params={"message_id": positive_result["message_id"]}
     )
     require(
         associated.status_code == 200 and associated.json()["events"], "message lookup"
@@ -495,8 +567,12 @@ async def run(base_url: str, *, with_rich: bool = False) -> None:
         if with_rich:
             await missing(client, "/v1/rich-labels/latest", "no rich labels yet")
 
-        for root in RESULT_ROOTS:
-            await missing(client, root + "/latest", "no analysis result yet")
+        for index, root in enumerate(RESULT_ROOTS):
+            detail = (
+                f"no {FEATURES[index - 1]} result yet" if index
+                else "no analysis result yet"
+            )
+            await missing(client, root + "/latest", detail)
         for root, detail in zip(
             VIDEO_ROOTS,
             (

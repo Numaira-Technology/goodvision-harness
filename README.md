@@ -2,9 +2,9 @@
 
 An independent demo service that pulls the robot's live WHEP/WebRTC stream and
 detects any selected subset of `fight`, `smoking`, `fall`, `weapon`, and
-`stranger` (all five remain the default). It exposes one structured result and one exactly correlated,
-annotated frame for every analyzed video frame, plus a continuous delayed
-annotation stream for display.
+`stranger` (all five remain the default). It publishes structured observations
+as recognition completes, source-correlated annotated images, and a continuous
+delayed annotation stream for display.
 
 The harness has no runtime dependency on the original `goodvision`
 repository.
@@ -13,9 +13,13 @@ repository.
 
 The service performs one external model request for whichever visual safety
 events are selected, while the local known-person matcher checks the same frame
-only when `stranger` is selected. Mixed results are merged in canonical order.
+only when `stranger` is selected. In mixed streaming sessions, safety and local
+faces have independent bounded request slots and publish independently on completion.
+Each message retains its own source frame; capability cards use each capability's
+latest observation. A slow remote request cannot consume the local face slot,
+and a slow face result cannot delay a completed safety judgment.
 It does not run one process or one LLM call per feature. Omitting `features`
-keeps the original fixed-five result. Before a real multi-event
+selects all five capabilities. Before a real multi-event
 or face-only session accepts its first frame, the service loads the local engine and
 runs one blank inference to remove its first-frame cold start; dry-run skips
 that warmup. The default runtime settings are:
@@ -639,9 +643,14 @@ even when they filter `judgments` and `objects` to one capability.
 Results use schema version `2`; the original v1 schema remains unchanged for
 archived records. Strict consumers must adopt the v2 schema before upgrading
 the producer. The HTTP endpoint paths remain `/v1/...`.
-`analysis_complete` is false and `missing_event_labels` lists skipped or failed
-capabilities when a frame is only partially analyzed. Such descriptions state
+`analysis_complete` is false and `missing_event_labels` lists capabilities absent
+from that message, including the independently published other branch in a normal
+mixed session. Missing does not imply negative or failed. Such descriptions state
 `Analysis incomplete` and retain any positive evidence, never reporting all-clear.
+Use feature-specific latest endpoints or consume all SSE messages to read both
+branches. Source times can interleave across branches; apply freshness per capability.
+The global latest endpoint returns one unchanged observation with the newest source
+time, not a combination of different frames. See [API delivery](API_DELIVERY.md).
 Live model responses must pass Chinese / English format validation; a malformed
 or monolingual description fails that inference branch. This validates language
 structure, not semantic translation equivalence.
@@ -652,9 +661,11 @@ in fullscreen, ignores older results, and resets when the session changes or
 stops. Its text follows the latest analysis result; the annotated video retains
 its configured display delay.
 
-In `fixed_five_events` mode, `judgments` always has exactly these labels in
-this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`. Each status is
-independent, so any number may be true in the same result. Negative judgments
+Legacy synchronous `fixed_five_events` results contain these labels in
+this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`; independent mixed
+streaming messages contain only their completed branch's labels, in that order.
+Each status is independent, so smoking and stranger may both be positive.
+Negative judgments
 use an empty `object_ids` array; every positive judgment references the boxes
 that support that event. The `stranger` status comes from a mismatch against
 the local known-person gallery, not merely from seeing a person.
@@ -872,6 +883,12 @@ See [event evidence and continuity](EVENT_EVIDENCE.md) for exact behavior and AP
 The [low-resolution validation report](LOW_RESOLUTION_VALIDATION.md) records real
 CPU face and public-media model results, actor-output latency, observed misses,
 crossing tradeoffs, and separately tested video-evidence behavior.
+The [stranger/LLM interoperability report](STRANGER_LLM_INTEROP_VALIDATION.md)
+records the retained 8081 observations, the reproduced scheduling defect,
+independent-branch regression tests and local HTTP validation. Mixed-session
+`/v1/status` includes `pipeline.branches.stranger.last_completion.face` diagnostics
+that distinguish raw detection quality from identity confirmation; they contain
+no names, persistent stranger features or photos.
 
 The harness does not grant rights to third-party face-analysis files. For
 customer or commercial use, supply files whose license covers the intended use.
