@@ -34,6 +34,14 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 `latest` 在尚无结果、或最新分析不含该能力时返回 `404`；它不会向前寻找历史
 阳性结果。正常返回且 `detected=false` 表示该次判断未检出，不是接口错误。
 
+每条分析结果新增顶层 `description`，与 `frame`、`judgments` 同级，描述
+`frame` 对应画面在本次分析中检出的事件。存在 `detected=true` 的判断时，按
+`judgments` 顺序拼接这些判断的 `event_label: description`，以 `; ` 分隔；
+全部未检出时固定返回 `"无异常"`。原有 `judgments[].description` 继续保留，
+表示各事件的判断依据。独立能力接口保留完整结果的全帧 `description`，即使
+该接口过滤后的 `judgments` 只有一个未检出的事件，也可能在顶层描述中看到
+其他能力检出的事件。完整帧描述可通过 `result.description` 读取。
+
 SSE 的 `Content-Type` 为 `text/event-stream`，每条消息以空行结束，结构如下：
 
 ```text

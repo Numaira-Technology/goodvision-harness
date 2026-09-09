@@ -581,9 +581,16 @@ def test_qwen_bbox_is_normalized_and_validated() -> None:
         NormalizedBBox(0.8, 0.1, 0.2, 0.9)
 
 
-def test_analysis_result_matches_versioned_json_schema() -> None:
-    payload = _analysis_result().as_dict()
+@pytest.mark.parametrize(
+    ("detected", "description"),
+    [(True, "smoking: Visible event."), (False, "无异常")],
+)
+def test_analysis_result_matches_versioned_json_schema(
+    detected: bool, description: str,
+) -> None:
+    payload = _analysis_result(detected=detected).as_dict()
     assert payload["model"]["name"] == PUBLIC_MODEL_NAME
+    assert payload["description"] == description
     schema = json.loads(
         (ROOT / "schemas" / "analysis-result-v1.schema.json").read_text(
             encoding="utf-8"
@@ -592,13 +599,75 @@ def test_analysis_result_matches_versioned_json_schema() -> None:
     jsonschema.Draft202012Validator.check_schema(schema)
     jsonschema.validate(payload, schema)
     invalid = json.loads(json.dumps(payload))
+    invalid["judgments"][0]["detected"] = True
     invalid["judgments"][0]["object_ids"] = []
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(invalid, schema)
-    assert payload["objects"][0]["bbox"]["coordinate_system"] == (
-        "source_normalized_xyxy"
-    )
+    if detected:
+        assert payload["objects"][0]["bbox"]["coordinate_system"] == (
+            "source_normalized_xyxy"
+        )
     assert payload["frame"]["width"] == 1920
+
+
+@pytest.mark.parametrize("description", ["", None, 42])
+def test_analysis_schema_requires_nonempty_frame_description(description: Any) -> None:
+    schema = json.loads(
+        (ROOT / "schemas" / "analysis-result-v1.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload = _analysis_result().as_dict()
+    del payload["description"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, schema)
+    payload["description"] = description
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, schema)
+
+
+def test_frame_description_summarizes_only_detected_events() -> None:
+    result = _analysis_result()
+    result = replace(
+        result,
+        judgments=(
+            result.judgments[0],
+            EventJudgment("fall", False, 0.98, "No fall is visible."),
+            EventJudgment(
+                "stranger", True, 0.9, "An unknown person is visible.", ("object-1",),
+            ),
+        ),
+    )
+
+    payload = result.as_dict()
+
+    assert payload["description"] == (
+        "smoking: Visible event.; stranger: An unknown person is visible."
+    )
+    assert payload["judgments"][1]["description"] == "No fall is visible."
+
+
+def test_frame_description_is_clear_with_only_known_people() -> None:
+    result = _analysis_result()
+    result = replace(
+        result,
+        analysis_kind="face_recognition",
+        judgments=(
+            EventJudgment(
+                "unknown_person", False, 0.99, "Only an authorized person is visible.",
+                matched_memory_ids=("alice",),
+            ),
+        ),
+        objects=(replace(result.objects[0], label="known_person"),),
+    )
+
+    payload = result.as_dict()
+
+    assert payload["objects"]
+    assert payload["description"] == "无异常"
+    assert payload["judgments"][0]["description"] == (
+        "Only an authorized person is visible."
+    )
 
 
 def test_pipeline_emits_grounded_result_with_source_frame_mapping(
@@ -967,10 +1036,12 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert latest.status_code == 200
         assert latest.json()["message_id"] == "message-1"
         assert latest.json()["model"]["name"] == PUBLIC_MODEL_NAME
+        assert latest.json()["description"] == "smoking: Visible event."
         assert latest.headers["X-Result-Stream"] == stub.results.epoch
         smoking = client.get("/v1/results/smoking/latest")
         assert smoking.status_code == 200
         assert smoking.headers["X-Result-Feature"] == "smoking"
+        assert smoking.json()["description"] == latest.json()["description"]
         assert [item["event_label"] for item in smoking.json()["judgments"]] == [
             "smoking"
         ]
@@ -1211,7 +1282,8 @@ def test_readiness_requires_video_and_successful_analysis() -> None:
         runtime.stop()
 
 
-def test_webhook_uses_stable_idempotency_and_hmac_signature() -> None:
+@pytest.mark.parametrize("detected", [True, False])
+def test_webhook_uses_stable_idempotency_and_hmac_signature(detected: bool) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1225,13 +1297,17 @@ def test_webhook_uses_stable_idempotency_and_hmac_signature() -> None:
         transport=httpx.MockTransport(handler),
     )
     delivery.start()
-    payload = _analysis_result().as_dict()
+    payload = _analysis_result(detected=detected).as_dict()
     assert delivery.submit(payload)
     assert delivery.flush(timeout_seconds=2.0)
     delivery.close()
 
     assert len(requests) == 1
     request = requests[0]
+    assert json.loads(request.content) == payload
+    assert json.loads(request.content)["description"] == (
+        "smoking: Visible event." if detected else "无异常"
+    )
     assert request.headers["Idempotency-Key"] == payload["message_id"]
     expected = hmac.new(
         b"shared-secret",

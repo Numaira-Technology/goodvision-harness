@@ -691,6 +691,11 @@ def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
     assert payload["source_id"] == "camera-multi"
     assert payload["frame"]["source_frame_index"] == 42
     assert payload["frame"]["width"] == 1920
+    assert payload["description"] == (
+        "fight: A raised fist and forceful contact are visible.; "
+        "smoking: A cigarette is held at the mouth.; "
+        "stranger: One known and one unknown face are visible."
+    )
     assert [item["event_label"] for item in payload["judgments"]] == list(
         DETECTION_EVENT_LABELS
     )
@@ -716,6 +721,14 @@ def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
     )
     assert stranger_object["attributes"]["photo_url"].endswith("/photo")
     assert emitted_frames == [(result, window.newest_frame.presentation_jpeg_bytes)]
+
+    # Capability views keep the original frame summary, including when their
+    # own judgment is negative but other events were detected in the frame.
+    for feature in ("smoking", "fall"):
+        filtered = service_module._feature_result_payload(payload, feature)
+        assert filtered is not None
+        assert len(filtered["judgments"]) == 1
+        assert filtered["description"] == payload["description"]
 
 
 def test_renderer_passes_each_shared_positive_object_once(

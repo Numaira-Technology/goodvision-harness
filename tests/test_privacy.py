@@ -37,7 +37,6 @@ from goodvision_harness.result_bus import ResultBus
 from goodvision_harness.service import HarnessRuntime, create_app
 from goodvision_harness.vision_result import VisionResult
 
-
 PRIVATE_MARKERS = (
     "aiclub",
     "zimaocloud",
@@ -466,6 +465,7 @@ def test_serialization_sse_history_and_webhook_preserve_domain_values() -> None:
     assert payload["objects"][0]["attributes"]["name"] == "Claude"
     assert payload["judgments"][0]["object_ids"] == ["torch-object"]
     assert payload["judgments"][0]["description"] == "Claude carries a torch."
+    assert payload["description"] == "weapon: Claude carries a torch."
     assert payload["model"]["name"] == PUBLIC_MODEL_NAME
     bus = ResultBus()
     assert bus.publish(payload).payload == payload

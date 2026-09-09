@@ -260,6 +260,16 @@ class AnalysisResult:
         if not referenced.issubset(object_ids):
             raise ValueError("judgments reference unknown objects")
 
+    @property
+    def description(self) -> str:
+        """Summarize detected events across this frame's analysis result."""
+
+        return "; ".join(
+            f"{judgment.event_label}: {judgment.description}"
+            for judgment in self.judgments
+            if judgment.detected
+        ) or "无异常"
+
     def as_dict(self) -> dict[str, Any]:
         record = {
             "type": "analysis_result",
@@ -272,6 +282,7 @@ class AnalysisResult:
             "sequence": self.sequence,
             "emitted_at": self.emitted_at,
             "frame": self.frame.as_dict(),
+            "description": self.description,
             "judgments": [item.as_dict() for item in self.judgments],
             "objects": [item.as_dict() for item in self.objects],
             "model": {

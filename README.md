@@ -534,6 +534,7 @@ A result has the following shape:
     "height": 1080,
     "clock_source": "ingest_estimated"
   },
+  "description": "smoking: A person holds an e-cigarette at the mouth.; stranger: One face does not match the known-person gallery.",
   "judgments": [
     {
       "event_label": "fight",
@@ -621,6 +622,15 @@ A result has the following shape:
   }
 }
 ```
+
+Every emitted analysis result includes a required, non-empty top-level
+`description` for the frame identified by `frame`. It joins detected events as
+`event_label: description` in judgment order, separated by `; `. When no judgment
+has `detected=true`, it is `"无异常"`. This is a summary of this result's analyzed
+events, generated without an extra model request. The per-event
+`judgments[].description` remains unchanged, including negative evidence.
+Feature-specific JSON and SSE endpoints preserve the full-frame `description`
+even when they filter `judgments` and `objects` to one capability.
 
 In `fixed_five_events` mode, `judgments` always has exactly these labels in
 this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`. Each status is
