@@ -632,6 +632,12 @@ events, generated without an extra model request. The per-event
 Feature-specific JSON and SSE endpoints preserve the full-frame `description`
 even when they filter `judgments` and `objects` to one capability.
 
+The console shows this text in **Overall description · 全画面描述** below the video,
+with the latest analyzed frame's index and timestamp. The card is also visible
+in fullscreen, ignores older results, and resets when the session changes or
+stops. Its text follows the latest analysis result; the annotated video retains
+its configured display delay.
+
 In `fixed_five_events` mode, `judgments` always has exactly these labels in
 this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`. Each status is
 independent, so any number may be true in the same result. Negative judgments

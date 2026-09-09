@@ -63,6 +63,50 @@ function result(timestamp,values,{session="session-1",frame=Math.round(timestamp
 }
 const clear={fight:false,smoking:false,fall:false,weapon:false};
 
+test("overall description displays the frame's text rather than held event alerts",()=>{
+  const view=dashboard();
+  view.app.analysis({...result(1,{...clear,stranger:true}),description:"画面中发现陌生人。"});
+  assert.equal(view.element("overall-description").textContent,"画面中发现陌生人。");
+  view.app.analysis({...result(1.4,clear),description:"无异常"});
+  assert.equal(view.element("verdict").textContent,"STRANGER");
+  assert.equal(view.element("overall-description").textContent,"无异常");
+  assert.equal(view.element("overall-description-meta").textContent,"Frame 14 · 1.400s");
+});
+
+test("overall description ignores older frames and results from other sessions",()=>{
+  const view=dashboard();
+  view.app.analysis({...result(2,{...clear,stranger:false}),description:"无异常"});
+  for(const old of [result(1,{smoking:true}),result(2,{smoking:true},{frame:19}),
+    result(3,{smoking:true},{session:"other"})]){
+    view.app.analysis({...old,description:"旧画面异常"});
+    assert.equal(view.element("overall-description").textContent,"无异常");
+    assert.equal(view.element("overall-description-meta").textContent,"Frame 20 · 2.000s");
+  }
+});
+
+test("overall description renders face results and treats model text as plain text",()=>{
+  const view=dashboard(),description='<img src=x onerror="alert(1)">';
+  view.app.analysis({...result(1,{stranger:true}),analysis_kind:"face_recognition",
+    objects:[],description});
+  assert.equal(view.element("overall-description").textContent,description);
+  assert.equal(view.element("overall-description").children.length,0);
+  assert.equal(view.element("overall-description-meta").textContent,"Frame 10 · 1.000s");
+});
+
+test("missing overall description is unavailable and session reset clears the old frame",()=>{
+  const view=dashboard();
+  view.app.analysis({...result(1,{smoking:true}),description:"吸烟行为"});
+  view.app.analysis(result(2,clear));
+  assert.equal(view.element("overall-description").textContent,"本帧未提供整体描述");
+  view.app.message({type:"session",stream_session_id:"session-2",mode:"stream",features:Object.keys(clear)});
+  assert.equal(view.element("overall-description").textContent,"等待当前帧分析…");
+  assert.equal(view.element("overall-description-meta").textContent,"等待分析帧");
+  view.app.analysis({...result(1,{smoking:true},{session:"session-2"}),description:"吸烟行为"});
+  view.app.message({type:"ended",reason:"stopped"});
+  assert.equal(view.element("overall-description").textContent,"等待当前帧分析…");
+  assert.equal(view.app.state.overallResult,null);
+});
+
 test("skipped face samples preserve panel alerts and face details without rewriting evidence",()=>{
   const view=dashboard();
   view.app.analysis(result(1,{...clear,stranger:true}));

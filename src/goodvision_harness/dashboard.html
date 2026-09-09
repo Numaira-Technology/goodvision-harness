@@ -31,6 +31,9 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
 .analysis-workspace.fullscreen-active{width:100vw;height:100vh;padding:0;overflow:hidden;background:#030712}.analysis-workspace:fullscreen{width:100vw;height:100vh;padding:0;overflow:hidden;background:#030712}.analysis-workspace:-webkit-full-screen{width:100vw;height:100vh;padding:0;overflow:hidden;background:#030712}.analysis-workspace::backdrop{background:#030712}.analysis-workspace.fullscreen-active .annotation-panel{position:absolute;inset:0;display:flex;height:100%;padding:0;overflow:hidden;background:#030712;border:0;border-radius:0;box-shadow:none}.analysis-workspace.fullscreen-active .annotation-main{height:100%}.analysis-workspace.fullscreen-active .annotation-head{z-index:7;position:absolute;top:max(14px,env(safe-area-inset-top));left:max(14px,env(safe-area-inset-left));max-width:calc(100% - 380px);margin:0;padding:7px 8px;color:#fff;background:rgba(3,7,18,.62);border:1px solid rgba(255,255,255,.14);border-radius:11px;backdrop-filter:blur(14px);box-shadow:0 8px 24px rgba(0,0,0,.18)}.analysis-workspace.fullscreen-active .annotation-head .section-title h2{color:#fff;font-size:12px}.analysis-workspace.fullscreen-active .annotation-head .step{width:21px;height:21px;border-radius:7px}.analysis-workspace.fullscreen-active .annotation-actions{flex-wrap:wrap}.analysis-workspace.fullscreen-active .annotation-actions #stream-meta{color:#dbe4f3}.analysis-workspace.fullscreen-active .viewport-control{color:#fff;background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.16)}.analysis-workspace.fullscreen-active .viewport{flex:1;width:100%;height:100%;min-height:0;background:#000;border:0;border-radius:0}.analysis-workspace.fullscreen-active .annotation-note{display:none}.analysis-workspace.fullscreen-active .analysis-hud{display:none}.analysis-workspace.fullscreen-active .badge{top:auto;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));left:auto}.analysis-workspace.fullscreen-active .classification-panel{z-index:8;position:absolute;top:max(14px,env(safe-area-inset-top));right:max(14px,env(safe-area-inset-right));width:min(320px,calc(100vw - 28px));max-height:calc(100vh - 28px);padding:10px;overflow:auto;color:#fff;background:rgba(8,15,27,.72);border:1px solid rgba(255,255,255,.16);border-radius:14px;backdrop-filter:blur(18px) saturate(1.2);box-shadow:0 18px 45px rgba(0,0,0,.3);transition:width .18s ease,background .18s ease}.analysis-workspace.fullscreen-active .detection-rail-head{display:flex;margin-bottom:8px}.analysis-workspace.fullscreen-active .overlay-toggle{min-height:30px;padding:5px 8px;color:#e5edf8;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);font-size:11px}.analysis-workspace.fullscreen-active .decision{min-height:0;gap:8px;padding:12px;color:#fff;background:rgba(15,23,42,.62);border:1px solid rgba(148,163,184,.38);border-radius:10px}.analysis-workspace.fullscreen-active .decision.detected{background:rgba(127,29,29,.64);border-color:rgba(248,113,113,.8)}.analysis-workspace.fullscreen-active .decision.clear{background:rgba(20,83,45,.58);border-color:rgba(74,222,128,.65)}.analysis-workspace.fullscreen-active .decision.warming{background:rgba(51,65,85,.58);border-color:rgba(148,163,184,.5)}.analysis-workspace.fullscreen-active .decision.detected .verdict{color:#fecaca}.analysis-workspace.fullscreen-active .decision.clear .verdict{color:#bbf7d0}.analysis-workspace.fullscreen-active .decision.warming .verdict{color:#e2e8f0}.analysis-workspace.fullscreen-active .decision .eyebrow{color:#cbd5e1;font-size:10px}.analysis-workspace.fullscreen-active .verdict{font-size:clamp(22px,3.2vw,34px);line-height:1;letter-spacing:-.025em}.analysis-workspace.fullscreen-active .confidence{color:#e2e8f0;font-size:12px}.analysis-workspace.fullscreen-active .event-statuses{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}.analysis-workspace.fullscreen-active .event-state{gap:5px;padding:6px 7px;color:#bbf7d0;background:rgba(22,163,74,.2);font-size:10px}.analysis-workspace.fullscreen-active .event-state.detected{color:#fecaca;background:rgba(220,38,38,.3)}.analysis-workspace.fullscreen-active .event-state.pending{color:#cbd5e1;background:rgba(100,116,139,.26)}.analysis-workspace.fullscreen-active .description{display:-webkit-box;overflow:hidden;color:#f1f5f9;font-size:11.5px;line-height:1.4;-webkit-box-orient:vertical;-webkit-line-clamp:2}.analysis-workspace.fullscreen-active .meta{overflow:hidden;color:#cbd5e1;font-size:10.5px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed{width:auto;max-width:min(260px,calc(100vw - 28px));overflow:hidden;background:rgba(8,15,27,.62)}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed .detection-rail-head{margin:0}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed .decision{display:block;margin-top:7px;padding:7px 9px}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed .decision>:not(.verdict){display:none!important}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed .verdict{max-width:210px;overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:1050px){.grid,.data,.control-grid,.deployment-grid{grid-template-columns:1fr}.metrics,.endpoint-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}@media(max-width:720px){.viewport{height:300px}.decision{min-height:300px}.face-fields,.metrics,.endpoint-grid{grid-template-columns:1fr}.control-source-row{align-items:stretch}.session-actions .btn,.deployment-actions .btn{flex:1}.debug-head{align-items:flex-start;flex-direction:column}}
 @media(max-width:720px){.analysis-workspace.fullscreen-active .annotation-head{right:max(10px,env(safe-area-inset-right));left:max(10px,env(safe-area-inset-left));max-width:none}.analysis-workspace.fullscreen-active .annotation-head .section-title h2,.analysis-workspace.fullscreen-active .annotation-head .step{display:none}.analysis-workspace.fullscreen-active .classification-panel{top:auto;right:max(10px,env(safe-area-inset-right));bottom:max(10px,env(safe-area-inset-bottom));left:max(10px,env(safe-area-inset-left));width:auto;max-height:38vh}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed{right:max(10px,env(safe-area-inset-right));bottom:max(10px,env(safe-area-inset-bottom));left:auto;max-width:calc(100vw - 20px)}.analysis-workspace.fullscreen-active .badge{top:max(68px,calc(env(safe-area-inset-top) + 58px));right:max(10px,env(safe-area-inset-right));bottom:auto}.analysis-workspace.fullscreen-active .description{-webkit-line-clamp:1}.analysis-workspace.fullscreen-active .meta{display:none}}
+.frame-summary{display:grid;gap:7px;padding:13px 15px;background:#f8fafc;border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:10px}.frame-summary-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:5px 12px}.frame-summary h3{font-size:12px;font-weight:750;color:var(--text)}.frame-summary-meta{color:var(--muted);font-size:11px}.frame-summary-text{color:#334155;font-size:14px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap;max-height:150px;overflow:auto}
+.analysis-workspace.fullscreen-active .frame-summary{position:absolute;z-index:7;left:16px;right:360px;bottom:16px;background:rgba(8,15,27,.82);border-color:rgba(255,255,255,.2);border-left-color:#60a5fa;backdrop-filter:blur(14px)}.analysis-workspace.fullscreen-active .frame-summary h3,.analysis-workspace.fullscreen-active .frame-summary-text{color:#f1f5f9}.analysis-workspace.fullscreen-active .frame-summary-meta{color:#cbd5e1}.analysis-workspace.fullscreen-active .frame-summary-text{max-height:18vh}
+@media(max-width:720px){.analysis-workspace.fullscreen-active .frame-summary{left:10px;right:10px;bottom:auto;top:110px;padding:10px 12px}.analysis-workspace.fullscreen-active .frame-summary-text{font-size:12px;max-height:15vh}}
 </style>
 </head>
 <body>
@@ -192,6 +195,13 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
           <div id="raw-badge" class="badge"><span class="dot"></span><span id="raw-badge-text">LIVE</span></div>
         </div>
       </div>
+      <section class="frame-summary" aria-labelledby="overall-description-title">
+        <div class="frame-summary-head">
+          <h3 id="overall-description-title">Overall description · 全画面描述</h3>
+          <span id="overall-description-meta" class="frame-summary-meta">等待分析帧</span>
+        </div>
+        <p id="overall-description" class="frame-summary-text">等待当前帧分析…</p>
+      </section>
       <div id="annotation-note" class="note annotation-note">
         Full-cadence source frames are delayed and server-rendered with bbox interpolation.
         <a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.
@@ -326,6 +336,7 @@ const ui={
   fullscreenButtonLabel:$("fullscreen-button-label"),overlayToggle:$("detection-overlay-toggle"),
   decision:$("decision"),verdict:$("verdict"),confidence:$("confidence"),eventStatuses:$("event-statuses"),
   faceDiagnosticSummary:$("face-diagnostic-summary"),
+  overallDescription:$("overall-description"),overallDescriptionMeta:$("overall-description-meta"),
   description:$("description"),meta:$("decision-meta"),statusJson:$("status-json"),
   resultJson:$("result-json"),resultCount:$("result-count"),logBody:$("log-body")
 };
@@ -341,7 +352,7 @@ const state={
   gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
   ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,count:0,
   activeAnnotationId:null,annotationTimer:null,overlayCollapsed:false,
-  classificationJudgments:new Map(),classificationResult:null,runtimeErrorMessage:""
+  classificationJudgments:new Map(),classificationResult:null,overallResult:null,runtimeErrorMessage:""
 };
 function number(value,digits){const n=Number(value);return Number.isFinite(n)?n.toFixed(digits):"-"}
 function say(text,error=false){ui.statusLine.textContent=text;ui.statusLine.className="status"+(error?" error":"")}
@@ -1127,8 +1138,9 @@ function analysis(result){
   if(!result||result.type!=="analysis_result")return;
   if(!state.running||!state.sessionId||result.stream_session_id!==state.sessionId)return;
   ui.resultJson.textContent=JSON.stringify(result,null,2);
-  if(result.analysis_kind==="face_recognition"){analysisFace(result);return}
+  if(result.analysis_kind==="face_recognition"){renderOverallDescription(result);analysisFace(result);return}
   const judgments=Array.isArray(result.judgments)?result.judgments:[];if(!judgments.length)return;
+  renderOverallDescription(result);
   mergeClassification(result);renderClassification();clearAnnotation();
   const ids=new Set(judgments.filter(judgment=>judgment&&judgment.detected===true)
     .flatMap(judgment=>Array.isArray(judgment.object_ids)?judgment.object_ids:[]));
@@ -1136,7 +1148,18 @@ function analysis(result){
   log(result,judgments,ids.size)
 }
 function resetClassification(){
-  state.classificationJudgments.clear();state.classificationResult=null
+  state.classificationJudgments.clear();state.classificationResult=null;state.overallResult=null;
+  ui.overallDescription.textContent="等待当前帧分析…";
+  ui.overallDescriptionMeta.textContent="等待分析帧"
+}
+function renderOverallDescription(result){
+  if(state.overallResult&&compareClassificationFrames(result,state.overallResult)<0)return;
+  state.overallResult=result;
+  ui.overallDescription.textContent=typeof result.description==="string"&&result.description.trim()
+    ?result.description:"本帧未提供整体描述";
+  const frame=result.frame||{};
+  ui.overallDescriptionMeta.textContent="Frame "+(frame.source_frame_index??"-")+
+    " · "+number(frame.timestamp_seconds,3)+"s"
 }
 function compareClassificationFrames(left,right){
   const a=left.frame||{},b=right.frame||{};
