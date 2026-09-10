@@ -21,7 +21,7 @@ button,input{font:inherit}.btn{padding:8px 16px;color:var(--text);background:#ff
 a{color:#c2410c;text-decoration:none;font-weight:700}a:hover{text-decoration:underline}
 .field select{min-height:38px;padding:8px 12px;font:inherit;font-size:13px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px}
 .field{display:flex;flex-direction:column;gap:5px;min-width:0}.field.grow{flex:1 1 360px}.field>span{color:var(--muted);font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
-input[type=text],input[type=password],input[type=file]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=password]:focus,input[type=file]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
+input[type=text],input[type=password],input[type=file],input[type=number]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=password]:focus,input[type=file]:focus,input[type=number]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
 .inline{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13.5px}.note,.status{color:var(--muted);font-size:12.5px;line-height:1.5}.status.error,.note.error{color:var(--red)}.notice{margin-bottom:18px;padding:10px 12px;color:#9a3412;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;font-size:12.5px;line-height:1.5}
 .decision{flex:1;min-height:390px;display:flex;flex-direction:column;justify-content:center;gap:14px;padding:clamp(22px,3vw,40px);background:linear-gradient(#fbfcfe,#f4f6fa);border:2px solid #d8dee9;border-radius:14px}.decision .eyebrow{color:var(--muted);font-size:12.5px;font-weight:750;letter-spacing:.18em;text-transform:uppercase}.verdict{font-size:clamp(40px,5.2vw,76px);font-weight:850;line-height:.95;letter-spacing:-.04em;overflow-wrap:anywhere}.confidence{color:var(--muted);font-size:20px;font-weight:650}.event-statuses{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.event-state{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;color:#15803d;background:rgba(22,163,74,.09);border-radius:9px;font-size:12px;font-weight:750;text-transform:uppercase}.event-state.detected{color:var(--red);background:rgba(220,38,38,.1)}.event-state.pending{color:var(--gray);background:#e2e8f0}.description{color:#3f4a5c;font-size:15.5px;line-height:1.55}.meta{color:var(--muted);font-size:13px;line-height:1.5}.detected{border-color:var(--red);background:linear-gradient(#fef2f2,#fde8e8)}.detected .verdict{color:var(--red)}.clear{border-color:var(--green);background:linear-gradient(#f0fdf4,#e6f9ec)}.clear .verdict{color:#15803d}.warming{border-color:#e0c391}.warming .verdict{color:#8a94a6}
 .data{grid-template-columns:minmax(280px,2fr) minmax(340px,3fr);gap:18px;margin-top:18px}.data .panel{display:flex;flex-direction:column;gap:10px}pre{min-height:210px;max-height:420px;overflow:auto;padding:12px;color:#334155;background:#f8fafc;border:1px solid var(--line);border-radius:12px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -80,9 +80,19 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
                  placeholder="Leave blank to keep the current key">
         </label>
         <div id="default-api-key-status" class="secret-status">Checking key status...</div>
+        <div class="row">
+          <button id="save-api-key-button" class="btn" disabled>保存 API key</button>
+          <span class="note">可直接在此配置，无需 .env；保存后重启仍有效。正式检测请取消 Test mode。</span>
+        </div>
       </div>
       <div class="deployment-options">
         <span class="metric-label">Defaults for future sessions</span>
+        <label class="field"><span>默认网络摄像头类型</span>
+          <select id="default-camera-layout">
+            <option value="mono">单目 · 完整画面</option>
+            <option value="stereo">双目 · 使用左半幅</option>
+          </select>
+        </label>
         <label class="switch"><input id="default-dry-run" type="checkbox"> Test mode · no model calls</label>
         <div class="secret-status">Unchecked means formal mode with model calls enabled.</div>
         <label class="switch"><input id="default-autostart" type="checkbox"> Start automatically with the container</label>
@@ -131,6 +141,13 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
             <span>This session's RTSP / RTMP / WHEP URL</span>
             <input id="stream-url" type="text" autocomplete="off" spellcheck="false"
                    placeholder="Blank uses the saved/default network source">
+            <label class="field"><span>本次摄像头类型</span>
+              <select id="camera-layout" aria-describedby="camera-layout-note">
+                <option value="mono">单目 · 完整画面</option>
+                <option value="stereo">双目 · 使用左半幅</option>
+              </select>
+            </label>
+            <span id="camera-layout-note" class="note">手动选择，不再自动判断。双目指左右并排画面；切换前请先停止会话。</span>
           </div>
         </div>
         <div id="source-note" class="note">Loading source configuration...</div>
@@ -235,6 +252,17 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
         <span id="last-update" class="channel">Status · waiting</span>
       </div>
     </div>
+    <div class="deployment-actions">
+      <label class="field">
+        <span>视频缓存（秒）</span>
+        <input id="buffer-delay-seconds" type="number" min="0" max="30" step="any" disabled
+               aria-describedby="buffer-delay-note" placeholder="2.5">
+      </label>
+      <button id="save-buffer-delay-button" class="btn primary" disabled>应用并保存缓存时间</button>
+      <span id="buffer-delay-current" class="note">正在读取缓存时间…</span>
+    </div>
+    <div class="note">可设为 0–30 秒，支持小数。运行中可调整，重启后保留。调大后画面会短暂等待；调小后会追上新延迟。</div>
+    <div id="buffer-delay-note" class="status deployment-note" role="status" aria-live="polite"></div>
     <div class="metrics">
       <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
       <div class="metric"><span class="metric-label">Results published</span><strong id="published-result-count" class="metric-value">0</strong><span id="last-result-note" class="metric-note">No result yet</span></div>
@@ -324,8 +352,11 @@ const ui={
   defaultStreamStatus:$("default-stream-status"),defaultApiKey:$("default-api-key"),
   defaultApiKeyStatus:$("default-api-key-status"),defaultDryRun:$("default-dry-run"),
   defaultAutostart:$("default-autostart"),deploymentSourceStatus:$("deployment-source-status"),
+  defaultCameraLayout:$("default-camera-layout"),cameraLayout:$("camera-layout"),
   saveDeployment:$("save-deployment-button"),resetDeployment:$("reset-deployment-button"),
   clearApiKey:$("clear-api-key-button"),deploymentNote:$("deployment-note"),
+  bufferDelay:$("buffer-delay-seconds"),saveBufferDelay:$("save-buffer-delay-button"),
+  bufferDelayCurrent:$("buffer-delay-current"),bufferDelayNote:$("buffer-delay-note"),
   service:$("service-chip"),sourceChip:$("source-chip"),readinessChip:$("readiness-chip"),
   model:$("model-chip"),event:$("event-chip"),sampling:$("sampling-chip"),
   analysisChipLabel:$("analysis-chip-label"),eventControls:$("event-controls"),faceControls:$("face-controls"),
@@ -357,6 +388,7 @@ const ui={
   resultJson:$("result-json"),resultCount:$("result-count"),logBody:$("log-body")
 };
 const featureInputs=[...document.querySelectorAll("[data-feature]")];
+const saveApiKeyButton=$("save-api-key-button");
 const localHosts=new Set(["localhost","127.0.0.1","::1","[::1]"]);
 const detectionEvents=["fight","smoking","fall","weapon","stranger"];
 const cameraAllowed=window.isSecureContext||localHosts.has(location.hostname);
@@ -365,6 +397,7 @@ const state={
   routes:null,routeLoading:false,routeSubmitting:false,
   info:null,mode:"stream",sessionAnalysisMode:null,sessionFeatures:null,
   deployment:null,deploymentLoading:false,deploymentSaving:false,runOverridesDirty:false,
+  bufferDelayDirty:false,
   gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
   ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,count:0,
   activeAnnotationId:null,annotationTimer:null,overlayCollapsed:false,overallResult:null,
@@ -442,7 +475,7 @@ function controls(){
     :!!ui.streamUrl.value.trim()||configured();
   ui.start.disabled=busy||routeBusy||!state.info||!ready||selectedFeatures().length===0;ui.stop.disabled=!busy;
   $("route-check-button").disabled=busy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_probe;
-  for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun])item.disabled=busy;
+  for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun,ui.cameraLayout])item.disabled=busy;
   for(const item of featureInputs)item.disabled=busy;
   ui.cameraButton.disabled=busy||!cameraAllowed||!cameraConfig();
   ui.refreshGallery.disabled=busy||state.galleryLoading;
@@ -451,10 +484,13 @@ function controls(){
   for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy;
   const persistenceReady=state.deployment&&state.deployment.persistence_available===true;
   const deploymentBusy=state.deploymentLoading||state.deploymentSaving||routeBusy;
-  for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart])
+  for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart,ui.defaultCameraLayout])
     item.disabled=!persistenceReady||deploymentBusy;
   ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||busy;
+  saveApiKeyButton.disabled=!persistenceReady||deploymentBusy||busy||!ui.defaultApiKey.value.trim();
   ui.resetDeployment.disabled=deploymentBusy||!state.deployment;
+  ui.bufferDelay.disabled=!persistenceReady||deploymentBusy||state.pending;
+  ui.saveBufferDelay.disabled=ui.bufferDelay.disabled;
   ui.clearApiKey.disabled=!persistenceReady||deploymentBusy||busy||
     state.deployment.api_key_persisted!==true
 }
@@ -474,11 +510,16 @@ function samplingText(settings){
 function annotatedOutputText(output){
   const value=output&&typeof output==="object"?output:{};
   const fps=Number(value.output_fps),delay=Number(value.buffer_delay_seconds);
-  return (Number.isFinite(fps)?number(fps,1)+" FPS":"full cadence")+" | "+
-    (Number.isFinite(delay)?number(delay,1)+"s delayed":"delayed")
+  return (Number.isFinite(fps)?"up to "+number(fps,1)+" FPS":"full cadence")+" | "+
+    (Number.isFinite(delay)?number(delay,1)+"s buffer":"delayed")
 }
 function updateAnnotatedOutput(output){
   const value=output&&typeof output==="object"?output:{},mode=String(value.annotation_mode||"none");
+  const delay=value.buffer_delay_seconds;
+  if(typeof delay==="number"&&Number.isFinite(delay)){
+    ui.bufferDelayCurrent.textContent="当前缓存："+delay+" 秒";
+    if(!state.bufferDelayDirty)ui.bufferDelay.value=String(delay)
+  }
   const stateLabel=value.state==="running"?mode.toUpperCase():"BUFFERING";
   ui.rawBadgeText.textContent="DELAYED | "+stateLabel;
   ui.streamMeta.textContent=annotatedOutputText(value);
@@ -543,15 +584,58 @@ function surfaces(){
   if(!ui.rawBadgeText.textContent)ui.rawBadgeText.textContent="DELAYED | BUFFERING";
   requestAnimationFrame(alignAnnotationLayer)
 }
+const latestFeed={generation:0,active:false,session:null,timer:null,controller:null,url:null};
+function stopLatestFeed(){
+  latestFeed.generation++;latestFeed.active=false;
+  clearTimeout(latestFeed.timer);latestFeed.controller?.abort();latestFeed.controller=null;
+  if(latestFeed.url)URL.revokeObjectURL(latestFeed.url);
+  latestFeed.url=null;
+  ui.rawFeed.removeAttribute("src");
+  for(const key of ["frameSequence","observedAt","mediaTimestamp","receivedAt"]){
+    delete ui.rawFeed.dataset[key]
+  }
+}
+async function pullLatestFrame(generation){
+  if(generation!==latestFeed.generation||!latestFeed.active||!state.running)return;
+  if(document.hidden){latestFeed.timer=setTimeout(()=>pullLatestFrame(generation),250);return}
+  const started=performance.now(),controller=new AbortController();
+  latestFeed.controller=controller;
+  const timeout=setTimeout(()=>controller.abort(),3000);
+  let nextUrl=null,retry=0;
+  try{
+    // Request one complete JPEG at a time so a slow viewer cannot replay a
+    // backlog already written into a continuous MJPEG response.
+    const response=await fetch("/v1/video/annotated/latest.jpg",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error("Frame unavailable");
+    nextUrl=URL.createObjectURL(await response.blob());
+    const decoded=new Image();decoded.src=nextUrl;await decoded.decode();
+    if(generation!==latestFeed.generation||!latestFeed.active||!state.running||document.hidden)return;
+    const previous=latestFeed.url;
+    ui.rawFeed.src=nextUrl;latestFeed.url=nextUrl;nextUrl=null;
+    ui.rawFeed.dataset.frameSequence=response.headers.get("X-Frame-Sequence")||"";
+    ui.rawFeed.dataset.observedAt=response.headers.get("X-Observed-At")||"";
+    ui.rawFeed.dataset.mediaTimestamp=response.headers.get("X-Media-Timestamp")||"";
+    ui.rawFeed.dataset.receivedAt=String(Date.now());
+    if(previous)URL.revokeObjectURL(previous)
+  }catch(error){retry=250}
+  finally{
+    clearTimeout(timeout);if(nextUrl)URL.revokeObjectURL(nextUrl);
+    if(generation===latestFeed.generation&&latestFeed.active&&state.running){
+      latestFeed.controller=null;
+      const fps=Math.min(30,Math.max(1,Number(state.info?.annotated_output?.output_fps)||15));
+      latestFeed.timer=setTimeout(()=>pullLatestFrame(generation),Math.max(retry,1000/fps-(performance.now()-started)))
+    }
+  }
+}
 function openFeed(){
-  if(state.running&&!ui.rawFeed.getAttribute("src")){
-    const key=encodeURIComponent(state.sessionId||Date.now());
-    ui.rawFeed.src="/v1/video/annotated/stream.mjpeg?ui="+key
+  if(state.running&&(!latestFeed.active||latestFeed.session!==state.sessionId)){
+    stopLatestFeed();latestFeed.active=true;latestFeed.session=state.sessionId;
+    pullLatestFrame(latestFeed.generation)
   }
   surfaces()
 }
 function closeFeed(){
-  ui.rawFeed.removeAttribute("src");resetAnnotations();surfaces()
+  stopLatestFeed();resetAnnotations();surfaces()
 }
 
 function settingsSourceLabel(value){
@@ -574,6 +658,9 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   if(clearSecrets){ui.defaultStreamUrl.value="";ui.defaultApiKey.value=""}
   ui.defaultDryRun.checked=data.dry_run===true;
   ui.defaultAutostart.checked=data.autostart===true;
+  ui.defaultCameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono";
+  if(!state.bufferDelayDirty&&Number.isFinite(data.buffer_delay_seconds))
+    ui.bufferDelay.value=String(data.buffer_delay_seconds);
   const available=data.persistence_available===true;
   ui.deploymentStorage.textContent=available?"Persistence · available":"Persistence · unavailable";
   ui.deploymentStorage.className="channel "+(available?"good":"warn");
@@ -592,7 +679,8 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   ui.deploymentSourceStatus.textContent="Effective source: "+settingsSourceLabel(data.settings_source)+
     (data.settings_saved===true?" · persistent settings saved":" · no persistent override saved");
   if(syncRun&&!state.running&&!state.pending){
-    ui.streamUrl.value="";ui.dryRun.checked=data.dry_run===true;state.runOverridesDirty=false
+    ui.streamUrl.value="";ui.dryRun.checked=data.dry_run===true;
+    ui.cameraLayout.value=ui.defaultCameraLayout.value;state.runOverridesDirty=false
   }
   updateSourceNote();controls()
 }
@@ -637,13 +725,51 @@ async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={
   }finally{state.deploymentSaving=false;controls()}
 }
 async function saveDeploymentSettings(){
-  const payload={dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked};
+  const payload={dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked,
+    camera_layout:ui.defaultCameraLayout.value};
   const streamUrl=ui.defaultStreamUrl.value.trim(),apiKey=ui.defaultApiKey.value.trim();
   if(streamUrl)payload.stream_url=streamUrl;
   if(apiKey)payload.api_key=apiKey;
   await updateDeploymentSettings(payload,
     "Deployment defaults saved. They will be used by the next session and container start; no running session was restarted.",
     {syncRun:true})
+}
+async function saveApiKey(){
+  const key=ui.defaultApiKey.value.trim();
+  if(!key){deploymentSay("请输入 API key 后保存。",true);return}
+  await updateDeploymentSettings({api_key:key},
+    "API key 已保存，无需 .env 或重启服务。正式检测请取消 Test mode，再开始检测。")
+}
+async function saveBufferDelay(){
+  const raw=ui.bufferDelay.value.trim(),seconds=Number(raw);
+  if(!raw||!Number.isFinite(seconds)||seconds<0||seconds>30){
+    ui.bufferDelayNote.textContent="请输入 0–30 之间的秒数，支持小数。";
+    ui.bufferDelayNote.className="status deployment-note error";return
+  }
+  if(ui.saveBufferDelay.disabled)return;
+  state.deploymentSaving=true;controls();
+  ui.bufferDelayNote.className="status deployment-note";
+  ui.bufferDelayNote.textContent="正在应用并保存缓存时间…";
+  try{
+    const response=await fetch("/v1/deployment/settings",{
+      method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({buffer_delay_seconds:seconds})
+    });
+    if(!response.ok)throw new Error(await responseError(response));
+    state.deployment=await response.json();state.bufferDelayDirty=false;
+    const saved=state.deployment.buffer_delay_seconds;
+    if(state.info){
+      state.info.annotated_output={...state.info.annotated_output,buffer_delay_seconds:saved};
+      updateAnalysisUi()
+    }
+    ui.bufferDelay.value=String(saved);
+    ui.bufferDelayCurrent.textContent="当前缓存："+saved+" 秒";
+    ui.bufferDelayNote.textContent="已应用并保存为 "+saved+" 秒，重启后继续使用。";
+    await status()
+  }catch(error){
+    ui.bufferDelayNote.textContent="缓存时间保存失败："+error.message;
+    ui.bufferDelayNote.className="status deployment-note error"
+  }finally{state.deploymentSaving=false;controls()}
 }
 async function clearSavedApiKey(){
   if(!state.deployment||state.deployment.api_key_persisted!==true)return;
@@ -676,8 +802,10 @@ async function info(){
     }
     state.info=data;
     updateAnnotatedOutput(data.annotated_output);
-    if(!state.runOverridesDirty&&!state.deployment)
+    if(!state.runOverridesDirty&&!state.deployment){
       ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present);
+      ui.cameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono"
+    }
     updateSourceNote();
     say("Ready. Choose an input or monitor the active server session.");updateAnalysisUi()
   }catch(error){say("Could not load /v1/ui/info: "+error.message,true)}
@@ -1045,6 +1173,12 @@ function message(data){
 }
 async function start(){
   if(state.running||state.pending||!state.info)return;
+  const needsKey=selectedFeatures().some(feature=>feature!=="stranger");
+  if(needsKey&&!ui.dryRun.checked&&!state.info.api_key_present){
+    const message="请先在控制台填写并保存 API key，再启动正式检测；无需创建 .env。";
+    say(message,true);deploymentSay(message,true);
+    ui.defaultApiKey.scrollIntoView({behavior:"smooth",block:"center"});ui.defaultApiKey.focus();return
+  }
   state.pending=true;reset();say("Starting session...");
   setConnection("Starting session","Opening the selected video source and waiting for its first frame.","warn");controls();
   try{
@@ -1052,7 +1186,9 @@ async function start(){
       type:"start",mode:state.mode,analysis_mode:"multi",features:selectedFeatures()
     };
     data.dry_run=ui.dryRun.checked;
-    if(state.mode==="stream")data.stream_url=ui.streamUrl.value.trim();
+    if(state.mode==="stream"){
+      data.stream_url=ui.streamUrl.value.trim();data.camera_layout=ui.cameraLayout.value
+    }
     socket.send(JSON.stringify(data))
   }catch(error){state.pending=false;say("Could not start: "+error.message,true);controls()}
 }
@@ -1135,7 +1271,8 @@ async function status(){
       state.sessionMode=data.input_mode||data.mode||(data.stream?"stream":state.sessionMode)||"stream";
       if(state.sessionMode==="stream"){
         state.mode="stream";ui.streamMode.classList.add("active");ui.cameraMode.classList.remove("active");
-        ui.streamControls.hidden=false;ui.cameraControls.hidden=true
+        ui.streamControls.hidden=false;ui.cameraControls.hidden=true;
+        if(data.stream&&data.stream.camera_layout)ui.cameraLayout.value=data.stream.camera_layout
       }
       openFeed();
       say("Server session "+data.pipeline_state+" | "+
@@ -1417,21 +1554,26 @@ function connectArchiveEvents(cursor){
 function deploymentEdited(){
   deploymentSay(state.running||state.pending
     ?"Deployment edits are staged. Stop the current session before saving."
-    :"Unsaved deployment edits. Save defaults or discard edits.")
+    :"Unsaved deployment edits. Save defaults or discard edits.");controls()
 }
 ui.defaultStreamUrl.oninput=deploymentEdited;ui.defaultApiKey.oninput=deploymentEdited;
+ui.bufferDelay.oninput=()=>{state.bufferDelayDirty=true};
+ui.saveBufferDelay.onclick=saveBufferDelay;
 $("refresh-events").onclick=()=>loadEventArchive();
 $("archive-more").onclick=()=>loadEventArchive(true);
 $("archive-feature").onchange=()=>loadEventArchive();
 $("archive-subject").onchange=()=>loadEventArchive();
 ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
+ui.defaultCameraLayout.onchange=deploymentEdited;
 ui.saveDeployment.onclick=saveDeploymentSettings;
+saveApiKeyButton.onclick=saveApiKey;
 ui.resetDeployment.onclick=()=>loadDeploymentSettings(true);
 ui.clearApiKey.onclick=clearSavedApiKey;
 $("route-check-button").onclick=checkRoutes;
 ui.cameraMode.onclick=()=>mode("camera");ui.streamMode.onclick=()=>mode("stream");
 ui.cameraButton.onclick=camera;
 ui.streamUrl.oninput=()=>{state.runOverridesDirty=true;controls()};
+ui.cameraLayout.onchange=()=>{state.runOverridesDirty=true;controls()};
 ui.dryRun.onchange=()=>{state.runOverridesDirty=true;controls()};
 for(const item of featureInputs)item.onchange=()=>{updateAnalysisUi();controls()};
 ui.enroll.onclick=enrollPerson;ui.refreshGallery.onclick=refreshGallery;

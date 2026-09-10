@@ -41,7 +41,12 @@ from .config import (
 from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
 from .delayed_overlay import DelayedOverlayComposer, DisplayAnalysis, OverlaySelection
 from .delivery import WebhookDelivery
-from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
+from .deployment_settings import (
+    DeploymentSettings,
+    DeploymentSettingsStore,
+    validate_buffer_delay_seconds,
+    validate_camera_layout,
+)
 from .event_archive import EventArchive
 from .event_routes import install_event_routes
 from .face_recognition import (
@@ -59,6 +64,7 @@ from .grounding import (
 )
 from .model_api import (
     DEFAULT_OPENROUTER_ENDPOINT,
+    MissingAPIKeyError,
     ModelAPISettings,
     PooledModelAPIClient,
     environment_api_key,
@@ -73,6 +79,7 @@ from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSessi
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
     PUBLIC_FACE_ERROR,
+    PUBLIC_MISSING_API_KEY_ERROR,
     public_error_message,
     public_safe_value,
     redact_public_text,
@@ -202,6 +209,14 @@ class HarnessRuntime:
         self.preview_frames = FrameBus()
         self.annotated_frames = FrameBus()
         display = config.display if config is not None else DisplaySettings()
+        if (
+            self._deployment_settings is not None
+            and self._deployment_settings.buffer_delay_seconds is not None
+        ):
+            display = replace(
+                display,
+                delay_seconds=self._deployment_settings.buffer_delay_seconds,
+            )
         self._display_settings = display
         self._rich_disabled_reason: str | None = None
         self._rich_requested = rich_label_coordinator is not None or (
@@ -419,6 +434,17 @@ class HarnessRuntime:
             return bool(self._state["dry_run"])
         return self.dry_run
 
+    def configured_frame_crop(self) -> str:
+        if self._deployment_settings is not None:
+            layout = self._deployment_settings.camera_layout
+            if layout is not None:
+                return "left_half" if layout == "stereo" else "none"
+        crop = self.config.stream.frame_crop if self.config is not None else "none"
+        return crop if crop in {"left_half", "right_half"} else "none"
+
+    def configured_camera_layout(self) -> str:
+        return "mono" if self.configured_frame_crop() == "none" else "stereo"
+
     def _route_probe_supported(self) -> bool:
         return self.config is not None and (
             self.config.model_api.provider == "openrouter"
@@ -567,16 +593,18 @@ class HarnessRuntime:
             "settings_source": source,
             "configured_stream": bool(stream_url),
             "configured_stream_protocol": protocol,
-            "stream_frame_crop": self.config.stream.frame_crop,
+            "stream_frame_crop": self.configured_frame_crop(),
+            "camera_layout": self.configured_camera_layout(),
             "dry_run": self.dry_run,
             "autostart": self.autostart,
+            "buffer_delay_seconds": self._display_settings.delay_seconds,
             "api_key_present": bool(self._aiclub_api_key),
             "api_key_persisted": bool(self._persisted_api_key),
             "storage_error": self._deployment_error,
         }
 
     def update_deployment_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Persist console-managed defaults for the next session and restart."""
+        """Persist defaults; buffer-only updates also apply to the active session."""
 
         if self._deployment_store is None:
             raise RuntimeError("persistent deployment storage is not configured")
@@ -586,17 +614,23 @@ class HarnessRuntime:
             "autostart",
             "api_key",
             "clear_api_key",
+            "buffer_delay_seconds",
+            "camera_layout",
         }
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise ValueError("unknown deployment setting")
         with self._control_lock:
-            if self._session is not None and self._session.running:
+            buffer_only = set(payload) == {"buffer_delay_seconds"}
+            if self._session is not None and self._session.running and not buffer_only:
                 raise RuntimeError("stop the active session before saving settings")
             if self._route_probe["state"] == "running":
                 raise RuntimeError("wait for the route check before saving settings")
 
-            setting_fields = {"stream_url", "dry_run", "autostart"}
+            setting_fields = {
+                "stream_url", "dry_run", "autostart", "buffer_delay_seconds",
+                "camera_layout",
+            }
             settings: DeploymentSettings | None = None
             if setting_fields.intersection(payload):
                 stream_url = payload.get("stream_url", self.configured_stream_url())
@@ -613,10 +647,26 @@ class HarnessRuntime:
                     raise ValueError("dry_run must be boolean")
                 if not isinstance(autostart, bool):
                     raise ValueError("autostart must be boolean")
+                buffer_delay_seconds = (
+                    self._deployment_settings.buffer_delay_seconds
+                    if self._deployment_settings is not None else None
+                )
+                if "buffer_delay_seconds" in payload:
+                    buffer_delay_seconds = validate_buffer_delay_seconds(
+                        payload["buffer_delay_seconds"]
+                    )
                 settings = DeploymentSettings(
                     stream_url=stream_url,
                     dry_run=dry_run,
                     autostart=autostart,
+                    buffer_delay_seconds=buffer_delay_seconds,
+                    camera_layout=(
+                        validate_camera_layout(payload["camera_layout"])
+                        if "camera_layout" in payload else (
+                            self._deployment_settings.camera_layout
+                            if self._deployment_settings is not None else None
+                        )
+                    ),
                 )
 
             api_key = payload.get("api_key")
@@ -648,6 +698,12 @@ class HarnessRuntime:
                 self._deployment_settings = settings
                 self.dry_run = settings.dry_run
                 self.autostart = settings.autostart
+                if "buffer_delay_seconds" in payload:
+                    assert buffer_delay_seconds is not None
+                    self._delayed_overlay.set_delay_seconds(buffer_delay_seconds)
+                    self._display_settings = replace(
+                        self._display_settings, delay_seconds=buffer_delay_seconds,
+                    )
             if rendered_key is not None:
                 self._deployment_store.save_api_key(
                     rendered_key, provider=self._inference_provider,
@@ -665,7 +721,8 @@ class HarnessRuntime:
                 self._route_transport.close()
                 self._route_transport = None
             self._deployment_error = None
-            self._update_state(dry_run=self.dry_run)
+            if not buffer_only:
+                self._update_state(dry_run=self.dry_run)
         return self.deployment_settings()
 
     def ui_info(self) -> dict[str, Any]:
@@ -703,7 +760,8 @@ class HarnessRuntime:
             "dry_run": self.dry_run,
             "configured_stream": bool(stream_url),
             "configured_stream_protocol": protocol,
-            "stream_frame_crop": self.config.stream.frame_crop,
+            "stream_frame_crop": self.configured_frame_crop(),
+            "camera_layout": self.configured_camera_layout(),
             "deployment": self.deployment_settings(),
             "analysis_modes": sorted(ANALYSIS_MODES),
             "reference_memory": (
@@ -735,7 +793,7 @@ class HarnessRuntime:
             "annotated_output": {
                 "output_fps": self._annotated_output_fps,
                 "max_image_side": self.config.display.max_image_side,
-                "buffer_delay_seconds": self.config.display.delay_seconds,
+                "buffer_delay_seconds": self._display_settings.delay_seconds,
                 "bbox_max_gap_seconds": (
                     self.config.display.bbox_max_gap_seconds
                 ),
@@ -881,6 +939,11 @@ class HarnessRuntime:
                 last_error=None,
                 webhook_enabled=self._delivery is not None,
             )
+        except MissingAPIKeyError:
+            self._update_state(
+                pipeline_state="idle", last_error=PUBLIC_MISSING_API_KEY_ERROR,
+                ready=False,
+            )
         except Exception:
             LOGGER.error("could not start harness runtime")
             self._update_state(
@@ -968,7 +1031,10 @@ class HarnessRuntime:
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
         features: Collection[str] | None = None,
+        camera_layout: str | None = None,
     ) -> dict[str, Any]:
+        if camera_layout is not None:
+            validate_camera_layout(camera_layout)
         url = (stream_url or "").strip() or self.configured_stream_url()
         if not url:
             raise ValueError("provide an RTSP, RTMP, or WebRTC/WHEP stream URL")
@@ -982,6 +1048,7 @@ class HarnessRuntime:
             event_label=event_label,
             analysis_mode=analysis_mode,
             features=features,
+            camera_layout=camera_layout,
         )
 
     def start_camera(
@@ -1014,6 +1081,7 @@ class HarnessRuntime:
         analysis_mode: str = MULTI_ANALYSIS_MODE,
         features: Collection[str] | None = None,
         camera_owner: str | None = None,
+        camera_layout: str | None = None,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
@@ -1058,6 +1126,14 @@ class HarnessRuntime:
             if self._session is not None and self._session.running:
                 raise RuntimeError(
                     "a harness session is already running; stop it first"
+                )
+            needs_model_key = selected_analysis == EVENT_ANALYSIS_MODE or (
+                selected_analysis == MULTI_ANALYSIS_MODE
+                and any(feature in SAFETY_EVENT_LABELS for feature in selected_features)
+            )
+            if needs_model_key and not use_dry_run and not self._aiclub_api_key:
+                raise MissingAPIKeyError(
+                    "missing model API key; set " + self.config.model_api.api_key_env
                 )
             self._ensure_delivery()
 
@@ -1186,6 +1262,13 @@ class HarnessRuntime:
                         if self._route_pool_enabled and not use_dry_run else None
                     ),
                 )
+            if mode == STREAM_MODE:
+                crop = self.configured_frame_crop() if camera_layout is None else (
+                    "left_half" if camera_layout == "stereo" else "none"
+                )
+                session_config = replace(
+                    session_config, stream=replace(session_config.stream, frame_crop=crop),
+                )
             generation = self._generation + 1
             callbacks = SessionCallbacks(
                 on_display_frame=(
@@ -1287,6 +1370,10 @@ class HarnessRuntime:
                                 "protocol": stream_protocol,
                                 "host": stream_host,
                                 "frame_crop": session_config.stream.frame_crop,
+                                "camera_layout": (
+                                    "mono" if session_config.stream.frame_crop == "none"
+                                    else "stereo"
+                                ),
                             }
                             if mode == STREAM_MODE
                             else None
@@ -1343,6 +1430,9 @@ class HarnessRuntime:
                 response["features"] = list(selected_features)
             if stream_protocol is not None:
                 response["stream_protocol"] = stream_protocol
+                response["camera_layout"] = (
+                    "mono" if session_config.stream.frame_crop == "none" else "stereo"
+                )
             if (
                 selected_analysis == EVENT_ANALYSIS_MODE
                 and session_config.memory is not None
@@ -2330,9 +2420,14 @@ def create_app(
                                     event_label=event_label,
                                     analysis_mode=analysis_mode,
                                     features=requested_features,
+                                    camera_layout=payload.get("camera_layout"),
                                 )
                             else:
                                 raise ValueError("mode must be camera or stream")
+                        except MissingAPIKeyError:
+                            await websocket.send_json(
+                                {"type": "error", "message": PUBLIC_MISSING_API_KEY_ERROR}
+                            )
                         except ValueError as exc:
                             await websocket.send_json(
                                 {
@@ -2448,7 +2543,12 @@ def create_app(
                 event_label=event_label,
                 analysis_mode=analysis_mode,
                 features=payload.get("features"),
+                camera_layout=payload.get("camera_layout"),
             )
+        except MissingAPIKeyError as exc:
+            raise HTTPException(
+                status_code=400, detail=PUBLIC_MISSING_API_KEY_ERROR,
+            ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,

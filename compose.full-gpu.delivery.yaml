@@ -2,7 +2,7 @@ name: goodvision-harness
 
 services:
   harness:
-    image: goodvision-harness:2026.09.10-full.2
+    image: goodvision-harness:2026.09.10-full.3
     pull_policy: never
     init: true
     restart: unless-stopped
@@ -17,7 +17,7 @@ services:
       RTSP_URL: "${RTSP_URL:-}"
       # Safe first boot. Settings saved in the console remain authoritative.
       HARNESS_DRY_RUN: "true"
-      HARNESS_AUTOSTART: "true"
+      HARNESS_AUTOSTART: "false"
       HARNESS_SOURCE_ID: "${HARNESS_SOURCE_ID:-external-camera}"
       VIDEO_CAPTURE_OPTIONS: "${VIDEO_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}"
       # Keep the customer service preset fixed when retaining an older .env.
@@ -52,7 +52,7 @@ services:
     stop_grace_period: 90s
   rich-label-worker:
     profiles: [gpu]
-    image: goodvision-rich-label-worker:2026.09.10-full.2
+    image: goodvision-rich-label-worker:2026.09.10-full.3
     pull_policy: never
     init: true
     restart: unless-stopped

@@ -399,6 +399,8 @@ def test_latest_complete_images_remain_bundled_but_cpu_has_no_gpu_dependency() -
     assert rich["image"] == launcher.RICH_IMAGE
     assert harness["environment"]["FACE_ACCELERATOR"] == "cpu"
     assert harness["environment"]["RICH_LABEL_ENABLED"] == "false"
+    assert harness["environment"]["HARNESS_AUTOSTART"] == "false"
+    assert "env_file" not in harness
     assert "depends_on" not in harness and "deploy" not in harness
     assert rich["profiles"] == ["gpu"]
     assert "./config.delivery.yaml:/app/config.yaml:ro" in harness["volumes"]

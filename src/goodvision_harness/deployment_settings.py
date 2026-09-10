@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,28 @@ class DeploymentSettings:
     stream_url: str
     dry_run: bool
     autostart: bool
+    buffer_delay_seconds: float | None = None
+    camera_layout: str | None = None
+
+
+def validate_camera_layout(value: object) -> str:
+    if not isinstance(value, str) or value not in {"mono", "stereo"}:
+        raise ValueError("camera_layout must be mono or stereo")
+    return value
+
+
+def validate_buffer_delay_seconds(value: object) -> float:
+    """Bound console buffering without coercing strings or booleans."""
+    message = "buffer_delay_seconds must be a finite number between 0 and 30"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(message)
+    try:
+        seconds = float(value)
+    except OverflowError as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(seconds) or not 0 <= seconds <= 30:
+        raise ValueError(message)
+    return seconds
 
 
 class DeploymentSettingsStore:
@@ -57,10 +80,19 @@ class DeploymentSettingsStore:
             raise TypeError("deployment dry_run must be boolean")
         if not isinstance(autostart, bool):
             raise TypeError("deployment autostart must be boolean")
+        buffer_delay_seconds = (
+            validate_buffer_delay_seconds(payload["buffer_delay_seconds"])
+            if "buffer_delay_seconds" in payload else None
+        )
         return DeploymentSettings(
             stream_url=stream_url.strip(),
             dry_run=dry_run,
             autostart=autostart,
+            buffer_delay_seconds=buffer_delay_seconds,
+            camera_layout=(
+                validate_camera_layout(payload["camera_layout"])
+                if "camera_layout" in payload else None
+            ),
         )
 
     def save(self, settings: DeploymentSettings) -> None:
@@ -70,6 +102,12 @@ class DeploymentSettingsStore:
             "dry_run": settings.dry_run,
             "autostart": settings.autostart,
         }
+        if settings.buffer_delay_seconds is not None:
+            payload["buffer_delay_seconds"] = validate_buffer_delay_seconds(
+                settings.buffer_delay_seconds
+            )
+        if settings.camera_layout is not None:
+            payload["camera_layout"] = validate_camera_layout(settings.camera_layout)
         self._atomic_write(
             self.path,
             json.dumps(payload, indent=2, sort_keys=True) + "\n",

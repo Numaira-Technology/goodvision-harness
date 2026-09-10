@@ -9,11 +9,17 @@ from pathlib import Path
 import pytest
 
 
-def test_dashboard_classification_handlers() -> None:
+@pytest.mark.parametrize(
+    "script_name", [
+        "dashboard_classification.cjs", "dashboard_feed.cjs", "dashboard_buffer_delay.cjs",
+        "dashboard_camera_layout.cjs",
+    ]
+)
+def test_dashboard_handlers(script_name: str) -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required to execute dashboard DOM regression tests")
-    script = Path(__file__).with_name("dashboard_classification.cjs")
+    script = Path(__file__).with_name(script_name)
     completed = subprocess.run(
         [node, "--test", str(script)],
         capture_output=True,

@@ -140,6 +140,10 @@ def environment_api_key(settings: ModelAPISettings) -> str:
     return ""
 
 
+class MissingAPIKeyError(ModelAPIError):
+    """The operator must configure a credential before live model calls."""
+
+
 class ModelAPIClient:
     """Generic JSON client used by the video inference layer."""
 
@@ -163,7 +167,7 @@ class ModelAPIClient:
         self.settings = settings
         self._api_key = (api_key or environment_api_key(settings)).strip()
         if not self._api_key:
-            raise ModelAPIError(f"missing model API key; set {settings.api_key_env}")
+            raise MissingAPIKeyError(f"missing model API key; set {settings.api_key_env}")
 
     def chat_completion(
         self,
