@@ -10,6 +10,7 @@ from typing import Any
 import cv2
 import jsonschema
 import numpy as np
+import pytest
 
 from goodvision_harness.event_archive import EventArchive, EventArchiveSettings
 from goodvision_harness.video_evidence import EvidenceFrame, stage_clip
@@ -59,6 +60,35 @@ def jpeg() -> bytes:
     ok, encoded = cv2.imencode(".jpg", np.zeros((90, 160, 3), np.uint8))
     assert ok
     return encoded.tobytes()
+
+
+@pytest.mark.parametrize("timestamp", [0.0092, 0.0098])
+@pytest.mark.parametrize("explicit_window", [False, True])
+def test_first_result_uses_same_millisecond_timeline_as_window(
+    tmp_path: Path, timestamp: float, explicit_window: bool,
+) -> None:
+    archive = EventArchive(EventArchiveSettings(directory=tmp_path), clock=lambda: 0.0)
+    try:
+        archive.note_window("session", "safety:0", timestamp, ("smoking",))
+        archive.submit_result(
+            result(round(timestamp, 3), "first"),
+            window_id="safety:0" if explicit_window else None,
+        )
+        archive.note_window(
+            "session", "safety:0", timestamp, ("smoking",), "completed",
+        )
+        assert archive.flush()
+        events = archive.list_events(message_id="first")["events"]
+        assert len(events) == 1
+        assert events[0]["start_seconds"] == round(timestamp, 3)
+        assert archive.status()["late_results"] == 0
+        # A genuinely earlier result must still be rejected by the watermark.
+        archive.submit_result(result(round(timestamp, 3) - 0.005, "before"))
+        assert archive.flush()
+        assert archive.list_events(message_id="before")["events"] == []
+        assert archive.status()["late_results"] == 1
+    finally:
+        archive.close()
 
 
 def fake_encoder(manifest: Path, destination: Path, **_: Any) -> dict[str, Any]:

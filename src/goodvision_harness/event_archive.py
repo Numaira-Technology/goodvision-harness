@@ -234,7 +234,10 @@ class EventArchive:
             {
                 "session_id": stream_session_id,
                 "window_id": str(window_id),
-                "timestamp": timestamp_seconds,
+                # FrameReference.as_dict() publishes millisecond precision.
+                # Use the same timeline for window matching and the watermark,
+                # so rounding down cannot make the first result appear late.
+                "timestamp": round(float(timestamp_seconds), 3),
                 "labels": [_label(v) for v in expected_labels],
                 "outcome": outcome,
                 "source_frame_index": source_frame_index,

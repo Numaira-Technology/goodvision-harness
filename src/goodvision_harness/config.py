@@ -26,7 +26,7 @@ class StreamSettings:
 
     url: str | None = None
     whep_headers: Mapping[str, str] = field(default_factory=dict)
-    frame_crop: str = "none"
+    frame_crop: str = "auto"
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,11 +223,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             raise TypeError(f"stream.whep_headers.{key} must be a string")
         whep_headers[key] = str(raw_value)
     frame_crop = _required_string(
-        stream_section.get("frame_crop", "none"), "stream.frame_crop"
+        stream_section.get("frame_crop", "auto"), "stream.frame_crop"
     ).lower()
-    if frame_crop not in {"none", "left_half", "right_half"}:
+    if frame_crop not in {"auto", "none", "left_half", "right_half"}:
         raise ValueError(
-            "stream.frame_crop must be none, left_half, or right_half"
+            "stream.frame_crop must be auto, none, left_half, or right_half"
         )
     stream = StreamSettings(
         url=stream_url,

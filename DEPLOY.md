@@ -9,20 +9,20 @@ Windows Docker Desktop 使用 Linux 容器模式，启动命令可写为 `py -3 
 
 | 服务 | 镜像 | 功能 |
 | --- | --- | --- |
-| 主服务 | `goodvision-harness:2026.09.10-full.1` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
-| 感知服务 | `goodvision-rich-label-worker:2026.09.10-full.1` | 人物/物品检测、会话内跟踪、异步行人属性 |
+| 主服务 | `goodvision-harness:2026.09.10-full.2` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
+| 感知服务 | `goodvision-rich-label-worker:2026.09.10-full.2` | 人物/物品检测、会话内跟踪、异步行人属性 |
 
 控制台保留当前 8 个模型 **A–H** 的选择与保存。吸烟判断要求可辨认烟具和可见互动；
 陌生人标注在连续视频帧中保持跟踪。行人属性标注不显示性别。
 
 ## 1. 交付文件与模型
 
-完整包使用 `goodvision-full-2026.09.10.1.tar`，包含上述两个镜像。
+完整包使用 `goodvision-full-2026.09.10.2.tar`，包含上述两个镜像。
 
 本版视频叠字内置中文字体，离线运行无需安装系统字体。状态栏仅显示 `CLEAR`
 或已检测事件；分析尚未完成、结果过期或人脸不可用时隐藏状态，不将缺失判断当成无异常。
 事件描述、已知人员姓名及标注卡均支持中文。完整包包含视频编解码、GPU 运行库和
-HTTP/2 通信依赖；模型权重仍使用下述持久卷。配置字段和接口版本未改变。
+HTTP/2 通信依赖；模型权重仍使用下述持久卷。接口版本保持不变。
 同目录还提供 `start_delivery.py`、`compose.yaml`、`compose.gpu.yaml`、
 `.env.example`、`config.delivery.yaml`、接口说明和自检入口。
 
@@ -36,12 +36,29 @@ GPU 感知功能还需要目标检测高精度模型包和属性标准模型包�
 留空时使用选定档位的缓存。人脸程序是否允许下载由 `config.delivery.yaml` 中的
 `face.allow_model_download` 决定。无 GPU 模式不加载感知模型。
 
+### 网络摄像头自动选取画面
+
+`config.delivery.yaml` 中的 `stream.frame_crop` 默认改为 `auto`。连接开始时短暂
+检查连续画面：只有多帧都确认左右两半是同一场景的双目视图时，才选取左半幅；
+单目、全景、低纹理或无法确认的输入保留全画面。宽高比本身不会触发裁剪。
+
+自动判断通常在开始后约 0.3–1 秒完成；最多检查到第 20 帧，因此低帧率输入可能
+等待下一帧才能结束判断。判定前不发布预览或分析帧，避免跟踪、叠框和事件视频混用
+两套坐标。结果在本次连接内固定，重新连接或切换视频源会重新判断。
+
+此功能针对左右并排双目流，无法保证在黑暗、极远景、严重遮挡或特殊拼接布局下识别。
+不确定时保留完整画面。需要确定行为时，可手动设为 `none`（全画面）、`left_half`
+或 `right_half`。文件和浏览器摄像头输入保持原有全画面行为。
+如果保留了旧配置文件，请将其中的 `frame_crop: left_half` 改为 `frame_crop: auto`
+并重启服务；显式手动设置会继续生效。可在 `/v1/status` 的 `stream.crop_selection`
+查看实际选择和判定原因。
+
 ## 2. 加载并启动
 
 在完整交付包目录执行：
 
 ```bash
-docker load -i goodvision-full-2026.09.10.1.tar
+docker load -i goodvision-full-2026.09.10.2.tar
 cp -n .env.example .env
 chmod 600 .env
 python3 start_delivery.py
