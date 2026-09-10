@@ -963,7 +963,7 @@ def test_face_gpu_image_and_compose_are_isolated_from_cpu_delivery() -> None:
     smoke = (ROOT / "tools" / "face_gpu_smoke.py").read_text(encoding="utf-8")
 
     assert "onnxruntime-gpu" not in cpu_dockerfile
-    assert ".[face-gpu,webrtc]" in gpu_dockerfile
+    assert ".[face-gpu,webrtc,vlm]" in gpu_dockerfile
     assert "FACE_PROVIDER=CUDAExecutionProvider" in gpu_dockerfile
     assert "face_gpu_smoke.py" in gpu_dockerfile
     assert "FROM python:3.11-slim AS runtime" in gpu_dockerfile

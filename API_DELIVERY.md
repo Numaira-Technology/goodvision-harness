@@ -90,6 +90,61 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 `X-Result-Stream`。游标按发布顺序单调增加，并非源帧时间；各能力的游标允许跳号。
 全局 `latest` 的游标也可能小于另一能力 `latest` 的游标，因为两者按源帧时间选取。
 
+## 视频状态显示
+
+视频状态栏仅显示确认无异常的 `CLEAR` 或当前检测到的事件（例如 `SMOKING`、
+`FALL`、陌生人 `UNKNOWN`）。没有可用的完整判断时隐藏状态栏和描述；不显示
+`INCOMPLETE`、`STALE`、`NO FACE` 或 `NO USABLE FACE`，也不误报 `CLEAR`。
+部分分支已有事件时照常显示该事件及其描述。状态文案、对象标签和已知人员姓名
+支持中文，字体已随程序内置。API 的 `analysis_complete`、`missing_event_labels`
+及原始双语 `description` 保持原语义，接入方仍应据此判断结果是否完整。
+
+## 人员身份 person_id 的返回位置
+
+`person_id` 是录入人脸库时指定的身份 ID。实时识别成功后，读取分析结果中
+`label="known_person"` 对象的 **`objects[].attributes.person_id`**；姓名位于
+同一对象的 `attributes.name`。它不是分析结果的顶层字段，也不在 `judgments` 内。
+
+| 接口 / 消息 | person_id 字段路径（相对于返回 JSON 或 SSE data） |
+| --- | --- |
+| `GET /v1/results/stranger/latest` | `objects[].attributes.person_id` |
+| `GET /v1/results/stranger/events` 的 `analysis_result` | `objects[].attributes.person_id` |
+| `GET /v1/results/latest`、`GET /v1/results/events` 的 `analysis_result` | 消息包含已知人脸时，位于 `objects[].attributes.person_id` |
+| `GET /v1/events` | `events[].person_id` |
+| `GET /v1/events/{event_id}` | `person_id`（事件对象顶层） |
+| `GET /v1/events/stream` 的 `event_change` | `events[].person_id` |
+| `POST /v1/faces/gallery/{person_id}` 录入成功响应 | `person.person_id` |
+| `GET /v1/faces/gallery` | `people[].person_id` |
+
+实时识别结果片段示例（省略其他字段）：
+
+```json
+{
+  "objects": [
+    {
+      "label": "known_person",
+      "attributes": {
+        "status": "known",
+        "person_id": "employee-007",
+        "name": "Alex"
+      }
+    }
+  ]
+}
+```
+
+接入人员识别建议使用陌生人能力的独立 `latest` / SSE，并遍历 `objects`。
+即使陌生人判断为 `detected=false`，仍可能返回已知人员；已知人脸不在陌生人判断的
+`object_ids` 中。混合模式的通用 `latest` 可能是事件分支消息，因此不保证包含人脸。
+`overall` 描述接口不返回 `objects`，也不返回 `person_id`。
+
+未知或待确认人脸不提供 `attributes.person_id`，不要把对象编号当作录入身份。
+当其他人物对象关联到已确认身份时，还可在
+`objects[].attributes.subject_identity.person_id` 读取关联身份；该字段按关联情况出现。
+连续事件未关联到录入身份时，`person_id` 为 `null`；群体事件也为 `null`。
+`subject_id` 用于会话内人物轨迹关联，`object_id` 仅标识当前分析消息内的对象，
+两者均不等于人脸库的 `person_id`。
+
 ## 全画面描述独立接口（Overall description）
 
 以下路径属于程序通用接口，以实际部署地址 `BASE` 为前缀，与演示端口无关。

@@ -82,6 +82,7 @@ class SyntheticModels:
         # The --isolated fixture simulates the health contract so the harness's
         # production GPU gate is exercised, never disabled or bypassed.
         self.gpu_ready = False
+        self.tracking_gpu_ready = False
         self.attribute_started = threading.Event()
         self.attribute_release = threading.Event()
         self.attribute_release.set()
@@ -91,6 +92,7 @@ class SyntheticModels:
     def ensure_detector_loaded(self) -> None:
         self.ready = True
         self.gpu_ready = True
+        self.tracking_gpu_ready = True
 
     def detect(self, image: Any) -> tuple[Any, ...]:
         self.detect_calls += 1
@@ -208,6 +210,12 @@ def self_test(
             "synthetic ready/GPU capability health",
         )
         passed("actual FastAPI lifespan and health routes")
+        require(
+            http(base_url, "/health/tracking")[0] == {
+                "ready": True, "gpu_ready": True,
+            },
+            "synthetic tracking readiness",
+        )
 
         jpeg = make_jpeg()
         models.attribute_release.clear()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
 import json
 import shutil
@@ -13,10 +12,10 @@ import time
 from pathlib import Path
 
 IMAGE_TAGS = (
-    "goodvision-harness:2026.09.09-full.1",
-    "goodvision-rich-label-worker:2026.09.09-full.1",
+    "goodvision-harness:2026.09.10-full.1",
+    "goodvision-rich-label-worker:2026.09.10-full.1",
 )
-ARCHIVE_NAME = "goodvision-full-2026.09.09.1.tar.gz"
+ARCHIVE_NAME = "goodvision-full-2026.09.10.1.tar"
 
 
 def export(directory: Path) -> None:
@@ -50,11 +49,7 @@ def export(directory: Path) -> None:
                 )
                 try:
                     assert process.stdout is not None
-                    with gzip.GzipFile(
-                        filename="", mode="wb", fileobj=output,
-                        compresslevel=1, mtime=0,
-                    ) as compressed:
-                        shutil.copyfileobj(process.stdout, compressed, 4 * 1024 * 1024)
+                    shutil.copyfileobj(process.stdout, output, 4 * 1024 * 1024)
                     process.stdout.close()
                     if process.wait() != 0:
                         raise RuntimeError("Docker image export failed; see export.log")
@@ -64,7 +59,7 @@ def export(directory: Path) -> None:
                         process.wait(timeout=30)
         print("Verifying the complete archive and both image tags", flush=True)
         manifests = []
-        with gzip.open(partial, "rb") as stream:
+        with partial.open("rb") as stream:
             with tarfile.open(fileobj=stream, mode="r|") as contents:
                 for member in contents:
                     if member.name == "manifest.json":
@@ -73,9 +68,6 @@ def export(directory: Path) -> None:
                         payload = contents.extractfile(member)
                         assert payload is not None
                         manifests.append(json.load(payload))
-                # Read through the gzip trailer to verify its CRC as well.
-                while stream.read(4 * 1024 * 1024):
-                    pass
         if len(manifests) != 1 or len(manifests[0]) != 2:
             raise RuntimeError("Archive must contain exactly two image entries")
         tags = [tag for item in manifests[0] for tag in item.get("RepoTags", [])]
@@ -89,7 +81,12 @@ def export(directory: Path) -> None:
         metadata = {
             "platform": "linux/amd64",
             "images": [
-                {"tag": tag, "id": item["Id"], "created": item["Created"]}
+                {
+                    "tag": tag, "id": item["Id"], "created": item["Created"],
+                    "source_revision": item["Config"].get("Labels", {}).get(
+                        "org.opencontainers.image.revision",
+                    ),
+                }
                 for tag, item in zip(IMAGE_TAGS, images, strict=True)
             ],
             "archive": archive.name,

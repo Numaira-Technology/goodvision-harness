@@ -159,7 +159,8 @@ def test_carried_overlay_preserves_v2_incompleteness_and_original_evidence(
     assert selection.analysis is not None
     arguments = _analysis_overlay_arguments(selection.analysis)
     assert arguments["incomplete"] is True
-    assert "Analysis incomplete" in arguments["description"]
+    assert "Analysis incomplete" not in arguments["description"]
+    assert "Analysis incomplete" in selection.analysis.as_dict()["description"]
     assert arguments["detected"] is (stranger and timestamp <= 13.0)
     assert bool(arguments["objects"]) is (stranger and timestamp <= 13.0)
     assert selection.analysis.as_dict() == (

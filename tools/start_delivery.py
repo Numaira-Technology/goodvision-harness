@@ -18,8 +18,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-MAIN_IMAGE = "goodvision-harness:2026.09.09-full.1"
-RICH_IMAGE = "goodvision-rich-label-worker:2026.09.09-full.1"
+MAIN_IMAGE = "goodvision-harness:2026.09.10-full.1"
+RICH_IMAGE = "goodvision-rich-label-worker:2026.09.10-full.1"
 PROBE_MARKER = "GOODVISION_CUDA_PROBE="
 PCI_DEVICE_DIRECTORY = Path("/sys/bus/pci/devices")
 CUDA_PROBE = """import ctypes, json

@@ -7,6 +7,8 @@ ARG WORKER_RUNTIME=goodvision-rich-label-worker:2026.09.03-full-gpu.1
 FROM ${MAIN_RUNTIME} AS harness
 USER root
 WORKDIR /app
+# Check new application dependencies even when reusing a runtime layer.
+RUN python -m pip install --no-cache-dir 'httpx[http2]>=0.27,<1' 'Pillow>=10.4,<13'
 COPY pyproject.toml /tmp/goodvision-build/pyproject.toml
 COPY src /tmp/goodvision-build/src
 RUN python -m pip install --no-cache-dir --no-index --no-deps \
@@ -26,7 +28,9 @@ ENV GOODVISION_COMPONENT=main \
     FACE_ACCELERATOR=cpu \
     FACE_PROVIDER="" \
     RICH_LABEL_ENABLED=false
-LABEL org.opencontainers.image.version="2026.09.09-full.1"
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.version="2026.09.10-full.1"
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 USER 10001:10001
 ENTRYPOINT []
 CMD ["python", "/opt/goodvision/runtime_gateway.py", "serve"]
@@ -44,7 +48,9 @@ RUN python /opt/goodvision/internal/perception_check.py --runtime \
     && chown -R 10002:10002 /worker /opt/goodvision
 ENV GOODVISION_COMPONENT=perception \
     RICH_DEVICE=gpu:0
-LABEL org.opencontainers.image.version="2026.09.09-full.1"
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.version="2026.09.10-full.1"
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 USER 10002:10002
 ENTRYPOINT []
 CMD ["python", "/opt/goodvision/runtime_gateway.py", "serve"]

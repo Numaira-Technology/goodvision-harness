@@ -6,9 +6,13 @@ import math
 import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from .privacy import redact_public_text
 
@@ -166,15 +170,15 @@ def draw_overlay(
         if analysis_kind == "face_reference_match"
         else redact_public_text(event_label).upper()
     )
-    state = "STALE" if stale else (positive_label if detected else "CLEAR")
-    if incomplete and not detected and not stale:
-        state = "INCOMPLETE"
+    if stale or (incomplete and not detected):
+        return rendered
+    state = positive_label if detected else "CLEAR"
     title = f"{state}  {float(confidence):.2f}"
     _text_with_background(rendered, title[:100], (12, 28), color, scale=0.7)
     if description:
         _text_with_background(
             rendered,
-            _ascii_safe(redact_public_text(description))[:110],
+            redact_public_text(description)[:110],
             (12, 55),
             (45, 45, 45),
             scale=0.48,
@@ -499,7 +503,6 @@ def _public_hud_text(value: Any, *, limit: int = 72) -> str:
         rendered = redact_public_text(value)
     except (TypeError, ValueError):
         return ""
-    rendered = _ascii_safe(rendered)
     rendered = "".join(
         character if character.isprintable() else " " for character in rendered
     )
@@ -675,15 +678,14 @@ def _rich_confidence(value: Any) -> str:
 def _fit_hud_text(text: str, width: int, scale: float) -> str:
     if width <= 0:
         return ""
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    if cv2.getTextSize(text, font, scale, 1)[0][0] <= width:
+    if _text_size(text, scale)[0][0] <= width:
         return text
     suffix = "..."
     low, high = 0, len(text)
     while low < high:
         middle = (low + high + 1) // 2
         candidate = text[:middle].rstrip() + suffix
-        if cv2.getTextSize(candidate, font, scale, 1)[0][0] <= width:
+        if _text_size(candidate, scale)[0][0] <= width:
             low = middle
         else:
             high = middle - 1
@@ -714,7 +716,7 @@ def _rich_card_size(
     lines: Sequence[tuple[str, float, tuple[int, int, int]]],
 ) -> tuple[int, int]:
     text_widths = tuple(
-        cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0]
+        _text_size(text, scale)[0][0]
         for text, scale, _text_color in lines
     )
     card_width = min(
@@ -869,15 +871,12 @@ def _draw_rich_card(
     available_width = max(0, right - text_x - 5)
     for index, (text, scale, text_color) in enumerate(lines):
         fitted = _fit_hud_text(text, available_width, scale)
-        cv2.putText(
+        _put_hud_text(
             image,
             fitted,
             (text_x, min(bottom - 2, top + 17 * (index + 1))),
-            cv2.FONT_HERSHEY_SIMPLEX,
             scale,
             text_color,
-            1,
-            cv2.LINE_AA,
         )
 
 
@@ -946,18 +945,13 @@ def _draw_face_overlay(
     stale: bool,
     incomplete: bool = False,
 ) -> Any:
-    statuses = _draw_face_boxes(rendered, objects)
-
     if stale:
-        state, color = "STALE", (90, 150, 220)
-    elif detected or "unknown" in statuses:
+        return rendered
+    statuses = _draw_face_boxes(rendered, objects)
+    if detected or "unknown" in statuses:
         state, color = "UNKNOWN", _FACE_COLORS["unknown"]
-    elif incomplete:
-        state, color = "INCOMPLETE", (90, 150, 220)
-    elif not statuses:
-        state, color = "NO FACE", _FACE_COLORS["unusable"]
-    elif all(status == "unusable" for status in statuses):
-        state, color = "NO USABLE FACE", _FACE_COLORS["unusable"]
+    elif incomplete or "unusable" in statuses:
+        return rendered
     else:
         state, color = "CLEAR", _FACE_COLORS["known"]
     _text_with_background(
@@ -970,7 +964,7 @@ def _draw_face_overlay(
     if description:
         _text_with_background(
             rendered,
-            _ascii_safe(redact_public_text(description))[:110],
+            redact_public_text(description)[:110],
             (12, 55),
             (45, 45, 45),
             scale=0.48,
@@ -986,9 +980,10 @@ def _text_with_background(
     *,
     scale: float = 0.55,
 ) -> None:
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    thickness = 1
-    (text_width, text_height), baseline = cv2.getTextSize(text, font, scale, thickness)
+    text = _fit_hud_text(text, image.shape[1] - 8, scale)
+    if not text:
+        return
+    (text_width, text_height), baseline = _text_size(text, scale)
     x, y = origin
     x = max(0, min(x, max(0, image.shape[1] - text_width - 8)))
     y = max(text_height + 6, min(y, image.shape[0] - baseline - 2))
@@ -999,17 +994,55 @@ def _text_with_background(
         color,
         -1,
     )
-    cv2.putText(
+    _put_hud_text(
         image,
         text,
         (x + 4, y - 2),
-        font,
         scale,
         (255, 255, 255),
-        thickness,
-        cv2.LINE_AA,
     )
 
 
-def _ascii_safe(value: str) -> str:
-    return value.encode("ascii", "replace").decode("ascii")
+@lru_cache(maxsize=16)
+def _unicode_font(size: int) -> ImageFont.FreeTypeFont:
+    # Ship the font with the package so offline Linux and Windows behave alike.
+    return ImageFont.truetype(
+        str(Path(__file__).with_name("fonts") / "NotoSansCJKsc-Regular.otf"), size,
+    )
+
+
+def _text_size(text: str, scale: float) -> tuple[tuple[int, int], int]:
+    if text.isascii():
+        return cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
+    font = _unicode_font(max(10, round(26 * scale)))
+    left, top, right, bottom = font.getbbox(text, anchor="ls")
+    return (right - min(0, left), -top), max(0, bottom)
+
+
+def _put_hud_text(
+    image: Any,
+    text: str,
+    origin: tuple[int, int],
+    scale: float,
+    color: tuple[int, int, int],
+) -> None:
+    if text.isascii():
+        cv2.putText(
+            image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color,
+            1, cv2.LINE_AA,
+        )
+        return
+    font = _unicode_font(max(10, round(26 * scale)))
+    x, y = origin
+    left, top, right, bottom = font.getbbox(text, anchor="ls")
+    left, top = max(0, x + left), max(0, y + top)
+    right, bottom = min(image.shape[1], x + right), min(image.shape[0], y + bottom)
+    if right <= left or bottom <= top:
+        return
+    # Convert just the text rectangle, not an entire video frame per caption.
+    region = image[top:bottom, left:right]
+    canvas = Image.fromarray(cv2.cvtColor(region, cv2.COLOR_BGR2RGB))
+    ImageDraw.Draw(canvas).text(
+        (x - left, y - top), text, font=font, anchor="ls", fill=color[::-1],
+    )
+    region[:] = np.asarray(canvas)[:, :, ::-1]

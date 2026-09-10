@@ -2032,9 +2032,7 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
         "event_label": event_label,
         "detected": detected,
         "confidence": confidence,
-        "description": (
-            analysis.description if analysis.missing_event_labels else description
-        ),
+        "description": description,
         "objects": objects,
         "known_faces": known_faces,
         "analysis_kind": analysis.analysis_kind,
