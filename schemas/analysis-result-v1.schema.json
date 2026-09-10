@@ -93,7 +93,7 @@
     "description": {
       "type": "string",
       "minLength": 1,
-      "description": "Frame-level summary of detected events in judgment order, or 无异常 when none were detected. Feature-specific endpoints preserve the full-frame summary."
+      "description": "Frame-level summary of detected events in judgment order, in Simplified Chinese / English, or 无异常 / No anomalies detected when none were detected. Feature-specific endpoints preserve the full-frame summary."
     },
     "judgments": {
       "type": "array",

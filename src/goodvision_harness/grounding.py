@@ -64,6 +64,20 @@ SMOKING_EVIDENCE_RULE = (
 )
 
 
+BILINGUAL_DESCRIPTION_RULE = (
+    "Every description must be a single bilingual string: one concise Simplified "
+    "Chinese sentence, followed by ' / ', followed by its equivalent English "
+    "sentence. Both sentences must describe the same visible evidence, without "
+    "adding details in either language. This language rule also applies to "
+    "negative judgments and supersedes earlier monolingual description examples. "
+    "Keep JSON keys, event_label values, object labels, and identifiers unchanged."
+)
+_EVENT_NAMES_ZH = {
+    "fight": "打架", "smoking": "吸烟", "fall": "跌倒", "weapon": "武器",
+    "stranger": "陌生人", "unknown_person": "陌生人",
+}
+
+
 def _system_prompt_with_evidence_rules(
     system_prompt: str, event_labels: Collection[str]
 ) -> str:
@@ -186,6 +200,9 @@ class MultiGroundedClassification:
 
     judgments: tuple[GroundedEventClassification, ...]
     analysis_kind: str = SAFETY_MULTI_ANALYSIS_KIND
+    # Observations such as known faces belong in the frame result without
+    # becoming evidence for a positive safety or stranger judgment.
+    supporting_objects: tuple[ModelObject, ...] = ()
 
     def __post_init__(self) -> None:
         judgments = tuple(self.judgments)
@@ -195,6 +212,7 @@ class MultiGroundedClassification:
         if len(set(event_labels)) != len(event_labels):
             raise ValueError("event_label values must be unique")
         object.__setattr__(self, "judgments", judgments)
+        object.__setattr__(self, "supporting_objects", tuple(self.supporting_objects))
         analysis_kind = str(self.analysis_kind).strip()
         if not analysis_kind:
             raise ValueError("analysis_kind must not be empty")
@@ -229,7 +247,7 @@ class MultiGroundedClassification:
     def objects(self) -> tuple[ModelObject, ...]:
         return tuple(
             item for judgment in self.judgments for item in judgment.objects
-        )
+        ) + self.supporting_objects
 
     @property
     def matched_memory_ids(self) -> tuple[str, ...]:
@@ -603,7 +621,7 @@ def build_grounding_messages(
             "role": "system",
             "content": _system_prompt_with_evidence_rules(
                 system_prompt, (effective_event_label,)
-            ),
+            ) + f"\n\n{BILINGUAL_DESCRIPTION_RULE}",
         },
         {"role": "user", "content": content},
     ]
@@ -631,6 +649,7 @@ def build_multi_grounding_messages(
     )
     system_text = (
         f"{_system_prompt_with_evidence_rules(system_prompt, event_labels)}\n"
+        f"{BILINGUAL_DESCRIPTION_RULE}\n"
         "For this request, independently judge every fixed "
         "safety event and allow multiple simultaneous positives."
     )
@@ -780,6 +799,9 @@ class DryRunGroundingClient:
         if self.memory_context is not None and not memory_ids:
             detected = False
         state = "visibly active" if detected else "not visible"
+        event_name = _EVENT_NAMES_ZH.get(
+            self.settings.event_label, self.settings.event_label
+        )
         objects: tuple[ModelObject, ...] = ()
         if detected:
             objects = (
@@ -793,6 +815,10 @@ class DryRunGroundingClient:
             detected=detected,
             confidence=confidence,
             description=(
+                f"演示帧{window.label}中"
+                f"{'检测到' if detected else '未检测到'}"
+                f"{event_name}"
+                "事件。 / "
                 f"Dry run: {self.settings.event_label} {state} in {window.label}."
             ),
             objects=objects,
@@ -941,6 +967,8 @@ class DryRunMultiGroundingClient:
                     detected=detected,
                     confidence=confidence,
                     description=(
+                        f"演示中{'检测到' if detected else '未检测到'}"
+                        f"{_EVENT_NAMES_ZH.get(event_label, event_label)}事件。 / "
                         f"Dry run: {event_label} "
                         f"{'is visible' if detected else 'is not visible'}."
                     ),
@@ -982,6 +1010,8 @@ class DryRunStrangerGroundingClient:
             detected=detected,
             confidence=0.88,
             description=(
+                f"演示人脸识别结果为{0 if detected else 1}名已知人员、"
+                f"{1 if detected else 0}名陌生人、0张不可用人脸。 / "
                 "Dry-run face recognition: "
                 f"{1 if not detected else 0} known, "
                 f"{1 if detected else 0} unknown, 0 unusable."
@@ -1199,6 +1229,7 @@ class SelectedFeaturesGroundingClient:
                 stranger_error = exc
 
         judgments: list[GroundedEventClassification] = []
+        supporting_objects: tuple[ModelObject, ...] = ()
         branch_errors: list[tuple[str, str]] = []
         completed_branches: list[str] = []
         safety_failed = False
@@ -1260,6 +1291,11 @@ class SelectedFeaturesGroundingClient:
                             ),
                         )
                     )
+                    event_indexes = set(indexes)
+                    supporting_objects = tuple(
+                        item for index, item in enumerate(face_classification.objects)
+                        if index not in event_indexes
+                    )
                     completed_branches.append("stranger")
                 except (TypeError, ValueError, IndexError) as exc:
                     stranger_error = exc
@@ -1295,6 +1331,7 @@ class SelectedFeaturesGroundingClient:
             )
             classification = MultiGroundedClassification(
                 judgments=tuple(judgments),
+                supporting_objects=supporting_objects,
                 analysis_kind=(
                     FIXED_FIVE_ANALYSIS_KIND
                     if returned_labels == DETECTION_EVENT_LABELS

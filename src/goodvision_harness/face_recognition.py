@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 
 from .config import InferenceSettings
-from .contracts import NormalizedBBox, PUBLIC_MODEL_NAME
+from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox
 from .face_tracking import FaceIdentityTracker
 from .grounding import (
     GroundedClassification,
@@ -662,6 +662,9 @@ class FaceRecognitionRuntime:
             detected=bool(event_indexes),
             confidence=confidence,
             description=(
+                f"最新帧人脸识别结果为{counts['known']}名已知人员、"
+                f"{counts['unknown']}名陌生人、"
+                f"{counts['unusable']}张不可用人脸。 / "
                 "Face recognition on the newest frame: "
                 f"{counts['known']} known, {counts['unknown']} unknown, "
                 f"{counts['unusable']} unusable."

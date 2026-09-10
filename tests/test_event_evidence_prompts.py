@@ -91,6 +91,9 @@ def test_evidence_rules_reach_model_in_each_detection_path(
     for key, value in settings.request_parameters.items():
         assert request[key] == value
     system_text = request["messages"][0]["content"]
+    assert "one concise Simplified Chinese sentence" in system_text
+    assert "its equivalent English sentence" in system_text
+    assert "supersedes earlier monolingual description examples" in system_text
     assert "For smoking and fall" in system_text
     assert "take precedence over this high-recall preference" in system_text
     if "smoking" in event_labels:
@@ -216,4 +219,6 @@ def test_smoking_evidence_rule_does_not_change_other_event_requests() -> None:
         prompt="Evaluate fall",
     )
 
-    assert messages[0]["content"] == "Existing fall policy"
+    assert messages[0]["content"].startswith("Existing fall policy\n\n")
+    assert "Mandatory smoking evidence rule" not in messages[0]["content"]
+    assert "equivalent English sentence" in messages[0]["content"]

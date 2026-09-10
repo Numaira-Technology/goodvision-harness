@@ -268,7 +268,7 @@ class AnalysisResult:
             f"{judgment.event_label}: {judgment.description}"
             for judgment in self.judgments
             if judgment.detected
-        ) or "无异常"
+        ) or "无异常 / No anomalies detected"
 
     def as_dict(self) -> dict[str, Any]:
         record = {

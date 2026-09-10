@@ -37,8 +37,10 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 每条分析结果新增顶层 `description`，与 `frame`、`judgments` 同级，描述
 `frame` 对应画面在本次分析中检出的事件。存在 `detected=true` 的判断时，按
 `judgments` 顺序拼接这些判断的 `event_label: description`，以 `; ` 分隔；
-全部未检出时固定返回 `"无异常"`。原有 `judgments[].description` 继续保留，
-表示各事件的判断依据。独立能力接口保留完整结果的全帧 `description`，即使
+全部未检出时固定返回 `"无异常 / No anomalies detected"`。原有 `judgments[].description` 继续保留，
+表示各事件的判断依据。描述采用“简体中文 / English”双语格式，两种语言
+表达相同的画面证据，由同一次识别请求生成，不增加翻译请求；本地人脸识别
+和演示模式也采用双语描述。独立能力接口保留完整结果的全帧 `description`，即使
 该接口过滤后的 `judgments` 只有一个未检出的事件，也可能在顶层描述中看到
 其他能力检出的事件。完整帧描述可通过 `result.description` 读取。
 
@@ -57,6 +59,100 @@ data: <一条完整分析结果 JSON>
 `Last-Event-ID` 请求头续传；显式非零 `after` 优先。续传仅针对服务保留的
 内存历史，不能作为永久归档接口。`latest` 响应头提供 `X-Result-Cursor` 和
 `X-Result-Stream`。
+
+## 全画面描述独立接口（Overall description）
+
+以下路径属于程序通用接口，以实际部署地址 `BASE` 为前缀，与演示端口无关。
+所有方法均为 `GET`：
+
+| 数据 | 最新 JSON | 实时 SSE |
+| --- | --- | --- |
+| 全画面描述 | `/v1/results/overall/latest` | `/v1/results/overall/events` |
+
+`latest` 返回 `application/json`，`events` 返回 `text/event-stream`。
+两者使用相同的精简 JSON 结构，顶层 `description` 与对应完整分析结果中的
+`description` 完全一致。接口复用已有结果，不启动额外推理，不要求启用全部
+五种能力；每次分析产生结果时均可输出，未检出事件也会输出。
+这里的“全画面描述”是本次已启用能力的检测摘要，并非额外生成的场景解说。
+
+返回示例：
+
+```json
+{
+  "type": "overall_description",
+  "schema_version": "1",
+  "message_id": "message-1",
+  "observation_id": "message-1",
+  "source_id": "external-camera",
+  "stream_session_id": "session-1",
+  "sequence": 1,
+  "emitted_at": "2026-09-09T10:00:01.000Z",
+  "frame": {
+    "source_frame_index": 42,
+    "timestamp_seconds": 1.25,
+    "observed_at": "2026-09-09T10:00:00.000Z",
+    "width": 1920,
+    "height": 1080,
+    "clock_source": "ingest_estimated"
+  },
+  "description": "无异常 / No anomalies detected"
+}
+```
+
+`type` 固定为 `overall_description`；其余字段沿用完整结果中的同名字段。
+`message_id`、`observation_id`、`source_id`、`stream_session_id` 为字符串，
+`sequence` 为结果序号整数，`emitted_at` 为 UTC 时间字符串，`frame` 为对应
+分析帧的信息。接口省略 `judgments`、`objects`、`model` 和 `analysis_kind`。
+客户端可用 `message_id` 与五能力结果、精确证据帧关联。
+
+`description` 为“简体中文 / English”双语字符串；没有检出事件时固定为
+`"无异常 / No anomalies detected"`，有事件时例如
+`"smoking: 有人吸烟。 / A person is smoking."`。
+尚未产生分析结果时，`latest` 返回 `404`，不会把“尚无结果”当作“无异常”。
+成功响应包含 `Cache-Control: no-store`、`X-Result-Cursor` 和 `X-Result-Stream`。
+
+此接口的 SSE 事件名为 **`overall_description`**：
+
+```text
+id: <结果流标识>:<游标>
+event: overall_description
+data: <与 overall/latest 相同结构的 JSON>
+
+```
+
+客户端监听 `overall_description` 并解析 `event.data`，读取其中的 `description`。
+SSE 保留通用结果流的游标和续传规则：支持 `?after=<非负整数游标>` 与
+`Last-Event-ID` 请求头，显式非零 `after` 优先；仅可续传内存中仍保留的结果。
+无新结果时发送 `: heartbeat` 注释。该流随分析结果更新，并非按原视频帧率推送。
+
+## 已录入人脸识别
+
+启用 `stranger` 能力后，人脸匹配达到阈值的已录入人员会显示绿色人脸框，
+标签为 `ID: <person_id> | <name>`。`person_id` 是录入时指定的稳定人物 ID，
+不同于每条结果中的 `object_id` 或当前视频会话的跟踪 ID。
+
+完整结果及 `/v1/results/stranger/latest`、`/v1/results/stranger/events`
+都会在 `objects` 中保留已知人脸，包含下列字段（示例为对象片段）：
+
+```json
+{
+  "label": "known_person",
+  "attributes": {
+    "status": "known",
+    "person_id": "employee-007",
+    "name": "Alice",
+    "similarity": 0.94,
+    "threshold": 0.4
+  }
+}
+```
+
+每个人脸对象同时包含 `object_id`、归一化 `bbox` 和检测置信度 `confidence`。
+`similarity` 是人脸匹配的余弦相似度，区别于检测置信度。已知人脸不属于
+陌生人告警证据，因此不会出现在 `stranger` 判断的 `object_ids` 中；仅有已知
+人脸时，`stranger.detected=false`、`object_ids=[]`，但 `objects` 仍含人物 ID。
+已知人与陌生人同框时分别保留各自对象，只有陌生人触发告警。未匹配或质量
+不足的人脸不会输出已录入人物的候选 ID，也不会因未触发告警而显示为已知人员。
 
 ## 陌生人证据照片
 

@@ -45,7 +45,7 @@ function dashboard(){
   vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
     state.running=true;state.sessionId="session-1";state.sessionFeatures=detectionEvents;
     state.gallery={ready:true};state.galleryLoading=false;
-    globalThis.app={analysis,message,status,reset,renderClassification,state};
+    globalThis.app={analysis,message,status,reset,renderClassification,renderFaceAnnotation,summarizeFaces,state};
   `,context);
   return {app:context.app,context,element:id=>document.getElementById(id),
     status:event=>document.getElementById("event-statuses").children
@@ -65,21 +65,22 @@ const clear={fight:false,smoking:false,fall:false,weapon:false};
 
 test("overall description displays the frame's text rather than held event alerts",()=>{
   const view=dashboard();
-  view.app.analysis({...result(1,{...clear,stranger:true}),description:"画面中发现陌生人。"});
-  assert.equal(view.element("overall-description").textContent,"画面中发现陌生人。");
-  view.app.analysis({...result(1.4,clear),description:"无异常"});
+  const description="画面中发现陌生人。 / An unknown person is visible in the frame.";
+  view.app.analysis({...result(1,{...clear,stranger:true}),description});
+  assert.equal(view.element("overall-description").textContent,description);
+  view.app.analysis({...result(1.4,clear),description:"无异常 / No anomalies detected"});
   assert.equal(view.element("verdict").textContent,"STRANGER");
-  assert.equal(view.element("overall-description").textContent,"无异常");
+  assert.equal(view.element("overall-description").textContent,"无异常 / No anomalies detected");
   assert.equal(view.element("overall-description-meta").textContent,"Frame 14 · 1.400s");
 });
 
 test("overall description ignores older frames and results from other sessions",()=>{
   const view=dashboard();
-  view.app.analysis({...result(2,{...clear,stranger:false}),description:"无异常"});
+  view.app.analysis({...result(2,{...clear,stranger:false}),description:"无异常 / No anomalies detected"});
   for(const old of [result(1,{smoking:true}),result(2,{smoking:true},{frame:19}),
     result(3,{smoking:true},{session:"other"})]){
     view.app.analysis({...old,description:"旧画面异常"});
-    assert.equal(view.element("overall-description").textContent,"无异常");
+    assert.equal(view.element("overall-description").textContent,"无异常 / No anomalies detected");
     assert.equal(view.element("overall-description-meta").textContent,"Frame 20 · 2.000s");
   }
 });
@@ -93,17 +94,113 @@ test("overall description renders face results and treats model text as plain te
   assert.equal(view.element("overall-description-meta").textContent,"Frame 10 · 1.000s");
 });
 
+test("known face display includes the enrolled ID even when a name is present and preserves JSON",()=>{
+  const view=dashboard(),personId="employee-007",name="Alex";
+  const face={object_id:"face-1",label:name,confidence:0.98,
+    bbox:{x1:0.1,y1:0.2,x2:0.3,y2:0.5},
+    attributes:{status:"known",person_id:personId,name,similarity:0.91}};
+  const observation={...result(1,{stranger:false}),analysis_kind:"face_recognition",objects:[face]};
+  view.app.analysis(observation);
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+  assert.equal(view.element("decision").className,"decision clear");
+  assert.equal(view.element("description").textContent,"1 known (ID: employee-007 | Alex)");
+  assert.deepEqual(JSON.parse(view.element("result-json").textContent).objects,[face]);
+  view.app.renderFaceAnnotation(observation,view.app.summarizeFaces(observation));
+  const box=view.element("bbox-layer").children.find(item=>item.className==="bbox-box face-known");
+  assert.ok(box,"a recognized face uses the green face-known style");
+  assert.equal(box.children[0].textContent,"ID: employee-007 | Alex | 0.910");
+  view.app.reset();
+});
+
+test("unknown faces stay red and never display an enrolled candidate ID",()=>{
+  const view=dashboard();
+  const observation={...result(1,{stranger:true}),analysis_kind:"face_recognition",objects:[{
+    object_id:"face-1",label:"Alex",bbox:{x1:0.1,y1:0.2,x2:0.3,y2:0.5},
+    attributes:{status:"unknown",candidate_person_id:"employee-007",similarity:0.2}
+  }]};
+  view.app.analysis(observation);
+  assert.equal(view.element("verdict").textContent,"UNKNOWN");
+  assert.equal(view.element("description").textContent,"1 unknown");
+  view.app.renderFaceAnnotation(observation,view.app.summarizeFaces(observation));
+  const box=view.element("bbox-layer").children.find(item=>item.className==="bbox-box face-unknown");
+  assert.ok(box,"an unknown face keeps the red face-unknown style");
+  assert.equal(box.children[0].textContent,"UNKNOWN | 0.200");
+  assert.doesNotMatch(box.children[0].textContent,/employee-007|Alex/);
+  view.app.reset();
+});
+
+test("known face IDs remain plain text and identities with the same name stay distinct",()=>{
+  const view=dashboard(),personId='<img src=x onerror="alert(1)">';
+  const observation={...result(1,{stranger:false}),analysis_kind:"face_recognition",objects:[
+    {object_id:"face-1",attributes:{status:"known",person_id:personId,name:"Alex"}},
+    {object_id:"face-2",attributes:{status:"known",person_id:"employee-008",name:"Alex"}}
+  ]};
+  view.app.analysis(observation);
+  assert.equal(view.element("description").textContent,
+    '2 known (ID: <img src=x onerror="alert(1)"> | Alex, ID: employee-008 | Alex)');
+  assert.equal(view.element("description").children.length,0);
+});
+
+test("multi-event known identities persist across skipped face samples and expire with face evidence",()=>{
+  const view=dashboard(),face={object_id:"face-1",label:"known_person",
+    bbox:{x1:0.1,y1:0.2,x2:0.3,y2:0.5},
+    attributes:{status:"known",person_id:"employee-007",name:"Alex"}};
+  const observation={...result(1,{...clear,stranger:false}),objects:[face]};
+  view.app.analysis(observation);
+  for(const id of ["description","face-diagnostic-summary"])
+    assert.match(view.element(id).textContent,/Known faces: ID: employee-007 \| Alex/);
+  assert.deepEqual(JSON.parse(view.element("result-json").textContent).objects,[face]);
+  assert.match(view.element("decision-meta").textContent,/\| 1 bbox \|/);
+  view.app.analysis(result(1.4,clear));
+  for(const id of ["description","face-diagnostic-summary"])
+    assert.match(view.element(id).textContent,/ID: employee-007/);
+  assert.equal(JSON.parse(view.element("result-json").textContent).objects,undefined);
+  assert.match(view.element("decision-meta").textContent,/\| 1 bbox \|/);
+  view.app.analysis(result(4.1,clear));
+  for(const id of ["description","face-diagnostic-summary"])
+    assert.doesNotMatch(view.element(id).textContent,/employee-007|Alex/);
+  assert.equal(view.status("stranger"),"WAITING");
+  assert.match(view.element("decision-meta").textContent,/\| 0 bboxes \|/);
+});
+
+test("multi-event box count includes known faces once and excludes unusable or missing boxes",()=>{
+  const view=dashboard(),bbox={x1:0.1,y1:0.2,x2:0.3,y2:0.5};
+  const observation={...result(1,{...clear,smoking:true,stranger:true}),objects:[
+    {object_id:"face-known",bbox,attributes:{status:"known",person_id:"employee-007"}},
+    {object_id:"face-unknown",bbox,attributes:{status:"unknown"}},
+    {object_id:"face-unusable",bbox,attributes:{status:"unusable"}},
+    {object_id:"face-no-box",attributes:{status:"known",person_id:"employee-008"}}
+  ]};
+  observation.judgments.find(item=>item.event_label==="smoking").object_ids=["face-known"];
+  observation.judgments.find(item=>item.event_label==="stranger").object_ids=["face-unknown"];
+  view.app.analysis(observation);
+  assert.match(view.element("decision-meta").textContent,/\| 2 bboxes \|/);
+});
+
+test("a fresh unknown face observation clears the previous known identity",()=>{
+  const view=dashboard();
+  view.app.analysis({...result(1,{...clear,stranger:false}),objects:[{
+    object_id:"face-1",attributes:{status:"known",person_id:"employee-007",name:"Alex"}
+  }]});
+  view.app.analysis({...result(1.4,{...clear,stranger:true}),objects:[{
+    object_id:"face-2",attributes:{status:"unknown",candidate_person_id:"employee-007"}
+  }]});
+  assert.equal(view.element("verdict").textContent,"STRANGER");
+  for(const id of ["description","face-diagnostic-summary"])
+    assert.doesNotMatch(view.element(id).textContent,/employee-007|Alex|Known faces/);
+});
+
 test("missing overall description is unavailable and session reset clears the old frame",()=>{
   const view=dashboard();
   view.app.analysis({...result(1,{smoking:true}),description:"吸烟行为"});
   view.app.analysis(result(2,clear));
-  assert.equal(view.element("overall-description").textContent,"本帧未提供整体描述");
+  assert.equal(view.element("overall-description").textContent,"本帧未提供整体描述 / No overall description for this frame");
   view.app.message({type:"session",stream_session_id:"session-2",mode:"stream",features:Object.keys(clear)});
-  assert.equal(view.element("overall-description").textContent,"等待当前帧分析…");
+  assert.equal(view.element("overall-description").textContent,"等待当前帧分析… / Waiting for frame analysis…");
   assert.equal(view.element("overall-description-meta").textContent,"等待分析帧");
   view.app.analysis({...result(1,{smoking:true},{session:"session-2"}),description:"吸烟行为"});
   view.app.message({type:"ended",reason:"stopped"});
-  assert.equal(view.element("overall-description").textContent,"等待当前帧分析…");
+  assert.equal(view.element("overall-description").textContent,"等待当前帧分析… / Waiting for frame analysis…");
   assert.equal(view.app.state.overallResult,null);
 });
 

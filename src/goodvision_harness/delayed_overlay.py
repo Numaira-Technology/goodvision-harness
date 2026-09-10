@@ -134,7 +134,11 @@ def _carry_stranger_annotation(
         )
         if judgment is None:
             continue
-        referenced = set(judgment.object_ids)
+        referenced = set(judgment.object_ids) if judgment.detected else set()
+        face_objects = tuple(
+            item for item in previous.objects
+            if item.object_id in referenced or _known_face(item)
+        )
         objects = tuple(
             replace(
                 item,
@@ -144,16 +148,27 @@ def _carry_stranger_annotation(
                     "annotation_source_message_id": previous.message_id,
                 },
             )
-            for item in previous.objects if item.object_id in referenced
+            for item in face_objects
         )
         return replace(
             current,
             judgments=(*current.judgments, replace(
-                judgment, object_ids=tuple(item.object_id for item in objects)
+                judgment, object_ids=tuple(
+                    held.object_id
+                    for original, held in zip(face_objects, objects, strict=True)
+                    if original.object_id in referenced and not _known_face(original)
+                ),
             )),
             objects=(*current.objects, *objects),
         )
     return current
+
+
+def _known_face(item: GroundedObject) -> bool:
+    return (
+        item.attributes.get("status") == "known"
+        or _normalized_label(item.label) == "known person"
+    )
 
 
 class DelayedOverlayComposer:
@@ -520,15 +535,22 @@ def _compatible_objects(
         return False
     if left_roles and right_roles and left_roles.isdisjoint(right_roles):
         return False
-    if analysis_kind == "face_recognition":
+    if analysis_kind in {
+        "face_recognition", "selected_features", "fixed_five_events",
+    }:
         left_status = str(left.attributes.get("status", ""))
         right_status = str(right.attributes.get("status", ""))
         if left_status and right_status and left_status != right_status:
             return False
-        left_name = str(left.attributes.get("name", ""))
-        right_name = str(right.attributes.get("name", ""))
-        if left_name and right_name and left_name != right_name:
+        left_id = str(left.attributes.get("person_id") or "")
+        right_id = str(right.attributes.get("person_id") or "")
+        if (left_id or right_id) and left_id != right_id:
             return False
+        if not left_id and not right_id:
+            left_name = str(left.attributes.get("name") or "")
+            right_name = str(right.attributes.get("name") or "")
+            if left_name and right_name and left_name != right_name:
+                return False
     return True
 
 

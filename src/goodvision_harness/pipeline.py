@@ -26,11 +26,11 @@ from uuid import uuid4
 
 from .config import DEFAULT_CONFIG_PATH, HarnessConfig, load_config
 from .contracts import (
+    PUBLIC_MODEL_NAME,
     AnalysisResult,
     EventJudgment,
     FrameReference,
     GroundedObject,
-    PUBLIC_MODEL_NAME,
 )
 from .grounding import GroundingClient, MultiGroundedClassification
 from .inference import WindowClient, WindowResponse, build_client
@@ -476,6 +476,16 @@ class StreamingSession:
                                     ),
                                     object_ids=tuple(object_ids),
                                     matched_memory_ids=judgment.matched_memory_ids,
+                                )
+                            )
+                        for item in classification.supporting_objects:
+                            object_records.append(
+                                GroundedObject(
+                                    object_id=f"object-{len(object_records) + 1}",
+                                    label=str(public_safe_value(item.label)),
+                                    bbox=item.bbox,
+                                    confidence=item.confidence,
+                                    attributes=public_safe_value(item.attributes),
                                 )
                             )
                         grounded_objects = tuple(object_records)

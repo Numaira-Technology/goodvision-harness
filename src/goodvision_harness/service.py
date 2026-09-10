@@ -38,7 +38,7 @@ from .config import (
     ServiceSettings,
     load_config,
 )
-from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
+from .contracts import PUBLIC_MODEL_NAME, AnalysisResult, GroundedObject
 from .delayed_overlay import DelayedOverlayComposer, OverlaySelection
 from .delivery import WebhookDelivery
 from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
@@ -58,7 +58,12 @@ from .model_api import (
     PooledModelAPIClient,
     environment_api_key,
 )
-from .overlay import draw_event_rich_overlay, draw_overlay, draw_rich_overlay
+from .overlay import (
+    draw_event_rich_overlay,
+    draw_face_boxes,
+    draw_overlay,
+    draw_rich_overlay,
+)
 from .overlay_fusion import OverlayFusionMatcher
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
@@ -1770,6 +1775,9 @@ class HarnessRuntime:
             arguments = _analysis_overlay_arguments(analysis)
             arguments["objects"] = ()
             rendered = draw_overlay(rendered, **arguments)
+            known_faces = _known_face_objects(analysis)
+            if known_faces:
+                rendered = draw_face_boxes(rendered, known_faces)
 
         ok, output = cv2.imencode(
             ".jpg",
@@ -1839,7 +1847,20 @@ def _render_analysis_jpeg(
 
 
 def _draw_analysis_overlay(image: Any, analysis: AnalysisResult) -> Any:
-    return draw_overlay(image, **_analysis_overlay_arguments(analysis))
+    rendered = draw_overlay(image, **_analysis_overlay_arguments(analysis))
+    if analysis.analysis_kind != "face_recognition":
+        known_faces = _known_face_objects(analysis)
+        if known_faces:
+            rendered = draw_face_boxes(rendered, known_faces)
+    return rendered
+
+
+def _known_face_objects(analysis: AnalysisResult) -> tuple[GroundedObject, ...]:
+    return tuple(
+        item for item in analysis.objects
+        if item.attributes.get("status") == "known"
+        and item.attributes.get("person_id")
+    )
 
 
 def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
@@ -2450,6 +2471,19 @@ def create_app(
     ) -> StreamingResponse:
         return _result_events_response(request, _runtime(request), after=after)
 
+    @application.get("/v1/results/overall/latest")
+    async def latest_overall_description(request: Request) -> JSONResponse:
+        return _latest_result_response(_runtime(request), overall_only=True)
+
+    @application.get("/v1/results/overall/events")
+    async def overall_description_events(
+        request: Request,
+        after: int = Query(default=0, ge=0),
+    ) -> StreamingResponse:
+        return _result_events_response(
+            request, _runtime(request), after=after, overall_only=True
+        )
+
     def feature_latest_endpoint(
         feature: str,
     ) -> Callable[[Request], Any]:
@@ -2560,7 +2594,16 @@ def _feature_result_payload(
         [
             copy.deepcopy(item)
             for item in objects
-            if isinstance(item, dict) and item.get("object_id") in object_ids
+            if isinstance(item, dict) and (
+                item.get("object_id") in object_ids
+                or (
+                    feature == "stranger"
+                    and isinstance(item.get("attributes"), dict)
+                    and item["attributes"].get("status") in {
+                        "known", "unknown", "unusable",
+                    }
+                )
+            )
         ]
         if isinstance(objects, list)
         else []
@@ -2571,10 +2614,33 @@ def _feature_result_payload(
     return result
 
 
+def _overall_description_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project the shared result into a frame-correlated description response."""
+
+    return {
+        "type": "overall_description",
+        **{
+            key: payload[key]
+            for key in (
+                "schema_version",
+                "message_id",
+                "observation_id",
+                "source_id",
+                "stream_session_id",
+                "sequence",
+                "emitted_at",
+                "frame",
+                "description",
+            )
+        },
+    }
+
+
 def _latest_result_response(
     runtime: HarnessRuntime,
     *,
     feature: str | None = None,
+    overall_only: bool = False,
 ) -> JSONResponse:
     record = runtime.results.latest()
     if record is None:
@@ -2588,6 +2654,8 @@ def _latest_result_response(
                 detail=f"no {feature} result in the latest analysis",
             )
         payload = selected
+    if overall_only:
+        payload = _overall_description_payload(payload)
     headers = {
         "Cache-Control": "no-store",
         "X-Result-Cursor": str(record.cursor),
@@ -2604,6 +2672,7 @@ def _result_events_response(
     *,
     after: int,
     feature: str | None = None,
+    overall_only: bool = False,
 ) -> StreamingResponse:
     header_cursor = request.headers.get("last-event-id")
     cursor = after
@@ -2637,15 +2706,20 @@ def _result_events_response(
                     if selected is None:
                         continue
                     payload = selected
+                if overall_only:
+                    payload = _overall_description_payload(payload)
                 data = json.dumps(
                     payload,
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
                 emitted = True
+                event_name = (
+                    "overall_description" if overall_only else "analysis_result"
+                )
                 yield (
                     f"id: {runtime.results.epoch}:{record.cursor}\n"
-                    f"event: analysis_result\ndata: {data}\n\n"
+                    f"event: {event_name}\ndata: {data}\n\n"
                 ).encode()
             if not emitted:
                 yield b": heartbeat\n\n"

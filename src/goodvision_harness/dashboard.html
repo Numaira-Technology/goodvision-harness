@@ -200,7 +200,7 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
           <h3 id="overall-description-title">Overall description · 全画面描述</h3>
           <span id="overall-description-meta" class="frame-summary-meta">等待分析帧</span>
         </div>
-        <p id="overall-description" class="frame-summary-text">等待当前帧分析…</p>
+        <p id="overall-description" class="frame-summary-text">等待当前帧分析… / Waiting for frame analysis…</p>
       </section>
       <div id="annotation-note" class="note annotation-note">
         Full-cadence source frames are delayed and server-rendered with bbox interpolation.
@@ -590,7 +590,7 @@ async function loadDeploymentSettings(discarded=false){
     if(state.deployment.storage_error){
       deploymentSay("Persistent storage error: "+state.deployment.storage_error,true)
     }else if(state.deployment.persistence_available!==true){
-      deploymentSay("Persistent storage is unavailable. The container needs a writable deployment data volume.",true)
+      deploymentSay("Persistent settings are unavailable for this server. Configure writable storage and restart the service.",true)
     }else{
       deploymentSay(discarded
         ?"Unsaved deployment edits discarded. Saved/default values reloaded; secret fields remain hidden."
@@ -926,7 +926,8 @@ function faceSimilarity(object){
 }
 function faceDisplayName(object){
   const attributes=object&&object.attributes||{};
-  return attributes.name||attributes.person_name||attributes.person_id||object.label||"KNOWN"
+  const personId=attributes.person_id,name=attributes.name||attributes.person_name;
+  return personId?"ID: "+personId+(name&&name!==personId?" | "+name:""):name||object.label||"KNOWN"
 }
 function summarizeFaces(result){
   const objects=Array.isArray(result.objects)?result.objects:[],known=[],unknown=[],unusable=[];
@@ -1149,14 +1150,14 @@ function analysis(result){
 }
 function resetClassification(){
   state.classificationJudgments.clear();state.classificationResult=null;state.overallResult=null;
-  ui.overallDescription.textContent="等待当前帧分析…";
+  ui.overallDescription.textContent="等待当前帧分析… / Waiting for frame analysis…";
   ui.overallDescriptionMeta.textContent="等待分析帧"
 }
 function renderOverallDescription(result){
   if(state.overallResult&&compareClassificationFrames(result,state.overallResult)<0)return;
   state.overallResult=result;
   ui.overallDescription.textContent=typeof result.description==="string"&&result.description.trim()
-    ?result.description:"本帧未提供整体描述";
+    ?result.description:"本帧未提供整体描述 / No overall description for this frame";
   const frame=result.frame||{};
   ui.overallDescriptionMeta.textContent="Frame "+(frame.source_frame_index??"-")+
     " · "+number(frame.timestamp_seconds,3)+"s"
@@ -1190,10 +1191,17 @@ function renderClassification(){
       latestTimestamp-(Number((entry.result.frame||{}).timestamp_seconds)||0)<=3
   });
   const judgments=entries.map(entry=>entry.judgment),pending=features.length-judgments.length;
+  const faceEntry=entries.find(entry=>entry.judgment.event_label==="stranger");
+  const knownObjects=faceEntry?summarizeFaces(faceEntry.result).known:[];
+  const knownFaces=[...new Set(knownObjects.map(faceDisplayName))];
   const active=judgments.filter(judgment=>judgment&&judgment.detected===true),yes=active.length>0;
   const ids=new Set(entries.filter(entry=>entry.judgment.detected===true).flatMap(entry=>
     (Array.isArray(entry.judgment.object_ids)?entry.judgment.object_ids:[])
       .map(id=>String(entry.result.message_id||entry.result.sequence)+":"+id)));
+  for(const object of knownObjects){
+    if(object.object_id&&object.bbox)
+      ids.add(String(faceEntry.result.message_id||faceEntry.result.sequence)+":"+object.object_id)
+  }
   const memoryIds=[...new Set(active.flatMap(judgment=>
     Array.isArray(judgment.matched_memory_ids)?judgment.matched_memory_ids:[]))];
   const positiveLabels=active.map(judgment=>result.analysis_kind==="face_reference_match"?"UNKNOWN":
@@ -1206,14 +1214,15 @@ function renderClassification(){
   ui.description.textContent=(yes
     ?active.map(judgment=>String(judgment.event_label||"event")+": "+(judgment.description||"Detected.")).join(" | ")
     :pending?"Waiting for results from all selected features.":"No target events detected.")+
-    (memoryIds.length?" | known: "+memoryIds.join(", "):"");
+    (memoryIds.length?" | known: "+memoryIds.join(", "):"")+
+    (knownFaces.length?" | Known faces: "+knownFaces.join(", "):"");
   const frame=result.frame||{},model=result.model||{};
   ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
     " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.size+" bbox"+(ids.size===1?"":"es")+
     (memoryIds.length?" | "+memoryIds.length+" known reference"+(memoryIds.length===1?"":"s"):"")+
     " | model "+number(model.latency_seconds,2)+"s";
   ui.analysisChipLabel.textContent="events";ui.event.textContent=features.length+" selected";ui.eventStatuses.hidden=false;
-  renderEventStatuses(judgments)
+  renderEventStatuses(judgments,knownFaces)
 }
 function analysisFace(result){
   const summary=summarizeFaces(result),frame=result.frame||{},model=result.model||{};
@@ -1233,7 +1242,7 @@ function canonicalEventLabel(value){
   return ({fighting:"fight",smoke:"smoking",falling:"fall",weapon_possession:"weapon",
     holding_weapon:"weapon",unknown_person:"stranger"})[key]||key
 }
-function renderEventStatuses(judgments){
+function renderEventStatuses(judgments,knownFaces=[]){
   const indexed=new Map();
   for(const judgment of Array.isArray(judgments)?judgments:[]){
     const key=canonicalEventLabel(judgment&&judgment.event_label);
@@ -1242,7 +1251,8 @@ function renderEventStatuses(judgments){
   const stranger=indexed.get("stranger");
   ui.faceDiagnosticSummary.textContent=stranger
     ?"Face diagnostics | "+(stranger.detected===true?"STRANGER ALERT":"CLEAR")+" | "+
-      (stranger.description||"No face diagnostic details.")
+      (stranger.description||"No face diagnostic details.")+
+      (knownFaces.length?" | Known faces: "+knownFaces.join(", "):"")
     :visibleFeatures().includes("stranger")
       ?"Face diagnostics | "+(state.classificationJudgments.has("stranger")
         ?"waiting for a fresh face observation.":"waiting for the first analyzed frame.")
