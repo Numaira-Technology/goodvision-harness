@@ -38,7 +38,7 @@ from .config import (
     ServiceSettings,
     load_config,
 )
-from .contracts import PUBLIC_MODEL_NAME, AnalysisResult, GroundedObject
+from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
 from .delayed_overlay import DelayedOverlayComposer, DisplayAnalysis, OverlaySelection
 from .delivery import WebhookDelivery
 from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
@@ -51,6 +51,9 @@ from .face_recognition import (
 )
 from .grounding import (
     DETECTION_EVENT_LABELS,
+    FIXED_FIVE_ANALYSIS_KIND,
+    SAFETY_EVENT_LABELS,
+    SELECTED_FEATURES_ANALYSIS_KIND,
     build_grounding_client,
     build_selected_features_grounding_client,
 )
@@ -62,7 +65,6 @@ from .model_api import (
 )
 from .overlay import (
     draw_event_rich_overlay,
-    draw_face_boxes,
     draw_overlay,
     draw_rich_overlay,
 )
@@ -1842,9 +1844,6 @@ class HarnessRuntime:
             arguments = _analysis_overlay_arguments(analysis)
             arguments["objects"] = ()
             rendered = draw_overlay(rendered, **arguments)
-            known_faces = _known_face_objects(analysis)
-            if known_faces:
-                rendered = draw_face_boxes(rendered, known_faces)
 
         ok, output = cv2.imencode(
             ".jpg",
@@ -1914,23 +1913,11 @@ def _render_analysis_jpeg(
 
 
 def _draw_analysis_overlay(image: Any, analysis: DisplayAnalysis) -> Any:
-    rendered = draw_overlay(image, **_analysis_overlay_arguments(analysis))
-    if analysis.analysis_kind != "face_recognition":
-        known_faces = _known_face_objects(analysis)
-        if known_faces:
-            rendered = draw_face_boxes(rendered, known_faces)
-    return rendered
-
-
-def _known_face_objects(analysis: DisplayAnalysis) -> tuple[GroundedObject, ...]:
-    return tuple(
-        item for item in analysis.objects
-        if item.attributes.get("status") == "known"
-        and item.attributes.get("person_id")
-    )
+    return draw_overlay(image, **_analysis_overlay_arguments(analysis))
 
 
 def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
+    known_faces = ()
     if analysis.analysis_kind == "face_recognition":
         detected_judgments = tuple(
             judgment for judgment in analysis.judgments if judgment.detected
@@ -1968,6 +1955,23 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
             for item in analysis.objects
             if item.object_id in labels_by_object
         )
+        if (
+            analysis.analysis_kind in (
+                FIXED_FIVE_ANALYSIS_KIND, SELECTED_FEATURES_ANALYSIS_KIND,
+            )
+            and not any(
+                judgment.event_label in SAFETY_EVENT_LABELS
+                for judgment in detected_judgments
+            )
+            and not set(analysis.missing_event_labels).intersection(SAFETY_EVENT_LABELS)
+        ):
+            known_faces = tuple(
+                item for item in analysis.objects
+                if item.object_id not in labels_by_object
+                and item.label == "known_person"
+                and item.attributes.get("status") == "known"
+                and item.attributes.get("person_id")
+            )
         detected = bool(detected_judgments)
         if detected_judgments:
             event_label = " | ".join(
@@ -1997,6 +2001,7 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
             analysis.description if analysis.missing_event_labels else description
         ),
         "objects": objects,
+        "known_faces": known_faces,
         "analysis_kind": analysis.analysis_kind,
         "incomplete": bool(analysis.missing_event_labels),
     }

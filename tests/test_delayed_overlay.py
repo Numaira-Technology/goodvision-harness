@@ -464,6 +464,31 @@ def test_select_overlay_does_not_inherit_stranger_from_another_session() -> None
     assert selection.analysis.objects == ()
 
 
+@pytest.mark.parametrize("next_person_id", ["alice", "bob"])
+def test_joint_face_interpolation_keeps_person_identity(next_person_id: str) -> None:
+    def known_result(timestamp: float, person_id: str, x: float) -> AnalysisResult:
+        base = _result(
+            timestamp=timestamp, frame_index=int(timestamp * 10),
+            message_id=person_id, bbox=None, detected=False,
+        )
+        return replace(
+            base, analysis_kind="fixed_five_events",
+            objects=(GroundedObject(
+                object_id="face-1", label="known_person",
+                bbox=NormalizedBBox(x, 0.2, x + 0.2, 0.5),
+                attributes={"status": "known", "person_id": person_id, "name": "Same"},
+            ),),
+        )
+
+    left = known_result(0.0, "alice", 0.1)
+    right = known_result(0.4, next_person_id, 0.2)
+    selection = select_overlay((left, right), 0.2, max_gap_seconds=0.8)
+    assert selection.analysis is not None
+    face = selection.analysis.objects[0]
+    assert face.attributes["person_id"] == "alice"
+    assert face.bbox.x1 == pytest.approx(0.15 if next_person_id == "alice" else 0.1)
+
+
 def test_select_overlay_interpolates_compatible_sparse_boxes() -> None:
     left = _result(
         timestamp=0.0,
