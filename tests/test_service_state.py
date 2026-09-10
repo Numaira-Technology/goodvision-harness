@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from goodvision_harness.config import load_config
-from goodvision_harness.privacy import PUBLIC_ANALYSIS_ERROR
+from goodvision_harness.privacy import (
+    PUBLIC_ANALYSIS_ERROR,
+    PUBLIC_STREAM_ERROR,
+    PUBLIC_STREAM_SUPPORT_ERROR,
+)
 from goodvision_harness.service import HarnessRuntime
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,3 +97,18 @@ def test_new_session_accepts_fresh_state_revision(runtime: HarnessRuntime) -> No
 
     assert runtime.status()["last_error"] is None
     assert runtime.status()["pipeline"]["revision"] == 1
+
+
+@pytest.mark.parametrize("error", [PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR])
+def test_stream_failure_remains_actionable_in_status(runtime, error) -> None:
+    runtime._on_end("error", error)
+
+    status = runtime.status()
+    assert status["pipeline_state"] == "error"
+    assert status["last_error"] == error
+
+
+def test_session_failure_still_hides_unknown_exception_text(runtime) -> None:
+    runtime._on_end("error", "http://private-source/?token=secret")
+
+    assert runtime.status()["last_error"] == PUBLIC_ANALYSIS_ERROR

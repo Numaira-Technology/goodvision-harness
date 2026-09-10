@@ -53,7 +53,7 @@ from .reference_memory import (
     UNKNOWN_FACE_EVENT_LABEL,
 )
 from .sliding_window import FrameWindow, SampledFrame, iter_sliding_windows
-from .stream_adapter import NetworkStreamAdapter
+from .stream_adapter import NetworkStreamAdapter, StreamAdapterError
 from .video_to_stream import (
     PushSampledSource,
     VideoFileStream,
@@ -335,6 +335,9 @@ class StreamingSession:
                     pass
                 if self._stop.is_set():
                     reason = "stopped"
+        except StreamAdapterError as exc:
+            LOGGER.warning("stream_failure code=%s", exc.code)
+            reason, error = "error", exc.public_message
         except Exception:
             reason, error = "error", PUBLIC_ANALYSIS_ERROR
         finally:

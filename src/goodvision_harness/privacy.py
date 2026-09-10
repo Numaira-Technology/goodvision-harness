@@ -14,6 +14,8 @@ from typing import Any
 
 PUBLIC_ANALYSIS_ERROR = "analysis request failed"
 PUBLIC_FACE_ERROR = "local face analysis failed"
+PUBLIC_STREAM_ERROR = "video input failed; check the video source and retry"
+PUBLIC_STREAM_SUPPORT_ERROR = "video input support is missing on this server"
 
 # These values belong to the application's correlation/CRUD contract, not to
 # its implementation metadata. Customer-supplied identifiers can legitimately
@@ -131,8 +133,12 @@ def public_error_message(
     *,
     fallback: str = PUBLIC_ANALYSIS_ERROR,
 ) -> str:
-    """Return a stable public failure without echoing an underlying exception."""
+    """Preserve known public failures without echoing an underlying exception."""
 
+    if isinstance(_error, str) and _error in {
+        PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR,
+    }:
+        return _error
     return fallback
 
 

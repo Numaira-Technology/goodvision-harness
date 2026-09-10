@@ -142,8 +142,11 @@ def test_customer_requests_keep_the_delivery_route_despite_overrides(
     assert request.get_header("Authorization") == "Bearer customer-key"
     assert request.get_header("X-private-credential") is None
     payload = json.loads(request.data)
-    assert payload["model"] == "qwen/qwen3.5-35b-a3b"
-    assert payload["provider"] == {"only": ["deepinfra"], "allow_fallbacks": False}
+    assert payload["model"] == "qwen/qwen3.5-35b-a3b:nitro"
+    assert payload["provider"] == {
+        "sort": "throughput", "allow_fallbacks": True,
+        "ignore": ["coreweave", "novita"],
+    }
     assert payload["reasoning"] == {"effort": "none"}
     for key in ("models", "route", "endpoint", "enable_thinking", "api_key_env"):
         assert key not in payload
@@ -293,8 +296,11 @@ def test_customer_console_credential_survives_restart_without_reusing_old_key(
     assert calls[0].full_url == "https://openrouter.ai/api/v1/chat/completions"
     assert calls[0].get_header("Authorization") == "Bearer current-service-secret"
     payload = json.loads(calls[0].data)
-    assert payload["model"] == "qwen/qwen3.5-35b-a3b"
-    assert payload["provider"] == {"only": ["deepinfra"], "allow_fallbacks": False}
+    assert payload["model"] == "qwen/qwen3.5-35b-a3b:nitro"
+    assert payload["provider"] == {
+        "sort": "throughput", "allow_fallbacks": True,
+        "ignore": ["coreweave", "novita"],
+    }
     assert payload["reasoning"] == {"effort": "none"}
     assert old_key.read_bytes() == old_contents
     assert not contains_private_implementation_detail(public_payloads)

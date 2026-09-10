@@ -772,7 +772,7 @@ INFERENCE_API_KEY=
 | `INFERENCE_PROVIDER` | 默认模型 | 使用的渠道密钥 |
 | --- | --- | --- |
 | `aiclub` | `qwen3.5-plus` | `AICLUB_API_KEY` |
-| `openrouter` | `qwen/qwen3.5-35b-a3b` | `OPENROUTER_API_KEY` |
+| `openrouter` | `qwen/qwen3.5-35b-a3b:nitro` | `OPENROUTER_API_KEY` |
 | `dashscope` | `qwen3.5-plus` | `DASHSCOPE_API_KEY` |
 
 例如，将 `INFERENCE_PROVIDER=dashscope` 即可改走 DashScope。测试其他模型时，
@@ -805,7 +805,7 @@ inference_service:
   provider: openrouter
   providers:
     openrouter:
-      model: qwen/qwen3.5-35b-a3b
+      model: qwen/qwen3.5-35b-a3b:nitro
       request_parameters:
         reasoning:
           enabled: false
@@ -971,8 +971,13 @@ docker build --platform linux/amd64 -f workers/paddle_rich_label/Dockerfile.gpu 
 ```
 
 The customer main image fixes `HARNESS_INFERENCE_PROFILE=customer-standard`.
-That internal preset retains OpenRouter, the DeepInfra backend only, and
-`qwen/qwen3.5-35b-a3b`, with fallback disabled. Delivery Compose does not forward
+That internal preset uses OpenRouter and `qwen/qwen3.5-35b-a3b:nitro`.
+All A-H selections also use their base model's `:nitro` variant, allowing
+throughput-based provider selection and fallbacks while excluding Novita and
+CoreWeave. Existing IDs and saved selections retain their base models;
+the eight slots contain six distinct models now that providers are not pinned.
+See the [Nitro documentation](https://openrouter.ai/docs/guides/routing/model-variants/nitro).
+Delivery Compose does not forward
 provider, model or endpoint overrides; the development target keeps configurable
 routing. Customer configuration, API profiles and UI continue to use neutral
 feature names. Saved credentials are scoped to their service: do not silently

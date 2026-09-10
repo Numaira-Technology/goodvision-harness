@@ -71,7 +71,7 @@ inference_service:
     aiclub:
       model: qwen3.5-plus
     openrouter:
-      model: qwen/qwen3.5-35b-a3b
+      model: qwen/qwen3.5-35b-a3b:nitro
       request_parameters:
         reasoning:
           enabled: false
