@@ -38,7 +38,7 @@ from .config import (
     ServiceSettings,
     load_config,
 )
-from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
+from .contracts import PUBLIC_MODEL_NAME, AnalysisResult, GroundedObject
 from .delayed_overlay import DelayedOverlayComposer, DisplayAnalysis, OverlaySelection
 from .delivery import WebhookDelivery
 from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
@@ -60,7 +60,12 @@ from .model_api import (
     PooledModelAPIClient,
     environment_api_key,
 )
-from .overlay import draw_event_rich_overlay, draw_overlay, draw_rich_overlay
+from .overlay import (
+    draw_event_rich_overlay,
+    draw_face_boxes,
+    draw_overlay,
+    draw_rich_overlay,
+)
 from .overlay_fusion import OverlayFusionMatcher
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
@@ -1837,6 +1842,9 @@ class HarnessRuntime:
             arguments = _analysis_overlay_arguments(analysis)
             arguments["objects"] = ()
             rendered = draw_overlay(rendered, **arguments)
+            known_faces = _known_face_objects(analysis)
+            if known_faces:
+                rendered = draw_face_boxes(rendered, known_faces)
 
         ok, output = cv2.imencode(
             ".jpg",
@@ -1906,7 +1914,20 @@ def _render_analysis_jpeg(
 
 
 def _draw_analysis_overlay(image: Any, analysis: DisplayAnalysis) -> Any:
-    return draw_overlay(image, **_analysis_overlay_arguments(analysis))
+    rendered = draw_overlay(image, **_analysis_overlay_arguments(analysis))
+    if analysis.analysis_kind != "face_recognition":
+        known_faces = _known_face_objects(analysis)
+        if known_faces:
+            rendered = draw_face_boxes(rendered, known_faces)
+    return rendered
+
+
+def _known_face_objects(analysis: DisplayAnalysis) -> tuple[GroundedObject, ...]:
+    return tuple(
+        item for item in analysis.objects
+        if item.attributes.get("status") == "known"
+        and item.attributes.get("person_id")
+    )
 
 
 def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
@@ -2634,7 +2655,16 @@ def _feature_result_payload(
         [
             copy.deepcopy(item)
             for item in objects
-            if isinstance(item, dict) and item.get("object_id") in object_ids
+            if isinstance(item, dict) and (
+                item.get("object_id") in object_ids
+                or (
+                    feature == "stranger"
+                    and isinstance(item.get("attributes"), dict)
+                    and item["attributes"].get("status") in {
+                        "known", "unknown", "unusable",
+                    }
+                )
+            )
         ]
         if isinstance(objects, list)
         else []

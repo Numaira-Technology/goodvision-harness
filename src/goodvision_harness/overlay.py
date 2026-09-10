@@ -23,6 +23,11 @@ _RICH_COLORS: tuple[tuple[int, int, int], ...] = (
 )
 _PERSON_LABELS = frozenset({"person", "human", "pedestrian"})
 _ALERT_COLOR = (40, 40, 220)
+_FACE_COLORS = {
+    "known": (55, 180, 70),
+    "unknown": (40, 40, 220),
+    "unusable": (105, 105, 105),
+}
 
 _APPEARANCE_TOKENS = {
     "front": ("direction", "FRONT"),
@@ -630,6 +635,61 @@ def _draw_rich_card(
         )
 
 
+def draw_face_boxes(bgr: Any, objects: Sequence[Any]) -> Any:
+    """Return a copy with face identities, without replacing the event verdict."""
+
+    rendered = bgr.copy()
+    _draw_face_boxes(rendered, objects)
+    return rendered
+
+
+def _draw_face_boxes(rendered: Any, objects: Sequence[Any]) -> list[str]:
+    height, width = rendered.shape[:2]
+    statuses: list[str] = []
+    for item in objects:
+        attributes = getattr(item, "attributes", {})
+        if not isinstance(attributes, Mapping):
+            attributes = {}
+        status = str(attributes.get("status", "unusable"))
+        if status not in _FACE_COLORS:
+            status = "unusable"
+        statuses.append(status)
+        bbox = getattr(item, "bbox", None)
+        if bbox is None:
+            continue
+        try:
+            x1, y1, x2, y2 = bbox.to_pixels(width, height)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        color = _FACE_COLORS[status]
+        cv2.rectangle(
+            rendered,
+            (x1, y1),
+            (max(x1, x2 - 1), max(y1, y2 - 1)),
+            color,
+            2,
+        )
+        if status == "known":
+            person_id = attributes.get("person_id")
+            name = redact_public_text(attributes.get("name") or "")
+            if isinstance(person_id, str) and person_id:
+                # Enrollment IDs are business identifiers and must not be redacted.
+                label = f"ID: {person_id}"
+                if name and name != person_id:
+                    label += f" | {name}"
+            else:
+                label = name or "known"
+        elif status == "unknown":
+            label = "UNKNOWN"
+        else:
+            label = "unusable"
+        similarity = attributes.get("similarity")
+        if isinstance(similarity, (int, float)) and not isinstance(similarity, bool):
+            label += f" {float(similarity):.2f}"
+        _text_with_background(rendered, label[:80], (x1, max(18, y1)), color)
+    return statuses
+
+
 def _draw_face_overlay(
     rendered: Any,
     *,
@@ -640,59 +700,20 @@ def _draw_face_overlay(
     stale: bool,
     incomplete: bool = False,
 ) -> Any:
-    height, width = rendered.shape[:2]
-    colors = {
-        "known": (55, 180, 70),
-        "unknown": (40, 40, 220),
-        "unusable": (105, 105, 105),
-    }
-    statuses: list[str] = []
-    for item in objects:
-        attributes = getattr(item, "attributes", {})
-        if not isinstance(attributes, Mapping):
-            attributes = {}
-        status = str(attributes.get("status", "unusable"))
-        if status not in colors:
-            status = "unusable"
-        statuses.append(status)
-        bbox = getattr(item, "bbox", None)
-        if bbox is None:
-            continue
-        try:
-            x1, y1, x2, y2 = bbox.to_pixels(width, height)
-        except (AttributeError, TypeError, ValueError):
-            continue
-        color = colors[status]
-        cv2.rectangle(
-            rendered,
-            (x1, y1),
-            (max(x1, x2 - 1), max(y1, y2 - 1)),
-            color,
-            2,
-        )
-        if status == "known":
-            label = redact_public_text(attributes.get("name") or "known")
-        elif status == "unknown":
-            label = "UNKNOWN"
-        else:
-            label = "unusable"
-        similarity = attributes.get("similarity")
-        if isinstance(similarity, (int, float)) and not isinstance(similarity, bool):
-            label += f" {float(similarity):.2f}"
-        _text_with_background(rendered, label[:80], (x1, max(18, y1)), color)
+    statuses = _draw_face_boxes(rendered, objects)
 
     if stale:
         state, color = "STALE", (90, 150, 220)
     elif detected or "unknown" in statuses:
-        state, color = "UNKNOWN", colors["unknown"]
+        state, color = "UNKNOWN", _FACE_COLORS["unknown"]
     elif incomplete:
         state, color = "INCOMPLETE", (90, 150, 220)
     elif not statuses:
-        state, color = "NO FACE", colors["unusable"]
+        state, color = "NO FACE", _FACE_COLORS["unusable"]
     elif all(status == "unusable" for status in statuses):
-        state, color = "NO USABLE FACE", colors["unusable"]
+        state, color = "NO USABLE FACE", _FACE_COLORS["unusable"]
     else:
-        state, color = "CLEAR", colors["known"]
+        state, color = "CLEAR", _FACE_COLORS["known"]
     _text_with_background(
         rendered,
         f"{state}  {float(confidence):.2f}"[:100],

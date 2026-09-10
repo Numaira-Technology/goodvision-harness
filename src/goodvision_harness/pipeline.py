@@ -605,6 +605,16 @@ class StreamingSession:
                                     matched_memory_ids=judgment.matched_memory_ids,
                                 )
                             )
+                        for item in classification.supporting_objects:
+                            object_records.append(
+                                GroundedObject(
+                                    object_id=f"object-{len(object_records) + 1}",
+                                    label=str(public_safe_value(item.label)),
+                                    bbox=item.bbox,
+                                    confidence=item.confidence,
+                                    attributes=public_safe_value(item.attributes),
+                                )
+                            )
                         grounded_objects = tuple(object_records)
                         judgments = tuple(judgment_records)
                     else:

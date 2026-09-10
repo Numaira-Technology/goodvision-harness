@@ -273,6 +273,9 @@ def test_fixed_five_combination_uses_only_unknown_faces_for_stranger() -> None:
     assert [item.label for item in stranger.objects] == ["unknown_person"]
     assert stranger.objects[0].attributes["status"] == "unknown"
     assert stranger.matched_memory_ids == ("alice",)
+    assert len(positive.supporting_objects) == 1
+    assert positive.supporting_objects[0].attributes["person_id"] == "alice"
+    assert positive.supporting_objects[0] in positive.objects
 
     known_only_response = _combined_client(unknown=False).classify_window(_window())
     known_only = known_only_response.classification
@@ -281,6 +284,7 @@ def test_fixed_five_combination_uses_only_unknown_faces_for_stranger() -> None:
     assert stranger.detected is False
     assert stranger.objects == ()
     assert stranger.matched_memory_ids == ("alice",)
+    assert known_only.supporting_objects == positive.supporting_objects
 
 
 def test_selected_feature_subset_runs_only_requested_detectors() -> None:
@@ -824,6 +828,13 @@ def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
         (ROOT / "schemas/analysis-result-v2.schema.json").read_text(encoding="utf-8")
     )
     jsonschema.Draft202012Validator(schema).validate(payload)
+    known_objects = [
+        item for item in payload["objects"]
+        if item["attributes"].get("status") == "known"
+    ]
+    assert len(known_objects) == 1
+    assert known_objects[0]["attributes"]["person_id"] == "alice"
+    assert known_objects[0]["object_id"] not in judgments["stranger"]["object_ids"]
     assert emitted_frames == [(result, window.newest_frame.presentation_jpeg_bytes)]
 
     # Capability views keep the original frame summary, including when their

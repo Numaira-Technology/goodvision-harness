@@ -87,6 +87,7 @@ def _selected_features_result(
     stranger: bool | None,
     smoking: bool = False,
     session_id: str = "session-1",
+    known_person_id: str | None = None,
 ) -> AnalysisResult:
     result = _result(
         timestamp=timestamp,
@@ -114,6 +115,17 @@ def _selected_features_result(
                 confidence=0.9,
                 attributes={"status": "unknown", "person_track_id": "P0001"},
             ))
+    if known_person_id is not None:
+        objects.append(GroundedObject(
+            object_id="known-face",
+            label="known_person",
+            bbox=NormalizedBBox(0.4, 0.1, 0.5, 0.25),
+            confidence=0.95,
+            attributes={
+                "status": "known", "person_id": known_person_id,
+                "name": "Same name", "person_track_id": "P0002",
+            },
+        ))
     return replace(
         result,
         stream_session_id=session_id,
@@ -288,6 +300,125 @@ def test_select_overlay_carried_stranger_preserves_safety_object_ids() -> None:
     assert len(skipped.objects) == 1
     assert len(skipped.judgments) == 1
     assert "annotation_source_message_id" not in positive.objects[0].attributes
+
+
+@pytest.mark.parametrize("stranger", [False, True])
+def test_select_overlay_carries_known_face_without_stranger_reference(
+    stranger: bool,
+) -> None:
+    face_sample = _selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="face-source",
+        stranger=stranger, known_person_id="employee-7",
+    )
+    skipped = _selected_features_result(
+        timestamp=10.4, frame_index=106, message_id="safety", stranger=None,
+        smoking=True,
+    )
+
+    selection = select_overlay((face_sample, skipped), 10.6, max_gap_seconds=0.8)
+
+    assert selection.analysis is not None
+    objects = {item.object_id: item for item in selection.analysis.objects}
+    known = objects["held-stranger-face-source-known-face"]
+    assert known.attributes["status"] == "known"
+    assert known.attributes["person_id"] == "employee-7"
+    assert known.attributes["person_track_id"] == "P0002"
+    assert known.attributes["annotation_source_message_id"] == "face-source"
+    judgments = {item.event_label: item for item in selection.analysis.judgments}
+    assert judgments["smoking"].object_ids == ("object-1",)
+    assert judgments["stranger"].detected is stranger
+    assert judgments["stranger"].object_ids == (
+        ("held-stranger-face-source-object-1",) if stranger else ()
+    )
+    assert len(objects) == 2 + int(stranger)
+    assert skipped.objects[0].label == "cigarette"
+    assert "annotation_source_message_id" not in face_sample.objects[-1].attributes
+
+
+@pytest.mark.parametrize(
+    ("media_timestamp", "expected"), [(13.0, True), (13.001, False)],
+)
+def test_select_overlay_expires_missing_known_face_from_original_observation(
+    media_timestamp: float, expected: bool,
+) -> None:
+    face_sample = _selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="face", stranger=False,
+        known_person_id="employee-7",
+    )
+    skipped = _selected_features_result(
+        timestamp=12.8, frame_index=142, message_id="safety", stranger=None,
+    )
+
+    selection = select_overlay(
+        (face_sample, skipped), media_timestamp, max_gap_seconds=0.8,
+    )
+
+    assert selection.analysis is not None
+    assert any(
+        item.attributes.get("person_id") == "employee-7"
+        for item in selection.analysis.objects
+    ) is expected
+
+
+@pytest.mark.parametrize("barrier", ["explicit-clear", "new-session"])
+def test_select_overlay_does_not_revive_known_face_after_clear_or_new_session(
+    barrier: str,
+) -> None:
+    face_sample = _selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="face", stranger=False,
+        known_person_id="employee-7",
+    )
+    clear = _selected_features_result(
+        timestamp=10.4, frame_index=106, message_id="clear",
+        stranger=False if barrier == "explicit-clear" else None,
+        session_id="session-1" if barrier == "explicit-clear" else "session-2",
+    )
+    skipped = _selected_features_result(
+        timestamp=10.8, frame_index=112, message_id="safety", stranger=None,
+        session_id=clear.stream_session_id,
+    )
+
+    selection = select_overlay(
+        (face_sample, clear, skipped), 11.0, max_gap_seconds=0.8,
+    )
+
+    assert selection.analysis is not None
+    assert selection.analysis.objects == ()
+
+
+@pytest.mark.parametrize(
+    "analysis_kind", ["face_recognition", "selected_features", "fixed_five_events"],
+)
+@pytest.mark.parametrize(
+    ("right_person_id", "right_name", "expected_x1"),
+    [("employee-7", "Renamed", 0.45), ("employee-8", "Same name", 0.4)],
+)
+def test_select_overlay_uses_person_id_to_interpolate_known_faces(
+    analysis_kind: str, right_person_id: str, right_name: str, expected_x1: float,
+) -> None:
+    left = replace(_selected_features_result(
+        timestamp=10.0, frame_index=100, message_id="left", stranger=False,
+        known_person_id="employee-7",
+    ), analysis_kind=analysis_kind)
+    right = replace(
+        left,
+        message_id="right",
+        frame=replace(left.frame, timestamp_seconds=10.4, source_frame_index=106),
+        objects=(replace(
+            left.objects[0],
+            bbox=NormalizedBBox(0.5, 0.1, 0.6, 0.25),
+            attributes={
+                **left.objects[0].attributes,
+                "person_id": right_person_id, "name": right_name,
+            },
+        ),),
+    )
+
+    selection = select_overlay((left, right), 10.2, max_gap_seconds=0.8)
+
+    assert selection.analysis is not None
+    assert selection.analysis.objects[0].bbox.x1 == pytest.approx(expected_x1)
+    assert selection.analysis.objects[0].attributes["person_id"] == "employee-7"
 
 
 @pytest.mark.parametrize("future_timestamp", [10.0, 10.4])

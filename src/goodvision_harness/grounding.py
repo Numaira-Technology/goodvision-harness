@@ -258,6 +258,9 @@ class MultiGroundedClassification:
     missing_event_labels: tuple[str, ...] = ()
     actors: tuple[ModelActor, ...] = ()
     face_observations: tuple[ModelObject, ...] = ()
+    # Observations such as known faces belong in the frame result without
+    # becoming evidence for a positive safety or stranger judgment.
+    supporting_objects: tuple[ModelObject, ...] = ()
 
     def __post_init__(self) -> None:
         judgments = tuple(self.judgments)
@@ -267,6 +270,7 @@ class MultiGroundedClassification:
         if len(set(event_labels)) != len(event_labels):
             raise ValueError("event_label values must be unique")
         object.__setattr__(self, "judgments", judgments)
+        object.__setattr__(self, "supporting_objects", tuple(self.supporting_objects))
         analysis_kind = str(self.analysis_kind).strip()
         if not analysis_kind:
             raise ValueError("analysis_kind must not be empty")
@@ -296,7 +300,9 @@ class MultiGroundedClassification:
 
     @property
     def objects(self) -> tuple[ModelObject, ...]:
-        return tuple(item for judgment in self.judgments for item in judgment.objects)
+        return tuple(
+            item for judgment in self.judgments for item in judgment.objects
+        ) + self.supporting_objects
 
     @property
     def matched_memory_ids(self) -> tuple[str, ...]:
@@ -1592,6 +1598,7 @@ class SelectedFeaturesGroundingClient:
         """Share validation for synchronous and independently completed branches."""
 
         judgments: list[GroundedEventClassification] = []
+        supporting_objects: tuple[ModelObject, ...] = ()
         branch_errors: list[tuple[str, str]] = []
         completed_branches: list[str] = []
         safety_failed = False
@@ -1663,6 +1670,14 @@ class SelectedFeaturesGroundingClient:
                             matched_memory_ids=(face_classification.matched_memory_ids),
                         )
                     )
+                    event_indexes = set(indexes)
+                    supporting_objects = tuple(
+                        item for index, item in enumerate(face_classification.objects)
+                        if index not in event_indexes
+                        and item.label == "known_person"
+                        and item.attributes.get("status") == "known"
+                        and item.attributes.get("person_id")
+                    )
                     completed_branches.append("stranger")
                     face_observations = (
                         face_classification.face_observations
@@ -1720,6 +1735,7 @@ class SelectedFeaturesGroundingClient:
                 missing_event_labels=tuple(
                     label for label in self.event_labels if label not in returned_labels
                 ),
+                supporting_objects=supporting_objects,
                 analysis_kind=(
                     FIXED_FIVE_ANALYSIS_KIND
                     if returned_labels == DETECTION_EVENT_LABELS
