@@ -180,6 +180,12 @@ SSE 保留通用结果流的游标和续传规则：支持 `?after=<非负整数
 事件的 `subject_id` 表示会话内人物轨迹，`person_id` 表示录入身份；`object_id` 只在当前分析消息内有效。原 AnalysisResult v2 可在对象 `attributes`
 中补充人物关联；事件编号尚未建立时，后续用 `/v1/events?message_id=...` 查询。
 
+已知人脸以 `known_person` 保留在分析结果的 `objects` 中，包含
+`attributes.person_id`，但不作为陌生人阳性的 `object_ids` 引用。
+陌生人能力的独立结果接口同样保留这些身份对象。联合检测仅在所选安全检查完整、
+且没有安全事件阳性时显示已知人脸的绿色 ID 框；安全事件阳性或结果缺失时隐藏绿框，
+身份对象仍保留在 JSON 中。
+
 事件流发送 `event_change`，一次携带受影响 `events` 和 `aliases`。客户端原子
 更新这些记录。列表支持 `limit` / `before`，用响应中的 `epoch:cursor` 连接事件流；
 收到 `reset` 后重新读取列表。已删除或不存在的事件返回 404。视频未就绪返回

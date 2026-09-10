@@ -177,7 +177,7 @@ def test_actors_do_not_change_existing_request_budget_or_add_model_calls() -> No
     assert len(response.classification.actors) == 1
 
 
-def test_composite_keeps_all_faces_even_when_only_strangers_enter_legacy_objects() -> (
+def test_composite_keeps_known_faces_separate_from_event_evidence() -> (
     None
 ):
     face = ModelObject(
@@ -217,5 +217,14 @@ def test_composite_keeps_all_faces_even_when_only_strangers_enter_legacy_objects
     bundle = observation_bundle(result.classification)
     assert bundle.face_observations == (face,)
     assert len(bundle.actors) == 1
-    assert bundle.object_actor_ids == (("a1",),)
-    assert [item.label for item in result.classification.objects] == ["cigarette"]
+    assert bundle.object_actor_ids == (("a1",), ())
+    assert [item.label for item in result.classification.objects] == [
+        "cigarette", "known_person",
+    ]
+    stranger = next(
+        item for item in result.classification.judgments
+        if item.event_label == "stranger"
+    )
+    assert not stranger.detected
+    assert stranger.objects == ()
+    assert result.classification.supporting_objects == (face,)
