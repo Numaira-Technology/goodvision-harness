@@ -51,6 +51,7 @@ def draw_overlay(
     stale: bool = False,
     analysis_kind: str = "event",
     incomplete: bool = False,
+    known_faces: Sequence[Any] = (),
 ) -> Any:
     """Return a copy of ``bgr`` with a compact verdict and normalized boxes."""
 
@@ -71,6 +72,25 @@ def draw_overlay(
     color = (40, 40, 220) if positive else (55, 180, 70)
     if stale or (incomplete and not positive):
         color = (90, 150, 220)
+
+    for item in known_faces if not stale else ():
+        attributes = getattr(item, "attributes", {})
+        person_id = str(attributes.get("person_id", "")).strip()
+        if not person_id:
+            continue
+        try:
+            x1, y1, x2, y2 = item.bbox.to_pixels(width, height)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        identity_color = (55, 180, 70)
+        cv2.rectangle(
+            rendered, (x1, y1), (max(x1, x2 - 1), max(y1, y2 - 1)),
+            identity_color, 2,
+        )
+        _text_with_background(
+            rendered, redact_public_text(person_id)[:120],
+            (x1, max(18, y1)), identity_color,
+        )
 
     for item in objects if positive else ():
         bbox = getattr(item, "bbox", None)

@@ -465,6 +465,9 @@ def _compatible_objects(
         return False
     if left_roles and right_roles and left_roles.isdisjoint(right_roles):
         return False
+    if left.label == "known_person":
+        if left.attributes.get("person_id") != right.attributes.get("person_id"):
+            return False
     if analysis_kind == "face_recognition":
         left_status = str(left.attributes.get("status", ""))
         right_status = str(right.attributes.get("status", ""))

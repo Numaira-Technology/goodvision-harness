@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import pytest
 
+import goodvision_harness.overlay as overlay_module
 import goodvision_harness.service as service_module
 from goodvision_harness.config import InferenceSettings, load_config
 from goodvision_harness.contracts import (
@@ -280,6 +281,81 @@ def test_fixed_five_combination_uses_only_unknown_faces_for_stranger() -> None:
     assert stranger.detected is False
     assert stranger.objects == ()
     assert stranger.matched_memory_ids == ("alice",)
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+@pytest.mark.parametrize("safety_event", [None, *SAFETY_EVENT_LABELS, "unavailable"])
+def test_joint_known_face_preserves_identity_and_renders_only_without_safety_events(
+    monkeypatch: pytest.MonkeyPatch, unknown: bool, safety_event: str | None,
+) -> None:
+    config = load_config(ROOT / "config.yaml")
+    safety = MultiGroundedClassification(
+        judgments=tuple(
+            GroundedEventClassification(
+                event_label=label,
+                detected=label == safety_event,
+                confidence=0.95,
+                description="Safety result.",
+                objects=(
+                    (_model_object(
+                        "person", (0.05, 0.2, 0.25, 0.9),
+                        confidence=0.95, attributes={},
+                    ),)
+                    if label == safety_event else ()
+                ),
+            )
+            for label in SAFETY_EVENT_LABELS
+        ),
+    )
+    safety_client = _StaticClient(config.inference, safety)
+    if safety_event == "unavailable":
+        monkeypatch.setattr(
+            safety_client, "classify_window",
+            lambda window: GroundingResponse(window, None, 0.1, error="failed"),
+        )
+    client = FixedFiveGroundingClient(
+        safety_client,
+        _StaticClient(config.inference, _stranger_classification(unknown=unknown)),
+        safety_max_image_side=320,
+        safety_jpeg_quality=75,
+    )
+    results: list[AnalysisResult] = []
+    session = StreamingSession.for_camera(
+        config, client, SessionCallbacks(on_analysis_result=results.append),
+    )
+    window = _window()
+    future: Future[Any] = Future()
+    future.set_result(client.classify_window(window))
+    session._on_window_done(future, window)
+    analysis = results[0]
+    known = next(item for item in analysis.objects if item.label == "known_person")
+    assert known.attributes["person_id"] == "alice"
+    assert known.bbox == NormalizedBBox(0.45, 0.1, 0.65, 0.8)
+    assert all(known.object_id not in item.object_ids for item in analysis.judgments)
+    stranger = next(
+        item for item in analysis.judgments if item.event_label == "stranger"
+    )
+    assert stranger.detected is unknown
+    assert bool(stranger.object_ids) is unknown
+    texts: list[str] = []
+    original_text = overlay_module._text_with_background
+
+    def capture_text(image: Any, text: str, *args: Any, **kwargs: Any) -> None:
+        texts.append(text)
+        original_text(image, text, *args, **kwargs)
+
+    monkeypatch.setattr(overlay_module, "_text_with_background", capture_text)
+    rendered = service_module._draw_analysis_overlay(
+        np.zeros((360, 640, 3), dtype=np.uint8), analysis,
+    )
+    has_green = tuple(rendered[287, 352]) == (55, 180, 70)
+    assert has_green is (safety_event is None)
+    assert ("alice" in texts) is (safety_event is None)
+    assert "Alice" not in texts
+    if safety_event in SAFETY_EVENT_LABELS:
+        assert tuple(rendered[323, 96]) == (40, 40, 220)
+    if unknown:
+        assert tuple(rendered[305, 512]) == (40, 40, 220)
 
 
 def test_selected_feature_subset_runs_only_requested_detectors() -> None:

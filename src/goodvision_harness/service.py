@@ -45,6 +45,9 @@ from .deployment_settings import DeploymentSettings, DeploymentSettingsStore
 from .face_recognition import FaceRecognitionRuntime, FaceRecognizerConfig
 from .grounding import (
     DETECTION_EVENT_LABELS,
+    FIXED_FIVE_ANALYSIS_KIND,
+    SAFETY_EVENT_LABELS,
+    SELECTED_FEATURES_ANALYSIS_KIND,
     build_grounding_client,
     build_selected_features_grounding_client,
 )
@@ -69,6 +72,7 @@ from .reference_memory import (
     UNKNOWN_FACE_EVENT_LABEL,
 )
 from .result_bus import FrameBus, FramePacket, ResultBus
+from .rich_labeling import RichLabelCoordinator, RichLabelHTTPClient
 from .route_probe import (
     MAX_PROBE_CONCURRENCY,
     PROBE_TRIALS,
@@ -79,7 +83,6 @@ from .route_probe import (
     finish_result,
     probe_sample,
 )
-from .rich_labeling import RichLabelCoordinator, RichLabelHTTPClient
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
 from .visual_memory import (
@@ -1709,6 +1712,7 @@ def _draw_analysis_overlay(image: Any, analysis: AnalysisResult) -> Any:
 
 
 def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
+    known_faces = ()
     if analysis.analysis_kind == "face_recognition":
         detected_judgments = tuple(
             judgment for judgment in analysis.judgments if judgment.detected
@@ -1746,6 +1750,23 @@ def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
             for item in analysis.objects
             if item.object_id in labels_by_object
         )
+        if (
+            analysis.analysis_kind in (
+                FIXED_FIVE_ANALYSIS_KIND, SELECTED_FEATURES_ANALYSIS_KIND,
+            )
+            and not any(
+                judgment.event_label in SAFETY_EVENT_LABELS
+                for judgment in detected_judgments
+            )
+            and not set(analysis.missing_event_labels).intersection(SAFETY_EVENT_LABELS)
+        ):
+            known_faces = tuple(
+                item for item in analysis.objects
+                if item.object_id not in labels_by_object
+                and item.label == "known_person"
+                and item.attributes.get("status") == "known"
+                and item.attributes.get("person_id")
+            )
         detected = bool(detected_judgments)
         if detected_judgments:
             event_label = " | ".join(
@@ -1775,6 +1796,7 @@ def _analysis_overlay_arguments(analysis: AnalysisResult) -> dict[str, Any]:
             analysis.description if analysis.missing_event_labels else description
         ),
         "objects": objects,
+        "known_faces": known_faces,
         "analysis_kind": analysis.analysis_kind,
         "incomplete": bool(analysis.missing_event_labels),
     }

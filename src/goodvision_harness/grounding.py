@@ -168,6 +168,7 @@ class MultiGroundedClassification:
     judgments: tuple[GroundedEventClassification, ...]
     analysis_kind: str = SAFETY_MULTI_ANALYSIS_KIND
     missing_event_labels: tuple[str, ...] = ()
+    known_faces: tuple[ModelObject, ...] = ()
 
     def __post_init__(self) -> None:
         judgments = tuple(self.judgments)
@@ -211,7 +212,7 @@ class MultiGroundedClassification:
     def objects(self) -> tuple[ModelObject, ...]:
         return tuple(
             item for judgment in self.judgments for item in judgment.objects
-        )
+        ) + self.known_faces
 
     @property
     def matched_memory_ids(self) -> tuple[str, ...]:
@@ -1159,6 +1160,7 @@ class SelectedFeaturesGroundingClient:
                 stranger_error = exc
 
         judgments: list[GroundedEventClassification] = []
+        known_faces: tuple[ModelObject, ...] = ()
         safety_failed = False
         if self._safety_client is not None:
             safety_classification = (
@@ -1185,6 +1187,14 @@ class SelectedFeaturesGroundingClient:
                 else None
             )
             if isinstance(face_classification, GroundedClassification):
+                # Identity boxes are observations, not stranger alerts. Keep
+                # them outside the event's positive-only object references.
+                known_faces = tuple(
+                    item for item in face_classification.objects
+                    if item.label == "known_person"
+                    and item.attributes.get("status") == "known"
+                    and item.attributes.get("person_id")
+                )
                 indexes = face_classification.event_object_indexes
                 if indexes is None:
                     indexes = (
@@ -1228,6 +1238,7 @@ class SelectedFeaturesGroundingClient:
             )
             classification = MultiGroundedClassification(
                 judgments=tuple(judgments),
+                known_faces=known_faces,
                 missing_event_labels=tuple(
                     label for label in self.event_labels if label not in returned_labels
                 ),

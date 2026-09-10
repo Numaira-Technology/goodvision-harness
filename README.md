@@ -874,6 +874,12 @@ matches the local matcher; `matched_memory_ids` is additional reference metadata
 | Unknown face only | `true` | `[]` |
 | Known and unknown faces | `true` | Known IDs |
 
+In fixed-five or selected-feature analysis, known faces are retained in `objects`
+with `attributes.person_id` and are not referenced by stranger alerts. When the
+selected safety checks are complete and none detects an event, the annotated
+video draws these faces in green with their **person ID**. A detected or missing
+safety result suppresses the green identity boxes; stranger alerts remain red.
+
 The fixed-five mode and the face diagnostics mode both use local face analysis by
 default. Enable remote reference memory only as an explicit legacy
 fallback/experiment by setting
