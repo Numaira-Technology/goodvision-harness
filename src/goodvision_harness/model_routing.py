@@ -10,10 +10,11 @@ from .model_api import (
     DEFAULT_OPENROUTER_ENDPOINT,
     PROVIDER_DEFAULTS,
     ModelAPISettings,
+    nitro_provider_preferences,
 )
 
 CUSTOMER_INFERENCE_PROFILE = "customer-standard"
-CUSTOMER_INFERENCE_MODEL = "qwen/qwen3.5-35b-a3b"
+CUSTOMER_INFERENCE_MODEL = "qwen/qwen3.5-35b-a3b:nitro"
 
 
 def _section(raw: Mapping[str, Any], key: str) -> dict[str, Any]:
@@ -59,7 +60,7 @@ def _resolve_customer_route(
     ):
         parameters.pop(key, None)
     parameters.update({
-        "provider": {"only": ["deepinfra"], "allow_fallbacks": False},
+        "provider": nitro_provider_preferences(),
         "reasoning": {"effort": "none"},
     })
     return settings, CUSTOMER_INFERENCE_MODEL, parameters
@@ -159,7 +160,10 @@ def resolve_model_route(
     # Custom model IDs need their own documented per-route options.
     if model == PROVIDER_DEFAULTS[provider][2]:
         defaults = {
-            "openrouter": {"reasoning": {"enabled": False}},
+            "openrouter": {
+                "reasoning": {"enabled": False},
+                "provider": nitro_provider_preferences(),
+            },
             "dashscope": {"enable_thinking": False},
         }.get(provider, {})
         parameters = {**defaults, **parameters}

@@ -2,7 +2,20 @@
 
 内部维护资料，不复制到客户界面、公开 API、事件 JSON 或交付说明中。公开部分仅展示线路代号、状态和耗时。内部持久化代号不得重用来指向其他 provider/model 组合；公开编号与内部代号分别维护。
 
-## 当前保留的 8 条线路
+## 当前路由：Nitro（2026-09-10）
+
+按用户要求，当前 A–H 全部使用原模型 ID 加 `:nitro`。请求移除固定
+`provider.only` / `provider.order`，使用 `sort: throughput`、
+`allow_fallbacks: true`，并通过 `ignore: [coreweave, novita]` 保留已有排除规则。
+默认交付模型同样改为 `qwen/qwen3.5-35b-a3b:nitro`。
+
+内部代号、公开 A–H 编号及已保存选择保持兼容；表内 provider 字段只记录历史
+来源，不再限制实际请求。历史允许代号恢复后也走其原模型的 Nitro 路由。
+八个位置覆盖六个不同模型，B/G 与 E/H 分别使用同一个 Nitro 模型。
+下文的固定服务商测速仅为历史记录，不能当作 Nitro 的测速结果。
+实际路由规则见 [OpenRouter Nitro 官方说明](https://openrouter.ai/docs/guides/routing/model-variants/nitro)。
+
+## 历史保留的 8 条固定线路
 
 2026-09-08 从 44 条候选中按完整响应成功率和中位耗时筛选，排除复测失败的线路；按用户最新要求移除 Novita 和 CoreWeave，使用后续排名中的 B、F 补位。当前 8 条覆盖 3 个 provider、6 个 Qwen 版本，均为 Alibaba、DeepInfra 或 Parasail。以下耗时来自全量初测；最后一节记录移除 provider 后的八条复测。
 

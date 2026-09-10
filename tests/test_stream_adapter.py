@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+
 import pytest
-from goodvision_harness.stream_adapter import parse_stream_source
+
+from goodvision_harness.privacy import PUBLIC_STREAM_SUPPORT_ERROR
+from goodvision_harness.stream_adapter import (
+    NetworkStreamAdapter,
+    StreamAdapterError,
+    parse_stream_source,
+)
 
 ROBOT_WHEP_URL = (
     "webrtc+http://192.168.20.199:1985/rtc/v1/whep/"
@@ -27,3 +36,14 @@ def test_plain_whep_http_url_requires_explicit_webrtc_prefix() -> None:
             "http://192.168.20.199:1985/rtc/v1/whep/"
             "?app=live&stream=livestream"
         )
+
+
+def test_missing_video_dependency_has_a_safe_actionable_error(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "aiortc", None)
+    adapter = NetworkStreamAdapter(ROBOT_WHEP_URL)
+
+    with pytest.raises(StreamAdapterError) as caught:
+        asyncio.run(adapter._receive_whep())
+
+    assert caught.value.code == "missing_support"
+    assert caught.value.public_message == PUBLIC_STREAM_SUPPORT_ERROR

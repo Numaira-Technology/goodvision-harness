@@ -42,7 +42,7 @@ ROUTES = (
         "openrouter",
         "https://openrouter.ai/api/v1/chat/completions",
         "OPENROUTER_API_KEY",
-        "qwen/qwen3.5-35b-a3b",
+        "qwen/qwen3.5-35b-a3b:nitro",
         {"reasoning": {"enabled": False}},
     ),
     (
@@ -345,6 +345,8 @@ def test_switch_discards_original_service_endpoint_and_key_name(
     )
     assert selected.inference.request_parameters == {
         "temperature": 0.0, "max_tokens": 1200, "reasoning": {"enabled": False},
+        "provider": {"sort": "throughput", "allow_fallbacks": True,
+                     "ignore": ["coreweave", "novita"]},
     }
 
 

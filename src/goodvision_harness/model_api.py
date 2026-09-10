@@ -22,13 +22,23 @@ DEFAULT_OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_DASHSCOPE_ENDPOINT = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 )
+OPENROUTER_EXCLUDED_PROVIDERS = frozenset({"novita", "coreweave"})
 PROVIDER_DEFAULTS = {
     "aiclub": (DEFAULT_AICLUB_ENDPOINT, DEFAULT_AICLUB_API_KEY_ENV, "qwen3.5-plus"),
     "openrouter": (
-        DEFAULT_OPENROUTER_ENDPOINT, "OPENROUTER_API_KEY", "qwen/qwen3.5-35b-a3b"
+        DEFAULT_OPENROUTER_ENDPOINT, "OPENROUTER_API_KEY", "qwen/qwen3.5-35b-a3b:nitro"
     ),
     "dashscope": (DEFAULT_DASHSCOPE_ENDPOINT, "DASHSCOPE_API_KEY", "qwen3.5-plus"),
 }
+
+
+def nitro_provider_preferences() -> dict[str, Any]:
+    """Let Nitro choose a fast endpoint while retaining operator exclusions."""
+    return {
+        "sort": "throughput",
+        "allow_fallbacks": True,
+        "ignore": sorted(OPENROUTER_EXCLUDED_PROVIDERS),
+    }
 
 
 class ModelAPIError(RuntimeError):

@@ -277,10 +277,9 @@ class HarnessRuntime:
         self._route_probe_stop = Event()
         self._selected_route_id: str | None = next((
             route.id for route in ROUTES_BY_ID.values()
-            if config is not None and config.inference.model == route.model
-            and isinstance(config.inference.request_parameters.get("provider"), dict)
-            and config.inference.request_parameters.get("provider", {}).get("only")
-            == [route.provider]
+            if config is not None and config.inference.model == route.request_model
+            and config.inference.request_parameters.get("provider")
+            == route.parameters({})["provider"]
         ), None)
         self._route_persisted = False
         self._route_probe: dict[str, Any] = {
