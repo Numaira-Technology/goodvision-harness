@@ -96,6 +96,7 @@ def test_actor_cost_control_changes_only_optional_text(monkeypatch, include_acto
 
     monkeypatch.setattr(evaluation.ModelAPIClient, "chat_completion", completion)
     settings = evaluation.load_config(ROOT / "config.yaml").model_api
+    monkeypatch.setenv(settings.api_key_env, "unit-test-key")
     transport = evaluation.MeasuredTransport(settings)
     transport.local.include_actors = include_actors
     original = [
