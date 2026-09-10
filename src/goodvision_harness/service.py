@@ -1525,6 +1525,11 @@ class HarnessRuntime:
                 self._rich_requested and rich_labels is not None
             )
             payload["person_tracking_enabled"] = rich_labels is not None
+            selector = getattr(
+                getattr(self, "_session", None), "frame_crop_selector", None,
+            )
+            if selector is not None and isinstance(payload.get("stream"), dict):
+                payload["stream"]["crop_selection"] = selector.status()
         payload["event_archive"] = (
             self._events.status() if self._events else {"state": "idle"}
         )

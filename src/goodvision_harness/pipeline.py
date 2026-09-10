@@ -34,6 +34,7 @@ from .contracts import (
     GroundedObject,
 )
 from .event_archive import EventArchive
+from .frame_crop import FrameCropSelector
 from .grounding import (
     GroundingClient,
     MultiGroundedClassification,
@@ -57,7 +58,6 @@ from .stream_adapter import NetworkStreamAdapter, StreamAdapterError
 from .video_to_stream import (
     PushSampledSource,
     VideoFileStream,
-    crop_frame,
     encode_jpeg,
 )
 from .vision_result import VisionResult
@@ -118,6 +118,9 @@ class StreamingSession:
         self.client = client
         self.callbacks = callbacks
         self.mode = mode
+        self.frame_crop_selector = FrameCropSelector(
+            config.stream.frame_crop if mode == STREAM_MODE else "none",
+        )
         self.video_stream = video_stream
         self.camera_source = camera_source
         self.source_id = source_id.strip()
@@ -362,19 +365,12 @@ class StreamingSession:
         sample_period = 1.0 / video.fps
         next_sample_time = 0.0
         sample_index = 0
-        for frame in self.video_stream.frames():
-            # The deployed WHEP source is a side-by-side stereo stream. Crop
-            # one eye before both display and inference encoding so the model,
-            # public frame dimensions, and normalized bbox coordinates all use
-            # the same single-view coordinate system.
-            frame_bgr = crop_frame(
-                frame.bgr,
-                mode=(
-                    self.config.stream.frame_crop
-                    if self.mode == STREAM_MODE
-                    else "none"
-                ),
-            )
+        for frame in self.frame_crop_selector.frames(
+            self.video_stream.frames(), stopped=self._stop.is_set,
+        ):
+            # Decide before display, tracking, evidence and inference see any
+            # frames, so every consumer uses one stable coordinate system.
+            frame_bgr = frame.bgr
             presentation_jpeg_bytes: bytes | None = None
             if self.callbacks.on_display_frame is not None or self.archive is not None:
                 presentation_jpeg_bytes, _, _ = encode_jpeg(

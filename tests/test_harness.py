@@ -191,7 +191,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     config = load_config(ROOT / "config.yaml")
 
     assert config.default_video is None
-    assert config.stream.frame_crop == "left_half"
+    assert config.stream.frame_crop == "auto"
     assert (
         config.video.fps,
         config.video.max_image_side,
@@ -295,6 +295,7 @@ def test_face_live_scheduler_rejects_unknown_value(
 
 def test_stream_crop_is_applied_before_display_sampling_and_source_mapping() -> None:
     config = load_config(ROOT / "config.yaml")
+    config = replace(config, stream=replace(config.stream, frame_crop="left_half"))
     image = np.zeros((100, 400, 3), dtype=np.uint8)
     image[:, :200] = (12, 34, 220)
     image[:, 200:] = (210, 32, 14)
@@ -1093,7 +1094,7 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     }
     assert info["configured_stream"] is True
     assert info["configured_stream_protocol"] == "rtsp"
-    assert info["stream_frame_crop"] == "left_half"
+    assert info["stream_frame_crop"] == "auto"
     assert "stream_url" not in info
     rendered = json.dumps({"info": info, "status": status}, sort_keys=True)
     assert config.inference.model not in rendered

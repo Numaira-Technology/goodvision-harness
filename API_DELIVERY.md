@@ -92,6 +92,18 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 
 ## 视频状态显示
 
+网络视频源默认采用 `stream.frame_crop: auto`：每次连接开始时检查连续画面，确认是
+左右并排双目视图才取左半幅；单目或证据不足时保留全画面。判断结果在会话中固定，
+所有预览、分析、叠框和事件视频都使用同一坐标系。`frame.width` / `frame.height`
+及归一化框仍对应实际交付画面，而不是裁剪前的双目拼接画面。
+
+`GET /v1/status` 的 `stream.frame_crop` 返回配置模式；新增
+`stream.crop_selection` 返回 `requested`、`effective`、`reason` 和 `probed_frames`。
+自动判断中 `effective=null`、`reason=probing`；确认双目后为
+`effective=left_half`、`reason=stereo_confirmed`；未确认则为
+`effective=none`、`reason=stereo_not_confirmed`。手动模式的 `reason=manual`。
+这是会话诊断信息，不改变 v2 分析消息和判断完整性字段。该信息无需显示在视频上。
+
 视频状态栏仅显示确认无异常的 `CLEAR` 或当前检测到的事件（例如 `SMOKING`、
 `FALL`、陌生人 `UNKNOWN`）。没有可用的完整判断时隐藏状态栏和描述；不显示
 `INCOMPLETE`、`STALE`、`NO FACE` 或 `NO USABLE FACE`，也不误报 `CLEAR`。

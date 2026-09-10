@@ -1,8 +1,8 @@
 # Reuse audited GPU dependencies; reinstall/copy every application component
 # from the current checkout. The ordinary GPU Dockerfiles build these runtimes
 # from dependency sources when a compatible local runtime is not available.
-ARG MAIN_RUNTIME=goodvision-harness:2026.09.03-full-gpu.1
-ARG WORKER_RUNTIME=goodvision-rich-label-worker:2026.09.03-full-gpu.1
+ARG MAIN_RUNTIME=goodvision-harness:2026.09.10-full.1
+ARG WORKER_RUNTIME=goodvision-rich-label-worker:2026.09.10-full.1
 
 FROM ${MAIN_RUNTIME} AS harness
 USER root
@@ -29,7 +29,7 @@ ENV GOODVISION_COMPONENT=main \
     FACE_PROVIDER="" \
     RICH_LABEL_ENABLED=false
 ARG SOURCE_REVISION=unknown
-LABEL org.opencontainers.image.version="2026.09.10-full.1"
+LABEL org.opencontainers.image.version="2026.09.10-full.2"
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 USER 10001:10001
 ENTRYPOINT []
@@ -49,7 +49,7 @@ RUN python /opt/goodvision/internal/perception_check.py --runtime \
 ENV GOODVISION_COMPONENT=perception \
     RICH_DEVICE=gpu:0
 ARG SOURCE_REVISION=unknown
-LABEL org.opencontainers.image.version="2026.09.10-full.1"
+LABEL org.opencontainers.image.version="2026.09.10-full.2"
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 USER 10002:10002
 ENTRYPOINT []
