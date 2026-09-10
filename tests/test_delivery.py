@@ -345,10 +345,10 @@ def test_full_delivery_keeps_both_images_and_requires_gpu_profile_for_rich() -> 
     services = _load_delivery()["services"]
     assert set(services) == {"harness", "rich-label-worker"}
     assert services["harness"]["image"] == (
-        "goodvision-harness:2026.09.09-full.1"
+        "goodvision-harness:2026.09.10-full.1"
     )
     assert services["rich-label-worker"]["image"] == (
-        "goodvision-rich-label-worker:2026.09.09-full.1"
+        "goodvision-rich-label-worker:2026.09.10-full.1"
     )
     for service in services.values():
         assert "build" not in service

@@ -68,6 +68,21 @@ def check_runtime() -> None:
     if not hasattr(insightface.app, "FaceAnalysis"):
         raise RuntimeError("InsightFace FaceAnalysis could not be imported")
 
+    import httpx
+
+    from goodvision_harness.overlay import _unicode_font, draw_overlay
+
+    with httpx.Client(http2=True):
+        pass
+    font = _unicode_font(20)
+    if bytes(font.getmask("中")) == bytes(font.getmask("\u0378")):
+        raise RuntimeError("Chinese video font is missing its glyphs")
+    draw_overlay(
+        np.zeros((100, 320, 3), dtype=np.uint8), event_label="fall",
+        detected=True, confidence=0.9, description="人员跌倒 / Person fell",
+        objects=(),
+    )
+
     result = subprocess.run(
         [sys.executable, "-m", "pip", "--no-cache-dir", "check"],
         capture_output=True,

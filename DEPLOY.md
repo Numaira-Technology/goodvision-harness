@@ -1,4 +1,4 @@
-# GoodVision 完整功能部署 · 2026.09.09
+# GoodVision 完整功能部署 · 2026.09.10
 
 本版提供完整双镜像，由随包启动脚本检查容器运行环境并自动选择 GPU 或 CPU 模式。
 所有应用代码、控制台和校验入口均来自本版源码；GPU 运行依赖复用经过版本与兼容性
@@ -9,15 +9,20 @@ Windows Docker Desktop 使用 Linux 容器模式，启动命令可写为 `py -3 
 
 | 服务 | 镜像 | 功能 |
 | --- | --- | --- |
-| 主服务 | `goodvision-harness:2026.09.09-full.1` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
-| 感知服务 | `goodvision-rich-label-worker:2026.09.09-full.1` | 人物/物品检测、会话内跟踪、异步行人属性 |
+| 主服务 | `goodvision-harness:2026.09.10-full.1` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
+| 感知服务 | `goodvision-rich-label-worker:2026.09.10-full.1` | 人物/物品检测、会话内跟踪、异步行人属性 |
 
 控制台保留当前 8 个模型 **A–H** 的选择与保存。吸烟判断要求可辨认烟具和可见互动；
 陌生人标注在连续视频帧中保持跟踪。行人属性标注不显示性别。
 
 ## 1. 交付文件与模型
 
-完整包使用 `goodvision-full-2026.09.09.1.tar.gz`，包含上述两个镜像。
+完整包使用 `goodvision-full-2026.09.10.1.tar`，包含上述两个镜像。
+
+本版视频叠字内置中文字体，离线运行无需安装系统字体。状态栏仅显示 `CLEAR`
+或已检测事件；分析尚未完成、结果过期或人脸不可用时隐藏状态，不将缺失判断当成无异常。
+事件描述、已知人员姓名及标注卡均支持中文。完整包包含视频编解码、GPU 运行库和
+HTTP/2 通信依赖；模型权重仍使用下述持久卷。配置字段和接口版本未改变。
 同目录还提供 `start_delivery.py`、`compose.yaml`、`compose.gpu.yaml`、
 `.env.example`、`config.delivery.yaml`、接口说明和自检入口。
 
@@ -36,7 +41,7 @@ GPU 感知功能还需要目标检测高精度模型包和属性标准模型包�
 在完整交付包目录执行：
 
 ```bash
-docker load -i goodvision-full-2026.09.09.1.tar.gz
+docker load -i goodvision-full-2026.09.10.1.tar
 cp -n .env.example .env
 chmod 600 .env
 python3 start_delivery.py

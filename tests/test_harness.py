@@ -675,9 +675,11 @@ def test_video_overlay_does_not_report_partial_results_as_clear(
         np.zeros((100, 200, 3), dtype=np.uint8), partial
     )
     assert not any(text.startswith("CLEAR") for text in captions)
-    assert any(
-        text.startswith("SMOKING" if detected else "INCOMPLETE") for text in captions
-    )
+    if detected:
+        assert any(text.startswith("SMOKING") for text in captions)
+        assert not any("incomplete" in text.lower() for text in captions)
+    else:
+        assert captions == []
 
 
 def test_historical_v1_records_keep_the_original_contract() -> None:

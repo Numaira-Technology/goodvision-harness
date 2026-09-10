@@ -27,7 +27,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m pip install --no-cache-dir '.[face,webrtc]'
+RUN python -m pip install --no-cache-dir '.[face,webrtc,vlm]'
 
 # InsightFace also requests GUI OpenCV; both distributions overwrite cv2.
 # Ship one server variant so dependency updates cannot silently select OpenCV 5.
