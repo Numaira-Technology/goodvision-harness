@@ -1,0 +1,670 @@
+{
+  "schema_version": "1",
+  "evaluation_date": "2026-09-10",
+  "scope": "Public-source, manually reviewed still-frame evaluation; no media included in this manifest.",
+  "source_frame_count": 37,
+  "long_side_settings": [
+    0,
+    320,
+    160,
+    96,
+    64,
+    32
+  ],
+  "zero_long_side_means": "keep original dimensions",
+  "jpeg_quality": 75,
+  "request_count": 222,
+  "evaluation_labels": [
+    "fight",
+    "fall",
+    "smoking",
+    "weapon"
+  ],
+  "truth_policy": "Manually inspected original source frames. Ambiguous boundaries and stable post-fall state are unscored, not assumed negative.",
+  "review_provenance": "Qualitative inspection of original-resolution local source frames by the evaluation agents; not independent human benchmark adjudication.",
+  "sampling_policy": "The actual OpenCV decoded PTS and frame index, recorded in the saved model journal, are authoritative for the evaluated image. Requested seek times can differ for variable-rate transcodes. Each source image is then reduced with INTER_AREA; no crop.",
+  "limitations": [
+    "Small convenience sample, not representative deployment accuracy or a certified benchmark.",
+    "The 222-request video experiment has no smoking/weapon positives; a separate 12-request static-image supplement covers one positive of each type.",
+    "The selected fight positive is handheld NON_CCTV_DATA, not fixed-camera CCTV.",
+    "Face enrollment and face-identity evaluation use a separate protocol, not these event-model requests.",
+    "Sparse sampling and intervals over the registry observation TTL do not measure dense tracking continuity.",
+    "RWF and NTU author pages state use and redistribution conditions; source media are not redistributed here."
+  ],
+  "clips": [
+    {
+      "clip_id": "vtest",
+      "source_dataset": "OpenCV sample / fixed outdoor camera",
+      "source_filename": "vtest.avi",
+      "source_url": "https://github.com/opencv/opencv/blob/4.x/samples/data/vtest.avi",
+      "evaluated_dimensions": [
+        768,
+        576
+      ],
+      "evaluated_duration_seconds": 79.5,
+      "evaluated_media": "original AVI",
+      "scene": "fixed outdoor camera, real people, local pre-existing benchmark source",
+      "samples": [
+        {
+          "requested_timestamp_seconds": 2,
+          "actual_timestamp_seconds": 2.0,
+          "actual_decoded_frame_index": 20,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 8,
+          "actual_timestamp_seconds": 8.0,
+          "actual_decoded_frame_index": 80,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 14,
+          "actual_timestamp_seconds": 14.0,
+          "actual_decoded_frame_index": 140,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 20,
+          "actual_timestamp_seconds": 20.0,
+          "actual_decoded_frame_index": 200,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 30,
+          "actual_timestamp_seconds": 30.0,
+          "actual_decoded_frame_index": 300,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 40,
+          "actual_timestamp_seconds": 40.0,
+          "actual_decoded_frame_index": 400,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        }
+      ],
+      "evaluated_file_sha256": "45cddc9490be69345cbdab64ca583be65987e864ca408038e648db99e10516cf",
+      "evaluated_file_bytes": 8131690
+    },
+    {
+      "clip_id": "crossing",
+      "source_dataset": "CAVIAR / CAVIARDATA2",
+      "source_filename": "EnterExitCrossingPaths2front.mpg",
+      "source_url": "https://homepages.inf.ed.ac.uk/rbf/CAVIAR/caviar.htm",
+      "evaluated_dimensions": [
+        384,
+        288
+      ],
+      "evaluated_duration_seconds": 19.4,
+      "evaluated_media": "pre-existing H.264 MP4 transcode of source",
+      "scene": "CAVIAR fixed mall camera, real people",
+      "samples": [
+        {
+          "requested_timestamp_seconds": 8,
+          "actual_timestamp_seconds": 8.0,
+          "actual_decoded_frame_index": 200,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 9.6,
+          "actual_timestamp_seconds": 9.6,
+          "actual_decoded_frame_index": 240,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 11.2,
+          "actual_timestamp_seconds": 11.2,
+          "actual_decoded_frame_index": 280,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 12.8,
+          "actual_timestamp_seconds": 12.8,
+          "actual_decoded_frame_index": 320,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 14.4,
+          "actual_timestamp_seconds": 14.4,
+          "actual_decoded_frame_index": 360,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 16,
+          "actual_timestamp_seconds": 16.0,
+          "actual_decoded_frame_index": 400,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        }
+      ],
+      "tracking_ground_truth": {
+        "source_url": "https://homepages.inf.ed.ac.uk/rbf/CAVIARDATA2/EnterExitCrossingPaths2front/feecp2gt.xml",
+        "filename": "feecp2gt.xml",
+        "dataset_name": "EnterExitCrossingPaths2front",
+        "frame_count": 485,
+        "source_fps": 25,
+        "frame_number_origin": 0,
+        "box_format": "center_x_center_y_width_height_pixels",
+        "image_size": [
+          384,
+          288
+        ],
+        "foreground_object_ids": [
+          "0",
+          "1"
+        ],
+        "all_object_ids": [
+          "0",
+          "1",
+          "2"
+        ],
+        "alignment_review": "Official boxes overlaid on actual decoded frames 200, 240, 280, 320, 360 and 400 and visually checked."
+      },
+      "evaluated_file_sha256": "4183270951732fd00281b29e2d68d224b5501d096477d8115382905aee775c18",
+      "evaluated_file_bytes": 252004
+    },
+    {
+      "clip_id": "nonfight",
+      "source_dataset": "RWF-2000 / validation NonFight",
+      "source_filename": "cpFWuHXF_0.avi",
+      "source_url": "https://github.com/mchengny/RWF2000-Video-Database-for-Violence-Detection",
+      "evaluated_dimensions": [
+        320,
+        240
+      ],
+      "evaluated_duration_seconds": 5.0,
+      "evaluated_media": "pre-existing H.264 MP4 transcode of source",
+      "scene": "RWF-2000 fixed street camera, real people",
+      "samples": [
+        {
+          "requested_timestamp_seconds": 1.6,
+          "actual_timestamp_seconds": 1.6,
+          "actual_decoded_frame_index": 48,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 2.4,
+          "actual_timestamp_seconds": 2.4,
+          "actual_decoded_frame_index": 72,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 3.2,
+          "actual_timestamp_seconds": 3.2,
+          "actual_decoded_frame_index": 96,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        },
+        {
+          "requested_timestamp_seconds": 4,
+          "actual_timestamp_seconds": 4.0,
+          "actual_decoded_frame_index": 120,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Negative control based on visible original-resolution scene; not an assertion about invisible objects or actions."
+        }
+      ],
+      "evaluated_file_sha256": "5f25f8a636bffcdcd5f38d692f61a153bee620b04f3308b588faf8cddc960e9e",
+      "evaluated_file_bytes": 145701
+    },
+    {
+      "clip_id": "fight_0822",
+      "source_dataset": "NTU CCTV-Fights / NON_CCTV_DATA validation",
+      "source_filename": "fight_0822.mpeg",
+      "source_url": "https://rose1.ntu.edu.sg/dataset/cctvFights/",
+      "evaluated_dimensions": [
+        960,
+        720
+      ],
+      "evaluated_duration_seconds": 37.01551,
+      "evaluated_media": "pre-existing H.264 MP4 transcode of source",
+      "scene": "NTU NON_CCTV_DATA handheld street video, real people",
+      "samples": [
+        {
+          "requested_timestamp_seconds": 0,
+          "actual_timestamp_seconds": 0.0,
+          "actual_decoded_frame_index": 0,
+          "expected_visible_judgments": {
+            "fight": null,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Uncertain conflict boundary or occlusion: fight/fall unscored; no clearly visible smoking item or weapon."
+        },
+        {
+          "requested_timestamp_seconds": 2,
+          "actual_timestamp_seconds": 2.002,
+          "actual_decoded_frame_index": 60,
+          "expected_visible_judgments": {
+            "fight": null,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Uncertain conflict boundary or occlusion: fight/fall unscored; no clearly visible smoking item or weapon."
+        },
+        {
+          "requested_timestamp_seconds": 4,
+          "actual_timestamp_seconds": 4.004,
+          "actual_decoded_frame_index": 120,
+          "expected_visible_judgments": {
+            "fight": true,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Visible conflict at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 6,
+          "actual_timestamp_seconds": 6.006,
+          "actual_decoded_frame_index": 180,
+          "expected_visible_judgments": {
+            "fight": true,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Visible conflict at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 8,
+          "actual_timestamp_seconds": 8.008,
+          "actual_decoded_frame_index": 240,
+          "expected_visible_judgments": {
+            "fight": true,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Visible conflict at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 10,
+          "actual_timestamp_seconds": 10.01,
+          "actual_decoded_frame_index": 300,
+          "expected_visible_judgments": {
+            "fight": null,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Uncertain conflict boundary or occlusion: fight/fall unscored; no clearly visible smoking item or weapon."
+        },
+        {
+          "requested_timestamp_seconds": 12.4,
+          "actual_timestamp_seconds": 12.4124,
+          "actual_decoded_frame_index": 372,
+          "expected_visible_judgments": {
+            "fight": true,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Visible conflict at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 16,
+          "actual_timestamp_seconds": 16.016,
+          "actual_decoded_frame_index": 480,
+          "expected_visible_judgments": {
+            "fight": true,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Visible conflict at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 20,
+          "actual_timestamp_seconds": 19.986633,
+          "actual_decoded_frame_index": 599,
+          "expected_visible_judgments": {
+            "fight": true,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Visible conflict at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 24,
+          "actual_timestamp_seconds": 23.990633,
+          "actual_decoded_frame_index": 719,
+          "expected_visible_judgments": {
+            "fight": null,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Uncertain conflict boundary or occlusion: fight/fall unscored; no clearly visible smoking item or weapon."
+        }
+      ],
+      "annotation_reference": {
+        "kind": "official NTU ground-truth.json intervals retained in existing local annotation",
+        "positive_intervals_seconds": [
+          [
+            3.6036,
+            9.142467
+          ],
+          [
+            11.945267,
+            22.555867
+          ]
+        ],
+        "note": "Temporal interval membership alone does not prove every sampled still frame visibly shows contact. Ambiguous sampled judgments remain null."
+      },
+      "evaluated_file_sha256": "a50ccdf9c44600771392dd0499ba404f41627cad042df535d374e0ed7ef49959",
+      "evaluated_file_bytes": 8851770
+    },
+    {
+      "clip_id": "fall",
+      "source_dataset": "CAVIAR / CAVIARDATA1",
+      "source_filename": "Rest_FallOnFloor.mpg",
+      "source_url": "https://homepages.inf.ed.ac.uk/rbf/CAVIARDATA1/",
+      "evaluated_dimensions": [
+        384,
+        288
+      ],
+      "evaluated_duration_seconds": 40.6,
+      "evaluated_media": "pre-existing H.264 MP4 transcode of source",
+      "scene": "CAVIAR fixed indoor camera, real person, staged fall dataset clip",
+      "samples": [
+        {
+          "requested_timestamp_seconds": 4,
+          "actual_timestamp_seconds": 4.2,
+          "actual_decoded_frame_index": 99,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Person is upright/walking; no visible fall at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 8,
+          "actual_timestamp_seconds": 8.16,
+          "actual_decoded_frame_index": 197,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Person is upright/walking; no visible fall at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 24,
+          "actual_timestamp_seconds": 23.92,
+          "actual_decoded_frame_index": 592,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Person is upright/walking; no visible fall at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 25.2,
+          "actual_timestamp_seconds": 25.12,
+          "actual_decoded_frame_index": 622,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Person is upright/walking; no visible fall at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 26,
+          "actual_timestamp_seconds": 25.92,
+          "actual_decoded_frame_index": 642,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": false,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Person is upright/walking; no visible fall at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 26.8,
+          "actual_timestamp_seconds": 26.68,
+          "actual_decoded_frame_index": 661,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Boundary posture is ambiguous; fall is unscored."
+        },
+        {
+          "requested_timestamp_seconds": 27.2,
+          "actual_timestamp_seconds": 27.08,
+          "actual_decoded_frame_index": 671,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Boundary posture is ambiguous; fall is unscored."
+        },
+        {
+          "requested_timestamp_seconds": 27.6,
+          "actual_timestamp_seconds": 27.48,
+          "actual_decoded_frame_index": 681,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": true,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Visible collapse/landing judged positive at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 28,
+          "actual_timestamp_seconds": 27.88,
+          "actual_decoded_frame_index": 691,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": true,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Visible collapse/landing judged positive at original resolution."
+        },
+        {
+          "requested_timestamp_seconds": 29.2,
+          "actual_timestamp_seconds": 29.08,
+          "actual_decoded_frame_index": 721,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Already lying on floor; unscored because falling-action versus fallen-state semantics differ."
+        },
+        {
+          "requested_timestamp_seconds": 32,
+          "actual_timestamp_seconds": 32.0,
+          "actual_decoded_frame_index": 790,
+          "expected_visible_judgments": {
+            "fight": false,
+            "fall": null,
+            "smoking": false,
+            "weapon": false
+          },
+          "review_note": "Already lying on floor; unscored because falling-action versus fallen-state semantics differ."
+        }
+      ],
+      "evaluated_file_sha256": "5ad8ed59521e9ddea0854f8886799b3d8b7d7f850ac73cfcd816566a3874e085",
+      "evaluated_file_bytes": 2312955
+    }
+  ],
+  "supplementary_static_images": [
+    {
+      "id": "smoking",
+      "public_source_url": "https://commons.wikimedia.org/wiki/File:Man_Smoking_(71920783).jpeg",
+      "original_url": "https://upload.wikimedia.org/wikipedia/commons/d/d6/Man_Smoking_%2871920783%29.jpeg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original",
+      "author": "Sascha Kohlmann",
+      "license": "CC BY-SA 3.0",
+      "sha256": "8e6cfd9dba4636eeeeb17fcebc22752c8ee89e58a45b96479bfe9765dd373283",
+      "bytes": 661909,
+      "samples": [
+        {
+          "timestamp": 0,
+          "expected": {
+            "smoking": true,
+            "weapon": false,
+            "fight": false,
+            "fall": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "weapon",
+      "public_source_url": "https://commons.wikimedia.org/wiki/File:A-man-holding-a-pistol-in-a-crowd-in-Aden-391852586382.jpg",
+      "original_url": "https://upload.wikimedia.org/wikipedia/commons/0/0c/A-man-holding-a-pistol-in-a-crowd-in-Aden-391852586382.jpg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original",
+      "author": "Unknown photographer / IMS Vintage Photos",
+      "license": "Commons PD-Yemen; see source page",
+      "sha256": "37bb0477b399849d4a8e85f8a440809f81bd34f451a2175a7b7748de4b7dd06b",
+      "bytes": 217880,
+      "samples": [
+        {
+          "timestamp": 0,
+          "expected": {
+            "smoking": false,
+            "weapon": true,
+            "fight": false,
+            "fall": false
+          }
+        }
+      ]
+    }
+  ],
+  "local_face_protocol_sources": [
+    {
+      "name": "david.webm",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_extra/4.x/testdata/cv/tracking/david/data/david.webm",
+      "bytes": 3917558,
+      "sha256": "4bbe69b7d097379af4d7ad128f02692820dc57a6d8275ea2b9e7eef4399a3e61"
+    },
+    {
+      "name": "david1.jpg",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_extra/4.x/testdata/cv/face/david1.jpg",
+      "bytes": 19981,
+      "sha256": "378293e79d6802032c9f3596d2a70ab41ea3f52fc6c8b2f8ef5971541f9b32b4"
+    },
+    {
+      "name": "david2.jpg",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_extra/4.x/testdata/cv/face/david2.jpg",
+      "bytes": 21695,
+      "sha256": "b39930fb7d57f4a14edc55d94ba1a002e9bffe323315b0423c223f7321a4e3cc"
+    },
+    {
+      "name": "control.jpg",
+      "url": "https://raw.githubusercontent.com/opencv/opencv_extra/4.x/testdata/cv/face/100032540_1.jpg",
+      "bytes": 189025,
+      "sha256": "bfe7d1d9bef715bca3d99b43733fc4c3812f4c43b71b8de4157482590e274037"
+    }
+  ]
+}

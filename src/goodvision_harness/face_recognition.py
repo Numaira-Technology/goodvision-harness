@@ -18,9 +18,9 @@ import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import cv2
@@ -33,10 +33,14 @@ from .grounding import (
     GroundedClassification,
     GroundingResponse,
     ModelObject,
+    build_face_diagnostics,
 )
 from .reference_memory import UNKNOWN_FACE_EVENT_LABEL
 from .rich_labeling import RichLabelCoordinator, RichLabelSnapshot
 from .sliding_window import FrameWindow
+
+if TYPE_CHECKING:
+    from .person_registry import PersonRegistry
 
 __all__ = [
     "FaceGallery",
@@ -45,7 +49,6 @@ __all__ = [
     "FaceRecognitionSession",
     "FaceRecognizerConfig",
     "GalleryPerson",
-    "StrangerCapture",
 ]
 
 _GALLERY_SCHEMA_VERSION = 2
@@ -131,25 +134,6 @@ class FaceMatch:
     person_id: str
     name: str
     similarity: float
-
-
-@dataclass(frozen=True, slots=True)
-class StrangerCapture:
-    """Embedding-free public metadata for one retained stranger face."""
-
-    stranger_id: str
-    photo_available: bool
-
-    @property
-    def photo_url(self) -> str:
-        return f"/v1/faces/strangers/{self.stranger_id}/photo"
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "stranger_id": self.stranger_id,
-            "photo_available": self.photo_available,
-            "photo_url": self.photo_url,
-        }
 
 
 @dataclass(slots=True)
@@ -250,24 +234,30 @@ class FaceGallery:
             return True
 
     def match(self, embedding: Any) -> FaceMatch | None:
+        matches = self.matches(embedding)
+        return matches[0] if matches else None
+
+    def matches(self, embedding: Any) -> tuple[FaceMatch, ...]:
+        """Rank identities for conservative switching without exposing vectors."""
         vector = _normalized_embedding(embedding)
         with self._lock:
             if not self._people:
-                return None
+                return ()
             if vector.size != self._embedding_dimension:
                 raise RuntimeError(
                     "query embedding dimension does not match the face gallery: "
                     f"expected {self._embedding_dimension}, got {vector.size}"
                 )
-            best: FaceMatch | None = None
+            matches: list[FaceMatch] = []
             for person_id, entry in self._people.items():
                 similarity = max(
                     float(np.dot(vector, sample)) for sample in entry.embeddings
                 )
                 similarity = max(-1.0, min(1.0, similarity))
-                if best is None or similarity > best.similarity:
-                    best = FaceMatch(person_id, entry.name, similarity)
-            return best
+                matches.append(FaceMatch(person_id, entry.name, similarity))
+            return tuple(
+                sorted(matches, key=lambda item: item.similarity, reverse=True)
+            )
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -397,15 +387,6 @@ class FaceRecognitionRuntime:
             config.gallery_path,
             model_name=config.model_name,
         )
-        stranger_gallery_path = config.gallery_path.with_name(
-            f"{config.gallery_path.stem}-strangers.json"
-        )
-        self.stranger_gallery = FaceGallery(
-            stranger_gallery_path,
-            model_name=config.model_name,
-        )
-        self.stranger_capture_dir = config.gallery_path.parent / "stranger-captures"
-        self._stranger_lock = threading.RLock()
         self._model: Any | None = None
         self._model_lock = threading.Lock()
         self._inference_lock = threading.Lock()
@@ -485,35 +466,6 @@ class FaceRecognitionRuntime:
     def delete_person(self, person_id: str) -> bool:
         return self.delete(person_id)
 
-    def list_strangers(self) -> tuple[StrangerCapture, ...]:
-        with self._stranger_lock:
-            return tuple(
-                StrangerCapture(
-                    person.person_id,
-                    self._stranger_photo_path(person.person_id).is_file(),
-                )
-                for person in self.stranger_gallery.list_people()
-                if _valid_stranger_id(person.person_id)
-            )
-
-    def stranger_photo(self, stranger_id: str) -> bytes | None:
-        rendered_id = _required_text(stranger_id, "stranger_id")
-        if not _valid_stranger_id(rendered_id):
-            return None
-        with self._stranger_lock:
-            known_ids = {
-                person.person_id for person in self.stranger_gallery.list_people()
-            }
-            if rendered_id not in known_ids:
-                return None
-            path = self._stranger_photo_path(rendered_id)
-            try:
-                return path.read_bytes()
-            except FileNotFoundError:
-                return None
-            except OSError as exc:
-                raise RuntimeError("could not read stranger photo") from exc
-
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         return self._classify_window(window)
 
@@ -521,7 +473,7 @@ class FaceRecognitionRuntime:
         self,
         window: FrameWindow,
         *,
-        tracker: FaceIdentityTracker | None = None,
+        tracker: FaceIdentityTracker | PersonRegistry | None = None,
         snapshot: RichLabelSnapshot | None = None,
     ) -> GroundingResponse:
         started = time.monotonic()
@@ -538,7 +490,6 @@ class FaceRecognitionRuntime:
         faces = self._infer(image, operation="classification")
         height, width = image.shape[:2]
         objects: list[ModelObject] = []
-        capture_inputs: list[tuple[Any, tuple[float, float, float, float]]] = []
         event_indexes: list[int] = []
         counts = {"known": 0, "unknown": 0, "unusable": 0}
 
@@ -574,10 +525,20 @@ class FaceRecognitionRuntime:
                     label = "unusable_face"
                     attributes["reason"] = "embedding_unavailable"
                 else:
-                    match = self.gallery.match(embedding)
+                    matches = self.gallery.matches(embedding)
+                    match = matches[0] if matches else None
                     if match is not None:
                         attributes["similarity"] = match.similarity
-                    if match is not None and match.similarity >= self.config.threshold:
+                        attributes["match_margin"] = (
+                            match.similarity - matches[1].similarity
+                            if len(matches) > 1
+                            else 2.0
+                        )
+                    if (
+                        match is not None
+                        and match.similarity >= self.config.threshold
+                        and float(attributes["match_margin"]) >= 0.08
+                    ):
                         status = "known"
                         label = "known_person"
                         attributes["person_id"] = match.person_id
@@ -585,7 +546,14 @@ class FaceRecognitionRuntime:
                     else:
                         # Small faces can still positively match a gallery
                         # sample, but a weak embedding is not proof of a stranger.
-                        if min(face_width, face_height) < 60:
+                        if (
+                            match is not None
+                            and match.similarity >= self.config.threshold
+                        ):
+                            status = "unusable"
+                            label = "unusable_face"
+                            attributes["reason"] = "ambiguous_gallery_match"
+                        elif min(face_width, face_height) < 60:
                             status = "unusable"
                             label = "unusable_face"
                             attributes["reason"] = "face_too_small_for_stranger"
@@ -594,7 +562,6 @@ class FaceRecognitionRuntime:
                             label = UNKNOWN_FACE_EVENT_LABEL
 
             attributes["status"] = status
-            capture_inputs.append((embedding, pixel_bbox))
             objects.append(
                 ModelObject(
                     label=label,
@@ -606,48 +573,39 @@ class FaceRecognitionRuntime:
                     ),
                     confidence=detection_score,
                     attributes=attributes,
+                    identity_embedding=(
+                        tuple(float(value) for value in embedding)
+                        if embedding is not None
+                        else ()
+                    ),
+                    identity_quality=_strict_identity_quality(
+                        face,
+                        pixel_bbox,
+                        detection_score,
+                    ),
                 )
             )
+        # Capture actual observations before identity confirmation/holding can
+        # change their status or append a face from recent track history.
+        raw_objects = tuple(objects)
         if tracker is not None:
-            objects = list(tracker.resolve(
-                objects,
-                timestamp=window.end_timestamp,
-                frame_sequence=window.newest_frame.source_frame_index,
-                people={person.person_id: person.name for person in self.list_people()},
-                snapshot=snapshot,
-            ))
+            resolve = getattr(tracker, "resolve_faces", None) or tracker.resolve
+            objects = list(
+                resolve(
+                    objects,
+                    timestamp=window.end_timestamp,
+                    frame_sequence=window.newest_frame.source_frame_index,
+                    people={
+                        person.person_id: person.name for person in self.list_people()
+                    },
+                    snapshot=snapshot,
+                )
+            )
         for object_index, item in enumerate(objects):
             status = str(item.attributes["status"])
             counts[status] += 1
             if status == "unknown":
                 event_indexes.append(object_index)
-                if (
-                    item.attributes.get("identity_source") == "track_history"
-                    or (tracker is not None and item.attributes.get("stranger_id"))
-                ):
-                    # Tracking is not a fresh face observation: reuse its capture
-                    # and never crop a missing face or another person's pixels.
-                    continue
-                embedding, pixel_bbox = capture_inputs[object_index]
-                try:
-                    stranger_id = self._identify_stranger(embedding, image, pixel_bbox)
-                except Exception:
-                    # Retention is best effort and must not suppress real alerts.
-                    LOGGER.warning("could not retain stranger face capture")
-                else:
-                    objects[object_index] = ModelObject(
-                        label=item.label, bbox=item.bbox, confidence=item.confidence,
-                        attributes={
-                            **item.attributes,
-                            "stranger_id": stranger_id,
-                            "photo_url": f"/v1/faces/strangers/{stranger_id}/photo",
-                        },
-                    )
-                    if tracker is not None:
-                        tracker.remember_stranger(
-                            str(item.attributes.get("face_track_id", "")),
-                            objects[object_index].attributes,
-                        )
 
         event_confidences = [
             objects[index].confidence
@@ -672,48 +630,14 @@ class FaceRecognitionRuntime:
             objects=tuple(objects),
             analysis_kind=_ANALYSIS_KIND,
             event_object_indexes=tuple(event_indexes),
+            face_observations=tuple(objects),
         )
         return GroundingResponse(
             window=window,
             classification=classification,
             latency_seconds=time.monotonic() - started,
+            face_diagnostics=build_face_diagnostics(raw_objects, tuple(objects)),
         )
-
-    def _identify_stranger(
-        self,
-        embedding: Any,
-        image: np.ndarray[Any, Any],
-        bbox: tuple[float, float, float, float],
-    ) -> str:
-        with self._stranger_lock:
-            match = self.stranger_gallery.match(embedding)
-            if match is not None and match.similarity >= self.config.threshold:
-                stranger_id = match.person_id
-                photo_path = self._stranger_photo_path(stranger_id)
-                if not photo_path.is_file():
-                    jpeg = _face_crop_jpeg(image, bbox)
-                    _atomic_write_bytes(photo_path, jpeg)
-            else:
-                stranger_id = f"stranger-{uuid4().hex}"
-                photo_path = self._stranger_photo_path(stranger_id)
-                jpeg = _face_crop_jpeg(image, bbox)
-                _atomic_write_bytes(photo_path, jpeg)
-                try:
-                    self.stranger_gallery.enroll(
-                        stranger_id,
-                        stranger_id,
-                        embedding,
-                    )
-                except Exception:
-                    try:
-                        photo_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    raise
-            return stranger_id
-
-    def _stranger_photo_path(self, stranger_id: str) -> Path:
-        return self.stranger_capture_dir / f"{stranger_id}.jpg"
 
     def _ensure_model(self) -> Any:
         if self._model is not None:
@@ -763,6 +687,11 @@ class FaceRecognitionSession:
         self._rich_labels: RichLabelCoordinator | None = None
         self._last_rich_sequence = -1
         self._last_source_sequence = -1
+        self._person_registry: PersonRegistry | None = None
+
+    def bind_person_registry(self, registry: PersonRegistry) -> None:
+        with self._lock:
+            self._person_registry = registry
 
     def bind_rich_labels(
         self, session_id: str, coordinator: RichLabelCoordinator | None
@@ -781,7 +710,8 @@ class FaceRecognitionSession:
                 # Raw completed frames only: the display selector may hold or
                 # interpolate boxes past the useful lifetime of identity evidence.
                 candidates = [
-                    item for item in self._rich_labels.history()
+                    item
+                    for item in self._rich_labels.history()
                     if item.stream_session_id == self._session_id
                     and item.frame_sequence <= window.newest_frame.source_frame_index
                     and item.timestamp_seconds <= window.end_timestamp
@@ -797,24 +727,38 @@ class FaceRecognitionSession:
                         > self._last_source_sequence
                     )
                 ):
-                    if self._last_rich_sequence >= 0:
-                        # A person disappearing between face samples breaks
-                        # continuity even if the worker later reuses the ID.
-                        stable_ids = {item.track_id for item in snapshot.objects}
-                        for candidate in candidates:
-                            if candidate.frame_sequence > self._last_rich_sequence:
-                                stable_ids.intersection_update(
-                                    item.track_id for item in candidate.objects
-                                )
-                        snapshot = replace(snapshot, objects=tuple(
-                            item for item in snapshot.objects
-                            if item.track_id in stable_ids
-                        ))
                     self._last_rich_sequence = snapshot.frame_sequence
                     self._last_source_sequence = window.newest_frame.source_frame_index
             return self.runtime._classify_window(
-                window, tracker=self._tracker, snapshot=snapshot
+                window,
+                tracker=self._person_registry or self._tracker,
+                snapshot=snapshot,
             )
+
+
+def _strict_identity_quality(
+    face: Any,
+    bbox: tuple[float, float, float, float],
+    score: float | None,
+) -> bool:
+    """Only a clear near-frontal face can invalidate an established identity."""
+    if (
+        score is None
+        or score < 0.8
+        or min(bbox[2] - bbox[0], bbox[3] - bbox[1]) < 80
+        or _face_quality_reason(face, bbox, score) is not None
+    ):
+        return False
+    landmarks = _face_value(face, "kps")
+    if landmarks is None:
+        return False
+    points = np.asarray(landmarks, dtype=np.float64)
+    eye_span = float(np.linalg.norm(points[1] - points[0]))
+    eye_center = (points[0] + points[1]) * 0.5
+    return (
+        eye_span >= (bbox[2] - bbox[0]) * 0.25
+        and abs(float(points[2, 0] - eye_center[0])) <= eye_span * 0.25
+    )
 
 
 def _face_quality_reason(
@@ -1056,47 +1000,3 @@ def _detection_score(face: Any) -> float | None:
     if not math.isfinite(rendered):
         return None
     return max(0.0, min(1.0, rendered))
-
-
-def _face_crop_jpeg(
-    image: np.ndarray[Any, Any],
-    bbox: tuple[float, float, float, float],
-) -> bytes:
-    height, width = image.shape[:2]
-    x1, y1, x2, y2 = bbox
-    left = max(0, min(width - 1, math.floor(x1)))
-    top = max(0, min(height - 1, math.floor(y1)))
-    right = max(left + 1, min(width, math.ceil(x2)))
-    bottom = max(top + 1, min(height, math.ceil(y2)))
-    crop = image[top:bottom, left:right]
-    ok, encoded = cv2.imencode(
-        ".jpg",
-        crop,
-        [int(cv2.IMWRITE_JPEG_QUALITY), 90],
-    )
-    if not ok:
-        raise RuntimeError("could not encode stranger face capture")
-    return encoded.tobytes()
-
-
-def _atomic_write_bytes(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        with temporary.open("xb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except OSError as exc:
-        raise RuntimeError("could not persist stranger face capture") from exc
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _valid_stranger_id(value: str) -> bool:
-    prefix = "stranger-"
-    suffix = value[len(prefix) :] if value.startswith(prefix) else ""
-    return len(suffix) == 32 and all(
-        character in "0123456789abcdef" for character in suffix
-    )

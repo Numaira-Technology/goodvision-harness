@@ -19,6 +19,7 @@ h1{font-size:clamp(20px,2.4vw,30px);letter-spacing:-.03em}h1 span{color:var(--or
 .seg{display:inline-flex;padding:3px;background:var(--soft);border:1px solid var(--line);border-radius:10px}.seg button{padding:7px 16px;color:var(--muted);background:transparent;border:0;border-radius:8px;font-weight:650;cursor:pointer}.seg button.active{color:var(--text);background:#fff;box-shadow:0 1px 3px rgba(23,32,46,.12)}
 button,input{font:inherit}.btn{padding:8px 16px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px;font-size:13.5px;font-weight:650;cursor:pointer}.btn:disabled,.seg button:disabled{opacity:.38;cursor:default}.primary{padding:10px 24px;color:#fff;background:var(--orange);border-color:transparent;font-size:15px}.danger{color:#b91c1c;background:#fdf1f1;border-color:rgba(220,38,38,.3)}
 a{color:#c2410c;text-decoration:none;font-weight:700}a:hover{text-decoration:underline}
+.field select{min-height:38px;padding:8px 12px;font:inherit;font-size:13px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px}
 .field{display:flex;flex-direction:column;gap:5px;min-width:0}.field.grow{flex:1 1 360px}.field>span{color:var(--muted);font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
 input[type=text],input[type=password],input[type=file]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=password]:focus,input[type=file]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
 .inline{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13.5px}.note,.status{color:var(--muted);font-size:12.5px;line-height:1.5}.status.error,.note.error{color:var(--red)}.notice{margin-bottom:18px;padding:10px 12px;color:#9a3412;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;font-size:12.5px;line-height:1.5}
@@ -237,7 +238,7 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
     <div class="metrics">
       <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
       <div class="metric"><span class="metric-label">Results published</span><strong id="published-result-count" class="metric-value">0</strong><span id="last-result-note" class="metric-note">No result yet</span></div>
-      <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Correlated 1:1 with results</span></div>
+      <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Each image identifies its source result</span></div>
       <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">Waiting for delayed frames</span></div>
     </div>
     <div class="endpoint-grid" aria-label="Output and API shortcuts">
@@ -286,6 +287,21 @@ input[type=text],input[type=password],input[type=file]{width:100%;min-width:180p
         </table>
       </div>
     </div>
+  </section>
+
+  <section class="panel log" aria-labelledby="event-history-title">
+    <div class="deployment-head section-title"><h2 id="event-history-title">事件记录 · Video evidence</h2>
+      <button id="refresh-events" class="btn" type="button">刷新记录</button></div>
+    <p class="note">连续事件与视频证据。实时识别状态仍以当前画面结果为准。</p>
+    <div class="control-source-row" style="margin-top:12px">
+      <div class="field"><label for="archive-feature">事件</label><select id="archive-feature"><option value="">全部</option><option value="smoking">吸烟 · Smoking</option><option value="fight">打架 · Fight</option><option value="fall">跌倒 · Fall</option><option value="weapon">持械 · Weapon</option><option value="stranger">陌生人 · Stranger</option></select></div>
+      <div class="field"><label for="archive-subject">人物 ID</label><input id="archive-subject" type="text" placeholder="subject_id"></div>
+    </div>
+    <p id="archive-note" class="note" role="status">正在读取事件记录…</p>
+    <div class="scroll"><table><thead><tr><th>事件 / 人物</th><th>源时间</th><th>归档状态</th><th>视频证据</th></tr></thead><tbody id="archive-body"></tbody></table></div>
+    <button id="archive-more" class="btn" type="button" hidden>更早记录</button>
+    <video id="archive-video" controls preload="none" hidden style="width:100%;max-height:420px;margin-top:12px"></video>
+    <p id="archive-video-note" class="note"></p>
   </section>
 
   <section class="panel log">
@@ -1198,7 +1214,9 @@ function renderClassification(){
   });
   const judgments=entries.map(entry=>entry.judgment),pending=features.length-judgments.length;
   const active=judgments.filter(judgment=>judgment&&judgment.detected===true),yes=active.length>0;
-  const incomplete=result.analysis_complete===false;
+  // Independent branch observations remain partial in the original JSON.
+  // The capability overview is ready once every selected feature has a result.
+  const incomplete=result.analysis_complete===false&&pending>0;
   const ids=new Set(entries.filter(entry=>entry.judgment.detected===true).flatMap(entry=>
     (Array.isArray(entry.judgment.object_ids)?entry.judgment.object_ids:[])
       .map(id=>String(entry.result.message_id||entry.result.sequence)+":"+id)));
@@ -1333,12 +1351,79 @@ function logFace(result,summary){
   ui.logBody.prepend(row);while(ui.logBody.children.length>200)ui.logBody.lastChild.remove()
 }
 
+const archiveView={items:new Map(),aliases:new Map(),next:null,stream:null,loading:false,reload:false};
+function renderArchive(){
+  const body=$("archive-body");body.replaceChildren();
+  const events=[...archiveView.items.values()].sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))||String(b.event_id).localeCompare(String(a.event_id)));
+  for(const event of events){
+    const row=document.createElement("tr"),subjects=["person","group"].includes(event.subject_type)?(event.subject_ids||(event.subject_id?[event.subject_id]:[])):[];
+    const evidence=event.evidence||{},available=evidence.available;
+    const values=[event.event_label+" · "+(subjects.join(", ")||"人物未关联"),
+      number(event.start_seconds??event.started_at_seconds??event.first_positive_at,2)+"s – "+
+      number(event.last_detected_seconds??event.last_positive_seconds??event.last_positive_at,2)+"s",
+      (event.status==="ended"?"已结束":"记录中")+(event.finalized?"":" · 可修订")];
+    for(const value of values){const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)}
+    const cell=document.createElement("td"),status=document.createElement("span");
+    status.textContent=({pending:"收集画面",collecting:"收集画面",queued:"等待编码",encoding:"生成中",ready:"可播放",failed:"生成失败"})[evidence.status]||evidence.status||"等待证据";
+    cell.appendChild(status);
+    if(available&&typeof available.url==="string"&&available.url.startsWith("/v1/events/")){
+      const button=document.createElement("button");button.type="button";button.className="btn";button.style.marginLeft="10px";
+      button.textContent="播放 v"+available.revision;
+      button.onclick=()=>{const player=$("archive-video");player.src=available.url;player.hidden=false;
+        $("archive-video-note").textContent=event.event_label+" · v"+available.revision+
+          (evidence.revision!==available.revision?" · 新版本生成中，当前为已有片段":"")+
+          (available.partial?" · 源视频不足完整3秒":"");player.play().catch(()=>{})};
+      cell.appendChild(button)
+    }
+    row.appendChild(cell);body.appendChild(row)
+  }
+  $("archive-more").hidden=!archiveView.next;
+}
+async function loadEventArchive(append=false){
+  if(archiveView.loading){archiveView.reload=true;return}
+  archiveView.loading=true;
+  try{
+    const params=new URLSearchParams({limit:"50"});
+    if(append&&archiveView.next)params.set("before",archiveView.next);
+    if($("archive-feature").value)params.set("event_label",$("archive-feature").value);
+    if($("archive-subject").value.trim())params.set("subject_id",$("archive-subject").value.trim());
+    const response=await fetch("/v1/events?"+params,{cache:"no-store"});
+    if(!response.ok)throw new Error("unavailable");
+    const page=await response.json();
+    if(!append){archiveView.items.clear();archiveView.aliases.clear()}
+    for(const event of page.events||[])archiveView.items.set(event.event_id,event);
+    archiveView.next=page.next_cursor||null;renderArchive();
+    $("archive-note").textContent=archiveView.items.size?"后台整理与录像不影响即时识别。":"暂无事件记录。";
+    if(!append)connectArchiveEvents(page.epoch+":"+page.cursor)
+  }catch(_){$("archive-note").textContent="事件记录暂不可用，可稍后刷新。"}
+  finally{archiveView.loading=false;if(archiveView.reload){archiveView.reload=false;loadEventArchive()}}
+}
+function connectArchiveEvents(cursor){
+  if(archiveView.stream)archiveView.stream.close();
+  const stream=new EventSource("/v1/events/stream?after="+encodeURIComponent(cursor));archiveView.stream=stream;
+  stream.addEventListener("event_change",message=>{
+    try{
+      const change=JSON.parse(message.data);
+      if($("archive-feature").value||$("archive-subject").value.trim()){loadEventArchive();return}
+      for(const event of change.events||[]){archiveView.aliases.delete(event.event_id);archiveView.items.set(event.event_id,event)}
+      for(const alias of change.aliases||[]){archiveView.aliases.set(alias.event_id,alias.canonical_event_id);archiveView.items.delete(alias.event_id)}
+      if(archiveView.items.size>500){loadEventArchive();return}
+      renderArchive()
+    }catch(_){loadEventArchive()}
+  });
+  stream.addEventListener("reset",()=>{stream.close();loadEventArchive()});
+}
+
 function deploymentEdited(){
   deploymentSay(state.running||state.pending
     ?"Deployment edits are staged. Stop the current session before saving."
     :"Unsaved deployment edits. Save defaults or discard edits.")
 }
 ui.defaultStreamUrl.oninput=deploymentEdited;ui.defaultApiKey.oninput=deploymentEdited;
+$("refresh-events").onclick=()=>loadEventArchive();
+$("archive-more").onclick=()=>loadEventArchive(true);
+$("archive-feature").onchange=()=>loadEventArchive();
+$("archive-subject").onchange=()=>loadEventArchive();
 ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
 ui.saveDeployment.onclick=saveDeploymentSettings;
 ui.resetDeployment.onclick=()=>loadDeploymentSettings(true);
@@ -1381,12 +1466,14 @@ async function connectResultEvents(){
   })
 }
 window.addEventListener("beforeunload",()=>{
+  if(archiveView.stream)archiveView.stream.close();
   if(events)events.close();stopSampler();resetAnnotations();
   if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
   if(state.ws)state.ws.close()
 });
 mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
 loadRoutes();setInterval(loadRoutes,1500);
+loadEventArchive();
 </script>
 </body>
 </html>

@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -21,13 +21,18 @@ class ResultRecord:
 
 
 class ResultBus:
-    """Bounded result history with condition-based multi-client fan-out."""
+    """Arrival-ordered delivery with source-ordered global and feature snapshots."""
 
     def __init__(self, history_size: int = 100) -> None:
         if history_size < 1:
             raise ValueError("history_size must be positive")
         self._condition = threading.Condition()
         self._history: deque[ResultRecord] = deque(maxlen=history_size)
+        self._latest: ResultRecord | None = None
+        self._latest_by_feature: OrderedDict[str, ResultRecord] = OrderedDict()
+        # Public features must survive history eviction by a faster branch.
+        # Bound auxiliary/custom labels as well as the arrival log.
+        self._feature_limit = max(16, history_size)
         self._cursor = 0
         self.epoch = str(uuid4())
 
@@ -39,6 +44,25 @@ class ResultBus:
                 payload=public_safe_value(copy.deepcopy(dict(payload))),
             )
             self._history.append(record)
+            if (
+                self._latest is None
+                or _frame_order(record) >= _frame_order(self._latest)
+            ):
+                self._latest = record
+            judgments = record.payload.get("judgments", ())
+            for judgment in judgments if isinstance(judgments, (list, tuple)) else ():
+                if not isinstance(judgment, Mapping):
+                    continue
+                label = judgment.get("event_label")
+                if not isinstance(label, str) or not label.strip():
+                    continue
+                feature = _feature_label(label)
+                previous = self._latest_by_feature.get(feature)
+                if previous is None or _frame_order(record) >= _frame_order(previous):
+                    self._latest_by_feature[feature] = record
+                    self._latest_by_feature.move_to_end(feature)
+            while len(self._latest_by_feature) > self._feature_limit:
+                self._latest_by_feature.popitem(last=False)
             self._condition.notify_all()
             return _copy_result(record)
 
@@ -47,14 +71,20 @@ class ResultBus:
 
         with self._condition:
             self._history.clear()
+            self._latest = None
+            self._latest_by_feature.clear()
             self.epoch = str(uuid4())
             self._condition.notify_all()
 
-    def latest(self) -> ResultRecord | None:
+    def latest(self, *, feature: str | None = None) -> ResultRecord | None:
+        """Return an unchanged observation, never a merge of different frames."""
+
         with self._condition:
-            if not self._history:
-                return None
-            return _copy_result(self._history[-1])
+            record = (
+                self._latest if feature is None
+                else self._latest_by_feature.get(_feature_label(feature))
+            )
+            return _copy_result(record) if record is not None else None
 
     def records_after(
         self,
@@ -78,6 +108,21 @@ class ResultBus:
                 if remaining <= 0:
                     return ()
                 self._condition.wait(remaining)
+
+
+def _feature_label(label: str) -> str:
+    return "stranger" if label == "unknown_person" else label
+
+
+def _frame_order(record: ResultRecord) -> tuple[float, int]:
+    frame = record.payload.get("frame")
+    if not isinstance(frame, Mapping):
+        # Legacy unframed publications retain their arrival-order behavior.
+        return (0.0, 0)
+    return (
+        float(frame.get("timestamp_seconds", 0.0)),
+        int(frame.get("source_frame_index", 0)),
+    )
 
 
 @dataclass(frozen=True, slots=True)

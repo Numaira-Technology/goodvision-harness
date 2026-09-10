@@ -19,6 +19,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import cv2
 
+from .privacy import PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR
 from .video_to_stream import LiveFrame
 
 StreamProtocol = Literal["rtsp", "rtmp", "webrtc"]
@@ -27,6 +28,19 @@ _END = object()
 
 class StreamAdapterError(RuntimeError):
     """A network stream could not be opened, decoded, or negotiated."""
+
+    def __init__(self, message: str, *, code: str = "connection_failed") -> None:
+        super().__init__(message)
+        self.code = (
+            "missing_support" if code == "missing_support" else "connection_failed"
+        )
+
+    @property
+    def public_message(self) -> str:
+        return (
+            PUBLIC_STREAM_SUPPORT_ERROR
+            if self.code == "missing_support" else PUBLIC_STREAM_ERROR
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,7 +247,8 @@ class NetworkStreamAdapter:
             from aiortc.mediastreams import MediaStreamError
         except ImportError as exc:
             raise StreamAdapterError(
-                "WebRTC support requires the streaming-harness optional dependencies"
+                "WebRTC support requires the streaming-harness optional dependencies",
+                code="missing_support",
             ) from exc
 
         pc = RTCPeerConnection()

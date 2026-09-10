@@ -19,13 +19,18 @@ from .grounding import (
     parse_multi_grounded_classification,
 )
 from .inference import InferenceSettings
-from .model_api import ModelAPIClient, ModelAPIError
+from .model_api import (
+    OPENROUTER_EXCLUDED_PROVIDERS,
+    ModelAPIClient,
+    ModelAPIError,
+    nitro_provider_preferences,
+)
 from .sliding_window import FrameWindow, SampledFrame
 
 PREFERRED_THRESHOLD_SECONDS = 2.5
 PROBE_TRIALS = 3
 MAX_PROBE_CONCURRENCY = 4
-EXCLUDED_PROVIDERS = frozenset({"novita", "coreweave"})
+EXCLUDED_PROVIDERS = OPENROUTER_EXCLUDED_PROVIDERS
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,11 @@ class ModelRoute:
     preferred: bool = False
     reasoning: str | None = None
 
+    @property
+    def request_model(self) -> str:
+        # Keep the historical identity intact for persisted selections.
+        return f"{self.model.removesuffix(':nitro')}:nitro"
+
     def parameters(self, original: dict[str, Any]) -> dict[str, Any]:
         if self.provider.split("/", 1)[0].lower() in EXCLUDED_PROVIDERS:
             raise ValueError("route is unavailable")
@@ -45,16 +55,14 @@ class ModelRoute:
             "enable_thinking", "reasoning", "provider", "stream",
         ):
             parameters.pop(key, None)
-        parameters["provider"] = {
-            "only": [self.provider], "allow_fallbacks": False,
-        }
+        parameters["provider"] = nitro_provider_preferences()
         if self.reasoning is not None:
             parameters["reasoning"] = {"effort": self.reasoning}
         return parameters
 
     def inference(self, settings: InferenceSettings) -> InferenceSettings:
         return replace(
-            settings, model=self.model,
+            settings, model=self.request_model,
             request_parameters=self.parameters(dict(settings.request_parameters)),
         )
 
@@ -115,6 +123,8 @@ ROUTES_BY_ID = {
 # Keep the fastest eight stable routes from the 2026-09-08 sweep and recheck.
 # Allowed historical IDs remain restorable; removed providers cannot be restored.
 # Only these eight routes are probed/shown.
+# Nitro removes provider pinning; duplicate base models retain their old IDs
+# and public positions so saved selections and A-H numbering stay compatible.
 ROUTES = tuple(ROUTES_BY_ID[key] for key in (
     "C", "D", "AA", "AE", "G", "K", "B", "F",
 ))
@@ -192,7 +202,7 @@ def probe_sample(
     error = None
     try:
         response = transport.chat_completion(
-            model=route.model, messages=messages, **parameters,
+            model=route.request_model, messages=messages, **parameters,
         )
         parse_multi_grounded_classification(
             transport.assistant_text(response), event_labels=SAFETY_EVENT_LABELS,

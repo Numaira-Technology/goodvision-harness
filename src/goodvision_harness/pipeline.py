@@ -16,6 +16,7 @@ import logging
 import sys
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -26,15 +27,22 @@ from uuid import uuid4
 
 from .config import DEFAULT_CONFIG_PATH, HarnessConfig, load_config
 from .contracts import (
+    PUBLIC_MODEL_NAME,
     AnalysisResult,
     EventJudgment,
     FrameReference,
     GroundedObject,
-    PUBLIC_MODEL_NAME,
 )
-from .grounding import GroundingClient, MultiGroundedClassification
-from .inference import WindowClient, WindowResponse, build_client
+from .event_archive import EventArchive
+from .grounding import (
+    GroundingClient,
+    MultiGroundedClassification,
+    build_grounding_client,
+    observation_bundle,
+)
+from .inference import WindowClient, WindowResponse
 from .organizer import ResultOrganizer
+from .person_registry import PersonRegistry
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
     public_error_message,
@@ -45,7 +53,7 @@ from .reference_memory import (
     UNKNOWN_FACE_EVENT_LABEL,
 )
 from .sliding_window import FrameWindow, SampledFrame, iter_sliding_windows
-from .stream_adapter import NetworkStreamAdapter
+from .stream_adapter import NetworkStreamAdapter, StreamAdapterError
 from .video_to_stream import (
     PushSampledSource,
     VideoFileStream,
@@ -76,9 +84,9 @@ class SessionCallbacks:
     on_vision_result: Callable[[VisionResult], None] | None = None
     on_analysis_frame: Callable[[AnalysisResult, bytes], None] | None = None
     on_analysis_result: Callable[[AnalysisResult], None] | None = None
-    # Every successful grounded keyframe, including an older response that
-    # finished after a newer one. Customer-facing result callbacks remain
-    # newest-wins; the delayed video compositor reorders this private timeline.
+    # Every successful grounded keyframe, including a response superseded in
+    # its own branch. Mixed local-face/safety sessions publish the newest result
+    # of each branch independently, always with that branch's exact source frame.
     on_timeline_result: Callable[[AnalysisResult], None] | None = None
 
 
@@ -96,6 +104,7 @@ class StreamingSession:
         camera_source: PushSampledSource | None = None,
         source_id: str = "default",
         stream_session_id: str | None = None,
+        archive: EventArchive | None = None,
     ) -> None:
         if mode not in {FILE_MODE, CAMERA_MODE, STREAM_MODE}:
             raise ValueError(f"unknown session mode: {mode}")
@@ -113,6 +122,14 @@ class StreamingSession:
         self.camera_source = camera_source
         self.source_id = source_id.strip()
         self.stream_session_id = stream_session_id or str(uuid4())
+        self.archive = archive
+        self.person_registry = PersonRegistry(
+            stream_session_id=self.stream_session_id, source_id=self.source_id,
+        )
+        face_client = getattr(client, "_stranger_client", client)
+        bind_registry = getattr(face_client, "bind_person_registry", None)
+        if bind_registry is not None:
+            bind_registry(self.person_registry)
         memory_context = getattr(client, "memory_context", None)
         event_labels = tuple(getattr(client, "event_labels", ()))
         if event_labels:
@@ -124,7 +141,18 @@ class StreamingSession:
                 and memory_context.purpose == FACE_RECOGNITION_PURPOSE
                 else client.settings.event_label
             )
-        self.organizer = ResultOrganizer(self.event_label)
+        self._independent_branches = (
+            getattr(client, "independent_live_branches", False) is True
+        )
+        self.organizer = ResultOrganizer(
+            ",".join(label for label in event_labels if label != "stranger")
+            if self._independent_branches else self.event_label
+        )
+        self._face_organizer = ResultOrganizer("stranger")
+        self._face_pending: set[Future[Any]] = set()
+        self._face_executor: ThreadPoolExecutor | None = None
+        self._branch_diagnostics: dict[str, dict[str, Any]] = {}
+        self._archive_result_windows: OrderedDict[str, str | int] = OrderedDict()
         # Live sources drop windows when all request slots are busy (the feed
         # cannot wait); offline runs block instead so every window is scored.
         self._drop_when_saturated = (
@@ -150,12 +178,16 @@ class StreamingSession:
         start_seconds: float = 0.0,
         realtime: bool | None = None,
         source_id: str = "file",
+        archive: EventArchive | None = None,
     ) -> StreamingSession:
         use_realtime = config.video.realtime if realtime is None else realtime
         stream = VideoFileStream(
             video_path,
-            # The display stream must run at least as fast as model sampling.
-            display_fps=max(config.display.fps, config.video.fps),
+            # Keep source cadence sufficient for both inference and evidence.
+            display_fps=max(
+                config.display.fps, config.video.fps,
+                config.events.fps if archive is not None else 0,
+            ),
             playback_speed=config.video.playback_speed,
             start_seconds=start_seconds,
             realtime=use_realtime,
@@ -167,6 +199,7 @@ class StreamingSession:
             mode=FILE_MODE,
             video_stream=stream,
             source_id=source_id,
+            archive=archive,
         )
 
     @classmethod
@@ -179,10 +212,14 @@ class StreamingSession:
         stream_url: str,
         whep_headers: Mapping[str, str] | None = None,
         source_id: str = "camera",
+        archive: EventArchive | None = None,
     ) -> StreamingSession:
         stream = NetworkStreamAdapter(
             stream_url,
-            output_fps=max(config.display.fps, config.video.fps),
+            output_fps=max(
+                config.display.fps, config.video.fps,
+                config.events.fps if archive is not None else 0,
+            ),
             whep_headers=whep_headers,
         )
         return cls(
@@ -192,6 +229,7 @@ class StreamingSession:
             mode=STREAM_MODE,
             video_stream=stream,
             source_id=source_id,
+            archive=archive,
         )
 
     @classmethod
@@ -202,6 +240,7 @@ class StreamingSession:
         callbacks: SessionCallbacks,
         *,
         source_id: str = "camera",
+        archive: EventArchive | None = None,
     ) -> StreamingSession:
         return cls(
             config,
@@ -210,11 +249,14 @@ class StreamingSession:
             mode=CAMERA_MODE,
             camera_source=PushSampledSource(),
             source_id=source_id,
+            archive=archive,
         )
 
     def start(self) -> None:
         if self._thread is not None:
             raise RuntimeError("session already started")
+        if self.archive is not None:
+            self.archive.start_session(self.stream_session_id, self.source_id)
         self._thread = threading.Thread(
             target=self._run,
             name="streaming-session",
@@ -223,6 +265,7 @@ class StreamingSession:
         self._thread.start()
 
     def stop(self) -> None:
+        self._emit_open = False
         self._stop.set()
         if self.video_stream is not None:
             self.video_stream.stop()
@@ -266,6 +309,11 @@ class StreamingSession:
             max_workers=self.config.runtime.max_concurrent_requests,
             thread_name_prefix="analysis-window",
         )
+        if self._independent_branches:
+            self._face_executor = ThreadPoolExecutor(
+                max_workers=self._face_concurrency(),
+                thread_name_prefix="analysis-face",
+            )
         try:
             windows = iter_sliding_windows(
                 self._sampled_frames(),
@@ -287,11 +335,18 @@ class StreamingSession:
                     pass
                 if self._stop.is_set():
                     reason = "stopped"
+        except StreamAdapterError as exc:
+            LOGGER.warning("stream_failure code=%s", exc.code)
+            reason, error = "error", exc.public_message
         except Exception:
             reason, error = "error", PUBLIC_ANALYSIS_ERROR
         finally:
             self._emit_open = False
             executor.shutdown(wait=False, cancel_futures=True)
+            if self._face_executor is not None:
+                self._face_executor.shutdown(wait=False, cancel_futures=True)
+            if self.archive is not None:
+                self.archive.end_session(self.stream_session_id, reason)
             if self.callbacks.on_end is not None:
                 self.callbacks.on_end(reason, error)
 
@@ -321,15 +376,21 @@ class StreamingSession:
                 ),
             )
             presentation_jpeg_bytes: bytes | None = None
-            if self.callbacks.on_display_frame is not None:
+            if self.callbacks.on_display_frame is not None or self.archive is not None:
                 presentation_jpeg_bytes, _, _ = encode_jpeg(
                     frame_bgr,
                     max_image_side=display.max_image_side,
                     quality=display.jpeg_quality,
                 )
-                self.callbacks.on_display_frame(
-                    presentation_jpeg_bytes, frame.timestamp_seconds, frame.index
-                )
+                if self.archive is not None:
+                    self.archive.submit_frame(
+                        presentation_jpeg_bytes, frame.timestamp_seconds, frame.index,
+                        self.stream_session_id,
+                    )
+                if self.callbacks.on_display_frame is not None:
+                    self.callbacks.on_display_frame(
+                        presentation_jpeg_bytes, frame.timestamp_seconds, frame.index
+                    )
 
             if frame.timestamp_seconds + 1e-9 < next_sample_time:
                 continue
@@ -366,45 +427,94 @@ class StreamingSession:
     def _schedule_window(
         self, window: FrameWindow, executor: ThreadPoolExecutor
     ) -> None:
+        if self._independent_branches:
+            # Local faces must be offered the same source samples even while
+            # every remote request slot is occupied. Neither pool queues stale
+            # live work; the CPU face branch retains its single-flight limit.
+            assert self._face_executor is not None
+            self._schedule_branch(window, self._face_executor, "stranger")
+            self._schedule_branch(window, executor, "safety")
+            return
+        self._schedule_branch(window, executor, None)
+
+    def _face_concurrency(self) -> int:
+        return (
+            1
+            if getattr(self.client, "face_live_scheduler", "single_flight")
+            == "single_flight"
+            else self.config.runtime.max_concurrent_requests
+        )
+
+    def _schedule_branch(
+        self,
+        window: FrameWindow,
+        executor: ThreadPoolExecutor,
+        branch: str | None,
+    ) -> None:
+        if self._stop.is_set():
+            return
+        pending = self._face_pending if branch == "stranger" else self._pending
+        organizer = self._face_organizer if branch == "stranger" else self.organizer
+        capacity = (
+            self._face_concurrency()
+            if branch == "stranger"
+            else self.config.runtime.max_concurrent_requests
+        )
         while True:
             with self._pending_lock:
-                saturated = (
-                    len(self._pending) >= self.config.runtime.max_concurrent_requests
-                )
+                saturated = len(pending) >= capacity
             if not saturated:
                 break
             if self._drop_when_saturated:
                 # A live feed cannot wait for the model; skip, don't queue.
-                record, snapshot = self.organizer.note_dropped(
+                record, snapshot = organizer.note_dropped(
                     window, elapsed_seconds=self._elapsed()
                 )
-                self._emit(record, snapshot)
+                self._emit_branch_state(record, snapshot, branch)
+                self._archive_window(window, "dropped", branch=branch)
                 return
             if self._stop.wait(0.02):
                 return
 
-        record, snapshot = self.organizer.note_submitted(
+        if self._stop.is_set():
+            return
+
+        record, snapshot = organizer.note_submitted(
             window, elapsed_seconds=self._elapsed()
         )
-        self._emit(record, snapshot)
-        future = executor.submit(self.client.classify_window, window)
+        self._emit_branch_state(record, snapshot, branch)
+        self._archive_window(window, "admitted", branch=branch)
+        classify = self.client.classify_window
+        if branch == "safety":
+            classify = self.client.classify_safety_window
+        elif branch == "stranger":
+            classify = self.client.classify_stranger_window
+        future = executor.submit(classify, window)
         with self._pending_lock:
-            self._pending.add(future)
+            pending.add(future)
         future.add_done_callback(
-            lambda done, window=window: self._on_window_done(done, window)
+            lambda done, window=window: self._on_window_done(
+                done, window, branch=branch,
+            )
         )
 
-    def _on_window_done(self, future: Future[Any], window: FrameWindow) -> None:
+    def _on_window_done(
+        self, future: Future[Any], window: FrameWindow, *, branch: str | None = None,
+    ) -> None:
         try:
-            self._apply_window_future(future, window)
+            self._apply_window_future(future, window, branch=branch)
         finally:
             # Keep the future pending until apply and every delivery callback has
             # finished. The session thread must not close emission too early.
             with self._pending_lock:
-                self._pending.discard(future)
+                pending = self._face_pending if branch == "stranger" else self._pending
+                pending.discard(future)
 
-    def _apply_window_future(self, future: Future[Any], window: FrameWindow) -> None:
+    def _apply_window_future(
+        self, future: Future[Any], window: FrameWindow, *, branch: str | None = None,
+    ) -> None:
         if future.cancelled():
+            self._archive_window(window, "cancelled", branch=branch)
             return
         exc = future.exception()
         if exc is not None:
@@ -418,9 +528,28 @@ class StreamingSession:
         else:
             response = future.result()
         with self._apply_lock:
-            record, snapshot = self.organizer.apply(
+            organizer = self._face_organizer if branch == "stranger" else self.organizer
+            record, snapshot = organizer.apply(
                 response, elapsed_seconds=self._elapsed()
             )
+            if branch is not None:
+                self._branch_diagnostics[branch] = {
+                    "window_index": window.index,
+                    "source_frame_index": window.newest_frame.source_frame_index,
+                    "source_timestamp_seconds": window.end_timestamp,
+                    "latency_seconds": response.latency_seconds,
+                    "applied": record.get("applied") is True,
+                    "error": response.error,
+                    **(
+                        {"face": dict(response.face_diagnostics)}
+                        if getattr(response, "face_diagnostics", None) is not None
+                        else {}
+                    ),
+                }
+                record = {**record, "branch": branch}
+                if branch == "stranger":
+                    record["diagnostics"] = self._branch_diagnostics[branch]
+                snapshot = self._branch_snapshot(branch, snapshot)
             vision_result = None
             analysis_result = None
             timeline_result = None
@@ -444,6 +573,7 @@ class StreamingSession:
                     self.callbacks.on_analysis_frame is not None
                     or self.callbacks.on_analysis_result is not None
                     or self.callbacks.on_timeline_result is not None
+                    or self.archive is not None
                 ):
                     grounded_objects: tuple[GroundedObject, ...]
                     judgments: tuple[EventJudgment, ...] | None
@@ -476,6 +606,16 @@ class StreamingSession:
                                     ),
                                     object_ids=tuple(object_ids),
                                     matched_memory_ids=judgment.matched_memory_ids,
+                                )
+                            )
+                        for item in classification.supporting_objects:
+                            object_records.append(
+                                GroundedObject(
+                                    object_id=f"object-{len(object_records) + 1}",
+                                    label=str(public_safe_value(item.label)),
+                                    bbox=item.bbox,
+                                    confidence=item.confidence,
+                                    attributes=public_safe_value(item.attributes),
                                 )
                             )
                         grounded_objects = tuple(object_records)
@@ -567,6 +707,14 @@ class StreamingSession:
                                 classification, "analysis_kind", "event"
                             ),
                         )
+                        try:
+                            timeline_result = self.person_registry.prepare_analysis(
+                                timeline_result, observation_bundle(classification),
+                            )
+                        except Exception:
+                            LOGGER.warning(
+                                "could not associate observation with a person"
+                            )
                         if applied:
                             analysis_result = timeline_result
                             analysis_frame_jpeg = (
@@ -580,10 +728,84 @@ class StreamingSession:
                 timeline_result=timeline_result,
                 analysis_frame_jpeg=analysis_frame_jpeg,
             )
+            # Archive work is strictly downstream of the immediate result. These
+            # methods only enqueue; disk, replay and encoding never run here.
+            if self.archive is not None and self._emit_open:
+                if timeline_result is not None:
+                    window_id = self._archive_window_id(window, branch)
+                    self._archive_result_windows[timeline_result.message_id] = window_id
+                    while len(self._archive_result_windows) > 2048:
+                        self._archive_result_windows.popitem(last=False)
+                    accepted = self.archive.submit_result(
+                        timeline_result, window_id=window_id,
+                    )
+                    self._archive_window(
+                        window, "completed" if accepted else "dropped", branch=branch,
+                    )
+                    for corrected in self.person_registry.drain_reassociated_results():
+                        self.archive.submit_result(
+                            corrected,
+                            window_id=self._archive_result_windows.get(corrected.message_id),
+                        )
+                else:
+                    self._archive_window(window, "failed", branch=branch)
+
+    def _branch_snapshot(self, branch: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+        safety = snapshot if branch == "safety" else self.organizer.snapshot()
+        face = snapshot if branch == "stranger" else self._face_organizer.snapshot()
+        errors = {**safety.get("branch_errors", {}), **face.get("branch_errors", {})}
+        return {
+            **safety,
+            "event_label": self.event_label,
+            "branch_errors": errors,
+            "last_error": safety.get("last_error") or face.get("last_error"),
+            "branches": {
+                "safety": {
+                    **safety,
+                    "last_completion": self._branch_diagnostics.get("safety"),
+                },
+                "stranger": {
+                    **face,
+                    "scheduler": getattr(
+                        self.client, "face_live_scheduler", "single_flight",
+                    ),
+                    "last_completion": self._branch_diagnostics.get("stranger"),
+                },
+            },
+        }
+
+    def _emit_branch_state(
+        self, record: dict[str, Any], snapshot: dict[str, Any], branch: str | None,
+    ) -> None:
+        if branch is not None:
+            record = {**record, "branch": branch}
+            snapshot = self._branch_snapshot(branch, snapshot)
+        self._emit(record, snapshot)
+
+    @staticmethod
+    def _archive_window_id(window: FrameWindow, branch: str | None) -> str | int:
+        return f"{branch}:{window.index}" if branch is not None else window.index
+
+    def _archive_window(
+        self, window: FrameWindow, outcome: str, *, branch: str | None = None,
+    ) -> None:
+        if self.archive is not None:
+            labels = tuple(getattr(self.client, "event_labels", ())) or (
+                self.event_label,
+            )
+            if branch == "stranger":
+                labels = ("stranger",)
+            elif branch == "safety":
+                labels = tuple(label for label in labels if label != "stranger")
+            self.archive.note_window(
+                self.stream_session_id, self._archive_window_id(window, branch),
+                window.end_timestamp, expected_labels=labels, outcome=outcome,
+                source_frame_index=window.newest_frame.source_frame_index,
+            )
 
     def _has_pending(self) -> bool:
         with self._pending_lock:
-            return bool(self._pending)
+            return bool(self._pending or self._face_pending)
 
     def _elapsed(self) -> float:
         if self._started_wall is None:
@@ -604,9 +826,12 @@ class StreamingSession:
             return
         if self.callbacks.on_event is not None:
             _invoke_callback("event", self.callbacks.on_event, record)
-        if self.callbacks.on_state is not None:
+        if self._emit_open and self.callbacks.on_state is not None:
             _invoke_callback("state", self.callbacks.on_state, snapshot)
-        if vision_result is not None and self.callbacks.on_vision_result is not None:
+        if (
+            self._emit_open and vision_result is not None
+            and self.callbacks.on_vision_result is not None
+        ):
             _invoke_callback(
                 "vision result",
                 self.callbacks.on_vision_result,
@@ -614,7 +839,7 @@ class StreamingSession:
             )
 
         if (
-            timeline_result is not None
+            self._emit_open and timeline_result is not None
             and self.callbacks.on_timeline_result is not None
         ):
             _invoke_callback(
@@ -624,7 +849,7 @@ class StreamingSession:
             )
 
         if (
-            analysis_result is not None
+            self._emit_open and analysis_result is not None
             and analysis_frame_jpeg is not None
             and self.callbacks.on_analysis_frame is not None
         ):
@@ -635,7 +860,7 @@ class StreamingSession:
                 analysis_frame_jpeg,
             )
         if (
-            analysis_result is not None
+            self._emit_open and analysis_result is not None
             and self.callbacks.on_analysis_result is not None
         ):
             _invoke_callback(
@@ -772,7 +997,7 @@ def _main(argv: list[str] | None = None) -> int:
             ),
         )
 
-    client = build_client(
+    client = build_grounding_client(
         config.inference,
         config.model_api,
         memory_context=config.memory,
@@ -783,6 +1008,7 @@ def _main(argv: list[str] | None = None) -> int:
         on_end=on_end,
         on_vision_result=lambda result: emit(result.as_dict()),
     )
+    archive = EventArchive(config.events)
     if stream_url is not None:
         session = StreamingSession.for_stream(
             config,
@@ -790,6 +1016,7 @@ def _main(argv: list[str] | None = None) -> int:
             callbacks,
             stream_url=stream_url,
             whep_headers=whep_headers,
+            archive=archive,
         )
     else:
         assert video is not None
@@ -800,6 +1027,7 @@ def _main(argv: list[str] | None = None) -> int:
             video_path=video,
             start_seconds=args.start_seconds,
             realtime=False if args.no_realtime else None,
+            archive=archive,
         )
     try:
         session.start()
@@ -809,6 +1037,7 @@ def _main(argv: list[str] | None = None) -> int:
         session.stop()
         done.wait(5.0)
     finally:
+        archive.close(timeout=15.0)
         if close_output:
             output.close()
     return 0

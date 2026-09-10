@@ -11,19 +11,18 @@ from fastapi.testclient import TestClient
 
 from goodvision_harness.config import InferenceSettings, load_config
 from goodvision_harness.contracts import (
+    PUBLIC_MODEL_NAME,
     AnalysisResult,
     EventJudgment,
     FrameReference,
     GroundedObject,
     NormalizedBBox,
-    PUBLIC_MODEL_NAME,
 )
 from goodvision_harness.face_recognition import (
     FaceRecognitionRuntime,
     FaceRecognitionSession,
     FaceRecognizerConfig,
     GalleryPerson,
-    StrangerCapture,
 )
 from goodvision_harness.reference_memory import MemoryContext, MemoryReference
 from goodvision_harness.service import (
@@ -75,12 +74,6 @@ class _FakeFaceRuntime:
 
     def delete_person(self, person_id: str) -> bool:
         return self.people.pop(person_id, None) is not None
-
-    def list_strangers(self) -> tuple[StrangerCapture, ...]:
-        return (StrangerCapture("stranger-test", True),)
-
-    def stranger_photo(self, stranger_id: str) -> bytes | None:
-        return _jpeg(40, 50) if stranger_id == "stranger-test" else None
 
     def classify_window(self, _window: Any) -> Any:
         raise AssertionError("this test does not submit a frame")
@@ -162,21 +155,11 @@ def test_face_gallery_http_surface_and_ui_info(
         assert fake.last_enrollment == ("bob", "Bob", image)
 
         strangers = client.get("/v1/faces/strangers")
-        assert strangers.json() == {
-            "count": 1,
-            "strangers": [
-                {
-                    "stranger_id": "stranger-test",
-                    "photo_available": True,
-                    "photo_url": "/v1/faces/strangers/stranger-test/photo",
-                }
-            ],
-        }
+        assert strangers.status_code == 410
+        assert strangers.json()["detail"]["events_url"] == "/v1/events"
         photo = client.get("/v1/faces/strangers/stranger-test/photo")
-        assert photo.status_code == 200
-        assert photo.headers["content-type"] == "image/jpeg"
-        assert photo.headers["cache-control"] == "no-store"
-        assert client.get("/v1/faces/strangers/missing/photo").status_code == 404
+        assert photo.status_code == 410
+        assert client.get("/v1/faces/strangers/missing/photo").status_code == 410
 
         deleted = client.delete("/v1/faces/gallery/bob")
         assert deleted.json() == {"deleted": True, "person_id": "bob"}

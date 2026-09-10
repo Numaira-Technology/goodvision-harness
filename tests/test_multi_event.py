@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import jsonschema
 import numpy as np
 import pytest
 
+import goodvision_harness.overlay as overlay_module
 import goodvision_harness.service as service_module
 from goodvision_harness.config import InferenceSettings, load_config
 from goodvision_harness.contracts import (
@@ -139,6 +141,8 @@ def _stranger_classification(*, unknown: bool) -> GroundedClassification:
         confidence=0.97,
         attributes={
             "status": "known",
+            "subject_id": "subject-known-alice",
+            "subject_ids": ["subject-known-alice"],
             "person_id": "alice",
             "name": "Alice",
             "similarity": 0.94,
@@ -155,11 +159,8 @@ def _stranger_classification(*, unknown: bool) -> GroundedClassification:
                 attributes={
                     "status": "unknown",
                     "similarity": 0.18,
-                    "stranger_id": "stranger-0123456789abcdef0123456789abcdef",
-                    "photo_url": (
-                        "/v1/faces/strangers/"
-                        "stranger-0123456789abcdef0123456789abcdef/photo"
-                    ),
+                    "subject_id": "subject-unknown-1",
+                    "subject_ids": ["subject-unknown-1"],
                 },
             ),
         )
@@ -273,6 +274,9 @@ def test_fixed_five_combination_uses_only_unknown_faces_for_stranger() -> None:
     assert [item.label for item in stranger.objects] == ["unknown_person"]
     assert stranger.objects[0].attributes["status"] == "unknown"
     assert stranger.matched_memory_ids == ("alice",)
+    assert len(positive.supporting_objects) == 1
+    assert positive.supporting_objects[0].attributes["person_id"] == "alice"
+    assert positive.supporting_objects[0] in positive.objects
 
     known_only_response = _combined_client(unknown=False).classify_window(_window())
     known_only = known_only_response.classification
@@ -281,6 +285,82 @@ def test_fixed_five_combination_uses_only_unknown_faces_for_stranger() -> None:
     assert stranger.detected is False
     assert stranger.objects == ()
     assert stranger.matched_memory_ids == ("alice",)
+    assert known_only.supporting_objects == positive.supporting_objects
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+@pytest.mark.parametrize("safety_event", [None, *SAFETY_EVENT_LABELS, "unavailable"])
+def test_joint_known_face_preserves_identity_and_renders_only_without_safety_events(
+    monkeypatch: pytest.MonkeyPatch, unknown: bool, safety_event: str | None,
+) -> None:
+    config = load_config(ROOT / "config.yaml")
+    safety = MultiGroundedClassification(
+        judgments=tuple(
+            GroundedEventClassification(
+                event_label=label,
+                detected=label == safety_event,
+                confidence=0.95,
+                description="Safety result.",
+                objects=(
+                    (_model_object(
+                        "person", (0.05, 0.2, 0.25, 0.9),
+                        confidence=0.95, attributes={},
+                    ),)
+                    if label == safety_event else ()
+                ),
+            )
+            for label in SAFETY_EVENT_LABELS
+        ),
+    )
+    safety_client = _StaticClient(config.inference, safety)
+    if safety_event == "unavailable":
+        monkeypatch.setattr(
+            safety_client, "classify_window",
+            lambda window: GroundingResponse(window, None, 0.1, error="failed"),
+        )
+    client = FixedFiveGroundingClient(
+        safety_client,
+        _StaticClient(config.inference, _stranger_classification(unknown=unknown)),
+        safety_max_image_side=320,
+        safety_jpeg_quality=75,
+    )
+    results: list[AnalysisResult] = []
+    session = StreamingSession.for_camera(
+        config, client, SessionCallbacks(on_analysis_result=results.append),
+    )
+    window = _window()
+    future: Future[Any] = Future()
+    future.set_result(client.classify_window(window))
+    session._on_window_done(future, window)
+    analysis = results[0]
+    known = next(item for item in analysis.objects if item.label == "known_person")
+    assert known.attributes["person_id"] == "alice"
+    assert known.bbox == NormalizedBBox(0.45, 0.1, 0.65, 0.8)
+    assert all(known.object_id not in item.object_ids for item in analysis.judgments)
+    stranger = next(
+        item for item in analysis.judgments if item.event_label == "stranger"
+    )
+    assert stranger.detected is unknown
+    assert bool(stranger.object_ids) is unknown
+    texts: list[str] = []
+    original_text = overlay_module._text_with_background
+
+    def capture_text(image: Any, text: str, *args: Any, **kwargs: Any) -> None:
+        texts.append(text)
+        original_text(image, text, *args, **kwargs)
+
+    monkeypatch.setattr(overlay_module, "_text_with_background", capture_text)
+    rendered = service_module._draw_analysis_overlay(
+        np.zeros((360, 640, 3), dtype=np.uint8), analysis,
+    )
+    has_green = tuple(rendered[287, 352]) == (55, 180, 70)
+    assert has_green is (safety_event is None)
+    assert ("alice" in texts) is (safety_event is None)
+    assert "Alice" not in texts
+    if safety_event in SAFETY_EVENT_LABELS:
+        assert tuple(rendered[323, 96]) == (40, 40, 220)
+    if unknown:
+        assert tuple(rendered[305, 512]) == (40, 40, 220)
 
 
 def test_selected_feature_subset_runs_only_requested_detectors() -> None:
@@ -720,7 +800,7 @@ def test_partial_negative_results_never_report_all_clear(scenario: str) -> None:
 @pytest.mark.parametrize("description,valid", (
     ("No smoking detected.", False),
     ("未发现吸烟。", False),
-    ("No smoking detected. / 未发现吸烟。", False),
+    ("No smoking detected. / 未发现吸烟。", True),
     ("未发现吸烟。 / ", False),
     ("未发现吸烟。 / No smoking detected.", True),
 ))
@@ -751,7 +831,7 @@ def test_live_grounding_rejects_invalid_bilingual_descriptions(
     if valid:
         classification = response.classification
         actual = classification.judgments[0] if multi else classification
-        assert actual.description == description
+        assert actual.description == "未发现吸烟。 / No smoking detected."
     else:
         assert response.classification is None
         assert response.raw_text is None
@@ -812,10 +892,25 @@ def test_pipeline_emits_one_rich_fixed_five_analysis_result() -> None:
     assert smoking_object["attributes"] == {"evidence": "at_mouth"}
     assert stranger_object["label"] == "unknown_person"
     assert stranger_object["attributes"]["status"] == "unknown"
-    assert stranger_object["attributes"]["stranger_id"] == (
-        "stranger-0123456789abcdef0123456789abcdef"
+    assert stranger_object["attributes"]["subject_id"] == "subject-unknown-1"
+    assert stranger_object["attributes"]["subject_ids"] == ["subject-unknown-1"]
+    assert "stranger_id" not in stranger_object["attributes"]
+    assert "photo_url" not in stranger_object["attributes"]
+    # Person association uses the existing open object-attributes extension.
+    # The version and top-level contract are unchanged.
+    assert payload["schema_version"] == "2"
+    assert "subject_id" not in payload
+    schema = json.loads(
+        (ROOT / "schemas/analysis-result-v2.schema.json").read_text(encoding="utf-8")
     )
-    assert stranger_object["attributes"]["photo_url"].endswith("/photo")
+    jsonschema.Draft202012Validator(schema).validate(payload)
+    known_objects = [
+        item for item in payload["objects"]
+        if item["attributes"].get("status") == "known"
+    ]
+    assert len(known_objects) == 1
+    assert known_objects[0]["attributes"]["person_id"] == "alice"
+    assert known_objects[0]["object_id"] not in judgments["stranger"]["object_ids"]
     assert emitted_frames == [(result, window.newest_frame.presentation_jpeg_bytes)]
 
     # Capability views keep the original frame summary, including when their

@@ -152,8 +152,11 @@ def test_console_selection_is_private_persisted_and_used_by_live_requests(
         assert runtime.push_camera_frame(frame.jpeg_bytes, width=320, height=180)
         assert runtime.results.records_after(0, timeout_seconds=5)
         payload = runtime._route_transport.calls[-1]
-        assert payload["model"] == "qwen/qwen3.5-35b-a3b"
-        assert payload["provider"] == {"only": ["alibaba"], "allow_fallbacks": False}
+        assert payload["model"] == "qwen/qwen3.5-35b-a3b:nitro"
+        assert payload["provider"] == {
+            "sort": "throughput", "allow_fallbacks": True,
+            "ignore": ["coreweave", "novita"],
+        }
         assert client.post("/v1/deployment/routes/check").status_code == 409
     restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
     try:
@@ -222,7 +225,7 @@ def test_invalid_saved_route_is_not_applied(runtime):
     ("C", "A"), ("D", "B"), ("AA", "C"), ("AE", "D"),
     ("G", "E"), ("K", "F"), ("B", "G"), ("F", "H"),
 ])
-def test_renumbered_route_preserves_saved_model_and_provider(
+def test_saved_route_keeps_number_and_base_model_while_enabling_nitro(
     runtime, stored_id, public_id,
 ):
     runtime._deployment_store.save_model_route(stored_id)
@@ -235,9 +238,10 @@ def test_renumbered_route_preserves_saved_model_and_provider(
         assert status["selected_label"] == f"线路 {public_id}"
         assert status["selection_persisted"] is True
         route = ROUTES_BY_ID[stored_id]
-        assert restored.config.inference.model == route.model
+        assert restored.config.inference.model == f"{route.model}:nitro"
         assert restored.config.inference.request_parameters["provider"] == {
-            "only": [route.provider], "allow_fallbacks": False,
+            "sort": "throughput", "allow_fallbacks": True,
+            "ignore": ["coreweave", "novita"],
         }
         assert saved_path.read_bytes() == saved
     finally:
@@ -260,7 +264,10 @@ def test_removed_provider_routes_cannot_be_selected_saved_restored_or_called(
         assert restored.route_probe_status()["selected_id"] is None
         assert restored._selected_route_id == "A"
         assert restored.route_probe_status()["error"] == "saved_route_unavailable"
-        assert restored.config.inference.request_parameters["provider"]["only"] == ["deepinfra"]
+        assert restored.config.inference.request_parameters["provider"] == {
+            "sort": "throughput", "allow_fallbacks": True,
+            "ignore": ["coreweave", "novita"],
+        }
     finally:
         restored.stop()
     route = next(route for route in ROUTE_CATALOG if route.id == route_id)
@@ -313,12 +320,18 @@ def test_probe_uses_live_contract_and_rejects_incomplete_results(runtime):
     pool = FakePool(runtime.config.model_api)
     settings = replace(runtime.config.inference, request_parameters={
         "max_tokens": 1200, "models": ["bad/fallback"], "stream": True,
-        "provider": {"allow_fallbacks": True}, "reasoning": {"effort": "high"},
+        "provider": {"only": ["alibaba"], "order": ["alibaba"],
+                     "sort": "price", "allow_fallbacks": False},
+        "reasoning": {"effort": "high"},
     })
     sample = probe_sample(pool, settings, ROUTES_BY_ID["C"], 1)
     assert sample["ok"]
     payload = pool.calls[0]
-    assert payload["provider"] == {"only": ["alibaba"], "allow_fallbacks": False}
+    assert payload["model"] == "qwen/qwen3-vl-8b-instruct:nitro"
+    assert payload["provider"] == {
+        "sort": "throughput", "allow_fallbacks": True,
+        "ignore": ["coreweave", "novita"],
+    }
     assert not {"models", "stream", "reasoning"}.intersection(payload)
     assert payload["messages"][0]["content"].startswith(settings.system_prompt)
     pool.chat_completion = lambda **_: {"choices": [{"message": {"content": "{}"}}]}

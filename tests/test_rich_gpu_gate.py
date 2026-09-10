@@ -103,7 +103,9 @@ def test_cpu_gate_never_constructs_coordinator_or_submits_frames(monkeypatch):
 def test_explicit_disabled_setting_does_not_even_probe_worker(monkeypatch):
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
     config = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
-    config = replace(config, rich_labeling=replace(config.rich_labeling, enabled=False))
+    config = replace(config, rich_labeling=replace(
+        config.rich_labeling, enabled=False, tracking_enabled=False,
+    ))
 
     def forbidden(*args, **kwargs):
         pytest.fail("disabled rich settings must not contact the worker")
@@ -114,6 +116,69 @@ def test_explicit_disabled_setting_does_not_even_probe_worker(monkeypatch):
         runtime.start()
         assert runtime.status()["rich_labeling"] == {"state": "disabled"}
         assert runtime._rich_probe_thread is None
+    finally:
+        runtime.stop()
+
+
+def test_tracking_stays_active_when_rich_ui_is_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    config = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
+    config = replace(
+        config,
+        rich_labeling=replace(
+            config.rich_labeling, enabled=False, tracking_enabled=True,
+        ),
+        events=replace(config.events, directory=tmp_path / "events"),
+    )
+    options, submissions = [], []
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            options.append(kwargs)
+
+        def gpu_ready(self):
+            return True
+
+        def infer(self, jpeg, **metadata):
+            submissions.append(metadata)
+            return RichLabelSnapshot(**metadata, objects=(RichLabelObject(
+                "P1", "person", NormalizedBBox(.2, .1, .7, .9),
+                observation_state="observed",
+                last_observed_timestamp_seconds=metadata["timestamp_seconds"],
+                last_observed_frame_sequence=metadata["frame_sequence"],
+            ),))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(service, "RichLabelHTTPClient", Client)
+    runtime = service.HarnessRuntime(config)
+    observed = Event()
+    try:
+        runtime.start()
+        runtime._rich_probe_thread.join(timeout=2)
+        assert runtime._rich_labels is not None
+        assert len(options) == 1
+        assert options[0]["mode"] == "tracks"
+        assert options[0]["include_attributes"] is False
+        runtime.start_camera(dry_run=True, features=["smoking"])
+        registry = runtime._session.person_registry
+        receive = registry.observe_snapshot
+
+        def record(snapshot):
+            receive(snapshot)
+            observed.set()
+
+        monkeypatch.setattr(registry, "observe_snapshot", record)
+        ok, image = cv2.imencode(".jpg", np.zeros((160, 240, 3), dtype=np.uint8))
+        assert ok
+        runtime._on_display_frame(image.tobytes(), 2., 2)
+        assert observed.wait(2)
+        assert len(submissions) == 1
+        assert registry.history()
+        assert runtime.status()["rich_labeling_enabled"] is False
+        assert runtime.ui_info()["rich_labeling"]["enabled"] is False
+        assert runtime.latest_rich_labels() is None
     finally:
         runtime.stop()
 

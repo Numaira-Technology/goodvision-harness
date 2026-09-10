@@ -2,9 +2,9 @@
 
 An independent demo service that pulls the robot's live WHEP/WebRTC stream and
 detects any selected subset of `fight`, `smoking`, `fall`, `weapon`, and
-`stranger` (all five remain the default). It exposes one structured result and one exactly correlated,
-annotated frame for every analyzed video frame, plus a continuous delayed
-annotation stream for display.
+`stranger` (all five remain the default). It publishes structured observations
+as recognition completes, source-correlated annotated images, and a continuous
+delayed annotation stream for display.
 
 The harness has no runtime dependency on the original `goodvision`
 repository.
@@ -13,9 +13,13 @@ repository.
 
 The service performs one external model request for whichever visual safety
 events are selected, while the local known-person matcher checks the same frame
-only when `stranger` is selected. Mixed results are merged in canonical order.
+only when `stranger` is selected. In mixed streaming sessions, safety and local
+faces have independent bounded request slots and publish independently on completion.
+Each message retains its own source frame; capability cards use each capability's
+latest observation. A slow remote request cannot consume the local face slot,
+and a slow face result cannot delay a completed safety judgment.
 It does not run one process or one LLM call per feature. Omitting `features`
-keeps the original fixed-five result. Before a real multi-event
+selects all five capabilities. Before a real multi-event
 or face-only session accepts its first frame, the service loads the local engine and
 runs one blank inference to remove its first-frame cold start; dry-run skips
 that warmup. The default runtime settings are:
@@ -202,6 +206,105 @@ the PP-Human grouped decoder (including the negative `Female` branch for
 male-presenting results) instead of treating PaddleX's positive-label list as a
 complete classification. The HUD shows age and gender estimates first, followed
 by a compact selection of direction, clothing, bag, and accessory hints.
+
+### Experimental VLM rich annotation
+
+`config.vlm-rich.yaml` enables the `vlm` rich-label backend on this experimental
+branch. The current experiment uses Qwen 3.6 Flash through OpenRouter/Alibaba
+for annotations, independently of the event model and its DeepInfra route.
+The VLM returns person/object boxes and
+the same appearance-attribute vocabulary as Paddle through the existing
+rich-label snapshot interface, coordinator, box fusion, and renderer. The VLM
+assigns local spatial track IDs. The safety-event request is separate, but both
+results use the same source frame timeline and final box compositor. Matched
+alerts attach to the rich box; a fusion error falls back to events on the
+original frame instead of drawing two independent box layers.
+
+The default experiment uses one request per sampled rich-label frame and a
+strict compact response schema with all 13 person attributes (unknown values
+are null). Both single and parallel modes reuse their HTTP connection pool,
+report first-content-token timing and token/cache usage to response observers,
+and apply a deadline to frame preparation and inference without retries.
+`rich_labeling.vlm_wire_format: compact` requests shorter JSON rows and expands
+them locally into the existing annotation protocol. With that format,
+`rich_labeling.vlm_execution_mode: parallel` enables three simultaneous requests:
+two overlapping person crops and one full-frame object request. Crop coordinates
+are mapped back locally. Opposite-crop duplicates are matched one-to-one by
+IoU, while unmatched people from either crop are retained. All three responses
+must validate before a rich snapshot is published. This mode reuses its
+connection pool and applies one timeout to
+the entire frame; it makes three paid API requests per frame, with no retry.
+`vlm_parallel_strategy: full_frame` instead shares one full image among all
+three calls and divides person output by horizontal regions. It keeps full-image
+coordinates, but still requires visual recall and duplicate checks; it is not the
+default. The September 8 tests found fast but incomplete results in both modes.
+`rich_labeling.vlm_structured_output: true` additionally requests a strict JSON
+schema for compact responses. Each person must have one complete box paired
+with one attribute object. The selected provider must support this schema;
+local coordinate and attribute validation still applies to every response.
+`vlm_require_complete: true` also checks all 13 fields, counts, types, and scopes
+locally before publishing. It is enabled in the experiment, independently of
+upstream schema support. Unknown fields stay null until public conversion.
+
+Verified TLS trust loading now reads the same certifi bundle into memory before
+passing it to OpenSSL. On the tested Windows host this reduced cold client setup
+by about 0.8 seconds while preserving every trusted CA and hostname validation.
+`vlm_keepalive_expiry_seconds` defaults to 60; `vlm_trust_env` defaults to true.
+`vlm_http2: true` is available after installing `pip install -e '.[vlm]'`, but is
+off by default because the measured HTTP/2 results did not consistently beat
+HTTP/1.1. Observers now distinguish TCP/TLS, content generation, DONE and EOF;
+transport tracing is opt-in through the benchmark runner.
+
+`rich_labeling.vlm_prompt_cache: true` opts into explicit prompt caching on
+compatible routes. It places the fixed text in a separate message before the
+changing frame: on the tested Alibaba route, a breakpoint inside a message
+containing both text and image cached the whole image too. The separate-message
+layout produced 1,320 cached tokens across different frames with the final
+prompt, without padding. Caching is off by default because that layout also
+changed annotation recall in testing. Check actual `cached_tokens`; support,
+minimum prefix size, and server scheduling depend on the upstream provider.
+
+The current target is **under 3 seconds for the complete, valid frame result**.
+September 8 tests still did not establish an accurate, reliable configuration
+within that target. The final configuration excludes Anthropic, OpenAI, Google,
+CoreWeave and Novita, and pins Qwen to Alibaba without fallback. The current
+measurement host exits through Taiwan, so these are not Hong Kong egress timings.
+September 6 Hong Kong tests also missed their earlier 2.5-second target: responses took
+4–8 seconds, while faster replies often omitted people/objects or failed the
+contract. The experiment now has an 8-second request deadline and a 10-second
+display buffer; these bound waiting and align video, not improve inference.
+It remains experimental, with visible attribute and box errors. See
+[the latest measured results](VLM_LATENCY_REPORT_20260908.md) and
+[the earlier report](VLM_LATENCY_REPORT_20260906.md).
+
+To reproduce the final client test with an authorized local frame and the
+configured OpenRouter key (the runner alternates original/mirrored pixels):
+
+```bash
+python tools/vlm_native_probe.py --image /path/to/frame.jpg \
+  --env-file /path/to/.env --output tmp/native-probe.jsonl
+```
+
+`tools/vlm_speed_matrix.py` compares model/provider parameters, HTTP versions,
+streaming versus JSON responses, TLS loading, image size, and parallel strategies.
+It also offers a diagnostic named-field wire format for providers that do not
+support tuple schemas. `protocol_valid` is not visual accuracy; failures stay in
+the denominator, and missing usage is marked rather than reported as zero cost.
+The reusable `tools/vlm_speed_cases.hk.json` pins Qwen/Alibaba and Seed/Seed FP8
+with fallback disabled. Seed remains experimental and needs Hong Kong egress
+validation. Raw observations are under the ignored `tmp/vlm-latency-20260908/`
+directory; historical cases there may predate the current provider exclusions.
+
+`tools/vlm_latency_probe.py` contains the model, output-format, and cache-boundary
+controls used for diagnosis. Its repeated-prefix option is a diagnostic control
+only. `tools/vlm_packed_probe.py` is an unsuccessful experimental wire format,
+retained for reproducing the measurements; it is not used by the service.
+
+Coordinator status reports `last_queue_seconds`,
+`last_latency_seconds` (inference), and `last_total_latency_seconds` (submission
+through inference completion); none includes the configured display buffer.
+`last_attempt_frame_sequence` and `last_attempt_succeeded` identify the attempt
+these timings describe, while `last_frame_sequence` remains the last success.
 
 PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
 itself grant rights to every pretrained weight or its training data. Before
@@ -398,10 +501,9 @@ curl --fail-with-body -X POST --data-binary @person.jpg \
   'http://127.0.0.1:8080/v1/faces/gallery/person_01?name=Person%20One'
 curl --fail-with-body -X DELETE \
   http://127.0.0.1:8080/v1/faces/gallery/person_01
-# List captured strangers, then retrieve a returned stranger_id.
-curl http://127.0.0.1:8080/v1/faces/strangers
-curl --output stranger.jpg \
-  http://127.0.0.1:8080/v1/faces/strangers/stranger-ID/photo
+# List continuous events, then use a returned evidence.available.url.
+curl http://127.0.0.1:8080/v1/events
+curl --output event.mp4 http://127.0.0.1:8080/v1/events/EVENT_ID/video
 docker compose logs --tail=200 harness
 docker volume inspect goodvision-harness_face-models goodvision-harness_face-data
 docker compose exec harness sh -lc \
@@ -411,11 +513,10 @@ docker compose exec harness sh -lc \
 In Compose, authorized face weights belong under
 `/models/models/<configured-profile>/` in the persistent `face-models`
 volume, while the gallery is `/data/face-gallery.json` in the persistent
-`face-data` volume. Stranger embeddings and one representative face crop per
-ID are retained in `/data/face-gallery-strangers.json` and
-`/data/stranger-captures/` on that same volume. Repeated unknown faces whose
-embeddings meet the configured threshold reuse the same `stranger_id`; live
-result objects include that ID and its `photo_url`. `docker compose down` preserves both volumes;
+`face-data` volume. Continuous event metadata and short MP4 evidence live in
+`/data/event-evidence/`, with 7-day/10-GiB retention. Stranger crop and persistent
+stranger-embedding capture have been removed. See [event evidence](EVENT_EVIDENCE.md)
+for APIs, identity continuity, revisions and legacy-file cleanup. `docker compose down` preserves both volumes;
 `docker compose down -v` deletes them. Back up the gallery volume before
 destructive maintenance. Optional local-file initialization is for the declared
 demo only. A customer deployment
@@ -485,8 +586,8 @@ enabled for that session).
 | `GET /v1/status` | Sanitized source, pipeline, counters, and delivery state. |
 | `POST /v1/sessions/start` | Start one network-stream session; JSON accepts the optional `features` array. Browser cameras start over `/ws`. |
 | `POST /v1/sessions/stop` | Stop the active session. |
-| `GET /v1/faces/strangers` | List retained stranger IDs and their photo URLs. |
-| `GET /v1/faces/strangers/{stranger_id}/photo` | Return one retained face crop as `image/jpeg`. |
+| `GET /v1/events` | List persistent continuous events and available video evidence. |
+| `GET /v1/events/{event_id}/video` | Play available MP4 evidence with HTTP Range support. |
 | `GET /v1/results/latest` | Latest customer-facing analysis JSON. Returns 404 before the first result. |
 | `GET /v1/results/events` | Server-Sent Events stream of analysis JSON with bounded in-memory replay. |
 | `GET /v1/results/<feature>/latest` | Independent latest result for one of the five feature names. |
@@ -641,9 +742,14 @@ even when they filter `judgments` and `objects` to one capability.
 Results use schema version `2`; the original v1 schema remains unchanged for
 archived records. Strict consumers must adopt the v2 schema before upgrading
 the producer. The HTTP endpoint paths remain `/v1/...`.
-`analysis_complete` is false and `missing_event_labels` lists skipped or failed
-capabilities when a frame is only partially analyzed. Such descriptions state
+`analysis_complete` is false and `missing_event_labels` lists capabilities absent
+from that message, including the independently published other branch in a normal
+mixed session. Missing does not imply negative or failed. Such descriptions state
 `Analysis incomplete` and retain any positive evidence, never reporting all-clear.
+Use feature-specific latest endpoints or consume all SSE messages to read both
+branches. Source times can interleave across branches; apply freshness per capability.
+The global latest endpoint returns one unchanged observation with the newest source
+time, not a combination of different frames. See [API delivery](API_DELIVERY.md).
 Live model responses must pass Chinese / English format validation; a malformed
 or monolingual description fails that inference branch. This validates language
 structure, not semantic translation equivalence.
@@ -654,9 +760,11 @@ in fullscreen, ignores older results, and resets when the session changes or
 stops. Its text follows the latest analysis result; the annotated video retains
 its configured display delay.
 
-In `fixed_five_events` mode, `judgments` always has exactly these labels in
-this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`. Each status is
-independent, so any number may be true in the same result. Negative judgments
+Legacy synchronous `fixed_five_events` results contain these labels in
+this order: `fight`, `smoking`, `fall`, `weapon`, `stranger`; independent mixed
+streaming messages contain only their completed branch's labels, in that order.
+Each status is independent, so smoking and stranger may both be positive.
+Negative judgments
 use an empty `object_ids` array; every positive judgment references the boxes
 that support that event. The `stranger` status comes from a mismatch against
 the local known-person gallery, not merely from seeing a person.
@@ -763,7 +871,7 @@ INFERENCE_API_KEY=
 | `INFERENCE_PROVIDER` | 默认模型 | 使用的渠道密钥 |
 | --- | --- | --- |
 | `aiclub` | `qwen3.5-plus` | `AICLUB_API_KEY` |
-| `openrouter` | `qwen/qwen3.5-35b-a3b` | `OPENROUTER_API_KEY` |
+| `openrouter` | `qwen/qwen3.5-35b-a3b:nitro` | `OPENROUTER_API_KEY` |
 | `dashscope` | `qwen3.5-plus` | `DASHSCOPE_API_KEY` |
 
 例如，将 `INFERENCE_PROVIDER=dashscope` 即可改走 DashScope。测试其他模型时，
@@ -796,7 +904,7 @@ inference_service:
   provider: openrouter
   providers:
     openrouter:
-      model: qwen/qwen3.5-35b-a3b
+      model: qwen/qwen3.5-35b-a3b:nitro
       request_parameters:
         reasoning:
           enabled: false
@@ -858,26 +966,28 @@ at `FACE_GALLERY_PATH`.
 `face.min_face_size` is the live-recognition floor in analysis-frame pixels.
 Small faces can positively match an enrolled person, but an unmatched face
 under 60 pixels, a low-confidence detection, or an extreme face angle is
-`unusable`, not evidence of a stranger. Live sessions require three consecutive
-reliable mismatches on the same track before raising an alert or retaining a
-stranger crop. Unclear or missing observations reset that confirmation count.
-After a stranger is confirmed, the same track can retain its label and existing
-capture for up to three seconds through unclear or missing faces. Without a
-recent body track, a missing face can be held for at most 1.5 seconds. A known
-match or a broken/ambiguous body track clears the retained stranger immediately.
-When CPU scheduling skips the face branch of a mixed result, the display keeps
-the latest stranger judgment for up to three seconds instead of treating the
-omission as a negative. An explicit negative clears it immediately; original
-per-frame JSON results remain unchanged.
+`unusable`, not evidence of a stranger. New unknown identities still require
+three reliable observations. A known identity remains attached to a reliable
+person trajectory through side views and ordinary mismatches; one contradictory
+frame cannot replace it. Source-time motion and one-to-one associations bridge
+brief gaps up to three seconds. Predicted boxes are not new evidence. Ambiguous
+crossings, prolonged absence and sustained identity conflicts require reconfirmation.
+No stranger photos or persistent stranger embeddings are created.
 
-Each live session keeps its own identity history. A confirmed name may be held
-for up to eight seconds through poor face observations, using an unambiguous
-face-box association or a recent, continuous Paddle person track. Track gaps,
-ambiguous people, deleted gallery identities, and new sessions prevent identity
-inheritance. `identity_source=track_history` and `identity_age_seconds` distinguish
-this temporary continuity from a fresh face match. A person first seen from
-behind or too far away remains unconfirmed until a usable face is visible.
-`face.enrollment_min_face_size` remains stricter to protect gallery sample quality.
+Each live session keeps its own identity history and stable `subject_id` values.
+`person_id` remains the enrolled identity. GPU detector tracking operates independently
+of optional attributes; non-GPU event requests may supply compact person locations.
+The immediate analysis result never waits for either sidecar or archive work.
+See [event evidence and continuity](EVENT_EVIDENCE.md) for exact behavior and APIs.
+The [low-resolution validation report](LOW_RESOLUTION_VALIDATION.md) records real
+CPU face and public-media model results, actor-output latency, observed misses,
+crossing tradeoffs, and separately tested video-evidence behavior.
+The [stranger/LLM interoperability report](STRANGER_LLM_INTEROP_VALIDATION.md)
+records the retained 8081 observations, the reproduced scheduling defect,
+independent-branch regression tests and local HTTP validation. Mixed-session
+`/v1/status` includes `pipeline.branches.stranger.last_completion.face` diagnostics
+that distinguish raw detection quality from identity confirmation; they contain
+no names, persistent stranger features or photos.
 
 The harness does not grant rights to third-party face-analysis files. For
 customer or commercial use, supply files whose license covers the intended use.
@@ -917,6 +1027,12 @@ matches the local matcher; `matched_memory_ids` is additional reference metadata
 | Unknown face only | `true` | `[]` |
 | Known and unknown faces | `true` | Known IDs |
 
+In fixed-five or selected-feature analysis, known faces are retained in `objects`
+with `attributes.person_id` and are not referenced by stranger alerts. When the
+selected safety checks are complete and none detects an event, the annotated
+video draws these faces in green with their **person ID**. A detected or missing
+safety result suppresses the green identity boxes; stranger alerts remain red.
+
 The fixed-five mode and the face diagnostics mode both use local face analysis by
 default. Enable remote reference memory only as an explicit legacy
 fallback/experiment by setting
@@ -954,8 +1070,13 @@ docker build --platform linux/amd64 -f workers/paddle_rich_label/Dockerfile.gpu 
 ```
 
 The customer main image fixes `HARNESS_INFERENCE_PROFILE=customer-standard`.
-That internal preset retains OpenRouter, the DeepInfra backend only, and
-`qwen/qwen3.5-35b-a3b`, with fallback disabled. Delivery Compose does not forward
+That internal preset uses OpenRouter and `qwen/qwen3.5-35b-a3b:nitro`.
+All A-H selections also use their base model's `:nitro` variant, allowing
+throughput-based provider selection and fallbacks while excluding Novita and
+CoreWeave. Existing IDs and saved selections retain their base models;
+the eight slots contain six distinct models now that providers are not pinned.
+See the [Nitro documentation](https://openrouter.ai/docs/guides/routing/model-variants/nitro).
+Delivery Compose does not forward
 provider, model or endpoint overrides; the development target keeps configurable
 routing. Customer configuration, API profiles and UI continue to use neutral
 feature names. Saved credentials are scoped to their service: do not silently
