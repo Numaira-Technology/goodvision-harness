@@ -646,6 +646,13 @@ def test_vlm_callbacks_follow_deployment_changes_and_session_override(
         runtime.update_deployment_settings({"clear_api_key": True})
         assert captured["api_key"]() is None
 
+        if not session_dry_run:
+            with pytest.raises(RuntimeError, match="missing model API key"):
+                runtime.start_camera(
+                    dry_run=False, analysis_mode="event", owner="rich-vlm-test",
+                )
+            runtime.update_deployment_settings({"api_key": "annotation-test-key"})
+
         runtime.start_camera(
             dry_run=session_dry_run,
             analysis_mode="event",
