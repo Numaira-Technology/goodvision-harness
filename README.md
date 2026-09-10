@@ -292,8 +292,8 @@ September 6 Hong Kong tests also missed their earlier 2.5-second target: respons
 contract. The experiment now has an 8-second request deadline and a 10-second
 display buffer; these bound waiting and align video, not improve inference.
 It remains experimental, with visible attribute and box errors. See
-[the latest measured results](VLM_LATENCY_REPORT_20260908.md) and
-[the earlier report](VLM_LATENCY_REPORT_20260906.md).
+[the latest measured results](docs/reports/VLM_LATENCY_REPORT_20260908.md) and
+[the earlier report](docs/reports/VLM_LATENCY_REPORT_20260906.md).
 
 To reproduce the final client test with an authorized local frame and the
 configured OpenRouter key (the runner alternates original/mirrored pixels):
@@ -1044,10 +1044,10 @@ Each live session keeps its own identity history and stable `subject_id` values.
 of optional attributes; non-GPU event requests may supply compact person locations.
 The immediate analysis result never waits for either sidecar or archive work.
 See [event evidence and continuity](EVENT_EVIDENCE.md) for exact behavior and APIs.
-The [low-resolution validation report](LOW_RESOLUTION_VALIDATION.md) records real
+The [low-resolution validation report](docs/validation/LOW_RESOLUTION_VALIDATION.md) records real
 CPU face and public-media model results, actor-output latency, observed misses,
 crossing tradeoffs, and separately tested video-evidence behavior.
-The [stranger/LLM interoperability report](STRANGER_LLM_INTEROP_VALIDATION.md)
+The [stranger/LLM interoperability report](docs/validation/STRANGER_LLM_INTEROP_VALIDATION.md)
 records the retained 8081 observations, the reproduced scheduling defect,
 independent-branch regression tests and local HTTP validation. Mixed-session
 `/v1/status` includes `pipeline.branches.stranger.last_completion.face` diagnostics
