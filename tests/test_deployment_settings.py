@@ -69,6 +69,81 @@ def test_legacy_api_key_record_is_migrated_to_generic_name(tmp_path: Path) -> No
     assert not legacy.exists()
 
 
+@pytest.mark.parametrize("seconds", [0, 3.75, 30])
+def test_buffer_delay_api_applies_while_running_and_survives_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seconds: float,
+) -> None:
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
+    config = load_config(ROOT / "config.yaml")
+    runtime = HarnessRuntime(config, deployment_store=store)
+
+    class RunningSession:
+        running = True
+
+    session = RunningSession()
+    with TestClient(create_app(lambda: runtime)) as client:
+        initial = client.get("/v1/deployment/settings").json()
+        assert initial["buffer_delay_seconds"] == 2.5
+        session_dry_run = not runtime.dry_run
+        runtime._update_state(dry_run=session_dry_run)
+        runtime._session = session  # type: ignore[assignment]
+        try:
+            response = client.put(
+                "/v1/deployment/settings", json={"buffer_delay_seconds": seconds},
+            )
+            assert response.status_code == 200
+            assert runtime._session is session
+            assert runtime._state["dry_run"] is session_dry_run
+            assert response.json()["buffer_delay_seconds"] == seconds
+            assert runtime._delayed_overlay.stats()["buffer_delay_seconds"] == seconds
+            info = client.get("/v1/ui/info").json()
+            assert info["annotated_output"]["buffer_delay_seconds"] == seconds
+            mixed = client.put(
+                "/v1/deployment/settings",
+                json={"buffer_delay_seconds": 1, "dry_run": True},
+            )
+            assert mixed.status_code == 409
+            assert store.load().buffer_delay_seconds == seconds
+        finally:
+            runtime._session = None
+
+    restored = HarnessRuntime(config, deployment_store=store)
+    assert restored.deployment_settings()["buffer_delay_seconds"] == seconds
+    assert restored._delayed_overlay.stats()["buffer_delay_seconds"] == seconds
+    restored.update_deployment_settings({"autostart": False})
+    assert store.load().buffer_delay_seconds == seconds
+
+
+def test_old_deployment_record_keeps_configured_buffer_default(tmp_path: Path) -> None:
+    store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
+    store.save(DeploymentSettings(stream_url="", dry_run=True, autostart=False))
+    assert "buffer_delay_seconds" not in json.loads(store.path.read_text())
+    config = load_config(ROOT / "config.yaml")
+    config = replace(config, display=replace(config.display, delay_seconds=4.25))
+    runtime = HarnessRuntime(config, deployment_store=store)
+    assert runtime.deployment_settings()["buffer_delay_seconds"] == 4.25
+    assert runtime._delayed_overlay.stats()["buffer_delay_seconds"] == 4.25
+    runtime.update_deployment_settings({"autostart": False})
+    assert store.load().buffer_delay_seconds is None
+
+
+@pytest.mark.parametrize(
+    "invalid", [-1, 30.1, True, "3", None, float("nan"), float("inf"), 10 ** 400],
+)
+def test_invalid_buffer_delay_does_not_change_disk_or_runtime(
+    tmp_path: Path, invalid: object,
+) -> None:
+    store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
+    original = DeploymentSettings("", True, False, buffer_delay_seconds=3.5)
+    store.save(original)
+    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"), deployment_store=store)
+    with pytest.raises(ValueError, match="buffer_delay_seconds"):
+        runtime.update_deployment_settings({"buffer_delay_seconds": invalid})
+    assert store.load() == original
+    assert runtime._delayed_overlay.stats()["buffer_delay_seconds"] == 3.5
+
+
 def test_stored_api_keys_are_independent_for_each_provider(tmp_path: Path) -> None:
     store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
     providers = ("aiclub", "openrouter", "dashscope")

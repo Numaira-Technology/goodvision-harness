@@ -3,9 +3,11 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
+import goodvision_harness.delayed_overlay as overlay_module
 from goodvision_harness.contracts import (
     AnalysisResult,
     EventJudgment,
@@ -637,6 +639,107 @@ def test_delayed_composer_preserves_frame_order_and_reorders_results() -> None:
         )
     finally:
         composer.close()
+
+
+def test_shorter_delay_wakes_queued_frames_and_preserves_annotations() -> None:
+    published: list[FramePacket] = []
+    done = threading.Event()
+
+    def publish(packet: FramePacket) -> None:
+        published.append(packet)
+        if len(published) == 3:
+            done.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=2.5, max_gap_seconds=0.2, output_fps=15,
+        render=lambda jpeg, analysis: jpeg, publish=publish,
+    )
+    try:
+        composer.submit_result(_result(
+            timestamp=0, frame_index=0, message_id="anchor",
+            bbox=(0.1, 0.1, 0.3, 0.3),
+        ))
+        for index in range(3):
+            composer.submit_frame(_packet(index, index * 0.1))
+        assert not done.is_set()
+        composer.set_delay_seconds(0)
+        assert done.wait(1)
+        assert [packet.frame_sequence for packet in published] == [0, 1, 2]
+        assert all(packet.stream_delay_seconds == 0 for packet in published)
+        assert all(packet.analysis_message_id == "anchor" for packet in published)
+    finally:
+        composer.close()
+
+
+def test_longer_delay_retimes_existing_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 100.0
+    monkeypatch.setattr(overlay_module, "time", SimpleNamespace(monotonic=lambda: now))
+    done = threading.Event()
+    composer = DelayedOverlayComposer(
+        delay_seconds=2.5, max_gap_seconds=0.2, output_fps=15,
+        render=lambda jpeg, analysis: jpeg, publish=lambda packet: done.set(),
+    )
+    try:
+        composer.submit_frame(_packet(0, 0))
+        composer.set_delay_seconds(5)
+        with composer._condition:
+            now = 102.5
+            composer._condition.notify_all()
+        assert not done.wait(0.05)
+        with composer._condition:
+            now = 105.0
+            composer._condition.notify_all()
+        assert done.wait(1)
+    finally:
+        composer.close()
+
+
+def test_delay_change_does_not_relabel_an_inflight_render() -> None:
+    rendering, release, done = threading.Event(), threading.Event(), threading.Event()
+    published: list[FramePacket] = []
+
+    def render(jpeg, selection, timestamp, sequence):
+        rendering.set()
+        assert release.wait(1)
+        return jpeg
+
+    def publish(packet):
+        published.append(packet)
+        done.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0, max_gap_seconds=0.2, output_fps=15,
+        render=lambda jpeg, analysis: jpeg, publish=publish, compose=render,
+    )
+    try:
+        composer.submit_frame(_packet(0, 0))
+        assert rendering.wait(1)
+        composer.set_delay_seconds(3)
+        release.set()
+        assert done.wait(1)
+        assert published[0].stream_delay_seconds == 0
+        assert composer.stats()["buffer_delay_seconds"] == 3
+    finally:
+        release.set()
+        composer.close()
+
+
+def test_delay_resize_bounds_the_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    composer = DelayedOverlayComposer(
+        delay_seconds=0, max_gap_seconds=0.2, output_fps=10,
+        render=lambda jpeg, analysis: jpeg, publish=lambda packet: None,
+    )
+    monkeypatch.setattr(composer, "start", lambda: None)
+    composer.set_delay_seconds(10)
+    for index in range(100):
+        composer.submit_frame(_packet(index, index * 0.1))
+    assert composer.stats()["frames_buffered"] == 100
+    composer.set_delay_seconds(0)
+    assert composer.stats()["frames_buffered"] == 20
+    assert composer.stats()["frames_dropped"] == 80
+    assert [frame.packet.frame_sequence for frame in composer._frames] == list(
+        range(80, 100)
+    )
 
 
 def test_delayed_composer_accepts_late_anchors_for_future_frames() -> None:

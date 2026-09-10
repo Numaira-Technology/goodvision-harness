@@ -16,10 +16,10 @@ are emitted. Existing resources with the reserved names cause an early failure.
 [CmdletBinding()]
 param(
     [ValidateNotNullOrEmpty()]
-    [string] $HarnessImage = 'goodvision-harness:2026.09.10-full.2',
+    [string] $HarnessImage = 'goodvision-harness:2026.09.10-full.3',
 
     [ValidateNotNullOrEmpty()]
-    [string] $WorkerImage = 'goodvision-rich-label-worker:2026.09.10-full.2'
+    [string] $WorkerImage = 'goodvision-rich-label-worker:2026.09.10-full.3'
 )
 
 Set-StrictMode -Version Latest

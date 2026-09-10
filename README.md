@@ -459,6 +459,14 @@ Stop the active session before saving. Saved values become effective for the
 next session and remain authoritative after container replacement or restart;
 the API key and complete stream URL are never returned by the settings API.
 
+Under **Output debug & delivery checks**, **视频缓存（秒）** adjusts the display
+buffer from 0 to 30 seconds (decimals supported; default 2.5). Click
+**应用并保存缓存时间** to apply it during an active session and retain it across
+restarts. Increasing the delay briefly pauses output while the buffer fills;
+decreasing it lets queued frames catch up. A writable deployment data volume is
+required. The equivalent API request is `PUT /v1/deployment/settings` with
+`{"buffer_delay_seconds": 3.5}`; only a buffer-only update is allowed while running.
+
 Open the UI through `http://127.0.0.1:8080/` on the server, or through the SSH
 tunnel / HTTPS reverse proxy described above. To change a running source, press
 **Stop**, select **Network stream**, and either leave the URL blank to use the
@@ -782,7 +790,8 @@ multipart JPEG in `GET /v1/video/stream.mjpeg` carry
 exact evidence feed remains at model-result cadence.
 
 For the display path, the container separately buffers the continuous source
-frames for 2.5 seconds. Results at 2.5 FPS act as bbox keyframes on the same
+frames for 2.5 seconds by default (adjustable in the console). Results at 2.5 FPS
+act as bbox keyframes on the same
 media timeline. Between two compatible keyframes, the service linearly moves
 the box. If the next result is late or a sampled request is dropped, the last
 analyzed state is latched onto every display frame; only a later keyframe may

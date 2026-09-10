@@ -9,15 +9,15 @@ Windows Docker Desktop 使用 Linux 容器模式，启动命令可写为 `py -3 
 
 | 服务 | 镜像 | 功能 |
 | --- | --- | --- |
-| 主服务 | `goodvision-harness:2026.09.10-full.2` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
-| 感知服务 | `goodvision-rich-label-worker:2026.09.10-full.2` | 人物/物品检测、会话内跟踪、异步行人属性 |
+| 主服务 | `goodvision-harness:2026.09.10-full.3` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
+| 感知服务 | `goodvision-rich-label-worker:2026.09.10-full.3` | 人物/物品检测、会话内跟踪、异步行人属性 |
 
 控制台保留当前 8 个模型 **A–H** 的选择与保存。吸烟判断要求可辨认烟具和可见互动；
 陌生人标注在连续视频帧中保持跟踪。行人属性标注不显示性别。
 
 ## 1. 交付文件与模型
 
-完整包使用 `goodvision-full-2026.09.10.2.tar`，包含上述两个镜像。
+完整包使用 `goodvision-full-2026.09.10.3.tar`，包含上述两个镜像。
 
 本版视频叠字内置中文字体，离线运行无需安装系统字体。状态栏仅显示 `CLEAR`
 或已检测事件；分析尚未完成、结果过期或人脸不可用时隐藏状态，不将缺失判断当成无异常。
@@ -36,35 +36,35 @@ GPU 感知功能还需要目标检测高精度模型包和属性标准模型包�
 留空时使用选定档位的缓存。人脸程序是否允许下载由 `config.delivery.yaml` 中的
 `face.allow_model_download` 决定。无 GPU 模式不加载感知模型。
 
-### 网络摄像头自动选取画面
+### 网络摄像头手动选择单目 / 双目
 
-`config.delivery.yaml` 中的 `stream.frame_crop` 默认改为 `auto`。连接开始时短暂
-检查连续画面：只有多帧都确认左右两半是同一场景的双目视图时，才选取左半幅；
-单目、全景、低纹理或无法确认的输入保留全画面。宽高比本身不会触发裁剪。
+`2026.09.10-full.3` 已包含手动单目 / 双目选择、控制台缓存设置和 API key 配置。
+网络摄像头不再自动识别或等待探测帧。
 
-自动判断通常在开始后约 0.3–1 秒完成；最多检查到第 20 帧，因此低帧率输入可能
-等待下一帧才能结束判断。判定前不发布预览或分析帧，避免跟踪、叠框和事件视频混用
-两套坐标。结果在本次连接内固定，重新连接或切换视频源会重新判断。
+在控制台网络视频源旁选择“单目 · 完整画面”或“双目 · 使用左半幅”。双目指
+左右并排输入。需要重启后沿用时，在 Deployment defaults 中保存摄像头类型；
+视频源旁的选择只作用于本次会话。运行期间类型锁定，先停止再切换并启动。
+从第一帧开始使用所选画面，预览、分析、叠框及事件视频始终使用相同坐标。
+文件和浏览器摄像头输入保持全画面。
 
-此功能针对左右并排双目流，无法保证在黑暗、极远景、严重遮挡或特殊拼接布局下识别。
-不确定时保留完整画面。需要确定行为时，可手动设为 `none`（全画面）、`left_half`
-或 `right_half`。文件和浏览器摄像头输入保持原有全画面行为。
-如果保留了旧配置文件，请将其中的 `frame_crop: left_half` 改为 `frame_crop: auto`
-并重启服务；显式手动设置会继续生效。可在 `/v1/status` 的 `stream.crop_selection`
-查看实际选择和判定原因。
+新版 `config.delivery.yaml` 默认 `stream.frame_crop: none`。旧配置中的 `auto`
+也按完整画面处理，不会再触发识别；旧 `left_half` / `right_half` 显式配置仍兼容。
+保存的 `camera_layout` 优先于配置文件，单次启动的同名字段优先于保存值。
+持久化设置使用现有数据卷，无需新增依赖、环境变量或挂载。
+`/v1/status` 的 `stream.camera_layout` 和 `stream.crop_selection` 可查看本次选择。
 
 ## 2. 加载并启动
 
 在完整交付包目录执行：
 
 ```bash
-docker load -i goodvision-full-2026.09.10.2.tar
-cp -n .env.example .env
-chmod 600 .env
+docker load -i goodvision-full-2026.09.10.3.tar
 python3 start_delivery.py
 ```
 
-已有 `.env` 和部署设置应保留。启动脚本自动查找随包配置文件，检查 GPU 能否供容器
+无需创建 `.env` 即可启动控制台。需要自定义监听地址、端口或其他环境配置时，可复制
+`.env.example` 为 `.env` 后修改；已有 `.env` 和部署设置应保留。
+启动脚本自动查找随包配置文件，检查 GPU 能否供容器
 使用，并选择对应的启动配置：
 
 - 有可用 GPU：启动本版主服务与感知服务，启用 GPU 加速。
@@ -75,9 +75,21 @@ python3 start_delivery.py
 GPU 镜像和组件始终保留在完整交付包中。感知服务运行在另一台机器时，是否启用标注
 以该服务实际确认的 GPU 能力为准。
 
-默认主服务端口为 `8080`。在浏览器打开 `http://服务器地址:8080`，设置视频源、
-推理服务凭据及模型 A–H。凭据可通过控制台保存，也可填入 `.env` 的
-`INFERENCE_API_KEY`。首次安装默认测试模式；已有持久设置继续使用原模式。
+默认主服务端口为 `8080`，无 `.env` 时仅监听本机，可打开 `http://localhost:8080`。
+需要局域网访问时，在 `.env` 中设置 `HARNESS_BIND_ADDRESS=0.0.0.0`。
+首次安装保持待机和测试模式，不自动连接视频源，先完成以下配置：
+
+1. 在控制台填写 API key，点击“保存 API key”。无需修改容器或创建 `.env`，保存后立即可用。
+2. 设置视频源、单目 / 双目及模型 A–H；正式检测需取消 Test mode，再启动所选检测。
+3. 需要重启后自动检测时，在默认设置中取消 Test mode、勾选自动启动并保存。
+
+密钥写入现有 `face-data` 数据卷，不会通过设置接口回显；容器重建后仍可读取。
+尚未配置密钥时，正式检测会明确提示先在控制台保存 API key，控制台始终可用。
+仅本地人脸检测和测试模式无需模型 API key。已有持久设置继续使用原模式与自动启动选择。
+`INFERENCE_API_KEY` 环境变量仍可用于预配置，但不再是使用控制台的前置条件。
+
+视频缓存支持在控制台设置 0–30 秒（可含小数），点击应用后立即生效并保存到同一数据卷，
+无需停止会话。新版本页面与后端必须同时升级，以支持 `buffer_delay_seconds` 设置。
 
 项目名保持 `goodvision-harness`，继续使用 `face-models`、`face-data`、`rich-models`
 三个持久卷。升级时保留模型、已知人脸、连续事件视频证据与部署设置，不执行 `down -v`。
@@ -87,9 +99,9 @@ GPU 镜像和组件始终保留在完整交付包中。感知服务运行在另�
 在具备可用 GPU 且模型已准备好的服务器上，使用随包配置运行：
 
 ```bash
-docker compose --env-file .env -f compose.yaml -f compose.gpu.yaml --profile gpu run --rm --no-deps harness python tools/check_runtime.py
-docker compose --env-file .env -f compose.yaml -f compose.gpu.yaml --profile gpu run --rm --no-deps harness python tools/check_face.py
-docker compose --env-file .env -f compose.yaml -f compose.gpu.yaml --profile gpu run --rm --no-deps rich-label-worker python tools/check_perception.py
+docker compose -f compose.yaml -f compose.gpu.yaml --profile gpu run --rm --no-deps harness python tools/check_runtime.py
+docker compose -f compose.yaml -f compose.gpu.yaml --profile gpu run --rm --no-deps harness python tools/check_face.py
+docker compose -f compose.yaml -f compose.gpu.yaml --profile gpu run --rm --no-deps rich-label-worker python tools/check_perception.py
 ```
 
 运行环境自检核对依赖组合。人脸自检验证检测与识别实际使用 GPU；感知自检验证

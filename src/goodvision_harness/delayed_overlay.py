@@ -206,8 +206,8 @@ class DelayedOverlayComposer:
         compose: Callable[[bytes, OverlaySelection, float, int], bytes]
         | None = None,
     ) -> None:
-        if delay_seconds < 0:
-            raise ValueError("delay_seconds must be non-negative")
+        if not math.isfinite(delay_seconds) or delay_seconds < 0:
+            raise ValueError("delay_seconds must be finite and non-negative")
         if max_gap_seconds <= 0:
             raise ValueError("max_gap_seconds must be positive")
         if output_fps <= 0:
@@ -249,6 +249,27 @@ class DelayedOverlayComposer:
             "left_message_id": None,
             "right_message_id": None,
         }
+
+    def set_delay_seconds(self, delay_seconds: float) -> None:
+        """Retiming queued frames keeps their order and existing analysis anchors."""
+        if not math.isfinite(delay_seconds) or delay_seconds < 0:
+            raise ValueError("delay_seconds must be finite and non-negative")
+        with self._condition:
+            difference = float(delay_seconds) - self.delay_seconds
+            self.delay_seconds = float(delay_seconds)
+            self._max_buffered_frames = max(
+                8, math.ceil((self.delay_seconds + 2.0) * self.output_fps),
+            )
+            self._frames = deque(
+                replace(frame, ready_at=frame.ready_at + difference)
+                for frame in self._frames
+            )
+            while len(self._frames) > self._max_buffered_frames:
+                self._frames.popleft()
+                self._stats["frames_dropped"] += 1
+            self._stats["buffer_delay_seconds"] = self.delay_seconds
+            self._stats["frames_buffered"] = len(self._frames)
+            self._condition.notify_all()
 
     def start(self) -> None:
         with self._condition:
@@ -362,6 +383,7 @@ class DelayedOverlayComposer:
                     self._condition.wait(remaining)
                     continue
                 buffered = self._frames.popleft()
+                delay_seconds = self.delay_seconds
                 results = tuple(self._results)
                 self._stats["frames_buffered"] = len(self._frames)
 
@@ -402,7 +424,7 @@ class DelayedOverlayComposer:
                 analysis_message_id=selection.left_message_id,
                 next_analysis_message_id=selection.right_message_id,
                 annotation_mode=mode,
-                stream_delay_seconds=self.delay_seconds,
+                stream_delay_seconds=delay_seconds,
             )
             with self._condition:
                 if buffered.generation != self._generation or self._closed:

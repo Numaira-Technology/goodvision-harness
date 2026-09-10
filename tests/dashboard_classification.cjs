@@ -43,6 +43,8 @@ function dashboard(){
   const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
   new vm.Script(script); // Parse the complete shipped script, including browser startup.
   vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+    // These tests exercise classification; video transport has separate coverage.
+    openFeed=()=>surfaces();
     state.running=true;state.sessionId="session-1";state.sessionFeatures=detectionEvents;
     state.gallery={ready:true};state.galleryLoading=false;
     globalThis.app={analysis,message,status,reset,renderClassification,state};

@@ -6,9 +6,9 @@ stream:
   # Robot LAN WHEP default. The deployment console can persistently override it.
   url: "webrtc+http://192.168.20.199:1985/rtc/v1/whep/?app=live&stream=livestream"
   whep_headers: {}
-  # Auto-detect side-by-side views at connection start; uncertain/mono feeds
-  # stay full-frame. Manual overrides: none, left_half, right_half.
-  frame_crop: auto
+  # Manual view selection: none = monocular/full frame; left_half = side-by-side stereo.
+  # The console can save the camera type or override it for one session.
+  frame_crop: none
 
 video:
   # Frames sampled from the live stream per second and sent to the model.

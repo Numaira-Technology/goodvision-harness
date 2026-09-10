@@ -92,17 +92,25 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 
 ## 视频状态显示
 
-网络视频源默认采用 `stream.frame_crop: auto`：每次连接开始时检查连续画面，确认是
-左右并排双目视图才取左半幅；单目或证据不足时保留全画面。判断结果在会话中固定，
-所有预览、分析、叠框和事件视频都使用同一坐标系。`frame.width` / `frame.height`
-及归一化框仍对应实际交付画面，而不是裁剪前的双目拼接画面。
+`2026.09.10-full.3` 改为手动选择摄像头类型，不再自动判断或等待探测帧。
 
-`GET /v1/status` 的 `stream.frame_crop` 返回配置模式；新增
-`stream.crop_selection` 返回 `requested`、`effective`、`reason` 和 `probed_frames`。
-自动判断中 `effective=null`、`reason=probing`；确认双目后为
-`effective=left_half`、`reason=stereo_confirmed`；未确认则为
-`effective=none`、`reason=stereo_not_confirmed`。手动模式的 `reason=manual`。
-这是会话诊断信息，不改变 v2 分析消息和判断完整性字段。该信息无需显示在视频上。
+网络视频源的 `camera_layout` 仅接受 `mono`（单目，完整画面）或 `stereo`
+（左右并排双目，使用左半幅）。控制台可保存默认类型，也可在开始前选择本次类型。
+`PUT /v1/deployment/settings` 可提交 `{"camera_layout":"stereo"}` 保存默认值；
+`GET /v1/deployment/settings` 和 `GET /v1/ui/info` 返回当前默认 `camera_layout`。
+`POST /v1/sessions/start` 和 WebSocket 的 `mode=stream` 启动消息接受同名可选字段，
+仅覆盖本次会话；省略时使用保存值，否则使用配置文件。会话启动响应也返回该字段。
+运行中修改已保存类型返回 `409`，切换须停止后重新开始。
+
+配置文件默认 `stream.frame_crop: none`。旧 `auto` 值按 `none` 处理；显式
+`left_half` / `right_half` 仍兼容，保存或提交 `camera_layout` 后以手动选择为准。
+文件和浏览器摄像头输入保持全画面。网络流从第一帧开始固定使用所选画面，预览、
+分析、叠框和事件视频共用同一坐标系；`frame.width` / `frame.height` 及归一化框
+对应实际交付画面。
+
+`GET /v1/status` 的 `stream.camera_layout` 和 `stream.frame_crop` 返回本次选择；
+`stream.crop_selection` 包含 `requested`、`effective`、`reason=manual` 和
+`probed_frames=0`。这些诊断字段不改变 v2 分析消息，也不显示在视频上。
 
 视频状态栏仅显示确认无异常的 `CLEAR` 或当前检测到的事件（例如 `SMOKING`、
 `FALL`、陌生人 `UNKNOWN`）。没有可用的完整判断时隐藏状态栏和描述；不显示
@@ -110,6 +118,23 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 部分分支已有事件时照常显示该事件及其描述。状态文案、对象标签和已知人员姓名
 支持中文，字体已随程序内置。API 的 `analysis_complete`、`missing_event_labels`
 及原始双语 `description` 保持原语义，接入方仍应据此判断结果是否完整。
+
+## 控制台首次配置与缓存设置
+
+`2026.09.10-full.3` 无需 `.env` 即可启动，首次安装保持待机和测试模式。
+控制台“保存 API key”调用 `PUT /v1/deployment/settings`，请求仅包含
+`{"api_key":"<密钥>"}`，不修改视频源、测试模式、自动启动或摄像头类型。
+也可在同一请求提交 `dry_run`、`autostart`、`stream_url`、`camera_layout`。
+密钥立即对下一次检测生效，并保存到现有部署数据卷，容器重建后仍有效。
+设置接口仅返回 `api_key_present` / `api_key_persisted`，不回显密钥。
+正式事件检测缺少密钥时，HTTP 启动接口返回 `400`，WebSocket 返回 `type=error`，
+文案明确提示在控制台保存 API key，无需创建 `.env`；不会启动视频或预热人脸模型。
+测试模式和仅本地人脸检测不要求此密钥。运行中的检测需停止后再保存密钥。
+
+缓存时间通过同一 PUT 接口提交 `{"buffer_delay_seconds":3.5}`，接受 0–30 的有限数字，
+不接受字符串或布尔值。仅修改缓存的请求允许在运行中提交，立即生效并保存；
+若同时包含其他设置，则沿用停止会话后再保存的限制。GET 设置接口返回当前缓存秒数。
+摄像头类型、缓存和密钥共享现有数据卷，无需新增环境变量。
 
 ## 人员身份 person_id 的返回位置
 
