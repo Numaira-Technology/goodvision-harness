@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import cv2
@@ -18,6 +19,8 @@ from goodvision_harness.contracts import (
     GroundedObject,
     NormalizedBBox,
 )
+from goodvision_harness.deployment_settings import DeploymentSettingsStore
+from goodvision_harness.grounding import DETECTION_EVENT_LABELS, DryRunGroundingClient
 from goodvision_harness.rich_labeling import (
     RichLabelObject,
     RichLabelSelection,
@@ -505,5 +508,152 @@ def test_rich_label_queue_failure_does_not_interrupt_live_preview() -> None:
         _, preview = runtime.preview_frames.latest() or (0, None)
         assert preview is not None
         assert preview.jpeg == source
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize("backend", ["paddle", "vlm"])
+@pytest.mark.parametrize("model", [None, "annotation-model"])
+@pytest.mark.parametrize("prompt_cache", [False, True])
+def test_runtime_selects_independent_rich_annotation_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    model: str | None,
+    prompt_cache: bool,
+) -> None:
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config,
+        rich_labeling=replace(
+            config.rich_labeling,
+            enabled=True,
+            backend=backend,
+            model=model,
+            timeout_seconds=18,
+            vlm_max_tokens=8192,
+            vlm_max_image_side=960,
+            vlm_prompt_cache=prompt_cache,
+        ),
+    )
+    created: list[tuple[str, Any, dict[str, Any]]] = []
+
+    def paddle_client(endpoint: str, **kwargs: Any) -> object:
+        created.append(("paddle", endpoint, kwargs))
+        return SimpleNamespace(gpu_ready=lambda: True)
+
+    def vlm_client(settings: Any, **kwargs: Any) -> object:
+        created.append(("vlm", settings, kwargs))
+        return object()
+
+    monkeypatch.setattr(service_module, "RichLabelHTTPClient", paddle_client)
+    monkeypatch.setattr(service_module, "VLMRichLabelClient", vlm_client)
+    runtime = HarnessRuntime(config)
+    try:
+        assert len(created) == 1
+        selected_backend, settings, options = created[0]
+        assert selected_backend == backend
+        if backend == "vlm":
+            assert settings == replace(
+                config.aiclub, timeout_seconds=18, max_retries=0
+            )
+            assert options["model"] == (model or config.inference.model)
+            assert options["max_tokens"] == 8192
+            assert options["max_image_side"] == 960
+            assert options["prompt_cache"] is prompt_cache
+            assert callable(options["api_key"])
+            assert callable(options["dry_run"])
+        else:
+            assert settings == config.rich_labeling.endpoint
+            assert options == {
+                "timeout_seconds": 18, "mode": "tracks", "include_attributes": True,
+            }
+
+        info = runtime.ui_info()
+        assert info["rich_labeling"]["capability"] == "rich_annotation"
+        assert info["rich_labeling"]["enabled"] is True
+        assert "backend" not in info["rich_labeling"]
+        assert "model" not in info["rich_labeling"]
+        assert info["supported_features"] == list(DETECTION_EVENT_LABELS)
+    finally:
+        runtime.stop()
+
+
+def test_vlm_runtime_starts_without_an_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config,
+        rich_labeling=replace(config.rich_labeling, enabled=True, backend="vlm"),
+    )
+    for name in (
+        "INFERENCE_API_KEY",
+        config.aiclub.api_key_env,
+        "AICLUB_API_KEY",
+        "MODEL_API_KEY",
+        "OPENROUTER_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    runtime = HarnessRuntime(config)
+    try:
+        assert runtime.ui_info()["api_key_present"] is False
+        assert runtime.status()["rich_labeling"]["failed"] == 0
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize("session_dry_run", [True, False])
+def test_vlm_callbacks_follow_deployment_changes_and_session_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    session_dry_run: bool,
+) -> None:
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config,
+        rich_labeling=replace(config.rich_labeling, enabled=True, backend="vlm"),
+    )
+    for name in (
+        "INFERENCE_API_KEY",
+        config.aiclub.api_key_env,
+        "AICLUB_API_KEY",
+        "MODEL_API_KEY",
+        "OPENROUTER_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    captured: dict[str, Any] = {}
+
+    def vlm_client(settings: Any, **kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    def event_client(settings: Any, *args: Any, **kwargs: Any) -> Any:
+        return DryRunGroundingClient(settings)
+
+    monkeypatch.setattr(service_module, "VLMRichLabelClient", vlm_client)
+    monkeypatch.setattr(service_module, "build_grounding_client", event_client)
+    runtime = HarnessRuntime(
+        config,
+        deployment_store=DeploymentSettingsStore(tmp_path / "deployment.json"),
+    )
+    try:
+        assert captured["api_key"]() is None
+        runtime.update_deployment_settings(
+            {"api_key": "annotation-test-key", "dry_run": not session_dry_run}
+        )
+        assert captured["api_key"]() == "annotation-test-key"
+        assert captured["dry_run"]() is not session_dry_run
+        runtime.update_deployment_settings({"clear_api_key": True})
+        assert captured["api_key"]() is None
+
+        runtime.start_camera(
+            dry_run=session_dry_run,
+            analysis_mode="event",
+            owner="rich-vlm-test",
+        )
+        assert captured["dry_run"]() is session_dry_run
+
+        runtime.stop_session()
+        assert captured["dry_run"]() is not session_dry_run
     finally:
         runtime.stop()

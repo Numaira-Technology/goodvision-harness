@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import zlib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import cv2
@@ -43,6 +44,54 @@ _APPEARANCE_PRIORITY = (
     "holding",
     "bag",
 )
+_VLM_APPEARANCE_TOKENS = {
+    **_APPEARANCE_TOKENS,
+    "shortsleeve": ("sleeve", "SHORT SLEEVE"),
+    "longsleeve": ("sleeve", "LONG SLEEVE"),
+    "upperstride": ("upper", "STRIPED TOP"),
+    "upperstripe": ("upper", "STRIPED TOP"),
+    "upperlogo": ("upper", "TOP LOGO"),
+    "upperplaid": ("upper", "PLAID TOP"),
+    "uppersplice": ("upper", "MIXED TOP"),
+    "lowerstripe": ("lower", "STRIPED BOTTOM"),
+    "lowerpattern": ("lower", "PATTERNED BOTTOM"),
+    "longcoat": ("lower", "LONG COAT"),
+    "trousers": ("lower", "TROUSERS"),
+    "shorts": ("lower", "SHORTS"),
+    "skirtdress": ("lower", "SKIRT/DRESS"),
+    "glasses": ("glasses", "GLASSES"),
+    "hat": ("hat", "HAT"),
+    "boots": ("boots", "BOOTS"),
+}
+_VLM_APPEARANCE_PRIORITY = (
+    "direction",
+    "sleeve",
+    "upper",
+    "lower",
+    "holding",
+    "bag",
+    "glasses",
+    "hat",
+    "boots",
+)
+_GARMENT_COLORS = frozenset(
+    {
+        "beige", "black", "blue", "brown", "gold", "gray", "green", "grey",
+        "khaki", "maroon", "multicolor", "navy", "olive", "orange", "pink",
+        "purple", "red", "silver", "tan", "teal", "turquoise", "white", "yellow",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _VLMCard:
+    bbox: tuple[int, int, int, int]
+    primary: str
+    detail: str
+    appearance: str
+    color: tuple[int, int, int]
+    alert: str
+    is_person: bool
 
 
 def draw_overlay(
@@ -163,6 +212,7 @@ def draw_rich_overlay(
         except (TypeError, ValueError):
             return rendered
 
+    vlm_cards: list[_VLMCard] = []
     for index, item in enumerate(safe_objects):
         bbox = _rich_bbox_to_pixels(_object_value(item, "bbox"), width, height)
         if bbox is None:
@@ -191,6 +241,13 @@ def draw_rich_overlay(
             track_id=track_id,
             object_id=object_id,
         )
+        if _mapping_value(attributes, "annotation_source") == "vlm":
+            label = _public_hud_text(_object_value(item, "label", "object"))
+            vlm_cards.append(_VLMCard(
+                bbox, primary, detail, appearance, color, alert_text,
+                label.casefold() in _PERSON_LABELS,
+            ))
+            continue
         _draw_rich_card(
             rendered,
             bbox,
@@ -201,6 +258,8 @@ def draw_rich_overlay(
             alert=alert_text,
         )
 
+    if vlm_cards:
+        _draw_vlm_cards(rendered, vlm_cards)
     return rendered
 
 
@@ -517,27 +576,42 @@ def _attribute_items(value: Any) -> tuple[Any, ...]:
 
 
 def _rich_appearance_tokens(attributes: Mapping[str, Any]) -> tuple[str, ...]:
-    """Decode non-garment attributes without presenting clothing guesses."""
+    """Decode public appearance labels, with garment details for VLM output."""
 
     found: list[tuple[str, str]] = []
     covered: set[str] = set()
+    is_vlm = _mapping_value(attributes, "annotation_source") == "vlm"
+    tokens = _VLM_APPEARANCE_TOKENS if is_vlm else _APPEARANCE_TOKENS
+    priority = _VLM_APPEARANCE_PRIORITY if is_vlm else _APPEARANCE_PRIORITY
     fields = (
         ("estimated_direction", "direction"),
         ("bag_type", "bag"),
     )
+    if is_vlm:
+        fields += (
+            ("sleeve_type", "sleeve"),
+            ("upper_style", "upper"),
+            ("lower_styles", "lower"),
+        )
     for field, category in fields:
         if field not in attributes:
             continue
         covered.add(category)
         value = _mapping_value(attributes, field)
         for item in _attribute_items(value):
-            match = _APPEARANCE_TOKENS.get(_attribute_key(item))
+            match = tokens.get(_attribute_key(item))
             if match is not None and match[0] == category:
                 found.append(match)
 
     flags = (
         ("holding_object", "holding", "HOLDING ITEM"),
     )
+    if is_vlm:
+        flags += (
+            ("wearing_glasses", "glasses", "GLASSES"),
+            ("wearing_hat", "hat", "HAT"),
+            ("wearing_boots", "boots", "BOOTS"),
+        )
     for field, category, token in flags:
         if field in attributes:
             covered.add(category)
@@ -549,12 +623,41 @@ def _rich_appearance_tokens(attributes: Mapping[str, Any]) -> tuple[str, ...]:
         fallback, (str, bytes, bytearray)
     ):
         for item in fallback:
-            match = _APPEARANCE_TOKENS.get(_attribute_key(item))
+            match = tokens.get(_attribute_key(item))
             if match is not None and match[0] not in covered:
                 found.append(match)
 
-    found.sort(key=lambda item: _APPEARANCE_PRIORITY.index(item[0]))
+    if is_vlm:
+        for field, category, garment in (
+            ("upper_color", "upper", "TOP"),
+            ("lower_color", "lower", "BOTTOM"),
+        ):
+            color = _rich_garment_color(_mapping_value(attributes, field))
+            if not color:
+                continue
+            for index, (found_category, token) in enumerate(found):
+                if found_category == category:
+                    found[index] = (category, f"{color} {token}")
+                    break
+            else:
+                found.append((category, f"{color} {garment}"))
+
+    found.sort(key=lambda item: priority.index(item[0]))
     return tuple(dict.fromkeys(token for _category, token in found))
+
+
+def _rich_garment_color(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    words = _public_hud_text(value, limit=32).casefold().replace("-", " ").split()
+    allowed = _GARMENT_COLORS | {"light", "dark", "and", "/"}
+    if (
+        not 1 <= len(words) <= 4
+        or any(word not in allowed for word in words)
+        or not any(word in _GARMENT_COLORS for word in words)
+    ):
+        return ""
+    return " ".join(words).upper()
 
 
 def _rich_confidence(value: Any) -> str:
@@ -587,26 +690,29 @@ def _fit_hud_text(text: str, width: int, scale: float) -> str:
     return (text[:low].rstrip() + suffix) if low else ""
 
 
-def _draw_rich_card(
-    image: Any,
-    bbox: tuple[int, int, int, int],
+def _rich_card_lines(
     primary: str,
     detail: str,
     appearance: str,
-    color: tuple[int, int, int],
-    *,
-    alert: str = "",
-) -> None:
-    height, width = image.shape[:2]
-    if width < 2 or height < 2:
-        return
-    x1, y1, _x2, y2 = bbox
+    alert: str,
+    compact: bool = False,
+) -> list[tuple[str, float, tuple[int, int, int]]]:
+    if compact:
+        return [(primary.replace("  |  ", " "), 0.38, (225, 232, 237))]
     lines = [(primary, 0.48, (245, 248, 250))]
     if alert:
         lines.append((alert, 0.42, (145, 178, 255)))
     lines.append((detail, 0.39, (190, 199, 207)))
     if appearance:
         lines.append((appearance, 0.36, (164, 177, 188)))
+    return lines
+
+
+def _rich_card_size(
+    width: int,
+    height: int,
+    lines: Sequence[tuple[str, float, tuple[int, int, int]]],
+) -> tuple[int, int]:
     text_widths = tuple(
         cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0]
         for text, scale, _text_color in lines
@@ -616,6 +722,124 @@ def _draw_rich_card(
         max(96, min(360, max(text_widths, default=74) + 22)),
     )
     card_height = min(height, 8 + 17 * len(lines))
+    return card_width, card_height
+
+
+def _card_overlap(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+    gap: int = 4,
+) -> bool:
+    return (
+        left[0] < right[2] + gap and left[2] + gap > right[0]
+        and left[1] < right[3] + gap and left[3] + gap > right[1]
+    )
+
+
+def _place_vlm_card(
+    bbox: tuple[int, int, int, int],
+    card_size: tuple[int, int],
+    frame_size: tuple[int, int],
+    occupied: Sequence[tuple[int, int, int, int]],
+    object_boxes: Sequence[tuple[int, int, int, int]],
+) -> tuple[int, int, int, int] | None:
+    """Pack nearby cards into free space before allowing them over objects."""
+
+    card_width, card_height = card_size
+    width, height = frame_size
+    source_x = (bbox[0] + bbox[2]) // 2
+    source_y = (bbox[1] + bbox[3]) // 2
+    obstacles = (*object_boxes, *occupied)
+    xs = {0, width - card_width, bbox[0], source_x - card_width // 2}
+    ys = {0, height - card_height, bbox[1] - card_height - 6, bbox[3] + 6}
+    for left, top, right, bottom in obstacles:
+        xs.update((left - card_width - 6, right + 6))
+        ys.update((top - card_height - 6, bottom + 6))
+    xs = {max(0, min(x, width - card_width)) for x in xs}
+    ys = {max(0, min(y, height - card_height)) for y in ys}
+    candidates = sorted(
+        ((x, y, x + card_width, y + card_height) for x in xs for y in ys),
+        key=lambda rect: (
+            abs((rect[0] + rect[2]) // 2 - source_x)
+            + abs((rect[1] + rect[3]) // 2 - source_y),
+            rect[1], rect[0],
+        ),
+    )
+    for avoid_objects in (True, False):
+        for rect in candidates:
+            if any(_card_overlap(rect, other) for other in occupied):
+                continue
+            if avoid_objects and any(
+                _card_overlap(rect, other) for other in object_boxes
+            ):
+                continue
+            return rect
+    return None
+
+
+def _draw_vlm_cards(image: Any, cards: Sequence[_VLMCard]) -> None:
+    height, width = image.shape[:2]
+    occupied: list[tuple[int, int, int, int]] = []
+    planned: list[tuple[_VLMCard, tuple[int, int, int, int], bool]] = []
+    object_boxes = tuple(card.bbox for card in cards)
+    ordered = sorted(
+        cards,
+        key=lambda card: (
+            not card.is_person, not bool(card.alert), card.bbox[1], card.bbox[0],
+            card.primary,
+        ),
+    )
+    for card in ordered:
+        compact = not card.is_person and not card.alert
+        lines = _rich_card_lines(
+            card.primary, card.detail, card.appearance, card.alert, compact,
+        )
+        size = _rich_card_size(width, height, lines)
+        rect = _place_vlm_card(
+            card.bbox, size, (width, height), occupied, object_boxes,
+        )
+        if rect is not None:
+            occupied.append(rect)
+            planned.append((card, rect, compact))
+
+    # Leaders go underneath every card, so dense scenes cannot cross out text.
+    for card, rect, _compact in planned:
+        target_x = (rect[0] + rect[2]) // 2
+        target_y = (rect[1] + rect[3]) // 2
+        source = (
+            max(card.bbox[0], min(target_x, card.bbox[2] - 1)),
+            max(card.bbox[1], min(target_y, card.bbox[3] - 1)),
+        )
+        target = (
+            max(rect[0], min(source[0], rect[2] - 1)),
+            max(rect[1], min(source[1], rect[3] - 1)),
+        )
+        cv2.line(image, source, target, card.color, 1, cv2.LINE_AA)
+    for card, rect, compact in planned:
+        _draw_rich_card(
+            image, card.bbox, card.primary, card.detail, card.appearance, card.color,
+            alert=card.alert, position=(rect[0], rect[1]), compact=compact,
+        )
+
+
+def _draw_rich_card(
+    image: Any,
+    bbox: tuple[int, int, int, int],
+    primary: str,
+    detail: str,
+    appearance: str,
+    color: tuple[int, int, int],
+    *,
+    alert: str = "",
+    position: tuple[int, int] | None = None,
+    compact: bool = False,
+) -> None:
+    height, width = image.shape[:2]
+    if width < 2 or height < 2:
+        return
+    x1, y1, _x2, y2 = bbox
+    lines = _rich_card_lines(primary, detail, appearance, alert, compact)
+    card_width, card_height = _rich_card_size(width, height, lines)
     left = max(0, min(x1, width - card_width))
     if y1 >= card_height + 4:
         top = y1 - card_height - 3
@@ -623,6 +847,8 @@ def _draw_rich_card(
         top = y2 + 3
     else:
         top = max(0, min(y1 + 3, height - card_height))
+    if position is not None:
+        left, top = position
     right = min(width - 1, left + card_width - 1)
     bottom = min(height - 1, top + card_height - 1)
 

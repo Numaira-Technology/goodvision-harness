@@ -84,6 +84,7 @@ from .reference_memory import (
 from .result_bus import FrameBus, FramePacket, ResultBus
 from .rich_labeling import (
     DeferredRichLabelHistory,
+    RichLabelClient,
     RichLabelCoordinator,
     RichLabelHTTPClient,
 )
@@ -104,6 +105,7 @@ from .visual_memory import (
     VisualMemoryRecord,
     VisualMemorySink,
 )
+from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
 
 LOGGER = logging.getLogger(__name__)
 MJPEG_BOUNDARY = "goodvision-frame"
@@ -211,15 +213,42 @@ class HarnessRuntime:
         self._events: EventArchive | None = None
         self._rich_probe_thread: Thread | None = None
         self._rich_probe_stop = Event()
+        self._active_rich_session_id: str | None = None
         if rich_label_coordinator is not None:
             self._rich_labels = rich_label_coordinator
         elif config is not None and config.rich_labeling.enabled:
             rich = config.rich_labeling
-            rich_client = RichLabelHTTPClient(
-                rich.endpoint, timeout_seconds=rich.timeout_seconds,
-                mode="tracks", include_attributes=self._rich_requested,
-            )
-            if rich_client.gpu_ready():
+            rich_client: RichLabelClient
+            if rich.backend == "vlm":
+                rich_client = VLMRichLabelClient(
+                    replace(
+                        config.model_api,
+                        timeout_seconds=rich.timeout_seconds,
+                        max_retries=0,
+                    ),
+                    model=rich.model or config.inference.model,
+                    api_key=lambda: self._aiclub_api_key,
+                    max_tokens=rich.vlm_max_tokens,
+                    max_image_side=rich.vlm_max_image_side,
+                    wire_format=rich.vlm_wire_format,
+                    execution_mode=rich.vlm_execution_mode,
+                    parallel_strategy=rich.vlm_parallel_strategy,
+                    structured_output=rich.vlm_structured_output,
+                    require_complete=rich.vlm_require_complete,
+                    prompt_cache=rich.vlm_prompt_cache,
+                    http2=rich.vlm_http2,
+                    trust_env=rich.vlm_trust_env,
+                    keepalive_expiry_seconds=rich.vlm_keepalive_expiry_seconds,
+                    request_parameters=rich.vlm_request_parameters,
+                    dry_run=self._rich_annotation_dry_run,
+                )
+            else:
+                rich_client = RichLabelHTTPClient(
+                    rich.endpoint,
+                    timeout_seconds=rich.timeout_seconds,
+                    mode="tracks", include_attributes=self._rich_requested,
+                )
+            if rich.backend == "vlm" or rich_client.gpu_ready():
                 self._rich_labels = RichLabelCoordinator(
                     rich_client,
                     max_fps=rich.max_fps,
@@ -238,7 +267,6 @@ class HarnessRuntime:
         else:
             self._rich_labels = None
         self._rich_history = DeferredRichLabelHistory(lambda: self._rich_labels)
-        self._active_rich_session_id: str | None = None
         self._overlay_fusion = OverlayFusionMatcher()
         self._annotated_output_fps = (
             max(display.fps, config.video.fps, config.face.sample_fps)
@@ -383,6 +411,13 @@ class HarnessRuntime:
             or os.environ.get("RTSP_URL", "").strip()
             or (self.config.stream.url or "")
         )
+
+    def _rich_annotation_dry_run(self) -> bool:
+        """Use the active session override, or the current deployment default."""
+
+        if self._active_rich_session_id is not None:
+            return bool(self._state["dry_run"])
+        return self.dry_run
 
     def _route_probe_supported(self) -> bool:
         return self.config is not None and (
@@ -707,6 +742,7 @@ class HarnessRuntime:
             },
             "rich_labeling": {
                 "enabled": self._rich_requested and self._rich_labels is not None,
+                "capability": RICH_ANNOTATION_CAPABILITY,
                 "max_fps": self.config.rich_labeling.max_fps,
                 "track_identity": "session_scoped",
                 "age": "estimated_range",

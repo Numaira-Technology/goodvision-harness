@@ -14,7 +14,7 @@ from dotenv import find_dotenv, load_dotenv
 
 from .event_archive import EventArchiveSettings
 from .model_api import ModelAPISettings
-from .model_routing import resolve_model_route
+from .model_routing import CUSTOMER_INFERENCE_PROFILE, resolve_model_route
 from .reference_memory import MemoryContext, load_memory_context
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
@@ -54,9 +54,23 @@ class DisplaySettings:
 
 @dataclass(frozen=True, slots=True)
 class RichLabelSettings:
-    """Optional isolated local worker used for high-cadence visual labels."""
+    """Optional independent visual annotation worker or VLM API client."""
 
     enabled: bool = False
+    backend: str = "paddle"
+    model: str | None = None
+    vlm_max_tokens: int = 4096
+    vlm_max_image_side: int = 1280
+    vlm_wire_format: str = "objects"
+    vlm_execution_mode: str = "single"
+    vlm_parallel_strategy: str = "crops"
+    vlm_structured_output: bool = False
+    vlm_require_complete: bool = False
+    vlm_prompt_cache: bool = False
+    vlm_http2: bool = False
+    vlm_trust_env: bool = True
+    vlm_keepalive_expiry_seconds: float = 60.0
+    vlm_request_parameters: Mapping[str, Any] = field(default_factory=dict)
     endpoint: str = "http://rich-label-worker:8091/v1/labels"
     timeout_seconds: float = 2.0
     max_fps: float = 7.5
@@ -264,6 +278,53 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         "RICH_LABEL_ENABLED",
         _bool(rich_label_section.get("enabled", False), "rich_labeling.enabled"),
     )
+    rich_label_backend = (
+        os.environ.get("RICH_LABEL_BACKEND", "").strip()
+        or _required_string(
+            rich_label_section.get("backend", "paddle"), "rich_labeling.backend"
+        )
+    ).lower()
+    if rich_label_backend not in {"paddle", "vlm"}:
+        raise ValueError("rich_labeling.backend must be paddle or vlm")
+    rich_label_model = rich_label_section.get("model")
+    if rich_label_model is not None and not isinstance(rich_label_model, str):
+        raise TypeError("rich_labeling.model must be a string or null")
+    if rich_label_model is not None:
+        rich_label_model = rich_label_model.strip() or None
+    rich_wire_format = _required_string(
+        rich_label_section.get("vlm_wire_format", "objects"),
+        "rich_labeling.vlm_wire_format",
+    ).lower()
+    if rich_wire_format not in {"objects", "compact"}:
+        raise ValueError("rich_labeling.vlm_wire_format must be objects or compact")
+    rich_execution_mode = _required_string(
+        rich_label_section.get("vlm_execution_mode", "single"),
+        "rich_labeling.vlm_execution_mode",
+    ).lower()
+    if rich_execution_mode not in {"single", "parallel"}:
+        raise ValueError("rich_labeling.vlm_execution_mode must be single or parallel")
+    if rich_execution_mode == "parallel" and rich_wire_format != "compact":
+        raise ValueError("parallel rich labeling requires vlm_wire_format: compact")
+    rich_parallel_strategy = _required_string(
+        rich_label_section.get("vlm_parallel_strategy", "crops"),
+        "rich_labeling.vlm_parallel_strategy",
+    ).lower()
+    if rich_parallel_strategy not in {"crops", "full_frame"}:
+        raise ValueError("rich_labeling.vlm_parallel_strategy must be crops or full_frame")
+    if rich_parallel_strategy == "full_frame" and rich_execution_mode != "parallel":
+        raise ValueError("full_frame rich labeling requires vlm_execution_mode: parallel")
+    rich_structured_output = _bool(
+        rich_label_section.get("vlm_structured_output", False),
+        "rich_labeling.vlm_structured_output",
+    )
+    if rich_structured_output and rich_wire_format != "compact":
+        raise ValueError("structured rich labeling requires vlm_wire_format: compact")
+    rich_require_complete = _bool(
+        rich_label_section.get("vlm_require_complete", False),
+        "rich_labeling.vlm_require_complete",
+    )
+    if rich_require_complete and rich_wire_format != "compact":
+        raise ValueError("complete rich labeling requires vlm_wire_format: compact")
     rich_label_endpoint = (
         os.environ.get("RICH_LABEL_ENDPOINT", "").strip()
         or _required_string(
@@ -287,6 +348,39 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "PERSON_TRACKING_ENABLED",
             _bool(rich_label_section.get("tracking_enabled", True),
                   "rich_labeling.tracking_enabled"),
+        ),
+        backend=rich_label_backend,
+        model=rich_label_model,
+        vlm_wire_format=rich_wire_format,
+        vlm_execution_mode=rich_execution_mode,
+        vlm_parallel_strategy=rich_parallel_strategy,
+        vlm_structured_output=rich_structured_output,
+        vlm_require_complete=rich_require_complete,
+        vlm_prompt_cache=_bool(
+            rich_label_section.get("vlm_prompt_cache", False),
+            "rich_labeling.vlm_prompt_cache",
+        ),
+        vlm_http2=_bool(
+            rich_label_section.get("vlm_http2", False), "rich_labeling.vlm_http2",
+        ),
+        vlm_trust_env=_bool(
+            rich_label_section.get("vlm_trust_env", True),
+            "rich_labeling.vlm_trust_env",
+        ),
+        vlm_keepalive_expiry_seconds=_positive_float(
+            rich_label_section.get("vlm_keepalive_expiry_seconds", 60.0),
+            "rich_labeling.vlm_keepalive_expiry_seconds",
+        ),
+        vlm_max_tokens=_positive_int(
+            rich_label_section.get("vlm_max_tokens", 4096),
+            "rich_labeling.vlm_max_tokens",
+        ),
+        vlm_max_image_side=_positive_int(
+            rich_label_section.get("vlm_max_image_side", 1280),
+            "rich_labeling.vlm_max_image_side",
+        ),
+        vlm_request_parameters=_rich_vlm_request_parameters(
+            raw, inference_section, rich_label_section
         ),
         endpoint=rich_label_endpoint,
         timeout_seconds=_positive_float(
@@ -540,6 +634,68 @@ def _mapping_section(root: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     if not isinstance(section, Mapping):
         raise TypeError(f"{name} must be a YAML mapping")
     return section
+
+
+def _rich_vlm_request_parameters(
+    raw: Mapping[str, Any],
+    inference: Mapping[str, Any],
+    rich_labeling: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Share selected-route options while keeping annotation's output budget."""
+
+    overrides = _mapping_section(rich_labeling, "vlm_request_parameters")
+    fixed_fields = {"model", "messages", "max_tokens", "stream"}
+    error = (
+        "rich_labeling.vlm_request_parameters must not override "
+        "model, messages, max_tokens, or stream"
+    )
+    if fixed_fields.intersection(overrides):
+        raise ValueError(error)
+    # Resolve after combining so an inherited model follows the event profile,
+    # including removal of stale options when the inference channel changes.
+    route, event_model, parameters = resolve_model_route(
+        raw,
+        {
+            **inference,
+            "request_parameters": {
+                **_mapping_section(inference, "request_parameters"),
+                **overrides,
+            },
+        },
+    )
+    rich_model = str(rich_labeling.get("model") or "").strip()
+    if rich_model and rich_model != event_model:
+        # A distinct annotation model may need another upstream provider and
+        # sampling settings; its explicit options must beat the event profile.
+        model_overrides = dict(overrides)
+        service = _mapping_section(raw, "inference_service")
+        legacy_provider = (
+            "openrouter" if "openrouter" in raw and "aiclub" not in raw else "aiclub"
+        )
+        configured_provider = str(
+            service.get("provider") or legacy_provider
+        ).strip().lower()
+        if (
+            os.environ.get("HARNESS_INFERENCE_PROFILE", "").strip().lower()
+            == CUSTOMER_INFERENCE_PROFILE
+            and "provider" not in service
+            and not {"aiclub", "openrouter"}.intersection(raw)
+        ):
+            # The neutral delivery config already belongs to the locked customer
+            # OpenRouter route; a distinct rich model is not a channel switch.
+            configured_provider = route.provider
+        if route.provider != configured_provider:
+            # Match resolve_model_route: overrides belong to the configured
+            # channel, so never restore its private options after switching.
+            for key in ("provider", "reasoning", "enable_thinking"):
+                model_overrides.pop(key, None)
+        parameters.update(model_overrides)
+    # Event/profile max_tokens is inherited, not an annotation override.
+    # Explicit rich max_tokens was rejected above; vlm_max_tokens stays in charge.
+    parameters.pop("max_tokens", None)
+    if fixed_fields.intersection(parameters):
+        raise ValueError(error)
+    return parameters
 
 
 def _bool(value: Any, name: str) -> bool:

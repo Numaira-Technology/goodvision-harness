@@ -1,0 +1,280 @@
+input:
+  # Set an explicit local path or pass --video; no sample media is bundled.
+  default_video: null
+
+stream:
+  # Robot LAN WHEP default. The deployment console can persistently override it.
+  url: "webrtc+http://192.168.20.199:1985/rtc/v1/whep/?app=live&stream=livestream"
+  whep_headers: {}
+  # The robot publishes left/right views side by side. Select one eye before
+  # display, face recognition, safety inference, and bbox normalization.
+  frame_crop: left_half
+
+video:
+  # Frames sampled from the live stream per second and sent to the model.
+  # Independent of the source file's native frame rate.
+  fps: 2.5
+  realtime: true
+  playback_speed: 1.0
+  max_sampled_frames: null
+  max_image_side: 320
+  jpeg_quality: 75
+
+display:
+  # Full-cadence display frames are buffered while sparse bbox keyframes arrive.
+  # The output stays smooth but intentionally trails the source timeline.
+  fps: 15.0
+  max_image_side: 720
+  jpeg_quality: 70
+  # Bound the experimental rich request at 8s; reserve 2s for queue/display work.
+  # This buffer aligns labels and video; it does not reduce inference latency.
+  delay_seconds: 10.0
+  # Maximum gap for motion interpolation. Beyond it, hold the last bbox on
+  # every frame until a new keyframe explicitly updates or clears the state.
+  bbox_max_gap_seconds: 0.8
+
+rich_labeling:
+  # Additional VLM capability: use the existing chat-completions API directly.
+  enabled: true
+  backend: vlm
+  # Independent annotation model; the event model below stays unchanged.
+  # Keep an HK-supported Qwen model on Alibaba. The 2026-09-08 tests did not
+  # establish a complete, accurate <3s replacement; see the latency report.
+  model: qwen/qwen3.6-flash
+  # Used only if backend is changed back to paddle.
+  endpoint: http://rich-label-worker:8091/v1/labels
+  timeout_seconds: 8.0
+  # One request at a time; superseded pending frames are dropped.
+  max_fps: 1.0
+  vlm_max_tokens: 1536
+  vlm_max_image_side: 720
+  vlm_wire_format: compact
+  vlm_execution_mode: single
+  # Available parallel experiments: crops or full_frame (requires parallel).
+  vlm_parallel_strategy: crops
+  vlm_structured_output: true
+  # Check every field locally even if an upstream ignores its JSON schema.
+  vlm_require_complete: true
+  # HTTP/2 is opt-in (install .[vlm]); A/B showed no consistent full-frame win.
+  vlm_http2: false
+  vlm_trust_env: true
+  vlm_keepalive_expiry_seconds: 60.0
+  # Optional: split fixed instructions from changing images for real prefix hits.
+  # Off by default: the tested cache layout changed recall and missed edge people.
+  vlm_prompt_cache: false
+  vlm_request_parameters:
+    reasoning:
+      enabled: false
+    provider:
+      # Explicit allowlist prevents routing to CoreWeave or Novita.
+      only: [alibaba]
+      allow_fallbacks: false
+      require_parameters: true
+  history_size: 128
+  max_interpolation_gap_seconds: 2.0
+  max_hold_seconds: 10.0
+
+sliding_window:
+  # Classify the newest frame every 0.4s with no window-collection delay:
+  # f0, f1, f2, ...
+  size_frames: 1
+  stride_frames: 1
+  include_partial_final_window: false
+
+inference_service:
+  # This experiment is configured for OpenRouter. Another channel also needs
+  # a compatible rich model ID, request parameters, and prompt-cache setting.
+  provider: openrouter
+  timeout_seconds: 60.0
+  # Avoid retrying provider errors into stale live results.
+  max_retries: 0
+  retry_backoff_seconds: 1.0
+  extra_headers: {}
+  providers:
+    aiclub:
+      model: qwen3.5-plus
+      request_parameters:
+        enable_thinking: false
+    openrouter:
+      # Previously selected by the live visual-latency benchmark (4592cd8).
+      model: qwen/qwen3.5-35b-a3b
+      request_parameters:
+        reasoning:
+          effort: none
+        provider:
+          only: [deepinfra]
+          allow_fallbacks: false
+    dashscope:
+      model: qwen3.5-plus
+      request_parameters:
+        enable_thinking: false
+
+inference:
+  # Event detection uses its selected route; rich annotation overrides its own.
+  profile: standard
+  event_label: smoking
+  system_prompt: >-
+    You are a risk-sensitive multi-label safety-event perception module for
+    live AI glasses. You receive
+    short, chronologically ordered windows of frames sampled from a live
+    camera. Use visible objects, human interaction, posture, motion, and
+    temporal context to detect plausible events, including precursors and
+    partial events. Use a deliberately low detection threshold and prefer
+    false positives over false negatives. Do not require certainty or a
+    textbook-complete event. Evaluate every requested event independently.
+    Answer with a single JSON object - no markdown, no extra text.
+  prompt: |-
+    Decide whether the target event is happening, starting, imminent, or
+    plausibly indicated in the NEWEST (last) frame. Use earlier frames as
+    temporal context.
+
+    This is a high-recall safety detector with a deliberately low threshold.
+    Set detected=true whenever visible evidence makes the target event a
+    reasonable possibility, even when the evidence is partial or ambiguous.
+    A related object combined with a person's interaction, posture, movement,
+    or context can be sufficient. When choosing between a plausible positive
+    and a negative, choose detected=true; lower confidence may express the
+    uncertainty. Use detected=false only when there is no meaningful visible
+    cue for the event or the evidence clearly indicates an unrelated activity.
+
+    Event-specific sensitivity examples:
+    - Smoking: detected=true when a person holds, handles, carries, or has a
+      cigarette, cigar, pipe, or e-cigarette in their hand or mouth; moves it
+      toward the mouth; takes it out or prepares it; appears to reach for or
+      use a lighter with it; or visibly puffs or emits smoke/vapor. The item
+      may be lit or unlit. Do not require a flame, glowing tip, inhalation,
+      exhalation, or visible smoke. An unattended item with no person
+      interacting with it is not sufficient by itself.
+    - Fighting: detected=true for striking or kicking, pushing, grabbing,
+      wrestling, aggressive lunging or chasing, raised fists, an attack
+      posture, or an apparently imminent attack. Do not require visible impact.
+    - Falling: detected=true for loss of balance, stumbling, uncontrolled
+      downward motion, collapse, being in the process of falling, or being
+      newly or abnormally on the ground. Do not require seeing the full impact.
+
+    Respond with only this JSON object:
+    {"detected": true or false, "confidence": 0.0-1.0, "description": "one short sentence of visible evidence"}
+
+    For the delivery contract, extend that same JSON object with an "objects"
+    array. Each relevant visible entity must be
+    {"label": "...", "confidence": 0.0-1.0, "bbox_2d": [x1, y1, x2, y2]}.
+    bbox_2d must tightly enclose the object in the NEWEST frame and use the
+    top-left-origin relative 0..1000 xyxy coordinate grid.
+
+    If detected=true, include at least one valid target object. For fight and
+    fall, return only the involved person's tight body box or boxes. For
+    smoking, return only the cigarette, cigar, pipe, or e-cigarette box; do not
+    return the smoker's person box. For weapon, return only the weapon box; do
+    not return the holder's person box. If detected=false, use "objects": [].
+  multi_event_prompt: |-
+    Evaluate exactly these four safety events in the NEWEST (last) frame:
+    fight, smoking, fall, and weapon. Use earlier frames only as temporal
+    context. Judge every event independently, so multiple events may be true.
+
+    This is a high-recall safety detector with a deliberately low threshold.
+    Set detected=true whenever visible evidence makes an event a reasonable
+    possibility, including partial, starting, imminent, or ambiguous evidence.
+    Prefer a lower-confidence positive over missing a plausible safety event.
+    Use detected=false only when there is no meaningful visible cue or the
+    evidence clearly indicates an unrelated activity.
+
+    Event rules:
+    - fight: striking, kicking, pushing, grabbing, wrestling, aggressive
+      lunging or chasing, raised fists, attack posture, or imminent attack.
+      Visible impact is not required.
+    - smoking: a person holds, handles, carries, or has a cigarette, cigar,
+      pipe, or e-cigarette in hand or mouth; moves it toward the mouth;
+      prepares or lights it; puffs; or emits smoke/vapor. A flame, glowing tip,
+      inhalation, exhalation, or visible smoke is not required. An unattended
+      item alone is insufficient.
+    - fall: loss of balance, stumbling, uncontrolled downward motion,
+      collapse, being in the process of falling, or being newly or abnormally
+      on the ground. The full impact is not required.
+    - weapon: a person visibly holds, carries, draws, reaches for, points,
+      brandishes, or uses a likely gun, firearm, knife, blade, club, or other
+      object being used or readied as a weapon.
+
+    Respond with only one JSON object in this exact shape and order:
+    {"events":[
+      {"event_label":"fight","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
+      {"event_label":"smoking","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
+      {"event_label":"fall","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
+      {"event_label":"weapon","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]}
+    ]}
+
+    Include each event exactly once and do not add other event labels. Each
+    object must be {"label":"...","confidence":0.0-1.0,
+    "bbox_2d":[x1,y1,x2,y2]}. bbox_2d must tightly enclose that relevant
+    entity in the NEWEST frame on the top-left-origin 0..1000 xyxy grid.
+    Every detected=true event requires at least one target object. For fight
+    and fall, return only the involved person's tight body box or boxes. For
+    smoking, return only the smoking item box, not the smoker. For weapon,
+    return only the weapon box, not the holder.
+    Every detected=false event must use "objects": [].
+  request_parameters:
+    temperature: 0.0
+    max_tokens: 1200
+memory:
+  # Optional fixed reference-image prefix for multimodal inference. Private
+  # images can live under the Git-ignored top-level memory/ directory.
+  # For face_recognition, detected=true means an unknown live face; known
+  # reference matches are reported independently in matched_memory_ids.
+  enabled: false
+  purpose: face_recognition
+  newest_frame_only: true
+  max_references: 8
+  max_image_side: 384
+  jpeg_quality: 85
+  references: []
+  # references:
+  #   - id: person_01
+  #     image: memory/person_01.jpg
+
+face:
+  # Local face-analysis mode. FACE_MODEL_ROOT and FACE_GALLERY_PATH override
+  # these paths in the read-only Docker deployment. Local analysis files
+  # packs are restricted to non-commercial research unless separately licensed,
+  # so this download opt-in is only appropriate for this declared
+  # non-commercial demo/testing use.
+  model_name: buffalo_l
+  model_root: .models/insightface
+  allow_model_download: true
+  provider: CPUExecutionProvider
+  # auto uses full cadence on accelerated providers and single-flight on CPU.
+  live_scheduler: auto
+  det_size: 640
+  threshold: 0.4
+  # Live safety detection is fail-open for distant faces. The current 1280px
+  # analysis feed yields valid embeddings for faces down to roughly 20px.
+  min_face_size: 20
+  # Keep enrollment stricter so low-detail samples cannot degrade the gallery.
+  enrollment_min_face_size: 80
+  sample_fps: 2.5
+  max_image_side: 1280
+  jpeg_quality: 90
+  gallery_path: .goodvision/face-gallery.json
+
+runtime:
+  # Independent windows are sent concurrently, up to this limit. Windows that
+  # would exceed it are dropped (a live feed never queues up the past).
+  # Six slots provide headroom for 2.5 requests/second.
+  max_concurrent_requests: 6
+
+server:
+  host: 127.0.0.1
+  port: 7900
+
+service:
+  source_id: external-camera
+  result_history: 100
+  ready_max_frame_age_seconds: 10.0
+  ready_max_result_age_seconds: 120.0
+  overlay_jpeg_quality: 85
+  webhook:
+    # Optional. RESULT_WEBHOOK_URL overrides this value.
+    url: null
+    secret_env: HARNESS_WEBHOOK_SECRET
+    timeout_seconds: 5.0
+    max_retries: 2
+    retry_backoff_seconds: 0.5
+    queue_size: 100

@@ -207,6 +207,105 @@ male-presenting results) instead of treating PaddleX's positive-label list as a
 complete classification. The HUD shows age and gender estimates first, followed
 by a compact selection of direction, clothing, bag, and accessory hints.
 
+### Experimental VLM rich annotation
+
+`config.vlm-rich.yaml` enables the `vlm` rich-label backend on this experimental
+branch. The current experiment uses Qwen 3.6 Flash through OpenRouter/Alibaba
+for annotations, independently of the event model and its DeepInfra route.
+The VLM returns person/object boxes and
+the same appearance-attribute vocabulary as Paddle through the existing
+rich-label snapshot interface, coordinator, box fusion, and renderer. The VLM
+assigns local spatial track IDs. The safety-event request is separate, but both
+results use the same source frame timeline and final box compositor. Matched
+alerts attach to the rich box; a fusion error falls back to events on the
+original frame instead of drawing two independent box layers.
+
+The default experiment uses one request per sampled rich-label frame and a
+strict compact response schema with all 13 person attributes (unknown values
+are null). Both single and parallel modes reuse their HTTP connection pool,
+report first-content-token timing and token/cache usage to response observers,
+and apply a deadline to frame preparation and inference without retries.
+`rich_labeling.vlm_wire_format: compact` requests shorter JSON rows and expands
+them locally into the existing annotation protocol. With that format,
+`rich_labeling.vlm_execution_mode: parallel` enables three simultaneous requests:
+two overlapping person crops and one full-frame object request. Crop coordinates
+are mapped back locally. Opposite-crop duplicates are matched one-to-one by
+IoU, while unmatched people from either crop are retained. All three responses
+must validate before a rich snapshot is published. This mode reuses its
+connection pool and applies one timeout to
+the entire frame; it makes three paid API requests per frame, with no retry.
+`vlm_parallel_strategy: full_frame` instead shares one full image among all
+three calls and divides person output by horizontal regions. It keeps full-image
+coordinates, but still requires visual recall and duplicate checks; it is not the
+default. The September 8 tests found fast but incomplete results in both modes.
+`rich_labeling.vlm_structured_output: true` additionally requests a strict JSON
+schema for compact responses. Each person must have one complete box paired
+with one attribute object. The selected provider must support this schema;
+local coordinate and attribute validation still applies to every response.
+`vlm_require_complete: true` also checks all 13 fields, counts, types, and scopes
+locally before publishing. It is enabled in the experiment, independently of
+upstream schema support. Unknown fields stay null until public conversion.
+
+Verified TLS trust loading now reads the same certifi bundle into memory before
+passing it to OpenSSL. On the tested Windows host this reduced cold client setup
+by about 0.8 seconds while preserving every trusted CA and hostname validation.
+`vlm_keepalive_expiry_seconds` defaults to 60; `vlm_trust_env` defaults to true.
+`vlm_http2: true` is available after installing `pip install -e '.[vlm]'`, but is
+off by default because the measured HTTP/2 results did not consistently beat
+HTTP/1.1. Observers now distinguish TCP/TLS, content generation, DONE and EOF;
+transport tracing is opt-in through the benchmark runner.
+
+`rich_labeling.vlm_prompt_cache: true` opts into explicit prompt caching on
+compatible routes. It places the fixed text in a separate message before the
+changing frame: on the tested Alibaba route, a breakpoint inside a message
+containing both text and image cached the whole image too. The separate-message
+layout produced 1,320 cached tokens across different frames with the final
+prompt, without padding. Caching is off by default because that layout also
+changed annotation recall in testing. Check actual `cached_tokens`; support,
+minimum prefix size, and server scheduling depend on the upstream provider.
+
+The current target is **under 3 seconds for the complete, valid frame result**.
+September 8 tests still did not establish an accurate, reliable configuration
+within that target. The final configuration excludes Anthropic, OpenAI, Google,
+CoreWeave and Novita, and pins Qwen to Alibaba without fallback. The current
+measurement host exits through Taiwan, so these are not Hong Kong egress timings.
+September 6 Hong Kong tests also missed their earlier 2.5-second target: responses took
+4–8 seconds, while faster replies often omitted people/objects or failed the
+contract. The experiment now has an 8-second request deadline and a 10-second
+display buffer; these bound waiting and align video, not improve inference.
+It remains experimental, with visible attribute and box errors. See
+[the latest measured results](VLM_LATENCY_REPORT_20260908.md) and
+[the earlier report](VLM_LATENCY_REPORT_20260906.md).
+
+To reproduce the final client test with an authorized local frame and the
+configured OpenRouter key (the runner alternates original/mirrored pixels):
+
+```bash
+python tools/vlm_native_probe.py --image /path/to/frame.jpg \
+  --env-file /path/to/.env --output tmp/native-probe.jsonl
+```
+
+`tools/vlm_speed_matrix.py` compares model/provider parameters, HTTP versions,
+streaming versus JSON responses, TLS loading, image size, and parallel strategies.
+It also offers a diagnostic named-field wire format for providers that do not
+support tuple schemas. `protocol_valid` is not visual accuracy; failures stay in
+the denominator, and missing usage is marked rather than reported as zero cost.
+The reusable `tools/vlm_speed_cases.hk.json` pins Qwen/Alibaba and Seed/Seed FP8
+with fallback disabled. Seed remains experimental and needs Hong Kong egress
+validation. Raw observations are under the ignored `tmp/vlm-latency-20260908/`
+directory; historical cases there may predate the current provider exclusions.
+
+`tools/vlm_latency_probe.py` contains the model, output-format, and cache-boundary
+controls used for diagnosis. Its repeated-prefix option is a diagnostic control
+only. `tools/vlm_packed_probe.py` is an unsuccessful experimental wire format,
+retained for reproducing the measurements; it is not used by the service.
+
+Coordinator status reports `last_queue_seconds`,
+`last_latency_seconds` (inference), and `last_total_latency_seconds` (submission
+through inference completion); none includes the configured display buffer.
+`last_attempt_frame_sequence` and `last_attempt_succeeded` identify the attempt
+these timings describe, while `last_frame_sequence` remains the last success.
+
 PaddleX and PaddleDetection source code is Apache-2.0, but that does not by
 itself grant rights to every pretrained weight or its training data. Before
 customer or commercial use, confirm the license and redistribution terms for
