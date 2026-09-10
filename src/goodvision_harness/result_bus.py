@@ -158,6 +158,7 @@ class FramePacket:
         if self.annotation_mode is not None and self.annotation_mode not in {
             "exact",
             "interpolated",
+            "face_aligned",
             "held",
             "none",
         }:

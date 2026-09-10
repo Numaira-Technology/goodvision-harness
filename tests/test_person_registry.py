@@ -262,6 +262,164 @@ def test_model_actors_work_when_a_newer_face_frame_completed_first() -> None:
     assert registry.snapshot_at(1) is not None
 
 
+def test_late_actor_binds_source_face_without_moving_latest_face() -> None:
+    registry = PersonRegistry("session", "camera")
+    people = {"alice": "Alice"}
+    source_face = registry.resolve_faces(
+        [_face("known")], timestamp=1, frame_sequence=10, people=people
+    )[0]
+    latest_box = NormalizedBBox(0.23, 0.1, 0.33, 0.2)
+    latest_face = registry.resolve_faces(
+        [replace(_face("known"), bbox=latest_box)],
+        timestamp=2,
+        frame_sequence=20,
+        people=people,
+    )[0]
+    current = registry.prepare_analysis(_result(1), _bundle())
+    subject_id = source_face.attributes["subject_id"]
+    assert latest_face.attributes["subject_id"] == subject_id
+    assert current.objects[0].attributes["subject_ids"] == (subject_id,)
+    assert current.objects[0].bbox == ITEM
+    assert registry._subjects[subject_id].bbox == latest_box
+    assert registry._subjects[subject_id].seen_at == 2
+
+
+def test_late_actor_cannot_bind_new_person_at_old_person_position() -> None:
+    registry = PersonRegistry("session", "camera")
+    people = {"alice": "Alice", "bob": "Bob"}
+    old_face = registry.resolve_faces(
+        [_face("known")], timestamp=1, frame_sequence=10, people=people
+    )[0]
+    new_face = registry.resolve_faces(
+        [_face("known", person_id="bob")],
+        timestamp=5,
+        frame_sequence=50,
+        people=people,
+    )[0]
+    current = registry.prepare_analysis(_result(1), _bundle())
+    assert old_face.attributes["subject_id"] != new_face.attributes["subject_id"]
+    assert (
+        current.objects[0].attributes["subject_id"]
+        == old_face.attributes["subject_id"]
+    )
+    assert "subject_identity" not in current.objects[0].attributes
+
+
+def test_source_actor_uses_frame_sequence_and_recent_face_limit() -> None:
+    for face_timestamp, face_sequence, source_timestamp in (
+        (1.0, 11, 1.0),  # Same timestamp, but a future source frame.
+        (0.0, 0, 0.6001),  # The last face is too old for source association.
+    ):
+        registry = PersonRegistry("session", "camera")
+        face = registry.resolve_faces(
+            [_face("known")],
+            timestamp=face_timestamp,
+            frame_sequence=face_sequence,
+            people={"alice": "Alice"},
+        )[0]
+        current = registry.prepare_analysis(_result(source_timestamp), _bundle())
+        assert (
+            current.objects[0].attributes.get("subject_id")
+            != face.attributes["subject_id"]
+        )
+
+
+def test_source_actor_rejects_two_faces_inside_one_body() -> None:
+    registry = PersonRegistry("session", "camera")
+    second_face = replace(
+        _face("known", person_id="bob"),
+        bbox=NormalizedBBox(0.31, 0.1, 0.41, 0.2),
+    )
+    faces = registry.resolve_faces(
+        [_face("known"), second_face],
+        timestamp=1,
+        frame_sequence=10,
+        people={"alice": "Alice", "bob": "Bob"},
+    )
+    current = registry.prepare_analysis(_result(1), _bundle())
+    assert not set(current.objects[0].attributes.get("subject_ids", ())).intersection(
+        face.attributes["subject_id"] for face in faces
+    )
+
+
+def test_one_source_face_cannot_be_claimed_by_two_actors() -> None:
+    registry = PersonRegistry("session", "camera")
+    face = registry.resolve_faces(
+        [_face("known")], timestamp=1, frame_sequence=10, people={"alice": "Alice"}
+    )[0]
+    bundle = ObservationBundle(
+        (
+            ModelActor("a1", BODY),
+            ModelActor("a2", NormalizedBBox(0.05, 0.01, 0.6, 0.9)),
+        ),
+        (("a1", "a2"),),
+    )
+    current = registry.prepare_analysis(_result(1), bundle)
+    assert face.attributes["subject_id"] not in current.objects[0].attributes.get(
+        "subject_ids", ()
+    )
+
+
+def test_face_history_covers_delayed_results_and_expires_within_90_seconds() -> None:
+    registry = PersonRegistry("session", "camera")
+    original_id = None
+    for index in range(1000):
+        face = registry.resolve_faces(
+            [_face("known")],
+            timestamp=index / 7.5,
+            frame_sequence=index,
+            people={"alice": "Alice"},
+        )[0]
+        if index == 413:
+            original_id = face.attributes["subject_id"]
+    assert len(registry._face_history) <= 1024
+    assert registry._face_history[0].timestamp >= 999 / 7.5 - 90
+    current = registry.prepare_analysis(_result(55.1), _bundle())
+    assert current.objects[0].attributes["subject_id"] == original_id
+
+
+def test_held_face_cannot_supply_source_actor_or_observed_clear() -> None:
+    registry = PersonRegistry("session", "camera")
+    face = registry.resolve_faces(
+        [_face("unknown")], timestamp=0, frame_sequence=0, people={}
+    )[0]
+    held = registry.resolve_faces([], timestamp=0.5, frame_sequence=5, people={})[0]
+    assert face.attributes["face_observation_state"] == "observed"
+    assert held.attributes["face_observation_state"] == "held"
+    current = registry.prepare_analysis(_result(0.5), _bundle())
+    assert current.objects[0].attributes["subject_id"] != face.attributes["subject_id"]
+
+
+def test_later_source_face_corrects_pending_event_with_provisional_body_id() -> None:
+    registry = PersonRegistry("session", "camera")
+    # The event was provisionally associated before the face branch completed.
+    previous = registry.prepare_analysis(_result(1), _bundle())
+    old_id = previous.objects[0].attributes["subject_id"]
+    # The nearest preceding face finishes later. It must not inherit a future
+    # body snapshot, and supplies its own source-time face ID for the event.
+    face = registry.resolve_faces(
+        [_face("known")], timestamp=0.5, frame_sequence=5, people={"alice": "Alice"}
+    )[0]
+    assert face.attributes["subject_id"] != old_id
+    updates = registry.drain_reassociated_results()
+    assert len(updates) == 1
+    assert updates[0].objects[0].attributes["subject_ids"] == (
+        face.attributes["subject_id"],
+    )
+    assert (
+        updates[0].objects[0].attributes["subject_id"]
+        == face.attributes["subject_id"]
+    )
+    assert updates[0].message_id == previous.message_id
+    assert updates[0].judgments == previous.judgments
+    assert updates[0].frame == previous.frame
+    assert registry.drain_reassociated_results() == ()
+    following = registry.resolve_faces(
+        [_face("known")], timestamp=1.5, frame_sequence=15, people={"alice": "Alice"}
+    )[0]
+    assert following.attributes["subject_id"] == face.attributes["subject_id"]
+
+
 def test_multiple_people_keep_distinct_subjects_when_actor_order_changes() -> None:
     registry = PersonRegistry("session", "camera")
     for timestamp, actors in (

@@ -541,7 +541,9 @@ def test_select_overlay_changes_event_state_only_at_right_keyframe() -> None:
     )
 
     between = select_overlay((positive, clear), 0.2, max_gap_seconds=0.8)
-    at_clear = select_overlay((positive, clear), 0.4, max_gap_seconds=0.8)
+    at_clear = select_overlay(
+        (positive, clear), 0.4, max_gap_seconds=0.8, clear_after_negatives=1,
+    )
 
     assert between.analysis is not None
     assert between.analysis.judgments[0].detected is True

@@ -19,6 +19,11 @@ import numpy as np
 
 from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
+from .event_sensitivity import (
+    SENSITIVITY_SYSTEM_PROMPT,
+    normalize_event_sensitivities,
+    sensitivity_policy_text,
+)
 from .model_api import ModelAPIClient, ModelAPIError, ModelAPISettings
 from .privacy import PUBLIC_ANALYSIS_ERROR, PUBLIC_FACE_ERROR
 from .reference_memory import (
@@ -66,8 +71,15 @@ SMOKING_EVIDENCE_RULE = (
 
 
 def _system_prompt_with_evidence_rules(
-    system_prompt: str, event_labels: Collection[str]
+    system_prompt: str, event_labels: Collection[str],
+    event_sensitivities: Mapping[str, str] | None = None,
 ) -> str:
+    if event_sensitivities is not None:
+        settings = normalize_event_sensitivities(event_sensitivities, event_labels)
+        if settings:
+            return SENSITIVITY_SYSTEM_PROMPT + "\n\n" + sensitivity_policy_text(
+                settings, smoking_standard_rule=SMOKING_EVIDENCE_RULE,
+            )
     if "smoking" in {label.strip().casefold() for label in event_labels}:
         return f"{system_prompt}\n\n{SMOKING_EVIDENCE_RULE}"
     return system_prompt
@@ -80,6 +92,18 @@ BILINGUAL_DESCRIPTION_RULE = (
     "adding details in either language. This language rule also applies to "
     "negative judgments and supersedes earlier monolingual description examples. "
     "Keep JSON keys, event_label values, object labels, and identifiers unchanged."
+)
+COMPACT_NO_EVENTS_RULE = (
+    "Compact negative output exception (overrides all full-event JSON examples, "
+    "description requirements, and actor instructions below): after checking "
+    "EVERY requested safety event, if ALL are negative, return ONLY "
+    '{"no_events":0.95}. Replace 0.95 with your numeric confidence (0..1) in '
+    "the all-negative verdict. Include no other keys, events, descriptions, "
+    "actors, boxes, or prose. This is a completed negative verdict for every "
+    "requested label, never a substitute for an error or an unperformed check. "
+    "If ANY requested event is positive, do NOT use no_events: return the full "
+    "events array for every requested label, with bilingual descriptions and "
+    "grounded target boxes as specified."
 )
 ACTOR_ASSOCIATION_RULE = (
     "Additional optional tracking metadata, without changing any event verdict "
@@ -98,6 +122,46 @@ ACTOR_ASSOCIATION_RULE = (
     "output budget; omit auxiliary actors before omitting required event fields. "
     "Do not describe actors in prose. Reference images are never live actors."
 )
+POSITIVE_EVENT_ACTOR_RULE = (
+    "Only when at least one event is positive, optionally add a top-level "
+    "actors array with at most 8 clearly visible people in the NEWEST LIVE "
+    "image, prioritizing event participants. Each actor has actor_id (a short "
+    "response-local ID), confidence (0..1), and a tight visible body bbox_2d "
+    "on the same 0..1000 grid. Event objects may have actor_ids naming these "
+    "people only when participation or item ownership is visible; otherwise "
+    "use actor_ids=[]. Proximity alone is insufficient. Keep smoking/weapon "
+    "objects as item boxes and body boxes in actors. Never invent people, "
+    "names, stable IDs, hidden body extent, or prose about actors. Omit actors "
+    "before omitting required event fields. When all events are negative, "
+    "return only no_events and omit actors entirely."
+)
+
+
+def _sensitivity_actor_rule(rule: str, smoking_high: bool) -> str:
+    if not smoking_high:
+        return rule
+    return rule.replace(
+        "Keep smoking/weapon objects as item boxes; put body boxes only in actors.",
+        "Keep weapon objects as item boxes. Smoking may use visible item, "
+        "hand/mouth action, or involved-person boxes under its HIGH policy.",
+    ).replace(
+        "Keep smoking/weapon objects as item boxes and body boxes in actors.",
+        "Keep weapon objects as item boxes. Smoking may use visible item, "
+        "hand/mouth action, or involved-person boxes under its HIGH policy.",
+    )
+
+
+def _smoking_box_rule(smoking_high: bool) -> str:
+    if smoking_high:
+        return (
+            "For smoking, box the visible smoking item when available; otherwise "
+            "use the visible hand/mouth action region (label smoking_action) "
+            "or involved visible person (label person). Never invent an item box. "
+        )
+    return (
+        "For smoking, return only the cigarette, cigar, pipe, or e-cigarette box, "
+        "never the smoker's person box. "
+    )
 _EVENT_NAMES_ZH = {
     "fight": "打架",
     "smoking": "吸烟",
@@ -330,6 +394,9 @@ class GroundingResponse:
     completed_branches: tuple[str, ...] = ()
     # Bounded local runtime diagnostics, never part of the public v2 result.
     face_diagnostics: Mapping[str, Any] | None = field(default=None, repr=False)
+    classification_diagnostics: Mapping[str, Any] | None = field(
+        default=None, repr=False,
+    )
 
     @property
     def ok(self) -> bool:
@@ -458,6 +525,52 @@ def _record_analysis_failure(
         status_code,
     )
     return code
+
+
+def _classification_diagnostics(
+    response: Mapping[str, Any],
+    text: str,
+    *,
+    error: Exception | None = None,
+    recovered: bool = False,
+) -> dict[str, Any]:
+    """Expose bounded schema diagnostics without provider prose or images."""
+
+    category = "single_event_envelope" if recovered else "invalid_schema"
+    message = str(error) if error is not None else ""
+    if "JSON" in message:
+        category = "invalid_json"
+    elif message == "events must be an array":
+        category = "invalid_envelope"
+    elif "bbox_2d" in message:
+        category = "invalid_bbox"
+    elif "confidence" in message:
+        category = "invalid_confidence"
+    elif message == "description must use Chinese / English format":
+        category = "description_format"
+    elif message.startswith("model response is missing event labels:"):
+        category = "missing_event_labels"
+    elif message.startswith("no_events"):
+        category = "invalid_compact_negative"
+    result: dict[str, Any] = {
+        "category": category,
+        "recovered": recovered,
+        "response_chars": len(text),
+    }
+    try:
+        reason = response["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        reason = None
+    result["finish_reason"] = (
+        reason if isinstance(reason, str) and reason in (
+            "stop", "length", "content_filter", "tool_calls", "function_call",
+        ) else "unknown"
+    )
+    usage = response.get("usage") if isinstance(response, Mapping) else None
+    tokens = usage.get("completion_tokens") if isinstance(usage, Mapping) else None
+    if type(tokens) is int and 0 <= tokens <= 1_000_000:
+        result["completion_tokens"] = tokens
+    return result
 
 
 class GroundingClient(Protocol):
@@ -732,7 +845,7 @@ def parse_multi_grounded_classification(
     analysis_kind: str = SAFETY_MULTI_ANALYSIS_KIND,
     require_bilingual: bool = False,
 ) -> MultiGroundedClassification:
-    """Parse one strict grounded judgment for every requested event label."""
+    """Parse every requested label, accepting a legacy envelope for one label."""
 
     requested_labels = tuple(str(label).strip() for label in event_labels)
     if not requested_labels or any(not label for label in requested_labels):
@@ -741,7 +854,42 @@ def parse_multi_grounded_classification(
         raise ValueError("event_labels must be unique")
 
     payload = _json_object(text)
+    if "no_events" in payload:
+        if set(payload) != {"no_events"}:
+            raise ValueError("no_events must be the only response field")
+        confidence = _number(payload["no_events"], "no_events")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("no_events must be between 0 and 1")
+        return MultiGroundedClassification(
+            judgments=tuple(
+                GroundedEventClassification(
+                    event_label=label,
+                    detected=False,
+                    confidence=confidence,
+                    description=(
+                        f"未检测到{_EVENT_NAMES_ZH.get(label, label)}。 / "
+                        f"No {label} detected."
+                    ),
+                    objects=(),
+                )
+                for label in requested_labels
+            ),
+            analysis_kind=analysis_kind,
+        )
     raw_events = payload.get("events")
+    if (
+        "events" not in payload
+        and len(requested_labels) == 1
+        and "detected" in payload
+    ):
+        # Older single-event prompts use a top-level verdict. There is exactly
+        # one possible target here; normalize only the envelope, then run every
+        # ordinary verdict/description/bbox check below. Never infer negatives
+        # for omitted labels in a multi-target response.
+        target = requested_labels[0]
+        if "event_label" in payload and payload["event_label"] != target:
+            raise ValueError("single-event response does not match requested label")
+        raw_events = [{**payload, "event_label": target}]
     if not isinstance(raw_events, list):
         raise TypeError("events must be an array")
 
@@ -802,6 +950,7 @@ def build_grounding_messages(
     system_prompt: str,
     prompt: str,
     memory_context: MemoryContext | None = None,
+    event_sensitivities: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     effective_event_label = (
         UNKNOWN_FACE_EVENT_LABEL
@@ -809,6 +958,30 @@ def build_grounding_messages(
         and memory_context.purpose == FACE_RECOGNITION_PURPOSE
         else event_label
     )
+    if memory_context is not None:
+        event_sensitivities = None
+    if event_sensitivities is not None:
+        event_sensitivities = normalize_event_sensitivities(
+            event_sensitivities, (effective_event_label,),
+        )
+    smoking_high = (
+        event_sensitivities is not None
+        and event_sensitivities.get("smoking") == "high"
+        and effective_event_label == "smoking"
+    )
+    if event_sensitivities and effective_event_label in SAFETY_EVENT_LABELS:
+        # Console policies replace legacy prose and JSON examples together so
+        # older item-only instructions cannot contradict a chosen HIGH policy.
+        prompt = (
+            "Judge the target event in the NEWEST image using its selected "
+            "sensitivity policy. Return one JSON object with detected (boolean), "
+            "confidence (0..1), description (Chinese / English), and objects. "
+            "Each object has label, confidence, and bbox_2d=[x1,y1,x2,y2] on "
+            "the 0..1000 grid. Positive requires at least one grounded box; "
+            "negative uses objects=[]. For fight/fall box involved people. "
+            + _smoking_box_rule(smoking_high)
+            + "For weapon box only the visible weapon item."
+        )
     rendered_prompt = prompt.replace("{event}", effective_event_label).replace(
         "{window_label}", window.label
     )
@@ -858,7 +1031,7 @@ def build_grounding_messages(
         )
         content = list(memory_context.prompt_prefix)
         content.append({"type": "text", "text": text})
-    actor_rule = ACTOR_ASSOCIATION_RULE
+    actor_rule = _sensitivity_actor_rule(ACTOR_ASSOCIATION_RULE, smoking_high)
     if (
         memory_context is not None
         and memory_context.purpose == FACE_RECOGNITION_PURPOSE
@@ -884,7 +1057,7 @@ def build_grounding_messages(
         {
             "role": "system",
             "content": _system_prompt_with_evidence_rules(
-                system_prompt, (effective_event_label,)
+                system_prompt, (effective_event_label,), event_sensitivities,
             )
             + f"\n\n{BILINGUAL_DESCRIPTION_RULE}",
         },
@@ -899,10 +1072,27 @@ def build_multi_grounding_messages(
     prompt: str,
     event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
     append_contract: bool = True,
+    event_sensitivities: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build one Qwen request that judges all fixed safety events at once."""
 
     rendered_events = ", ".join(event_labels)
+    if event_sensitivities is not None:
+        event_sensitivities = normalize_event_sensitivities(
+            event_sensitivities, event_labels,
+        )
+    smoking_high = (
+        event_sensitivities is not None
+        and event_sensitivities.get("smoking") == "high"
+        and "smoking" in event_labels
+    )
+    if event_sensitivities:
+        prompt = "Judge every requested event using its selected sensitivity policy."
+        append_contract = True
+    # The shared legacy prompt has detection policy followed by its own
+    # single-event JSON contract. Keep that policy, and supply just one output
+    # contract for this multi-event client, including single-feature selections.
+    prompt = prompt.partition("Respond with only this JSON object:")[0].rstrip()
     rendered_prompt = (
         prompt.replace("{events}", rendered_events)
         .replace("{event}", rendered_events)
@@ -912,28 +1102,38 @@ def build_multi_grounding_messages(
         f"f{frame.sample_index}={frame.timestamp_seconds:.3f}s"
         for frame in window.frames
     )
+    policy_system_prompt = _system_prompt_with_evidence_rules(
+        system_prompt, event_labels, event_sensitivities,
+    )
     system_text = (
-        f"{_system_prompt_with_evidence_rules(system_prompt, event_labels)}\n"
+        f"{policy_system_prompt}\n"
         f"{BILINGUAL_DESCRIPTION_RULE}\n"
+        f"{COMPACT_NO_EVENTS_RULE}\n"
         "For this request, independently judge every fixed "
         "safety event and allow multiple simultaneous positives."
     )
     contract = (
-        "Authoritative fixed safety-event output contract (this supersedes any "
+        "When at least one event is positive, use this authoritative fixed "
+        "safety-event output contract (this supersedes any "
         "earlier single-event JSON example): return only one JSON object with an "
         "events array. The array must contain exactly one item for each target "
         "event in the stated order and use its exact event_label. Every item must "
         "contain event_label, detected (boolean), confidence (0..1 confidence in "
-        "that verdict), description (one short sentence of visible evidence), and "
+        "that verdict), description (Chinese / English visible evidence), and "
         "objects (array). Each object must contain label, confidence (0..1), and "
         "bbox_2d=[x1,y1,x2,y2] on Qwen's relative 0..1000 top-left-origin "
         "xyxy grid for the NEWEST image. A positive item requires at least one "
         "tight target box; a negative item must use objects=[]. For fight and "
-        "fall, return only the involved person's body box or boxes. For smoking, "
-        "return only the cigarette, cigar, pipe, or e-cigarette box, never the "
-        "smoker's person box. For weapon, use the same high-recall policy but "
+        "fall, return only the involved person's body box or boxes. "
+        + _smoking_box_rule(smoking_high)
+        + "For weapon, use the selected sensitivity policy and "
         "return only the firearm, knife, machete, club, or other weapon box, "
         "never the holder's person box."
+    )
+    system_text += (
+        "\nA positive response always has a top-level events array, even for "
+        "ONE requested event. Put detected, confidence, description and objects "
+        "inside that event item, never at the response root."
     )
     contract_section = f"\n\n{contract}" if append_contract else ""
     text = (
@@ -941,7 +1141,10 @@ def build_multi_grounding_messages(
         f"Target safety events (exact order): {rendered_events}\n"
         f"Window: {window.label}\n"
         f"Sample timestamps: {timestamps}"
-        f"{contract_section}\n\n{ACTOR_ASSOCIATION_RULE}\n"
+        f"{contract_section}\n\n"
+        f"{_sensitivity_actor_rule(POSITIVE_EVENT_ACTOR_RULE, smoking_high)}\n"
+        'If ALL requested events are negative, return only {"no_events":0.95} '
+        "with your confidence; omit all other fields.\n"
         "The live JPEG images follow in chronological order."
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
@@ -975,10 +1178,14 @@ class AIClubGroundingClient:
         settings: InferenceSettings,
         transport: ModelAPIClient,
         memory_context: MemoryContext | None = None,
+        event_sensitivities: Mapping[str, str] | None = None,
     ) -> None:
         self.settings = settings
         self._transport = transport
         self.memory_context = memory_context
+        self.event_sensitivities = (
+            dict(event_sensitivities) if event_sensitivities is not None else None
+        )
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
@@ -991,6 +1198,7 @@ class AIClubGroundingClient:
                     system_prompt=self.settings.system_prompt,
                     prompt=self.settings.prompt,
                     memory_context=self.memory_context,
+                    event_sensitivities=self.event_sensitivities,
                 ),
                 **dict(self.settings.request_parameters),
             )
@@ -1022,7 +1230,7 @@ class AIClubGroundingClient:
                 analysis_kind=_memory_analysis_kind(self.memory_context),
                 require_bilingual=True,
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             code = _record_analysis_failure(
                 window,
                 branch="safety",
@@ -1036,6 +1244,9 @@ class AIClubGroundingClient:
                 latency_seconds=latency,
                 error=PUBLIC_ANALYSIS_ERROR,
                 branch_errors=(("safety", code),),
+                classification_diagnostics=_classification_diagnostics(
+                    response, text, error=exc,
+                ),
             )
         return GroundingResponse(
             window=window,
@@ -1116,12 +1327,16 @@ class AIClubMultiGroundingClient:
         settings: InferenceSettings,
         transport: ModelAPIClient,
         event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
+        event_sensitivities: Mapping[str, str] | None = None,
     ) -> None:
         labels = tuple(event_labels)
         if not labels or len(set(labels)) != len(labels):
             raise ValueError("event_labels must be non-empty and unique")
         self.settings = settings
         self.event_labels = labels
+        self.event_sensitivities = (
+            dict(event_sensitivities) if event_sensitivities is not None else None
+        )
         self.memory_context = None
         self.model_name = PUBLIC_MODEL_NAME
         self._transport = transport
@@ -1155,6 +1370,7 @@ class AIClubMultiGroundingClient:
                     prompt=prompt,
                     event_labels=self.event_labels,
                     append_contract=not use_fixed_prompt,
+                    event_sensitivities=self.event_sensitivities,
                 ),
                 **request_parameters,
             )
@@ -1182,7 +1398,7 @@ class AIClubMultiGroundingClient:
                 event_labels=self.event_labels,
                 require_bilingual=True,
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             code = _record_analysis_failure(
                 window,
                 branch="safety",
@@ -1196,13 +1412,22 @@ class AIClubMultiGroundingClient:
                 latency_seconds=latency,
                 error=PUBLIC_ANALYSIS_ERROR,
                 branch_errors=(("safety", code),),
+                classification_diagnostics=_classification_diagnostics(
+                    response, text, error=exc,
+                ),
             )
+        payload = _json_object(text)
+        normalized_envelope = "detected" in payload and "events" not in payload
         return GroundingResponse(
             window=window,
             classification=classification,
             raw_text=None,
             latency_seconds=latency,
             completed_branches=("safety",),
+            classification_diagnostics=(
+                _classification_diagnostics(response, text, recovered=True)
+                if normalized_envelope else None
+            ),
         )
 
 
@@ -1603,6 +1828,10 @@ class SelectedFeaturesGroundingClient:
         completed_branches: list[str] = []
         safety_failed = False
         face_diagnostics = None
+        classification_diagnostics = (
+            safety_response.classification_diagnostics
+            if safety_response is not None else None
+        )
         actors: tuple[ModelActor, ...] = ()
         face_observations: tuple[ModelObject, ...] = ()
         if include_safety:
@@ -1724,6 +1953,7 @@ class SelectedFeaturesGroundingClient:
                 latency_seconds=time.monotonic() - started,
                 error=(PUBLIC_ANALYSIS_ERROR if safety_failed else PUBLIC_FACE_ERROR),
                 branch_errors=tuple(branch_errors),
+                classification_diagnostics=classification_diagnostics,
             )
 
         try:
@@ -1775,6 +2005,7 @@ class SelectedFeaturesGroundingClient:
             branch_errors=tuple(branch_errors),
             completed_branches=tuple(completed_branches),
             face_diagnostics=face_diagnostics,
+            classification_diagnostics=classification_diagnostics,
         )
 
 
@@ -1807,6 +2038,7 @@ def build_grounding_client(
     dry_run: bool = False,
     api_key: str | None = None,
     transport: ModelAPIClient | None = None,
+    event_sensitivities: Mapping[str, str] | None = None,
 ) -> GroundingClient:
     if dry_run:
         return DryRunGroundingClient(settings, memory_context)
@@ -1814,6 +2046,7 @@ def build_grounding_client(
         settings,
         transport or ModelAPIClient(aiclub_settings, api_key=api_key),
         memory_context,
+        event_sensitivities=event_sensitivities,
     )
 
 
@@ -1829,6 +2062,7 @@ def build_selected_features_grounding_client(
     dry_run: bool = False,
     api_key: str | None = None,
     transport: ModelAPIClient | None = None,
+    event_sensitivities: Mapping[str, str] | None = None,
 ) -> SelectedFeaturesGroundingClient:
     """Build one detector graph for an arbitrary non-empty feature subset."""
 
@@ -1857,6 +2091,7 @@ def build_selected_features_grounding_client(
                 settings,
                 transport or ModelAPIClient(aiclub_settings, api_key=api_key),
                 safety_labels,
+                event_sensitivities=event_sensitivities,
             )
     if include_stranger:
         if dry_run:

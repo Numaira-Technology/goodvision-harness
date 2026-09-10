@@ -322,13 +322,8 @@ def test_single_conflicting_match_does_not_replace_known_identity() -> None:
     assert retained.attributes["person_id"] == "alice"
 
 
-@pytest.mark.parametrize("initial_status", [None])
-def test_clear_unknown_requires_three_consecutive_observations(
-    initial_status: str | None,
-) -> None:
+def test_clear_unknown_is_reported_on_the_first_observation() -> None:
     tracker = FaceIdentityTracker()
-    if initial_status is not None:
-        _resolve(tracker, [_face(initial_status)], 0.0, 0)
 
     observed = [
         _resolve(tracker, [_face("unknown")], sequence * 0.4, sequence)[0]
@@ -336,8 +331,8 @@ def test_clear_unknown_requires_three_consecutive_observations(
     ]
 
     assert [item.attributes["status"] for item in observed] == [
-        "unusable",
-        "unusable",
+        "unknown",
+        "unknown",
         "unknown",
     ]
     assert [item.attributes["unknown_confirmations"] for item in observed] == [1, 2, 3]
@@ -349,7 +344,7 @@ def test_clear_unknown_requires_three_consecutive_observations(
     assert after_unknown.attributes["identity_age_seconds"] == pytest.approx(0.4)
 
 
-def test_poor_observation_breaks_unknown_confirmation_sequence() -> None:
+def test_poor_observation_does_not_delay_the_next_unknown_frame() -> None:
     tracker = FaceIdentityTracker()
     _resolve(tracker, [_face("unknown")], 0.0, 0)
     _resolve(tracker, [_face("unknown")], 0.4, 1)
@@ -357,12 +352,12 @@ def test_poor_observation_breaks_unknown_confirmation_sequence() -> None:
 
     observed = _resolve(tracker, [_face("unknown")], 1.2, 3)[0]
 
-    assert observed.attributes["status"] == "unusable"
+    assert observed.attributes["status"] == "unknown"
     assert observed.attributes["unknown_confirmations"] == 1
 
 
 @pytest.mark.parametrize("with_body", [False, True])
-def test_absent_face_breaks_unknown_confirmation_sequence(with_body: bool) -> None:
+def test_unknown_returns_immediately_after_a_missing_face(with_body: bool) -> None:
     tracker = FaceIdentityTracker()
     for sequence in range(2):
         timestamp = sequence * 0.4
@@ -389,19 +384,29 @@ def test_absent_face_breaks_unknown_confirmation_sequence(with_body: bool) -> No
         snapshot=_snapshot(1.2, 3) if with_body else None,
     )[0]
 
-    assert observed.attributes["status"] == "unusable"
+    assert observed.attributes["status"] == "unknown"
     assert observed.attributes["unknown_confirmations"] == 1
 
 
-def test_unknown_confirmations_are_not_shared_between_distinct_faces() -> None:
+def test_new_face_is_reported_immediately_with_its_own_track() -> None:
     tracker = FaceIdentityTracker()
     _resolve(tracker, [_face("unknown")], 0.0, 0)
     _resolve(tracker, [_face("unknown")], 0.4, 1)
 
     observed = _resolve(tracker, [_face("unknown", FAR_FACE)], 0.8, 2)[0]
 
-    assert observed.attributes["status"] == "unusable"
+    assert observed.attributes["status"] == "unknown"
     assert observed.attributes["unknown_confirmations"] == 1
+    assert observed.bbox == FAR_FACE
+
+
+def test_sparse_unknown_observations_do_not_need_consecutive_frames() -> None:
+    tracker = FaceIdentityTracker()
+    for sequence, timestamp in ((0, 0.0), (11, 4.5), (30, 12.0)):
+        observed = _resolve(tracker, [_face("unknown")], timestamp, sequence)[0]
+        assert observed.attributes["status"] == "unknown"
+        assert observed.attributes["unknown_confirmations"] == 1
+        assert observed.bbox == FACE
 
 
 @pytest.mark.parametrize(("timestamp", "sequence"), [(0.0, 2), (0.8, 0), (0.4, 1)])
@@ -537,9 +542,9 @@ def test_repeated_poor_faces_do_not_extend_confirmed_stranger_lifetime() -> None
 
     expired = _resolve(tracker, [_face("unusable")], 4.0, 10)[0]
     assert expired.attributes["status"] == "unusable"
-    pending = _resolve(tracker, [_face("unknown")], 4.4, 11)[0]
-    assert pending.attributes["status"] == "unusable"
-    assert pending.attributes["unknown_confirmations"] == 1
+    returning = _resolve(tracker, [_face("unknown")], 4.4, 11)[0]
+    assert returning.attributes["status"] == "unknown"
+    assert returning.attributes["unknown_confirmations"] == 1
 
 
 def test_missing_face_without_body_expires_after_three_seconds() -> None:
@@ -596,30 +601,25 @@ def test_missing_face_follows_body_and_expires_without_new_evidence() -> None:
 
 
 @pytest.mark.parametrize("with_body", [False, True])
-def test_unconfirmed_stranger_does_not_emit_annotation_for_missing_face(
+def test_single_frame_stranger_keeps_annotation_for_brief_missing_face(
     with_body: bool,
 ) -> None:
     tracker = FaceIdentityTracker()
-    for sequence in range(2):
-        timestamp = sequence * 0.4
-        _resolve(
-            tracker,
-            [_face("unknown")],
-            timestamp,
-            sequence,
-            snapshot=_snapshot(timestamp, sequence) if with_body else None,
-        )
-
-    assert (
-        _resolve(
-            tracker,
-            [],
-            0.8,
-            2,
-            snapshot=_snapshot(0.8, 2) if with_body else None,
-        )
-        == ()
+    _resolve(
+        tracker, [_face("unknown")], 0.0, 0,
+        snapshot=_snapshot(0.0, 0) if with_body else None,
     )
+
+    held = _resolve(
+        tracker,
+        [],
+        0.8,
+        2,
+        snapshot=_snapshot(0.8, 2) if with_body else None,
+    )
+    assert len(held) == 1
+    assert held[0].attributes["status"] == "unknown"
+    assert held[0].attributes["identity_source"] == "track_history"
 
 
 @pytest.mark.parametrize(
@@ -654,7 +654,7 @@ def test_confirmed_stranger_history_is_dropped_when_body_continuity_breaks(
         4,
         snapshot=_snapshot(1.6, 4),
     )[0]
-    assert returning.attributes["status"] == "unusable"
+    assert returning.attributes["status"] == "unknown"
     assert returning.attributes["unknown_confirmations"] == 1
 
 
@@ -727,7 +727,7 @@ def test_only_sustained_strict_quality_mismatches_can_reset_known_identity() -> 
         current = _resolve(tracker, [mismatch], sequence * 0.5, sequence)[0]
         assert current.attributes["status"] == "known"
     reset = _resolve(tracker, [mismatch], 2.5, 5)[0]
-    assert reset.attributes["status"] == "unusable"
+    assert reset.attributes["status"] == "unknown"
     assert reset.attributes["identity_reset"] is True
     for sequence in (6, 7):
         current = _resolve(tracker, [mismatch], sequence * 0.5, sequence)[0]
@@ -770,7 +770,7 @@ def test_abrupt_face_scale_change_cannot_inherit_identity_without_body(scale) ->
     half = 0.05 * scale
     changed = NormalizedBBox(0.25 - half, 0.15 - half, 0.25 + half, 0.15 + half)
     current = _resolve(tracker, [_face("unknown", changed)], 0.4, 1)[0]
-    assert current.attributes["status"] == "unusable"
+    assert current.attributes["status"] == "unknown"
     assert "person_id" not in current.attributes
     assert current.attributes["face_track_id"] != first.attributes["face_track_id"]
 
@@ -796,7 +796,7 @@ def test_real_sample_hard_cut_does_not_inherit_face_only_identity(control_box) -
     tracker = FaceIdentityTracker()
     _resolve(tracker, [_face("known", david)], 0, 0)
     current = _resolve(tracker, [_face("unknown", other)], 1, 1)[0]
-    assert current.attributes["status"] == "unusable"
+    assert current.attributes["status"] == "unknown"
     assert "person_id" not in current.attributes
 
 

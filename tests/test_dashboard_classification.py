@@ -11,8 +11,10 @@ import pytest
 
 @pytest.mark.parametrize(
     "script_name", [
-        "dashboard_classification.cjs", "dashboard_feed.cjs", "dashboard_buffer_delay.cjs",
+        "dashboard_classification.cjs", "dashboard_feed.cjs",
+        "dashboard_buffer_delay.cjs",
         "dashboard_camera_layout.cjs",
+        "dashboard_routes.cjs",
     ]
 )
 def test_dashboard_handlers(script_name: str) -> None:

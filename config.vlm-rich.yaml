@@ -194,7 +194,10 @@ inference:
       brandishes, or uses a likely gun, firearm, knife, blade, club, or other
       object being used or readied as a weapon.
 
-    Respond with only one JSON object in this exact shape and order:
+    If ALL requested events are negative, return only {"no_events":0.95},
+    replacing 0.95 with your confidence in that all-negative verdict.
+    Do not output descriptions, actors, or event arrays in this case.
+    Otherwise, respond with one JSON object in this exact shape and order:
     {"events":[
       {"event_label":"fight","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
       {"event_label":"smoking","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},

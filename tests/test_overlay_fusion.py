@@ -11,8 +11,8 @@ from goodvision_harness.contracts import (
     GroundedObject,
     NormalizedBBox,
 )
-from goodvision_harness.overlay_fusion import OverlayFusionMatcher
 from goodvision_harness.delayed_overlay import select_overlay
+from goodvision_harness.overlay_fusion import OverlayFusionMatcher
 from goodvision_harness.rich_labeling import RichLabelObject
 
 
@@ -82,11 +82,16 @@ def _analysis(
     )
 
 
-def test_carried_stranger_reuses_original_association_after_person_moves() -> None:
+@pytest.mark.parametrize("event_label", ["stranger", "fall"])
+def test_carried_event_reuses_original_association_after_person_moves(
+    event_label,
+) -> None:
     matcher = OverlayFusionMatcher()
     face = _analysis(
-        bbox=(0.25, 0.12, 0.35, 0.25), object_label="unknown_person",
-        alerts=(("stranger", 0.9),), message_id="face-source", object_id="object-1",
+        bbox=(0.25, 0.12, 0.35, 0.25) if event_label == "stranger"
+        else (0.15, 0.1, 0.5, 0.9),
+        object_label="unknown_person" if event_label == "stranger" else "person",
+        alerts=((event_label, 0.9),), message_id="face-source", object_id="object-1",
     )
     first = matcher.plan(face, (_rich("P1", (0.15, 0.1, 0.5, 0.9)),))
     assert "P1" in first.alerts_by_track_id()

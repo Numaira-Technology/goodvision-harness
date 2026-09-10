@@ -12,7 +12,6 @@ from .rich_labeling import RichLabelSnapshot
 
 _MAX_FACE_GAP = 3.0
 _MAX_BODY_AGE = 0.75
-_UNKNOWN_CONFIRMATIONS = 3
 _STRANGER_HOLD_SECONDS = 3.0
 
 
@@ -40,7 +39,8 @@ class FaceIdentityTracker:
 
     A body track supplies continuity, not identity evidence. Only a successful
     gallery match establishes identity. Poor observations cannot create a
-    stranger alert; clear mismatches require consecutive confirmation.
+    stranger alert. A usable unknown face is reported on its first observation;
+    established known identities retain their trajectory-based protection.
     """
 
     def __init__(self) -> None:
@@ -283,19 +283,13 @@ class FaceIdentityTracker:
                     track.unknown_count = 0
                     attributes.update(face_track_id=track.track_id, identity_reset=True)
                 track.unknown_count += 1
+                # Diagnostic only: a new stranger does not wait for a streak.
                 attributes["unknown_confirmations"] = track.unknown_count
-                if (
-                    track.unknown_count < _UNKNOWN_CONFIRMATIONS
-                    and not _confirmed_stranger(track, timestamp)
-                ):
-                    attributes.update(status="unusable", reason="identity_unconfirmed")
-                    item = replace(item, label="unusable_face")
-                else:
-                    track.person_id = None
-                    track.unknown_at = timestamp
-                    attributes["identity_source"] = "face_match"
-                    track.unknown_attributes = dict(attributes)
-                    track.unknown_confidence = item.confidence
+                track.person_id = None
+                track.unknown_at = timestamp
+                attributes["identity_source"] = "face_match"
+                track.unknown_attributes = dict(attributes)
+                track.unknown_confidence = item.confidence
             if body_id:
                 attributes["person_track_id"] = body_id
             resolved.append(replace(item, attributes=attributes))

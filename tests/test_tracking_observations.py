@@ -12,6 +12,7 @@ from goodvision_harness.contracts import NormalizedBBox
 from goodvision_harness.grounding import (
     ACTOR_ASSOCIATION_RULE,
     FACE_REFERENCE_ANALYSIS_KIND,
+    POSITIVE_EVENT_ACTOR_RULE,
     AIClubMultiGroundingClient,
     GroundedClassification,
     GroundingResponse,
@@ -144,9 +145,11 @@ def test_actor_contract_is_appended_for_custom_and_fixed_multi_prompts() -> None
         prompt="old fixed prompt",
         append_contract=False,
     )
-    for messages in (custom, fixed):
+    for messages, rule in (
+        (custom, ACTOR_ASSOCIATION_RULE), (fixed, POSITIVE_EVENT_ACTOR_RULE),
+    ):
         content = messages[1]["content"]
-        assert ACTOR_ASSOCIATION_RULE in content[0]["text"]
+        assert rule in content[0]["text"]
         assert len([item for item in content if item["type"] == "image_url"]) == 1
     assert "at most 8" in ACTOR_ASSOCIATION_RULE
     assert "every event is negative" in ACTOR_ASSOCIATION_RULE

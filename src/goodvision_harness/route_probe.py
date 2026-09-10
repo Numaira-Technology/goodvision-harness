@@ -27,7 +27,6 @@ from .model_api import (
 )
 from .sliding_window import FrameWindow, SampledFrame
 
-PREFERRED_THRESHOLD_SECONDS = 2.5
 PROBE_TRIALS = 3
 MAX_PROBE_CONCURRENCY = 4
 EXCLUDED_PROVIDERS = OPENROUTER_EXCLUDED_PROVIDERS
@@ -145,7 +144,7 @@ def empty_results() -> list[dict[str, Any]]:
 
 
 def choose_route(results: list[dict[str, Any]]) -> tuple[str | None, str]:
-    """Prefer the fastest 35B route strictly below 2.5s, else fastest valid route."""
+    """Choose the lowest median latency among fully successful routes."""
     eligible = [
         row for row in results
         if row["id"] in ROUTES_BY_ID and row.get("eligible")
@@ -154,17 +153,10 @@ def choose_route(results: list[dict[str, Any]]) -> tuple[str | None, str]:
     ]
     if not eligible:
         return None, "no_available_route"
-    preferred = [
-        row for row in eligible
-        if ROUTES_BY_ID[row["id"]].preferred
-        and row["median_seconds"] < PREFERRED_THRESHOLD_SECONDS
-    ]
     fastest = min(
-        preferred or eligible, key=lambda row: (row["median_seconds"], row["id"]),
+        eligible, key=lambda row: (row["median_seconds"], row["id"]),
     )
-    return fastest["id"], (
-        "preferred_below_threshold" if preferred else "fastest_available"
-    )
+    return fastest["id"], "fastest_available"
 
 
 def probe_window(index: int = 0) -> FrameWindow:
@@ -206,6 +198,7 @@ def probe_sample(
         )
         parse_multi_grounded_classification(
             transport.assistant_text(response), event_labels=SAFETY_EVENT_LABELS,
+            require_bilingual=True,
         )
     except ModelAPIError:
         error = "request_failed"

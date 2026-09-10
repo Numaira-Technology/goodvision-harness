@@ -35,6 +35,20 @@ _PERSON_LABELS = frozenset(
         "fighter",
     }
 )
+_SOURCE_FACE_MAX_GAP_SECONDS = 0.6
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceFace:
+    subject_id: str
+    bbox: NormalizedBBox
+
+
+@dataclass(frozen=True, slots=True)
+class _FaceSnapshot:
+    timestamp: float
+    sequence: int
+    faces: tuple[_SourceFace, ...]
 
 
 @dataclass(slots=True)
@@ -75,6 +89,7 @@ class PersonRegistry:
         self._body_aliases: dict[str, str] = {}
         self._face_aliases: dict[str, str] = {}
         self._history: deque[RichLabelSnapshot] = deque(maxlen=1024)
+        self._face_history: deque[_FaceSnapshot] = deque(maxlen=1024)
         self._pending: OrderedDict[str, tuple[AnalysisResult, ObservationBundle]] = (
             OrderedDict()
         )
@@ -134,7 +149,12 @@ class PersonRegistry:
         }
 
     def _replace_subject_aliases(
-        self, old_id: str, new_id: str, timestamp: float
+        self,
+        old_id: str,
+        new_id: str,
+        timestamp: float,
+        *,
+        frame_sequence: int | None = None,
     ) -> None:
         self._body_aliases = {
             key: new_id if value == old_id else value
@@ -157,6 +177,9 @@ class PersonRegistry:
                     ),
                 )
                 if snapshot.timestamp_seconds == timestamp
+                and (
+                    frame_sequence is None or snapshot.frame_sequence == frame_sequence
+                )
                 else snapshot
                 for snapshot in self._history
             ),
@@ -219,9 +242,13 @@ class PersonRegistry:
         timestamp: float,
         *,
         worker: bool = False,
+        excluded_subject_ids: set[str] | None = None,
     ) -> dict[str, str]:
         self._expire(timestamp)
-        candidates = tuple(self._subjects.values())
+        candidates = tuple(
+            item for item in self._subjects.values()
+            if item.subject_id not in (excluded_subject_ids or ())
+        )
         assignments: dict[str, str] = {}
         proposals: dict[str, _Subject | None] = {}
         disputed: set[str] = set()
@@ -369,6 +396,70 @@ class PersonRegistry:
         with self._lock:
             return tuple(self._history)
 
+    def _record_faces(
+        self, timestamp: float, sequence: int, faces: tuple[ModelObject, ...]
+    ) -> None:
+        # Empty observations are meaningful: never borrow a disappeared person's
+        # older face to identify an actor in a later, explicitly empty frame.
+        snapshot = _FaceSnapshot(
+            timestamp,
+            sequence,
+            tuple(
+                _SourceFace(str(item.attributes["subject_id"]), item.bbox)
+                for item in faces
+            ),
+        )
+        records = sorted(
+            (
+                *(
+                    item
+                    for item in self._face_history
+                    if (item.timestamp, item.sequence) != (timestamp, sequence)
+                ),
+                snapshot,
+            ),
+            key=lambda item: (item.timestamp, item.sequence),
+        )
+        cutoff = max(self._latest_time, timestamp) - 90.0
+        self._face_history = deque(
+            (item for item in records[-1024:] if item.timestamp >= cutoff),
+            maxlen=1024,
+        )
+
+    def _source_face_actors(
+        self, actors: Sequence[ModelActor], timestamp: float, sequence: int
+    ) -> dict[str, str]:
+        snapshot = max(
+            (
+                item
+                for item in self._face_history
+                if item.timestamp <= timestamp and item.sequence <= sequence
+            ),
+            key=lambda item: (item.timestamp, item.sequence),
+            default=None,
+        )
+        if (
+            snapshot is None
+            or timestamp - snapshot.timestamp > _SOURCE_FACE_MAX_GAP_SECONDS
+        ):
+            return {}
+        proposals = {}
+        candidate_counts: Counter[str] = Counter()
+        for actor in actors:
+            candidates = [
+                face.subject_id
+                for face in snapshot.faces
+                if _face_body_score(face.bbox, actor.bbox) is not None
+            ]
+            candidate_counts.update(candidates)
+            if len(candidates) == 1:
+                proposals[actor.actor_id] = candidates[0]
+        return {
+            actor_id: subject_id
+            for actor_id, subject_id in proposals.items()
+            if candidate_counts[subject_id] == 1
+        }
+
     def resolve_faces(
         self,
         objects: Sequence[ModelObject],
@@ -416,10 +507,15 @@ class PersonRegistry:
             result = []
             for item in resolved:
                 attributes = dict(item.attributes)
+                attributes["face_observation_state"] = (
+                    "observed"
+                    if any(item.bbox == raw.bbox for raw in objects)
+                    else "held"
+                )
                 face_id = str(attributes.get("face_track_id", ""))
                 # A delayed face must not inherit future identity state.
                 if not face_id:
-                    result.append(item)
+                    result.append(replace(item, attributes=attributes))
                     continue
                 body_id = str(attributes.get("person_track_id", ""))
                 subject = self._subjects.get(body_id) or self._subjects.get(
@@ -469,6 +565,15 @@ class PersonRegistry:
                 )
                 result.append(replace(item, attributes=attributes))
             self._expire(timestamp)
+            self._record_faces(
+                timestamp,
+                frame_sequence,
+                tuple(
+                    item for item in result
+                    if item.attributes.get("subject_id")
+                    and item.attributes.get("face_observation_state") == "observed"
+                ),
+            )
             return tuple(result)
 
     def prepare_analysis(
@@ -488,7 +593,26 @@ class PersonRegistry:
             if not self.source_id:
                 self.source_id = result.source_id
             actors = _unique_actors(bundle.actors)
-            actor_map: dict[str, str] = {}
+            face_actor_map = self._source_face_actors(actors, timestamp, sequence)
+            source_snapshot = self.snapshot_at(timestamp, sequence)
+            if source_snapshot is not None and (
+                source_snapshot.timestamp_seconds, source_snapshot.frame_sequence
+            ) == (timestamp, sequence):
+                for actor in actors:
+                    face_id = face_actor_map.get(actor.actor_id)
+                    old_body = _unique_body(actor.bbox, source_snapshot.objects)
+                    if (
+                        face_id is not None and old_body is not None
+                        and old_body.track_id != face_id
+                    ):
+                        # Keep the next face from jumping back to the provisional
+                        # body ID after this event receives its source-face owner.
+                        self._subjects.pop(old_body.track_id, None)
+                        self._replace_subject_aliases(
+                            old_body.track_id, face_id, timestamp,
+                            frame_sequence=sequence,
+                        )
+            actor_map: dict[str, str] = dict(face_actor_map)
             latest_body_time = max(
                 (
                     item.seen_at
@@ -502,10 +626,17 @@ class PersonRegistry:
                 sequence,
             ) > self._actor_watermark and timestamp >= latest_body_time:
                 self._actor_watermark = (timestamp, sequence)
-                actor_map = self._observe_bodies(
-                    [(item.actor_id, item.bbox, item.confidence) for item in actors],
+                actor_map.update(self._observe_bodies(
+                    [
+                        (item.actor_id, item.bbox, item.confidence)
+                        for item in actors if item.actor_id not in face_actor_map
+                    ],
                     timestamp,
-                )
+                    excluded_subject_ids=set(face_actor_map.values()) | {
+                        item.subject_id for item in self._subjects.values()
+                        if item.kind == "face"
+                    },
+                ))
                 body_objects = tuple(
                     RichLabelObject(
                         actor_map[item.actor_id],
@@ -528,6 +659,8 @@ class PersonRegistry:
                     and timestamp - snapshot.timestamp_seconds <= self.max_gap_seconds
                 ):
                     for actor in actors:
+                        if actor.actor_id in face_actor_map:
+                            continue
                         match = _unique_body(actor.bbox, snapshot.objects)
                         if match is not None:
                             actor_map[actor.actor_id] = match.track_id
@@ -607,6 +740,21 @@ class PersonRegistry:
                     ):
                         ids.append(actor_map[actor_id])
                 face = faces.get(str(attributes.get("face_track_id", "")))
+                if ids and any(
+                    actor_id in face_actor_map
+                    for actor_id in (
+                        bundle.object_actor_ids[index]
+                        if index < len(bundle.object_actor_ids) else ()
+                    )
+                ):
+                    # A provisional body ID may already be public/archived. A
+                    # source-face correction replaces it, never adds a second
+                    # owner to the same event.
+                    for key in (
+                        "subject_id", "subject_ids", "person_track_id",
+                        "subject_identity",
+                    ):
+                        attributes.pop(key, None)
                 for source in (attributes, face.attributes if face is not None else {}):
                     subject_id = source.get("subject_id")
                     if isinstance(subject_id, str) and subject_id.startswith(
@@ -672,7 +820,9 @@ class PersonRegistry:
                             )
             prepared = replace(result, objects=tuple(records))
             if not self._reassociating:
-                if _has_unassociated_positive(prepared):
+                if _has_unassociated_positive(prepared) or _needs_face_association(
+                    prepared, bundle, face_actor_map
+                ):
                     self._pending[result.message_id] = (prepared, bundle)
                     self._pending.move_to_end(result.message_id)
                 else:
@@ -700,7 +850,14 @@ class PersonRegistry:
                         )
                     ):
                         updates.append(current)
-                    if _has_unassociated_positive(current):
+                    face_actor_map = self._source_face_actors(
+                        _unique_actors(bundle.actors),
+                        current.frame.timestamp_seconds,
+                        current.frame.source_frame_index,
+                    )
+                    if _has_unassociated_positive(current) or _needs_face_association(
+                        current, bundle, face_actor_map
+                    ):
                         self._pending[message_id] = (current, bundle)
                         self._pending.move_to_end(message_id)
                     else:
@@ -720,6 +877,27 @@ def _has_unassociated_positive(result: AnalysisResult) -> bool:
     return any(
         item.object_id in positive_ids and not item.attributes.get("subject_ids")
         for item in result.objects
+    )
+
+
+def _needs_face_association(
+    result: AnalysisResult,
+    bundle: ObservationBundle,
+    face_actor_map: Mapping[str, str],
+) -> bool:
+    positive_ids = {
+        object_id
+        for judgment in result.judgments if judgment.detected
+        for object_id in judgment.object_ids
+    }
+    return any(
+        item.object_id in positive_ids
+        and index < len(bundle.object_actor_ids)
+        and any(
+            actor_id not in face_actor_map
+            for actor_id in bundle.object_actor_ids[index]
+        )
+        for index, item in enumerate(result.objects)
     )
 
 

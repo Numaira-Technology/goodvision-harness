@@ -111,7 +111,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     <div class="deployment-head">
       <div class="deployment-title">
         <div class="section-title"><h2 id="route-title">线路测速</h2><span class="scope persistent">启动前检查</span></div>
-        <p class="note">线路分批检查，每条预热后测 3 次完整响应，以中位耗时选路。优先组低于 2.5 秒时优先，否则选择最快的可用线路。请等待全部线路完成。</p>
+        <p class="note">线路分批检查，每条预热后测 3 次完整响应。自动选择全部成功且中位耗时最短的线路，也可在表格中手动选择并保存。切换线路前请先停止检测。</p>
         <p class="note">使用固定测试图发起真实请求，会产生少量 API 费用。结果用于选路，实际视频延迟还包含本地处理。</p>
       </div>
       <button id="route-check-button" class="btn primary" disabled>检查最快线路</button>
@@ -119,7 +119,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     <div class="state-line" style="margin-top:12px"><strong id="route-selected">当前线路：读取中</strong></div>
     <div id="route-note" class="status deployment-note" role="status" aria-live="polite">正在读取线路配置…</div>
     <div class="scroll">
-      <table aria-label="线路测速结果"><thead><tr><th>线路</th><th>状态</th><th>成功次数</th><th>中位耗时</th><th>测量记录</th></tr></thead>
+      <table aria-label="线路测速结果"><thead><tr><th>线路</th><th>状态</th><th>成功次数</th><th>中位耗时</th><th>测量记录</th><th>手动选择</th></tr></thead>
       <tbody id="route-results"></tbody></table>
     </div>
   </section>
@@ -163,6 +163,11 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
             </div>
           </div>
           <label class="switch"><input id="dry-run" type="checkbox"> this run only · dry run · no model calls</label>
+        </div>
+        <div class="field" id="event-sensitivity-controls">
+          <span>事件敏感度 · 启动前调整</span>
+          <div id="event-sensitivity-fields" class="row"></div>
+          <span class="note">高敏感度更容易触发警报，也可能增加误报。行为警报需连续 10 次有效阴性才解除；人脸识别使用独立设置。</span>
         </div>
         <div class="session-actions">
           <button id="start-button" class="btn primary" disabled>Start selected detection</button>
@@ -221,7 +226,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
         <p id="overall-description" class="frame-summary-text">等待当前帧分析… / Waiting for frame analysis…</p>
       </section>
       <div id="annotation-note" class="note annotation-note">
-        Full-cadence source frames are delayed and server-rendered with bbox interpolation.
+        Events follow the same person's latest face frame. Each person's event clears independently.
         <a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.
       </div>
       <div id="rich-annotation-status" class="note annotation-note" aria-live="polite" hidden></div>
@@ -241,6 +246,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
         <div id="description" class="description">Choose features and an input, then start detection.</div>
         <div id="decision-meta" class="meta"></div>
       </div>
+      <div id="event-notice" class="error-banner" role="status" aria-live="polite" hidden></div>
     </section>
   </div>
 
@@ -391,17 +397,21 @@ const featureInputs=[...document.querySelectorAll("[data-feature]")];
 const saveApiKeyButton=$("save-api-key-button");
 const localHosts=new Set(["localhost","127.0.0.1","::1","[::1]"]);
 const detectionEvents=["fight","smoking","fall","weapon","stranger"];
+const safetyEvents=detectionEvents.filter(key=>key!=="stranger");
+const sensitivityInputs=new Map();
+const clearAfterNegatives=10;
 const cameraAllowed=window.isSecureContext||localHosts.has(location.hostname);
 const activeStates=new Set(["starting","running"]);
 const state={
-  routes:null,routeLoading:false,routeSubmitting:false,
+  routes:null,routeLoading:false,routeSubmitting:false,routeRevision:0,
   info:null,mode:"stream",sessionAnalysisMode:null,sessionFeatures:null,
   deployment:null,deploymentLoading:false,deploymentSaving:false,runOverridesDirty:false,
   bufferDelayDirty:false,
   gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
   ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,count:0,
   activeAnnotationId:null,annotationTimer:null,overlayCollapsed:false,overallResult:null,
-  classificationJudgments:new Map(),classificationResult:null,runtimeErrorMessage:""
+  classificationJudgments:new Map(),classificationResult:null,classificationHistory:new Map(),
+  notifiedResults:new Set(),runtimeErrorMessage:""
 };
 function number(value,digits){const n=Number(value);return Number.isFinite(n)?n.toFixed(digits):"-"}
 function say(text,error=false){ui.statusLine.textContent=text;ui.statusLine.className="status"+(error?" error":"")}
@@ -467,6 +477,39 @@ function cameraConfig(){
 }
 function selectedFeatures(){return featureInputs.filter(item=>item.checked).map(item=>item.dataset.feature)}
 function visibleFeatures(){return state.running&&Array.isArray(state.sessionFeatures)?state.sessionFeatures:selectedFeatures()}
+function selectedSensitivities(){
+  return Object.fromEntries(selectedFeatures().filter(key=>sensitivityInputs.has(key))
+    .map(key=>[key,sensitivityInputs.get(key).value]))
+}
+function renderSensitivities(){
+  const options=state.info&&state.info.event_sensitivity_options||{};
+  const defaults=state.info&&state.info.event_sensitivity_defaults||{};
+  const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械"};
+  const previous=Object.fromEntries([...sensitivityInputs].map(([key,input])=>[key,input.value]));
+  const fields=$("event-sensitivity-fields");fields.replaceChildren();sensitivityInputs.clear();
+  for(const key of safetyEvents){
+    if(!Array.isArray(options[key]))continue;
+    const field=document.createElement("label"),title=document.createElement("span");
+    const select=document.createElement("select"),note=document.createElement("span");
+    field.className="field grow";title.textContent=labels[key]+" · "+key;
+    select.id="sensitivity-"+key;select.setAttribute("aria-label",labels[key]+"敏感度");
+    note.className="note";note.style.maxWidth="230px";
+    for(const option of options[key]){
+      const item=document.createElement("option");item.value=option.value;item.textContent=option.label;
+      select.appendChild(item)
+    }
+    select.value=previous[key]||defaults[key]||"standard";
+    select.onchange=()=>{note.textContent=(options[key].find(item=>item.value===select.value)||{}).description||""};
+    select.onchange();sensitivityInputs.set(key,select);
+    field.appendChild(title);field.appendChild(select);field.appendChild(note);fields.appendChild(field)
+  }
+}
+function reflectSessionSensitivities(values){
+  if(!values||typeof values!=="object")return;
+  for(const [key,input] of sensitivityInputs){
+    if(values[key]==="standard"||values[key]==="high"){input.value=values[key];input.onchange()}
+  }
+}
 function controls(){
   const busy=state.running||state.pending;
   const routeBusy=state.routeSubmitting||state.routes&&state.routes.state==="running";
@@ -475,8 +518,12 @@ function controls(){
     :!!ui.streamUrl.value.trim()||configured();
   ui.start.disabled=busy||routeBusy||!state.info||!ready||selectedFeatures().length===0;ui.stop.disabled=!busy;
   $("route-check-button").disabled=busy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_probe;
+  for(const button of $("route-results").querySelectorAll("button"))
+    button.disabled=busy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_select||
+      button.dataset.routeId===state.routes.selected_id;
   for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun,ui.cameraLayout])item.disabled=busy;
   for(const item of featureInputs)item.disabled=busy;
+  for(const [key,item] of sensitivityInputs)item.disabled=busy||!selectedFeatures().includes(key);
   ui.cameraButton.disabled=busy||!cameraAllowed||!cameraConfig();
   ui.refreshGallery.disabled=busy||state.galleryLoading;
   const galleryBusy=busy||state.galleryLoading||!state.gallery||state.gallery.ready!==true;
@@ -545,8 +592,8 @@ function updateAnalysisUi(){
   ui.eyebrow.textContent="Live selected-feature classification";
   ui.start.textContent="Start selected detection";
   const output=state.info&&state.info.annotated_output||{};
-  ui.annotationNote.innerHTML="The server buffers full-cadence frames for "+
-    annotatedOutputText(output)+". Every display frame keeps the last bbox until a keyframe updates or clears it; compatible keyframes are interpolated. "+
+  ui.annotationNote.innerHTML="The server delivers "+
+    annotatedOutputText(output)+". With face detection, events follow the same person's latest face frame until that person's event clears. Other face boxes stay visible. "+
     '<a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.';
   if(!state.running&&!state.pending){
     resetClassification();
@@ -801,6 +848,7 @@ async function info(){
       data.annotated_output.buffer_delay_seconds=Number(data.annotated_output.buffer_delay_seconds)
     }
     state.info=data;
+    renderSensitivities();
     updateAnnotatedOutput(data.annotated_output);
     if(!state.runOverridesDirty&&!state.deployment){
       ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present);
@@ -834,35 +882,44 @@ function renderRoutes(){
       samples.length?samples.map(sample=>sample.ok?number(sample.seconds,3)+" 秒":
         sample.error==="invalid_result"?"结果不完整":"请求失败").join(" / "):"—"];
     for(const value of values){const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)}
+    const action=document.createElement("td"),button=document.createElement("button");
+    button.className="btn";button.dataset.routeId=result.id;
+    button.textContent=data.selected_id===result.id?"使用中":"选择此线路";
+    button.setAttribute("aria-label","选择"+result.label);
+    button.onclick=()=>selectRoute(result.id);action.appendChild(button);row.appendChild(action);
     body.appendChild(row)
   }
   const note=$("route-note");note.className="status deployment-note";
   if(!data.supported)note.textContent="当前部署未启用线路测速。";
   else if(data.state==="running")note.textContent="正在检查线路（"+completed+" / "+
     ((data.results||[]).length*data.trials_per_route)+" 次）…完成后自动选路，再启动检测。";
-  else if(data.state==="complete")note.textContent=
-    (data.reason==="preferred_below_threshold"?"优先组达标，已选其中最快线路。":"已选择最快的可用线路。")+
+  else if(data.selection_method==="manual"&&!data.error)note.textContent="已手动选择"+data.selected_label+
+    "，下次启动检测时生效。"+(data.selection_persisted?"重启后继续使用。":"");
+  else if(data.state==="complete")note.textContent="已选择中位耗时最短的可用线路。"+
     "下次启动检测时生效。测速时间："+timeLabel(data.finished_at);
   else if(data.state==="failed"){
     note.className+=" error";note.textContent=data.error==="no_available_route"
       ?"本次没有通过检查的线路，保留原选择。请检查网络或 API key 后重试。"
       :"线路检查未完成，保留原选择。请重试。"
   }else note.textContent=data.error?"上次保存的线路无法读取，请重新测速。":
-    "共 "+(data.results||[]).length+" 条候选线路；可在启动前手动检查，完成后自动选择并保存线路。";
+    "共 "+(data.results||[]).length+" 条候选线路；可直接手动选择，或测速后自动选择最快线路。";
   controls()
 }
 async function loadRoutes(){
   if(state.routeLoading||state.routeSubmitting)return;
+  const revision=state.routeRevision;
   state.routeLoading=true;
   try{
     const response=await fetch("/v1/deployment/routes",{cache:"no-store"});
     if(!response.ok)throw new Error("HTTP "+response.status);
-    state.routes=await response.json();renderRoutes()
+    const data=await response.json();
+    if(!state.routeSubmitting&&revision===state.routeRevision){state.routes=data;renderRoutes()}
   }catch(_){$("route-note").textContent="无法读取线路状态，请检查服务连接。"}
   finally{state.routeLoading=false}
 }
 async function checkRoutes(){
   if(state.running||state.pending||state.routeSubmitting)return;
+  state.routeRevision++;
   state.routeSubmitting=true;controls();
   $("route-note").textContent="正在启动线路测速…";
   try{
@@ -871,6 +928,22 @@ async function checkRoutes(){
     state.routes=await response.json();renderRoutes()
   }catch(_){$("route-note").textContent="无法开始测速。请确认检测已停止且 API key 已保存。"}
   finally{state.routeSubmitting=false;controls()}
+}
+async function selectRoute(routeId){
+  if(state.running||state.pending||state.routeSubmitting||!state.routes||!state.routes.can_select)return;
+  state.routeRevision++;
+  state.routeSubmitting=true;controls();
+  $("route-note").textContent="正在保存线路选择…";
+  try{
+    const response=await fetch("/v1/deployment/routes/select",{
+      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({route_id:routeId})
+    });
+    if(!response.ok)throw new Error(await responseError(response));
+    state.routes=await response.json();renderRoutes()
+  }catch(_){
+    $("route-note").className="status deployment-note error";
+    $("route-note").textContent="线路选择未保存，保留原选择。请确认检测和测速已停止后重试。"
+  }finally{state.routeSubmitting=false;controls()}
 }
 function sampleCount(person){
   if(Array.isArray(person.samples))return person.samples.length;
@@ -1152,6 +1225,7 @@ function message(data){
     state.pending=false;state.running=true;state.sessionMode=data.mode||state.mode;
     state.sessionAnalysisMode=data.analysis_mode||"multi";
     state.sessionFeatures=Array.isArray(data.features)?data.features:detectionEvents;
+    reflectSessionSensitivities(data.event_sensitivities);
     const sessionId=data.stream_session_id||data.session_id||null;
     if(sessionId!==state.sessionId){state.sessionId=sessionId;reset()}
     openFeed();
@@ -1183,7 +1257,8 @@ async function start(){
   setConnection("Starting session","Opening the selected video source and waiting for its first frame.","warn");controls();
   try{
     const socket=await connect(),data={
-      type:"start",mode:state.mode,analysis_mode:"multi",features:selectedFeatures()
+      type:"start",mode:state.mode,analysis_mode:"multi",features:selectedFeatures(),
+      event_sensitivities:selectedSensitivities()
     };
     data.dry_run=ui.dryRun.checked;
     if(state.mode==="stream"){
@@ -1266,6 +1341,7 @@ async function status(){
       state.sessionAnalysisMode=data.analysis_mode||state.sessionAnalysisMode||"multi";
       state.sessionFeatures=Array.isArray(data.features)?data.features:
         (Array.isArray(data.event_labels)?data.event_labels:detectionEvents);
+      reflectSessionSensitivities(data.event_sensitivities);
       if(changedSession)reset();
       updateAnalysisUi();
       state.sessionMode=data.input_mode||data.mode||(data.stream?"stream":state.sessionMode)||"stream";
@@ -1313,10 +1389,17 @@ function compareClassificationFrames(left,right){
 function analysis(result){
   if(!result||result.type!=="analysis_result")return;
   if(!state.running||!state.sessionId||result.stream_session_id!==state.sessionId)return;
-  ui.resultJson.textContent=JSON.stringify(result,null,2);
+  if(!state.overallResult||compareClassificationFrames(result,state.overallResult)>=0)
+    ui.resultJson.textContent=JSON.stringify(result,null,2);
   renderOverallDescription(result);
-  if(result.analysis_kind==="face_recognition"){analysisFace(result);return}
+  if(result.analysis_kind==="face_recognition"){
+    if(state.overallResult&&compareClassificationFrames(result,state.overallResult)<0)
+      logFace(result,summarizeFaces(result));
+    else analysisFace(result);
+    return
+  }
   const judgments=Array.isArray(result.judgments)?result.judgments:[];if(!judgments.length)return;
+  notifyEvent(result,judgments);
   mergeClassification(result);renderClassification();clearAnnotation();
   const ids=new Set(judgments.filter(judgment=>judgment&&judgment.detected===true)
     .flatMap(judgment=>Array.isArray(judgment.object_ids)?judgment.object_ids:[]));
@@ -1324,7 +1407,47 @@ function analysis(result){
   log(result,judgments,ids.size)
 }
 function resetClassification(){
-  state.classificationJudgments.clear();state.classificationResult=null
+  state.classificationJudgments.clear();state.classificationResult=null;
+  state.classificationHistory.clear();state.notifiedResults.clear();
+  $("event-notice").hidden=true;$("event-notice").textContent=""
+}
+function notifyEvent(result,judgments){
+  const active=judgments.filter(item=>item&&item.detected===true&&safetyEvents.includes(canonicalEventLabel(item.event_label)));
+  if(!active.length)return;
+  const id=result.message_id||String(result.sequence);
+  if(state.notifiedResults.has(id))return;
+  state.notifiedResults.add(id);
+  if(state.notifiedResults.size>1024)state.notifiedResults.delete(state.notifiedResults.values().next().value);
+  const late=state.classificationResult&&compareClassificationFrames(result,state.classificationResult)<0;
+  const notice=$("event-notice");notice.hidden=false;
+  notice.textContent=(late?"迟到事件通知":"最近事件通知")+" · "+
+    active.map(item=>String(item.event_label).toUpperCase()).join(" + ")+" · 视频 "+
+    number((result.frame||{}).timestamp_seconds,3)+"s · "+
+    active.map(item=>item.description||"检测到行为事件").join(" | ")+
+    (late?" · 当前画面继续按时间顺序显示。":"")
+}
+function advanceClassification(previous,entry){
+  if(entry.judgment.detected)return {...entry,negativeCount:0};
+  if(previous&&previous.judgment.detected){
+    const negativeCount=(previous.negativeCount||0)+1;
+    if(negativeCount<clearAfterNegatives)return {...previous,negativeCount};
+  }
+  return {...entry,negativeCount:0}
+}
+function mergeSafetyClassification(key,entry){
+  let history=state.classificationHistory.get(key);
+  if(!history){history={entries:[],base:null,through:null};state.classificationHistory.set(key,history)}
+  if(history.through&&compareClassificationFrames(entry.result,history.through)<=0)return;
+  const index=history.entries.findIndex(item=>compareClassificationFrames(item.result,entry.result)===0);
+  if(index>=0)history.entries[index]=entry;else history.entries.push(entry);
+  history.entries.sort((a,b)=>compareClassificationFrames(a.result,b.result));
+  while(history.entries.length>256){
+    const first=history.entries.shift();history.base=advanceClassification(history.base,first);
+    history.through=first.result
+  }
+  let current=history.base;
+  for(const item of history.entries)current=advanceClassification(current,item);
+  if(current)state.classificationJudgments.set(key,current)
 }
 function mergeClassification(result){
   // Like delayed_overlay.select_overlay, missing inference branches do not mean CLEAR.
@@ -1334,6 +1457,9 @@ function mergeClassification(result){
   for(const judgment of result.judgments){
     const key=canonicalEventLabel(judgment&&judgment.event_label);
     if(!visibleFeatures().includes(key)||typeof judgment.detected!=="boolean")continue;
+    if(safetyEvents.includes(key)){
+      mergeSafetyClassification(key,{judgment:{...judgment,event_label:key},result});continue
+    }
     const previous=state.classificationJudgments.get(key);
     if(!previous||compareClassificationFrames(result,previous.result)>=0)
       state.classificationJudgments.set(key,{judgment:{...judgment,event_label:key},result})
@@ -1432,6 +1558,8 @@ function renderEventStatuses(judgments){
       const detected=judgment.detected===true;
       if(detected)item.classList.add("detected");
       status.textContent=(detected?"ALERT ":"CLEAR ")+number(Number(judgment.confidence)*100,1)+"%"
+      const held=state.classificationJudgments.get(eventLabel);
+      if(detected&&held&&held.negativeCount)status.textContent+=" · 待解除 "+held.negativeCount+"/"+clearAfterNegatives
     }
     items.push(item)
   }

@@ -9,11 +9,35 @@ Each completed branch publishes its own AnalysisResult v2 message immediately;
 another branch appearing in `missing_event_labels` does not imply a failure.
 Source times can interleave across branches. Freshness is enforced separately for
 safety and faces, and capability latest endpoints retain each capability's newest
-source observation. A smoking negative clears the current smoking judgment even
-while the face branch is busy. Each message keeps its original frame and identity
+source observation. Every valid result, including late negatives, is published
+so consumers can reconstruct source-ordered state. Late positives also produce
+a console event notice without replacing a newer video frame. Each message keeps its original frame and identity
 time basis; older face boxes are never pasted onto a newer safety frame.
 
 ## People and continuity
+
+New strangers are reported on the first usable unmatched face observation; no
+consecutive-frame confirmation is required. Known and unknown faces use the same
+`face.min_face_size` floor (20 pixels by default), with no extra stranger size gate.
+For annotated video with local faces, behavior state is maintained per
+`(stream_session_id, subject_id, event_label)`. Source-time actors are matched to
+the original frame's observed faces; a delayed result then colors those same
+people's latest face boxes red. Other known people stay green. A person's box
+returns to its normal identity color only after all their behaviors clear.
+Display alerts clear after ten consecutive valid negative source frames for that
+event; a positive resets the count. Replayed or revised observations of the same
+frame count once. Explicit negatives affect only people actually observed near that source frame.
+Lost people, skipped/failed branches and another person's clear cannot end their
+event. Older positives cannot revive a newer confirmed clear. Ambiguous ownership remains
+unbound. Source face history retains up to 90 seconds / 1024 records; associations
+use exact or preceding face observations within 0.6 seconds.
+
+The display reuses the latest completed face result's exact source JPEG, repeating
+it between face completions, with `X-Annotation-Mode: face_aligned`. After three
+seconds without a fresh face result it shows raw frames without stale boxes.
+Session reset clears annotations. This display state never modifies per-frame
+JSON or exact evidence. A later association correction updates the private
+display timeline and archive without republishing a model verdict.
 
 `subject_id` identifies a person track within one source/session. `person_id` is
 the independently enrolled identity. Frame-local `object_id` and model-local
@@ -23,10 +47,25 @@ identity conflicts and more than 3 seconds without real observations require
 reconfirmation. Predicted boxes cannot refresh the last real observation.
 
 Without a GPU worker, existing event-model requests may return up to eight
-compact actors, including on negative frames. Missing auxiliary fields are
-optional and do not invalidate an otherwise valid event judgment. Smoking and
-weapon target boxes retain their existing meaning; people are associated
+compact actors on positive frames. Compact all-negative responses omit actors.
+Missing auxiliary fields are
+optional and do not invalidate an otherwise valid event judgment. Standard smoking
+and weapon boxes identify visible items. High-sensitivity smoking may ground the
+visible hand/mouth action or involved person when the item cannot be identified;
+the description must disclose suspected smoking and cannot invent item details.
+People are associated
 separately. A pure local-face session does not acquire a new remote dependency.
+
+The console exposes standard/high sensitivity for each safety event before a
+run. HTTP and WebSocket start accept `event_sensitivities`, for example
+`{"smoking":"high","fall":"standard"}`. Choices are frozen for the session and
+reported in its response/status. Smoking defaults to high; other safety events
+default to standard. Standard smoking requires an identifiable smoking item;
+high smoking accepts plausible actions and context without that requirement.
+Neither mode changes the full-scene 320 px input or local face resolution.
+For display without face tracking, a pending clear retains the event title but
+does not paste historical object boxes onto a negative frame. Exact evidence and
+per-frame JSON remain the original model observations.
 
 With a ready GPU detector, the shared `/v1/tracks` worker path runs independently
 of optional attributes and UI overlays. `/health/tracking` checks the detector;
@@ -155,6 +194,5 @@ cards. Synthetic dry-run sessions can generate real playable clips of synthetic
 input. Such tests validate delivery and temporal behavior, not real-model accuracy.
 Validate actual identity switches, duplicate events and first-result/P95 latency
 on representative recordings on the target CPU and GPU deployments.
-See [stranger/LLM interoperability validation](STRANGER_LLM_INTEROP_VALIDATION.md)
-for the 8081 investigation and independent publication tests, and
-[low-resolution validation](LOW_RESOLUTION_VALIDATION.md) for real-model limits.
+See the current [release validation](RELEASE.md) for completed publication,
+continuity and image-delivery checks, and the remaining real-model limits.

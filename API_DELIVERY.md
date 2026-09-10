@@ -51,6 +51,12 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 全局 `latest` 仍只选源帧最新的一条消息，不是各能力的汇总；同源帧后到的消息可更新它。
 会话切换会清空全局和各能力最新记录。
 
+`2026.09.10-full.4` 会发布所有有效的迟到观察，包括阳性和阴性。迟到阳性用于事件
+通知，迟到阴性供消费者重建连续阴性计数；它们不会回退对应能力的 `latest` 或当前
+精确画面。控制台按源帧顺序累计 10 次有效阴性才解除行为告警，阳性重置计数，重复
+源帧仅计一次，失败/缺失不计阴性。`judgments[].detected` 始终表示原始单帧判断，
+不是十帧保持后的告警状态；接入方需要相同保持行为时应自行按能力/人物重建状态。
+
 每条分析结果新增顶层 `description`，与 `frame`、`judgments` 同级，描述
 `frame` 对应画面在本次分析中检出的事件。存在 `detected=true` 的判断时，按
 `judgments` 顺序拼接这些判断的 `event_label: description`，以 `; ` 分隔；
@@ -135,6 +141,43 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 不接受字符串或布尔值。仅修改缓存的请求允许在运行中提交，立即生效并保存；
 若同时包含其他设置，则沿用停止会话后再保存的限制。GET 设置接口返回当前缓存秒数。
 摄像头类型、缓存和密钥共享现有数据卷，无需新增环境变量。
+
+## 运行前事件敏感度与线路选择
+
+`GET /v1/ui/info` 返回 `event_sensitivity_options` 和 `event_sensitivity_defaults`。
+打架、吸烟、跌倒、持械分别使用 `fight`、`smoking`、`fall`、`weapon`，允许值均为
+`standard` / `high`。吸烟默认 `high`，其他行为默认 `standard`；本地陌生人识别
+沿用独立人脸设置，不属于此映射。
+
+HTTP 启动示例：
+
+```json
+{
+  "mode": "stream",
+  "features": ["smoking", "stranger"],
+  "dry_run": false,
+  "event_sensitivities": {"smoking": "high"}
+}
+```
+
+提交到 `POST /v1/sessions/start`。WebSocket `/ws` 的 `type=start` 消息接受相同
+`event_sensitivities` 字段，浏览器摄像头使用 `mode=camera, analysis_mode=multi`。
+省略的事件使用默认值；不在所选能力中的合法配置不生效。未知事件、未知档位、
+非对象配置会被拒绝。设置仅在启动前解析，运行中不能通过重新启动请求更改；
+启动响应和 `/v1/status` 的 `event_sensitivities` 返回本次实际配置。
+
+标准吸烟要求能辨认烟具。高敏感度可依据可见动作和上下文输出疑似吸烟；烟具不可辨认时，
+正例的 `objects` 可以是 `smoking_action` 动作区域或 `person`，不能假设所有吸烟框
+都是香烟物体。这些框仍是当前原始帧上的归一化坐标。两档均保留双语描述、严格 JSON
+结构和正例必须有可见区域框的约束。
+
+事件图像使用最长边 320 px 的完整画面，本地人脸使用独立高分辨率输入。模型无事件
+时的极简输出由服务还原成原有完整 JSON 契约，接入方不应处理内部 `no_events` 格式。
+
+`GET /v1/deployment/routes` 返回线路状态；`POST /v1/deployment/routes/select` 提交
+`{"route_id":"A"}`（A–H）保存手动选择。自动测速仍调用
+`POST /v1/deployment/routes/check`，从测试全部成功的线路中选择中位延迟最低者。
+检测或测速进行中不能切换线路，手动线路选择保存在部署数据卷中。
 
 ## 人员身份 person_id 的返回位置
 

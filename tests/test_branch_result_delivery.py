@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import jsonschema
+import pytest
 from fastapi.testclient import TestClient
 
+from goodvision_harness.config import load_config
 from goodvision_harness.contracts import (
     AnalysisResult,
     EventJudgment,
@@ -19,12 +22,19 @@ from goodvision_harness.contracts import (
     GroundedObject,
     NormalizedBBox,
 )
+from goodvision_harness.grounding import (
+    GroundedClassification,
+    GroundingResponse,
+    ModelObject,
+)
+from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
 from goodvision_harness.result_bus import FrameBus, ResultBus
 from goodvision_harness.service import (
     HarnessRuntime,
     _result_events_response,
     create_app,
 )
+from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
 
 def observation(label, timestamp, *, detected=True, message=None, frame=None):
@@ -115,8 +125,8 @@ def test_latest_global_and_feature_use_source_frame_order_and_original_payload()
     assert bus.latest(feature="smoking").payload == safety
     assert [r.payload for r in bus.records_after(0)] == [safety, face]
 
-    # An older same-feature record cannot move any snapshot backward, even if
-    # a caller bypasses the streaming organizer's same-branch rejection.
+    # A late positive reaches the arrival log without moving either snapshot
+    # backward to a superseded observation of the same feature.
     bus.publish(observation("smoking", 1.0).as_dict())
     assert bus.latest().payload == safety
     assert bus.latest(feature="smoking").payload == safety
@@ -221,8 +231,97 @@ def test_service_generation_guard_cannot_repopulate_reset_feature_cache():
     assert [r.payload for r in runtime.results.records_after(0)] == [new.as_dict()]
 
 
+@pytest.mark.parametrize("older_outcome", ("positive", "negative", "failed"))
+def test_single_event_late_positive_reaches_sse_and_webhook_without_frame_rewind(
+    older_outcome, monkeypatch,
+):
+    runtime, webhook = runtime_without_workers()
+    config = load_config()
+    config = replace(config, inference=replace(config.inference, event_label="smoking"))
+    exact, timeline, archived, visions = [], [], [], []
+    session = StreamingSession.for_camera(
+        config,
+        SimpleNamespace(settings=config.inference),
+        SessionCallbacks(
+            on_analysis_result=runtime._on_analysis_result,
+            on_analysis_frame=lambda result, jpeg: exact.append((result, jpeg)),
+            on_timeline_result=timeline.append,
+            on_vision_result=visions.append,
+        ),
+        archive=SimpleNamespace(
+            submit_result=lambda result, **kwargs: archived.append(result) or True,
+            note_window=lambda *args, **kwargs: None,
+        ),
+    )
+
+    def complete(index, outcome):
+        window = FrameWindow(index, (SampledFrame(
+            index, index * 10, index * 0.4, f"jpeg-{index}".encode(), 320, 180,
+        ),))
+        future = Future()
+        if outcome == "failed":
+            future.set_exception(ValueError("invalid model result"))
+        else:
+            detected = outcome == "positive"
+            objects = (ModelObject(
+                "cigarette", NormalizedBBox(0.2, 0.2, 0.4, 0.4),
+            ),) if detected else ()
+            future.set_result(GroundingResponse(
+                window,
+                GroundedClassification(detected, 0.98, "Observed", objects),
+                1.3 if detected else 0.49,
+            ))
+        session._apply_window_future(future, window)
+
+    complete(1, "negative")
+    original_latest = runtime.results.latest()
+    if older_outcome == "positive":
+        # Association corrections use the private callback only. They must not
+        # send a second notification for the same model observation.
+        monkeypatch.setattr(
+            session.person_registry, "drain_reassociated_results",
+            lambda: (timeline[-1],),
+        )
+    complete(0, older_outcome)
+
+    assert runtime.results.latest() == original_latest
+    assert runtime.results.latest(feature="smoking") == original_latest
+    assert [result.frame.source_frame_index for result, _ in exact] == [10]
+    assert exact[0][1] == b"jpeg-1"
+    assert len(visions) == 1
+    assert visions[0].detected is False
+    assert session.organizer.snapshot()["decision"]["detected"] is False
+
+    if older_outcome != "failed":
+        assert [payload["sequence"] for payload in webhook] == [1, 2]
+        assert [payload["judgments"][0]["detected"] for payload in webhook] == [
+            False, older_outcome == "positive",
+        ]
+        assert webhook[-1]["frame"]["source_frame_index"] == 0
+        assert webhook[-1]["model"]["latency_seconds"] == (
+            1.3 if older_outcome == "positive" else 0.49
+        )
+        assert timeline[-1].message_id == webhook[-1]["message_id"]
+        assert [payload for _, payload in sse_records(runtime)] == webhook
+        assert [payload for _, payload in sse_records(runtime, after=1)] == [
+            webhook[-1],
+        ]
+        assert len({payload["message_id"] for payload in webhook}) == 2
+        assert archived[-1].message_id == webhook[-1]["message_id"]
+    else:
+        assert len(webhook) == 1
+        assert runtime.results.records_after(1) == ()
+        assert len(archived) == 1
+
+
 def test_exact_frame_callback_keeps_memory_but_does_not_rewind_preview(monkeypatch):
     runtime, _ = runtime_without_workers()
+    display_frames = []
+    runtime._delayed_overlay = SimpleNamespace(
+        submit_analysis_frame=lambda result, jpeg: display_frames.append(
+            (result, jpeg)
+        ),
+    )
     runtime.frames = FrameBus()
     runtime._rich_labels = None
     runtime.settings = SimpleNamespace(overlay_jpeg_quality=85)
@@ -252,6 +351,7 @@ def test_exact_frame_callback_keeps_memory_but_does_not_rewind_preview(monkeypat
     assert first_packet.analysis_message_id == safety.message_id
     assert [r.observation for r in memory] == [safety.as_dict(), face.as_dict()]
     assert [r.evidence_jpeg for r in memory] == [b"safety-frame", b"face-frame"]
+    assert display_frames[-1] == (face, b"face-frame")
 
     same_frame = observation("stranger", 2.0)
     runtime._guarded_callback(

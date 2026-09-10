@@ -15,12 +15,21 @@ import goodvision_harness.service as service_module
 from goodvision_harness.config import load_config
 from goodvision_harness.deployment_settings import DeploymentSettingsStore
 from goodvision_harness.model_api import (
-    ModelAPIClient, ModelAPIError, ModelAPISettings, PooledModelAPIClient,
+    ModelAPIClient,
+    ModelAPIError,
+    ModelAPISettings,
+    PooledModelAPIClient,
 )
 from goodvision_harness.privacy import contains_private_implementation_detail
 from goodvision_harness.route_probe import (
-    MAX_PROBE_CONCURRENCY, ROUTE_CATALOG, ROUTES, ROUTES_BY_ID, choose_route,
-    finish_result, probe_sample, probe_window,
+    MAX_PROBE_CONCURRENCY,
+    ROUTE_CATALOG,
+    ROUTES,
+    ROUTES_BY_ID,
+    choose_route,
+    finish_result,
+    probe_sample,
+    probe_window,
 )
 from goodvision_harness.service import HarnessRuntime, create_app
 
@@ -39,12 +48,12 @@ def results(**latencies):
 
 
 @pytest.mark.parametrize(("latencies", "selected", "reason"), [
-    ({"A": 2.4, "B": 2.1, "C": 1.0}, "B", "preferred_below_threshold"),
-    ({"A": 2.49999, "C": 1.0}, "A", "preferred_below_threshold"),
+    ({"A": 2.4, "B": 2.1, "C": 1.0}, "C", "fastest_available"),
+    ({"A": 2.49999, "C": 1.0}, "C", "fastest_available"),
     ({"A": 2.5, "C": 1.0}, "C", "fastest_available"),
     ({"A": 3.0, "B": 2.6, "C": 1.2, "E": 1.1}, "E", "fastest_available"),
-    ({"D": 2.0, "C": 1.0}, "D", "preferred_below_threshold"),
-    ({"F": 2.4, "G": 2.0, "H": 2.1, "I": 0.7}, "G", "preferred_below_threshold"),
+    ({"D": 2.0, "C": 1.0}, "C", "fastest_available"),
+    ({"F": 2.4, "G": 2.0, "H": 2.1, "I": 0.7}, "I", "fastest_available"),
     ({"H": 2.5, "AA": 1.0, "AR": 1.5}, "AA", "fastest_available"),
     ({"J": 2.0, "AE": 1.8, "AH": 1.7, "I": 0.7}, "I", "fastest_available"),
     ({"A": 4.0, "B": 3.0}, "B", "fastest_available"),
@@ -129,8 +138,8 @@ def test_console_selection_is_private_persisted_and_used_by_live_requests(
         assert client.post("/v1/deployment/routes/check").status_code == 202
         data = wait_for_probe(runtime)
         assert data["state"] == "complete"
-        assert data["selected_id"] == "B"
-        assert data["selected_label"] == "线路 B"
+        assert data["selected_id"] == "A"
+        assert data["selected_label"] == "线路 A"
         assert data["selection_persisted"] is True
         public = client.get("/v1/deployment/routes").json()
         assert len(public["results"]) == 8
@@ -146,21 +155,23 @@ def test_console_selection_is_private_persisted_and_used_by_live_requests(
         for route in ROUTE_CATALOG:
             assert route.provider.split("/")[0] not in json.dumps(public).lower()
         assert runtime._route_transport.settings == runtime.config.model_api
-        assert runtime._deployment_store.load_model_route() == "D"
+        assert runtime._deployment_store.load_model_route() == "C"
         runtime.start_camera(features=("fight", "smoking", "fall", "weapon"))
         frame = probe_window().frames[0]
         assert runtime.push_camera_frame(frame.jpeg_bytes, width=320, height=180)
         assert runtime.results.records_after(0, timeout_seconds=5)
         payload = runtime._route_transport.calls[-1]
-        assert payload["model"] == "qwen/qwen3.5-35b-a3b:nitro"
+        assert payload["model"] == "qwen/qwen3-vl-8b-instruct:nitro"
         assert payload["provider"] == {
             "sort": "throughput", "allow_fallbacks": True,
             "ignore": ["coreweave", "novita"],
         }
         assert client.post("/v1/deployment/routes/check").status_code == 409
-    restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
+    restored = HarnessRuntime(
+        runtime.config, deployment_store=runtime._deployment_store,
+    )
     try:
-        assert restored.route_probe_status()["selected_id"] == "B"
+        assert restored.route_probe_status()["selected_id"] == "A"
         assert restored._route_pool_enabled is True
     finally:
         restored.stop()
@@ -212,13 +223,103 @@ def test_failed_save_retains_previous_selection(runtime, monkeypatch):
 def test_invalid_saved_route_is_not_applied(runtime):
     path = runtime._deployment_store.path.with_name("selected-route.json")
     path.write_text(json.dumps({"schema_version": 1, "route_id": "arbitrary/model"}))
-    restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
+    restored = HarnessRuntime(
+        runtime.config, deployment_store=runtime._deployment_store,
+    )
     try:
         assert restored.route_probe_status()["selected_id"] is None
         assert restored._selected_route_id == "A"
         assert restored.route_probe_status()["error"] == "saved_route_unavailable"
     finally:
         restored.stop()
+
+
+def test_manual_selection_uses_public_id_and_survives_restart(runtime):
+    with TestClient(create_app(lambda: runtime)) as client:
+        before = client.get("/v1/deployment/routes").json()
+        assert before["can_select"]
+        assert before["selection_policy"] == "lowest_median_latency"
+        response = client.post(
+            "/v1/deployment/routes/select", json={"route_id": "A"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["selected_id"] == "A"
+        assert data["selection_method"] == "manual"
+        assert data["selection_persisted"]
+        assert runtime._deployment_store.load_model_route() == "C"
+        assert not contains_private_implementation_detail(data)
+        runtime.start_camera(features=("fight", "smoking", "fall", "weapon"))
+        frame = probe_window().newest_frame
+        assert runtime.push_camera_frame(frame.jpeg_bytes, width=320, height=180)
+        assert runtime.results.records_after(0, timeout_seconds=5)
+        assert runtime._route_transport.calls[-1]["model"] == (
+            "qwen/qwen3-vl-8b-instruct:nitro"
+        )
+        assert not runtime.route_probe_status()["can_select"]
+        assert client.post(
+            "/v1/deployment/routes/select", json={"route_id": "B"},
+        ).status_code == 409
+    restored = HarnessRuntime(
+        runtime.config, deployment_store=runtime._deployment_store,
+    )
+    try:
+        assert restored.route_probe_status()["selected_id"] == "A"
+        assert restored.route_probe_status()["selection_method"] == "saved"
+    finally:
+        restored.stop()
+
+
+@pytest.mark.parametrize("payload", [
+    {}, [], {"route_id": "AA"}, {"route_id": "qwen/arbitrary"},
+    {"route_id": 1}, {"route_id": "A", "model": "override"},
+])
+def test_manual_selection_rejects_non_public_routes_and_extra_fields(runtime, payload):
+    previous = runtime.config.inference
+    with TestClient(create_app(lambda: runtime)) as client:
+        assert client.post(
+            "/v1/deployment/routes/select", json=payload,
+        ).status_code == 400
+    assert runtime.config.inference is previous
+    assert runtime._deployment_store.load_model_route() is None
+
+
+def test_manual_selection_save_failure_retains_previous_route(runtime, monkeypatch):
+    runtime.select_model_route("A")
+    previous = runtime.config.inference
+
+    def fail(_route):
+        raise OSError("secret storage detail")
+
+    monkeypatch.setattr(runtime._deployment_store, "save_model_route", fail)
+    with TestClient(create_app(lambda: runtime)) as client:
+        response = client.post(
+            "/v1/deployment/routes/select", json={"route_id": "B"},
+        )
+        assert response.status_code == 503
+        assert "secret" not in response.text
+    assert runtime.config.inference is previous
+    assert runtime._deployment_store.load_model_route() == "C"
+
+
+def test_manual_selection_is_blocked_during_probe(runtime, monkeypatch):
+    entered, release = Event(), Event()
+
+    def blocked(*_args):
+        entered.set()
+        assert release.wait(5)
+        return {"ok": True, "error": None, "seconds": 1.0}
+
+    monkeypatch.setattr(service_module, "probe_sample", blocked)
+    try:
+        runtime.start_route_probe()
+        assert entered.wait(2)
+        assert not runtime.route_probe_status()["can_select"]
+        with pytest.raises(RuntimeError, match="route check"):
+            runtime.select_model_route("A")
+    finally:
+        release.set()
+    wait_for_probe(runtime)
 
 
 @pytest.mark.parametrize(("stored_id", "public_id"), [
@@ -231,7 +332,9 @@ def test_saved_route_keeps_number_and_base_model_while_enabling_nitro(
     runtime._deployment_store.save_model_route(stored_id)
     saved_path = runtime._deployment_store.path.with_name("selected-route.json")
     saved = saved_path.read_bytes()
-    restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
+    restored = HarnessRuntime(
+        runtime.config, deployment_store=runtime._deployment_store,
+    )
     try:
         status = restored.route_probe_status()
         assert status["selected_id"] == public_id
@@ -259,7 +362,9 @@ def test_removed_provider_routes_cannot_be_selected_saved_restored_or_called(
         runtime._deployment_store.save_model_route(route_id)
     path = runtime._deployment_store.path.with_name("selected-route.json")
     path.write_text(json.dumps({"schema_version": 1, "route_id": route_id}))
-    restored = HarnessRuntime(runtime.config, deployment_store=runtime._deployment_store)
+    restored = HarnessRuntime(
+        runtime.config, deployment_store=runtime._deployment_store,
+    )
     try:
         assert restored.route_probe_status()["selected_id"] is None
         assert restored._selected_route_id == "A"
@@ -335,7 +440,8 @@ def test_probe_uses_live_contract_and_rejects_incomplete_results(runtime):
     assert not {"models", "stream", "reasoning"}.intersection(payload)
     assert payload["messages"][0]["content"].startswith(settings.system_prompt)
     pool.chat_completion = lambda **_: {"choices": [{"message": {"content": "{}"}}]}
-    assert probe_sample(pool, settings, ROUTES_BY_ID["C"], 1)["error"] == "invalid_result"
+    result = probe_sample(pool, settings, ROUTES_BY_ID["C"], 1)
+    assert result["error"] == "invalid_result"
 
 
 def test_pooled_transport_reuses_client_and_never_echoes_vendor_errors():
@@ -353,9 +459,13 @@ def test_pooled_transport_reuses_client_and_never_echoes_vendor_errors():
 
     pool._http = httpx.Client(transport=httpx.MockTransport(respond))
     try:
-        assert pool.chat_completion(model="test", messages=[{"role": "user", "content": "test"}])
+        assert pool.chat_completion(
+            model="test", messages=[{"role": "user", "content": "test"}],
+        )
         with pytest.raises(ModelAPIError, match="HTTP 401") as exc:
-            pool.chat_completion(model="test", messages=[{"role": "user", "content": "test"}])
+            pool.chat_completion(
+                model="test", messages=[{"role": "user", "content": "test"}],
+            )
         assert "secret" not in str(exc.value)
         assert requests[0].headers["Authorization"] == "Bearer secret"
     finally:

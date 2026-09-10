@@ -10,7 +10,7 @@ import os
 import struct
 import time
 import unicodedata
-from collections.abc import AsyncIterator, Callable, Collection
+from collections.abc import AsyncIterator, Callable, Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -49,6 +49,11 @@ from .deployment_settings import (
 )
 from .event_archive import EventArchive
 from .event_routes import install_event_routes
+from .event_sensitivity import (
+    EVENT_SENSITIVITY_DEFAULTS,
+    normalize_event_sensitivities,
+    sensitivity_ui_info,
+)
 from .face_recognition import (
     FaceRecognitionRuntime,
     FaceRecognitionSession,
@@ -71,10 +76,12 @@ from .model_api import (
 )
 from .overlay import (
     draw_event_rich_overlay,
+    draw_face_boxes,
     draw_overlay,
     draw_rich_overlay,
 )
 from .overlay_fusion import OverlayFusionMatcher
+from .person_event_overlay import PersonOverlayAnalysis
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
@@ -340,6 +347,7 @@ class HarnessRuntime:
             == route.parameters({})["provider"]
         ), None)
         self._route_persisted = False
+        self._route_selection_method = "default"
         self._route_probe: dict[str, Any] = {
             "state": "idle", "results": empty_results(), "reason": None,
             "started_at": None, "finished_at": None, "error": None,
@@ -356,6 +364,7 @@ class HarnessRuntime:
                     )
                     self._selected_route_id = saved_route
                     self._route_persisted = True
+                    self._route_selection_method = "saved"
                     self._route_pool_enabled = True
             except Exception:
                 LOGGER.error("could not load saved route selection")
@@ -384,6 +393,7 @@ class HarnessRuntime:
             ),
             "event_labels": list(DETECTION_EVENT_LABELS),
             "features": list(DETECTION_EVENT_LABELS),
+            "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
             "model": PUBLIC_MODEL_NAME if config is not None else None,
             "dry_run": self.dry_run,
             "webhook_enabled": False,
@@ -469,12 +479,47 @@ class HarnessRuntime:
                 "can_probe": supported and bool(self._aiclub_api_key)
                 and not active and not self._closed
                 and self._route_probe["state"] != "running",
+                "can_select": supported and not active and not self._closed
+                and self._route_probe["state"] != "running",
                 "selected_id": selected,
                 "selected_label": f"线路 {selected}" if selected else None,
                 "selection_persisted": self._route_persisted,
+                "selection_method": self._route_selection_method,
                 "trials_per_route": PROBE_TRIALS,
-                "threshold_seconds": 2.5,
+                "selection_policy": "lowest_median_latency",
             }
+
+    def _apply_model_route(self, route_id: str, *, method: str) -> None:
+        """Caller holds the control lock; persistence must succeed first."""
+        inference = ROUTES_BY_ID[route_id].inference(self.config.inference)
+        if self._deployment_store is not None:
+            self._deployment_store.save_model_route(route_id)
+        self.config = replace(self.config, inference=inference)
+        self._selected_route_id = route_id
+        self._route_persisted = self._deployment_store is not None
+        self._route_selection_method = method
+        self._route_pool_enabled = True
+        if self._route_transport is not None:
+            self._route_transport.settings = self.config.model_api
+
+    def select_model_route(self, public_route_id: str) -> dict[str, Any]:
+        """Select only a displayed route, never an arbitrary model or endpoint."""
+        with self._control_lock:
+            if self._closed or not self._route_probe_supported():
+                raise ValueError("route selection is unavailable for this deployment")
+            if self._session is not None and self._session.running:
+                raise RuntimeError("stop the active session before selecting a route")
+            if self._route_probe["state"] == "running":
+                raise RuntimeError("wait for the route check before selecting a route")
+            route_id = next((
+                internal for internal, public in PUBLIC_ROUTE_IDS.items()
+                if public == public_route_id
+            ), None)
+            if route_id is None:
+                raise ValueError("route_id must be one of the displayed route IDs")
+            self._apply_model_route(route_id, method="manual")
+            self._route_probe["error"] = None
+            return self.route_probe_status()
 
     def _pooled_transport(self) -> PooledModelAPIClient:
         if self._route_transport is None:
@@ -544,17 +589,7 @@ class HarnessRuntime:
                 if route_id is None:
                     self._route_probe.update(state="failed", error=reason)
                     return
-                # Save before changing the effective route; failure retains the old one.
-                if self._deployment_store is not None:
-                    self._deployment_store.save_model_route(route_id)
-                self.config = replace(
-                    self.config,
-                    inference=ROUTES_BY_ID[route_id].inference(self.config.inference),
-                )
-                self._selected_route_id = route_id
-                self._route_persisted = self._deployment_store is not None
-                self._route_pool_enabled = True
-                self._route_transport.settings = self.config.model_api
+                self._apply_model_route(route_id, method="automatic")
                 self._route_probe.update(state="complete", reason=reason)
         except Exception:
             LOGGER.error("route check could not complete")
@@ -748,6 +783,7 @@ class HarnessRuntime:
             "event_labels": list(DETECTION_EVENT_LABELS),
             "features": list(DETECTION_EVENT_LABELS),
             "supported_features": list(DETECTION_EVENT_LABELS),
+            **sensitivity_ui_info(),
             "sample_fps": self.config.video.fps,
             "max_image_side": self.config.video.max_image_side,
             "jpeg_quality": self.config.video.jpeg_quality,
@@ -793,6 +829,7 @@ class HarnessRuntime:
             "annotated_output": {
                 "output_fps": self._annotated_output_fps,
                 "max_image_side": self.config.display.max_image_side,
+                "jpeg_quality": self.config.display.jpeg_quality,
                 "buffer_delay_seconds": self._display_settings.delay_seconds,
                 "bbox_max_gap_seconds": (
                     self.config.display.bbox_max_gap_seconds
@@ -861,9 +898,14 @@ class HarnessRuntime:
                 return
             registry = session.person_registry
         registry.observe_snapshot(snapshot)
-        if session.archive is not None:
-            for corrected in registry.drain_reassociated_results():
-                session.archive.submit_result(corrected)
+        corrections = registry.drain_reassociated_results()
+        with self._state_lock:
+            if self._session is not session:
+                return
+            for corrected in corrections:
+                self._on_timeline_result(corrected)
+                if session.archive is not None:
+                    session.archive.submit_result(corrected)
 
     def enroll_face(
         self,
@@ -1031,6 +1073,7 @@ class HarnessRuntime:
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
         features: Collection[str] | None = None,
+        event_sensitivities: Mapping[str, str] | None = None,
         camera_layout: str | None = None,
     ) -> dict[str, Any]:
         if camera_layout is not None:
@@ -1048,6 +1091,7 @@ class HarnessRuntime:
             event_label=event_label,
             analysis_mode=analysis_mode,
             features=features,
+            event_sensitivities=event_sensitivities,
             camera_layout=camera_layout,
         )
 
@@ -1058,6 +1102,7 @@ class HarnessRuntime:
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
         features: Collection[str] | None = None,
+        event_sensitivities: Mapping[str, str] | None = None,
         owner: str | None = None,
     ) -> dict[str, Any]:
         return self._start_session(
@@ -1066,6 +1111,7 @@ class HarnessRuntime:
             event_label=event_label,
             analysis_mode=analysis_mode,
             features=features,
+            event_sensitivities=event_sensitivities,
             camera_owner=owner,
         )
 
@@ -1080,6 +1126,7 @@ class HarnessRuntime:
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
         features: Collection[str] | None = None,
+        event_sensitivities: Mapping[str, str] | None = None,
         camera_owner: str | None = None,
         camera_layout: str | None = None,
     ) -> dict[str, Any]:
@@ -1117,6 +1164,13 @@ class HarnessRuntime:
                     label = self.config.inference.event_label
             label = label[:EVENT_LABEL_MAX_CHARS]
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
+
+        sensitivity_labels = selected_features or (label,)
+        if selected_analysis == EVENT_ANALYSIS_MODE and self.config.memory is not None:
+            sensitivity_labels = ()
+        selected_sensitivities = normalize_event_sensitivities(
+            event_sensitivities, sensitivity_labels,
+        )
 
         with self._control_lock:
             if self._closed:
@@ -1231,6 +1285,7 @@ class HarnessRuntime:
                     session_config.inference,
                     session_config.model_api,
                     features=selected_features,
+                    event_sensitivities=selected_sensitivities,
                     stranger_client=face_session or face_runtime,
                     safety_max_image_side=self.config.video.max_image_side,
                     safety_jpeg_quality=self.config.video.jpeg_quality,
@@ -1255,6 +1310,7 @@ class HarnessRuntime:
                     session_config.inference,
                     session_config.model_api,
                     memory_context=session_config.memory,
+                    event_sensitivities=selected_sensitivities,
                     dry_run=use_dry_run,
                     api_key=self._aiclub_api_key,
                     transport=(
@@ -1267,7 +1323,8 @@ class HarnessRuntime:
                     "left_half" if camera_layout == "stereo" else "none"
                 )
                 session_config = replace(
-                    session_config, stream=replace(session_config.stream, frame_crop=crop),
+                    session_config,
+                    stream=replace(session_config.stream, frame_crop=crop),
                 )
             generation = self._generation + 1
             callbacks = SessionCallbacks(
@@ -1390,6 +1447,7 @@ class HarnessRuntime:
                             if selected_analysis == MULTI_ANALYSIS_MODE
                             else None
                         ),
+                        "event_sensitivities": dict(selected_sensitivities),
                         "model": PUBLIC_MODEL_NAME,
                         "dry_run": use_dry_run,
                         "webhook_enabled": self._delivery is not None,
@@ -1424,6 +1482,7 @@ class HarnessRuntime:
                 "event_label": label,
                 "model": PUBLIC_MODEL_NAME,
                 "dry_run": use_dry_run,
+                "event_sensitivities": dict(selected_sensitivities),
             }
             if selected_analysis == MULTI_ANALYSIS_MODE:
                 response["event_labels"] = list(selected_features)
@@ -1726,6 +1785,7 @@ class HarnessRuntime:
 
     def _on_analysis_frame(self, result: AnalysisResult, jpeg: bytes) -> None:
         source_jpeg = bytes(jpeg)
+        self._delayed_overlay.submit_analysis_frame(result, source_jpeg)
         if self._memory_sink is not None:
             try:
                 accepted = self._memory_sink.submit(
@@ -1944,7 +2004,10 @@ class HarnessRuntime:
 
         if analysis is None:
             rendered = draw_rich_overlay(image, rich_objects)
-        elif analysis.analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS:
+        elif (
+            isinstance(analysis, PersonOverlayAnalysis)
+            or analysis.analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS
+        ):
             rendered = (
                 draw_rich_overlay(image, rich_objects) if rich_objects else image
             )
@@ -2043,6 +2106,8 @@ def _render_analysis_jpeg(
 
 
 def _draw_analysis_overlay(image: Any, analysis: DisplayAnalysis) -> Any:
+    if isinstance(analysis, PersonOverlayAnalysis):
+        return draw_face_boxes(image, analysis.objects)
     return draw_overlay(image, **_analysis_overlay_arguments(analysis))
 
 
@@ -2066,11 +2131,18 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
             judgment.description for judgment in displayed_judgments
         )
     else:
-        detected_judgments = tuple(
+        observed_positives = tuple(
             judgment for judgment in analysis.judgments if judgment.detected
         )
+        observed_labels = {judgment.event_label for judgment in observed_positives}
+        detected_judgments = (*observed_positives, *(
+            judgment for judgment in getattr(analysis, "pending_clear_judgments", ())
+            if judgment.event_label not in observed_labels
+        ))
         labels_by_object: dict[str, list[str]] = {}
-        for judgment in detected_judgments:
+        # Pending clears affect the event title only. Their historical object
+        # IDs and coordinates cannot be attached to the current negative frame.
+        for judgment in observed_positives:
             for object_id in judgment.object_ids:
                 labels = labels_by_object.setdefault(object_id, [])
                 if judgment.event_label not in labels:
@@ -2085,6 +2157,8 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
             for item in analysis.objects
             if item.object_id in labels_by_object
         )
+        # Hide identity boxes during a positive safety event, but do not hide
+        # observed known people just because the safety branch is still pending.
         if (
             analysis.analysis_kind in (
                 FIXED_FIVE_ANALYSIS_KIND, SELECTED_FEATURES_ANALYSIS_KIND,
@@ -2093,7 +2167,6 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
                 judgment.event_label in SAFETY_EVENT_LABELS
                 for judgment in detected_judgments
             )
-            and not set(analysis.missing_event_labels).intersection(SAFETY_EVENT_LABELS)
         ):
             known_faces = tuple(
                 item for item in analysis.objects
@@ -2305,6 +2378,37 @@ def create_app(
                 status_code=503, detail="could not start route check",
             ) from exc
 
+    @application.post("/v1/deployment/routes/select")
+    async def select_route(request: Request) -> dict[str, Any]:
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 1024:
+                raise HTTPException(status_code=413, detail="route selection too large")
+            body.extend(chunk)
+        try:
+            payload = json.loads(body)
+            if (
+                not isinstance(payload, dict) or set(payload) != {"route_id"}
+                or not isinstance(payload["route_id"], str)
+            ):
+                raise ValueError
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(
+                status_code=400, detail="expected one route_id string",
+            ) from exc
+        try:
+            return await asyncio.to_thread(
+                _runtime(request).select_model_route, payload["route_id"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail="could not save route selection",
+            ) from exc
+
     @application.put("/v1/deployment/settings")
     async def update_deployment_settings(request: Request) -> dict[str, Any]:
         content_length = request.headers.get("content-length")
@@ -2410,6 +2514,7 @@ def create_app(
                                     event_label=event_label,
                                     analysis_mode=analysis_mode,
                                     features=requested_features,
+                                    event_sensitivities=payload.get("event_sensitivities"),
                                     owner=owner,
                                 )
                             elif mode == STREAM_MODE:
@@ -2420,13 +2525,15 @@ def create_app(
                                     event_label=event_label,
                                     analysis_mode=analysis_mode,
                                     features=requested_features,
+                                    event_sensitivities=payload.get("event_sensitivities"),
                                     camera_layout=payload.get("camera_layout"),
                                 )
                             else:
                                 raise ValueError("mode must be camera or stream")
                         except MissingAPIKeyError:
                             await websocket.send_json(
-                                {"type": "error", "message": PUBLIC_MISSING_API_KEY_ERROR}
+                                {"type": "error",
+                                 "message": PUBLIC_MISSING_API_KEY_ERROR}
                             )
                         except ValueError as exc:
                             await websocket.send_json(
@@ -2543,6 +2650,7 @@ def create_app(
                 event_label=event_label,
                 analysis_mode=analysis_mode,
                 features=payload.get("features"),
+                event_sensitivities=payload.get("event_sensitivities"),
                 camera_layout=payload.get("camera_layout"),
             )
         except MissingAPIKeyError as exc:

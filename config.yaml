@@ -24,8 +24,10 @@ display:
   # Full-cadence display frames are buffered while sparse bbox keyframes arrive.
   # The output stays smooth but intentionally trails the source timeline.
   fps: 15.0
-  max_image_side: 720
-  jpeg_quality: 70
+  # null preserves the source dimensions AFTER selecting the camera view.
+  # A positive integer optionally caps the longest side without upscaling.
+  max_image_side: null
+  jpeg_quality: 90
   # End-to-end completion can exceed raw model latency while concurrent
   # results are applied. Leave enough headroom before publishing each frame.
   delay_seconds: 2.5
@@ -198,7 +200,10 @@ inference:
       brandishes, or uses a likely gun, firearm, knife, blade, club, or other
       object being used or readied as a weapon.
 
-    Respond with only one JSON object in this exact shape and order:
+    If ALL requested events are negative, return only {"no_events":0.95},
+    replacing 0.95 with your confidence in that all-negative verdict.
+    Do not output descriptions, actors, or event arrays in this case.
+    Otherwise, respond with one JSON object in this exact shape and order:
     {"events":[
       {"event_label":"fight","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
       {"event_label":"smoking","detected":true or false,"confidence":0.0-1.0,"description":"one short sentence","objects":[]},
@@ -248,8 +253,8 @@ face:
   live_scheduler: auto
   det_size: 640
   threshold: 0.4
-  # Small faces may positively match known people. Stranger alerts require
-  # reliable faces at least 60px wide/high and three consecutive live mismatches.
+  # Shared minimum width/height for live known and stranger recognition.
+  # One reliable unmatched face can alert immediately; no consecutive-frame gate.
   min_face_size: 20
   # Keep enrollment stricter so low-detail samples cannot degrade the gallery.
   enrollment_min_face_size: 80
@@ -273,7 +278,7 @@ service:
   result_history: 100
   ready_max_frame_age_seconds: 10.0
   ready_max_result_age_seconds: 120.0
-  overlay_jpeg_quality: 85
+  overlay_jpeg_quality: 90
   webhook:
     # Optional. RESULT_WEBHOOK_URL overrides this value.
     url: null

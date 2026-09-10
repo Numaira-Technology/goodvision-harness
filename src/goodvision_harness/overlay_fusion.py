@@ -328,9 +328,10 @@ class OverlayFusionMatcher:
 
 def _association_object_id(item: GroundedObject) -> str:
     anchor = item.attributes.get("annotation_source_message_id")
-    prefix = f"held-stranger-{anchor}-"
-    if anchor and item.object_id.startswith(prefix):
-        return item.object_id[len(prefix):]
+    for capability in ("stranger", "safety"):
+        prefix = f"held-{capability}-{anchor}-"
+        if anchor and item.object_id.startswith(prefix):
+            return item.object_id[len(prefix):]
     return item.object_id
 
 

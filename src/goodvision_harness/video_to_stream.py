@@ -70,14 +70,14 @@ def probe_video(path: str | Path) -> VideoInfo:
 def encode_jpeg(
     bgr: Any,
     *,
-    max_image_side: int,
+    max_image_side: int | None,
     quality: int,
 ) -> tuple[bytes, int, int]:
-    """Downscale to the bounding side and encode; returns (jpeg, width, height)."""
+    """Encode with an optional side cap; None preserves the input dimensions."""
 
     height, width = bgr.shape[:2]
     longest_side = max(height, width)
-    if longest_side > max_image_side:
+    if max_image_side is not None and longest_side > max_image_side:
         scale = max_image_side / longest_side
         width = max(1, round(width * scale))
         height = max(1, round(height * scale))

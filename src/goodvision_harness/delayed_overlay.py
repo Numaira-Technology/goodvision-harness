@@ -15,12 +15,19 @@ import math
 import threading
 import time
 from bisect import bisect_right
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
 from .contracts import AnalysisResult, EventJudgment, GroundedObject, NormalizedBBox
+from .grounding import SAFETY_EVENT_LABELS
+from .person_event_overlay import (
+    CLEAR_AFTER_NEGATIVES,
+    PersonEventOverlay,
+    PersonOverlayAnalysis,
+    is_face_result,
+)
 from .result_bus import FramePacket
 
 LOGGER = logging.getLogger(__name__)
@@ -39,12 +46,15 @@ class CarriedOverlayAnalysis:
     source: AnalysisResult
     judgments: tuple[EventJudgment, ...]
     objects: tuple[GroundedObject, ...]
+    # Display status only: references belong to the historical positive and
+    # must never supply coordinates for the currently displayed negative frame.
+    pending_clear_judgments: tuple[EventJudgment, ...] = ()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.source, name)
 
 
-DisplayAnalysis = AnalysisResult | CarriedOverlayAnalysis
+DisplayAnalysis = AnalysisResult | CarriedOverlayAnalysis | PersonOverlayAnalysis
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +80,7 @@ def select_overlay(
     *,
     max_gap_seconds: float,
     frame_sequence: int | None = None,
+    clear_after_negatives: int = CLEAR_AFTER_NEGATIVES,
 ) -> OverlaySelection:
     """Select or interpolate analysis state for one media timestamp.
 
@@ -92,7 +103,9 @@ def select_overlay(
     if position < 0:
         return OverlaySelection(None, "none")
 
-    left = _carry_stranger_annotation(results, position, float(media_timestamp))
+    left = _carry_annotations(
+        results, position, float(media_timestamp), clear_after_negatives,
+    )
     left_timestamp = left.frame.timestamp_seconds
     age = max(0.0, float(media_timestamp) - left_timestamp)
     exact_sequence = (
@@ -103,8 +116,9 @@ def select_overlay(
         return OverlaySelection(left, "exact", left.message_id)
 
     right = (
-        _carry_stranger_annotation(
-            results, position + 1, results[position + 1].frame.timestamp_seconds
+        _carry_annotations(
+            results, position + 1, results[position + 1].frame.timestamp_seconds,
+            clear_after_negatives,
         ) if position + 1 < len(results) else None
     )
     if right is None:
@@ -125,6 +139,107 @@ def select_overlay(
         "interpolated",
         left.message_id,
         right.message_id,
+    )
+
+
+def _carry_annotations(
+    results: Sequence[AnalysisResult], position: int, timestamp: float,
+    clear_after_negatives: int,
+) -> DisplayAnalysis:
+    """Keep each safety verdict until that capability supplies a new verdict."""
+
+    current = results[position]
+    analysis = _carry_stranger_annotation(results, position, timestamp)
+    missing = set(SAFETY_EVENT_LABELS).difference(
+        item.event_label for item in current.judgments
+    )
+    judgments = list(analysis.judgments)
+    objects = list(analysis.objects)
+    for previous in reversed(results[:position]):
+        if not missing or previous.stream_session_id != current.stream_session_id:
+            break
+        observed = tuple(
+            item for item in previous.judgments if item.event_label in missing
+        )
+        # An explicit negative is a barrier even though it contributes no box.
+        # Face-only results, failures and other capabilities cannot clear it.
+        missing.difference_update(item.event_label for item in observed)
+        positives = tuple(item for item in observed if item.detected)
+        referenced = {
+            object_id for item in positives for object_id in item.object_ids
+        }
+        carried_ids = {
+            item.object_id: f"held-safety-{previous.message_id}-{item.object_id}"
+            for item in previous.objects if item.object_id in referenced
+        }
+        objects.extend(
+            replace(
+                item,
+                object_id=carried_ids[item.object_id],
+                attributes={
+                    **item.attributes,
+                    "annotation_source_message_id": previous.message_id,
+                },
+            )
+            for item in previous.objects if item.object_id in carried_ids
+        )
+        judgments.extend(
+            replace(item, object_ids=tuple(carried_ids[key] for key in item.object_ids))
+            for item in positives
+        )
+    pending = _pending_clear_judgments(results[:position + 1], clear_after_negatives)
+    if len(judgments) == len(analysis.judgments) and not pending:
+        return analysis
+    return CarriedOverlayAnalysis(current, tuple(judgments), tuple(objects), pending)
+
+
+def _safety_observations(
+    results: Sequence[AnalysisResult],
+) -> list[tuple[AnalysisResult, EventJudgment]]:
+    """Deduplicate valid per-event observations by source frame, not message."""
+
+    if not results:
+        return []
+    current = results[-1]
+    observations = {}
+    for result in sorted(results, key=_analysis_key):
+        if (
+            result.stream_session_id != current.stream_session_id
+            or result.source_id != current.source_id
+        ):
+            continue
+        for judgment in result.judgments:
+            if judgment.event_label in SAFETY_EVENT_LABELS:
+                observations[(
+                    result.frame.timestamp_seconds, result.frame.source_frame_index,
+                    judgment.event_label,
+                )] = (result, judgment)
+    return list(observations.values())
+
+
+def _pending_clear_judgments(
+    results: Sequence[AnalysisResult], clear_after_negatives: int,
+) -> tuple[EventJudgment, ...]:
+    active: dict[str, EventJudgment] = {}
+    streaks: dict[str, int] = {}
+    for _result, judgment in _safety_observations(results):
+        label = judgment.event_label
+        if judgment.detected:
+            active[label] = judgment
+            streaks[label] = 0
+        else:
+            streaks[label] = min(clear_after_negatives, streaks.get(label, 0) + 1)
+            if streaks[label] >= clear_after_negatives:
+                active.pop(label, None)
+    return tuple(
+        replace(
+            judgment,
+            description=(
+                f"Awaiting clear confirmation: {streaks[label]}/"
+                f"{clear_after_negatives} negative observations."
+            ),
+        )
+        for label, judgment in active.items() if streaks[label]
     )
 
 
@@ -205,6 +320,7 @@ class DelayedOverlayComposer:
         enrich: Callable[[bytes, float, int], bytes] | None = None,
         compose: Callable[[bytes, OverlaySelection, float, int], bytes]
         | None = None,
+        clear_after_negatives: int = CLEAR_AFTER_NEGATIVES,
     ) -> None:
         if not math.isfinite(delay_seconds) or delay_seconds < 0:
             raise ValueError("delay_seconds must be finite and non-negative")
@@ -222,6 +338,13 @@ class DelayedOverlayComposer:
         self._condition = threading.Condition()
         self._frames: deque[_BufferedFrame] = deque()
         self._results: list[AnalysisResult] = []
+        self._person_events = PersonEventOverlay(
+            clear_after_negatives=clear_after_negatives,
+        )
+        self.clear_after_negatives = clear_after_negatives
+        self._face_alignment_expected = False
+        self._face_frames: OrderedDict[str, FramePacket] = OrderedDict()
+        self._last_display_packet: FramePacket | None = None
         self._generation = 0
         self._closed = False
         self._thread: threading.Thread | None = None
@@ -291,6 +414,10 @@ class DelayedOverlayComposer:
             self._generation += 1
             self._frames.clear()
             self._results.clear()
+            self._person_events.reset()
+            self._face_alignment_expected = False
+            self._face_frames.clear()
+            self._last_display_packet = None
             self._stream_session_id = None
             self._last_output_timestamp = None
             self._stats.update(
@@ -354,15 +481,82 @@ class DelayedOverlayComposer:
                 # as the newest authoritative state for future frames. Record
                 # the lateness, but never create a gap by discarding it.
 
-            key = _analysis_key(result)
-            keys = [_analysis_key(item) for item in self._results]
-            index = bisect_right(keys, key)
-            if index > 0 and keys[index - 1] == key:
-                self._results[index - 1] = result
-            else:
-                self._results.insert(index, result)
+            # Independent branches can finish the very same source frame.
+            # Retain both observations; only a revision of the same message
+            # replaces one. Otherwise a face result can erase a safety positive.
+            self._results = [
+                item for item in self._results if item.message_id != result.message_id
+            ]
+            index = bisect_right(
+                [_analysis_key(item) for item in self._results], _analysis_key(result),
+            )
+            self._results.insert(index, result)
+            self._person_events.submit_result(result)
+            self._face_alignment_expected |= (
+                "stranger" in result.missing_event_labels or is_face_result(result)
+            )
+            self._enqueue_person_redraw_locked()
             self._condition.notify_all()
             return True
+
+    def _enqueue_person_redraw_locked(self) -> None:
+        # A late verdict also updates the final/paused source frame. Coalesce
+        # repeated results into one repaint; normal queued frames already do it.
+        if (
+            self._person_events.has_face_results
+            and not self._frames
+            and self._last_display_packet is not None
+        ):
+            self._frames.append(_BufferedFrame(
+                self._last_display_packet, time.monotonic(), self._generation,
+            ))
+            self._stats["frames_buffered"] = len(self._frames)
+
+    def submit_analysis_frame(self, result: AnalysisResult, jpeg: bytes) -> None:
+        """Retain the exact face source image for the display-only composite."""
+
+        if not is_face_result(result):
+            return
+        with self._condition:
+            if result.stream_session_id != self._stream_session_id:
+                return
+            self._face_frames[result.message_id] = FramePacket(
+                jpeg=bytes(jpeg),
+                media_timestamp=result.frame.timestamp_seconds,
+                frame_sequence=result.frame.source_frame_index,
+                observed_at=result.frame.observed_at,
+                analysis_message_id=result.message_id,
+            )
+            newest = max(item.media_timestamp for item in self._face_frames.values())
+            cutoff = newest - max(5.0, self.delay_seconds + 3.0)
+            self._face_frames = OrderedDict(
+                (key, packet) for key, packet in self._face_frames.items()
+                if packet.media_timestamp >= cutoff
+            )
+            while len(self._face_frames) > 1024:
+                self._face_frames.popitem(last=False)
+            self._enqueue_person_redraw_locked()
+            self._condition.notify_all()
+
+    def _select_person_frame_locked(
+        self, buffered: _BufferedFrame,
+    ) -> tuple[_BufferedFrame, OverlaySelection] | None:
+        if not self._face_alignment_expected:
+            return None
+        packet = buffered.packet
+        analysis = self._person_events.select(
+            packet.media_timestamp, frame_sequence=packet.frame_sequence,
+        )
+        source = (
+            self._face_frames.get(analysis.source.message_id)
+            if analysis is not None else None
+        )
+        if source is None:
+            # Missing/expired faces never fall back to stale safety coordinates.
+            return buffered, OverlaySelection(None, "none")
+        return replace(buffered, packet=source), OverlaySelection(
+            analysis, "face_aligned", analysis.source.message_id,
+        )
 
     def stats(self) -> dict[str, Any]:
         with self._condition:
@@ -383,16 +577,23 @@ class DelayedOverlayComposer:
                     self._condition.wait(remaining)
                     continue
                 buffered = self._frames.popleft()
+                self._last_display_packet = buffered.packet
                 delay_seconds = self.delay_seconds
                 results = tuple(self._results)
+                person_selection = self._select_person_frame_locked(buffered)
                 self._stats["frames_buffered"] = len(self._frames)
 
-            selection = select_overlay(
-                results,
-                buffered.packet.media_timestamp,
-                max_gap_seconds=self.max_gap_seconds,
-                frame_sequence=buffered.packet.frame_sequence,
-            )
+            display_timestamp = buffered.packet.media_timestamp
+            if person_selection is not None:
+                buffered, selection = person_selection
+            else:
+                selection = select_overlay(
+                    results,
+                    buffered.packet.media_timestamp,
+                    max_gap_seconds=self.max_gap_seconds,
+                    frame_sequence=buffered.packet.frame_sequence,
+                    clear_after_negatives=self.clear_after_negatives,
+                )
             mode = selection.mode
             if self._compose is not None:
                 try:
@@ -450,7 +651,7 @@ class DelayedOverlayComposer:
                         "right_message_id": selection.right_message_id,
                     }
                 )
-                self._prune_results_locked(output.media_timestamp)
+                self._prune_results_locked(display_timestamp)
 
     def _render_legacy(
         self,
@@ -494,15 +695,48 @@ class DelayedOverlayComposer:
         cutoff = media_timestamp - max(
             self.max_gap_seconds, _STRANGER_ANNOTATION_HOLD_SECONDS
         )
+        count = 0
         while (
-            len(self._results) > 2
-            and self._results[1].frame.timestamp_seconds < cutoff
+            len(self._results) - count > 2
+            and self._results[count + 1].frame.timestamp_seconds < cutoff
         ):
-            self._results.pop(0)
+            count += 1
+        # Retain the preceding positive or a complete negative confirmation
+        # streak per event. Missing capabilities never count toward a clear.
+        missing = set(SAFETY_EVENT_LABELS)
+        negative_counts = dict.fromkeys(SAFETY_EVENT_LABELS, 0)
+        seen_frames = {
+            (*_analysis_key(result)[:2], judgment.event_label)
+            for result in self._results[count:]
+            for judgment in result.judgments
+        }
+        retained = set()
+        for index in range(count - 1, -1, -1):
+            result = self._results[index]
+            for judgment in result.judgments:
+                label = judgment.event_label
+                observation = (*_analysis_key(result)[:2], label)
+                if label not in missing or observation in seen_frames:
+                    continue
+                seen_frames.add(observation)
+                retained.add(index)
+                if judgment.detected:
+                    missing.discard(label)
+                else:
+                    negative_counts[label] += 1
+                    if negative_counts[label] >= self.clear_after_negatives:
+                        missing.discard(label)
+        self._results[:count] = [
+            item for index, item in enumerate(self._results[:count])
+            if index in retained
+        ]
 
 
-def _analysis_key(result: AnalysisResult) -> tuple[float, int]:
-    return result.frame.timestamp_seconds, result.frame.source_frame_index
+def _analysis_key(result: AnalysisResult) -> tuple[float, int, int, str]:
+    return (
+        result.frame.timestamp_seconds, result.frame.source_frame_index,
+        result.sequence, result.message_id,
+    )
 
 
 def _interpolate_analysis(

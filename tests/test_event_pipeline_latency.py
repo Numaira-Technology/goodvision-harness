@@ -268,7 +268,7 @@ def test_slow_gpu_tracking_does_not_delay_actor_assisted_live_results(tmp_path, 
         archive.close()
 
 
-def test_older_positive_reaches_archive_without_replacing_newer_live_negative(
+def test_older_positive_notifies_and_archives_without_replacing_newer_live_negative(
     tmp_path, jpeg
 ):
     archive = EventArchive(EventArchiveSettings(directory=tmp_path))
@@ -280,7 +280,7 @@ def test_older_positive_reaches_archive_without_replacing_newer_live_negative(
             session._archive_window(window, "admitted")
         for future, window in (newer, older):
             session._apply_window_future(future, window)
-        assert [item.judgments[0].detected for item in live] == [False]
+        assert [item.judgments[0].detected for item in live] == [False, True]
         assert [item.detected for item in legacy] == [False]
         assert [item.frame.timestamp_seconds for item, _ in exact] == [1.4]
         assert [item.judgments[0].detected for item in timeline] == [False, True]

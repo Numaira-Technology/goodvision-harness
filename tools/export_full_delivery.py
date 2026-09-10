@@ -12,10 +12,10 @@ import time
 from pathlib import Path
 
 IMAGE_TAGS = (
-    "goodvision-harness:2026.09.10-full.3",
-    "goodvision-rich-label-worker:2026.09.10-full.3",
+    "goodvision-harness:2026.09.10-full.4",
+    "goodvision-rich-label-worker:2026.09.10-full.4",
 )
-ARCHIVE_NAME = "goodvision-full-2026.09.10.3.tar"
+ARCHIVE_NAME = "goodvision-full-2026.09.10.4.tar"
 
 
 def export(directory: Path) -> None:

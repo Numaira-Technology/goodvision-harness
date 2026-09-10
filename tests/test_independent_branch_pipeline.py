@@ -7,6 +7,7 @@ No real model, camera, network service or webhook is used here.
 from __future__ import annotations
 
 import itertools
+import json
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -29,11 +30,13 @@ from goodvision_harness.grounding import (
     SelectedFeaturesGroundingClient,
 )
 from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
+from goodvision_harness.privacy import PUBLIC_ANALYSIS_ERROR
+from goodvision_harness.result_bus import ResultBus
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
 
 def _window(index):
-    ok, jpeg = cv2.imencode(".jpg", np.full((48, 64, 3), index * 30, np.uint8))
+    ok, jpeg = cv2.imencode(".jpg", np.full((48, 64, 3), (index * 30) % 256, np.uint8))
     assert ok
     return FrameWindow(
         index, (SampledFrame(index, index * 10, index * 0.4, jpeg.tobytes(), 64, 48),)
@@ -210,7 +213,7 @@ def test_smoking_negative_is_immediate_while_face_is_busy_then_face_is_not_lost(
         assert states[-1]["branches"]["stranger"]["counts"]["dropped"] == 1
 
 
-def test_llm_capacity_does_not_prevent_three_reliable_face_confirmations():
+def test_busy_llm_does_not_delay_the_first_stranger_frame():
     gate = threading.Event()
     with _session(safety_gate=gate, confirm=True) as (
         session,
@@ -225,12 +228,14 @@ def test_llm_capacity_does_not_prevent_three_reliable_face_confirmations():
         for index in range(3):
             session._schedule_window(_window(index), pool)
             _wait(lambda: not session._face_pending)
+            assert len(_feature(live, "stranger")) == index + 1
+            assert _feature(live, "stranger")[-1][1].detected
         assert safety.entered.wait(4)
         assert safety.calls == [0]
         assert face.calls == [0, 1, 2]
         assert [j.detected for _, j in _feature(live, "stranger")] == [
-            False,
-            False,
+            True,
+            True,
             True,
         ]
         assert states[-1]["branches"]["safety"]["counts"]["dropped"] == 2
@@ -272,6 +277,56 @@ def _partial_future(index, label, positive):
     return future, window
 
 
+@pytest.mark.parametrize("recovered", (False, True))
+def test_classification_diagnostics_stay_in_branch_status_on_original_source_frame(
+    recovered,
+):
+    with _session() as (session, _, _, _, live, exact, timeline, states):
+        original, window = _partial_future(2, "smoking", True)
+        diagnostics = {
+            "category": (
+                "single_event_envelope" if recovered else "invalid_envelope"
+            ),
+            "finish_reason": "stop",
+            "recovered": recovered,
+            "response_chars": 256,
+            "completion_tokens": 80,
+        }
+        response = replace(
+            original.result(),
+            classification=original.result().classification if recovered else None,
+            classification_diagnostics=diagnostics,
+            error=None if recovered else PUBLIC_ANALYSIS_ERROR,
+            completed_branches=("safety",) if recovered else (),
+            branch_errors=() if recovered else (("safety", "invalid_response"),),
+        )
+        future = Future()
+        future.set_result(response)
+        session._apply_window_future(future, window, branch="safety")
+
+        completion = states[-1]["branches"]["safety"]["last_completion"]
+        assert completion["classification"] == diagnostics
+        assert completion["classification"] is not diagnostics
+        assert completion["source_frame_index"] == 20
+        assert completion["source_timestamp_seconds"] == window.end_timestamp
+        assert completion["error"] == response.error
+        assert "raw_text" not in json.dumps(completion)
+
+        if recovered:
+            assert len(live) == len(exact) == len(timeline) == 1
+            assert live[0].judgments[0].detected is True
+            assert live[0].frame.source_frame_index == 20
+            assert exact[0][1] == window.newest_frame.jpeg_bytes
+            payload = json.dumps(live[0].as_dict())
+            assert "classification" not in payload
+            assert diagnostics["category"] not in payload
+            assert "response_chars" not in payload
+            assert "completion_tokens" not in payload
+            assert "raw_text" not in payload
+        else:
+            assert live == exact == timeline == []
+
+
 @pytest.mark.parametrize(
     "order", list(itertools.permutations(("face0", "smoke0", "smoke1")))
 )
@@ -289,8 +344,12 @@ def test_every_interleaving_preserves_latest_of_each_branch_with_original_frames
             )
         assert _feature(live, "stranger")[0][1].detected is True
         assert _feature(live, "stranger")[0][0].frame.source_frame_index == 0
-        assert _feature(live, "smoking")[-1][1].detected is False
-        assert _feature(live, "smoking")[-1][0].frame.source_frame_index == 10
+        smoking = max(
+            _feature(live, "smoking"), key=lambda row: row[0].frame.timestamp_seconds
+        )
+        assert smoking[1].detected is False
+        assert smoking[0].frame.source_frame_index == 10
+        assert len(_feature(live, "smoking")) == 2
         assert len(timeline) == 3
         assert [r.sequence for r in live] == list(range(1, len(live) + 1))
         for result, jpeg in exact:
@@ -305,14 +364,62 @@ def test_every_interleaving_preserves_latest_of_each_branch_with_original_frames
 @pytest.mark.parametrize(
     "label,branch", [("smoking", "safety"), ("stranger", "stranger")]
 )
-def test_old_positive_never_replaces_newer_negative_in_the_same_branch(label, branch):
-    with _session() as (session, _, _, _, live, _, timeline, _states):
+def test_old_positive_notifies_without_replacing_newer_negative_in_same_branch(
+    label, branch,
+):
+    with _session() as (session, _, _, _, live, exact, timeline, _states):
         for index, positive in [(1, False), (0, True)]:
             future, window = _partial_future(index, label, positive)
             session._apply_window_future(future, window, branch=branch)
-        assert len(live) == 1
+        assert len(live) == 2
         assert live[0].judgments[0].detected is False
+        assert live[1].judgments[0].detected is True
+        assert [result.sequence for result in live] == [1, 2]
+        assert [result.frame.source_frame_index for result, _ in exact] == [10]
         assert len(timeline) == 2
+        assert timeline[-1].message_id == live[-1].message_id
+        bus = ResultBus()
+        for result in live:
+            bus.publish(result.as_dict())
+        assert bus.latest(feature=label).payload == live[0].as_dict()
+        organizer = (
+            session._face_organizer if branch == "stranger" else session.organizer
+        )
+        assert organizer.snapshot()["decision"]["detected"] is False
+
+
+@pytest.mark.parametrize(
+    "label,branch", [("smoking", "safety"), ("stranger", "stranger")]
+)
+def test_source_history_keeps_late_negatives_for_ten_frame_clear_confirmation(
+    label, branch,
+):
+    with _session() as (session, _, _, _, live, exact, timeline, _states):
+        # Frame 10 finishes first. Frames 1 through 9 must still reach consumers
+        # so their ten-negative confirmation has exactly the private evidence.
+        for index in (0, 10, *range(1, 9)):
+            future, window = _partial_future(index, label, index == 0)
+            session._apply_window_future(future, window, branch=branch)
+        assert sum(not result.judgments[0].detected for result in live) == 9
+        future, window = _partial_future(9, label, False)
+        session._apply_window_future(future, window, branch=branch)
+        assert sum(not result.judgments[0].detected for result in live) == 10
+        assert live == timeline
+        assert [result.sequence for result in live] == list(range(1, 12))
+        assert [result.frame.source_frame_index for result, _ in exact] == [0, 100]
+        bus = ResultBus()
+        for result in live:
+            bus.publish(result.as_dict())
+        latest = bus.latest(feature=label).payload
+        assert latest["frame"]["source_frame_index"] == 100
+        assert latest["judgments"][0]["detected"] is False
+        source_order = sorted(
+            bus.records_after(0),
+            key=lambda record: record.payload["frame"]["source_frame_index"],
+        )
+        assert [row.payload["judgments"][0]["detected"] for row in source_order] == [
+            True, *([False] * 10),
+        ]
 
 
 def test_stopped_camera_does_not_publish_late_results_from_either_branch():
@@ -432,6 +539,29 @@ def test_person_reassociation_preserves_the_original_archive_branch_window(monke
             ("safety:0", ("smoking",), "admitted"),
             ("safety:0", ("smoking",), "completed"),
         ]
+
+
+def test_person_reassociation_updates_private_display_without_archive(monkeypatch):
+    with _session() as (
+        session, _pool, _safety, _face, live, exact, timeline, _states,
+    ):
+        future, window = _partial_future(0, "smoking", True)
+        session._apply_window_future(future, window, branch="safety")
+        original = live[0]
+        corrected = replace(original, objects=tuple(
+            replace(item, attributes={"subject_ids": ["subject-alice"]})
+            for item in original.objects
+        ))
+        monkeypatch.setattr(
+            session.person_registry, "drain_reassociated_results", lambda: [corrected],
+        )
+        future, window = _partial_future(1, "stranger", False)
+        session._apply_window_future(future, window, branch="stranger")
+        assert timeline[-1] == corrected
+        assert len(timeline) == 3
+        assert len(live) == len(exact) == 2
+        assert live[0] == original
+        assert not live[0].objects[0].attributes.get("subject_ids")
 
 
 @pytest.mark.parametrize(

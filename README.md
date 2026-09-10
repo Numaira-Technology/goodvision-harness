@@ -25,21 +25,23 @@ runs one blank inference to remove its first-frame cold start; dry-run skips
 that warmup. The default runtime settings are:
 
 - source/face sampling: 2.5 FPS, 1280 px maximum image side, JPEG quality 90;
-- the same frame is resized to 320 px, JPEG quality 75, for the single remote
-  safety request;
-- display output: 15 FPS, 720 px maximum image side, JPEG quality 70, delayed
+- safety input: 320 px maximum image side, JPEG quality 75, for the single
+  remote safety request;
+- display output: 15 FPS, source dimensions after camera-view selection,
+  JPEG quality 90, delayed
   2.5 seconds so most completed 2.5 FPS analysis keyframes can be interpolated;
 - one-frame windows with stride 1 and six concurrent model requests;
 - `max_tokens=1200`, no API retry, and one explicitly selected model route
   with automatic route fallback disabled;
 - one multi-label safety prompt that independently evaluates `fight`,
   `smoking`, `fall`, and `weapon` and permits simultaneous positives.
-  Minimum visual-evidence rules for `fall`/`smoking` override the general
-  high-recall preference: stable supported crouching and empty-hand-to-mouth
-  gestures are not sufficient. These prompt-only changes keep the original
-  one-frame, 320 px safety input and do not change Paddle or face recognition.
-  They may also miss subtle falls or small/occluded smoking items; validate
-  both false positives and missed positives on fixed test recordings.
+  The console offers standard/high sensitivity independently for each safety
+  event before starting. Smoking defaults to high: plausible smoking gestures
+  and context can trigger an alert without identifying a smoking item. Standard
+  smoking requires an identifiable item. Other events default to standard.
+  Safety requests retain full-scene, one-frame, 320 px inputs; sensitivity does
+  not change Paddle or face recognition. Validate both missed events and false
+  alarms on fixed test recordings when choosing a sensitivity.
 
 The original headless CLI keeps its prior event and result protocol. Browser
 testing now uses one unified page, based on the familiar original Demo UI.
@@ -47,6 +49,22 @@ Both browser-camera and network-stream modes use the same grounded delivery
 pipeline and expose customer JSON plus analyzed and raw video outputs. The
 legacy single-event and face-only modes remain available as diagnostic API
 modes; the page lets the operator select any non-empty feature combination.
+
+When every selected safety event is negative, the model returns only
+`{"no_events":0.95}` (using its confidence in that verdict). The service expands
+this into the existing per-event negative judgments, with bilingual summary
+text and no boxes. It omits auxiliary actor detection on these frames. Positive
+responses retain the full evidence and box contract and the 1200-token budget;
+face recognition remains independent, and safety images remain 320×180 for
+16:9 input. Legacy full negative responses are still accepted.
+
+The console's route check selects the lowest median latency among routes with
+three successful responses; model size no longer gets priority. Each route row
+also has a manual selection button, available before starting detection and
+outside a route check. Both automatic and manual selections are saved for the
+next session and survive restart. `POST /v1/deployment/routes/select` accepts
+only `{"route_id":"A"}` through `{"route_id":"H"}`, using the displayed IDs.
+Running another automatic check replaces the saved selection with its winner.
 
 ## Optional rich video labels
 
@@ -568,6 +586,13 @@ clients use the same field in the existing `/ws` start message:
 Only one input session runs at a time; selected safety labels share one model
 request, and `stranger` uses the local face matcher on the same frame.
 
+Before each run, choose a sensitivity for each safety event in the console, or
+include `"event_sensitivities":{"smoking":"high","fall":"standard"}` in either
+start request. Allowed levels are `standard` and `high`; only selected safety
+events are applied, and unsupported keys or levels are rejected. Omitted levels
+use `smoking: high` and `fight/fall/weapon: standard`. The choices are fixed for
+the run and returned in the session response and `/v1/status`.
+
 The combined output remains available at `/v1/results/latest` and
 `/v1/results/events`. Each feature also has an independent pull URL that returns
 only that judgment and the objects it references:
@@ -789,18 +814,28 @@ multipart JPEG in `GET /v1/video/stream.mjpeg` carry
 `X-Analysis-Message-Id`; its value is the same as the JSON `message_id`. This
 exact evidence feed remains at model-result cadence.
 
-For the display path, the container separately buffers the continuous source
-frames for 2.5 seconds by default (adjustable in the console). Results at 2.5 FPS
-act as bbox keyframes on the same
-media timeline. Between two compatible keyframes, the service linearly moves
-the box. If the next result is late or a sampled request is dropped, the last
-analyzed state is latched onto every display frame; only a later keyframe may
-update or explicitly clear it. This prevents a continuously detected bbox from
-blinking between model samples. The original video frames are not synthesized
-or skipped, so `/v1/video/annotated/stream.mjpeg` remains smooth while staying
-intentionally behind the camera. Multipart frames report `X-Annotation-Mode`
-(`exact`, `interpolated`, `held`, or `none`), the left and optional next
-analysis IDs, and `X-Stream-Delay`. The
+For the display path, the container buffers source frames for the delay selected
+in the console. When local face detection is enabled, the annotated output uses
+the newest completed face result and its exact source JPEG. A late event is
+associated with people in its own source frame, then attached to those same
+people's latest face boxes. The image repeats between face completions, while
+new event verdicts can update its labels immediately. Raw coordinates from an
+older event are never pasted onto a newer person's face.
+
+Event state is keyed by session, stable `subject_id`, and event type. Ten
+consecutive valid negative source frames clear the displayed behavior alert;
+each positive resets the count. Duplicate frame observations count once.
+Negatives affect only people actually observed near that event's source frame;
+absence, failed branches, and another person's clear do not end an event. Older
+positives cannot override newer confirmed clears. Late results still enter the
+immediate result stream, and late positives produce a separate event notice.
+Current image and latest-result endpoints remain in source-frame order.
+Ambiguous associations stay unbound.
+Faces missing for over three seconds stop being displayed without clearing their
+event state. Without face detection, compatible event keyframes retain the
+existing delayed interpolation. Multipart frames report `X-Annotation-Mode`
+(`face_aligned`, `exact`, `interpolated`, `held`, or `none`), the displayed face
+or analysis message ID, optional next analysis ID, and `X-Stream-Delay`. The
 `/v1/video/live/*` endpoints remain the unannotated, near-live diagnostic feed.
 
 ## Optional webhook
@@ -819,6 +854,19 @@ not durable across container restarts. Use SSE plus receiver-side persistence
 when replay guarantees matter.
 
 ## Configuration
+
+`display.max_image_side: null` preserves each decoded network frame's dimensions
+after camera-view selection. A 2560×720 stereo frame is first cropped to one
+1280×720 eye, then independently encoded for display and inference; it is never
+downscaled before cropping. A 1920×1080 monocular source displays at 1920×1080.
+Set a positive side limit (for example, `1280`) to reduce display bandwidth;
+smaller sources are never enlarged. Browser-camera output preserves the uploaded
+frame dimensions, which remain bounded by the browser capture settings.
+Display JPEGs and annotation re-encoding use quality 90. Matching resolution
+does not make JPEG output lossless or match the source frame rate: display
+cadence remains 15 FPS, and higher resolutions cost more bandwidth, encoding
+time, and buffer memory. Event archive clips retain their separate `events`
+resolution limit.
 
 `config.yaml` controls sampling, model selection, the legacy single-event
 prompt, the fixed-four `multi_event_prompt`, concurrency, readiness windows,
@@ -972,16 +1020,24 @@ in the test UI. Install compatible detection and recognition weights under
 download. The harness does not bundle models; the known-person gallery persists
 at `FACE_GALLERY_PATH`.
 
-`face.min_face_size` is the live-recognition floor in analysis-frame pixels.
-Small faces can positively match an enrolled person, but an unmatched face
-under 60 pixels, a low-confidence detection, or an extreme face angle is
-`unusable`, not evidence of a stranger. New unknown identities still require
-three reliable observations. A known identity remains attached to a reliable
+`face.min_face_size` is the shared live-recognition floor for known and unknown
+faces: both width and height must reach the configured value (20 analysis-frame
+pixels by default). There is no extra 60-pixel minimum for strangers. A face below
+the configured minimum, a low-confidence detection, or an extreme face angle is
+`unusable`. A new unknown identity is reported on
+the first reliable unmatched frame, with its bbox; there is no consecutive-frame
+confirmation gate. A known identity remains attached to a reliable
 person trajectory through side views and ordinary mismatches; one contradictory
 frame cannot replace it. Source-time motion and one-to-one associations bridge
 brief gaps up to three seconds. Predicted boxes are not new evidence. Ambiguous
 crossings, prolonged absence and sustained identity conflicts require reconfirmation.
 No stranger photos or persistent stranger embeddings are created.
+
+In the face-aligned display, known people have green face boxes and strangers
+have red identity boxes. An active behavior changes only its participants' face
+boxes to red and adds the event label; everyone else's identity boxes remain
+visible. Clearing one event preserves any other active event on that person.
+Once all their behaviors clear, their normal identity color and label return.
 
 Each live session keeps its own identity history and stable `subject_id` values.
 `person_id` remains the enrolled identity. GPU detector tracking operates independently
@@ -1038,9 +1094,11 @@ matches the local matcher; `matched_memory_ids` is additional reference metadata
 
 In fixed-five or selected-feature analysis, known faces are retained in `objects`
 with `attributes.person_id` and are not referenced by stranger alerts. When the
-selected safety checks are complete and none detects an event, the annotated
-video draws these faces in green with their **person ID**. A detected or missing
-safety result suppresses the green identity boxes; stranger alerts remain red.
+selected safety checks have no active positive, the annotated video draws these
+faces in green with their **person ID**, including while a check is pending.
+A positive safety result suppresses the green identity boxes until that capability
+receives ten consecutive valid negatives; missing results preserve its prior
+state. Stranger alerts remain red and keep their independent face semantics.
 
 The fixed-five mode and the face diagnostics mode both use local face analysis by
 default. Enable remote reference memory only as an explicit legacy
@@ -1153,9 +1211,9 @@ Add a reviewed `RELEASE.md` recording the exact candidate versions, completed
 checks and unverified boundaries, plus `SOURCE_HASHES.json` for the application
 files verified inside both images. Export with
 `python tools/export_full_delivery.py <new-bundle-directory>`.
-The exporter streams exactly the two current image tags through a binary-safe
-gzip pipe, verifies the complete stream and manifest, and writes `IMAGES.json`
-and `SHA256SUMS.txt`. `docker load -i` accepts the compressed archive directly.
+The exporter streams exactly the two current image tags into a binary-safe tar
+archive, verifies the complete stream and manifest, and writes `IMAGES.json`
+and `SHA256SUMS.txt`. Load the archive directly with `docker load -i`.
 The fixed eleven-file audit in `tools/audit_customer_bundle.py` describes the
 historical 2026.09.03 bundle; it is not the current release inventory.
 
@@ -1163,7 +1221,7 @@ Before publishing, run the full unit suite and isolated image protocol check
 with the candidate image tags:
 
 ```powershell
-pwsh -NoProfile -File tools/run_full_delivery_smoke.ps1 -HarnessImage goodvision-harness:2026.09.09-full.1 -WorkerImage goodvision-rich-label-worker:2026.09.09-full.1
+pwsh -NoProfile -File tools/run_full_delivery_smoke.ps1 -HarnessImage goodvision-harness:2026.09.10-full.4 -WorkerImage goodvision-rich-label-worker:2026.09.10-full.4
 ```
 
 The smoke uses disposable resources, not production sessions or data volumes.

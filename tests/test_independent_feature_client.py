@@ -350,7 +350,7 @@ def test_legacy_face_client_does_not_claim_raw_detector_observations() -> None:
 
 
 @pytest.mark.parametrize("mixed", [False, True])
-def test_runtime_diagnostics_distinguish_confirmation_and_no_face_with_held_identity(
+def test_runtime_diagnostics_distinguish_single_frame_and_held_stranger(
     tmp_path: Path, mixed: bool,
 ) -> None:
     face = SimpleNamespace(
@@ -369,11 +369,12 @@ def test_runtime_diagnostics_distinguish_confirmation_and_no_face_with_held_iden
         if mixed else session.classify_window
     )
     responses = [classify(_window(index)) for index in range(4)]
-    for index in range(2):
+    for index in range(3):
         diagnostics = responses[index].face_diagnostics
         assert diagnostics["raw_status_counts"]["unknown"] == 1
-        assert diagnostics["stable_status_counts"]["unusable"] == 1
-        assert diagnostics["reason_counts"] == {"identity_unconfirmed": 1}
+        assert responses[index].classification.detected
+        assert diagnostics["stable_status_counts"]["unknown"] == 1
+        assert diagnostics["reason_counts"] == {"none": 1}
         assert diagnostics["faces"][0]["unknown_confirmations"] == index + 1
     assert responses[2].classification.detected
     assert responses[2].face_diagnostics["stable_status_counts"]["unknown"] == 1

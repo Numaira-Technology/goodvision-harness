@@ -82,7 +82,11 @@ class SessionCallbacks:
     on_state: Callable[[dict[str, Any]], None] | None = None
     on_end: Callable[[str, str | None], None] | None = None
     on_vision_result: Callable[[VisionResult], None] | None = None
+    # Only the newest successful result in a branch may supply its exact frame.
     on_analysis_frame: Callable[[AnalysisResult, bytes], None] | None = None
+    # Every valid grounded observation, in arrival order, including superseded
+    # positives and negatives. Consumers keep source-ordered live state and can
+    # confirm a clear using the same source observations as the video overlay.
     on_analysis_result: Callable[[AnalysisResult], None] | None = None
     # Every successful grounded keyframe, including a response superseded in
     # its own branch. Mixed local-face/safety sessions publish the newest result
@@ -541,6 +545,12 @@ class StreamingSession:
                         if getattr(response, "face_diagnostics", None) is not None
                         else {}
                     ),
+                    **(
+                        {"classification": dict(response.classification_diagnostics)}
+                        if getattr(response, "classification_diagnostics", None)
+                        is not None
+                        else {}
+                    ),
                 }
                 record = {**record, "branch": branch}
                 if branch == "stranger":
@@ -672,18 +682,12 @@ class StreamingSession:
                     if judgments is not None:
                         newest = window.newest_frame
                         frame_width, frame_height = newest.original_dimensions
-                        if applied:
-                            self._result_sequence += 1
-                            result_sequence = self._result_sequence
-                        else:
-                            # This value is only used by the private timeline.
-                            # It stays stable even when requests finish out of order.
-                            result_sequence = window.index + 1
+                        self._result_sequence += 1
                         timeline_result = AnalysisResult(
                             message_id=str(uuid4()),
                             source_id=self.source_id,
                             stream_session_id=self.stream_session_id,
-                            sequence=result_sequence,
+                            sequence=self._result_sequence,
                             emitted_at=_utc_now(),
                             frame=FrameReference(
                                 source_frame_index=newest.source_frame_index,
@@ -711,8 +715,10 @@ class StreamingSession:
                             LOGGER.warning(
                                 "could not associate observation with a person"
                             )
+                        analysis_result = timeline_result
                         if applied:
-                            analysis_result = timeline_result
+                            # A late positive still reaches event notifications,
+                            # but must not replace the current source image.
                             analysis_frame_jpeg = (
                                 newest.presentation_jpeg_bytes or newest.jpeg_bytes
                             )
@@ -724,6 +730,19 @@ class StreamingSession:
                 timeline_result=timeline_result,
                 analysis_frame_jpeg=analysis_frame_jpeg,
             )
+            corrections = (
+                self.person_registry.drain_reassociated_results()
+                if timeline_result is not None and self._emit_open else ()
+            )
+            # A later face observation can resolve an earlier actor. Update the
+            # private display state without republishing a new model verdict.
+            for corrected in corrections:
+                if self._emit_open and self.callbacks.on_timeline_result is not None:
+                    _invoke_callback(
+                        "private overlay association correction",
+                        self.callbacks.on_timeline_result,
+                        corrected,
+                    )
             # Archive work is strictly downstream of the immediate result. These
             # methods only enqueue; disk, replay and encoding never run here.
             if self.archive is not None and self._emit_open:
@@ -738,7 +757,7 @@ class StreamingSession:
                     self._archive_window(
                         window, "completed" if accepted else "dropped", branch=branch,
                     )
-                    for corrected in self.person_registry.drain_reassociated_results():
+                    for corrected in corrections:
                         self.archive.submit_result(
                             corrected,
                             window_id=self._archive_result_windows.get(corrected.message_id),

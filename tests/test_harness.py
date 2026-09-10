@@ -203,7 +203,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.display.jpeg_quality,
         config.display.delay_seconds,
         config.display.bbox_max_gap_seconds,
-    ) == (15.0, 720, 70, 2.5, 0.8)
+    ) == (15.0, None, 90, 2.5, 0.8)
     assert (
         config.sliding_window.size_frames,
         config.sliding_window.stride_frames,
@@ -414,10 +414,12 @@ def test_model_prompt_has_one_bbox_append_and_dynamic_suffix() -> None:
         prompt=config.inference.multi_event_prompt,
         append_contract=False,
     )
-    assert multi_messages[0]["content"].endswith(
+    assert (
         "independently judge every fixed safety event and allow multiple "
         "simultaneous positives."
+        in multi_messages[0]["content"]
     )
+    assert "even for ONE requested event" in multi_messages[0]["content"]
     multi_prompt_text = multi_messages[1]["content"][0]["text"]
     assert multi_prompt_text.startswith(config.inference.multi_event_prompt)
     assert (
@@ -820,10 +822,11 @@ def test_pipeline_emits_grounded_result_with_source_frame_mapping(
     assert emitted_frames == [(emitted[0], presentation_jpeg)]
 
 
-def test_pipeline_keeps_late_success_for_private_overlay_timeline() -> None:
+def test_pipeline_publishes_late_success_without_rewinding_exact_frame() -> None:
     config = load_config(ROOT / "config.yaml")
     client = DryRunGroundingClient(config.inference)
     public_results: list[AnalysisResult] = []
+    exact_results: list[AnalysisResult] = []
     timeline_results: list[AnalysisResult] = []
     records: list[dict[str, Any]] = []
     session = StreamingSession.for_camera(
@@ -832,6 +835,7 @@ def test_pipeline_keeps_late_success_for_private_overlay_timeline() -> None:
         SessionCallbacks(
             on_event=records.append,
             on_analysis_result=public_results.append,
+            on_analysis_frame=lambda result, jpeg: exact_results.append(result),
             on_timeline_result=timeline_results.append,
         ),
     )
@@ -869,7 +873,8 @@ def test_pipeline_keeps_late_success_for_private_overlay_timeline() -> None:
     session._on_window_done(newer_future, newer_window)
     session._on_window_done(older_future, older_window)
 
-    assert [item.frame.source_frame_index for item in public_results] == [20]
+    assert [item.frame.source_frame_index for item in public_results] == [20, 10]
+    assert [item.frame.source_frame_index for item in exact_results] == [20]
     assert [item.frame.source_frame_index for item in timeline_results] == [20, 10]
     assert [item["applied"] for item in records] == [True, False]
 
@@ -1088,7 +1093,8 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert info["max_concurrent_requests"] == 6
     assert info["annotated_output"] == {
         "output_fps": 15.0,
-        "max_image_side": 720,
+        "max_image_side": None,
+        "jpeg_quality": 90,
         "buffer_delay_seconds": 2.5,
         "bbox_max_gap_seconds": 0.8,
     }

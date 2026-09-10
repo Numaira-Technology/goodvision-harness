@@ -47,7 +47,8 @@ function dashboard(){
     openFeed=()=>surfaces();
     state.running=true;state.sessionId="session-1";state.sessionFeatures=detectionEvents;
     state.gallery={ready:true};state.galleryLoading=false;
-    globalThis.app={analysis,message,status,reset,renderClassification,state};
+    globalThis.app={analysis,message,status,reset,renderClassification,state,
+      renderSensitivities,selectedSensitivities,sensitivityInputs,controls,start};
   `,context);
   return {app:context.app,context,element:id=>document.getElementById(id),
     status:event=>document.getElementById("event-statuses").children
@@ -64,6 +65,83 @@ function result(timestamp,values,{session="session-1",frame=Math.round(timestamp
     }))};
 }
 const clear={fight:false,smoking:false,fall:false,weapon:false};
+
+test("behavior alerts clear only after ten distinct negative frames and raw evidence stays negative",()=>{
+  const view=dashboard();view.app.state.sessionFeatures=["smoking"];
+  view.app.analysis(result(0,{smoking:true}));
+  for(let frame=1;frame<=9;frame++){
+    view.app.analysis(result(frame,{smoking:false}));
+    view.app.analysis(result(frame,{smoking:false}));
+    view.app.analysis(result(frame+0.1,{fight:false}));
+    assert.equal(view.element("verdict").textContent,"SMOKING");
+    assert.match(view.status("smoking"),new RegExp("待解除 "+frame+"/10"));
+  }
+  view.app.analysis(result(10,{smoking:false}));
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+  assert.equal(JSON.parse(view.element("result-json").textContent).judgments[0].detected,false);
+});
+
+test("a new positive resets the streak independently for each event",()=>{
+  const view=dashboard();view.app.state.sessionFeatures=["smoking","fight"];
+  view.app.analysis(result(0,{smoking:true,fight:true}));
+  for(let frame=1;frame<=9;frame++)view.app.analysis(result(frame,{smoking:false,fight:false}));
+  view.app.analysis(result(10,{smoking:true,fight:false}));
+  assert.equal(view.element("verdict").textContent,"SMOKING");
+  assert.equal(view.status("smoking"),"ALERT 90.0%");
+  for(let frame=11;frame<=19;frame++)view.app.analysis(result(frame,{smoking:false}));
+  assert.equal(view.element("verdict").textContent,"SMOKING");
+  view.app.analysis(result(20,{smoking:false}));
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+});
+
+test("late positives notify without rolling back confirmed clear, current JSON or description",()=>{
+  const view=dashboard();view.app.state.sessionFeatures=["smoking"];
+  for(let frame=1;frame<=10;frame++)view.app.analysis({...result(frame,{smoking:false}),description:"current "+frame});
+  const currentJson=view.element("result-json").textContent;
+  view.app.analysis({...result(0,{smoking:true}),description:"old smoking frame"});
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+  assert.equal(view.element("result-json").textContent,currentJson);
+  assert.equal(view.element("overall-description").textContent,"current 10");
+  assert.match(view.element("decision-meta").textContent,/video 10\.000s/);
+  assert.equal(view.element("event-notice").hidden,false);
+  assert.match(view.element("event-notice").textContent,/迟到事件通知.*SMOKING.*0\.000s/);
+  assert.equal(view.element("log-body").children[0].children[2].children[0].textContent,"SMOKING");
+});
+
+test("source-order replay and bounded history retain ten-negative semantics",()=>{
+  const view=dashboard();view.app.state.sessionFeatures=["smoking"];
+  view.app.analysis(result(0,{smoking:true}));
+  for(let frame=2;frame<=10;frame++)view.app.analysis(result(frame,{smoking:false}));
+  assert.equal(view.element("verdict").textContent,"SMOKING");
+  view.app.analysis(result(1,{smoking:false}));
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+  for(let frame=11;frame<=300;frame++)view.app.analysis(result(frame,{smoking:false}));
+  assert.equal(view.app.state.classificationHistory.get("smoking").entries.length,256);
+  view.app.analysis(result(0,{smoking:true}));
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+});
+
+test("per-event sensitivity is selectable before start, sent with the request, and frozen during a run",async()=>{
+  const view=dashboard(),sent=[];
+  view.app.state.running=false;view.app.state.info={api_key_present:true,
+    event_sensitivity_defaults:{fight:"standard",smoking:"high",fall:"standard",weapon:"standard"},
+    event_sensitivity_options:Object.fromEntries(Object.keys(clear).map(key=>[key,[
+      {value:"standard",label:"标准",description:"Clear visual evidence"},
+      {value:"high",label:"高",description:"Contextual evidence"}]]))};
+  view.app.renderSensitivities();view.app.controls();
+  assert.equal(view.app.sensitivityInputs.size,4);
+  assert.equal(view.app.sensitivityInputs.get("smoking").value,"high");
+  assert.equal(view.app.sensitivityInputs.get("smoking").disabled,false);
+  view.app.sensitivityInputs.get("smoking").value="standard";
+  view.app.sensitivityInputs.get("fall").value="high";
+  view.app.state.ws={readyState:1,send:value=>sent.push(JSON.parse(value))};
+  await view.app.start();
+  assert.deepEqual(sent[0].event_sensitivities,{fight:"standard",smoking:"standard",fall:"high",weapon:"standard"});
+  assert.ok([...view.app.sensitivityInputs.values()].every(input=>input.disabled));
+  view.app.message({type:"session",stream_session_id:"session-2",mode:"stream",features:["smoking"],
+    event_sensitivities:{smoking:"high"}});
+  assert.equal(view.app.sensitivityInputs.get("smoking").value,"high");
+});
 
 test("skipped face samples preserve panel alerts and face details without rewriting evidence",()=>{
   const view=dashboard();
@@ -369,26 +447,27 @@ test("independent partial branches make the capability overview ready without ch
   assert.equal(view.element("confidence").textContent,"All 5 events clear");
   assert.doesNotMatch(view.element("description").textContent,/incomplete/i);
   assert.match(view.element("decision-meta").textContent,/video 2\.000s/);
-  assert.deepEqual(JSON.parse(view.element("result-json").textContent),face);
+  assert.deepEqual(JSON.parse(view.element("result-json").textContent),safety);
   assert.equal(view.element("log-body").children[0].children[2].children[0].textContent,"PARTIAL");
 });
 
 test("a newly delivered face branch alerts behind a newer safety frame immediately",()=>{
   const view=dashboard();
-  view.app.analysis({...result(2,{...clear,smoking:true}),analysis_complete:false,
-    missing_event_labels:["stranger"]});
+  const safety={...result(2,{...clear,smoking:true}),analysis_complete:false,
+    missing_event_labels:["stranger"]};
+  view.app.analysis(safety);
   const face={...result(1.8,{stranger:true}),analysis_complete:false,
     missing_event_labels:Object.keys(clear)};
   view.app.analysis(face);
   assert.equal(view.element("verdict").textContent,"SMOKING + STRANGER");
   assert.doesNotMatch(view.element("description").textContent,/incomplete/i);
-  assert.deepEqual(JSON.parse(view.element("result-json").textContent),face);
+  assert.deepEqual(JSON.parse(view.element("result-json").textContent),safety);
   view.app.analysis({...result(2.4,clear),analysis_complete:false,missing_event_labels:["stranger"]});
-  assert.equal(view.element("verdict").textContent,"STRANGER");
+  assert.equal(view.element("verdict").textContent,"SMOKING + STRANGER");
   view.app.analysis({...result(2.2,{...clear,smoking:true}),analysis_complete:false,
     missing_event_labels:["stranger"]});
-  assert.equal(view.element("verdict").textContent,"STRANGER");
-  assert.equal(view.status("smoking"),"CLEAR 90.0%");
+  assert.equal(view.element("verdict").textContent,"SMOKING + STRANGER");
+  assert.equal(view.status("smoking"),"ALERT 90.0% · 待解除 1/10");
   assert.equal(view.status("stranger"),"ALERT 90.0%");
 });
 

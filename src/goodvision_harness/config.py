@@ -43,11 +43,11 @@ class VideoSettings:
 
 @dataclass(frozen=True, slots=True)
 class DisplaySettings:
-    """Browser-facing live feed parameters used when streaming a file."""
+    """Live display settings; no side limit preserves the selected source view."""
 
     fps: float = 15.0
-    max_image_side: int = 720
-    jpeg_quality: int = 70
+    max_image_side: int | None = None
+    jpeg_quality: int = 90
     delay_seconds: float = 2.5
     bbox_max_gap_seconds: float = 0.8
 
@@ -143,7 +143,7 @@ class ServiceSettings:
     result_history: int = 100
     ready_max_frame_age_seconds: float = 10.0
     ready_max_result_age_seconds: float = 120.0
-    overlay_jpeg_quality: int = 85
+    overlay_jpeg_quality: int = 90
     webhook: WebhookSettings = field(default_factory=WebhookSettings)
 
 
@@ -259,11 +259,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     )
     display = DisplaySettings(
         fps=_positive_float(display_section.get("fps", 15.0), "display.fps"),
-        max_image_side=_positive_int(
-            display_section.get("max_image_side", 720), "display.max_image_side"
+        max_image_side=_optional_positive_int(
+            display_section.get("max_image_side"), "display.max_image_side"
         ),
         jpeg_quality=_bounded_int(
-            display_section.get("jpeg_quality", 70),
+            display_section.get("jpeg_quality", 90),
             "display.jpeg_quality",
             minimum=1,
             maximum=100,
@@ -562,7 +562,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "service.ready_max_result_age_seconds",
         ),
         overlay_jpeg_quality=_bounded_int(
-            service_section.get("overlay_jpeg_quality", 85),
+            service_section.get("overlay_jpeg_quality", 90),
             "service.overlay_jpeg_quality",
             minimum=1,
             maximum=100,

@@ -907,6 +907,12 @@ def _draw_face_boxes(rendered: Any, objects: Sequence[Any]) -> list[str]:
         except (AttributeError, TypeError, ValueError):
             continue
         color = _FACE_COLORS[status]
+        active_events = tuple(
+            str(event) for event in attributes.get("active_events", ())
+            if isinstance(event, str)
+        )
+        if active_events:
+            color = _FACE_COLORS["unknown"]
         cv2.rectangle(
             rendered,
             (x1, y1),
@@ -928,6 +934,8 @@ def _draw_face_boxes(rendered: Any, objects: Sequence[Any]) -> list[str]:
             label = "UNKNOWN"
         else:
             label = "unusable"
+        if active_events:
+            label = f"{' / '.join(active_events).upper()} | {label}"
         similarity = attributes.get("similarity")
         if isinstance(similarity, (int, float)) and not isinstance(similarity, bool):
             label += f" {float(similarity):.2f}"

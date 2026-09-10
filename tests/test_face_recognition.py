@@ -340,26 +340,34 @@ def test_unknown_classification_does_not_write_any_files(
 
 
 @pytest.mark.parametrize(
-    ("face_width", "expected_status", "expected_detected"),
+    ("minimum", "face_width", "face_height", "expected_detected"),
     [
-        (19, "unusable", False),
-        (20, "unusable", False),
-        (59, "unusable", False),
-        (60, "unknown", True),
+        (20, 19, 40, False),
+        (20, 40, 19, False),
+        (20, 20, 30, True),
+        (20, 30, 20, True),
+        (20, 55, 67, True),
+        (20, 59, 59, True),
+        (20, 60, 60, True),
+        (32, 31, 40, False),
+        (32, 32, 40, True),
+        (64, 63, 80, False),
+        (64, 64, 80, True),
     ],
 )
 def test_live_face_size_boundary_controls_alert_and_bbox(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    minimum: int,
     face_width: int,
-    expected_status: str,
+    face_height: int,
     expected_detected: bool,
 ) -> None:
     app = _FakeFaceAnalysis(
         [
             [
                 _face(
-                    (100, 30, 100 + face_width, 30 + face_width),
+                    (100, 30, 100 + face_width, 30 + face_height),
                     (1.0, 0.0),
                     detection_score=0.86,
                 )
@@ -367,24 +375,25 @@ def test_live_face_size_boundary_controls_alert_and_bbox(
         ]
     )
     monkeypatch.setattr(face_module, "_load_face_analysis", lambda _config: app)
-    runtime = FaceRecognitionRuntime(_config(tmp_path, min_face_size=20))
+    runtime = FaceRecognitionRuntime(_config(tmp_path, min_face_size=minimum))
 
-    response = runtime.classify_window(_window(_jpeg()))
+    response = FaceRecognitionSession(runtime).classify_window(_window(_jpeg()))
     classification = response.classification
     assert classification is not None
     assert classification.detected is expected_detected
     assert classification.event_object_indexes == ((0,) if expected_detected else ())
     face = classification.objects[0]
-    assert face.attributes["status"] == expected_status
+    assert face.attributes["status"] == ("unknown" if expected_detected else "unusable")
     assert face.confidence == pytest.approx(0.86)
-    assert face.bbox.to_pixels(320, 160) == (100, 30, 100 + face_width, 30 + face_width)
+    assert face.bbox.to_pixels(320, 160) == (
+        100, 30, 100 + face_width, 30 + face_height,
+    )
     if expected_detected:
         assert face.label == "unknown_person"
+        assert face.attributes["unknown_confirmations"] == 1
     else:
         assert face.label == "unusable_face"
-        assert face.attributes["reason"] == (
-            "face_too_small" if face_width < 20 else "face_too_small_for_stranger"
-        )
+        assert face.attributes["reason"] == "face_too_small"
 
 
 def _timed_window(index: int) -> FrameWindow:
@@ -422,7 +431,7 @@ def test_session_keeps_known_person_for_distant_and_low_quality_faces(
         )
 
 
-def test_session_confirms_only_after_consecutive_reliable_stranger_faces(
+def test_session_reports_each_reliable_stranger_frame_immediately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -433,7 +442,9 @@ def test_session_confirms_only_after_consecutive_reliable_stranger_faces(
     for index in range(3):
         result = session.classify_window(_timed_window(index)).classification
         assert result is not None
-        assert result.detected is (index == 2)
+        assert result.detected
+        assert result.event_object_indexes == (0,)
+        assert result.objects[0].label == "unknown_person"
 
 
 def test_session_keeps_stranger_annotation_through_poor_and_missing_faces(
@@ -494,9 +505,9 @@ def test_session_retained_stranger_keeps_its_track_when_another_face_arrives(
 
     assert result is not None and result.detected
     assert len(result.objects) == 2
-    assert result.event_object_indexes == (1,)
+    assert result.event_object_indexes == (0, 1)
     newcomer, retained = result.objects
-    assert newcomer.attributes["status"] == "unusable"
+    assert newcomer.attributes["status"] == "unknown"
     assert newcomer.attributes["unknown_confirmations"] == 1
     assert "stranger_id" not in newcomer.attributes
     assert retained.attributes["status"] == "unknown"
@@ -531,7 +542,7 @@ def test_session_stranger_annotation_with_body_expires_after_three_seconds(
         snapshots.append(RichLabelSnapshot("session", index * 10, index * 0.4, (body,)))
         result = session.classify_window(_timed_window(index)).classification
         assert result is not None
-        assert result.detected is (2 <= index <= 9)
+        assert result.detected is (index <= 9)
         if 3 <= index <= 9:
             assert result.objects[0].attributes["identity_source"] == "track_history"
             assert result.objects[0].attributes["person_track_id"] == "P0001"

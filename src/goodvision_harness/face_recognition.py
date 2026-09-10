@@ -543,23 +543,16 @@ class FaceRecognitionRuntime:
                         label = "known_person"
                         attributes["person_id"] = match.person_id
                         attributes["name"] = match.name
+                    elif (
+                        match is not None
+                        and match.similarity >= self.config.threshold
+                    ):
+                        status = "unusable"
+                        label = "unusable_face"
+                        attributes["reason"] = "ambiguous_gallery_match"
                     else:
-                        # Small faces can still positively match a gallery
-                        # sample, but a weak embedding is not proof of a stranger.
-                        if (
-                            match is not None
-                            and match.similarity >= self.config.threshold
-                        ):
-                            status = "unusable"
-                            label = "unusable_face"
-                            attributes["reason"] = "ambiguous_gallery_match"
-                        elif min(face_width, face_height) < 60:
-                            status = "unusable"
-                            label = "unusable_face"
-                            attributes["reason"] = "face_too_small_for_stranger"
-                        else:
-                            status = "unknown"
-                            label = UNKNOWN_FACE_EVENT_LABEL
+                        status = "unknown"
+                        label = UNKNOWN_FACE_EVENT_LABEL
 
             attributes["status"] = status
             objects.append(

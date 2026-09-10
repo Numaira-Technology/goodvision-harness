@@ -290,7 +290,7 @@ def test_fixed_five_combination_uses_only_unknown_faces_for_stranger() -> None:
 
 @pytest.mark.parametrize("unknown", [False, True])
 @pytest.mark.parametrize("safety_event", [None, *SAFETY_EVENT_LABELS, "unavailable"])
-def test_joint_known_face_preserves_identity_and_renders_only_without_safety_events(
+def test_joint_known_face_renders_for_negative_or_pending_safety(
     monkeypatch: pytest.MonkeyPatch, unknown: bool, safety_event: str | None,
 ) -> None:
     config = load_config(ROOT / "config.yaml")
@@ -354,8 +354,8 @@ def test_joint_known_face_preserves_identity_and_renders_only_without_safety_eve
         np.zeros((360, 640, 3), dtype=np.uint8), analysis,
     )
     has_green = tuple(rendered[287, 352]) == (55, 180, 70)
-    assert has_green is (safety_event is None)
-    assert ("alice" in texts) is (safety_event is None)
+    assert has_green is (safety_event not in SAFETY_EVENT_LABELS)
+    assert ("alice" in texts) is (safety_event not in SAFETY_EVENT_LABELS)
     assert "Alice" not in texts
     if safety_event in SAFETY_EVENT_LABELS:
         assert tuple(rendered[323, 96]) == (40, 40, 220)

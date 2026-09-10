@@ -106,6 +106,9 @@ def test_evidence_rules_reach_model_in_each_detection_path(
         if not legacy_single and event_labels == SAFETY_EVENT_LABELS
         else settings.prompt
     )
+    if not legacy_single and event_labels != SAFETY_EVENT_LABELS:
+        expected = expected.split("Respond with only this JSON object:")[0].rstrip()
+        assert "extend that same JSON object" not in prompt
     assert prompt.startswith(expected)
     normalized = " ".join(prompt.split())
     for required_rule in (
@@ -163,7 +166,7 @@ def test_bare_finger_evidence_rule_overrides_stale_permissive_prompts(
         "detected": False,
         "confidence": 0.95,
         "description": (
-            "两根空手指接触嘴唇，未见吸烟物品。 / "
+            "两根空手指接触嘴唇，未见吸烟物品。 / "  # noqa: RUF001
             "Two bare fingers touch the lips; no smoking item is visible."
         ),
         "objects": [],

@@ -17,12 +17,16 @@ import goodvision_harness.face_recognition as face_module
 import goodvision_harness.overlay as overlay_module
 import goodvision_harness.service as service_module
 from goodvision_harness.config import load_config
-from goodvision_harness.contracts import AnalysisResult
+from goodvision_harness.contracts import AnalysisResult, NormalizedBBox
 from goodvision_harness.delayed_overlay import OverlaySelection
-from goodvision_harness.face_recognition import FaceRecognitionRuntime
+from goodvision_harness.face_recognition import (
+    FaceRecognitionRuntime,
+    FaceRecognitionSession,
+)
 from goodvision_harness.grounding import (
     GroundedEventClassification,
     GroundingResponse,
+    ModelObject,
     MultiGroundedClassification,
     SelectedFeaturesGroundingClient,
 )
@@ -40,7 +44,7 @@ def _face(left: int, embedding: tuple[float, ...]) -> SimpleNamespace:
     )
 
 
-@pytest.mark.parametrize("mode", ["face", "stranger", "multi"])
+@pytest.mark.parametrize("mode", ["face", "stranger", "multi", "multi_event"])
 @pytest.mark.parametrize("include_unknown", [False, True])
 def test_enrolled_ids_survive_pipeline_http_and_annotated_video(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -72,6 +76,8 @@ def test_enrolled_ids_survive_pipeline_http_and_annotated_video(
         sample_index=0, source_frame_index=0, timestamp_seconds=0.0,
         jpeg_bytes=jpeg, width=320, height=240,
     ),))
+    has_safety = mode in {"multi", "multi_event"}
+    safety_detected = mode == "multi_event"
 
     class ClearSafetyClient:
         settings = config.inference
@@ -81,14 +87,21 @@ def test_enrolled_ids_survive_pipeline_http_and_annotated_video(
                 window=window, latency_seconds=0.01,
                 classification=MultiGroundedClassification(judgments=(
                     GroundedEventClassification(
-                        "smoking", False, 0.99, "No smoking.",
+                        "smoking", safety_detected, 0.99,
+                        "可见香烟。 / A cigarette is visible." if safety_detected
+                        else "未见吸烟。 / No smoking.",
+                        (ModelObject(
+                            "cigarette", NormalizedBBox(0.925, 0.5, 0.975, 0.85),
+                            0.99,
+                        ),) if safety_detected else (),
                     ),
                 )),
             )
 
-    client = face if mode == "face" else SelectedFeaturesGroundingClient(
-        ClearSafetyClient() if mode == "multi" else None,
-        face, safety_event_labels=("smoking",) if mode == "multi" else (),
+    face_session = FaceRecognitionSession(face)
+    client = face_session if mode == "face" else SelectedFeaturesGroundingClient(
+        ClearSafetyClient() if has_safety else None,
+        face_session, safety_event_labels=("smoking",) if has_safety else (),
         include_stranger=True,
     )
     emitted: list[AnalysisResult] = []
@@ -122,10 +135,10 @@ def test_enrolled_ids_survive_pipeline_http_and_annotated_video(
     assert " / Face recognition on the newest frame: 2 known" in stranger["description"]
     assert len(stranger["object_ids"]) == int(include_unknown)
     assert not {item["object_id"] for item in known} & set(stranger["object_ids"])
-    if not include_unknown:
+    if not include_unknown and not safety_detected:
         assert payload["description"] == "无异常 / No anomalies detected"
     for item in payload["objects"]:
-        if item["attributes"]["status"] != "known":
+        if item["attributes"].get("status") != "known":
             assert "person_id" not in item["attributes"]
             assert "name" not in item["attributes"]
         assert "embedding" not in item["attributes"]
@@ -137,12 +150,17 @@ def test_enrolled_ids_survive_pipeline_http_and_annotated_video(
         selected = http.get("/v1/results/stranger/latest")
         assert selected.status_code == 200
         selected_payload = selected.json()
-        assert selected_payload["objects"] == payload["objects"]
+        assert selected_payload["objects"] == [
+            item for item in payload["objects"] if item["label"] != "cigarette"
+        ]
         assert selected_payload["judgments"][0]["object_ids"] == stranger["object_ids"]
         assert selected_payload["judgments"][0]["detected"] is include_unknown
-        if mode == "multi":
+        if has_safety:
             smoking = http.get("/v1/results/smoking/latest").json()
-            assert smoking["objects"] == []
+            assert smoking["judgments"][0]["detected"] is safety_detected
+            assert [item["label"] for item in smoking["objects"]] == (
+                ["cigarette"] if safety_detected else []
+            )
 
         labels: list[str] = []
         original_text = overlay_module._text_with_background
@@ -163,13 +181,19 @@ def test_enrolled_ids_survive_pipeline_http_and_annotated_video(
             assert pixels is not None
             for left in (10, 110):
                 blue, green, red = (int(value) for value in pixels[150, left])
-                assert green > 130 and blue < 110 and red < 110
+                has_green = green > 130 and blue < 110 and red < 110
+                assert has_green is not safety_detected
             if include_unknown:
                 blue, green, red = (int(value) for value in pixels[198, 210])
+                assert red > 150 and blue < 110 and green < 110
+            if safety_detected:
+                blue, green, red = (int(value) for value in pixels[198, 296])
                 assert red > 150 and blue < 110 and green < 110
         expected_labels = (
             ("ID: employee-007 | Alex", "ID: staff-008 | Alex")
             if mode == "face" else ("employee-007", "staff-008")
         )
         for expected in expected_labels:
-            assert sum(expected in text for text in labels) == 2
+            assert sum(expected in text for text in labels) == (
+                0 if safety_detected else 2
+            )
