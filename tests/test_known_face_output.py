@@ -182,7 +182,7 @@ def test_enrolled_ids_survive_pipeline_http_and_annotated_video(
             for left in (10, 110):
                 blue, green, red = (int(value) for value in pixels[150, left])
                 has_green = green > 130 and blue < 110 and red < 110
-                assert has_green is not safety_detected
+                assert has_green
             if include_unknown:
                 blue, green, red = (int(value) for value in pixels[198, 210])
                 assert red > 150 and blue < 110 and green < 110
@@ -194,6 +194,4 @@ def test_enrolled_ids_survive_pipeline_http_and_annotated_video(
             if mode == "face" else ("employee-007", "staff-008")
         )
         for expected in expected_labels:
-            assert sum(expected in text for text in labels) == (
-                0 if safety_detected else 2
-            )
+            assert sum(expected in text for text in labels) == 2
