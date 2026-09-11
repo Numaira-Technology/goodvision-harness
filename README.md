@@ -821,7 +821,9 @@ Display FPS is independent of LLM and InsightFace sampling. Face and safety-even
 boxes are drawn independently, so event targets do not require a face or subject
 association. Between analysis completions, original video pixels continue moving
 while the preceding boxes and labels are held. A late event can also
-update the final paused frame. Exact analysis JPEGs remain on the evidence feed.
+update the final paused frame. Result-triggered repaints are coalesced and paced
+at the display rate after source frames pause; resumed source frames cancel a
+pending repaint. Exact analysis JPEGs remain on the evidence feed.
 
 Display event state is keyed by session and event type. Ten consecutive valid
 negative source frames clear both the behavior alert and its retained boxes;

@@ -387,6 +387,9 @@ class DelayedOverlayComposer:
         self._results: list[AnalysisResult] = []
         self.clear_after_negatives = clear_after_negatives
         self._last_display_packet: FramePacket | None = None
+        self._last_source_frame_at: float | None = None
+        self._last_publish_at: float | None = None
+        self._redraw_requested = False
         self._generation = 0
         self._closed = False
         self._thread: threading.Thread | None = None
@@ -458,6 +461,9 @@ class DelayedOverlayComposer:
             self._frames.clear()
             self._results.clear()
             self._last_display_packet = None
+            self._last_source_frame_at = None
+            self._last_publish_at = None
+            self._redraw_requested = False
             self._stream_session_id = None
             self._last_output_timestamp = None
             self._stats.update(
@@ -492,10 +498,12 @@ class DelayedOverlayComposer:
         self.start()
         with self._condition:
             generation = self._generation
+            self._last_source_frame_at = time.monotonic()
+            self._redraw_requested = False
             self._frames.append(
                 _BufferedFrame(
                     packet=packet,
-                    ready_at=time.monotonic() + self.delay_seconds,
+                    ready_at=self._last_source_frame_at + self.delay_seconds,
                     generation=generation,
                 )
             )
@@ -543,10 +551,30 @@ class DelayedOverlayComposer:
             not self._frames
             and self._last_display_packet is not None
         ):
-            self._frames.append(_BufferedFrame(
-                self._last_display_packet, time.monotonic(), self._generation,
-            ))
-            self._stats["frames_buffered"] = len(self._frames)
+            self._redraw_requested = True
+
+    def _schedule_redraw_locked(self, now: float) -> float | None:
+        """Wait for a source pause and pace/coalesce result-triggered repaints."""
+
+        if (
+            not self._redraw_requested
+            or self._last_display_packet is None
+            or self._last_source_frame_at is None
+        ):
+            return None
+        period = 1.0 / self.output_fps
+        ready_at = max(
+            self._last_source_frame_at + 2 * period,
+            (self._last_publish_at or self._last_source_frame_at) + period,
+        )
+        if now < ready_at:
+            return ready_at - now
+        self._redraw_requested = False
+        self._frames.append(_BufferedFrame(
+            self._last_display_packet, now, self._generation,
+        ))
+        self._stats["frames_buffered"] = len(self._frames)
+        return 0.0
 
     def stats(self) -> dict[str, Any]:
         with self._condition:
@@ -558,7 +586,9 @@ class DelayedOverlayComposer:
         while True:
             with self._condition:
                 while not self._closed and not self._frames:
-                    self._condition.wait()
+                    redraw_wait = self._schedule_redraw_locked(time.monotonic())
+                    if not self._frames:
+                        self._condition.wait(redraw_wait)
                 if self._closed:
                     return
                 buffered = self._frames[0]
@@ -635,6 +665,7 @@ class DelayedOverlayComposer:
                     self._stats["frames_dropped"] += 1
                     continue
                 self._last_output_timestamp = output.media_timestamp
+                self._last_publish_at = time.monotonic()
                 self._stats.update(
                     {
                         "state": "running",
