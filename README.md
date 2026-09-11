@@ -27,9 +27,9 @@ that warmup. The default runtime settings are:
 - source/face sampling: 2.5 FPS, 1280 px maximum image side, JPEG quality 90;
 - safety input: 320 px maximum image side, JPEG quality 75, for the single
   remote safety request;
-- display output: 15 FPS, source dimensions after camera-view selection,
+- display output: up to 30 FPS using original source frames after camera-view selection,
   JPEG quality 90, delayed
-  2.5 seconds so most completed 2.5 FPS analysis keyframes can be interpolated;
+  2.5 seconds, with intervening frames inheriting the preceding annotations;
 - one-frame windows with stride 1 and six concurrent model requests;
 - `max_tokens=1200`, no API retry, and one explicitly selected model route
   with automatic route fallback disabled;
@@ -625,8 +625,8 @@ enabled for that session).
 | `GET /v1/results/events` | Server-Sent Events stream of analysis JSON with bounded in-memory replay. |
 | `GET /v1/results/<feature>/latest` | Independent latest result for one of the five feature names. |
 | `GET /v1/results/<feature>/events` | Independent SSE result stream for one feature. |
-| `GET /v1/video/annotated/latest.jpg` | Latest full-cadence delayed frame with exact, interpolated, or briefly held bbox. |
-| `GET /v1/video/annotated/stream.mjpeg` | Continuous delayed annotated MJPEG, 15 FPS by default. This is the display output. |
+| `GET /v1/video/annotated/latest.jpg` | Latest original display frame with current or inherited annotations. |
+| `GET /v1/video/annotated/stream.mjpeg` | Continuous delayed annotated MJPEG, up to 30 FPS by default. This is the display output. |
 | `GET /v1/video/latest.jpg` | Latest exact analyzed frame with burned-in verdict/bbox. |
 | `GET /v1/video/stream.mjpeg` | Annotated MJPEG at result cadence: one exact analyzed frame per JSON result. |
 | `GET /v1/video/live/latest.jpg` | Latest unannotated source-preview frame. |
@@ -815,27 +815,31 @@ multipart JPEG in `GET /v1/video/stream.mjpeg` carry
 exact evidence feed remains at model-result cadence.
 
 For the display path, the container buffers source frames for the delay selected
-in the console. When local face detection is enabled, the annotated output uses
-the newest completed face result and its exact source JPEG. A late event is
-associated with people in its own source frame, then attached to those same
-people's latest face boxes. The image repeats between face completions, while
-new event verdicts can update its labels immediately. Raw coordinates from an
-older event are never pasted onto a newer person's face.
+in the console. The annotated output uses each original source frame at up to
+30 FPS, holding the preceding annotations until a newer result updates them.
+Display FPS is independent of LLM and InsightFace sampling. Face and safety-event
+boxes are drawn independently, so event targets do not require a face or subject
+association. Between analysis completions, original video pixels continue moving
+while the preceding boxes and labels are held. A late event can also
+update the final paused frame. Exact analysis JPEGs remain on the evidence feed.
 
-Event state is keyed by session, stable `subject_id`, and event type. Ten
-consecutive valid negative source frames clear the displayed behavior alert;
-each positive resets the count. Duplicate frame observations count once.
-Negatives affect only people actually observed near that event's source frame;
-absence, failed branches, and another person's clear do not end an event. Older
-positives cannot override newer confirmed clears. Late results still enter the
+Display event state is keyed by session and event type. Ten consecutive valid
+negative source frames clear both the behavior alert and its retained boxes;
+each positive updates the boxes and resets the count. Duplicate frame observations
+count once. Missing or failed branches and other event types do not advance the
+clear counter. Older positives cannot override newer confirmed clears. Late results still enter the
 immediate result stream, and late positives produce a separate event notice.
 Current image and latest-result endpoints remain in source-frame order.
-Ambiguous associations stay unbound.
-Faces missing for over three seconds stop being displayed without clearing their
-event state. Without face detection, compatible event keyframes retain the
-existing delayed interpolation. Multipart frames report `X-Annotation-Mode`
-(`face_aligned`, `exact`, `interpolated`, `held`, or `none`), the displayed face
-or analysis message ID, optional next analysis ID, and `X-Stream-Delay`. The
+Archive identity associations remain independent of these display rules.
+Faces missing for over three seconds stop being displayed without clearing safety
+events or their boxes. Event-only sessions also hold the preceding annotations without
+interpolating toward a future result. Multipart frames report `X-Annotation-Mode`
+(`exact`, `held`, or `none`), the annotation's analysis message ID, the original
+display frame's sequence and timestamp, and `X-Stream-Delay`. Rendering runs in
+its own thread; if it falls behind by over one output frame interval, it skips
+to the newest due source frame instead of accumulating extra playback delay.
+The configured delay stays unchanged. Status reports `publish_lag_seconds`
+for time spent beyond that configured delay, including rendering. The
 `/v1/video/live/*` endpoints remain the unannotated, near-live diagnostic feed.
 
 ## Optional webhook
@@ -864,13 +868,14 @@ smaller sources are never enlarged. Browser-camera output preserves the uploaded
 frame dimensions, which remain bounded by the browser capture settings.
 Display JPEGs and annotation re-encoding use quality 90. Matching resolution
 does not make JPEG output lossless or match the source frame rate: display
-cadence remains 15 FPS, and higher resolutions cost more bandwidth, encoding
+cadence targets 30 FPS (limited by available source frames), and higher
+resolutions cost more bandwidth, encoding
 time, and buffer memory. Event archive clips retain their separate `events`
 resolution limit.
 
 `config.yaml` controls sampling, model selection, the legacy single-event
 prompt, the fixed-four `multi_event_prompt`, concurrency, readiness windows,
-the `display.delay_seconds` / `display.bbox_max_gap_seconds` compositor timing,
+the `display.fps` / `display.delay_seconds` display timing,
 overlay JPEG quality, and optional webhook behavior. Inference routes are
 configured under `inference_service`. The API retry count remains zero so a
 failed live request is not replayed as a stale result.
@@ -1033,11 +1038,12 @@ brief gaps up to three seconds. Predicted boxes are not new evidence. Ambiguous
 crossings, prolonged absence and sustained identity conflicts require reconfirmation.
 No stranger photos or persistent stranger embeddings are created.
 
-In the face-aligned display, known people have green face boxes and strangers
-have red identity boxes. An active behavior changes only its participants' face
-boxes to red and adds the event label; everyone else's identity boxes remain
-visible. Clearing one event preserves any other active event on that person.
-Once all their behaviors clear, their normal identity color and label return.
+In the annotated display, face and safety-event boxes are independent. Known
+people retain green identity boxes and strangers retain red face boxes while
+safety events draw their own target boxes, even without a face or subject match.
+Each event keeps its latest positive boxes until ten consecutive valid negative
+source frames clear both its alert and boxes. A new positive updates the boxes
+and resets that event's counter; missing or failed branches do not count.
 
 Each live session keeps its own identity history and stable `subject_id` values.
 `person_id` remains the enrolled identity. GPU detector tracking operates independently
@@ -1093,12 +1099,11 @@ matches the local matcher; `matched_memory_ids` is additional reference metadata
 | Known and unknown faces | `true` | Known IDs |
 
 In fixed-five or selected-feature analysis, known faces are retained in `objects`
-with `attributes.person_id` and are not referenced by stranger alerts. When the
-selected safety checks have no active positive, the annotated video draws these
-faces in green with their **person ID**, including while a check is pending.
-A positive safety result suppresses the green identity boxes until that capability
-receives ten consecutive valid negatives; missing results preserve its prior
-state. Stranger alerts remain red and keep their independent face semantics.
+with `attributes.person_id` and are not referenced by stranger alerts. In the
+annotated video these faces stay green with their **person ID**,
+including while safety checks are positive or pending. Safety-event boxes remain
+independent of face boxes and stay visible until that event receives ten
+consecutive valid negatives. Stranger alerts keep their independent face semantics.
 
 The fixed-five mode and the face diagnostics mode both use local face analysis by
 default. Enable remote reference memory only as an explicit legacy
