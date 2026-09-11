@@ -2205,7 +2205,10 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
         "objects": objects,
         "face_objects": face_objects,
         "analysis_kind": analysis_kind,
-        "incomplete": bool(analysis.missing_event_labels),
+        "incomplete": bool(
+            analysis.missing_event_labels
+            or getattr(analysis, "expired_event_labels", ())
+        ),
     }
 
 

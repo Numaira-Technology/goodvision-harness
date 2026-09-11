@@ -20,7 +20,12 @@ from goodvision_harness.contracts import (
 from goodvision_harness.delayed_overlay import DelayedOverlayComposer, select_overlay
 from goodvision_harness.overlay_fusion import OverlayFusionMatcher
 from goodvision_harness.result_bus import FramePacket
-from goodvision_harness.service import HarnessRuntime, _render_analysis_jpeg
+from goodvision_harness.service import (
+    HarnessRuntime,
+    _analysis_overlay_arguments,
+    _draw_analysis_overlay,
+    _render_analysis_jpeg,
+)
 
 
 def _face(at: float, *, moved: bool = False, empty: bool = False) -> AnalysisResult:
@@ -143,6 +148,38 @@ def test_empty_expired_and_reset_faces_do_not_suppress_event_boxes(empty):
         assert selected.analysis is None
     finally:
         composer.close()
+
+
+@pytest.mark.parametrize("face_kind", ["face_recognition", "selected_features"])
+@pytest.mark.parametrize("safety", ["absent", "clear", "positive", "pending_clear"])
+def test_expired_face_is_incomplete_without_false_clear_or_losing_event_boxes(
+    face_kind, safety,
+):
+    face = replace(_face(1), analysis_kind=face_kind, missing_event_labels=())
+    records = []
+    if safety in {"positive", "pending_clear"}:
+        records.append(_event(0.8))
+    if safety in {"clear", "pending_clear"}:
+        records.append(_event(0.9, positive=False))
+    records.append(face)
+    original = face.as_dict()
+    selected = select_overlay(records, 4.1, max_gap_seconds=0.8)
+    analysis = selected.analysis
+    assert analysis.expired_event_labels == ("stranger",)
+    arguments = _analysis_overlay_arguments(analysis)
+    assert arguments["incomplete"]
+    assert not arguments["face_objects"]
+    positive = safety in {"positive", "pending_clear"}
+    assert arguments["detected"] is positive
+    assert len(arguments["objects"]) == int(positive)
+    image = np.full((240, 320, 3), 180, np.uint8)
+    rendered = _draw_analysis_overlay(image, analysis)
+    if positive:
+        assert int(rendered[195, 38, 2]) > int(rendered[195, 38, 1]) + 70
+    else:
+        # No face rectangles and no synthesized CLEAR verdict/HUD.
+        np.testing.assert_array_equal(rendered, image)
+    assert analysis.as_dict() == original
 
 
 @pytest.mark.parametrize("fused", [False, True])

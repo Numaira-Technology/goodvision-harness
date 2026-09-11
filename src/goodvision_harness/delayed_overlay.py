@@ -42,6 +42,7 @@ class CarriedOverlayAnalysis:
     objects: tuple[GroundedObject, ...]
     # Display-only held positives, including their last grounded coordinates.
     pending_clear_judgments: tuple[EventJudgment, ...] = ()
+    expired_event_labels: tuple[str, ...] = ()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.source, name)
@@ -214,6 +215,7 @@ def _carry_annotations(
         return analysis
     return CarriedOverlayAnalysis(
         current, tuple(judgments), tuple(objects), tuple(pending),
+        expired_event_labels=getattr(analysis, "expired_event_labels", ()),
     )
 
 
@@ -288,6 +290,7 @@ def _carry_stranger_annotation(
                     item for item in current.judgments if item.event_label != "stranger"
                 ),
                 tuple(item for item in current.objects if not is_face_object(item)),
+                expired_event_labels=("stranger",),
             )
         return current
     for previous in reversed(results[:position]):
