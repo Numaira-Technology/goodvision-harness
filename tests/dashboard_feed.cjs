@@ -72,3 +72,53 @@ test("unavailable frames retry without leaving concurrent requests or URLs",asyn
   view.respond(view.requests[1],5);await settle();assert.equal(view.rawFeed.src,"blob:5");
   view.closeFeed();assert.deepEqual(view.revoked,["blob:5"])
 });
+
+function cameraSampler(outputFps){
+  let tick,period;
+  const sent=[],canvas={getContext:()=>({drawImage(){}}),
+    toBlob:callback=>callback({arrayBuffer:async()=>new ArrayBuffer(8)})};
+  const context=vm.createContext({
+    state:{cameraStream:{},info:{annotated_output:{output_fps:outputFps}},
+      ws:{readyState:1,bufferedAmount:0,send:packet=>sent.push(packet)}},
+    ui:{cameraPreview:{videoWidth:640,videoHeight:480}},
+    cameraConfig:()=>true,cameraSettings:()=>({sample_fps:2.5,max_image_side:320,jpeg_quality:75}),
+    document:{createElement:()=>canvas},
+    setInterval:(callback,delay)=>{tick=callback;period=delay;return 1},clearInterval:()=>{},
+    Uint8Array,DataView,
+  });
+  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
+  vm.runInContext(html.slice(html.indexOf("function startSampler()"),html.indexOf("function clearAnnotation()")),context);
+  context.startSampler();
+  return {context,sent,period,tick,canvas}
+}
+
+test("camera capture schedules 30 FPS independently of 2.5 FPS analysis settings",async()=>{
+  for(const outputFps of [undefined,30,60]){
+    const sampler=cameraSampler(outputFps);
+    assert.equal(sampler.period,1000/30);
+    for(let index=0;index<30;index++)await sampler.tick();
+    assert.equal(sampler.sent.length,30);
+    assert.equal(sampler.context.cameraSettings().sample_fps,2.5)
+  }
+});
+
+test("30 FPS camera capture drops work while encoding or socket delivery is busy",async()=>{
+  const sampler=cameraSampler(30);
+  sampler.context.state.cameraBusy=true;await sampler.tick();
+  sampler.context.state.cameraBusy=false;
+  sampler.context.state.ws.bufferedAmount=1;await sampler.tick();
+  assert.equal(sampler.sent.length,0);
+  sampler.context.state.ws.bufferedAmount=0;await sampler.tick();
+  assert.equal(sampler.sent.length,1)
+});
+
+test("camera skips a captured frame if socket delivery stalls during encoding",async()=>{
+  const sampler=cameraSampler(30);
+  sampler.canvas.toBlob=callback=>{
+    sampler.context.state.ws.bufferedAmount=1;
+    callback({arrayBuffer:async()=>new ArrayBuffer(8)})
+  };
+  await sampler.tick();
+  assert.equal(sampler.sent.length,0);
+  assert.equal(sampler.context.state.cameraBusy,false)
+});

@@ -620,6 +620,7 @@ class RichLabelCoordinator:
         timestamp_seconds: float,
         *,
         frame_sequence: int | None = None,
+        interpolate: bool = True,
     ) -> RichLabelSelection:
         session_id = _required_text(stream_session_id, "stream_session_id")
         timestamp = _timestamp(timestamp_seconds)
@@ -636,6 +637,7 @@ class RichLabelCoordinator:
             max_gap_seconds=self.max_interpolation_gap_seconds,
             max_hold_seconds=display_hold_seconds,
             frame_sequence=frame_sequence,
+            interpolate=interpolate,
         )
 
     def latest(
@@ -866,6 +868,7 @@ def select_rich_labels(
     max_gap_seconds: float,
     max_hold_seconds: float | None = None,
     frame_sequence: int | None = None,
+    interpolate: bool = True,
 ) -> RichLabelSelection:
     """Select or interpolate labels using detector-provided stable track IDs.
 
@@ -875,6 +878,9 @@ def select_rich_labels(
     compositor and avoiding unannotated flashes. At the unknown history tail,
     ``max_hold_seconds`` remains bounded so a worker outage cannot leave stale
     decorative boxes on screen forever.
+
+    ``interpolate=False`` keeps the preceding snapshot unchanged between
+    keyframes, including geometry and attributes, for original-frame display.
     """
 
     timestamp = _timestamp(timestamp_seconds)
@@ -919,6 +925,8 @@ def select_rich_labels(
     if right is None:
         if hold_age > hold_limit + 1e-9:
             return RichLabelSelection(None, "none")
+        return RichLabelSelection(left, "held", left.frame_sequence, None)
+    if not interpolate:
         return RichLabelSelection(left, "held", left.frame_sequence, None)
     gap = right.timestamp_seconds - left.timestamp_seconds
     if gap <= 0 or gap > max_gap_seconds + 1e-9:

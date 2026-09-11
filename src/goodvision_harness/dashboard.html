@@ -226,7 +226,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
         <p id="overall-description" class="frame-summary-text">等待当前帧分析… / Waiting for frame analysis…</p>
       </section>
       <div id="annotation-note" class="note annotation-note">
-        Events follow the same person's latest face frame. Each person's event clears independently.
+        Original video frames inherit the preceding annotation between analysis updates.
         <a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.
       </div>
       <div id="rich-annotation-status" class="note annotation-note" aria-live="polite" hidden></div>
@@ -593,7 +593,7 @@ function updateAnalysisUi(){
   ui.start.textContent="Start selected detection";
   const output=state.info&&state.info.annotated_output||{};
   ui.annotationNote.innerHTML="The server delivers "+
-    annotatedOutputText(output)+". With face detection, events follow the same person's latest face frame until that person's event clears. Other face boxes stay visible. "+
+    annotatedOutputText(output)+". Original video frames inherit the preceding annotation between analysis updates. "+
     '<a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.';
   if(!state.running&&!state.pending){
     resetClassification();
@@ -669,7 +669,7 @@ async function pullLatestFrame(generation){
     clearTimeout(timeout);if(nextUrl)URL.revokeObjectURL(nextUrl);
     if(generation===latestFeed.generation&&latestFeed.active&&state.running){
       latestFeed.controller=null;
-      const fps=Math.min(30,Math.max(1,Number(state.info?.annotated_output?.output_fps)||15));
+      const fps=Math.min(30,Math.max(1,Number(state.info?.annotated_output?.output_fps)||30));
       latestFeed.timer=setTimeout(()=>pullLatestFrame(generation),Math.max(retry,1000/fps-(performance.now()-started)))
     }
   }
@@ -1035,13 +1035,13 @@ function startSampler(){
   stopSampler();if(!state.cameraStream||!cameraConfig())return;
   const settings=cameraSettings();
   const output=state.info&&state.info.annotated_output||{};
-  const displayFps=Number(output.output_fps)||15;
+  const displayFps=Math.min(30,Number(output.output_fps)||30);
   const analysisFps=Number(settings.sample_fps)||0;
   const captureFps=Math.max(displayFps,analysisFps);
   const canvas=document.createElement("canvas"),context=canvas.getContext("2d");
   state.cameraTimer=setInterval(async()=>{
     const video=ui.cameraPreview,socket=state.ws;
-    if(state.cameraBusy||!socket||socket.readyState!==1||socket.bufferedAmount>1048576||!video.videoWidth)return;
+    if(state.cameraBusy||!socket||socket.readyState!==1||socket.bufferedAmount>0||!video.videoWidth)return;
     state.cameraBusy=true;
     try{
       const scale=Math.min(1,settings.max_image_side/Math.max(video.videoWidth,video.videoHeight));
@@ -1052,7 +1052,7 @@ function startSampler(){
       if(!blob)return;
       const jpeg=new Uint8Array(await blob.arrayBuffer()),packet=new Uint8Array(4+jpeg.length);
       const header=new DataView(packet.buffer);header.setUint16(0,canvas.width);header.setUint16(2,canvas.height);
-      packet.set(jpeg,4);if(socket.readyState===1)socket.send(packet.buffer)
+      packet.set(jpeg,4);if(socket.readyState===1&&socket.bufferedAmount===0)socket.send(packet.buffer)
     }finally{state.cameraBusy=false}
   },1000/captureFps)
 }

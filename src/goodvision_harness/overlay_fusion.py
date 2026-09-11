@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from threading import RLock
 
 from .contracts import GroundedObject, NormalizedBBox
-from .delayed_overlay import DisplayAnalysis
+from .delayed_overlay import DisplayAnalysis, is_face_object
 from .rich_labeling import RichLabelObject
 
 _PERSON_LABELS = frozenset(
@@ -340,14 +340,17 @@ def _event_alerts_by_object(
 ) -> dict[str, tuple[RichAlert, ...]]:
     objects_by_id = {item.object_id: item for item in analysis.objects}
     alerts: dict[str, list[RichAlert]] = {}
-    for judgment in analysis.judgments:
+    for judgment in (
+        *analysis.judgments, *getattr(analysis, "pending_clear_judgments", ()),
+    ):
         if not judgment.detected:
             continue
         for object_id in judgment.object_ids:
             event_object = objects_by_id.get(object_id)
-            if event_object is None or not _event_targets_object(
-                judgment.event_label,
-                event_object,
+            if (
+                event_object is None
+                or is_face_object(event_object)
+                or not _event_targets_object(judgment.event_label, event_object)
             ):
                 continue
             object_alerts = alerts.setdefault(object_id, [])

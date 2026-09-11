@@ -94,7 +94,7 @@ def test_carried_event_reuses_original_association_after_person_moves(
         alerts=((event_label, 0.9),), message_id="face-source", object_id="object-1",
     )
     first = matcher.plan(face, (_rich("P1", (0.15, 0.1, 0.5, 0.9)),))
-    assert "P1" in first.alerts_by_track_id()
+    assert ("P1" in first.alerts_by_track_id()) is (event_label != "stranger")
     skipped = replace(
         face, message_id="safety-only", objects=(),
         frame=replace(face.frame, timestamp_seconds=1.4, source_frame_index=2),
@@ -106,7 +106,7 @@ def test_carried_event_reuses_original_association_after_person_moves(
         selection.analysis, (_rich("P1", (0.55, 0.1, 0.9, 0.9)),),
         association_message_id=selection.left_message_id,
     )
-    assert "P1" in moved.alerts_by_track_id()
+    assert ("P1" in moved.alerts_by_track_id()) is (event_label != "stranger")
     assert moved.unmatched_event_object_ids == ()
 
 
@@ -203,6 +203,40 @@ def test_clear_event_produces_no_track_alerts_or_fallback_boxes() -> None:
     assert plan.track_alerts == ()
     assert plan.matched_event_object_ids == ()
     assert plan.unmatched_event_object_ids == ()
+
+
+@pytest.mark.parametrize("rich_visible", [False, True])
+def test_pending_clear_keeps_latest_positive_box_in_fused_output(rich_visible):
+    first = _analysis()
+    latest = replace(
+        first, message_id="new-positive",
+        frame=replace(first.frame, timestamp_seconds=2, source_frame_index=2),
+        objects=(replace(first.objects[0], bbox=NormalizedBBox(0.6, 0.1, 0.9, 0.8)),),
+    )
+    records = [first, latest]
+    rich = (_rich("P0001", (0.6, 0.1, 0.9, 0.8)),) if rich_visible else ()
+    matcher = OverlayFusionMatcher()
+    for count in range(1, 11):
+        negative = replace(
+            latest, message_id=f"negative-{count}", objects=(),
+            frame=replace(
+                latest.frame, timestamp_seconds=2 + count, source_frame_index=2 + count,
+            ),
+            judgments=(EventJudgment("fight", False, 0.95, "Clear"),),
+        )
+        original = negative.as_dict()
+        records.append(negative)
+        selected = select_overlay(records, 2 + count, max_gap_seconds=0.8)
+        plan = matcher.plan(selected.analysis, rich)
+        boxes = (*plan.matched_event_object_ids, *plan.unmatched_event_object_ids)
+        assert len(boxes) == int(count < 10)
+        if count < 10:
+            held = next(
+                item for item in selected.analysis.objects if item.object_id in boxes
+            )
+            assert held.bbox == latest.objects[0].bbox
+            assert bool(plan.track_alerts) is rich_visible
+        assert selected.analysis.as_dict() == original
 
 
 def test_high_overlap_person_alias_matches_rich_track() -> None:
@@ -336,14 +370,13 @@ def test_semantic_routing_aggregates_person_events_and_targets_smoking_item() ->
         "fight-person",
         "cigarette",
         "fall-person",
-        "unknown-face",
     )
     assert plan.unmatched_event_object_ids == ()
     assert "smoking-person" not in plan.matched_event_object_ids
     assert tuple(
         (alert.event_label, alert.confidence)
         for alert in plan.alerts_by_track_id()["P0001"]
-    ) == (("fight", 0.91), ("fall", 0.86), ("stranger", 0.875))
+    ) == (("fight", 0.91), ("fall", 0.86))
     assert tuple(
         (alert.event_label, alert.confidence)
         for alert in plan.alerts_by_track_id()["O0002"]
