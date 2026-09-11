@@ -94,16 +94,19 @@ def _clocked_redraw_composer(monkeypatch):
     return clock, composer
 
 
-def test_live_zero_delay_results_do_not_enqueue_duplicate_source_frames(monkeypatch):
+@pytest.mark.parametrize("source_fps", [10, 15, 30, 60])
+def test_live_zero_delay_results_do_not_enqueue_duplicate_source_frames(
+    monkeypatch, source_fps,
+):
     clock, composer = _clocked_redraw_composer(monkeypatch)
     for index in range(90):
-        started = 100 + index / 30
+        started = 100 + index / source_fps
         clock[0] = started
         composer.submit_frame(_packet(index, index / 30))
         assert len(composer._frames) == 1
         composer._last_display_packet = composer._frames.popleft().packet
         composer._last_publish_at = started
-        for offset in (0.001, 0.020, 0.030):
+        for offset in (0.03 / source_fps, 0.7 / source_fps, 0.99 / source_fps):
             clock[0] = started + offset
             composer.submit_result(_result(
                 timestamp=index / 30, frame_index=index,
@@ -125,17 +128,17 @@ def test_paused_redraws_are_coalesced_paced_and_cancelled_when_source_resumes(
     event = _result(
         timestamp=0, frame_index=0, message_id="event", bbox=(0.1, 0.1, 0.4, 0.6),
     )
-    clock[0] = 100.2  # Source is now paused beyond two frame intervals.
+    clock[0] = 101.2  # The initial source grace period has elapsed.
     composer.submit_result(event)
     assert composer._schedule_redraw_locked(clock[0]) == 0
     assert composer._frames.popleft().packet.frame_sequence == 0
     composer._last_publish_at = clock[0]
     for index in range(1, 10):
-        clock[0] = 100.2 + index / 1000
+        clock[0] = 101.2 + index / 1000
         composer.submit_result(replace(event, message_id=f"late-{index}"))
         assert composer._schedule_redraw_locked(clock[0]) > 0
         assert not composer._frames
-    clock[0] = 100.2 + 1 / 30 + 1e-6
+    clock[0] = 101.2 + 1 / 30 + 1e-6
     assert composer._schedule_redraw_locked(clock[0]) == 0
     assert len(composer._frames) == 1  # Nine results yield one paced repaint.
     composer._frames.popleft()
@@ -145,6 +148,35 @@ def test_paused_redraws_are_coalesced_paced_and_cancelled_when_source_resumes(
     assert len(composer._frames) == 1
     assert composer._frames.popleft().packet.frame_sequence == 1
     assert composer._schedule_redraw_locked(clock[0] + 1) is None
+
+
+def test_source_resume_after_repaint_respects_publication_rate():
+    published = []
+    ready = threading.Event()
+
+    def publish(packet):
+        published.append((packet.frame_sequence, time.monotonic()))
+        ready.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0, max_gap_seconds=0.8, output_fps=30,
+        render=lambda jpeg, analysis: jpeg, publish=publish,
+    )
+    try:
+        composer.submit_frame(_packet(0, 0))
+        assert ready.wait(3)
+        ready.clear()
+        composer.submit_result(_result(
+            timestamp=0, frame_index=0, message_id="late", bbox=(0.1, 0.1, 0.4, 0.6),
+        ))
+        assert ready.wait(3)
+        ready.clear()
+        composer.submit_frame(_packet(1, 1 / 30))
+        assert ready.wait(3)
+        assert [item[0] for item in published] == [0, 0, 1]
+        assert published[-1][1] - published[-2][1] >= 1 / 30 - 1e-6
+    finally:
+        composer.close()
 
 
 def _selected_features_result(

@@ -66,6 +66,7 @@ class _BufferedFrame:
     packet: FramePacket
     ready_at: float
     generation: int
+    is_redraw: bool = False
 
 
 def select_overlay(
@@ -388,7 +389,9 @@ class DelayedOverlayComposer:
         self.clear_after_negatives = clear_after_negatives
         self._last_display_packet: FramePacket | None = None
         self._last_source_frame_at: float | None = None
+        self._source_frame_intervals: deque[float] = deque(maxlen=8)
         self._last_publish_at: float | None = None
+        self._last_publish_was_redraw = False
         self._redraw_requested = False
         self._generation = 0
         self._closed = False
@@ -462,7 +465,9 @@ class DelayedOverlayComposer:
             self._results.clear()
             self._last_display_packet = None
             self._last_source_frame_at = None
+            self._source_frame_intervals.clear()
             self._last_publish_at = None
+            self._last_publish_was_redraw = False
             self._redraw_requested = False
             self._stream_session_id = None
             self._last_output_timestamp = None
@@ -498,7 +503,12 @@ class DelayedOverlayComposer:
         self.start()
         with self._condition:
             generation = self._generation
-            self._last_source_frame_at = time.monotonic()
+            now = time.monotonic()
+            if self._last_source_frame_at is not None:
+                interval = now - self._last_source_frame_at
+                if interval > 0:
+                    self._source_frame_intervals.append(interval)
+            self._last_source_frame_at = now
             self._redraw_requested = False
             self._frames.append(
                 _BufferedFrame(
@@ -563,15 +573,18 @@ class DelayedOverlayComposer:
         ):
             return None
         period = 1.0 / self.output_fps
+        # Observe input cadence independently of the configured output limit.
+        # Until a second source frame arrives, use a conservative startup grace.
+        source_period = max(self._source_frame_intervals, default=0.5)
         ready_at = max(
-            self._last_source_frame_at + 2 * period,
+            self._last_source_frame_at + 2 * max(period, source_period),
             (self._last_publish_at or self._last_source_frame_at) + period,
         )
         if now < ready_at:
             return ready_at - now
         self._redraw_requested = False
         self._frames.append(_BufferedFrame(
-            self._last_display_packet, now, self._generation,
+            self._last_display_packet, now, self._generation, is_redraw=True,
         ))
         self._stats["frames_buffered"] = len(self._frames)
         return 0.0
@@ -653,6 +666,20 @@ class DelayedOverlayComposer:
                 stream_delay_seconds=delay_seconds,
             )
             with self._condition:
+                # A resumed source frame can follow a repaint at any time.
+                # Pace publication itself so that transition cannot burst.
+                while (
+                    (buffered.is_redraw or self._last_publish_was_redraw)
+                    and buffered.generation == self._generation
+                    and not self._closed
+                    and self._last_publish_at is not None
+                ):
+                    remaining = (
+                        self._last_publish_at + 1.0 / self.output_fps - time.monotonic()
+                    )
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(remaining)
                 if buffered.generation != self._generation or self._closed:
                     continue
                 try:
@@ -666,6 +693,7 @@ class DelayedOverlayComposer:
                     continue
                 self._last_output_timestamp = output.media_timestamp
                 self._last_publish_at = time.monotonic()
+                self._last_publish_was_redraw = buffered.is_redraw
                 self._stats.update(
                     {
                         "state": "running",

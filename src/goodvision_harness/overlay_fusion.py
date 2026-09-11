@@ -17,6 +17,7 @@ from threading import RLock
 
 from .contracts import GroundedObject, NormalizedBBox
 from .delayed_overlay import DisplayAnalysis, is_face_object
+from .grounding import SAFETY_EVENT_LABELS
 from .rich_labeling import RichLabelObject
 
 _PERSON_LABELS = frozenset(
@@ -328,7 +329,9 @@ class OverlayFusionMatcher:
 
 def _association_object_id(item: GroundedObject) -> str:
     anchor = item.attributes.get("annotation_source_message_id")
-    for capability in ("stranger", "safety"):
+    for capability in (
+        "stranger", "safety", *(f"pending-{label}" for label in SAFETY_EVENT_LABELS),
+    ):
         prefix = f"held-{capability}-{anchor}-"
         if anchor and item.object_id.startswith(prefix):
             return item.object_id[len(prefix):]

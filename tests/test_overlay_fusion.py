@@ -255,6 +255,41 @@ def test_high_overlap_person_alias_matches_rich_track() -> None:
 
 
 @pytest.mark.parametrize(
+    ("event_label", "object_label"),
+    [
+        ("fight", "person"), ("fall", "person"),
+        ("smoking", "cigarette"), ("weapon", "knife"),
+    ],
+)
+def test_pending_clear_follows_cached_track_after_it_leaves_original_box(
+    event_label, object_label,
+):
+    positive = _analysis(object_label=object_label, alerts=((event_label, 0.9),))
+    original = _rich("tracked", (0.2, 0.1, 0.5, 0.8), label=object_label)
+    moved = _rich("tracked", (0.65, 0.1, 0.95, 0.8), label=object_label)
+    distractor = replace(original, track_id="different-object")
+    matcher = OverlayFusionMatcher()
+    first_plan = matcher.plan(positive, (original,))
+    assert tuple(first_plan.alerts_by_track_id()) == ("tracked",)
+    records = [positive]
+    for count in range(1, 11):
+        negative = replace(
+            positive, message_id=f"negative-{count}", objects=(),
+            frame=replace(
+                positive.frame,
+                timestamp_seconds=1 + count, source_frame_index=1 + count,
+            ),
+            judgments=(EventJudgment(event_label, False, 0.9, "Clear"),),
+        )
+        records.append(negative)
+        selected = select_overlay(records, 1 + count, max_gap_seconds=0.8)
+        plan = matcher.plan(selected.analysis, (moved, distractor))
+        assert tuple(plan.alerts_by_track_id()) == (("tracked",) if count < 10 else ())
+        assert plan.unmatched_event_object_ids == ()
+        assert selected.analysis.as_dict() == negative.as_dict()
+
+
+@pytest.mark.parametrize(
     ("analysis", "rich_object"),
     (
         (
