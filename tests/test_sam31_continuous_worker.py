@@ -52,8 +52,9 @@ def payload(count=16, *, start=0, request_id="r0", final=False, size=(64, 40)):
 class Backend:
     gpu_ready = True
 
-    def __init__(self):
+    def __init__(self, hotstart_delay=15):
         self.calls = 0
+        self.hotstart_delay = hotstart_delay
         self.object_id = 7
         self.entered = threading.Event()
         self.release = None
@@ -71,7 +72,7 @@ class Backend:
         if self.fail:
             raise RuntimeError("native failed")
         end = session.total_frames + len(images)
-        stop = end if final else max(0, end - 14)
+        stop = end if final else max(0, end - (self.hotstart_delay - 1))
         for index in range(session.emitted_index + 1, stop):
             width, height = session.output_size
             mask = np.zeros((1, height, width), dtype=bool)
@@ -86,7 +87,7 @@ class Backend:
             )
 
     def prune(self, session):
-        assert len(session.sources) <= 14
+        assert len(session.sources) <= self.hotstart_delay - 1
 
     def discard(self, session):
         session.native_state = None
@@ -99,8 +100,9 @@ def engine(**settings):
     video = SimpleNamespace(
         settings=replace(VideoSettings(), enabled=True), gpu_ready=True
     )
+    session_settings = replace(SessionSettings(), enabled=True, **settings)
     result = SessionEngine(
-        video, replace(SessionSettings(), enabled=True, **settings), Backend()
+        video, session_settings, Backend(session_settings.hotstart_delay)
     )
     result.warmup()
     return result

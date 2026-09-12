@@ -35,6 +35,7 @@ BACKEND = "sam3.1_video"
 class VideoSettings:
     enabled: bool = False
     checkpoint_path: str = "/models/sam3.1_multiplex.pt"
+    compile_mode: str = "off"
     max_frames: int = 16
     max_request_bytes: int = 32 * 1024 * 1024
     max_jpeg_bytes: int = 8 * 1024 * 1024
@@ -48,6 +49,10 @@ class VideoSettings:
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool or not self.checkpoint_path.strip():
             raise ValueError("invalid video backend configuration")
+        if type(self.compile_mode) is not str or self.compile_mode not in {
+            "off", "encoder"
+        }:
+            raise ValueError("compile_mode must be off or encoder")
         ceilings = {
             "max_frames": 16,
             "max_request_bytes": 32 * 1024 * 1024,
@@ -94,7 +99,7 @@ class VideoSettings:
         return {
             name: getattr(self, name)
             for name in self.__dataclass_fields__
-            if name not in {"enabled", "checkpoint_path"}
+            if name not in {"enabled", "checkpoint_path", "compile_mode"}
         } | {"max_inflight_requests": 1}
 
 
@@ -346,6 +351,43 @@ class VideoBackend(Protocol):
     def close(self) -> None: ...
 
 
+def compile_vision_encoder(torch, model):
+    """Compile only the fixed-image ViT after strict loading, with no new weights.
+
+    Wrapping the bound forward keeps state_dict names and shared Prod tensors
+    unchanged. The official all-component compiler modifies global functions and
+    suppresses compiler failures; this opt-in path does neither. Complex RoPE is
+    retained, so performance and compiler support require real CUDA measurement.
+    """
+    try:
+        encoder = model.detector.backbone.vision_backbone.trunk
+        forward = encoder.forward
+    except AttributeError:
+        raise RuntimeError("pinned native vision encoder is unavailable") from None
+    if not callable(forward) or getattr(model, "compile_model", False):
+        raise RuntimeError("unsupported encoder compilation state")
+    if getattr(encoder, "_goodvision_compiled_forward", False):
+        raise RuntimeError("native vision encoder already compiled")
+    expected = {
+        key: (tuple(tensor.shape), tensor.data_ptr())
+        for key, tensor in model.state_dict().items()
+    }
+    compiled = torch.compile(
+        forward, backend="inductor", mode="default", fullgraph=True, dynamic=False
+    )
+    if not callable(compiled):
+        raise RuntimeError("compiler did not produce an encoder callable")
+    encoder.forward = compiled
+    actual = {
+        key: (tuple(tensor.shape), tensor.data_ptr())
+        for key, tensor in model.state_dict().items()
+    }
+    if expected != actual:
+        encoder.forward = forward
+        raise RuntimeError("encoder compilation changed verified model tensors")
+    encoder._goodvision_compiled_forward = True
+
+
 class NativeSam31:
     def __init__(self, settings: VideoSettings):
         self.settings = settings
@@ -396,6 +438,8 @@ class NativeSam31:
         # Bound masks/grounding buffers instead of precomputing 16 frames at once.
         model.postprocess_batch_size = 1
         model.use_batched_grounding = False
+        if self.settings.compile_mode == "encoder":
+            compile_vision_encoder(torch, model)
         blanks = [Image.new("RGB", (320, 192)) for _ in range(3)]
         probe = VideoBatch(
             "warmup",
@@ -426,6 +470,10 @@ class NativeSam31:
                 raise RuntimeError("native warmup did not return all frames")
             torch.cuda.synchronize()
             self.gpu_ready = True
+            LOGGER.info(
+                "Native video CUDA warmup completed compile_mode=%s",
+                self.settings.compile_mode,
+            )
         finally:
             for image in blanks:
                 image.close()

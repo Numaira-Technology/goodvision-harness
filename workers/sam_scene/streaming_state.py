@@ -23,11 +23,12 @@ FRAME_FIELDS = (
 def finalize_pending(model, state):
     """Flush arrived hotstart outputs without running a fabricated/repeated frame.
 
-    This is the single-GPU, postprocess_batch_size=1 specialization of the
+    This is the single-GPU, bounded postprocessing specialization of the
     pinned Prod final-batch postprocessing (tracking.py lines 1995-2059).
     The native detector/tracker memory is never advanced here.
     """
-    if model.world_size != 1 or model.postprocess_batch_size != 1:
+    batch_size = model.postprocess_batch_size
+    if model.world_size != 1 or type(batch_size) is not int or batch_size not in {1, 4}:
         raise RuntimeError("unsupported native finalization settings")
     generator = state["generator_state"]
     if generator["postprocess_yield_list"]:
@@ -35,16 +36,29 @@ def finalize_pending(model, state):
     delay = model.masklet_confirmation_consecutive_det_thresh - 1
     last = state["num_frames"] - 1
     removed = set(generator["hotstart_removed_obj_ids"])
-    for index, output in generator["hotstart_buffer"]:
-        unconfirmed = generator["unconfirmed_obj_ids_per_frame"].get(
-            max(0, min(index + delay, last)), None
-        )
-        yield (
-            index,
-            model._postprocess_output(
-                state, output, removed, output["suppressed_obj_ids"], unconfirmed
-            ),
-        )
+    pending = generator["hotstart_buffer"]
+    for offset in range(0, len(pending), batch_size):
+        chunk = pending[offset : offset + batch_size]
+        postprocess_inputs = []
+        for index, output in chunk:
+            unconfirmed = generator["unconfirmed_obj_ids_per_frame"].get(
+                max(0, min(index + delay, last)), None
+            )
+            postprocess_inputs.append(
+                (output, set(removed), output["suppressed_obj_ids"], unconfirmed)
+            )
+        if batch_size == 1:
+            outputs = [model._postprocess_output(state, *postprocess_inputs[0])]
+        else:
+            # The pinned CPU mask buffer has capacity batch_size * max_objects.
+            # Never pass all 14 hotstart frames to a four-frame buffer at once.
+            outputs = model._postprocess_output_batched(
+                state["orig_height"], state["orig_width"], postprocess_inputs
+            )
+        if len(outputs) != len(chunk):
+            raise RuntimeError("native EOF postprocessing omitted source frames")
+        for (index, _), output in zip(chunk, outputs, strict=True):
+            yield index, output
     generator["hotstart_buffer"].clear()
 
 
@@ -74,7 +88,22 @@ class CountBoundedProcessingOrder:
         )
 
 
-def make_prod_model(native):
+def hotstart_parameters(delay):
+    """Explicit latency profiles; shorter early rejection is a quality tradeoff."""
+    if type(delay) is not int or delay not in {3, 5, 15}:
+        raise ValueError("hotstart_delay must be 3, 5, or 15")
+    return {
+        "hotstart_delay": delay,
+        # The pinned constructor requires both thresholds <= hotstart_delay.
+        # Keep the separate three-detection masklet confirmation unchanged.
+        "hotstart_unmatch_thresh": min(8, delay),
+        "hotstart_dup_thresh": min(8, delay),
+    }
+
+
+def make_prod_model(native, *, hotstart_delay=15, postprocess_batch_size=1):
+    if type(postprocess_batch_size) is not int or postprocess_batch_size not in {1, 4}:
+        raise ValueError("postprocess_batch_size must be 1 or 4")
     from sam3.model.sam3_multiplex_base import Sam3MultiplexBase
     from sam3.model.sam3_multiplex_tracking import Sam3MultiplexTrackingProd
 
@@ -95,8 +124,13 @@ def make_prod_model(native):
     for name in ("image_size", "image_mean", "image_std"):
         kwargs[name] = getattr(existing, name)
     kwargs.update(
-        compile_model=False, postprocess_batch_size=1, use_batched_grounding=False
+        compile_model=False,
+        postprocess_batch_size=postprocess_batch_size,
+        use_batched_grounding=False,
     )
+    if kwargs["masklet_confirmation_consecutive_det_thresh"] != 3:
+        raise RuntimeError("unsupported native masklet confirmation settings")
+    kwargs.update(hotstart_parameters(hotstart_delay))
     model = CountBoundedProd(**kwargs).eval()
     expected, actual = existing.state_dict(), model.state_dict()
     if expected.keys() != actual.keys() or any(

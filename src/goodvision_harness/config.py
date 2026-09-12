@@ -81,6 +81,10 @@ class RichLabelSettings:
     video_batch_frames: int = 16
     video_batch_seconds: float = 4.0
     video_timeout_seconds: float = 75.0
+    video_transport_max_side: int | None = None
+    video_transport_jpeg_quality: int | None = None
+    video_transport_codec: str = "jpeg"
+    video_transport_crf: int = 23
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +389,29 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             or rich_label_section.get("video_timeout_seconds", 75.0),
             "rich_labeling.video_timeout_seconds",
         ),
+        video_transport_max_side=_optional_bounded_int(
+            int(os.environ["SAM31_TRANSPORT_MAX_SIDE"])
+            if os.environ.get("SAM31_TRANSPORT_MAX_SIDE")
+            else rich_label_section.get("video_transport_max_side"),
+            "rich_labeling.video_transport_max_side", minimum=128, maximum=1280,
+        ),
+        video_transport_jpeg_quality=_optional_bounded_int(
+            int(os.environ["SAM31_TRANSPORT_JPEG_QUALITY"])
+            if os.environ.get("SAM31_TRANSPORT_JPEG_QUALITY")
+            else rich_label_section.get("video_transport_jpeg_quality"),
+            "rich_labeling.video_transport_jpeg_quality", minimum=1, maximum=100,
+        ),
+        video_transport_codec=_required_string(
+            os.environ.get("SAM31_TRANSPORT_CODEC")
+            or rich_label_section.get("video_transport_codec", "jpeg"),
+            "rich_labeling.video_transport_codec",
+        ).lower(),
+        video_transport_crf=_bounded_int(
+            int(os.environ["SAM31_TRANSPORT_CRF"])
+            if os.environ.get("SAM31_TRANSPORT_CRF")
+            else rich_label_section.get("video_transport_crf", 23),
+            "rich_labeling.video_transport_crf", minimum=18, maximum=35,
+        ),
         model=rich_label_model,
         vlm_wire_format=rich_wire_format,
         vlm_execution_mode=rich_execution_mode,
@@ -443,10 +470,13 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         rich_labeling.max_fps > 30 or rich_labeling.history_size > 4096
     ):
         raise ValueError("sam31 max_fps must be <=30 and history_size must be <=4096")
-    if rich_labeling.backend == "sam31_stream" and (
-        rich_labeling.video_batch_frames != 16 or rich_labeling.max_fps < 0.5
-    ):
-        raise ValueError("sam31_stream requires video_batch_frames=16 and max_fps>=0.5")
+    if rich_labeling.backend == "sam31_stream" and rich_labeling.max_fps < 0.5:
+        raise ValueError("sam31_stream requires max_fps>=0.5")
+    if rich_labeling.video_transport_codec not in {"jpeg", "h264"}:
+        raise ValueError("video transport codec must be jpeg or h264")
+    if (rich_labeling.video_transport_codec == "h264"
+            and rich_labeling.backend != "sam31_stream"):
+        raise ValueError("H264 transport requires sam31_stream")
     sliding_window = SlidingWindowSettings(
         size_frames=_positive_int(
             window_section.get("size_frames", 4), "sliding_window.size_frames"
@@ -841,6 +871,14 @@ def _optional_positive_int(value: Any, name: str) -> int | None:
     if value is None:
         return None
     return _positive_int(value, name)
+
+
+def _optional_bounded_int(
+    value: Any, name: str, *, minimum: int, maximum: int,
+) -> int | None:
+    if value is None:
+        return None
+    return _bounded_int(value, name, minimum=minimum, maximum=maximum)
 
 
 def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:

@@ -8,6 +8,8 @@ uvicorn==0.34.2
 Pillow==11.2.1
 numpy==1.26.4
 opencv-python-headless==4.10.0.84
+# Optional session H264 transport uses bounded independent CPU-decoded batches.
+av==17.1.0
 einops==0.8.1
 scipy==1.15.3
 psutil==7.0.0

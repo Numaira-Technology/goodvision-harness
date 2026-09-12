@@ -34,6 +34,7 @@ COPY app.py ./app.py
 COPY sam31.py ./sam31.py
 COPY continuous.py ./continuous.py
 COPY streaming_state.py ./streaming_state.py
+COPY h264_transport.py ./h264_transport.py
 COPY smoke.py ./smoke.py
 COPY video_smoke.py ./video_smoke.py
 RUN groupadd --system --gid 10003 samscene \

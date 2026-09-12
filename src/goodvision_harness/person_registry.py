@@ -65,6 +65,7 @@ def _native_metadata(value: object) -> tuple[str, str, str] | None:
 class _SourceFace:
     subject_id: str
     bbox: NormalizedBBox
+    person_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +131,148 @@ class PersonRegistry:
         self._native_tracks: dict[tuple[str, str, str, str, str], str] = {}
         self._max_native_tracks = max_native_tracks
         self._native_rejections: Counter[str] = Counter()
+        self._subject_merges: OrderedDict[str, str] = OrderedDict()
+        self._subject_aliases: OrderedDict[str, str] = OrderedDict()
         self._lock = RLock()
+
+    def drain_subject_merges(self) -> tuple[tuple[str, str], ...]:
+        """Consume trusted same-source face-to-native associations for scene state."""
+        with self._lock:
+            result = tuple(self._subject_merges.items())
+            self._subject_merges.clear()
+            return result
+
+    def canonical_subject_id(self, subject_id: str) -> str:
+        with self._lock:
+            return self._subject_aliases.get(subject_id, subject_id)
+
+    def _exact_source_face_matches(
+        self, snapshot: RichLabelSnapshot, faces: tuple[_SourceFace, ...] | None = None
+    ) -> dict[str, str]:
+        """Require the same real frame and a unique match in both directions."""
+        faces = (
+            faces
+            if faces is not None
+            else next(
+                (
+                    item.faces
+                    for item in self._face_history
+                    if (item.timestamp, item.sequence)
+                    == (snapshot.timestamp_seconds, snapshot.frame_sequence)
+                ),
+                (),
+            )
+        )
+        bodies = [
+            item
+            for item in snapshot.objects
+            if item.label.casefold() in {"person", "pedestrian"}
+            and _native_metadata(item.attributes.get("native_track")) is not None
+            and (
+                item.observation_state
+                or item.attributes.get("observation_state", "observed")
+            )
+            == "observed"
+        ]
+        proposals = {}
+        counts: Counter[str] = Counter()
+        for body in bodies:
+            candidates = [
+                face
+                for face in faces
+                if _face_body_score(face.bbox, body.bbox) is not None
+            ]
+            counts.update(face.subject_id for face in candidates)
+            if len(candidates) == 1:
+                source_face = candidates[0]
+                metadata = _native_metadata(body.attributes["native_track"])
+                native_id = self._native_tracks.get(
+                    (self.stream_session_id, self.source_id, *metadata)
+                )
+                current = self._subjects.get(native_id)
+                if (
+                    source_face.person_id
+                    and current is not None
+                    and current.identity.get("person_id")
+                    and source_face.person_id != current.identity["person_id"]
+                ):
+                    self._native_rejections["face_identity_conflict"] += 1
+                    continue
+                proposals[body.track_id] = source_face.subject_id
+        return {body: face for body, face in proposals.items() if counts[face] == 1}
+
+    def _merge_face_subject(self, old_id: str, native_id: str) -> None:
+        old, current = self._subjects.get(old_id), self._subjects.get(native_id)
+        if (
+            old is None
+            and old_id
+            and old_id not in self._subject_aliases
+            and current is not None
+            and current.native_track is not None
+        ):
+            # The exact source face is retained even after its live tracker
+            # expires. Scene state may still hold its events and identity.
+            old = _Subject(old_id, current.bbox, current.seen_at, "face")
+            self._subjects[old_id] = old
+        if (
+            old is None
+            or current is None
+            or old_id == native_id
+            or old.native_track is not None
+            or old.kind != "face"
+            or current.native_track is None
+            or old.association_uncertain
+        ):
+            return
+        # Conflicting established gallery identities require fresh identity
+        # resolution; geometry alone cannot decide which identity was wrong.
+        if (
+            old.identity.get("person_id")
+            and current.identity.get("person_id")
+            and old.identity["person_id"] != current.identity["person_id"]
+        ):
+            self._native_rejections["face_identity_conflict"] += 1
+            return
+        if old.identity and old.identity_at >= current.identity_at:
+            current.identity = dict(old.identity)
+            current.identity_at = old.identity_at
+            current.identity_embeddings = old.identity_embeddings
+        self._subjects.pop(old_id)
+        self._face_aliases = {
+            key: native_id if value == old_id else value
+            for key, value in self._face_aliases.items()
+        }
+        self._body_aliases = {
+            key: native_id if value == old_id else value
+            for key, value in self._body_aliases.items()
+        }
+        self._face_tracker.rebind_body(old_id, native_id)
+        self._face_history = deque(
+            (
+                replace(
+                    frame,
+                    faces=tuple(
+                        replace(face, subject_id=native_id)
+                        if face.subject_id == old_id
+                        else face
+                        for face in frame.faces
+                    ),
+                )
+                for frame in self._face_history
+            ),
+            maxlen=1024,
+        )
+        self._subject_merges[old_id] = native_id
+        self._subject_aliases[old_id] = native_id
+        while len(self._subject_aliases) > 4096:
+            self._subject_aliases.popitem(last=False)
+        # Service drains after each result/batch. Bound abandoned consumers too.
+        while len(self._subject_merges) > 4096:
+            self._subject_merges.popitem(last=False)
+
+    def _associate_source_faces(self, snapshot: RichLabelSnapshot) -> None:
+        for native_id, face_id in self._exact_source_face_matches(snapshot).items():
+            self._merge_face_subject(face_id, native_id)
 
     def begin_native_epoch(self, backend: str, epoch: str) -> bool:
         """Activate a host-validated video batch, including an empty batch.
@@ -161,6 +303,20 @@ class PersonRegistry:
                 for key, value in self._face_aliases.items()
                 if value not in retired
             }
+            self._face_history = deque(
+                (
+                    replace(
+                        frame,
+                        faces=tuple(
+                            face
+                            for face in frame.faces
+                            if face.subject_id not in retired
+                        ),
+                    )
+                    for frame in self._face_history
+                ),
+                maxlen=1024,
+            )
             self._native_tracks.clear()
             self._native_epoch = backend, epoch
             return True
@@ -304,6 +460,7 @@ class PersonRegistry:
             self._gpu_watermark = key
             observations = []
             native_objects = []
+            source_faces = self._exact_source_face_matches(snapshot)
             for item in snapshot.objects:
                 if item.label.casefold() not in {"person", "pedestrian"}:
                     continue
@@ -342,9 +499,36 @@ class PersonRegistry:
                         if len(self._native_tracks) >= self._max_native_tracks:
                             self._native_rejections["capacity"] += 1
                             continue
-                        subject = self._new_subject(
-                            item.bbox, snapshot.timestamp_seconds
+                        face_subject = self._subjects.get(
+                            source_faces.get(item.track_id, "")
                         )
+                        source_face_id = source_faces.get(item.track_id)
+                        if (
+                            face_subject is None
+                            and source_face_id
+                            and source_face_id not in self._subject_aliases
+                        ):
+                            # A real source face can outlive the short live face
+                            # tracker. Reuse its public ID without restoring any
+                            # expired gallery identity or guessing continuity.
+                            face_subject = _Subject(
+                                source_face_id,
+                                item.bbox,
+                                snapshot.timestamp_seconds,
+                                "face",
+                            )
+                            self._subjects[source_face_id] = face_subject
+                        subject = (
+                            face_subject
+                            if face_subject is not None
+                            and face_subject.native_track is None
+                            and face_subject.kind == "face"
+                            and not face_subject.association_uncertain
+                            else self._new_subject(
+                                item.bbox, snapshot.timestamp_seconds
+                            )
+                        )
+                        subject.kind = "body"
                         subject.native_track = metadata
                         self._native_tracks[native_key] = subject.subject_id
                     subject.bbox = item.bbox
@@ -382,6 +566,9 @@ class PersonRegistry:
             )
             self._record_snapshot(
                 snapshot.timestamp_seconds, snapshot.frame_sequence, objects
+            )
+            self._associate_source_faces(
+                replace(snapshot, objects=tuple(native_objects))
             )
 
     def _observe_bodies(
@@ -555,7 +742,14 @@ class PersonRegistry:
             timestamp,
             sequence,
             tuple(
-                _SourceFace(str(item.attributes["subject_id"]), item.bbox)
+                _SourceFace(
+                    str(item.attributes["subject_id"]),
+                    item.bbox,
+                    str(item.attributes["person_id"])
+                    if item.attributes.get("status") == "known"
+                    and item.attributes.get("person_id")
+                    else None,
+                )
                 for item in faces
             ),
         )
@@ -654,6 +848,28 @@ class PersonRegistry:
                     and subject.identity_at <= timestamp
                 },
             )
+            if canonical is not None and (
+                canonical.timestamp_seconds,
+                canonical.frame_sequence,
+            ) == (timestamp, frame_sequence):
+                source_faces = tuple(
+                    _SourceFace(
+                        self._face_aliases.get(
+                            str(item.attributes.get("face_track_id")), ""
+                        ),
+                        item.bbox,
+                        str(item.attributes["person_id"])
+                        if item.attributes.get("status") == "known"
+                        and item.attributes.get("person_id")
+                        else None,
+                    )
+                    for item in resolved
+                    if any(item.bbox == raw.bbox for raw in objects)
+                )
+                for native_id, old_id in self._exact_source_face_matches(
+                    canonical, source_faces
+                ).items():
+                    self._merge_face_subject(old_id, native_id)
             result = []
             for item in resolved:
                 attributes = dict(item.attributes)
@@ -739,7 +955,29 @@ class PersonRegistry:
                     and item.attributes.get("face_observation_state") == "observed"
                 ),
             )
+            source_body = self.snapshot_at(timestamp, frame_sequence)
+            if source_body is not None and (
+                source_body.timestamp_seconds,
+                source_body.frame_sequence,
+            ) == (timestamp, frame_sequence):
+                self._associate_source_faces(source_body)
+                result = [self._canonical_face(item) for item in result]
             return tuple(result)
+
+    def _canonical_face(self, item: ModelObject) -> ModelObject:
+        attributes = dict(item.attributes)
+        for key in ("subject_id", "person_track_id"):
+            value = attributes.get(key)
+            if isinstance(value, str):
+                attributes[key] = self._subject_aliases.get(value, value)
+        if isinstance(attributes.get("subject_ids"), (list, tuple)):
+            attributes["subject_ids"] = list(
+                dict.fromkeys(
+                    self._subject_aliases.get(value, value)
+                    for value in attributes["subject_ids"]
+                )
+            )
+        return replace(item, attributes=attributes)
 
     def prepare_analysis(
         self, result: AnalysisResult, bundle: ObservationBundle | None = None

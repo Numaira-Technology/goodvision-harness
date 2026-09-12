@@ -155,7 +155,7 @@ def test_persistent_native_backend_is_opt_in_with_explicit_endpoint(monkeypatch)
     assert settings.video_batch_frames == 16
 
 
-@pytest.mark.parametrize(("frames", "fps"), [(8, 4), (16, 0.1)])
+@pytest.mark.parametrize(("frames", "fps"), [(8, 0.1), (16, 0.1)])
 def test_persistent_native_startup_cannot_outgrow_retained_evidence(
     monkeypatch, frames, fps
 ):
@@ -163,6 +163,55 @@ def test_persistent_native_startup_cannot_outgrow_retained_evidence(
     monkeypatch.setenv("SAM31_BATCH_FRAMES", str(frames))
     monkeypatch.setenv("RICH_LABEL_MAX_FPS", str(fps))
     with pytest.raises(ValueError, match="sam31_stream requires"):
+        load_config(ROOT / "config.yaml")
+
+
+def test_native_stream_append_target_and_transport_are_independent_of_startup(
+    monkeypatch,
+):
+    monkeypatch.setenv("RICH_LABEL_BACKEND", "sam31_stream")
+    monkeypatch.setenv("SAM31_BATCH_FRAMES", "4")
+    monkeypatch.setenv("SAM31_BATCH_SECONDS", "0.5")
+    monkeypatch.setenv("SAM31_TRANSPORT_MAX_SIDE", "512")
+    monkeypatch.setenv("SAM31_TRANSPORT_JPEG_QUALITY", "55")
+    rich = load_config(ROOT / "config.yaml").rich_labeling
+    assert (rich.video_batch_frames, rich.video_batch_seconds) == (4, 0.5)
+    assert rich.video_transport_max_side == 512
+    assert rich.video_transport_jpeg_quality == 55
+
+
+def test_h264_transport_is_explicit_session_only_with_bounded_crf(monkeypatch):
+    monkeypatch.setenv("RICH_LABEL_BACKEND", "sam31_stream")
+    monkeypatch.setenv("SAM31_TRANSPORT_CODEC", "h264")
+    monkeypatch.setenv("SAM31_TRANSPORT_CRF", "23")
+    rich = load_config(ROOT / "config.yaml").rich_labeling
+    assert rich.video_transport_codec == "h264"
+    assert rich.video_transport_crf == 23
+
+
+@pytest.mark.parametrize("backend", ["paddle", "vlm", "sam", "sam31"])
+def test_h264_cannot_silently_change_other_backends(monkeypatch, backend):
+    monkeypatch.setenv("RICH_LABEL_BACKEND", backend)
+    monkeypatch.setenv("SAM31_TRANSPORT_CODEC", "h264")
+    with pytest.raises(ValueError, match="requires sam31_stream"):
+        load_config(ROOT / "config.yaml")
+
+
+@pytest.mark.parametrize("value", ["17", "36", "23.5", "nan"])
+def test_h264_crf_rejects_out_of_range_or_noninteger_values(monkeypatch, value):
+    monkeypatch.setenv("SAM31_TRANSPORT_CRF", value)
+    with pytest.raises(ValueError):
+        load_config(ROOT / "config.yaml")
+
+
+@pytest.mark.parametrize(("name", "value"), [
+    ("SAM31_TRANSPORT_MAX_SIDE", "127"), ("SAM31_TRANSPORT_MAX_SIDE", "1281"),
+    ("SAM31_TRANSPORT_MAX_SIDE", "512.5"), ("SAM31_TRANSPORT_JPEG_QUALITY", "0"),
+    ("SAM31_TRANSPORT_JPEG_QUALITY", "101"), ("SAM31_TRANSPORT_JPEG_QUALITY", "nan"),
+])
+def test_native_transport_rejects_invalid_explicit_options(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError):
         load_config(ROOT / "config.yaml")
 
 

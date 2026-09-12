@@ -166,6 +166,132 @@ class SceneState:
         self._counters[reason] += 1
         return False
 
+    def merge_subject(self, previous_id: str, current_id: str) -> bool:
+        """Apply a registry-proven association; never infer one from geometry.
+
+        Source times and evidence IDs do not change. Replaying combined ledgers
+        counts each source frame once, including when both branches saw it.
+        """
+        previous_id = _text(previous_id, "previous_id")
+        current_id = _text(current_id, "current_id")
+        with self._lock:
+            if previous_id == current_id:
+                return False
+            previous = self._people.get(previous_id)
+            current = self._people.get(current_id)
+            if previous is None:
+                return False
+            if previous.native_track and (
+                current is None or previous.native_track != current.native_track
+            ):
+                return self._reject("native_subject_merge_rejected")
+            if current is None:
+                previous.subject_id = current_id
+                self._people[current_id] = previous
+            else:
+                records = {}
+                for person in (previous, current):
+                    for record in person.history:
+                        key = (record["timestamp_seconds"], record["frame_sequence"])
+                        # Native full-body geometry wins over a same-frame face.
+                        if key not in records or record.get("native_track"):
+                            records[key] = record
+                current.history = deque(
+                    (records[key] for key in sorted(records)),
+                    maxlen=self.person_history_size,
+                )
+                current.first_seen = min(current.first_seen, previous.first_seen)
+                if (previous.last_seen, previous.frame_sequence) > (
+                    current.last_seen,
+                    current.frame_sequence,
+                ):
+                    current.bbox = previous.bbox
+                    current.last_seen = previous.last_seen
+                    current.frame_sequence = previous.frame_sequence
+                self._update_identity(
+                    current, previous.identity, *previous.identity_source
+                )
+                self._prune_person_history(current)
+            del self._people[previous_id]
+
+            def subjects(values):
+                return tuple(
+                    sorted(
+                        {current_id if sid == previous_id else sid for sid in values}
+                    )
+                )
+
+            self._source_pins = {
+                key: tuple(
+                    (current_id if sid == previous_id else sid, at, seq, box)
+                    for sid, at, seq, box in values
+                )
+                for key, values in self._source_pins.items()
+            }
+            self._evidence = OrderedDict(
+                (key, subjects(values)) for key, values in self._evidence.items()
+            )
+            for transition in self._transitions:
+                transition["subject_ids"] = list(subjects(transition["subject_ids"]))
+            for old_key in tuple(self._ledgers):
+                if previous_id not in old_key[1]:
+                    continue
+                old = self._ledgers.pop(old_key)
+                prior = self._events.pop(old_key, None)
+                ids = subjects(old_key[1])
+                key = (old_key[0], ids)
+                collapsed_fight = old_key[0] == "fight" and len(ids) < 2
+                old.seed = replace(old.seed, subject_ids=ids)
+                if collapsed_fight:
+                    old.seed = replace(
+                        old.seed, phase="retracted", positives=0, uncertain=True
+                    )
+                for record in old.records.values():
+                    record.subject_ids = subjects(record.subject_ids)
+                    if collapsed_fight:
+                        record.detected = None
+                        record.confidence = None
+                existing = self._ledgers.get(key)
+                if existing is None:
+                    self._ledgers[key] = old
+                else:
+                    # A compacted prefix cannot be expanded again. Use the seed
+                    # at the later source floor; never add the two vote counts.
+                    seed_ledger = max((old, existing), key=lambda item: item.floor)
+                    floor = seed_ledger.floor
+                    records = {**existing.records, **old.records}
+                    self._ledgers[key] = _Ledger(
+                        replace(seed_ledger.seed, subject_ids=ids),
+                        {
+                            evidence_key: record
+                            for evidence_key, record in records.items()
+                            if record.sequence > floor[1]
+                            and record.timestamp >= floor[0]
+                        },
+                        floor,
+                        max(old.watermark, existing.watermark),
+                    )
+                for evidence_key in (
+                    *old.records,
+                    *(existing.records if existing else ()),
+                ):
+                    self._record_groups.pop(evidence_key, None)
+                for evidence_key in self._ledgers[key].records:
+                    self._record_groups[evidence_key] = key
+                event, _ = self._replay(key)
+                if collapsed_fight and prior is not None and prior.event_id:
+                    event = replace(
+                        event,
+                        event_id=prior.event_id,
+                        phase="retracted",
+                        uncertain=True,
+                    )
+                    self._transition(event, "retract")
+                self._events[key] = event
+                self._prune_ledger(key)
+            self._counters["subjects_merged"] += 1
+            return True
+
     def advance(self, timestamp_seconds: float) -> None:
         """Advance source time; occlusion never generates negative evidence."""
         timestamp = _time(timestamp_seconds)
@@ -245,9 +371,7 @@ class SceneState:
             self._counters["expired_batch_entities_retired"] += len(retired)
             return True
 
-    def can_reserve_native_person_slots(
-        self, keys: set[tuple[str, str, str]]
-    ) -> bool:
+    def can_reserve_native_person_slots(self, keys: set[tuple[str, str, str]]) -> bool:
         """A continuing native identity does not need a new scene entity slot."""
         with self._lock:
             existing = {
@@ -441,6 +565,8 @@ class SceneState:
             "bbox": bbox.as_dict(),
             **({"native_track": native_track} if native_track else {}),
         }
+        if native_track:
+            person.native_track = native_track
         records = [
             item for item in person.history if item["frame_sequence"] != sequence
         ]

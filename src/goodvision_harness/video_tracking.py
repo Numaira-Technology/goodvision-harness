@@ -17,6 +17,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from io import BytesIO
 from itertools import pairwise
 from typing import Any
 from uuid import uuid4
@@ -198,12 +199,22 @@ class VideoTrackingHTTPClient:
         *,
         timeout_seconds: float = 75.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        transport_max_side: int | None = None,
+        transport_jpeg_quality: int | None = None,
     ) -> None:
         url = httpx.URL(endpoint)
         if url.scheme not in {"http", "https"} or not url.host:
             raise ValueError("video endpoint must be HTTP(S)")
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        for name, value, minimum, maximum in (
+            ("transport_max_side", transport_max_side, 128, 1280),
+            ("transport_jpeg_quality", transport_jpeg_quality, 1, 100),
+        ):
+            if value is not None and (
+                type(value) is not int or not minimum <= value <= maximum
+            ):
+                raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
         self.endpoint = str(url.copy_with(query=None, fragment=None))
         self._health = str(
             url.copy_with(path="/health/video", query=None, fragment=None)
@@ -214,6 +225,25 @@ class VideoTrackingHTTPClient:
             raise ValueError("video transport must support asynchronous I/O")
         self._timeout_seconds = float(timeout_seconds)
         self._transport = transport
+        self._transport_max_side = transport_max_side
+        self._transport_jpeg_quality = transport_jpeg_quality
+        self._transport_codec = "jpeg"
+        self._transport_stats_lock = threading.Lock()
+        self._transport_metrics = {
+            "requests": 0,
+            "frames": 0,
+            "source_jpeg_bytes": 0,
+            "transport_jpeg_bytes": 0,
+            "transport_bytes": 0,
+            "encode_seconds": 0.0,
+            "compression_seconds": 0.0,
+            "last_frames": 0,
+            "last_source_jpeg_bytes": 0,
+            "last_transport_jpeg_bytes": 0,
+            "last_transport_bytes": 0,
+            "last_encode_seconds": 0.0,
+            "last_compression_seconds": 0.0,
+        }
         self._client: httpx.AsyncClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -239,12 +269,123 @@ class VideoTrackingHTTPClient:
     def _invalid_constant(_value: str) -> None:
         raise RichLabelProtocolError("nonfinite video response value")
 
+    def transport_stats(self) -> dict[str, Any]:
+        """Prepared payload totals; transport bytes exclude JSON/base64 overhead."""
+        with self._transport_stats_lock:
+            return {
+                **self._transport_metrics,
+                "max_side": self._transport_max_side,
+                "jpeg_quality": self._transport_jpeg_quality,
+                "codec": self._transport_codec,
+            }
+
+    def _record_transport(
+        self, frames, wire_bytes, elapsed, *, codec="jpeg", encode_seconds=0.0
+    ):
+        original_bytes = sum(len(frame.jpeg_bytes) for frame in frames)
+        jpeg_bytes = wire_bytes if codec == "jpeg" else 0
+        with self._transport_stats_lock:
+            metrics = self._transport_metrics
+            metrics["requests"] += 1
+            metrics["frames"] += len(frames)
+            metrics["source_jpeg_bytes"] += original_bytes
+            metrics["transport_jpeg_bytes"] += jpeg_bytes
+            metrics["transport_bytes"] += wire_bytes
+            metrics["compression_seconds"] += elapsed
+            metrics["encode_seconds"] += encode_seconds
+            metrics.update(
+                last_frames=len(frames),
+                last_source_jpeg_bytes=original_bytes,
+                last_transport_jpeg_bytes=jpeg_bytes,
+                last_transport_bytes=wire_bytes,
+                last_compression_seconds=elapsed,
+                last_encode_seconds=encode_seconds,
+            )
+
+    def _transport_frames(self, frames: tuple[VideoFrame, ...], *, deadline: float):
+        """Compress once inside the admitted request; never alter source evidence.
+
+        Header checks bound decoded pixels before allocating image buffers. A
+        resize preserves the entire view, so normalized source geometry remains
+        valid. No transform is performed unless explicitly configured.
+        """
+        started = time.monotonic()
+        transformed = (
+            self._transport_max_side is not None
+            or self._transport_jpeg_quality is not None
+        )
+        outputs = []
+        pixels = 0
+        wire_bytes = 0
+        for frame in frames:
+            if time.monotonic() >= deadline:
+                raise httpx.TimeoutException(
+                    "video compression exceeded total deadline"
+                )
+            output = frame
+            if transformed:
+                from PIL import Image
+
+                with Image.open(BytesIO(frame.jpeg_bytes)) as source:
+                    width, height = source.size
+                    pixels += width * height
+                    if (
+                        source.format != "JPEG"
+                        or width <= 0
+                        or height <= 0
+                        or width * height > 3840 * 2160
+                        or pixels > 64 * 1024 * 1024
+                    ):
+                        raise ValueError("video transport image exceeds decoded limits")
+                    scale = (
+                        min(1.0, self._transport_max_side / max(width, height))
+                        if self._transport_max_side
+                        else 1.0
+                    )
+                    if scale < 1 or self._transport_jpeg_quality is not None:
+                        image = source.convert("RGB")
+                        if scale < 1:
+                            resized = image.resize(
+                                (
+                                    max(1, round(width * scale)),
+                                    max(1, round(height * scale)),
+                                ),
+                                Image.Resampling.LANCZOS,
+                            )
+                            image.close()
+                            image = resized
+                        try:
+                            buffer = BytesIO()
+                            image.save(
+                                buffer,
+                                format="JPEG",
+                                quality=self._transport_jpeg_quality or 90,
+                            )
+                            output = VideoFrame(
+                                frame.frame_sequence,
+                                frame.timestamp_seconds,
+                                buffer.getvalue(),
+                            )
+                        finally:
+                            image.close()
+            wire_bytes += len(output.jpeg_bytes)
+            if wire_bytes > MAX_BATCH_JPEG_BYTES:
+                raise ValueError("video transport batch exceeds byte limit")
+            outputs.append(output)
+        if time.monotonic() >= deadline:
+            raise httpx.TimeoutException("video compression exceeded total deadline")
+        elapsed = time.monotonic() - started if transformed else 0.0
+        self._record_transport(frames, wire_bytes, elapsed)
+        return tuple(outputs)
+
     async def _exchange(
         self,
         method: str,
         url: str,
         payload_factory: Callable[[], dict[str, Any]] | None,
         result_parser: Callable[[dict[str, Any]], Any] | None,
+        *,
+        deadline: float,
     ) -> Any:
         if self._client is None:
             self._client = httpx.AsyncClient(
@@ -257,6 +398,11 @@ class VideoTrackingHTTPClient:
                 limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
             )
         kwargs = {"json": payload_factory()} if payload_factory is not None else {}
+        if time.monotonic() >= deadline:
+            raise httpx.TimeoutException("video preparation exceeded total deadline")
+        # Deliver a queued cancellation before opening the network stream after
+        # bounded CPU preparation, which cannot itself yield to the event loop.
+        await asyncio.sleep(0)
         async with self._client.stream(method, url, **kwargs) as response:
             response.raise_for_status()
             # Reject compressed bodies before any decoder can expand them.
@@ -337,7 +483,9 @@ class VideoTrackingHTTPClient:
                     self._active = None
                 close = self._closed
             else:
-                self._task = self._loop.create_task(self._exchange(*args))
+                self._task = self._loop.create_task(
+                    self._exchange(*args, deadline=deadline)
+                )
                 self._task.add_done_callback(
                     lambda task: self._finish_operation(operation, task, deadline)
                 )
@@ -494,7 +642,7 @@ class VideoTrackingHTTPClient:
                             "ascii"
                         ),
                     }
-                    for frame in frames
+                    for frame in self._transport_frames(frames, deadline=deadline)
                 ],
             },
             result_parser=lambda payload: VideoTrackingBatch.parse(
@@ -595,6 +743,9 @@ class VideoTrackingCoordinator:
             "last_latency_seconds": None,
             "last_frame_sequence": None,
             "completed_timestamp_seconds": None,
+            "last_queue_wait_seconds": None,
+            "last_request_frames": 0,
+            "total_queue_wait_seconds": 0.0,
         }
 
     def reset(self, stream_session_id: str | None = None) -> None:
@@ -700,7 +851,10 @@ class VideoTrackingCoordinator:
                         )
                     if self._closed:
                         return
+                    self._stats["last_queue_wait_seconds"] = age
+                    self._stats["total_queue_wait_seconds"] += age
                     frames = tuple(frame for frame, _ in self._pending)
+                    self._stats["last_request_frames"] = len(frames)
                     self._pending.clear()
                     self._pending_bytes = 0
                     generation, session = self._generation, self._session
@@ -788,6 +942,9 @@ class VideoTrackingCoordinator:
                 "in_flight": self._in_flight,
                 "history_size": len(self._history),
                 "history_capacity": self.history_size,
+                "transport": self._client.transport_stats()
+                if hasattr(self._client, "transport_stats")
+                else {},
                 "tracking_lag_seconds": (
                     None
                     if completed is None

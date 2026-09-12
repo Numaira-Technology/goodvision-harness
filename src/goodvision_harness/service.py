@@ -115,7 +115,7 @@ from .route_probe import (
 )
 from .scene_archive import SceneArchive
 from .scene_capture import SceneCaptureClient
-from .scene_delivery import SceneDisplayWorker
+from .scene_delivery import SceneDisplayWorker, TrackedSceneDisplayWorker
 from .scene_model import TemporalVLMInspector
 from .scene_runtime import SceneRuntime
 from .scene_worker import SceneInspectionWorker
@@ -261,6 +261,14 @@ class HarnessRuntime:
                 display,
                 delay_seconds=self._deployment_settings.buffer_delay_seconds,
             )
+        if (
+            config is not None
+            and config.rich_labeling.backend == "sam31_stream"
+            and self._scene_mode == "active"
+        ):
+            # Match the console's 0..30-second promise before allocating clients
+            # or starting a capture. Source retention remains independently capped.
+            validate_buffer_delay_seconds(display.delay_seconds)
         self._display_settings = display
         self._rich_disabled_reason: str | None = None
         self._rich_requested = rich_label_coordinator is not None or (
@@ -308,6 +316,12 @@ class HarnessRuntime:
                 )
                 rich_client = client_class(
                     rich.endpoint, timeout_seconds=rich.video_timeout_seconds,
+                    transport_max_side=rich.video_transport_max_side,
+                    transport_jpeg_quality=rich.video_transport_jpeg_quality,
+                    **({
+                        "transport_codec": rich.video_transport_codec,
+                        "transport_crf": rich.video_transport_crf,
+                    } if rich.backend == "sam31_stream" else {}),
                 )
             else:
                 rich_client = RichLabelHTTPClient(
@@ -773,6 +787,8 @@ class HarnessRuntime:
                 if "buffer_delay_seconds" in payload:
                     assert buffer_delay_seconds is not None
                     self._delayed_overlay.set_delay_seconds(buffer_delay_seconds)
+                    if isinstance(self._scene_display, TrackedSceneDisplayWorker):
+                        self._scene_display.set_delay_seconds(buffer_delay_seconds)
                     self._display_settings = replace(
                         self._display_settings, delay_seconds=buffer_delay_seconds,
                     )
@@ -889,7 +905,11 @@ class HarnessRuntime:
                     if scene_active else self.config.display.jpeg_quality
                 ),
                 "buffer_delay_seconds": (
-                    0.0 if scene_active else self._display_settings.delay_seconds
+                    0.0 if (
+                        scene_active
+                        and self.config.rich_labeling.backend != "sam31_stream"
+                    )
+                    else self._display_settings.delay_seconds
                 ),
                 "bbox_max_gap_seconds": (
                     None if scene_active else self.config.display.bbox_max_gap_seconds
@@ -993,6 +1013,9 @@ class HarnessRuntime:
                     ) != (snapshot.timestamp_seconds, snapshot.frame_sequence):
                         raise ValueError("native frame could not be mapped to source")
                     canonical.append(mapped)
+                merges = registry.drain_subject_merges()
+                if scene is not None:
+                    scene.apply_subject_merges(merges)
                 return tuple(canonical)
 
             scene = getattr(self, "_scene", None)
@@ -1015,6 +1038,9 @@ class HarnessRuntime:
             worker = getattr(self, "_scene_worker", None)
             if worker is not None:
                 worker.wake()
+            display = getattr(self, "_scene_display", None)
+            if isinstance(display, TrackedSceneDisplayWorker):
+                display.notify_tracking()
 
     def _on_tracking_snapshot(self, snapshot: Any) -> None:
         with self._state_lock:
@@ -1176,6 +1202,12 @@ class HarnessRuntime:
                 )
                 client = client_class(
                     rich.endpoint, timeout_seconds=rich.video_timeout_seconds,
+                    transport_max_side=rich.video_transport_max_side,
+                    transport_jpeg_quality=rich.video_transport_jpeg_quality,
+                    **({
+                        "transport_codec": rich.video_transport_codec,
+                        "transport_crf": rich.video_transport_crf,
+                    } if rich.backend == "sam31_stream" else {}),
                 )
             else:
                 client = RichLabelHTTPClient(
@@ -1627,14 +1659,24 @@ class HarnessRuntime:
                     ),
                 )
                 next_scene.automatic_temporal_inference = True
+            display_class = (
+                TrackedSceneDisplayWorker
+                if self.config.rich_labeling.backend == "sam31_stream"
+                else SceneDisplayWorker
+            )
+            display_options = (
+                {"delay_seconds": self._display_settings.delay_seconds}
+                if display_class is TrackedSceneDisplayWorker else {}
+            )
             next_display = (
-                SceneDisplayWorker(
+                display_class(
                     next_scene,
                     lambda packet: self._guarded_callback(
                         generation, self.annotated_frames.publish, packet
                     ),
                     quality=min(95, self.settings.overlay_jpeg_quality),
                     max_fps=self._annotated_output_fps,
+                    **display_options,
                 )
                 if scene_active
                 else None
@@ -1964,7 +2006,19 @@ class HarnessRuntime:
         payload["event_archive"] = (
             self._events.status() if self._events else {"state": "idle"}
         )
-        payload["annotated_output"] = self._delayed_overlay.stats()
+        scene_display = self._scene_display
+        if isinstance(scene_display, TrackedSceneDisplayWorker):
+            output = scene_display.stats()
+            latest = self.annotated_frames.latest()
+            output["annotation_mode"] = (
+                latest[1].annotation_mode if latest is not None else "none"
+            )
+            output["output_fps"] = min(
+                self._annotated_output_fps, self.config.rich_labeling.max_fps,
+            )
+            payload["annotated_output"] = output
+        else:
+            payload["annotated_output"] = self._delayed_overlay.stats()
         payload["rich_labeling"] = (
             rich_labels.stats()
             if rich_labels is not None
@@ -2016,6 +2070,8 @@ class HarnessRuntime:
                 payload["archive"] = self._scene_archive.stats()
             if self._scene_worker is not None:
                 payload["worker"] = self._scene_worker.stats()
+            if isinstance(self._scene_display, TrackedSceneDisplayWorker):
+                payload["display"] = self._scene_display.stats()
             if payload.get("scene"):
                 for item in payload["scene"]["entities"] + payload["scene"]["events"]:
                     item.pop("history", None)
@@ -2252,20 +2308,26 @@ class HarnessRuntime:
             self._delivery.submit(payload)
 
     def _on_timeline_result(self, result: AnalysisResult) -> None:
-        if getattr(self, "_scene", None) is not None:
-            session = self._session
-            if (
-                session is not None
-                and session.stream_session_id == result.stream_session_id
-            ):
-                canonical = session.person_registry.snapshot_at(
-                    result.frame.timestamp_seconds, result.frame.source_frame_index,
-                )
-                if canonical is not None and (
-                    canonical.timestamp_seconds, canonical.frame_sequence
-                ) == (result.frame.timestamp_seconds, result.frame.source_frame_index):
-                    self._observe_scene("observe_tracks", canonical)
-            self._observe_scene("observe_result", result)
+        with self._state_lock:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                session = self._session
+                if (
+                    session is not None
+                    and session.stream_session_id == result.stream_session_id
+                ):
+                    registry = session.person_registry
+                    scene.apply_subject_merges(registry.drain_subject_merges())
+                    canonical = registry.snapshot_at(
+                        result.frame.timestamp_seconds, result.frame.source_frame_index,
+                    )
+                    if canonical is not None and (
+                        canonical.timestamp_seconds, canonical.frame_sequence
+                    ) == (
+                        result.frame.timestamp_seconds, result.frame.source_frame_index,
+                    ):
+                        self._observe_scene("observe_tracks", canonical)
+                self._observe_scene("observe_result", result)
         if self._scene_is_active():
             self._on_scene_update()
             return
@@ -2361,7 +2423,9 @@ class HarnessRuntime:
         self.preview_frames.publish(packet)
         if self._scene_is_active():
             display = getattr(self, "_scene_display", None)
-            if display is not None:
+            if isinstance(display, TrackedSceneDisplayWorker):
+                display.submit(packet, retain_source=continuous_queued and admitted)
+            elif display is not None:
                 display.submit(packet)
             else:
                 self.annotated_frames.publish(packet)
@@ -2581,6 +2645,20 @@ class HarnessRuntime:
                         outcome = "timed_out"
                         break
                     time.sleep(min(0.05, remaining))
+            with self._state_lock:
+                display = self._scene_display
+            if (
+                isinstance(display, TrackedSceneDisplayWorker)
+                and outcome == "completed"
+            ):
+                display.notify_tracking()
+                while current():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        outcome = "timed_out"
+                        break
+                    if display.wait_until_idle(timeout_seconds=min(0.1, remaining)):
+                        break
         except Exception:
             outcome = "failed"
             LOGGER.warning("native source end could not finish pending results")

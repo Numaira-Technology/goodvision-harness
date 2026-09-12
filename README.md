@@ -29,6 +29,15 @@ torch 2.10.0／torchvision 0.25.0 使用 `cu126`；镜像可传入
 [worker 部署说明](workers/sam_scene/README.md) 和
 [SAM 3.1 实施记录](docs/architecture/sam31-implementation-20260912.md) 包含具体步骤。
 这些验证证明链路可运行及历史回收一致；人物、事件准确率和数小时运行仍需专项验收。
+持续视频还可选择 `SAM31_TRANSPORT_CODEC=h264`，将每次追加的最多 16 张源图
+直接编码为独立 H.264 数据，保留原图与源帧清单。客户端安装 `.[video]`（PyAV
+17.1.0），worker 开启 `SAM31_SESSION_H264_ENABLED=true`；双方确认能力后才发送。
+此模式默认最长边 512、`SAM31_TRANSPORT_CRF=23`（允许 18–35），可通过
+`SAM31_TRANSPORT_MAX_SIDE` 调整尺寸；JPEG 质量参数只作用于 JPEG 模式。
+默认仍为 `jpeg`。H.264 每批独立、无 B 帧，接收端先检查码流的尺寸、图片数量和
+解码缓冲限制再解码。该压缩模式需另行验证实际跟踪质量，不改变源时间或事件证据。
+本次 4090 实测、人物合并、源画面对齐和 Demo 采用的 3 FPS 配置见
+[SAM 3.1 优化与验证记录](docs/architecture/sam31-optimization-20260913.md)。
 [持续事件架构与运行指南](docs/architecture/entity-event-engine.md) 包含本地 active 配置、
 容器启动、录制视频验证、请求预算和具体边界。没有权重时可明确使用 `--recorded-tracks`
 验证上层链路，报告会标识这不验证 SAM。

@@ -402,6 +402,7 @@ raised beyond the table's hard ceilings (timeout can be raised to 120 seconds).
 | --- | --- | --- |
 | `ENABLED` | `false` | Explicitly enable the native model |
 | `CHECKPOINT_PATH` | `/models/sam3.1_multiplex.pt` | Approved local merged checkpoint |
+| `COMPILE_MODE` | `off` | `off` or experimental `encoder`; benchmark CUDA before retaining it |
 | `MAX_FRAMES` | 16 | Already received frames per batch; one-frame flush accepted |
 | `MAX_REQUEST_BYTES` | 33554432 | Streamed JSON request cap, including base64 overhead |
 | `MAX_JPEG_BYTES` | 8388608 | One decoded base64 JPEG payload |
@@ -419,6 +420,29 @@ The native encoder itself uses 1008-pixel inputs. Native state, mask history and
 output buffers remain bounded by this finite batch and object cap; their actual
 VRAM footprint depends on frame size, object count and the execution path. See
 the isolated GPU continuation measurements below; they are not a capacity guarantee.
+
+`SAM31_COMPILE_MODE=encoder` is an independent, opt-in optimization for both native
+batch and continuous paths. After strict loading it applies `torch.compile` only
+to the detector ViT trunk's bound `forward` (`inductor`, `mode=default`,
+`fullgraph=True`, `dynamic=False`). Module identity, weight names, tensor storage
+and complex-valued RoPE remain unchanged; it neither requests FA3 nor enables the
+upstream all-component compiler's global function replacements. Existing BF16
+autocast is retained. The compiled function executes during real CUDA warmup;
+compilation or execution errors fail readiness instead of silently falling back.
+Compilation may substantially increase cold startup time and compiler cache use.
+The RTX 4090 comparison on the same 512-pixel input and profile 5 measured roughly
+2.4 seconds per 16-frame native operation in both modes, with no demonstrated
+throughput improvement. Use a writable
+compiler cache (the container already provides `/tmp`) and allow startup to finish
+before recording steady-state timings. `off` remains the default and comparison.
+
+Native session INFO logs expose only operation names, frame/byte counts and
+timings: `body_read_seconds`, `validation_decode_seconds`, `native_output_seconds`,
+`retention_response_seconds`, and total worker request time. `native_output_seconds`
+includes native inference plus conversion of its masks to the response objects;
+it is not a CUDA-kernel-only measurement. Neither source/session identifiers,
+JPEGs nor model output text are logged. Client round-trip time additionally
+includes network work outside the worker's received-body/response-ready interval.
 
 There is one shared admission/GPU slot across **both image and video endpoints**.
 Busy requests get 429, oversized requests 413, invalid input 400/415, out-of-order
@@ -536,6 +560,30 @@ allocated 约 7.30 GB。这是特定录像和配置的执行/一致性证据，*
 4. `DELETE /v1/video/sessions/{video_session_id}` 用于取消或断流，回复
    `discarded_pending_frames`。它释放状态并明确丢弃尚未发出的帧，不把它们当作成功证据。
 
+可选 H264 传输只在 `SAM31_SESSION_H264_ENABLED=true` 且 CPU 解码器初始化成功时
+启用；health 和创建响应的 `limits.h264_transport` 用整数 `1` 表示支持、`0` 表示关闭。
+它复用相同的 append 地址，在原来的四个顶层字段之外增加第五个字段：
+
+```json
+{
+  "stream_session_id": "camera-1",
+  "request_id": "request-2",
+  "frames": [{"frame_sequence": 104, "timestamp_seconds": 25.25}],
+  "is_last_batch": false,
+  "video": {"format": "h264_annexb", "data_base64": "..."}
+}
+```
+
+此模式的每个 frame 只包含原始序号和时间；不得混入 `jpeg_base64`。每个请求都是独立、
+以 IDR 开始、无 B 帧的 Annex-B elementary stream，包含与元数据数量相同且顺序一致的
+1–16 帧，支持 baseline/main、8-bit 4:2:0。解码前先检查 SPS、参考帧和尺寸；最长边
+不超过 1280，编码字节不超过 8 MiB，且同时受请求总字节和原有总像素预算约束。
+只接收严格的原始 H264，不接收容器文件、外部引用或分辨率变更。解码和推理共用原来的
+单请求槽与总截止时间；失败不会悄悄切回 JPEG。空 EOF 继续使用四字段 JSON，不带 video。
+请求重放 hash 覆盖编码格式、完整 bitstream、所有源帧元数据及 final 标志。
+worker 仅暂存本次解码图像，持续状态仍只保留待发源帧元数据；主程序的证据仍对应原始采样帧。
+压缩会改变模型看到的像素，因此传输性能和人物分割质量都需要用同一录像对照。
+
 append 回复的 `backend` 是 `sam3.1_video`、`memory_scope` 是 `session`；整个会话的
 `predictor_epoch` 保持不变。`frames` 是此前已接收但尚未发出的源帧前缀，可能属于之前
 的 append。SAM 默认保留 14 帧确认缓冲，所以第一批 16 帧通常只发出前 2 帧。
@@ -554,6 +602,9 @@ ID/内容重试返回缓存；相同 ID 内容改变、旧源帧和错误源会�
 | 环境变量 | 默认值 | 范围/含义 |
 | --- | --- | --- |
 | `SAM31_SESSION_ENABLED` | `false` | 显式启用实验连续路径 |
+| `SAM31_SESSION_H264_ENABLED` | `false` | 显式接受有界 H264 append；要求 PyAV 17.1.0，默认 JPEG 协议仍可用 |
+| `SAM31_SESSION_HOTSTART_DELAY` | `15` | 固定 profile：3、5、15；较短 profile 会改变早期去重／淘汰判断，需录像对照 |
+| `SAM31_SESSION_POSTPROCESS_BATCH_SIZE` | `1` | 1 或实验 4；四帧一起后处理，不改变检测和跟踪记忆 |
 | `SAM31_SESSION_HISTORY_FRAMES` | `32` | 32–64；须覆盖已核验的记忆与确认范围 |
 | `SAM31_SESSION_MAX_SESSION_FRAMES` | `65536` | 16–65536；在官方 100000 帧 sentinel 前结束 |
 | `SAM31_SESSION_MAX_CUMULATIVE_NATIVE_IDS` | `2048` | 16–2048；限制整个会话的累计原生 ID |
@@ -563,6 +614,40 @@ ID/内容重试返回缓存；相同 ID 内容改变、旧源帧和错误源会�
 客户端应建立新会话并明确换 epoch；不会静默复用旧人物编号。单请求的上传、像素、对象
 数量和总超时仍服从 `SAM31_` 限额。服务只保留尚未发出的源帧元数据（最多 32 条），
 不会保留它们的上传 JPEG。录制、证据保存和事件语义仍由主程序负责。
+
+可单独使用 `SAM31_SESSION_HOTSTART_DELAY=5` 做低延迟对照，默认仍为 15。
+三个 profile 的待发上限分别为 2、4、14 帧；health 和创建响应的 `limits` 同时报告
+`hotstart_delay` 与 `max_pending_frames`。官方构造器要求早期未匹配／重复淘汰阈值不大于
+hotstart，因此这两个阈值设为 `min(8, hotstart_delay)`；连续三次检测的 masklet 确认保持不变。
+较短窗口可能改变误检和轨迹淘汰，不能沿用默认 profile 的质量结论。
+首个非 final 请求仍须 16 帧，以保留已验证的输入环和注意力启动语义；之后可追加 1–16 帧。
+这降低的是持续输出等待，不会把首批所需帧伪造成已经到达。第一批直接 final 的 1–16 帧
+同样使用所选 profile，且无需填充未来帧；空 EOF 保持发完实际待发源帧的行为。
+
+`SAM31_SESSION_POSTPROCESS_BATCH_SIZE=4` 只批量处理模型输出，默认仍为 1。
+Prod 在每次 append 结束时会发完不足四帧的后处理结果，不把这部分等待带到下一请求；
+空 EOF 也按最多四帧一组处理，14 帧尾部拆为 4／4／4／2，避免超过官方
+`postprocess_batch_size × max_objects` 的输出缓冲容量。它不启用 batched grounding，
+不改变确认窗口、源水位和 HTTP 协议。RTX 4090 上三轮相同 16 帧加空 EOF 的隔离对照，
+逐帧原生 ID／mask hash 全等；模式 1 和 4 的平均 native session 耗时分别为
+2.22553 秒和 2.22935 秒，没有观察到净提速，因此默认继续为 1。这仅是该录像和配置的结果。
+
+隔离于正在服务的 GPU 推理，可以用以下工具排除网络影响：
+
+```sh
+python tools/sam31_postprocess_benchmark.py \
+  --checkpoint /models/sam3.1_multiplex.pt \
+  --frame-dir /srv/goodvision/sam31/test-media/long-frames \
+  --max-side 512 --hotstart-delay 5 --repeats 3 \
+  --output /tmp/sam31-postprocess-comparison.json
+```
+
+如果远端是平铺的 worker 文件目录，增加 `--worker-dir /path/to/worker`。
+工具严格加载同一模型，分别预热两种后处理模式，再交替执行三轮 1／4 对照；每次都以相同
+16 张已存在的 JPEG 建立新 native session，再发送空 EOF。报告保存源文件 hash、各阶段
+耗时、CUDA allocated/peak 及逐帧 ID／mask hash。JPEG 加载和 hash 计算不计入模型计时，
+不调用 HTTP/VLM。`--start-index` 可换用目录内另一组16张，`--budget-seconds` 最多600秒，
+这只是协作式截止，不能中断挂起的 CUDA。输出文件须不存在；未提供人工真值，因此仍不报告准确率。
 
 隔离 GPU 对照工具：
 

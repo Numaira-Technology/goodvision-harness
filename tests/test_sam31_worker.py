@@ -708,8 +708,9 @@ def test_wrong_source_installation_rejected(monkeypatch):
         verify_installed_source()
 
 
+@pytest.mark.parametrize("compile_mode", ["off", "encoder"])
 def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, compile_mode
 ):
     """Runs only Python API doubles, never imports real torch/SAM or uses CUDA."""
     import workers.sam_scene.sam31 as module
@@ -724,6 +725,9 @@ def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
 
         def is_floating_point(self):
             return False
+
+        def data_ptr(self):
+            return id(self)
 
     expected = {"detector.weight": TensorDouble(), "tracker.weight": TensorDouble()}
 
@@ -743,6 +747,13 @@ def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
         def __init__(self):
             self.tracker = SimpleNamespace(bf16_context=BuilderAutocast("tracker"))
             self.tracker.bf16_context.__enter__()
+            self.detector = SimpleNamespace(
+                backbone=SimpleNamespace(
+                    vision_backbone=SimpleNamespace(
+                        trunk=SimpleNamespace(forward=lambda value: value)
+                    )
+                )
+            )
 
         def state_dict(self):
             return expected
@@ -767,6 +778,7 @@ def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
             assert self.use_batched_grounding is False
             assert self.postprocess_batch_size == 1
             for index, image in enumerate(inference_state["images"]):
+                self.detector.backbone.vision_backbone.trunk.forward(image)
                 yield index, native_output(image.size, ids=())
 
         def reset_state(self, state):
@@ -789,6 +801,19 @@ def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
     torch.autocast = lambda **_: nullcontext()
     torch.bfloat16 = "bf16"
 
+    def compile_encoder(forward, **kwargs):
+        # Compilation must follow complete strict weight loading.
+        assert calls["strict"] is True
+        calls["compile"] = kwargs
+
+        def compiled(value):
+            calls["compiled_calls"] = calls.get("compiled_calls", 0) + 1
+            return forward(value)
+
+        return compiled
+
+    torch.compile = compile_encoder
+
     def load(path, *, map_location, weights_only):
         calls["load"] = (path, map_location, weights_only)
         return {"model": expected}
@@ -802,7 +827,10 @@ def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
     monkeypatch.setitem(sys.modules, "sam3.model_builder", builder)
     monkeypatch.setattr(module, "verify_installed_source", lambda: None)
     backend = NativeSam31(
-        replace(VideoSettings(), enabled=True, checkpoint_path=str(checkpoint))
+        replace(
+            VideoSettings(), enabled=True, checkpoint_path=str(checkpoint),
+            compile_mode=compile_mode,
+        )
     )
     backend.warmup()
     assert autocast_stack == []
@@ -825,6 +853,14 @@ def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
     assert calls["prompt"] == (0, "person")
     assert calls["propagate"] == (0, 3, False)
     assert calls["reset"] == 1 and calls["synchronized"]
+    if compile_mode == "encoder":
+        assert calls["compile"] == {
+            "backend": "inductor", "mode": "default",
+            "fullgraph": True, "dynamic": False,
+        }
+        assert calls["compiled_calls"] == 3
+    else:
+        assert "compile" not in calls
     backend.close()
     assert calls["builder_autocast_exits"] == ["predictor", "tracker"]
 

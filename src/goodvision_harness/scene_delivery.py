@@ -5,8 +5,9 @@ from __future__ import annotations
 import io
 import math
 import time
+from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from threading import Condition, Event, Thread, current_thread
 from typing import Any
 
@@ -397,3 +398,280 @@ class SceneDisplayWorker:
             self._condition.notify_all()
         if thread is not None and thread is not current_thread():
             thread.join(timeout_seconds)
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceStamp:
+    sequence: int
+    timestamp: float
+    observed_at: str
+    received_at: float
+
+
+class TrackedSceneDisplayWorker(SceneDisplayWorker):
+    """Display completed sampled sources, after their minimum presentation delay.
+
+    JPEGs remain in the scene's bounded evidence cache. This worker retains only
+    512 admitted-source stamps and one in-progress render. Capture packets update
+    presentation freshness but are never substituted for missing source images.
+    """
+
+    def __init__(self, scene, publish, *, quality=85, max_fps=4, delay_seconds=0.0):
+        super().__init__(scene, publish, quality=quality, max_fps=max_fps)
+        if not _finite(delay_seconds) or not 0 <= delay_seconds <= 30:
+            raise ValueError(
+                "tracked display delay must be between zero and 30 seconds"
+            )
+        self._delay_seconds = float(delay_seconds)
+        self._sources: deque[_SourceStamp] = deque(maxlen=512)
+        self._displayed_source: _SourceStamp | None = None
+        self._stopped_at: float | None = None
+        self._last_published_sequence = -1
+        self._display_state = "buffering"
+        self._stats.update(
+            source_stamps_dropped=0,
+            unavailable_sources=0,
+            unavailable_source_frames=0,
+            displayed_source_timestamp_seconds=None,
+            stream_delay_seconds=None,
+        )
+
+    def set_delay_seconds(self, delay_seconds: float) -> None:
+        if not _finite(delay_seconds) or not 0 <= delay_seconds <= 30:
+            raise ValueError(
+                "tracked display delay must be between zero and 30 seconds"
+            )
+        with self._condition:
+            self._delay_seconds = float(delay_seconds)
+            self._condition.notify_all()
+
+    def submit(self, packet: FramePacket, *, retain_source: bool = True) -> None:
+        """Record capture metadata; retain_source marks actual SAM admissions."""
+        with self._condition:
+            if self._stop.is_set():
+                return
+            if (
+                not isinstance(packet, FramePacket)
+                or not isinstance(packet.jpeg, bytes)
+                or not 0 < len(packet.jpeg) <= _MAX_JPEG_BYTES
+                or not _finite(packet.media_timestamp)
+                or packet.media_timestamp < 0
+                or type(packet.frame_sequence) is not int
+                or packet.media_timestamp < self._last_timestamp
+                or packet.frame_sequence <= self._last_sequence
+                or type(retain_source) is not bool
+            ):
+                self._stats["rejected_frames"] += 1
+                return
+            self._last_timestamp = packet.media_timestamp
+            self._last_sequence = packet.frame_sequence
+            self._stats["submitted_frames"] += 1
+            if retain_source:
+                if len(self._sources) == self._sources.maxlen:
+                    self._stats["source_stamps_dropped"] += 1
+                self._sources.append(
+                    _SourceStamp(
+                        packet.frame_sequence,
+                        packet.media_timestamp,
+                        packet.observed_at,
+                        time.monotonic(),
+                    )
+                )
+            self._condition.notify_all()
+
+    def notify_tracking(self) -> None:
+        with self._condition:
+            self._condition.notify_all()
+
+    def _run(self) -> None:
+        next_render = 0.0
+        while not self._stop.is_set():
+            with self._condition:
+                if self._stop.is_set():
+                    return
+                if not self._sources:
+                    self._condition.wait()
+                    continue
+                pending = tuple(
+                    (source.sequence, source.timestamp) for source in self._sources
+                )
+            # Never acquire scene/registry locks while holding the display lock.
+            # Reject/eviction is final for these already-arrived source JPEGs.
+            unavailable = set(self.scene.unavailable_display_sources(pending))
+            with self._condition:
+                if self._stop.is_set():
+                    return
+                if unavailable:
+                    previous_count = len(self._sources)
+                    self._sources = deque(
+                        (source for source in self._sources
+                         if source.sequence not in unavailable),
+                        maxlen=self._sources.maxlen,
+                    )
+                    removed = previous_count - len(self._sources)
+                    self._stats["unavailable_sources"] += removed
+                    self._stats["unavailable_source_frames"] += removed
+                    self._stats["discarded_frames"] += removed
+                    if removed:
+                        self._display_state = "buffering"
+                    self._condition.notify_all()
+                now = time.monotonic()
+                ready = tuple(
+                    source for source in self._sources
+                    if source.received_at + self._delay_seconds <= now
+                )
+                if not ready or now < next_render:
+                    self._condition.wait(
+                        max(0.001, min(0.25, next_render - now)) if ready else 0.25
+                    )
+                    continue
+                after_sequence = self._last_published_sequence
+                capture_timestamp = self._last_timestamp
+                self._stats["active_frames"] = 1
+            started = time.monotonic()
+            next_render = started + self._interval
+            source = output = selected = None
+            try:
+                selected = self.scene.tracked_display_frame(
+                    before_timestamp_seconds=ready[-1].timestamp,
+                    after_frame_sequence=after_sequence,
+                )
+                if selected is None:
+                    with self._condition:
+                        self._display_state = "buffering"
+                        self._stats["unavailable_sources"] += 1
+                    continue
+                source, snapshot = selected
+                stamp = next(
+                    (
+                        item
+                        for item in ready
+                        if item.sequence == source.frame_sequence
+                        and item.timestamp == source.timestamp_seconds
+                    ),
+                    None,
+                )
+                if (
+                    stamp is None
+                    or self._stop.is_set()
+                    or snapshot.get("state") == "stopped"
+                ):
+                    with self._condition:
+                        self._stats["discarded_frames"] += 1
+                    continue
+                rendered = render_scene_jpeg(
+                    source.jpeg_bytes,
+                    snapshot,
+                    source.timestamp_seconds,
+                    quality=self._quality,
+                )
+                with self._condition:
+                    capture_timestamp = max(capture_timestamp, self._last_timestamp)
+                    # Settings can change while rendering. Never publish sooner
+                    # than a newly increased user minimum delay.
+                    if time.monotonic() < stamp.received_at + self._delay_seconds:
+                        continue
+                elapsed = time.monotonic() - stamp.received_at
+                delay = max(0.0, capture_timestamp - stamp.timestamp, elapsed)
+                output = FramePacket(
+                    jpeg=rendered,
+                    media_timestamp=stamp.timestamp,
+                    frame_sequence=stamp.sequence,
+                    observed_at=stamp.observed_at,
+                    annotation_mode="exact"
+                    if _people(snapshot, stamp.timestamp)
+                    else "none",
+                    stream_delay_seconds=delay,
+                )
+                if self._stop.is_set():
+                    with self._condition:
+                        self._stats["discarded_frames"] += 1
+                    continue
+                try:
+                    self._publish(output)
+                except Exception:
+                    with self._condition:
+                        self._stats["publish_failures"] += 1
+                else:
+                    with self._condition:
+                        self._last_published_sequence = stamp.sequence
+                        self._displayed_source = stamp
+                        while (
+                            self._sources
+                            and self._sources[0].sequence <= stamp.sequence
+                        ):
+                            self._sources.popleft()
+                        self._display_state = "running"
+                        self._stats.update(
+                            published_frames=self._stats["published_frames"] + 1,
+                            displayed_source_timestamp_seconds=stamp.timestamp,
+                            stream_delay_seconds=round(delay, 3),
+                        )
+            except Exception:
+                with self._condition:
+                    self._stats["render_failures"] += 1
+            finally:
+                source = output = selected = None
+                with self._condition:
+                    self._stats["active_frames"] = 0
+                    self._stats["last_render_seconds"] = round(
+                        time.monotonic() - started, 6
+                    )
+                    self._condition.notify_all()
+
+    def stats(self) -> dict[str, Any]:
+        with self._condition:
+            result = super().stats()
+            if self._thread and not self._stop.is_set():
+                result["state"] = self._display_state
+            if self._displayed_source is not None:
+                now = (
+                    self._stopped_at
+                    if self._stopped_at is not None else time.monotonic()
+                )
+                result["stream_delay_seconds"] = round(
+                    max(
+                        0.0,
+                        self._last_timestamp - self._displayed_source.timestamp,
+                        now - self._displayed_source.received_at,
+                    ), 3,
+                )
+            return result | {
+                "mode": "tracked_source",
+                "buffer_delay_seconds": self._delay_seconds,
+                "capture_timestamp_seconds": self._last_timestamp
+                if self._last_timestamp >= 0
+                else None,
+                "pending_frames": len(self._sources),
+                "max_pending_frames": self._sources.maxlen,
+                "pending_bytes": 0,
+                "last_displayed_frame_sequence": self._last_published_sequence
+                if self._last_published_sequence >= 0
+                else None,
+            }
+
+    def wait_until_idle(self, timeout_seconds: float = 1.0) -> bool:
+        """After native EOF flush, wait boundedly for remaining delayed sources."""
+        if not _finite(timeout_seconds) or timeout_seconds < 0:
+            raise ValueError("display drain timeout must be finite and nonnegative")
+        deadline = time.monotonic() + timeout_seconds
+        with self._condition:
+            while self._sources or self._stats["active_frames"]:
+                if self._stop.is_set():
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+            return True
+
+    def close(self, timeout_seconds: float = 1.0) -> None:
+        if not _finite(timeout_seconds) or timeout_seconds < 0:
+            raise ValueError("close timeout must be finite and non-negative")
+        with self._condition:
+            self._stop.set()
+            if self._stopped_at is None:
+                self._stopped_at = time.monotonic()
+            self._stats["discarded_frames"] += len(self._sources)
+            self._sources.clear()
+        super().close(timeout_seconds)

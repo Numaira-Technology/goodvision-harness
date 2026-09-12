@@ -203,7 +203,9 @@ class SessionServer:
         count = (
             len(state["pending"])
             if payload["is_last_batch"]
-            else max(0, len(state["pending"]) - 14)
+            else max(
+                0, len(state["pending"]) - self.settings.get("max_pending_frames", 14)
+            )
         )
         if (
             self.empty_first
@@ -538,6 +540,153 @@ def test_slow_startup_never_sends_fewer_than_sixteen_without_final(connection):
         coordinator.close()
 
 
+def test_small_append_target_keeps_full_startup_then_emits_without_long_timer(
+    connection,
+):
+    server, client = connection
+    server.settings.update(hotstart_delay=5, max_pending_frames=4)
+    results = []
+    coordinator = VideoSessionTrackingCoordinator(
+        client, batch_frames=4, batch_seconds=10, on_batch=results.append
+    )
+    try:
+        submit(coordinator, frames(count=15))
+        assert not coordinator.wait_until_idle(0.05)
+        assert server.creates == server.requests == []
+        submit(coordinator, frames(15, 1))
+        assert coordinator.wait_until_idle()
+        assert len(results[0].frames) == 12
+        submit(coordinator, frames(16, 4))
+        assert coordinator.wait_until_idle()
+        assert [len(body["frames"]) for body in server.requests] == [16, 4]
+        assert results[1].predictor_epoch == results[0].predictor_epoch
+        assert [frame.frame_sequence for frame in results[1].frames] == [36, 39, 42, 45]
+        status = coordinator.stats()
+        assert status["startup_frames"] == status["max_append_frames"] == 16
+        assert status["append_target_frames"] == status["last_request_frames"] == 4
+        assert (
+            status["total_queue_wait_seconds"] >= status["last_queue_wait_seconds"] >= 0
+        )
+        assert status["transport"]["frames"] == 20
+        coordinator.flush()
+        assert coordinator.wait_until_idle()
+        assert [f.frame_sequence for r in results for f in r.frames] == [
+            f.frame_sequence for f in frames(count=20)
+        ]
+    finally:
+        coordinator.close()
+
+
+def test_short_followup_timer_dispatches_partial_without_startup_shortcut(connection):
+    server, client = connection
+    coordinator = VideoSessionTrackingCoordinator(
+        client, batch_frames=4, batch_seconds=0.02
+    )
+    try:
+        submit(coordinator, frames(count=3))
+        assert not coordinator.wait_until_idle(0.05)
+        assert not server.requests
+        submit(coordinator, frames(3, 13))
+        assert coordinator.wait_until_idle()
+        submit(coordinator, frames(16, 1))
+        assert coordinator.wait_until_idle()
+        assert [len(body["frames"]) for body in server.requests] == [16, 1]
+        assert coordinator.stats()["last_queue_wait_seconds"] >= 0.015
+        coordinator.flush()
+        assert coordinator.wait_until_idle()
+    finally:
+        coordinator.close()
+
+
+def test_small_target_combines_backlog_and_retains_one_inflight_bounded_queue(
+    connection,
+):
+    server, client = connection
+    server.release.clear()
+    coordinator = VideoSessionTrackingCoordinator(
+        client, batch_frames=4, batch_seconds=0.5
+    )
+    try:
+        submit(coordinator, frames())
+        assert server.entered.wait(1)
+        submit(coordinator, frames(16, 32))
+        assert len(server.requests) == 1
+        assert coordinator.stats()["pending_frames"] == 16
+        assert coordinator.stats()["dropped_backpressure"] == 16
+        server.release.set()
+        assert coordinator.wait_until_idle()
+        assert [len(body["frames"]) for body in server.requests] == [16, 16]
+        assert coordinator.stats()["append_target_frames"] == 4
+        assert coordinator.stats()["last_request_frames"] == 16
+    finally:
+        server.release.set()
+        coordinator.close()
+
+
+def test_startup_uses_validated_health_capability_without_inventing_source_frames(
+    connection,
+):
+    server, client = connection
+    # Future protocol capability exercised with a double, not a claim that the
+    # current native ring supports fewer than sixteen startup frames.
+    server.settings.update(
+        startup_frames=4, max_append_frames=4, hotstart_delay=3, max_pending_frames=2
+    )
+    assert client.gpu_ready()
+    coordinator = VideoSessionTrackingCoordinator(
+        client, batch_frames=2, batch_seconds=10
+    )
+    try:
+        submit(coordinator, frames(count=3))
+        assert not coordinator.wait_until_idle(0.05)
+        assert not server.requests
+        submit(coordinator, frames(3, 1))
+        assert coordinator.wait_until_idle()
+        submit(coordinator, frames(4, 2))
+        assert coordinator.wait_until_idle()
+        coordinator.flush()
+        assert coordinator.wait_until_idle()
+        assert [len(body["frames"]) for body in server.requests] == [4, 2, 0]
+        assert [f.frame_sequence for f in coordinator.history()] == [0, 3, 6, 9, 12, 15]
+    finally:
+        coordinator.close()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"hotstart_delay": 5},
+        {"max_pending_frames": 4},
+        {"hotstart_delay": 7, "max_pending_frames": 6},
+        {"hotstart_delay": 5, "max_pending_frames": 14},
+        {"hotstart_delay": True, "max_pending_frames": 4},
+        {"startup_frames": 0},
+        {"startup_frames": 17},
+    ],
+)
+def test_malformed_new_session_capabilities_are_rejected_before_native_use(
+    connection, extra
+):
+    server, client = connection
+    server.settings.update(extra)
+    assert not client.gpu_ready()
+    assert client.startup_frames == 16
+    with pytest.raises(RichLabelProtocolError):
+        client.open_session("camera")
+    assert not server.requests
+
+
+def test_response_cannot_exceed_advertised_hotstart_pending_count(connection):
+    server, client = connection
+    server.settings.update(hotstart_delay=5, max_pending_frames=4)
+    server.empty_first = True
+    client.open_session("camera")
+    with pytest.raises(RichLabelProtocolError, match="pending source limit"):
+        client.append(frames(), stream_session_id="camera")
+    assert client.stats()["accepted_frames"] == 0
+    assert client.stats()["state"] == "invalid"
+
+
 def test_backpressure_drops_only_waiting_inputs_not_accepted_delayed_frames(connection):
     server, client = connection
     server.release.clear()
@@ -632,7 +781,11 @@ def test_callback_rejection_stops_continuity_until_explicit_reset(connection):
         coordinator.close()
 
 
-def test_actual_session_worker_routes_match_client_delayed_source_contract():
+@pytest.mark.parametrize("hotstart_delay", [3, 5, 15])
+@pytest.mark.parametrize("compress", [False, True])
+def test_actual_session_worker_routes_match_client_delayed_source_contract(
+    hotstart_delay, compress
+):
     from fastapi import FastAPI
 
     from workers.sam_scene.app import decode_jpeg
@@ -646,23 +799,27 @@ def test_actual_session_worker_routes_match_client_delayed_source_contract():
     )
     fixture = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixture)
-    selected = fixture.engine()
+    selected = fixture.engine(hotstart_delay=hotstart_delay)
     app = FastAPI()
     register_session_routes(app, selected, threading.Lock(), decode_jpeg)
     client = VideoSessionTrackingHTTPClient(
         "http://asgi.test/v1/video/sessions",
         transport=httpx.ASGITransport(app=app),
         timeout_seconds=2,
+        transport_max_side=512 if compress else None,
+        transport_jpeg_quality=65 if compress else None,
     )
     try:
         assert not client.gpu_ready()
-        client.open_session("camera")
+        session = client.open_session("camera")
+        assert session.limits["hotstart_delay"] == hotstart_delay
+        assert session.limits["max_pending_frames"] == hotstart_delay - 1
         outputs = []
         inputs = []
         for start, count, final in ((0, 16, False), (16, 3, False), (19, 0, True)):
-            records = json.loads(fixture.payload(count, start=start, final=final))[
-                "frames"
-            ]
+            records = json.loads(
+                fixture.payload(count, start=start, final=final, size=(720, 540))
+            )["frames"]
             chunk = tuple(
                 VideoFrame(
                     f["frame_sequence"],
@@ -679,11 +836,19 @@ def test_actual_session_worker_routes_match_client_delayed_source_contract():
             frame.frame_sequence for result in outputs for frame in result.frames
         ] == [frame.frame_sequence for frame in inputs]
         assert len({result.predictor_epoch for result in outputs}) == 1
-        assert [len(result.frames) for result in outputs] == [2, 3, 14]
+        assert [len(result.frames) for result in outputs] == [
+            17 - hotstart_delay,
+            3,
+            hotstart_delay - 1,
+        ]
         assert outputs[-1].state == "closed"
         assert outputs[-1].pending_frame_count == 0
         assert not selected.has_active_session
         assert selected.backend.calls == 3
+        metrics = client.transport_stats()
+        assert metrics["frames"] == 19
+        if compress:
+            assert metrics["transport_jpeg_bytes"] < metrics["source_jpeg_bytes"]
     finally:
         client.close()
         selected.close()

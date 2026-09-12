@@ -751,10 +751,13 @@ function updateAnnotatedOutput(output){
     if(!state.bufferDelayDirty)ui.bufferDelay.value=String(delay)
   }
   const stateLabel=value.state==="running"?mode.toUpperCase():"BUFFERING";
-  ui.rawBadgeText.textContent="DELAYED | "+stateLabel;
+  const actualDelay=Number(value.stream_delay_seconds);
+  const actualText=value.stream_delay_seconds!=null&&Number.isFinite(actualDelay)
+    ?" · 实际延迟 "+number(actualDelay,1)+" 秒":"";
+  ui.rawBadgeText.textContent="DELAYED | "+stateLabel+actualText;
   ui.streamMeta.textContent=annotatedOutputText(value);
   ui.annotatedState.textContent=stateLabel;
-  ui.annotatedNote.textContent=annotatedOutputText(value)+(mode!=="none"?" · "+mode:" · no frame yet");
+  ui.annotatedNote.textContent=annotatedOutputText(value)+actualText+(mode!=="none"?" · "+mode:" · no frame yet");
   setChannel(ui.outputChannel,"Annotated output · "+stateLabel.toLowerCase(),value.state==="running"?"good":"warn")
 }
 function updateRichAnnotationStatus(rich){

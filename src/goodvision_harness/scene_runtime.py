@@ -198,6 +198,7 @@ class SceneRuntime:
         self._processed: OrderedDict[str, tuple[float, int]] = OrderedDict()
         self._forgotten_identities: set[str] = set()
         self._identities_disabled = False
+        self._subject_aliases: OrderedDict[str, str] = OrderedDict()
         self._stats = {
             "association_revisions_ignored": 0,
             "association_revisions_applied": 0,
@@ -213,6 +214,112 @@ class SceneRuntime:
             "queued_tracking_intervals": 0,
             "rejected_tracking_intervals": 0,
         }
+
+    def _canonical_subject(self, subject_id: str) -> str:
+        return self._subject_aliases.get(subject_id, subject_id)
+
+    def _canonical_result(self, result: AnalysisResult) -> AnalysisResult:
+        objects = []
+        for item in result.objects:
+            attributes = dict(item.attributes)
+            ids = _subjects(attributes)
+            if ids:
+                ids = tuple(sorted({self._canonical_subject(sid) for sid in ids}))
+                attributes["subject_ids"] = list(ids)
+                if len(ids) == 1:
+                    attributes.update(subject_id=ids[0], person_track_id=ids[0])
+            objects.append(replace(item, attributes=attributes))
+        return replace(result, objects=tuple(objects))
+
+    def apply_subject_merges(self, merges: Sequence[tuple[str, str]]) -> int:
+        """Apply only registry-proven source associations, within this session.
+
+        Claimed model jobs stay immutable. Their response IDs are checked against
+        the original request before trusted aliases are applied at completion.
+        """
+        if not isinstance(merges, (tuple, list)) or len(merges) > 4096:
+            raise ValueError("subject merges must be bounded")
+        if any(
+            not isinstance(pair, (tuple, list))
+            or len(pair) != 2
+            or any(
+                not isinstance(sid, str) or not sid or len(sid) > 256 for sid in pair
+            )
+            for pair in merges
+        ):
+            raise ValueError("invalid subject merge")
+        with self._lock:
+            if self._closed:
+                return 0
+            count = 0
+            for old_id, new_id in merges:
+                old_id, new_id = (
+                    self._canonical_subject(old_id),
+                    self._canonical_subject(new_id),
+                )
+                if old_id == new_id:
+                    continue
+                # Registry never merges distinct native objects. Keep the same
+                # guard at the scene boundary even for incorrectly wired callers.
+                entities = {
+                    item["subject_id"]: item
+                    for item in self.scene.snapshot(include_history=False)["entities"]
+                }
+                if entities.get(old_id, {}).get("native_track"):
+                    continue
+                self.scene.merge_subject(old_id, new_id)
+                self._subject_aliases = OrderedDict(
+                    (key, new_id if value == old_id else value)
+                    for key, value in self._subject_aliases.items()
+                )
+                self._subject_aliases[old_id] = new_id
+                count += 1
+            while len(self._subject_aliases) > 4096:
+                self._subject_aliases.popitem(last=False)
+            self._accepted = OrderedDict(
+                (
+                    key,
+                    replace(
+                        value,
+                        subject_ids=tuple(
+                            sorted(
+                                {
+                                    self._canonical_subject(sid)
+                                    for sid in value.subject_ids
+                                }
+                            )
+                        ),
+                    ),
+                )
+                for key, value in self._accepted.items()
+            )
+            self._pending_results = OrderedDict(
+                (key, self._canonical_result(value))
+                for key, value in self._pending_results.items()
+            )
+            for key, interval in tuple(self._tracking_intervals.items()):
+                self._tracking_intervals[key] = replace(
+                    interval,
+                    request=replace(
+                        interval.request,
+                        subject_ids=tuple(
+                            sorted(
+                                {
+                                    self._canonical_subject(sid)
+                                    for sid in interval.request.subject_ids
+                                }
+                            )
+                        ),
+                    ),
+                    subject_boxes=tuple(
+                        (sequence, self._canonical_subject(sid), box)
+                        for sequence, sid, box in interval.subject_boxes
+                    ),
+                )
+            self._stats["subjects_merged"] = (
+                self._stats.get("subjects_merged", 0) + count
+            )
+            return count
 
     def observe_frame(
         self,
@@ -734,6 +841,7 @@ class SceneRuntime:
                 or result.source_id != self.source_id
             ):
                 return
+            result = self._canonical_result(result)
             at, sequence = (
                 result.frame.timestamp_seconds,
                 result.frame.source_frame_index,
@@ -1160,6 +1268,21 @@ class SceneRuntime:
                     source_people: dict[int, set[str]] = {}
                     for sequence, subject_id, _bbox in job.subject_boxes:
                         source_people.setdefault(sequence, set()).add(subject_id)
+                    canonical_verdicts: dict[tuple[str, tuple[str, ...]], list] = {}
+                    for verdict in verdicts:
+                        key = (
+                            verdict.event_label,
+                            tuple(
+                                sorted(
+                                    {
+                                        self._canonical_subject(sid)
+                                        for sid in verdict.subject_ids
+                                    }
+                                )
+                            ),
+                        )
+                        canonical_verdicts.setdefault(key, []).append(verdict)
+                    completed_groups = set()
                     for index, verdict in enumerate(verdicts):
                         candidates = (
                             job.frames[-1:] if job.request.subject_ids else job.frames
@@ -1176,13 +1299,36 @@ class SceneRuntime:
                         if newest is None:
                             # Separate appearances are not a joint interaction.
                             continue
+                        participants = tuple(
+                            sorted(
+                                {
+                                    self._canonical_subject(sid)
+                                    for sid in verdict.subject_ids
+                                }
+                            )
+                        )
+                        if (
+                            verdict.event_label == "fight"
+                            and len(participants) < 2
+                            and len(set(verdict.subject_ids)) >= 2
+                        ):
+                            continue
+                        group = (verdict.event_label, participants)
+                        if group in completed_groups:
+                            continue
+                        completed_groups.add(group)
+                        matching = canonical_verdicts[group]
+                        detected = verdict.detected
+                        confidence = verdict.confidence
+                        if any(other.detected is not detected for other in matching):
+                            detected, confidence = None, None
                         accepted_count += self.scene.observe_event(
                             verdict.event_label,
-                            verdict.subject_ids,
+                            participants,
                             timestamp_seconds=newest.timestamp_seconds,
                             frame_sequence=newest.frame_sequence,
-                            detected=verdict.detected,
-                            confidence=verdict.confidence,
+                            detected=detected,
+                            confidence=confidence,
                             evidence_id=f"inspection:{request_id}:{index}",
                         )
             finally:
@@ -1212,6 +1358,104 @@ class SceneRuntime:
         """Return the last successful immutable interval for evidence display."""
         with self._lock:
             return self._latest_inspection
+
+    def unavailable_display_sources(
+        self, sources: Sequence[tuple[int, float]]
+    ) -> tuple[int, ...]:
+        """Identify arrived sources that can no longer produce an exact display.
+
+        Capture retains the JPEG before submitting its display stamp. A missing
+        JPEG has therefore been rejected/evicted; a missing completed stamp behind
+        the native watermark has been skipped. Neither requires waiting at EOF.
+        """
+        if not isinstance(sources, (tuple, list)) or len(sources) > 512:
+            raise ValueError("display source query must be bounded")
+        for source in sources:
+            if not isinstance(source, (tuple, list)) or len(source) != 2:
+                raise ValueError("invalid display source stamp")
+            sequence, timestamp = source
+            if (
+                type(sequence) is not int or sequence < 0
+                or type(timestamp) not in (int, float)
+                or not math.isfinite(timestamp) or timestamp < 0
+            ):
+                raise ValueError("invalid display source stamp")
+        with self._lock:
+            return tuple(
+                sequence for sequence, timestamp in sources
+                if self._closed
+                or self.evidence.source_frame(
+                    stream_session_id=self.stream_session_id,
+                    frame_sequence=sequence,
+                    timestamp_seconds=timestamp,
+                ) is None
+                or (
+                    self._tracking_completed_sequence is not None
+                    and sequence <= self._tracking_completed_sequence
+                    and self._tracking_frames.get(sequence) != timestamp
+                )
+            )
+
+    def tracked_display_frame(
+        self,
+        *,
+        before_timestamp_seconds: float,
+        after_frame_sequence: int | None = None,
+    ) -> tuple[EvidenceFrame, dict[str, Any]] | None:
+        """Select a retained completed source JPEG and its exact-source view.
+
+        This read does not advance any clock. The caller controls monotonic
+        presentation with after_frame_sequence; missing/expired evidence is not
+        replaced by a nearby capture frame or held native geometry.
+        """
+        if (
+            type(before_timestamp_seconds) not in (int, float)
+            or not math.isfinite(before_timestamp_seconds)
+            or before_timestamp_seconds < 0
+        ):
+            raise ValueError("display source timestamp must be finite and nonnegative")
+        if after_frame_sequence is not None and (
+            type(after_frame_sequence) is not int or after_frame_sequence < -1
+        ):
+            raise ValueError("display source sequence must be an integer >= -1")
+        with self._lock:
+            if self._closed or self._tracking_completed_timestamp is None:
+                return None
+            ceiling = min(
+                before_timestamp_seconds, self._now, self._tracking_completed_timestamp
+            )
+            for sequence, timestamp in reversed(self._tracking_frames.items()):
+                if timestamp > ceiling or (
+                    after_frame_sequence is not None
+                    and sequence <= after_frame_sequence
+                ):
+                    continue
+                frame = self.evidence.source_frame(
+                    stream_session_id=self.stream_session_id,
+                    frame_sequence=sequence,
+                    timestamp_seconds=timestamp,
+                )
+                if frame is None:
+                    continue
+                view = self.scene.snapshot_at(timestamp)
+                exact_people = set()
+                for entity in view["entities"]:
+                    if (
+                        entity["frame_sequence"] == sequence
+                        and entity["last_observed_timestamp_seconds"] == timestamp
+                    ):
+                        exact_people.add(entity["subject_id"])
+                    else:
+                        entity["observation_state"] = "occluded"
+                for event in view["events"]:
+                    if not set(event["subject_ids"]) <= exact_people:
+                        event["observation_state"] = "uncertain"
+                view["capture_timestamp_seconds"] = self._now
+                view["tracking_completed_timestamp_seconds"] = (
+                    self._tracking_completed_timestamp
+                )
+                return frame, view
+            return None
 
     def close(self) -> None:
         """Stop observations and release images; loss is not an event clear."""
