@@ -58,7 +58,7 @@ def test_rich_labeling_environment_overrides_connection_and_backend(
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("backend", "unsupported", "backend must be paddle or vlm"),
+        ("backend", "unsupported", "backend must be paddle, vlm or sam"),
         ("vlm_wire_format", "unsupported",
          "vlm_wire_format must be objects or compact"),
         ("vlm_execution_mode", "unsupported",
@@ -137,7 +137,7 @@ def test_rich_labeling_invalid_environment_backend_is_rejected(
 ) -> None:
     monkeypatch.setenv("RICH_LABEL_BACKEND", "unsupported")
 
-    with pytest.raises(ValueError, match="backend must be paddle or vlm"):
+    with pytest.raises(ValueError, match="backend must be paddle, vlm or sam"):
         load_config(ROOT / "config.yaml")
 
 

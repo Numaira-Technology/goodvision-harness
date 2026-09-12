@@ -120,6 +120,10 @@ class FaceSettings:
 class RuntimeSettings:
     max_concurrent_requests: int = 4
     scene_enabled: bool = False
+    scene_mode: str = "disabled"
+    scene_timeout_seconds: float = 15.0
+    scene_max_image_side: int = 720
+    scene_max_tokens: int = 1600
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,8 +292,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             rich_label_section.get("backend", "paddle"), "rich_labeling.backend"
         )
     ).lower()
-    if rich_label_backend not in {"paddle", "vlm"}:
-        raise ValueError("rich_labeling.backend must be paddle or vlm")
+    if rich_label_backend not in {"paddle", "vlm", "sam"}:
+        raise ValueError("rich_labeling.backend must be paddle, vlm or sam")
     rich_label_model = rich_label_section.get("model")
     if rich_label_model is not None and not isinstance(rich_label_model, str):
         raise TypeError("rich_labeling.model must be a string or null")
@@ -354,8 +358,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         enabled=rich_label_enabled,
         tracking_enabled=_environment_bool(
             "PERSON_TRACKING_ENABLED",
-            _bool(rich_label_section.get("tracking_enabled", True),
-                  "rich_labeling.tracking_enabled"),
+            _bool(
+                rich_label_section.get("tracking_enabled", True),
+                "rich_labeling.tracking_enabled",
+            ),
         ),
         backend=rich_label_backend,
         model=rich_label_model,
@@ -369,7 +375,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "rich_labeling.vlm_prompt_cache",
         ),
         vlm_http2=_bool(
-            rich_label_section.get("vlm_http2", False), "rich_labeling.vlm_http2",
+            rich_label_section.get("vlm_http2", False),
+            "rich_labeling.vlm_http2",
         ),
         vlm_trust_env=_bool(
             rich_label_section.get("vlm_trust_env", True),
@@ -392,11 +399,14 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         ),
         endpoint=rich_label_endpoint,
         timeout_seconds=_positive_float(
-            rich_label_section.get("timeout_seconds", 2.0),
+            os.environ.get("RICH_LABEL_TIMEOUT_SECONDS")
+            or rich_label_section.get("timeout_seconds", 2.0),
             "rich_labeling.timeout_seconds",
         ),
         max_fps=_positive_float(
-            rich_label_section.get("max_fps", 7.5), "rich_labeling.max_fps"
+            os.environ.get("RICH_LABEL_MAX_FPS")
+            or rich_label_section.get("max_fps", 7.5),
+            "rich_labeling.max_fps",
         ),
         history_size=rich_label_history_size,
         max_interpolation_gap_seconds=_positive_float(
@@ -506,6 +516,23 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             name="face.gallery_path",
         ),
     )
+    scene_mode = (
+        str(
+            os.environ.get("SCENE_ENGINE_MODE")
+            or runtime_section.get("scene_mode", "disabled")
+        )
+        .strip()
+        .lower()
+    )
+    if scene_mode not in {"disabled", "shadow", "active"}:
+        raise ValueError("runtime.scene_mode must be disabled, shadow or active")
+    scene_timeout = _positive_float(
+        os.environ.get("SCENE_TIMEOUT_SECONDS")
+        or runtime_section.get("scene_timeout_seconds", 15),
+        "runtime.scene_timeout_seconds",
+    )
+    if scene_timeout > 20:
+        raise ValueError("runtime.scene_timeout_seconds must not exceed 20 seconds")
     runtime = RuntimeSettings(
         max_concurrent_requests=_positive_int(
             runtime_section.get("max_concurrent_requests", 4),
@@ -515,7 +542,23 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "SCENE_ENGINE_ENABLED",
             _bool(runtime_section.get("scene_enabled", False), "runtime.scene_enabled"),
         ),
+        scene_mode=scene_mode,
+        scene_timeout_seconds=scene_timeout,
+        scene_max_image_side=_positive_int(
+            int(os.environ["SCENE_MAX_IMAGE_SIDE"])
+            if os.environ.get("SCENE_MAX_IMAGE_SIDE")
+            else runtime_section.get("scene_max_image_side", 720),
+            "runtime.scene_max_image_side",
+        ),
+        scene_max_tokens=_positive_int(
+            int(os.environ["SCENE_MAX_TOKENS"])
+            if os.environ.get("SCENE_MAX_TOKENS")
+            else runtime_section.get("scene_max_tokens", 1600),
+            "runtime.scene_max_tokens",
+        ),
     )
+    if runtime.scene_max_image_side > 2048 or runtime.scene_max_tokens > 16384:
+        raise ValueError("scene image/output budget exceeds supported limits")
     server = ServerSettings(
         host=str(server_section.get("host", "127.0.0.1")),
         port=_positive_int(server_section.get("port", 7900), "server.port"),

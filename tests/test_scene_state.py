@@ -367,3 +367,256 @@ def test_invalid_event_arguments_are_rejected(extra):
     values.update(extra)
     with pytest.raises(ValueError):
         scene.observe_event(**values)
+
+
+def revise(
+    scene,
+    sequence,
+    *,
+    subjects=("a",),
+    detected=True,
+    revision=0,
+    evidence_id=None,
+    label="smoking",
+    timestamp=None,
+):
+    return scene.revise_event_evidence(
+        label,
+        subjects,
+        timestamp_seconds=sequence if timestamp is None else timestamp,
+        frame_sequence=sequence,
+        detected=detected,
+        evidence_id=evidence_id or f"e-{sequence}",
+        confidence=0.9,
+        revision=revision,
+    )
+
+
+def events_by_subject(scene):
+    return {tuple(event["subject_ids"]): event for event in scene.snapshot()["events"]}
+
+
+def test_revision_transfers_evidence_and_withdraws_wrong_owner_episode():
+    scene = SceneState("session", "camera")
+    for sequence in (1, 2):
+        for subject in ("a", "b"):
+            person(scene, sequence, sequence, subject)
+        assert revise(scene, sequence)
+    wrong_id = events_by_subject(scene)[("a",)]["event_id"]
+    assert revise(scene, 1, subjects=("b",), revision=1)
+    halfway = events_by_subject(scene)
+    assert halfway[("a",)]["phase"] == "suspected"
+    assert halfway[("a",)]["event_id"] == wrong_id
+    assert halfway[("b",)]["phase"] == "suspected"
+    right_id = halfway[("b",)]["event_id"]
+    assert revise(scene, 2, subjects=("b",), revision=1)
+    final = events_by_subject(scene)
+    assert final[("a",)]["phase"] == "retracted"
+    assert final[("b",)]["phase"] == "confirmed"
+    assert final[("b",)]["event_id"] == right_id
+    retracts = [
+        item for item in scene.snapshot()["transitions"] if item["type"] == "retract"
+    ]
+    assert [(item["event_id"], item["subject_ids"]) for item in retracts] == [
+        (wrong_id, ["a"])
+    ]
+
+
+def test_late_correction_keeps_newer_ended_state_and_unchanged_episode_ids():
+    scene = SceneState("session", "camera")
+    for sequence, detected in enumerate((True, True, False, False, True, True), 1):
+        person(scene, sequence, sequence)
+        assert revise(scene, sequence, detected=detected)
+    newest_id = events_by_subject(scene)[("a",)]["event_id"]
+    assert revise(scene, 1, detected=None, revision=1)
+    current = events_by_subject(scene)[("a",)]
+    assert current["event_id"] == newest_id
+    assert current["phase"] == "confirmed"
+    assert current["frame_sequence"] == 6
+    for sequence in (7, 8):
+        person(scene, sequence, sequence)
+        revise(scene, sequence, detected=False)
+    assert revise(scene, 5, detected=True, revision=1)
+    current = events_by_subject(scene)[("a",)]
+    assert current["event_id"] == newest_id
+    assert current["phase"] == "ended"
+    assert current["last_evidence_timestamp_seconds"] == 8
+
+
+def test_revising_old_negative_replays_later_positive_and_retracts_merged_episode():
+    scene = SceneState("session", "camera")
+    for sequence, detected in enumerate((True, True, False, False, True, True), 1):
+        person(scene, sequence, sequence)
+        revise(scene, sequence, detected=detected)
+    original_ids = [
+        item["event_id"]
+        for item in scene.snapshot()["transitions"]
+        if item["type"] == "start"
+    ]
+    assert len(original_ids) == 2
+    assert revise(scene, 3, detected=True, revision=1)
+    latest = events_by_subject(scene)[("a",)]
+    assert latest["phase"] == "confirmed"
+    assert latest["event_id"] == original_ids[0]
+    assert latest["frame_sequence"] == 6
+    assert any(
+        item["type"] == "retract" and item["event_id"] == original_ids[1]
+        for item in scene.snapshot()["transitions"]
+    )
+
+
+def test_withdrawal_is_explicit_retraction_and_can_be_reassigned_again():
+    scene = SceneState("session", "camera")
+    person(scene, 1, 1)
+    person(scene, 1, 1, "b")
+    assert revise(scene, 1)
+    assert revise(scene, 1, subjects=(), detected=None, revision=1)
+    assert events_by_subject(scene)[("a",)]["phase"] == "retracted"
+    assert revise(scene, 1, subjects=("b",), revision=2)
+    assert events_by_subject(scene)[("b",)]["phase"] == "suspected"
+    assert not revise(scene, 1, subjects=("a",), revision=1)
+    assert not evidence(scene, 1, 1, subjects=("a",))
+
+
+def test_failed_reassignment_and_retiming_leave_old_contribution_untouched():
+    scene = SceneState("session", "camera")
+    person(scene, 1, 1)
+    assert revise(scene, 1)
+    original = scene.snapshot()["events"]
+    assert not revise(scene, 1, subjects=("unseen",), revision=1)
+    assert not revise(scene, 1, timestamp=1.01, revision=1)
+    assert not revise(scene, 1, revision=0)
+    person(scene, 2, 2, "b")
+    assert not revise(scene, 1, subjects=("b",), revision=1)
+    assert scene.snapshot()["events"] == original
+    assert not revise(scene, 1, revision=2, evidence_id="never-accepted")
+
+
+def test_group_merge_deduplicates_same_source_before_confirmation():
+    scene = SceneState("session", "camera")
+    for subject in ("a", "b"):
+        person(scene, 1, 1, subject)
+        assert revise(
+            scene, 1, subjects=(subject,), label="fight", evidence_id=f"slot-{subject}"
+        )
+    for subject in ("a", "b"):
+        assert revise(
+            scene,
+            1,
+            subjects=("b", "a"),
+            label="fight",
+            evidence_id=f"slot-{subject}",
+            revision=1,
+        )
+    merged = events_by_subject(scene)
+    assert merged[("a",)]["phase"] == "retracted"
+    assert merged[("b",)]["phase"] == "retracted"
+    assert merged[("a", "b")]["phase"] == "suspected"
+    assert merged[("a", "b")]["positive_observations"] == 1
+    for subject in ("a", "b"):
+        person(scene, 2, 2, subject)
+    assert revise(scene, 2, subjects=("a", "b"), label="fight")
+    assert events_by_subject(scene)[("a", "b")]["phase"] == "confirmed"
+
+
+def test_unretained_source_cannot_be_revised_or_counted_twice_after_seed_pruning():
+    scene = SceneState("session", "camera", history_size=2)
+    person(scene, 1, 1)
+    for slot in range(3):
+        assert revise(scene, 1, evidence_id=f"same-frame-{slot}")
+    assert events_by_subject(scene)[("a",)]["positive_observations"] == 1
+    assert not revise(scene, 1, evidence_id="same-frame-0", revision=1)
+    assert not revise(scene, 1, evidence_id="new-slot-old-source")
+    person(scene, 2, 2)
+    assert revise(scene, 2)
+    assert events_by_subject(scene)[("a",)]["positive_observations"] == 2
+    assert events_by_subject(scene)[("a",)]["phase"] == "confirmed"
+
+
+def test_retained_correction_replays_against_immutable_pruned_prefix():
+    scene = SceneState("session", "camera", history_size=2)
+    for sequence in range(1, 6):
+        person(scene, sequence, sequence)
+        assert revise(scene, sequence)
+    original_id = events_by_subject(scene)[("a",)]["event_id"]
+    assert revise(scene, 5, detected=False, revision=1)
+    assert events_by_subject(scene)[("a",)]["phase"] == "confirmed"
+    assert revise(scene, 4, detected=False, revision=1)
+    current = events_by_subject(scene)[("a",)]
+    assert current["phase"] == "ended"
+    assert current["event_id"] == original_id
+    assert current["frame_sequence"] == 5
+    assert len(scene._record_groups) <= scene.max_events * scene.history_size
+    assert all(
+        len(ledger.records) <= scene.history_size for ledger in scene._ledgers.values()
+    )
+    scene.advance(100)
+    assert not scene._record_groups
+    assert not scene._ledgers
+    assert not revise(scene, 5, revision=2)
+
+
+def test_revision_capacity_rejection_is_atomic():
+    scene = SceneState("session", "camera", max_entities=2)
+    for subject in ("a", "b"):
+        person(scene, 1, 1, subject)
+        for label in ("smoking", "fight", "fall", "weapon", "stranger"):
+            assert revise(
+                scene,
+                1,
+                subjects=(subject,),
+                label=label,
+                evidence_id=f"{label}-{subject}",
+            )
+    before = scene.snapshot()["events"]
+    assert not revise(
+        scene, 1, subjects=("a", "b"), label="fight", evidence_id="fight-a", revision=1
+    )
+    assert scene.snapshot()["events"] == before
+
+
+@pytest.mark.parametrize("revision", [True, -1, 1.5, float("inf")])
+def test_revision_number_is_a_nonnegative_integer(revision):
+    scene = SceneState("session", "camera")
+    with pytest.raises(ValueError):
+        revise(scene, 1, revision=revision)
+
+
+def test_source_pin_preserves_old_real_evidence_without_refreshing_visibility():
+    scene = SceneState("session", "camera", history_size=2)
+    person(scene, 1, 1)
+    assert scene.pin_source_observations("job", (("a", 1, 1, BOX),))
+    for sequence in range(2, 100):
+        person(scene, 1 + sequence / 15, sequence)
+    scene.advance(12)
+    current = scene.snapshot()["entities"][0]
+    assert current["observation_state"] == "occluded"
+    assert all(item["frame_sequence"] != 1 for item in current["history"])
+    assert evidence(scene, 1, 1)
+    after = scene.snapshot()["entities"][0]
+    assert after == current
+    scene.unpin_source_observations("job")
+    assert not evidence(scene, 1, 1, label="weapon")
+    assert scene.snapshot()["source_pins"] == {"jobs": 0, "observations": 0}
+
+
+def test_pins_are_bounded_immutable_and_cannot_invent_source_observations():
+    scene = SceneState("session", "camera")
+    person(scene, 1, 1)
+    observation = (("a", 1, 1, BOX),)
+    assert scene.pin_source_observations("job-0", observation)
+    assert scene.pin_source_observations("job-0", observation)
+    assert not scene.pin_source_observations("job-0", ())
+    wrong = NormalizedBBox(0.4, 0.1, 0.8, 0.9)
+    assert not scene.pin_source_observations("wrong-box", (("a", 1, 1, wrong),))
+    assert not scene.pin_source_observations("wrong-time", (("a", 1.1, 1, BOX),))
+    assert not scene.pin_source_observations("unknown", (("b", 1, 1, BOX),))
+    for index in range(1, 4):
+        assert scene.pin_source_observations(f"job-{index}", observation)
+    assert not scene.pin_source_observations("overflow", observation)
+    scene.unpin_source_observations("job-0")
+    assert scene.pin_source_observations("replacement", observation)
+    scene.advance(100)
+    assert scene.snapshot()["source_pins"]["observations"] == 0
+    assert not evidence(scene, 1, 1)
+    assert not scene.snapshot()["entities"]

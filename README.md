@@ -9,13 +9,24 @@ delayed annotation stream for display.
 The harness has no runtime dependency on the original `goodvision`
 repository.
 
-An experimental persistent person/event engine is available behind
-`SCENE_ENGINE_ENABLED=true`. It maintains source-grounded event episodes and
-prepares temporal inspections alongside the existing pipeline. See the
-[architecture and replay guide](docs/architecture/entity-event-engine.md) for
-the implemented scope, offline example, and remaining SAM integration work.
+新增持续人物／事件链路：`SCENE_ENGINE_MODE=active` 先通过 SAM 发现和关联人物，再以
+多个时刻的画面检查事件，维护疑似、确认、遮挡、结束及修订。它已接入独立后台时序请求、
+控制台、视频叠加、SSE、最近原始证据和事件元数据记录；选择陌生人时继续运行独立人脸识别。
+默认 `disabled` 保留原有流程；`shadow` 仅旁路观察，旧 `SCENE_ENGINE_ENABLED=true`
+兼容为 shadow。
+
+部署使用 [compose.scene.yaml](compose.scene.yaml) 和 [SAM worker](workers/sam_scene/README.md)。
+SAM 部分是固定官方版本的**图像关键帧检测 + 保守运动跟踪**，并非原生实时 SAM 3.1 视频会话。
+Hugging Face 权限和目标 GPU 实测仍待完成，不能把已通过的软件测试当作生产准确率验收。
+[持续事件架构与运行指南](docs/architecture/entity-event-engine.md) 包含本地 active 配置、
+容器启动、录制视频验证、请求预算和具体边界。没有权重时可明确使用 `--recorded-tracks`
+验证上层链路，报告会标识这不验证 SAM。
 
 ## Harness behavior
+
+本节描述 `disabled`／`shadow` 的原有逐帧流程。`active` 停止旧逐帧安全请求，
+使用最多四张、默认 720 最长边的时序输入与单个后台在途请求，默认总超时 15 秒；
+事件状态由持续引擎驱动。空事件列表、遮挡与模型失败都不会显示全部安全。
 
 The service performs one external model request for whichever visual safety
 events are selected, while the local known-person matcher checks the same frame
@@ -73,6 +84,10 @@ only `{"route_id":"A"}` through `{"route_id":"H"}`, using the displayed IDs.
 Running another automatic check replaces the saved selection with its winner.
 
 ## Optional rich video labels
+
+以下 Paddle 装饰标签说明适用于原有模式。`active` 把人物跟踪作为必需输入；
+使用 [SAM 部署说明](workers/sam_scene/README.md)，在 GPU readiness 完成后启动正式会话。
+跟踪不可用时不会退回旧安全模型的人物框。
 
 Rich person/object labels require a usable GPU on their worker. Without one,
 rich annotation is disabled; event analysis and face recognition continue.

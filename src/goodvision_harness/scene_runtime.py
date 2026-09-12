@@ -1,9 +1,9 @@
-"""Experimental bridge from source observations to a persistent scene.
+"""Bounded continuous scene state shared by shadow and active live pipelines.
 
-Live integration runs in shadow mode: it prepares bounded temporal inspections
-without changing the existing alarm feed or invoking another model. An explicit
-consumer can take an inspection and return a verdict via complete_inspection.
-All methods are CPU-only; model calls must run outside the live callback lock.
+Prepare temporal inspections from real source observations. A separate worker
+claims these immutable intervals and completes them without running model calls
+under video callback locks. Shadow mode also accepts legacy safety observations;
+active mode obtains safety verdicts exclusively through temporal inspections.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from threading import RLock
 from typing import Any
 
 from .contracts import AnalysisResult, NormalizedBBox
+from .event_sensitivity import normalize_event_sensitivities
 from .rich_labeling import RichLabelSnapshot
 from .scene_evidence import (
     EvidenceFrame,
@@ -54,6 +55,7 @@ class TemporalInspection:
     request: InspectionRequest
     frames: tuple[EvidenceFrame, ...]
     subject_boxes: tuple[tuple[int, str, NormalizedBBox], ...] = ()
+    event_sensitivities: tuple[tuple[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +81,16 @@ class TemporalVerdict:
     confidence: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _AcceptedEvidence:
+    subject_ids: tuple[str, ...]
+    detected: bool | None
+    confidence: float | None
+    revision: int
+    timestamp: float
+    sequence: int
+
+
 def _subjects(attributes: Mapping[str, Any]) -> tuple[str, ...]:
     values = attributes.get("subject_ids", (attributes.get("subject_id"),))
     if not isinstance(values, (tuple, list)) or any(
@@ -91,10 +103,31 @@ def _subjects(attributes: Mapping[str, Any]) -> tuple[str, ...]:
 class SceneRuntime:
     """One explicitly scoped camera session, with bounded observation memory."""
 
-    def __init__(self, stream_session_id: str, source_id: str) -> None:
+    def __init__(
+        self,
+        stream_session_id: str,
+        source_id: str,
+        *,
+        mode: str = "shadow",
+        event_labels: tuple[str, ...] = ("fight", "smoking", "fall", "weapon"),
+        event_sensitivities: Mapping[str, str] | None = None,
+    ) -> None:
+        if mode not in {"shadow", "active"}:
+            raise ValueError("scene mode must be shadow or active")
+        if not set(event_labels) <= _EVENTS - {"stranger"}:
+            raise ValueError("unsupported temporal event label")
+        self.mode = mode
+        self.event_labels = tuple(dict.fromkeys(event_labels))
+        self.event_sensitivities = tuple(
+            normalize_event_sensitivities(event_sensitivities, event_labels).items()
+        )
+        self.automatic_temporal_inference = False
         self.scene = SceneState(stream_session_id, source_id)
         self.evidence = SceneEvidenceBuffer()
-        self.planner = InspectionPlanner()
+        self.planner = InspectionPlanner(
+            full_scene_interval_seconds=5.0 if mode == "active" else 15.0,
+            refresh_seconds=3.0 if mode == "active" else 8.0,
+        )
         self.stream_session_id = stream_session_id
         self.source_id = source_id
         self._lock = RLock()
@@ -102,16 +135,18 @@ class SceneRuntime:
         self._last_buffered = -math.inf
         self._closed = False
         self._jobs: OrderedDict[str, TemporalInspection] = OrderedDict()
+        self._latest_inspection: TemporalInspection | None = None
         self._claimed: set[str] = set()
         self._pending_results: OrderedDict[str, AnalysisResult] = OrderedDict()
-        self._accepted: OrderedDict[tuple[str, str], tuple[tuple[str, ...], ...]] = (
+        self._accepted: OrderedDict[tuple[str, str, str], _AcceptedEvidence] = (
             OrderedDict()
         )
-        self._processed: OrderedDict[tuple, None] = OrderedDict()
+        self._processed: OrderedDict[str, tuple[float, int]] = OrderedDict()
         self._forgotten_identities: set[str] = set()
         self._identities_disabled = False
         self._stats = {
             "association_revisions_ignored": 0,
+            "association_revisions_applied": 0,
             "prepared_inspections": 0,
             "completed_inspections": 0,
             "failed_inspections": 0,
@@ -223,13 +258,18 @@ class SceneRuntime:
                 result.frame.source_frame_index,
             ),
         )
-        # Keep late negatives available until their source observations arrive.
+        # Stable object slots survive changed owner sets and changed object order.
+        accepted_slots: dict[tuple[str, str], set[str]] = {}
+        accepted_sources: dict[str, tuple[float, int]] = {}
+        for (message_id, label, slot), accepted in self._accepted.items():
+            accepted_slots.setdefault((message_id, label), set()).add(slot)
+            accepted_sources[message_id] = (accepted.timestamp, accepted.sequence)
         snapshot = self.scene.snapshot(include_history=False)
         event_groups = {
             label: {
                 tuple(event["subject_ids"])
                 for event in snapshot["events"]
-                if event["event_label"] == label
+                if event["event_label"] == label and event["phase"] != "retracted"
             }
             for label in _EVENTS
         }
@@ -240,96 +280,155 @@ class SceneRuntime:
             objects = {item.object_id: item for item in result.objects}
             at = result.frame.timestamp_seconds
             sequence = result.frame.source_frame_index
-            for judgment in result.judgments:
-                if judgment.event_label not in _EVENTS:
+            source = self._processed.get(
+                result.message_id, accepted_sources.get(result.message_id)
+            )
+            if source is not None and source != (at, sequence):
+                self._stats["association_revisions_ignored"] += 1
+                continue
+            judgments = {
+                judgment.event_label: judgment
+                for judgment in result.judgments
+                if judgment.event_label in _EVENTS
+            }
+            labels = set(judgments) | {
+                label
+                for message_id, label in accepted_slots
+                if message_id == result.message_id
+            }
+            for label in sorted(labels):
+                if self.mode == "active" and label != "stranger":
                     continue
-                groups = (
-                    {
-                        _subjects(objects[object_id].attributes)
-                        for object_id in judgment.object_ids
-                    }
-                    if judgment.detected or judgment.object_ids
-                    else set(event_groups[judgment.event_label])
-                )
-                groups.discard(())
-                if judgment.event_label == "stranger" and not judgment.detected:
-                    known = {
-                        sid
-                        for item in result.objects
-                        if item.attributes.get("status") == "known"
-                        and item.attributes.get("face_observation_state") == "observed"
-                        for sid in _subjects(item.attributes)
-                    }
-                    groups = {ids for ids in groups if set(ids) <= known}
-                if judgment.detected and not groups:
-                    # Same-message source-face correction may supply owners later.
-                    continue
-                for group_index, ids in enumerate(sorted(groups)):
-                    # Preserve object/group identity for multiple simultaneous events.
-                    processed_key = (result.message_id, judgment.event_label, ids)
-                    if processed_key in self._processed:
-                        continue
-                    # Keep the evidence identity stable even if an association
-                    # revision changes owners after the bridge cache expires.
-                    evidence_id = sha256(
-                        repr(
-                            (
-                                result.message_id,
-                                judgment.event_label,
-                                group_index,
+                judgment = judgments.get(label)
+                desired: dict[
+                    str, tuple[tuple[str, ...], bool | None, float | None]
+                ] = {}
+                if judgment is not None:
+                    if judgment.object_ids:
+                        for object_id in judgment.object_ids:
+                            item = objects.get(object_id)
+                            ids = _subjects(item.attributes) if item is not None else ()
+                            desired[f"object:{object_id}"] = (
+                                ids,
+                                judgment.detected if ids else None,
+                                judgment.confidence if ids else None,
                             )
-                        ).encode()
-                    ).hexdigest()
-                    key = (result.message_id, judgment.event_label)
-                    owners = tuple(sorted(groups))
-                    accepted_owners = self._accepted.get(key)
-                    if (
-                        judgment.detected
-                        and accepted_owners is not None
-                        and accepted_owners != owners
-                    ):
-                        self._stats["association_revisions_ignored"] += 1
+                    elif not judgment.detected:
+                        # A whole-frame negative applies only where its source
+                        # people were truly observed, enforced by SceneState.
+                        for ids in event_groups[label]:
+                            slot = "group:" + sha256(repr(ids).encode()).hexdigest()
+                            desired[slot] = (ids, False, judgment.confidence)
+                    if label == "stranger" and not judgment.detected:
+                        known = {
+                            sid
+                            for item in result.objects
+                            if item.attributes.get("status") == "known"
+                            and item.attributes.get("face_observation_state")
+                            == "observed"
+                            for sid in _subjects(item.attributes)
+                        }
+                        desired = {
+                            slot: value
+                            for slot, value in desired.items()
+                            if set(value[0]) <= known
+                        }
+                accepted_key = (result.message_id, label)
+                slots = set(desired) | accepted_slots.get(accepted_key, set())
+                changed = False
+                for slot in sorted(slots):
+                    key = (*accepted_key, slot)
+                    previous = self._accepted.get(key)
+                    ids, detected, confidence = desired.get(slot, ((), None, None))
+                    if previous is None and not ids:
+                        continue  # An unassigned first result has contributed nothing.
+                    if previous is not None and (
+                        previous.subject_ids,
+                        previous.detected,
+                        previous.confidence,
+                    ) == (ids, detected, confidence):
                         continue
-                    accepted = self.scene.observe_event(
-                        judgment.event_label,
+                    revision = 0 if previous is None else previous.revision + 1
+                    accepted = self.scene.revise_event_evidence(
+                        label,
                         ids,
                         timestamp_seconds=at,
                         frame_sequence=sequence,
-                        detected=judgment.detected,
-                        confidence=judgment.confidence,
-                        evidence_id=evidence_id,
+                        detected=detected,
+                        confidence=confidence,
+                        evidence_id=sha256(repr(key).encode()).hexdigest(),
+                        revision=revision,
                     )
                     if accepted:
-                        event_groups[judgment.event_label].add(ids)
-                        if judgment.detected:
-                            self._accepted[key] = owners
-                        self._processed[processed_key] = None
-                        while len(self._accepted) > 512:
+                        self._accepted[key] = _AcceptedEvidence(
+                            ids,
+                            detected,
+                            confidence,
+                            revision,
+                            at,
+                            sequence,
+                        )
+                        self._accepted.move_to_end(key)
+                        self._processed[result.message_id] = (at, sequence)
+                        self._processed.move_to_end(result.message_id)
+                        accepted_slots.setdefault(accepted_key, set()).add(slot)
+                        if previous is not None:
+                            self._stats["association_revisions_applied"] += 1
+                        changed = True
+                        while len(self._accepted) > 2048:
                             self._accepted.popitem(last=False)
-                        while len(self._processed) > 2048:
+                        while len(self._processed) > 512:
                             self._processed.popitem(last=False)
+                if changed:
+                    event_groups[label] = {
+                        tuple(event["subject_ids"])
+                        for event in self.scene.snapshot(include_history=False)[
+                            "events"
+                        ]
+                        if event["event_label"] == label
+                        and event["phase"] != "retracted"
+                    }
 
     def _plan(self) -> None:
+        if not self.event_labels:
+            return
         for request_id, job in tuple(self._jobs.items()):
             if self._now - job.request.end_seconds >= 20.0:
                 self._jobs.pop(request_id)
                 self._claimed.discard(request_id)
+                self.scene.unpin_source_observations(request_id)
                 self.planner.complete(
                     request_id, success=False, timestamp_seconds=self._now
                 )
         if len(self._jobs) >= 4 or len(self.evidence) < 2:
             return
+        if self.mode == "active":
+            recent = self.evidence.select(
+                stream_session_id=self.stream_session_id,
+                start_seconds=max(0.0, self._now - 3.0),
+                end_seconds=self._now,
+                limit=48,
+            )
+            if (
+                len(recent) < 2
+                or recent[-1].timestamp_seconds - recent[0].timestamp_seconds < 0.75
+            ):
+                return
         planning_scene = self.scene.snapshot(include_history=False)
         planning_scene["events"] = [
             event
             for event in planning_scene["events"]
-            if event["event_label"] != "stranger"
+            if event["event_label"] in self.event_labels
         ]
         for request in self.planner.plan(planning_scene, timestamp_seconds=self._now):
-            if not request.event_labels:
-                request = replace(
-                    request, event_labels=("fight", "smoking", "fall", "weapon")
-                )
+            request = replace(
+                request,
+                event_labels=tuple(
+                    label
+                    for label in (request.event_labels or self.event_labels)
+                    if label in self.event_labels
+                ),
+            )
             frames = self.evidence.select(
                 stream_session_id=self.stream_session_id,
                 start_seconds=request.start_seconds,
@@ -356,6 +455,13 @@ class SceneRuntime:
                         for sid in request.subject_ids
                     )
                 )
+            else:
+                observed_sequences = {sequence for sequence, _ in boxes}
+                frames = tuple(
+                    frame
+                    for frame in frames
+                    if frame.frame_sequence in observed_sequences
+                )
             if len(frames) > 4:
                 frames = tuple(
                     frames[round(i * (len(frames) - 1) / 3)] for i in range(4)
@@ -375,7 +481,7 @@ class SceneRuntime:
                     request.request_id, success=False, timestamp_seconds=self._now
                 )
                 continue
-            self._jobs[request.request_id] = TemporalInspection(
+            job = TemporalInspection(
                 self.stream_session_id,
                 self.source_id,
                 request,
@@ -386,15 +492,37 @@ class SceneRuntime:
                     for (sequence, sid), box in boxes.items()
                     if frame.frame_sequence == sequence
                 ),
+                self.event_sensitivities,
             )
+            frame_times = {
+                frame.frame_sequence: frame.timestamp_seconds for frame in frames
+            }
+            if not self.scene.pin_source_observations(
+                request.request_id,
+                tuple(
+                    (sid, frame_times[sequence], sequence, box)
+                    for sequence, sid, box in job.subject_boxes
+                ),
+            ):
+                self.planner.complete(
+                    request.request_id, success=False, timestamp_seconds=self._now
+                )
+                continue
+            self._jobs[request.request_id] = job
             self._stats["prepared_inspections"] += 1
 
-    def take_inspections(self) -> tuple[TemporalInspection, ...]:
+    def inspection_active(self, request_id: str) -> bool:
+        with self._lock:
+            return not self._closed and request_id in self._jobs
+
+    def take_inspections(self, limit: int = 4) -> tuple[TemporalInspection, ...]:
         """Explicit worker seam; claiming never calls a model on the live thread."""
+        if type(limit) is not int or not 1 <= limit <= 4:
+            raise ValueError("inspection limit must be within 1..4")
         with self._lock:
             jobs = tuple(
                 job for key, job in self._jobs.items() if key not in self._claimed
-            )
+            )[:limit]
             self._claimed.update(job.request.request_id for job in jobs)
             return jobs
 
@@ -449,19 +577,42 @@ class SceneRuntime:
             self._jobs.pop(request_id)
             self._claimed.discard(request_id)
             accepted_count = 0
+            try:
+                if success:
+                    # The pinned real source frames remain grounded even when
+                    # new tracking observations have rolled past the history limit.
+                    source_people: dict[int, set[str]] = {}
+                    for sequence, subject_id, _bbox in job.subject_boxes:
+                        source_people.setdefault(sequence, set()).add(subject_id)
+                    for index, verdict in enumerate(verdicts):
+                        candidates = (
+                            job.frames[-1:] if job.request.subject_ids else job.frames
+                        )
+                        newest = next(
+                            (
+                                frame
+                                for frame in reversed(candidates)
+                                if set(verdict.subject_ids)
+                                <= source_people.get(frame.frame_sequence, set())
+                            ),
+                            None,
+                        )
+                        if newest is None:
+                            # Separate appearances are not a joint interaction.
+                            continue
+                        accepted_count += self.scene.observe_event(
+                            verdict.event_label,
+                            verdict.subject_ids,
+                            timestamp_seconds=newest.timestamp_seconds,
+                            frame_sequence=newest.frame_sequence,
+                            detected=verdict.detected,
+                            confidence=verdict.confidence,
+                            evidence_id=f"inspection:{request_id}:{index}",
+                        )
+            finally:
+                self.scene.unpin_source_observations(request_id)
             if success:
-                # Use the actual last included source image, never completion time.
-                newest = job.frames[-1]
-                for index, verdict in enumerate(verdicts):
-                    accepted_count += self.scene.observe_event(
-                        verdict.event_label,
-                        verdict.subject_ids,
-                        timestamp_seconds=newest.timestamp_seconds,
-                        frame_sequence=newest.frame_sequence,
-                        detected=verdict.detected,
-                        confidence=verdict.confidence,
-                        evidence_id=f"inspection:{request_id}:{index}",
-                    )
+                self._latest_inspection = job
             self.planner.complete(
                 request_id, success=success, timestamp_seconds=self._now
             )
@@ -478,11 +629,19 @@ class SceneRuntime:
                 )
             return True
 
+    def latest_inspection(self) -> TemporalInspection | None:
+        """Return the last successful immutable interval for evidence display."""
+        with self._lock:
+            return self._latest_inspection
+
     def close(self) -> None:
         """Stop observations and release images; loss is not an event clear."""
         with self._lock:
             self._closed = True
+            for request_id in self._jobs:
+                self.scene.unpin_source_observations(request_id)
             self._jobs.clear()
+            self._latest_inspection = None
             self._claimed.clear()
             self._pending_results.clear()
             self.evidence.reset()
@@ -504,9 +663,11 @@ class SceneRuntime:
         with self._lock:
             return {
                 "enabled": True,
-                "mode": "shadow",
+                "mode": self.mode,
                 "state": "stopped" if self._closed else "running",
-                "automatic_temporal_inference": False,
+                "automatic_temporal_inference": self.automatic_temporal_inference
+                and not self._closed,
+                "event_labels": list(self.event_labels),
                 "scene": self.scene.snapshot(),
                 "inspections": [
                     job.as_dict()

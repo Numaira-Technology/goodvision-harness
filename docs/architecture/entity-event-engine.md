@@ -1,165 +1,267 @@
-# 持续人物与时序事件引擎 · 首个可运行版本
+# 持续人物与时序事件引擎
 
 日期：2026-09-12。分支：`codex/entity-event-engine`。
 
-本版本把人物、源帧观察、事件经历和待检查的时间片段变成独立组件，
-用于验证从逐帧判断迁移到持续现场状态的架构。当前接入方式是 **shadow（旁路观察）**：
-人物和事件观察来自现有跟踪、人脸及事件模型，新增引擎维护自己的状态。
-实验接口不会替换现有告警、客户 JSON 或视频显示，也不会自动增加付费模型请求。
+本轮软件回归与真实时序请求结果见 [验证记录](entity-event-validation-20260912.md)。
 
-SAM 3.1 权重、实时视频适配和真实时序 VLM 调用尚未接入。本版本验证软件机制，
-不代表 SAM 效果、抽烟召回率、生产告警规则或客户 5090 性能已经验收。
+本版本提供完整的可选运行链路：先发现人物，维护会话内人物状态，再用多个时刻的原始画面
+检查事件，把开始、持续、结束和修订交给同一个事件引擎。`active` 模式已经接入后台时序模型、
+独立视频叠加、控制台状态、SSE 和事件元数据归档。默认仍为 `disabled`，保留原有运行方式。
 
-## 数据流
+SAM 感知 worker 使用真实官方 SAM 3 图像模型；关键帧之间的运动跟踪由本项目实现。
+它不是 SAM 3.1 原生实时视频会话。Hugging Face 权限与真实 GPU 权重验收仍待完成；
+代码、协议模拟或真实 VLM 请求成功，均不能证明 SAM 检测准确率、人物连续性或生产告警效果。
+
+## 模式与数据流
+
+| 模式 | 行为 |
+| --- | --- |
+| `disabled`（默认） | 原有逐帧安全识别、人脸与视频交付 |
+| `shadow` | 在原有链路旁维护人物、事件和检查任务；不自动增加时序 VLM 请求，不接管原有安全卡片 |
+| `active` | 四类安全事件使用持续事件链路；停止旧逐帧安全请求，选择陌生人能力时保留独立人脸识别 |
+
+使用 `SCENE_ENGINE_MODE=disabled/shadow/active`，或 YAML 的 `runtime.scene_mode`。
+旧的 `SCENE_ENGINE_ENABLED=true` / `runtime.scene_enabled: true` 仍兼容：当模式为
+`disabled` 时将其提升为 `shadow`。要彻底关闭新引擎，也需清除或关闭该旧开关。
 
 ```mermaid
 flowchart TD
-    Video[连续视频] --> Buffer[有界原始 JPEG 缓冲]
-    Video --> Existing[现有人物跟踪／人脸／事件观察]
-    Existing --> Registry[PersonRegistry：稳定人物关联]
-    Registry --> Scene[SceneState：人物与事件经历]
-    Scene --> Planner[变化、事件及全景巡检调度]
-    Buffer --> Jobs[带源帧人物框的多时刻证据]
-    Planner --> Jobs
-    Jobs --> Inspector[显式提供的时序识别适配器]
-    Inspector --> Scene
-    Scene --> API[实验状态接口与离线回放]
+    Source[连续视频与源时间] --> SAM[SAM 图像关键帧检测与保守运动跟踪]
+    Source --> Buffer[有界原始 JPEG 证据缓冲]
+    Source --> Face[可选独立人脸识别]
+    SAM --> Registry[人物关联与会话内编号]
+    Face --> Registry
+    Registry --> Scene[人物状态与事件经历]
+    Scene --> Planner[新人物、位移、事件复核与全景巡检]
+    Buffer --> Job[2–4 个时刻的证据与对应人物框]
+    Planner --> Job
+    Job --> VLM[独立后台时序判断]
+    VLM --> Scene
+    Scene --> UI[控制台与独立视频叠加]
+    Scene --> API[状态、SSE、最近证据与事件记录]
 ```
 
-`SAM → PersonRegistry` 是下一步替换感知输入的位置。SAM 原始 track ID 与人物实体 ID
-不等同，真实身份也不等同于跟踪编号。现阶段复用已有 registry 的保守关联；
-其三秒间隔限制、跨越遮挡后的重关联能力仍然限制人物连续性。
+正式 `active` 会话要求已准备好的跟踪输入，拒绝把旧 VLM 的人物框作为跟踪后备来源。
+感知 worker 无法通过 GPU readiness 时，启动会给出错误。启动后的失败、断流或人物缺失
+会进入等待／不确定状态，不会生成阴性或绿色“全部安全”。`active` 不支持旧单事件诊断模式；
+多事件与人脸模式仍可使用，干运行不会启动自动时序 VLM，不能用于准确率验收。
 
-## 已实现
+## SAM 感知的实际实现
 
-| 组件 | 职责 |
+- 固定官方源码为 `facebookresearch/sam3` 的
+  `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`，本地权重为 `facebook/sam3` 的 `sam3.pt`。
+  不支持 SAM 3.1 multiplex 权重，也不在启动时下载权重。
+- 调用官方 `build_sam3_image_model` 和 `Sam3Processor`，以文字 `person` 发现人物，
+  导出归一化 xyxy 框。SAM 内部计算分割掩码，本版本只消费框。
+- 默认每 0.4 源秒或五次请求重新检测；中间用保守的恒速运动关联，明确标记 `predicted`，
+  保留原始 `last_observed_frame_sequence` 和源时间。预测不能冒充一次新的模型观察。
+- 多人匹配有歧义、预测相撞、源时间长间断或分辨率变化时停止旧编号延续，重新发现人物。
+  因此不会承诺拥挤交叉和长遮挡后的稳定身份，也没有外观 ReID、姿态、光流或跨镜头身份。
+- 官方视频接口以已经存在的图像目录或视频资源建立会话；核对版本没有公开的实时帧 append
+  操作。结果流式返回不等于摄像头帧可以持续追加。本实现没有用重叠离线片段假装连续 SAM 记忆。
+- 部署必须使用 CUDA。加载本地权重并完成全部提示词的真实预热后才报告 `gpu_ready=true`。
+  必需图像权重的键和 shape 均严格校验，仅允许官方可选 `sam2_convs` 分支中与图像 neck
+  一一对应的额外权重。测试替身永远不能通过生产 GPU readiness。
+
+worker 默认最多八个会话、每会话 64 个轨迹、空闲 60 秒清理；上传上限 8 MiB／约 830 万像素，
+SAM 输入最长边 1280。全进程一次接纳一个上传／解码／推理请求，忙时返回 429；总截止时间
+默认 15 秒，超时返回 504，迟到结果丢弃且在后台任务真正结束前保持忙碌。挂起的 CUDA 调用
+不能由 HTTP 取消安全中断，需重启 worker。完整接口、参数与容器说明见
+[SAM worker 文档](../../workers/sam_scene/README.md)。
+
+## 人物、事件与修订语义
+
+人物用 canonical `subject_id` 表示，SAM 的 `track_id`、人物实体编号和真实姓名分别维护。
+框由当时源帧的真实观察决定；迟到身份可以补充保留的历史帧，不回退人物位置。
+删除登记身份会清除保留身份并阻止迟到结果重新写入，直到明确重新登记。
+
+事件按类型与规范化人物组维护。例如两人的打架是一条共同事件。默认首次阳性为 `suspected`，
+两次不同源帧的阳性确认，两次有效阴性结束；这是可调的软件初始规则，尚未经安防数据验收。
+同源帧重复消息不会重复积累证据。参与者必须在判断对应源帧有真实人物观察；预测框、保持框、
+遮挡、能力缺失、模型错误与 `detected=null` 都不是阴性。全景阴性也只影响当时真实可见的参与者。
+陌生人事件由人脸通道决定，清除要求真实观察到已确认熟人身份。
+
+`phase`（`suspected/confirmed/ended/retracted`）与 `observation_state` 分开维护。
+已经确认的事件在人物遮挡时保留历史结论，同时显示 `uncertain`，不会靠时间到期自动宣称结束。
+已结束后再次出现阳性会形成新 episode；普通迟到阳性不能重启结束的事件。
+
+同一证据消息可提交更高 `revision`，在固定源帧上修正判断或人物归属；显式撤回可取消原观察。
+引擎重放受影响人物组的保留证据，必要时输出 `retract` 并修正 episode。相同或较低版本被忽略，
+已超出有界历史的旧修订不会恢复被淘汰状态。无可用判断的 `null` 与显式修订撤回是不同操作。
+转换记录包括开始、更新、结束和撤回，不把淘汰当成真实结束证据。
+
+## 自动时序判断与资源预算
+
+`active` 的 `SceneInspectionWorker` 在视频回调和现场状态锁之外执行模型请求，同一时刻最多
+一个请求在途。使用当前配置的模型、供应商和密钥；不自动切换模型路线。默认网络总超时
+15 秒、无 API 自动重试。调度失败会退避，下一次检查重新使用可用证据。
+
+每次检查包含 2–4 张按源时间排序的全景图，最长边默认 720，附每张图当时人物框和编号。
+指定人物的任务要求目标在各证据帧有真实位置。不会把当前框复制到过去，也尚未实现高分辨率
+人物／烟具裁剪。新人物、位移变化、疑似事件及持续事件可触发复核；独立全景巡检避免只依赖
+已知动作线索。默认 active 全景间隔五秒、事件刷新三秒，实际频率还受证据、队列及模型耗时限制。
+
+四类安全事件为 `smoking/fight/fall/weapon`，陌生人身份不发给此接口。响应要求严格 JSON 字段、
+类型、唯一键、合法人物引用、有限置信度及有据可查的源帧；允许仅覆盖整条消息的完整 JSON
+代码围栏。空结果不等于所有阴性。请求成功、证据被接受和事件确认分别计数。
+
+主要配置为 `SCENE_TIMEOUT_SECONDS`（默认 15，最大 20）、`SCENE_MAX_IMAGE_SIDE`
+（默认 720，最大 2048）和 `SCENE_MAX_TOKENS`（默认 1600，最大 16384）。
+运行服务持续产生模型请求，没有整场固定次数上限；用离线工具的 `--max-requests` 做有预算的对照。
+
+| 资源 | 默认上限／行为 |
 | --- | --- |
-| `scene_state.py` | 会话内人物实体、历史位置、身份，按人物组维护事件经历 |
-| `scene_evidence.py` | 源时间证据缓冲、新人物／位移／事件刷新／全景巡检调度 |
-| `scene_runtime.py` | 现有观察到新状态的桥接、待检查片段、显式认领与结果回填 |
-| `scene_inspection.py` | 多图时序提示构建、识别器协议、在实时锁外执行显式请求 |
-| `tools/scene_replay.py` | 无模型、无网络的 JSONL 观察回放 |
+| 人物 | 128 人，每人 64 条位置；三秒未观察为遮挡，90 秒淘汰 |
+| 事件 | 640 个事件键，每键 64 条证据；转换和去重缓存有界 |
+| 源 JPEG 缓冲 | 48 张、16 MiB、八秒；通常最高四 FPS |
+| 待检查任务 | 四个，保留图像合计 16 MiB；按源时间 20 秒过期 |
+| 等待关联结果 | 128 条、90 秒 |
+| 最近成功时序证据 | 最多四张原始 JPEG，另有 16 MiB 上限，新成功结果覆盖旧集合 |
+| 现场发布与视频显示 | 状态历史最多 32 条；显示线程仅保留最新一个待画帧 |
 
-### 人物与事件语义
+源缓冲与待检查图像预算合计 32 MiB，另加最近成功证据最多 16 MiB；这些预算不包含 Python
+对象、模型解码、现有人脸／视频缓存或 GPU 内存。停止和新源会话会清理 JPEG 与待处理请求；
+迟到旧会话结果不能污染新状态。
 
-- 人物由 canonical `subject_id` 定位，不根据事件物体框自行猜测人物归属。
-- 当前人物位置、源帧历史位置和身份分别维护。已保留的历史源帧可以补充迟到身份，
-  不回退人物位置。删除登记身份会清理保留值，并阻止迟到结果重新写入，直到明确重新登记。
-- 事件以类型和规范化人物组作为键。例如两个人的打架是一个共同事件，
-  不会自动拆成两个独立的单人事件。
-- 默认两次不同源帧的阳性进入 confirmed；两次阴性进入 ended。首次阳性为 suspected。
-  这是可配置的原型默认规则，不是实际安防告警标准。
-- 同一个源帧不因多个模型、重复消息或重试而累计多次证据。
-- 每次正负判断均要求参与者在对应源帧有真实位置观察。预测框、保持框、遮挡、
-  缺失能力、接口失败都不是阴性，也不能结束事件。
-- 全景阴性只作用于相同源帧实际观察到的已有事件参与者；带明确对象引用的阴性
-  只作用于指定人物。陌生人事件需要真实观察到已确认的熟人身份才允许清除。
-- 事件结束后再次出现阳性会产生新 episode ID。迟到的旧源帧不能重启已结束事件。
-- 新会话有新的状态和检查请求标识；停止时释放 JPEG 和待处理请求，保留最后状态用于检查。
+## 展示、接口与归档
 
-事件的 `phase` 与 `observation_state` 分开：例如已确认抽烟的人暂时被遮挡，
-仍保留 confirmed，同时标记 uncertain。长时间没有证据的记录会按保留期限淘汰，
-淘汰不产生“事件已结束”的观察。
+控制台从 `/v1/ui/info.scene_engine` 读取模式，用不堆积的串行请求更新 `/v1/scene`。
+active 安全卡片由持续事件驱动，人脸结果单独显示；shadow 只增加探索面板。
+人物遮挡、源停止、数据停滞、识别不可用与等待证据分别显示，空事件列表不显示“全部安全”。
+人物姓名等外部文本只按文本渲染。
 
-### 时序检查
+原有 `/v1/video/annotated/latest.jpg` 和 `/v1/video/annotated/stream.mjpeg` 在 active 接入独立
+现场显示线程。显示帧使用对应源时间的已有框，最多保持一秒，较旧框用虚线；未来或过旧的框
+不会被画到当前画面。人物未获新观察时事件标记待核实。图像编码不阻塞视频输入或后台模型。
+不会为了兼容旧安全结果而伪造逐帧 `AnalysisResult`；原有人脸结果协议保留。
 
-待检查任务包含 2–4 张按源时间排列的图像，附每张图当时实际观察到的人物框。
-面向指定人物的任务只使用所有目标人物有对应源帧位置的画面；不把当前人物位置
-复制到过去的图像。提示保留全景和多人关系，要求证据不足时返回 `detected=null`。
+| 接口 | 内容 |
+| --- | --- |
+| `GET /v1/scene` | 模式、状态、人物、事件、有界转换、检查任务及 worker 统计；不带完整位置历史 |
+| `GET /v1/experimental/scene` | `/v1/scene` 的兼容别名 |
+| `GET /v1/scene/events` | 每约 0.5 秒推送 `event: scene` 状态；重连读取当前状态，不提供持久游标重放 |
+| `GET /v1/scene/history?limit=100` | 持久事件元数据，最大 1000 条；不包含视频或人脸向量 |
+| `GET /v1/scene/evidence` | 最近成功检查的请求标识、原始帧序号／时间及逐帧 JPEG 地址 |
+| `GET /v1/scene/evidence/{request_id}/{frame_sequence}.jpg` | 对应检查的原始证据 JPEG，非叠加后的显示图 |
 
-新人物、位移变化和疑似事件可以触发检查；持续事件降低重复检查频率。
-全景巡检保留独立调度机会，以避免所有事件都依赖单一前置动作线索。
-陌生人身份判断走人脸通道，不发送到此四类安全事件时序接口。
+状态和证据接口只读，禁止缓存。最近证据是有界的内存集合，新成功检查覆盖旧集合，停止清空；
+旧会话或旧请求的图像返回 404。这些 JPEG 是 VLM 缩放前保留的对应源画面，输入模型时仍遵守
+720 最长边限制。active 控制台的“连续观察证据”入口指向这个集合；旧 latest evidence 地址
+在混合人脸模式仍可能提供人脸单帧，不能视为时序安全事件的完整证据。
 
-实时服务只准备这些任务。开发者可显式调用
-`run_pending_inspections(scene_runtime, inspector)`，提供实现
-`TemporalInspector.inspect(job)` 的模型适配器。它必须自行设置网络超时；
-执行器每轮最多处理四个任务，不承担中断挂起模型调用的职责。
-`build_temporal_messages(job)` 提供可用于多模态聊天接口的输入。
+`SceneArchive` 在配置的事件目录下写入 `scene/scene-events.sqlite3`，只记录事件类型、
+人物编号、源时间、状态及有效证据计数等元数据，不存姓名、JPEG、脸部向量或任意属性。
+默认数据库预算 64 MiB、队列 32、读取缓存 1000 条，保留天数沿用事件配置。
+记录更新为每个事件的最新状态，不是永久保存每次修订的审计日志。原有人脸事件归档继续工作；
+**当前没有独立的持续场景事件录制片段**，不可把 metadata journal 或最近四张图称为完整 scene clip。
 
-没有接入自动执行线程、供应商客户端或实际模型响应解析器。空回复表示没有可用判断，
-不等于所有事件阴性。请求执行成功、状态接受证据和事件确认分别统计，不能互相替代。
+## 本地与容器运行
 
-### 资源边界
+需要已经获准使用的 `sam3.pt`、可用 NVIDIA CUDA GPU，以及已配置的事件模型接口。
+权限申请期间先运行软件测试或录制轨迹回放；无需向程序提供 Hugging Face token。
+权重获批后由用户按官方授权准备到本地，再以只读文件挂载。
 
-- 默认最多 128 个人物，每人最多 64 条位置观察；超过 3 秒未观察标记遮挡，
-  超过 90 秒淘汰。
-- 事件键最多 640 个，每个最多 64 条证据；转换历史和去重缓存同样有上限。
-- 图像缓冲最多 48 张、16 MiB、8 秒；通常按最高 4 FPS 收集，另保留可用的分析源 JPEG。
-- 最多 4 个待处理检查，所保留图像合计最多 16 MiB；因此两类编码图像引用预算合计最多
-  32 MiB，不包含模型图像解码、Python 对象、现有视频缓存和 GPU 内存。
-- 源结果等待关联的队列最多 128 条、90 秒。内部调度使用不含完整历史的轻量快照。
-- 检查任务按源时间 20 秒过期；传输失败由调度器退避重试，且不会产生阴性证据。
+先按 [worker 文档](../../workers/sam_scene/README.md) 启动端口 8092 的 worker 并确认
+`/health/tracking` 的 `ready` 与 `gpu_ready` 都为 `true`。本地 Harness 示例：
 
-## 运行离线示例
+```powershell
+$env:SCENE_ENGINE_MODE = 'active'
+$env:SCENE_TIMEOUT_SECONDS = '15'
+$env:SCENE_MAX_IMAGE_SIDE = '720'
+$env:SCENE_MAX_TOKENS = '1600'
+$env:PERSON_TRACKING_ENABLED = 'true'
+$env:RICH_LABEL_ENABLED = 'true'
+$env:RICH_LABEL_BACKEND = 'sam'
+$env:RICH_LABEL_ENDPOINT = 'http://127.0.0.1:8092/v1/tracks'
+$env:RICH_LABEL_TIMEOUT_SECONDS = '20'
+$env:RICH_LABEL_MAX_FPS = '4'
+$env:HARNESS_AUTOSTART = 'false'
+$env:HARNESS_HOST = '127.0.0.1'
+python -m goodvision_harness.service
+```
 
-在已安装项目开发依赖的 Python 环境中，从仓库根目录运行：
+使用原有 `config.yaml`／`.env` 配置视频、人脸和模型接口，必要时用 `HARNESS_CONFIG` 指定
+配置路径。打开本地 8080 端口的控制台选择能力并开始会话。不要把真实密钥写进实验报告或提交。
+
+Linux GPU 容器用专门 overlay，默认权重位置为仓库 `.models/sam3/sam3.pt`：
+
+```powershell
+$env:SAM_SCENE_CHECKPOINT_FILE = 'D:/models/sam3/sam3.pt'
+docker compose -f compose.yaml -f compose.scene.yaml build
+docker compose -f compose.yaml -f compose.scene.yaml up -d
+```
+
+在 Linux shell 中将变量改为 `export SAM_SCENE_CHECKPOINT_FILE=/path/to/sam3.pt`。
+文件必须真实存在，overlay 不会创建一个同名空目录。Harness 等待 worker 健康后启动，
+overlay 已配置 active、跟踪、内部地址和 GPU；不要同时叠加旧 Paddle rich worker 作为同一感知源。
+容器构建需要公开代码／依赖下载，运行设置 `HF_HUB_OFFLINE=1`。
+构建通过只验证安装准备，真实 CUDA readiness 和录制测试仍必须在目标机器进行。
+
+## 录制视频的有预算验证
+
+在已安装项目与视频依赖的环境中运行：
+
+```powershell
+python tools/scene_video_run.py path/to/recording.mp4 --sam-endpoint http://127.0.0.1:8092/v1/tracks --output tmp/scene-real-run --fps 4 --max-seconds 60 --max-requests 12
+```
+
+无 SAM 权重时，可以明确使用预录制的 `RichLabelSnapshot` JSONL：
+
+```powershell
+python tools/scene_video_run.py path/to/recording.mp4 --recorded-tracks path/to/tracks.jsonl --output tmp/scene-recorded-run --fps 4 --max-seconds 60 --max-requests 12
+```
+
+`--sam-endpoint` 和 `--recorded-tracks` 必须二选一。后者只验证给定轨迹之上的引擎与真实 VLM
+连接，绝不验证 SAM。轨迹按原始 `frame_sequence` 定位，时间必须与视频帧序号／帧率一致；
+不存在的轨迹不会自动补人物。读取以恒定源帧率计算时间，可变帧率录像应先规范化再作精确对照。
+
+其他参数：`--config` 默认 `config.yaml`；`--events` 默认四类安全事件；`--fps` 默认四、
+最大 15 且不超过源帧率；`--max-seconds` 默认 60、最大 600；`--max-requests` 默认 12、
+范围 1–100，包含失败调用。达到请求预算后继续输出视频，但停止新 VLM 请求。
+`--no-inference` 关闭 VLM，搭配 SAM 地址时仍会调用真实 SAM，不能把它当作全部推理关闭。
+
+输出目录必须尚不存在。输出包括：
+
+- `tracks.jsonl`：本次源帧的跟踪输入；
+- `scene.jsonl`：采样时刻的现场状态；
+- `annotated.mp4`：用于查看人物和事件状态的叠加视频；
+- `report.json`：输入类型、请求／失败次数、预算、统计与最终状态。
+
+报告明确标记 `perception_source=sam_gpu` 或 `recorded_tracks`，`accuracy_measured=false`。
+`sam_validated` 只表示使用了已通过 GPU readiness 的 worker 链路，不表示测过准确率。
+模型请求发生失败时工具返回非零退出码。源视频、轨迹和模型判断是否正确，需要独立标注验证。
+
+纯软件生命周期示例仍可运行：
 
 ```powershell
 python tools/scene_replay.py tests/fixtures/scene_smoking.jsonl --output tmp/scene-replay.jsonl
 ```
 
-输出路径必须尚不存在，防止覆盖旧实验。省略 `--output` 可以直接查看输出。
+其中人物和事件是人工编排的观察，展示疑似、确认、遮挡、有效清除、重复／迟到处理，
+没有视频识别或网络请求。输入每行最多 1 MiB，输出同样不覆盖旧文件。
 
-样例按顺序展示：Alice 出现 → 疑似抽烟 → 确认 → 遮挡 → 拒绝预测框和无可见证据的清除
-→ 重新可见 → 两次真实阴性结束事件 → 拒绝迟到阳性与重复证据。Bob 的状态独立。
-输入的事件判断是人工编排的测试观察，并非视频识别实测。
+## 验证范围与仍需配合的工作
 
-JSONL 第一行为 `session`，随后为 `person`、`event` 或 `tick`。
-`person.bbox` 使用 `[x1,y1,x2,y2]`、0–1 源图坐标；所有时间均为同一视频源时间。
-工具逐行处理，每行最多 1 MiB；错误指出行号，退出码非零，不回显整条输入。
-
-## 在视频服务中旁路观察
-
-启动服务前设置：
-
-```powershell
-$env:SCENE_ENGINE_ENABLED = 'true'
-```
-
-然后按原有方式启动此分支的服务和视频会话。也可在 YAML 的 `runtime` 中设置
-`scene_enabled: true`；环境变量优先。Docker 部署须显式把此变量传入容器，
-仅在宿主机设置变量不代表容器自动收到。
-
-读取 `GET /v1/experimental/scene`，可获得：
-
-- `enabled`、`mode=shadow`、运行状态、观察器错误数；
-- `scene.entities`、`scene.events`、有界的 `scene.transitions`；
-- `inspections` 中的 prepared／claimed 任务及源帧引用；
-- 请求准备、完成、失败、接受和拒绝证据的计数。
-
-接口是只读的，带 `Cache-Control: no-store`，不包含 JPEG、模型密钥或人脸向量，
-也不加入既有客户 OpenAPI 合约。观察器异常只影响实验状态，原有视频和结果继续交付。
-
-## 当前限制与后续制造顺序
-
-1. **感知输入**：接入独立 SAM 3.1 worker，验证持续帧输入、窗口／内存回收、
-   新目标发现和会话重置，并与已有检测跟踪输入比较。
-2. **事件归属修订**：尚不支持撤销已接受证据并重新分配人物。
-   未归属结果可以等待同消息修订；已接受的人物组发生变化会拒绝转移并计数。
-   这是旁路阶段的明确限制，正式接管告警前需支持带修订号的归属与源时间重放。
-3. **真实时序判断**：接入显式模型适配器、响应校验和独立有界执行线程，
-   使用固定录制视频比较逐帧与时序策略的事件召回、误报、结束延迟、归属准确度和请求量。
-   当前的源帧抽样及完整上下文规则不足以证明小烟具可识别，需单独验证裁剪策略。
-4. **完整现场关系**：扩展物体实体、持有／接触等关系以及多人交互。
-   当前支持多人事件参与者组，尚未维护通用物体与关系图，也未接入姿态／动作模型。
-5. **生产接管**：通过录像与目标设备并发性能验收后，再让新事件生命周期驱动告警、
-   显示和证据归档，逐步退役重复的逐帧调度与展示状态。
-
-本次实现的单元及服务测试验证时间、归属、资源边界和接口行为。它们不提供真实检测准确率。
-
-## 验证环境
-
-2026-09-12 验证结果：新增 135 项测试通过；完整回归 **2158 passed，4 skipped**。
-改动相关 Python 文件的 Ruff 检查及 `git diff --check` 通过。
-17 步离线示例执行完毕，抽烟事件最终为 ended，第二人的状态保持独立。
-
-回归测试应隔离部署用 `.env`，避免实际供应商设置覆盖测试默认值。
-使用项目的 `dev` 与 `vlm` 依赖（后者包含 HTTP/2 支持）后运行：
+单元、协议、服务与控制台测试覆盖源帧关联、时间顺序、资源边界、超时取消、歧义轨迹、
+修订撤回、模式接管及页面清理；SAM API 测试使用替身。真实 VLM 连接测试只能证明所配置
+路线可完成时序请求，不能证明录像事件判断正确。完整回归应隔离部署 `.env`：
 
 ```powershell
 $env:PYTHON_DOTENV_DISABLED = '1'
 python -m pytest tests
 ```
 
-此设置只用于测试进程，不应当作为生产服务的默认环境变量。
+尚待完成：获得 SAM 3 权限后，在目标 GPU 上构建／加载／预热与 smoke；用固定、有人工标注的
+录像检查新人物发现、多人交叉、遮挡重现、身份串线及源重连；比较逐帧与时序方案的事件召回、
+误报、人物归属、确认／结束延迟、请求量、显存和连续运行稳定性。抽烟的小目标可见性需特别验证，
+当前全景缩放不足以保证烟具辨认。人物高分辨率裁剪、通用物体关系图、动作／姿态模型、跨镜头
+身份与独立 scene 事件录像均未实现。完成这些实测前，不将此分支宣称为生产验收版本。
+
+## 官方研究来源
+
+- [Meta：Segment Anything Model 3](https://ai.meta.com/blog/segment-anything-model-3/)
+- [固定版本官方 README 与安装条件](https://github.com/facebookresearch/sam3/blob/660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7/README.md)
+- [图像模型构造及权重加载](https://github.com/facebookresearch/sam3/blob/660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7/sam3/model_builder.py)
+- [图像提示 API 与输出坐标](https://github.com/facebookresearch/sam3/blob/660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7/sam3/model/sam3_image_processor.py)
+- [视频会话分派接口](https://github.com/facebookresearch/sam3/blob/660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7/sam3/model/sam3_base_predictor.py)
+- [模型权限申请](https://huggingface.co/facebook/sam3)

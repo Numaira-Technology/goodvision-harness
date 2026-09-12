@@ -113,7 +113,12 @@ from .route_probe import (
     finish_result,
     probe_sample,
 )
+from .scene_archive import SceneArchive
+from .scene_capture import SceneCaptureClient
+from .scene_delivery import SceneDisplayWorker
+from .scene_model import TemporalVLMInspector
 from .scene_runtime import SceneRuntime
+from .scene_worker import SceneInspectionWorker
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
 from .visual_memory import (
@@ -201,8 +206,21 @@ class HarnessRuntime:
             autostart = False
             config_error = config_error or "configuration error"
         self.config = config
-        self._scene_enabled = config is not None and config.runtime.scene_enabled
+        self._scene_mode = (
+            config.runtime.scene_mode if config is not None else "disabled"
+        )
+        if (
+            self._scene_mode == "disabled"
+            and config is not None
+            and config.runtime.scene_enabled
+        ):
+            self._scene_mode = "shadow"
+        self._scene_enabled = self._scene_mode != "disabled"
         self._scene: SceneRuntime | None = None
+        self._scene_worker: SceneInspectionWorker | None = None
+        self._scene_display = None
+        self._scene_archive: SceneArchive | None = None
+        self._last_scene_inference_monotonic: float | None = None
         self._scene_errors = 0
         self.config_error = config_error
         self.dry_run = dry_run
@@ -216,6 +234,7 @@ class HarnessRuntime:
             os.environ.get("HARNESS_SOURCE_ID", "").strip() or self.settings.source_id
         )
         self.results = ResultBus(self.settings.result_history)
+        self.scene_results = ResultBus(min(self.settings.result_history, 32))
         self.frames = FrameBus()
         self.preview_frames = FrameBus()
         self.annotated_frames = FrameBus()
@@ -773,6 +792,16 @@ class HarnessRuntime:
             safe = public_safe_value(result)
             assert isinstance(safe, dict)
             return safe
+        scene_active = self._scene_mode == "active"
+        scene_source_side = self.config.runtime.scene_max_image_side
+        camera_side = max(
+            self.config.video.max_image_side,
+            scene_source_side if scene_active else self.config.video.max_image_side,
+        )
+        face_side = max(
+            self.config.face.max_image_side,
+            scene_source_side if scene_active else self.config.face.max_image_side,
+        )
         stream_url = self.configured_stream_url()
         protocol = None
         if stream_url:
@@ -782,6 +811,12 @@ class HarnessRuntime:
                 protocol = None
         result = {
             "configured": True,
+            "scene_engine": {
+                "enabled": self._scene_enabled,
+                "mode": self._scene_mode,
+                "snapshot_url": "/v1/scene",
+                "events_url": "/v1/scene/events",
+            },
             "model": PUBLIC_MODEL_NAME,
             "event_label": self.config.inference.event_label,
             "event_labels": list(DETECTION_EVENT_LABELS),
@@ -789,7 +824,7 @@ class HarnessRuntime:
             "supported_features": list(DETECTION_EVENT_LABELS),
             **sensitivity_ui_info(),
             "sample_fps": self.config.video.fps,
-            "max_image_side": self.config.video.max_image_side,
+            "max_image_side": camera_side,
             "jpeg_quality": self.config.video.jpeg_quality,
             "window": {
                 "size_frames": self.config.sliding_window.size_frames,
@@ -816,27 +851,34 @@ class HarnessRuntime:
             "face": {
                 "engine": "local",
                 "sample_fps": self.config.face.sample_fps,
-                "max_image_side": self.config.face.max_image_side,
+                "max_image_side": face_side,
                 "jpeg_quality": self.config.face.jpeg_quality,
                 "threshold": self.config.face.threshold,
                 "min_face_size": self.config.face.min_face_size,
-                "enrollment_min_face_size": (
-                    self.config.face.enrollment_min_face_size
-                ),
+                "enrollment_min_face_size": (self.config.face.enrollment_min_face_size),
             },
             "multi": {
                 "sample_fps": self.config.face.sample_fps,
-                "max_image_side": self.config.face.max_image_side,
+                "max_image_side": face_side,
                 "jpeg_quality": self.config.face.jpeg_quality,
-                "safety_max_image_side": self.config.video.max_image_side,
+                "safety_max_image_side": (
+                    scene_source_side
+                    if scene_active else self.config.video.max_image_side
+                ),
             },
             "annotated_output": {
+                **({"mode": "scene", "max_hold_seconds": 1.0} if scene_active else {}),
                 "output_fps": self._annotated_output_fps,
                 "max_image_side": self.config.display.max_image_side,
-                "jpeg_quality": self.config.display.jpeg_quality,
-                "buffer_delay_seconds": self._display_settings.delay_seconds,
+                "jpeg_quality": (
+                    min(95, self.settings.overlay_jpeg_quality)
+                    if scene_active else self.config.display.jpeg_quality
+                ),
+                "buffer_delay_seconds": (
+                    0.0 if scene_active else self._display_settings.delay_seconds
+                ),
                 "bbox_max_gap_seconds": (
-                    self.config.display.bbox_max_gap_seconds
+                    None if scene_active else self.config.display.bbox_max_gap_seconds
                 ),
             },
             "rich_labeling": {
@@ -1208,6 +1250,27 @@ class HarnessRuntime:
             self._ensure_delivery()
 
             face_session = None
+            scene_active = self._scene_mode == "active"
+            if scene_active and selected_analysis == EVENT_ANALYSIS_MODE:
+                raise ValueError(
+                    "continuous scene mode requires multi-feature or face analysis"
+                )
+            if (
+                scene_active
+                and not use_dry_run
+                and (
+                    self._rich_labels is None
+                    or self.config.rich_labeling.backend == "vlm"
+                )
+            ):
+                raise RuntimeError(
+                    "continuous scene mode requires a ready SAM or GPU person tracker"
+                )
+            if scene_active and self._scene_archive is None:
+                self._scene_archive = SceneArchive(
+                    self.config.events.directory / "scene",
+                    retention_days=self.config.events.retention_days,
+                )
             if selected_analysis == FACE_ANALYSIS_MODE:
                 face_runtime = self._ensure_face_runtime()
                 warmup_seconds = face_runtime.warmup()
@@ -1297,23 +1360,33 @@ class HarnessRuntime:
                             else self.config.runtime
                         ),
                     )
-                client = build_selected_features_grounding_client(
-                    session_config.inference,
-                    session_config.model_api,
-                    features=selected_features,
-                    event_sensitivities=selected_sensitivities,
-                    stranger_client=face_session or face_runtime,
-                    safety_max_image_side=self.config.video.max_image_side,
-                    safety_jpeg_quality=self.config.video.jpeg_quality,
-                    face_live_scheduler=face_live_scheduler,
-                    dry_run=use_dry_run,
-                    api_key=self._aiclub_api_key,
-                    transport=(
-                        self._pooled_transport()
-                        if self._route_pool_enabled and not use_dry_run
-                        and any(item != "stranger" for item in selected_features)
-                        else None
-                    ),
+                frame_features = (
+                    (("stranger",) if include_stranger else ())
+                    if scene_active
+                    else selected_features
+                )
+                client = (
+                    build_selected_features_grounding_client(
+                        session_config.inference,
+                        session_config.model_api,
+                        features=frame_features,
+                        event_sensitivities=selected_sensitivities,
+                        stranger_client=face_session or face_runtime,
+                        safety_max_image_side=self.config.video.max_image_side,
+                        safety_jpeg_quality=self.config.video.jpeg_quality,
+                        face_live_scheduler=face_live_scheduler,
+                        dry_run=use_dry_run,
+                        api_key=self._aiclub_api_key,
+                        transport=(
+                            self._pooled_transport()
+                            if self._route_pool_enabled
+                            and not use_dry_run
+                            and any(item != "stranger" for item in frame_features)
+                            else None
+                        ),
+                    )
+                    if frame_features
+                    else SceneCaptureClient(session_config.inference, selected_features)
                 )
             else:
                 session_config = self.config
@@ -1332,6 +1405,20 @@ class HarnessRuntime:
                     transport=(
                         self._pooled_transport()
                         if self._route_pool_enabled and not use_dry_run else None
+                    ),
+                )
+            if scene_active:
+                # The continuous tracker and temporal inspector consume these
+                # source pictures. Do not inherit the legacy 320px safety crop
+                # budget for browser capture or source-only session admission.
+                session_config = replace(
+                    session_config,
+                    video=replace(
+                        session_config.video,
+                        max_image_side=max(
+                            session_config.video.max_image_side,
+                            self.config.runtime.scene_max_image_side,
+                        ),
                     ),
                 )
             if mode == STREAM_MODE:
@@ -1399,6 +1486,62 @@ class HarnessRuntime:
                     self._rich_history if self._tracking_requested else None,
                 )
 
+            scene_labels = tuple(
+                item
+                for item in (selected_features or ())
+                if item in SAFETY_EVENT_LABELS
+            )
+            if (
+                selected_analysis == EVENT_ANALYSIS_MODE
+                and label in SAFETY_EVENT_LABELS
+            ):
+                scene_labels = (label,)
+            next_scene = (
+                SceneRuntime(
+                    session.stream_session_id,
+                    self.source_id,
+                    mode=self._scene_mode,
+                    event_labels=scene_labels,
+                    event_sensitivities=selected_sensitivities,
+                )
+                if self._scene_enabled
+                else None
+            )
+            next_worker = None
+            if scene_active and not use_dry_run and scene_labels:
+                inspector = TemporalVLMInspector(
+                    replace(
+                        session_config.model_api,
+                        timeout_seconds=self.config.runtime.scene_timeout_seconds,
+                        max_retries=0,
+                    ),
+                    model=session_config.inference.model,
+                    api_key=lambda: self._aiclub_api_key or "",
+                    request_parameters=session_config.inference.request_parameters,
+                    max_tokens=self.config.runtime.scene_max_tokens,
+                    max_image_side=self.config.runtime.scene_max_image_side,
+                )
+                next_worker = SceneInspectionWorker(
+                    next_scene,
+                    inspector,
+                    on_update=lambda: self._guarded_callback(
+                        generation, self._on_scene_update
+                    ),
+                )
+                next_scene.automatic_temporal_inference = True
+            next_display = (
+                SceneDisplayWorker(
+                    next_scene,
+                    lambda packet: self._guarded_callback(
+                        generation, self.annotated_frames.publish, packet
+                    ),
+                    quality=min(95, self.settings.overlay_jpeg_quality),
+                    max_fps=self._annotated_output_fps,
+                )
+                if scene_active
+                else None
+            )
+
             with self._state_lock:
                 self._generation = generation
                 # Reset the compositor before its public bus. A frame already
@@ -1413,15 +1556,19 @@ class HarnessRuntime:
                 self._delayed_overlay.reset()
                 self.annotated_frames.reset()
                 self.results.reset()
+                self.scene_results.reset()
                 self.frames.reset()
                 self.preview_frames.reset()
                 self._session = session
                 if self._scene is not None:
                     self._scene.close()
-                self._scene = (
-                    SceneRuntime(session.stream_session_id, self.source_id)
-                    if self._scene_enabled else None
-                )
+                self._close_scene_workers()
+                self._scene = next_scene
+                self._scene_worker = next_worker
+                self._scene_display = next_display
+                self._last_scene_inference_monotonic = None
+                self._scene_success_count = 0
+                self._last_scene_publish_monotonic = 0.0
                 self._scene_errors = 0
                 self._session_mode = mode
                 self._camera_owner = camera_owner if mode == CAMERA_MODE else None
@@ -1479,6 +1626,10 @@ class HarnessRuntime:
                 )
             try:
                 session.start()
+                if next_worker is not None:
+                    next_worker.start()
+                if next_display is not None:
+                    next_display.start()
             except Exception:
                 with self._state_lock:
                     if self._rich_labels is not None:
@@ -1488,6 +1639,7 @@ class HarnessRuntime:
                     if self._scene is not None:
                         self._scene.close()
                     self._scene = None
+                    self._close_scene_workers()
                     self._session_mode = None
                     self._camera_owner = None
                     self._state.update(
@@ -1558,6 +1710,7 @@ class HarnessRuntime:
                 self._generation += 1
                 if self._scene is not None:
                     self._scene.close()
+                self._close_scene_workers()
                 self._state.update(
                     {
                         "pipeline_state": "stopping",
@@ -1625,6 +1778,8 @@ class HarnessRuntime:
             self._delivery.close(timeout_seconds=5.0)
         if self._events is not None:
             self._events.close(timeout=15.0)
+        if self._scene_archive is not None:
+            self._scene_archive.close(timeout_seconds=1.0)
         self._update_state(pipeline_state="stopped", ready=False)
 
     def push_camera_frame(
@@ -1751,22 +1906,60 @@ class HarnessRuntime:
             payload = (
                 self._scene.snapshot() if self._scene is not None else {
                     "enabled": self._scene_enabled,
-                    "mode": "shadow",
+                    "mode": self._scene_mode,
                     "state": "idle" if self._scene_enabled else "disabled",
                     "automatic_temporal_inference": False,
                     "scene": None, "inspections": [],
                 }
             )
             payload["observer_errors"] = self._scene_errors
+            if self._scene_archive is not None:
+                payload["archive"] = self._scene_archive.stats()
+            if self._scene_worker is not None:
+                payload["worker"] = self._scene_worker.stats()
+            if payload.get("scene"):
+                for item in payload["scene"]["entities"] + payload["scene"]["events"]:
+                    item.pop("history", None)
         safe = public_safe_value(payload)
         assert isinstance(safe, dict)
         return safe
+
+    def _close_scene_workers(self) -> None:
+        # May hold the state lock: never join a callback waiting on that lock.
+        for name in ("_scene_worker", "_scene_display"):
+            worker = getattr(self, name, None)
+            if worker is not None:
+                worker.close(timeout_seconds=0)
+                setattr(self, name, None)
+
+    def _on_scene_update(self) -> None:
+        scene = getattr(self, "_scene", None)
+        if scene is None:
+            return
+        payload = self.scene_snapshot()
+        self.scene_results.publish({"type": "scene", **payload})
+        if self._scene_is_active() and self._scene_archive is not None:
+            self._scene_archive.submit(payload)
+        self._last_scene_publish_monotonic = time.monotonic()
+        worker = getattr(self, "_scene_worker", None)
+        if worker is not None:
+            succeeded = worker.stats()["succeeded_requests"]
+            if succeeded > getattr(self, "_scene_success_count", 0):
+                self._last_scene_inference_monotonic = time.monotonic()
+                self._scene_success_count = succeeded
+
+    def _scene_is_active(self) -> bool:
+        scene = getattr(self, "_scene", None)
+        return scene is not None and scene.mode == "active"
 
     def _observe_scene(self, method: str, *args: Any, **kwargs: Any) -> None:
         scene = getattr(self, "_scene", None)
         if scene is not None:
             try:
                 getattr(scene, method)(*args, **kwargs)
+                worker = getattr(self, "_scene_worker", None)
+                if worker is not None:
+                    worker.wake()
             except Exception:
                 self._scene_errors += 1
                 if self._scene_errors == 1:
@@ -1796,6 +1989,8 @@ class HarnessRuntime:
         now = time.monotonic()
         if now - last_frame > self.settings.ready_max_frame_age_seconds:
             return False, "frame_stale"
+        if self._scene_is_active() and self._scene.event_labels:
+            last_result = self._last_scene_inference_monotonic
         if last_result is None:
             return False, "waiting_for_first_analysis"
         if now - last_result > self.settings.ready_max_result_age_seconds:
@@ -1851,6 +2046,36 @@ class HarnessRuntime:
                 "observe_frame", source_jpeg, result.frame.timestamp_seconds,
                 result.frame.source_frame_index, force=True,
             )
+        if self._scene_is_active():
+            # Mixed sessions still produce exact local-face observations. Keep
+            # their original JPEG and analysis ID available without painting
+            # current scene positions over an older source frame. Source-only
+            # sessions never enter this callback and cannot invent evidence.
+            if (
+                result.stream_session_id != scene.stream_session_id
+                or result.source_id != scene.source_id
+            ):
+                return
+            latest = self.frames.latest()
+            if latest is not None and (
+                result.frame.timestamp_seconds, result.frame.source_frame_index
+            ) < (latest[1].media_timestamp, latest[1].frame_sequence):
+                return
+            self.frames.publish(FramePacket(
+                jpeg=source_jpeg,
+                media_timestamp=result.frame.timestamp_seconds,
+                frame_sequence=result.frame.source_frame_index,
+                observed_at=result.frame.observed_at,
+                analysis_message_id=result.message_id,
+                annotation_mode="none",
+            ))
+            self._update_state(
+                analysis_frames_published=(
+                    int(self._state["analysis_frames_published"]) + 1
+                ),
+                last_analysis_frame_at=_utc_now(),
+            )
+            return
         self._delayed_overlay.submit_analysis_frame(result, source_jpeg)
         if self._memory_sink is not None:
             try:
@@ -1942,6 +2167,9 @@ class HarnessRuntime:
                 ) == (result.frame.timestamp_seconds, result.frame.source_frame_index):
                     self._observe_scene("observe_tracks", canonical)
             self._observe_scene("observe_result", result)
+        if self._scene_is_active():
+            self._on_scene_update()
+            return
         coordinator = self._rich_labels
         if (
             coordinator is not None
@@ -2007,7 +2235,16 @@ class HarnessRuntime:
             observed_at=observed_at,
         )
         self.preview_frames.publish(packet)
-        self._delayed_overlay.submit_frame(packet)
+        if self._scene_is_active():
+            display = getattr(self, "_scene_display", None)
+            if display is not None:
+                display.submit(packet)
+            else:
+                self.annotated_frames.publish(packet)
+            if time.monotonic() - self._last_scene_publish_monotonic >= 0.5:
+                self._on_scene_update()
+        else:
+            self._delayed_overlay.submit_frame(packet)
         frame_count = int(self._state["source_frames_received"]) + 1
         self._last_frame_monotonic = time.monotonic()
         self._update_state(
@@ -2153,6 +2390,9 @@ class HarnessRuntime:
 
     def _on_end(self, reason: str, error: str | None) -> None:
         self._observe_scene("close")
+        self._close_scene_workers()
+        if getattr(self, "_scene", None) is not None:
+            self._on_scene_update()
         next_state = "error" if error else "ended"
         self._update_state(
             pipeline_state=next_state,
@@ -2860,10 +3100,12 @@ def create_app(
             raise HTTPException(status_code=404, detail="no rich labels yet")
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
+    @application.get("/v1/scene")
     @application.get("/v1/experimental/scene", include_in_schema=False)
     async def experimental_scene(request: Request) -> JSONResponse:
         return JSONResponse(
-            _runtime(request).scene_snapshot(), headers={"Cache-Control": "no-store"},
+            _runtime(request).scene_snapshot(),
+            headers={"Cache-Control": "no-store"},
         )
 
     @application.get("/v1/results/events")
@@ -2872,6 +3114,106 @@ def create_app(
         after: int = Query(default=0, ge=0),
     ) -> StreamingResponse:
         return _result_events_response(request, _runtime(request), after=after)
+
+    @application.get("/v1/scene/evidence")
+    async def scene_evidence(request: Request) -> JSONResponse:
+        runtime = _runtime(request)
+        with runtime._state_lock:
+            scene = runtime._scene
+            job = scene.latest_inspection() if scene else None
+        if job is None:
+            raise HTTPException(
+                status_code=404, detail="no completed temporal evidence"
+            )
+        payload = {
+            "stream_session_id": job.stream_session_id,
+            "request_id": job.request.request_id,
+            "event_labels": list(job.request.event_labels),
+            "source_interval": [
+                job.frames[0].timestamp_seconds,
+                job.frames[-1].timestamp_seconds,
+            ],
+            "frames": [
+                {
+                    "frame_sequence": frame.frame_sequence,
+                    "timestamp_seconds": frame.timestamp_seconds,
+                    "url": (
+                        f"/v1/scene/evidence/{job.request.request_id}/"
+                        f"{frame.frame_sequence}.jpg"
+                    ),
+                }
+                for frame in job.frames
+            ],
+        }
+        return JSONResponse(
+            public_safe_value(payload), headers={"Cache-Control": "no-store"}
+        )
+
+    @application.get("/v1/scene/evidence/{request_id}/{frame_sequence}.jpg")
+    async def scene_evidence_frame(
+        request: Request, request_id: str, frame_sequence: int
+    ) -> Response:
+        runtime = _runtime(request)
+        with runtime._state_lock:
+            scene = runtime._scene
+            job = scene.latest_inspection() if scene else None
+            frame = (
+                next(
+                    (
+                        item
+                        for item in job.frames
+                        if item.frame_sequence == frame_sequence
+                    ),
+                    None,
+                )
+                if job and job.request.request_id == request_id
+                else None
+            )
+        if frame is None:
+            raise HTTPException(
+                status_code=404, detail="temporal evidence expired or unavailable"
+            )
+        return Response(
+            frame.jpeg_bytes,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Frame-Sequence": str(frame.frame_sequence),
+                "X-Media-Timestamp": str(frame.timestamp_seconds),
+            },
+        )
+
+    @application.get("/v1/scene/history")
+    async def scene_history(
+        request: Request, limit: int = Query(default=100, ge=1, le=1000)
+    ) -> JSONResponse:
+        runtime = _runtime(request)
+        archive = runtime._scene_archive
+        events = (
+            await asyncio.to_thread(archive.list_events, limit=limit) if archive else []
+        )
+        return JSONResponse({"events": events}, headers={"Cache-Control": "no-store"})
+
+    @application.get("/v1/scene/events")
+    async def scene_events(request: Request) -> StreamingResponse:
+        runtime = _runtime(request)
+
+        async def generate() -> AsyncIterator[bytes]:
+            # Always begin with a current session snapshot on reconnect.
+            while not await request.is_disconnected():
+                payload = await asyncio.to_thread(runtime.scene_snapshot)
+                data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                yield f"event: scene\ndata: {data}\n\n".encode()
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @application.get("/v1/results/overall/latest")
     async def latest_overall_description(request: Request) -> JSONResponse:

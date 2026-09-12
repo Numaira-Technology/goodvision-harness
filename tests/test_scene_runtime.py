@@ -122,13 +122,113 @@ def test_explicit_targeted_negative_does_not_clear_another_person():
     assert events == {("a",): "ended", ("b",): "confirmed"}
 
 
-def test_same_message_regrouping_is_not_new_evidence():
+def test_same_message_regrouping_retracts_old_groups_without_counting_new_frames():
     runtime = SceneRuntime("s", "camera")
     tracks(runtime, 1, ("a", "b", "c", "d"))
     runtime.observe_result(result(1, (("a", "b"), ("c", "d")), label="fight"))
     runtime.observe_result(result(1, (("a", "c"), ("b", "d")), label="fight"))
-    assert len(runtime.scene.snapshot()["events"]) == 2
+    events = {
+        tuple(event["subject_ids"]): event
+        for event in runtime.scene.snapshot()["events"]
+    }
+    assert events[("a", "b")]["phase"] == "retracted"
+    assert events[("c", "d")]["phase"] == "retracted"
+    assert events[("a", "c")]["phase"] == "suspected"
+    assert events[("b", "d")]["phase"] == "suspected"
+    assert events[("a", "c")]["positive_observations"] == 1
+    assert runtime.snapshot()["stats"]["association_revisions_applied"] == 2
+
+
+def test_removed_object_slot_is_withdrawn_and_reordered_slots_keep_stable_identity():
+    runtime = SceneRuntime("s", "camera")
+    tracks(runtime, 1, ("a", "b"))
+    initial = result(1, (("a",), ("b",)))
+    runtime.observe_result(initial)
+    original = runtime.scene.snapshot()["events"]
+    reordered = replace(
+        initial,
+        objects=tuple(reversed(initial.objects)),
+        judgments=(
+            replace(
+                initial.judgments[0],
+                object_ids=tuple(reversed(initial.judgments[0].object_ids)),
+            ),
+        ),
+    )
+    runtime.observe_result(reordered)
+    assert runtime.scene.snapshot()["events"] == original
+    runtime.observe_result(result(1, (("a",),)))
+    events = {
+        tuple(event["subject_ids"]): event
+        for event in runtime.scene.snapshot()["events"]
+    }
+    assert events[("a",)]["phase"] == "suspected"
+    assert events[("b",)]["phase"] == "retracted"
+    runtime.observe_result(result(1, (("a",),)))
+    assert runtime.snapshot()["stats"]["association_revisions_applied"] == 1
+
+
+def test_object_slots_merged_into_one_group_count_one_source_observation():
+    runtime = SceneRuntime("s", "camera")
+    tracks(runtime, 1, ("a", "b"))
+    runtime.observe_result(result(1, (("a",), ("b",)), label="fight"))
+    runtime.observe_result(result(1, (("a", "b"), ("a", "b")), label="fight"))
+    active = [
+        event
+        for event in runtime.scene.snapshot()["events"]
+        if event["phase"] != "retracted"
+    ]
+    assert len(active) == 1
+    assert active[0]["positive_observations"] == 1
+    assert active[0]["subject_ids"] == ["a", "b"]
+
+
+def test_late_owner_correction_replays_subsequent_whole_frame_negatives():
+    runtime = SceneRuntime("s", "camera")
+    for at, detected in ((1, True), (2, True), (3, False), (4, False)):
+        tracks(runtime, at, ("a", "b"))
+        runtime.observe_result(
+            result(at, (("a",),) if detected else (), detected=detected)
+        )
+    runtime.observe_result(result(1, (("b",),)))
+    runtime.observe_result(result(2, (("b",),)))
+    events = {
+        tuple(event["subject_ids"]): event
+        for event in runtime.scene.snapshot()["events"]
+    }
+    assert events[("a",)]["phase"] == "retracted"
+    assert events[("b",)]["phase"] == "ended"
+    assert events[("b",)]["frame_sequence"] == 40
+
+
+def test_same_message_source_cannot_be_retimed_during_regrouping():
+    runtime = SceneRuntime("s", "camera")
+    tracks(runtime, 1, ("a", "b"))
+    runtime.observe_result(result(1, (("a",),), message="fixed-source"))
+    original = runtime.scene.snapshot()["events"]
+    tracks(runtime, 2, ("a", "b"))
+    runtime.observe_result(result(2, (("b",),), message="fixed-source"))
+    assert runtime.scene.snapshot()["events"] == original
     assert runtime.snapshot()["stats"]["association_revisions_ignored"] > 0
+
+
+def test_active_scene_legacy_bridge_only_accepts_stranger_verdicts():
+    runtime = SceneRuntime("s", "camera", mode="active")
+    tracks(runtime, 1, ("a", "b"))
+    runtime.observe_result(result(1, (("a",),)))
+    assert not runtime.scene.snapshot()["events"]
+    runtime.observe_result(
+        result(1, (("a",),), label="stranger", message="face-result")
+    )
+    runtime.observe_result(
+        result(1, (("b",),), label="stranger", message="face-result")
+    )
+    events = {
+        tuple(event["subject_ids"]): event
+        for event in runtime.scene.snapshot()["events"]
+    }
+    assert events[("a",)]["phase"] == "retracted"
+    assert events[("b",)]["event_label"] == "stranger"
 
 
 def test_unassigned_positive_can_be_completed_by_same_message_correction():
@@ -234,6 +334,131 @@ def test_temporal_inspection_has_multiple_exact_source_frames_and_claims_once():
     assert not runtime.complete_inspection(job.request.request_id, [])
 
 
+def test_slow_temporal_completion_uses_pinned_evidence_after_15fps_history_rollover():
+    runtime, job = prepared()
+    for sequence in range(6, 100):
+        runtime.observe_tracks(
+            RichLabelSnapshot(
+                runtime.stream_session_id,
+                sequence,
+                0.5 + (sequence - 5) / 15,
+                (RichLabelObject("a", "person", BOX),),
+            )
+        )
+    before = runtime.scene.snapshot()["entities"][0]
+    assert before["last_observed_timestamp_seconds"] > 6
+    assert not any(item["frame_sequence"] == 5 for item in before["history"])
+    counts = {}
+    assert runtime.complete_inspection(
+        job.request.request_id,
+        [TemporalVerdict("smoking", ("a",), True, 0.9)],
+        completion_counts=counts,
+    )
+    assert counts == {"accepted_verdicts": 1, "rejected_verdicts": 0}
+    assert runtime.scene.snapshot()["entities"][0] == before
+    assert runtime.scene.snapshot()["events"][0]["frame_sequence"] == 5
+    assert job.request.request_id not in runtime.scene._source_pins
+    runtime.close()
+    assert runtime.scene.snapshot()["source_pins"] == {"jobs": 0, "observations": 0}
+
+
+def test_latest_successful_inspection_is_immutable_bounded_and_released_on_close():
+    runtime, job = prepared()
+    assert runtime.latest_inspection() is None
+    assert runtime.complete_inspection(job.request.request_id, [])
+    assert runtime.latest_inspection() is job
+    assert job.request.request_id not in runtime.scene._source_pins
+    other = next(iter(runtime._jobs.values()))
+    assert runtime.complete_inspection(other.request.request_id, [])
+    assert runtime.latest_inspection() is other
+    assert len(other.frames) <= 4
+    assert sum(len(frame.jpeg_bytes) for frame in other.frames) <= 16 * 1024 * 1024
+    runtime.close()
+    assert runtime.latest_inspection() is None
+
+
+def test_failed_and_invalid_inspections_do_not_replace_latest_success():
+    runtime, job = prepared()
+    assert runtime.complete_inspection(job.request.request_id, [])
+    other = next(iter(runtime._jobs.values()))
+    with pytest.raises(ValueError):
+        runtime.complete_inspection(
+            other.request.request_id, [TemporalVerdict("smoking", ("missing",), True)]
+        )
+    assert runtime.latest_inspection() is job
+    assert runtime.complete_inspection(other.request.request_id, [], success=False)
+    assert runtime.latest_inspection() is job
+    assert not runtime.complete_inspection(other.request.request_id, [])
+    assert runtime.latest_inspection() is job
+    runtime.close()
+
+
+def full_scene_with_partial_appearances(first=("a", "b"), second=("a",)):
+    runtime = SceneRuntime("s", "camera")
+    for at, subjects in ((0, first), (0.5, second)):
+        tracks(runtime, at, subjects)
+        runtime.observe_frame(b"jpeg", at, int(at * 10))
+    job = next(job for job in runtime.take_inspections() if not job.request.subject_ids)
+    return runtime, job
+
+
+def test_full_scene_verdict_uses_last_real_shared_source_without_reviving_visibility():
+    runtime, job = full_scene_with_partial_appearances()
+    runtime.scene.advance(4)
+    counts = {}
+    assert runtime.complete_inspection(
+        job.request.request_id,
+        [TemporalVerdict("smoking", ("b",), True, 0.9)],
+        completion_counts=counts,
+    )
+    assert counts == {"accepted_verdicts": 1, "rejected_verdicts": 0}
+    scene = runtime.scene.snapshot()
+    event = scene["events"][0]
+    assert event["frame_sequence"] == 0
+    assert event["last_evidence_timestamp_seconds"] == 0
+    assert event["observation_state"] == "uncertain"
+    person_b = next(
+        entity for entity in scene["entities"] if entity["subject_id"] == "b"
+    )
+    assert person_b["last_observed_timestamp_seconds"] == 0
+    assert person_b["observation_state"] == "occluded"
+
+
+def test_full_scene_group_without_any_shared_frame_cannot_create_fight():
+    runtime, job = full_scene_with_partial_appearances(first=("a",), second=("b",))
+    counts = {}
+    assert runtime.complete_inspection(
+        job.request.request_id,
+        [TemporalVerdict("fight", ("a", "b"), True, 0.9)],
+        completion_counts=counts,
+    )
+    assert counts == {"accepted_verdicts": 0, "rejected_verdicts": 1}
+    assert not runtime.scene.snapshot()["events"]
+    assert job.request.request_id not in runtime.scene._source_pins
+
+
+def test_old_full_scene_negative_cannot_override_newer_positive_evidence():
+    runtime, job = full_scene_with_partial_appearances()
+    tracks(runtime, 1, ("b",))
+    assert runtime.scene.observe_event(
+        "smoking",
+        ("b",),
+        timestamp_seconds=1,
+        frame_sequence=10,
+        detected=True,
+        evidence_id="newer",
+    )
+    before = runtime.scene.snapshot()["events"]
+    counts = {}
+    assert runtime.complete_inspection(
+        job.request.request_id,
+        [TemporalVerdict("smoking", ("b",), False, 0.9)],
+        completion_counts=counts,
+    )
+    assert counts == {"accepted_verdicts": 0, "rejected_verdicts": 1}
+    assert runtime.scene.snapshot()["events"] == before
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -261,10 +486,12 @@ def test_inspection_expires_and_close_releases_all_images():
     runtime, job = prepared()
     runtime.observe_frame(b"new", 20.5, 205)
     assert not runtime.complete_inspection(job.request.request_id, [])
+    assert job.request.request_id not in runtime.scene._source_pins
     runtime.close()
     assert len(runtime.evidence) == 0
     assert not runtime.take_inspections()
     assert runtime.snapshot()["state"] == "stopped"
+    assert runtime.scene.snapshot()["source_pins"] == {"jobs": 0, "observations": 0}
     runtime.observe_result(result(21, (("a",),)))
     assert not runtime.scene.snapshot()["events"]
 

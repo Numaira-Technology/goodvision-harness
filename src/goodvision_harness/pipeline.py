@@ -333,7 +333,8 @@ class StreamingSession:
             for window in windows:
                 if self._stop.is_set():
                     break
-                self._schedule_window(window, executor)
+                if not getattr(self.client, "scene_source_only", False):
+                    self._schedule_window(window, executor)
             if self._stop.is_set():
                 reason = "stopped"
             else:

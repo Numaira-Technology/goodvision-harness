@@ -250,6 +250,38 @@ def test_timeline_receives_exact_registry_visibility_before_positive_and_negativ
     assert events[0]["phase"] == "ended"
 
 
+def test_timeline_owner_correction_withdraws_old_person_event(runtime_factory):
+    runtime = runtime_factory()
+    _start(runtime)
+    right_box = NormalizedBBox(0.6, 0.1, 0.9, 0.95)
+    for sequence, at in ((10, 1), (20, 2)):
+        runtime._on_tracking_snapshot(
+            replace(
+                _tracks(runtime, at, sequence),
+                objects=(
+                    RichLabelObject("worker-person-1", "person", BOX, 0.99),
+                    RichLabelObject("worker-person-2", "person", right_box, 0.99),
+                ),
+            )
+        )
+        canonical = runtime._session.person_registry.snapshot_at(at, sequence)
+        first_id, second_id = (item.track_id for item in canonical.objects)
+        runtime._on_timeline_result(
+            _result(runtime, first_id, at=at, sequence=sequence)
+        )
+    for sequence, at in ((10, 1), (20, 2)):
+        runtime._on_timeline_result(
+            _result(runtime, second_id, at=at, sequence=sequence)
+        )
+    events = {
+        tuple(event["subject_ids"]): event
+        for event in runtime.scene_snapshot()["scene"]["events"]
+    }
+    assert events[(first_id,)]["phase"] == "retracted"
+    assert events[(second_id,)]["phase"] == "confirmed"
+    assert runtime.scene_snapshot()["stats"]["association_revisions_applied"] == 2
+
+
 def test_stale_generation_cannot_add_frames_or_people_to_new_scene(runtime_factory):
     runtime = runtime_factory()
     _start(runtime)
@@ -345,8 +377,8 @@ def test_failed_session_start_closes_and_clears_scene(runtime_factory, monkeypat
     created = []
     original = service.SceneRuntime
 
-    def make(*args):
-        scene = original(*args)
+    def make(*args, **kwargs):
+        scene = original(*args, **kwargs)
         created.append(scene)
         return scene
 

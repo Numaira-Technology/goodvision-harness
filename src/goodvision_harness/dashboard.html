@@ -33,6 +33,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
 @media(max-width:1050px){.grid,.data,.control-grid,.deployment-grid{grid-template-columns:1fr}.metrics,.endpoint-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}@media(max-width:720px){.viewport{height:300px}.decision{min-height:300px}.face-fields,.metrics,.endpoint-grid{grid-template-columns:1fr}.control-source-row{align-items:stretch}.session-actions .btn,.deployment-actions .btn{flex:1}.debug-head{align-items:flex-start;flex-direction:column}}
 @media(max-width:720px){.analysis-workspace.fullscreen-active .annotation-head{right:max(10px,env(safe-area-inset-right));left:max(10px,env(safe-area-inset-left));max-width:none}.analysis-workspace.fullscreen-active .annotation-head .section-title h2,.analysis-workspace.fullscreen-active .annotation-head .step{display:none}.analysis-workspace.fullscreen-active .classification-panel{top:auto;right:max(10px,env(safe-area-inset-right));bottom:max(10px,env(safe-area-inset-bottom));left:max(10px,env(safe-area-inset-left));width:auto;max-height:38vh}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed{right:max(10px,env(safe-area-inset-right));bottom:max(10px,env(safe-area-inset-bottom));left:auto;max-width:calc(100vw - 20px)}.analysis-workspace.fullscreen-active .badge{top:max(68px,calc(env(safe-area-inset-top) + 58px));right:max(10px,env(safe-area-inset-right));bottom:auto}.analysis-workspace.fullscreen-active .description{-webkit-line-clamp:1}.analysis-workspace.fullscreen-active .meta{display:none}}
 .frame-summary{display:grid;gap:7px;padding:13px 15px;background:#f8fafc;border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:10px}.frame-summary-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:5px 12px}.frame-summary h3{font-size:12px;font-weight:750;color:var(--text)}.frame-summary-meta{color:var(--muted);font-size:11px}.frame-summary-text{color:#334155;font-size:14px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap;max-height:150px;overflow:auto}
+.scene-panel{margin-top:18px}.scene-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:16px;margin-top:14px}.scene-grid h3{font-size:13px;margin-bottom:8px}.scene-list{display:grid;gap:8px;max-height:330px;overflow:auto}.scene-item{padding:10px 12px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}.scene-item.alert{border-left:3px solid var(--red);background:#fff5f5}.scene-item.uncertain{border-left:3px solid var(--amber)}.scene-item strong{display:block;font-size:13px;margin-bottom:4px}.scene-empty{padding:12px;color:var(--muted);font-size:13px;background:#f8fafc;border-radius:10px}.scene-panel .head h2{text-transform:none;letter-spacing:0;font-size:15px;color:var(--text)}@media(max-width:720px){.scene-grid{grid-template-columns:1fr}}
 .analysis-workspace.fullscreen-active .frame-summary{position:absolute;z-index:7;left:16px;right:360px;bottom:16px;background:rgba(8,15,27,.82);border-color:rgba(255,255,255,.2);border-left-color:#60a5fa;backdrop-filter:blur(14px)}.analysis-workspace.fullscreen-active .frame-summary h3,.analysis-workspace.fullscreen-active .frame-summary-text{color:#f1f5f9}.analysis-workspace.fullscreen-active .frame-summary-meta{color:#cbd5e1}.analysis-workspace.fullscreen-active .frame-summary-text{max-height:18vh}
 @media(max-width:720px){.analysis-workspace.fullscreen-active .frame-summary{left:10px;right:10px;bottom:auto;top:110px;padding:10px 12px}.analysis-workspace.fullscreen-active .frame-summary-text{font-size:12px;max-height:15vh}}
 </style>
@@ -167,7 +168,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
         <div class="field" id="event-sensitivity-controls">
           <span>事件敏感度 · 启动前调整</span>
           <div id="event-sensitivity-fields" class="row"></div>
-          <span class="note">高敏感度更容易触发警报，也可能增加误报。行为警报需连续 10 次有效阴性才解除；人脸识别使用独立设置。</span>
+          <span id="event-sensitivity-note" class="note">高敏感度更容易触发警报，也可能增加误报。行为警报需连续 10 次有效阴性才解除；人脸识别使用独立设置。</span>
         </div>
         <div class="session-actions">
           <button id="start-button" class="btn primary" disabled>Start selected detection</button>
@@ -250,6 +251,16 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     </section>
   </div>
 
+  <section id="scene-panel" class="panel scene-panel" aria-labelledby="scene-title" hidden>
+    <div class="head"><h2 id="scene-title">连续人物与事件</h2><span id="scene-mode" class="channel"></span></div>
+    <p id="scene-status" class="status" role="status" aria-live="polite">等待连续观察证据…</p>
+    <p id="scene-summary" class="note"></p>
+    <div class="scene-grid">
+      <div><h3>现场人物</h3><div id="scene-entities" class="scene-list"></div></div>
+      <div><h3>事件进展</h3><div id="scene-events" class="scene-list"></div></div>
+    </div>
+  </section>
+
   <section class="panel output-console">
     <div class="head debug-head">
       <div class="section-title"><span class="step">3</span><h2>Output debug &amp; delivery checks</h2></div>
@@ -277,10 +288,11 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     </div>
     <div class="endpoint-grid" aria-label="Output and API shortcuts">
       <a class="endpoint" href="/v1/video/annotated/stream.mjpeg" target="_blank" rel="noreferrer">Annotated stream <small>MJPEG</small></a>
-      <a class="endpoint" href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Exact evidence stream <small>MJPEG</small></a>
+      <a id="legacy-evidence-stream" class="endpoint" href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Exact evidence stream <small>MJPEG</small></a>
       <a class="endpoint" href="/v1/video/live/stream.mjpeg" target="_blank" rel="noreferrer">Raw source stream <small>MJPEG</small></a>
       <a class="endpoint" href="/v1/video/annotated/latest.jpg" target="_blank" rel="noreferrer">Latest annotated frame <small>JPEG</small></a>
-      <a class="endpoint" href="/v1/video/latest.jpg" target="_blank" rel="noreferrer">Latest exact evidence <small>JPEG</small></a>
+      <a id="legacy-evidence-latest" class="endpoint" href="/v1/video/latest.jpg" target="_blank" rel="noreferrer">Latest exact evidence <small>JPEG</small></a>
+      <a id="scene-evidence-latest" class="endpoint" href="/v1/scene/evidence" target="_blank" rel="noreferrer" hidden>连续观察证据 <small>JSON · 原始画面</small></a>
       <a class="endpoint" href="/v1/results/latest" target="_blank" rel="noreferrer">Latest result <small>JSON</small></a>
       <a class="endpoint" href="/v1/results/events" target="_blank" rel="noreferrer">Result event stream <small>SSE</small></a>
       <a class="endpoint" href="/v1/status" target="_blank" rel="noreferrer">Runtime status <small>API</small></a>
@@ -393,6 +405,8 @@ const ui={
   description:$("description"),meta:$("decision-meta"),statusJson:$("status-json"),
   resultJson:$("result-json"),resultCount:$("result-count"),logBody:$("log-body")
 };
+const sceneUi={panel:$("scene-panel"),mode:$("scene-mode"),status:$("scene-status"),
+  summary:$("scene-summary"),entities:$("scene-entities"),events:$("scene-events")};
 const featureInputs=[...document.querySelectorAll("[data-feature]")];
 const saveApiKeyButton=$("save-api-key-button");
 const localHosts=new Set(["localhost","127.0.0.1","::1","[::1]"]);
@@ -413,6 +427,172 @@ const state={
   classificationJudgments:new Map(),classificationResult:null,classificationHistory:new Map(),
   notifiedResults:new Set(),runtimeErrorMessage:""
 };
+const sceneView={enabled:false,mode:"shadow",snapshot:null,error:false,timer:null,
+  controller:null,generation:0,polling:false,closed:false,sourceKey:null,sourceTimestamp:null,
+  advancedAt:null,receivedAt:null,aliases:new Map(),nextAlias:1};
+const sceneEventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人"};
+function sceneActive(){return sceneView.enabled&&sceneView.mode==="active"}
+function sceneMoment(value){return typeof value==="number"&&Number.isFinite(value)?value.toFixed(1)+" 秒":"待补充"}
+function sceneName(value){return sceneEventNames[canonicalEventLabel(value)]||"事件"}
+function scenePerson(subject){
+  const key=String(subject||"");
+  if(!sceneView.aliases.has(key)){
+    if(sceneView.aliases.size>=512)sceneView.aliases.delete(sceneView.aliases.keys().next().value);
+    sceneView.aliases.set(key,"人物 "+sceneView.nextAlias++)
+  }
+  return sceneView.aliases.get(key)
+}
+function sceneCondition(){
+  const data=sceneView.snapshot;
+  if(!state.running||data&&["stopped","idle","disabled"].includes(data.state))return "stopped";
+  if(sceneView.error)return "unavailable";
+  if(!data||!data.scene)return "waiting";
+  if(sceneView.advancedAt!==null&&Date.now()-sceneView.advancedAt>5000)return "stale";
+  if(data.worker&&["failed","stopped","stopping"].includes(data.worker.state))return "unavailable";
+  return "observing"
+}
+function sceneEmpty(parent,text){const item=document.createElement("div");item.className="scene-empty";item.textContent=text;parent.append(item)}
+function sceneItem(parent,title,detail,tone=""){
+  const item=document.createElement("div"),heading=document.createElement("strong"),body=document.createElement("div");
+  item.className="scene-item"+(tone?" "+tone:"");heading.textContent=title;body.className="note";body.textContent=detail;
+  item.append(heading,body);parent.append(item)
+}
+function renderSceneDecision(){
+  if(!sceneActive())return;
+  const data=sceneView.snapshot||{},scene=data.scene||{},condition=sceneCondition();
+  const events=Array.isArray(scene.events)?scene.events:[];
+  const live=events.filter(item=>item&&["suspected","confirmed"].includes(item.phase));
+  const confirmed=live.filter(item=>item.phase==="confirmed");
+  const labels=(Array.isArray(data.event_labels)?data.event_labels:visibleFeatures()).filter(key=>key!=="stranger");
+  const hasAlert=confirmed.length>0&&condition!=="stopped";
+  ui.analysisChipLabel.textContent="持续事件";ui.event.textContent=labels.length+" 类";
+  ui.eyebrow.textContent="连续事件判断";
+  ui.decision.className="decision "+(hasAlert?"detected":"warming");
+  ui.verdict.textContent=condition==="stopped"?"已停止":hasAlert?"事件持续中":
+    condition==="unavailable"?"状态暂不可用":condition==="stale"?"画面未更新":live.length?"正在复核":"等待证据";
+  ui.confidence.textContent=hasAlert?confirmed.map(item=>sceneName(item.event_label)).join(" · "):
+    "根据连续观察更新事件状态";
+  ui.description.textContent=condition==="stopped"?"视频观察已停止，历史事件不代表当前状态。":
+    condition==="unavailable"?"暂时无法获得新的识别结果，已确认事件仍需后续证据更新。":
+    condition==="stale"?"视频画面已一段时间没有推进，保留历史事件并等待新画面。":
+    hasAlert&&confirmed.some(item=>item.observation_state==="uncertain")?"事件已确认；相关人物暂不可见或证据不足，持续状态待核实。":
+    hasAlert?"持续跟踪相关人物，等待后续证据确认事件结束。":
+    live.length?"发现疑似事件，正在收集和复核更多证据。":"尚无已确认的持续事件，等待连续观察证据。";
+  ui.meta.textContent="最近画面："+sceneMoment(scene.timestamp_seconds);
+  ui.eventStatuses.hidden=false;ui.eventStatuses.replaceChildren();
+  for(const key of [...new Set(labels)].slice(0,16)){
+    const group=events.filter(item=>item&&canonicalEventLabel(item.event_label)===canonicalEventLabel(key));
+    const active=group.find(item=>item.phase==="confirmed")||group.find(item=>item.phase==="suspected");
+    const ended=group.find(item=>item.phase==="ended"),retracted=group.find(item=>item.phase==="retracted");
+    const item=document.createElement("div"),name=document.createElement("span"),status=document.createElement("span");
+    const alert=condition!=="stopped"&&active&&active.phase==="confirmed";
+    item.dataset.eventLabel=key;item.className="event-state "+(alert?"detected":"pending");name.textContent=sceneName(key);
+    status.textContent=condition==="stopped"?"已停止":active?
+      (active.phase==="confirmed"?"持续中":"疑似，复核中")+
+      (active.observation_state==="uncertain"||["stale","unavailable"].includes(condition)?" · 待核实":""):
+      condition==="unavailable"?"状态暂不可用":condition==="stale"?"等待新画面":ended?"已结束，继续观察":retracted?"判断已修订":"等待证据";
+    item.append(name,status);ui.eventStatuses.append(item)
+  }
+}
+function renderScene(){
+  sceneUi.panel.hidden=!sceneView.enabled;if(!sceneView.enabled)return;
+  const data=sceneView.snapshot||{},scene=data.scene||{},condition=sceneCondition();
+  const entities=(Array.isArray(scene.entities)?scene.entities:[]).filter(Boolean).slice(0,64);
+  const events=(Array.isArray(scene.events)?scene.events:[]).filter(Boolean).slice(-64).reverse();
+  sceneUi.mode.textContent=sceneActive()?"持续识别":"探索验证";
+  sceneUi.status.textContent=condition==="stopped"?"观察已停止；以下保留最近一次记录。":
+    condition==="unavailable"?"识别结果暂不可用，正在重试。":condition==="stale"?"画面未更新，当前人物与事件状态待核实。":
+    condition==="waiting"?"等待当前视频的连续观察证据…":data.automatic_temporal_inference===true?"正在持续观察人物，按变化复核事件。":"正在记录人物状态，自动事件复核尚未就绪。";
+  sceneUi.status.className="status"+(condition==="unavailable"?" error":"");
+  const worker=data.worker||{};
+  sceneUi.summary.textContent=entities.length+" 位人物 · "+events.filter(item=>item.phase==="confirmed").length+
+    " 项已确认事件 · 最近画面 "+sceneMoment(scene.timestamp_seconds)+
+    (Number.isFinite(worker.succeeded_requests)?" · 已完成 "+worker.succeeded_requests+" 次复核":"")+
+    (sceneActive()?"":" · 此面板用于探索验证");
+  sceneUi.entities.replaceChildren();sceneUi.events.replaceChildren();
+  for(const entity of entities){
+    const identity=entity.identity&&typeof entity.identity==="object"?entity.identity:{};
+    const name=identity.status==="known"&&identity.name?String(identity.name):"身份待确认";
+    const observation=condition==="stopped"?"观察已停止":["stale","unavailable"].includes(condition)?"当前状态待核实":
+      entity.observation_state==="observed"?"画面中可见":entity.observation_state==="occluded"?"暂时遮挡或离开画面":
+      entity.observation_state==="predicted"?"位置待确认":"观察状态待核实";
+    sceneItem(sceneUi.entities,scenePerson(entity.subject_id)+" · "+name,
+      observation+" · 最近看见："+sceneMoment(entity.last_observed_timestamp_seconds),
+      entity.observation_state!=="observed"||condition!=="observing"?"uncertain":"")
+  }
+  if(!entities.length)sceneEmpty(sceneUi.entities,"等待建立人物记录；空列表不代表现场安全。");
+  for(const event of events){
+    const phase=({suspected:"发现疑似事件，正在复核",confirmed:"已确认，持续中",ended:"已结束",retracted:"判断已修订"})[event.phase]||"等待更多证据";
+    const uncertain=event.observation_state==="uncertain"||condition!=="observing";
+    const subjects=Array.isArray(event.subject_ids)?event.subject_ids.map(scenePerson).join("、"):"相关人物待确认";
+    sceneItem(sceneUi.events,sceneName(event.event_label)+" · "+subjects,
+      phase+(condition==="stopped"?" · 历史记录":uncertain?" · 当前状态待核实":"")+
+      " · 首次证据："+sceneMoment(event.first_evidence_timestamp_seconds)+
+      " · 最近证据："+sceneMoment(event.last_evidence_timestamp_seconds),
+      event.phase==="confirmed"&&condition!=="stopped"?"alert":uncertain||event.phase==="suspected"?"uncertain":"")
+  }
+  if(!events.length)sceneEmpty(sceneUi.events,"等待连续观察证据，尚无可展示的事件。");
+  renderSceneDecision()
+}
+function acceptSceneSnapshot(data){
+  if(!data||typeof data!=="object"||data.enabled!==true)return false;
+  const scene=data.scene;
+  if(scene){
+    if(typeof scene.stream_session_id!=="string"||
+      state.sessionId&&scene.stream_session_id!==state.sessionId)return false;
+    if(typeof scene.timestamp_seconds!=="number"||!Number.isFinite(scene.timestamp_seconds))return false;
+    const key=scene.stream_session_id+"/"+String(scene.source_id||"");
+    if(key!==sceneView.sourceKey){
+      sceneView.aliases.clear();sceneView.nextAlias=1;sceneView.sourceTimestamp=null;sceneView.sourceKey=key
+    }
+    if(sceneView.sourceTimestamp!==null&&scene.timestamp_seconds<sceneView.sourceTimestamp)return false;
+    if(sceneView.sourceTimestamp===null||scene.timestamp_seconds>sceneView.sourceTimestamp)sceneView.advancedAt=Date.now();
+    sceneView.sourceTimestamp=scene.timestamp_seconds
+  }
+  sceneView.snapshot=data;sceneView.receivedAt=Date.now();sceneView.error=false;renderScene();return true
+}
+function stopScenePolling(){
+  sceneView.generation++;sceneView.polling=false;clearTimeout(sceneView.timer);sceneView.timer=null;
+  if(sceneView.controller)sceneView.controller.abort();sceneView.controller=null
+}
+function startScenePolling(){
+  if(sceneView.closed||sceneView.polling||!sceneView.enabled||document.hidden)return;
+  sceneView.polling=true;const generation=++sceneView.generation;pollScene(generation)
+}
+async function pollScene(generation){
+  if(generation!==sceneView.generation||!sceneView.polling)return;
+  const controller=new AbortController();sceneView.controller=controller;
+  const session=state.sessionId,timeout=setTimeout(()=>controller.abort(),4000);
+  try{
+    const response=await fetch("/v1/scene",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error("scene unavailable");
+    const data=await response.json();
+    if(generation!==sceneView.generation||session!==state.sessionId)return;
+    if(!acceptSceneSnapshot(data)){sceneView.error=true;renderScene()}
+  }catch(_){if(generation===sceneView.generation){sceneView.error=true;renderScene()}}
+  finally{
+    clearTimeout(timeout);
+    if(generation===sceneView.generation){
+      sceneView.controller=null;
+      if(sceneView.polling&&!sceneView.closed&&!document.hidden)
+        sceneView.timer=setTimeout(()=>pollScene(generation),750)
+    }
+  }
+}
+function configureScene(config){
+  sceneView.enabled=!!(config&&config.enabled===true);
+  sceneView.mode=config&&config.mode==="active"?"active":"shadow";
+  $("legacy-evidence-stream").hidden=sceneActive();
+  $("legacy-evidence-latest").hidden=sceneActive();
+  $("scene-evidence-latest").hidden=!sceneActive();
+  if(sceneView.enabled){renderScene();startScenePolling()}
+  else{stopScenePolling();sceneUi.panel.hidden=true}
+}
+function resetSceneView(){
+  stopScenePolling();sceneView.snapshot=null;sceneView.error=false;sceneView.sourceKey=null;
+  sceneView.sourceTimestamp=null;sceneView.advancedAt=null;sceneView.receivedAt=null;
+  sceneView.aliases.clear();sceneView.nextAlias=1;renderScene();startScenePolling()
+}
 function number(value,digits){const n=Number(value);return Number.isFinite(n)?n.toFixed(digits):"-"}
 function say(text,error=false){ui.statusLine.textContent=text;ui.statusLine.className="status"+(error?" error":"")}
 function count(value){const n=Number(value);return Number.isFinite(n)&&n>=0?Math.floor(n).toLocaleString():"0"}
@@ -592,9 +772,18 @@ function updateAnalysisUi(){
   ui.eyebrow.textContent="Live selected-feature classification";
   ui.start.textContent="Start selected detection";
   const output=state.info&&state.info.annotated_output||{};
-  ui.annotationNote.innerHTML="The server delivers "+
-    annotatedOutputText(output)+". With face detection, events follow the same person's latest face frame until that person's event clears. Other face boxes stay visible. "+
-    '<a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.';
+  if(sceneActive()){
+    ui.annotationNote.textContent="框随人物持续更新；事件根据连续证据开始、持续和结束。暂时遮挡时，保留历史判断并标记待核实。 ";
+    const evidence=document.createElement("a");evidence.href="/v1/scene/evidence";
+    evidence.target="_blank";evidence.rel="noreferrer";evidence.textContent="查看连续观察证据";
+    ui.annotationNote.append(evidence);
+    $("event-sensitivity-note").textContent="事件按连续观察证据确认和结束；人物暂时不可见时继续等待复核。人脸识别使用独立设置。"
+  }else{
+    ui.annotationNote.innerHTML="The server delivers "+
+      annotatedOutputText(output)+". With face detection, events follow the same person's latest face frame until that person's event clears. Other face boxes stay visible. "+
+      '<a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.';
+    $("event-sensitivity-note").textContent="高敏感度更容易触发警报，也可能增加误报。行为警报需连续 10 次有效阴性才解除；人脸识别使用独立设置。"
+  }
   if(!state.running&&!state.pending){
     resetClassification();
     ui.decision.className="decision warming";ui.verdict.textContent="READY";
@@ -604,7 +793,7 @@ function updateAnalysisUi(){
       :"Select at least one detection feature.";
     ui.meta.textContent="";resetAnnotations();renderEventStatuses([])
   }
-  controls();if(!state.gallery&&!state.galleryLoading)refreshGallery()
+  renderScene();controls();if(!state.gallery&&!state.galleryLoading)refreshGallery()
 }
 function sourceMedia(){
   if(state.running)return ui.rawFeed;
@@ -847,7 +1036,7 @@ async function info(){
       data.annotated_output.output_fps=Number(data.annotated_output.output_fps);
       data.annotated_output.buffer_delay_seconds=Number(data.annotated_output.buffer_delay_seconds)
     }
-    state.info=data;
+    state.info=data;configureScene(data.scene_engine);
     renderSensitivities();
     updateAnnotatedOutput(data.annotated_output);
     if(!state.runOverridesDirty&&!state.deployment){
@@ -1274,6 +1463,7 @@ async function stop(){
   }catch(error){say("Could not stop: "+error.message,true)}
 }
 function reset(){
+  resetSceneView();
   resetOverallDescription();
   resetClassification();
   state.count=0;ui.resultCount.textContent="0 results";ui.logBody.replaceChildren();
@@ -1412,6 +1602,7 @@ function resetClassification(){
   $("event-notice").hidden=true;$("event-notice").textContent=""
 }
 function notifyEvent(result,judgments){
+  if(sceneActive())return;
   const active=judgments.filter(item=>item&&item.detected===true&&safetyEvents.includes(canonicalEventLabel(item.event_label)));
   if(!active.length)return;
   const id=result.message_id||String(result.sequence);
@@ -1466,6 +1657,10 @@ function mergeClassification(result){
   }
 }
 function renderClassification(){
+  if(sceneActive()){
+    renderEventStatuses([...state.classificationJudgments.values()].map(entry=>entry.judgment));
+    renderSceneDecision();return
+  }
   const result=state.classificationResult;if(!result)return;
   const features=visibleFeatures(),latestTimestamp=Number((result.frame||{}).timestamp_seconds)||0;
   const entries=features.map(key=>state.classificationJudgments.get(key)).filter(entry=>{
@@ -1508,6 +1703,11 @@ function renderClassification(){
 }
 function analysisFace(result){
   const summary=summarizeFaces(result),frame=result.frame||{},model=result.model||{};
+  if(sceneActive()){
+    ui.faceDiagnosticSummary.textContent="人脸识别 · "+summary.description;
+    ui.faceDiagnosticSummary.className="face-diagnostic"+(summary.decisionClass==="detected"?" error":"");
+    clearAnnotation();logFace(result,summary);renderSceneDecision();return
+  }
   ui.decision.className="decision "+summary.decisionClass;ui.verdict.textContent=summary.verdict;
   if(result.analysis_complete===false&&summary.decisionClass!=="detected"){
     ui.decision.className="decision warming";ui.verdict.textContent="INCOMPLETE"
@@ -1543,6 +1743,7 @@ function renderEventStatuses(judgments){
         ?"waiting for a fresh face observation.":"waiting for the first analyzed frame.")
       :"Face diagnostics | stranger detection is not enabled.";
   ui.faceDiagnosticSummary.className="face-diagnostic"+(stranger&&stranger.detected===true?" error":"");
+  if(sceneActive()){renderSceneDecision();return}
   const existing=new Map([...ui.eventStatuses.children].map(item=>[item.dataset.eventLabel,item]));
   const items=[];
   for(const eventLabel of visibleFeatures()){
@@ -1736,10 +1937,14 @@ async function connectResultEvents(){
   })
 }
 window.addEventListener("beforeunload",()=>{
+  sceneView.closed=true;stopScenePolling();
   if(archiveView.stream)archiveView.stream.close();
   if(events)events.close();stopSampler();resetAnnotations();
   if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
   if(state.ws)state.ws.close()
+});
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)stopScenePolling();else{renderScene();startScenePolling()}
 });
 mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
 loadRoutes();setInterval(loadRoutes,1500);

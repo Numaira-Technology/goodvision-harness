@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from PIL import Image, UnidentifiedImageError
 
 from .contracts import NormalizedBBox
+from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .scene_runtime import SceneRuntime, TemporalInspection, TemporalVerdict
 
 _EVENT_LABELS = frozenset(("fight", "smoking", "fall", "weapon"))
@@ -142,6 +143,17 @@ def build_temporal_messages(
     if type(max_image_side) is not int or not 1 <= max_image_side <= 2048:
         raise ValueError("max_image_side must be an integer from 1 through 2048")
     allowed_ids = _validate_job(job)
+    sensitivities = normalize_event_sensitivities(
+        dict(job.event_sensitivities), job.request.event_labels
+    )
+    policy = sensitivity_policy_text(
+        sensitivities,
+        smoking_standard_rule=(
+            "Smoking STANDARD: require a clearly visible cigarette, cigar, pipe "
+            "or vaping device and a compatible smoking action; a hand near the "
+            "mouth alone is insufficient."
+        ),
+    )
     context = {
         "allowed_event_labels": list(job.request.event_labels),
         "allowed_subject_ids": sorted(allowed_ids),
@@ -177,7 +189,13 @@ def build_temporal_messages(
             }
         )
     return [
-        {"role": "system", "content": _PROMPT},
+        {
+            "role": "system",
+            "content": policy
+            + "\n\nApply these event criteria across the sequence. Output only the "
+            "temporal verdict schema below; do not produce new bounding boxes.\n\n"
+            + _PROMPT,
+        },
         {"role": "user", "content": content},
     ]
 
