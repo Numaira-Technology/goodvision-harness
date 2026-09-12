@@ -35,6 +35,7 @@ from .grounding import (
     ModelObject,
     build_face_diagnostics,
 )
+from .privacy import LocalFaceUnavailableError
 from .reference_memory import UNKNOWN_FACE_EVENT_LABEL
 from .rich_labeling import RichLabelCoordinator, RichLabelSnapshot
 from .sliding_window import FrameWindow
@@ -824,7 +825,7 @@ def _load_face_analysis_inner(config: FaceRecognizerConfig) -> Any:
         insightface_app = importlib.import_module("insightface.app")
         onnxruntime = importlib.import_module("onnxruntime")
     except ModuleNotFoundError as exc:
-        raise RuntimeError("local face analysis is unavailable") from exc
+        raise LocalFaceUnavailableError("local face analysis is unavailable") from exc
 
     if config.provider == "CUDAExecutionProvider":
         # The GPU distribution can install its CUDA/cuDNN runtime libraries as

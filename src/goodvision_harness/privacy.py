@@ -14,12 +14,22 @@ from typing import Any
 
 PUBLIC_ANALYSIS_ERROR = "analysis request failed"
 PUBLIC_FACE_ERROR = "local face analysis failed"
+PUBLIC_FACE_UNAVAILABLE_ERROR = (
+    "本地人脸识别组件不可用。请安装或修复服务端人脸组件后重试。 / "
+    "Local face recognition is unavailable; install or repair the server's "
+    "face components, then retry."
+)
 PUBLIC_STREAM_ERROR = "video input failed; check the video source and retry"
 PUBLIC_STREAM_SUPPORT_ERROR = "video input support is missing on this server"
 PUBLIC_MISSING_API_KEY_ERROR = (
     "请先在控制台保存 API key，再启动正式检测；无需创建 .env。 / "
     "Save an API key in the console before starting live detection; no .env file is required."
 )
+
+
+class LocalFaceUnavailableError(RuntimeError):
+    """Known missing local components, safe to map to an actionable public error."""
+
 
 # These values belong to the application's correlation/CRUD contract, not to
 # its implementation metadata. Customer-supplied identifiers can legitimately
@@ -139,6 +149,8 @@ def public_error_message(
 ) -> str:
     """Preserve known public failures without echoing an underlying exception."""
 
+    if isinstance(_error, LocalFaceUnavailableError):
+        return PUBLIC_FACE_UNAVAILABLE_ERROR
     if isinstance(_error, str) and _error in {
         PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR,
     }:

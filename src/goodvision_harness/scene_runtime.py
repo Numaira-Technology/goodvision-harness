@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from threading import RLock
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -30,6 +31,7 @@ from .scene_state import SceneState
 from .video_tracking import BACKEND as _NATIVE_VIDEO_BACKEND
 
 _EVENTS = frozenset(("fight", "smoking", "fall", "weapon", "stranger"))
+_INSPECTION_TIMEOUT_SECONDS = 20.0
 _PERSON_LABELS = frozenset(
     (
         "person",
@@ -188,6 +190,7 @@ class SceneRuntime:
         self._jobs: OrderedDict[str, TemporalInspection] = OrderedDict()
         self._latest_inspection: TemporalInspection | None = None
         self._claimed: set[str] = set()
+        self._inspection_deadlines: dict[str, float] = {}
         self._pending_results: OrderedDict[str, AnalysisResult] = OrderedDict()
         self._accepted: OrderedDict[tuple[str, str, str], _AcceptedEvidence] = (
             OrderedDict()
@@ -201,6 +204,7 @@ class SceneRuntime:
             "prepared_inspections": 0,
             "completed_inspections": 0,
             "failed_inspections": 0,
+            "expired_inspections": 0,
             "accepted_temporal_verdicts": 0,
             "rejected_temporal_verdicts": 0,
             "completed_tracking_batches": 0,
@@ -717,6 +721,9 @@ class SceneRuntime:
                 interval.subject_boxes,
                 self.event_sensitivities,
             )
+            self._inspection_deadlines[request_id] = (
+                monotonic() + _INSPECTION_TIMEOUT_SECONDS
+            )
             self._tracking_intervals.pop(request_id)
             self._stats["prepared_inspections"] += 1
 
@@ -917,10 +924,18 @@ class SceneRuntime:
         return self._now
 
     def _expire_inspections(self) -> None:
+        execution_now = monotonic() if self.tracking_mode == "batch" else None
         for request_id, job in tuple(self._jobs.items()):
-            if self._now - job.request.end_seconds >= 20.0:
+            expired = (
+                execution_now >= self._inspection_deadlines[request_id]
+                if self.tracking_mode == "batch"
+                else self._now - job.request.end_seconds >= _INSPECTION_TIMEOUT_SECONDS
+            )
+            if expired:
                 self._jobs.pop(request_id)
                 self._claimed.discard(request_id)
+                self._inspection_deadlines.pop(request_id, None)
+                self._stats["expired_inspections"] += 1
                 self.scene.unpin_source_observations(request_id)
                 self.planner.complete(
                     request_id,
@@ -1059,6 +1074,7 @@ class SceneRuntime:
 
     def inspection_active(self, request_id: str) -> bool:
         with self._lock:
+            self._expire_inspections()
             return not self._closed and request_id in self._jobs
 
     def take_inspections(self, limit: int = 4) -> tuple[TemporalInspection, ...]:
@@ -1066,10 +1082,22 @@ class SceneRuntime:
         if type(limit) is not int or not 1 <= limit <= 4:
             raise ValueError("inspection limit must be within 1..4")
         with self._lock:
+            if self._closed:
+                return ()
+            self._expire_inspections()
+            if self.tracking_mode == "batch":
+                self._drain_tracking_intervals()
             jobs = tuple(
                 job for key, job in self._jobs.items() if key not in self._claimed
             )[:limit]
             self._claimed.update(job.request.request_id for job in jobs)
+            if self.tracking_mode == "batch":
+                # Arrived source age includes native hotstart/network delay.
+                # Give a newly claimed immutable job its own bounded model
+                # budget without moving capture time or its evidence timestamps.
+                deadline = monotonic() + _INSPECTION_TIMEOUT_SECONDS
+                for job in jobs:
+                    self._inspection_deadlines[job.request.request_id] = deadline
             return jobs
 
     def complete_inspection(
@@ -1081,6 +1109,7 @@ class SceneRuntime:
         completion_counts: dict[str, int] | None = None,
     ) -> bool:
         with self._lock:
+            self._expire_inspections()
             job = self._jobs.get(request_id)
             if self._closed or job is None or request_id not in self._claimed:
                 return False
@@ -1122,6 +1151,7 @@ class SceneRuntime:
                 seen.add(key)
             self._jobs.pop(request_id)
             self._claimed.discard(request_id)
+            self._inspection_deadlines.pop(request_id, None)
             accepted_count = 0
             try:
                 if success:
@@ -1192,6 +1222,7 @@ class SceneRuntime:
             self._jobs.clear()
             self._latest_inspection = None
             self._claimed.clear()
+            self._inspection_deadlines.clear()
             self._pending_results.clear()
             self.evidence.reset()
             self._tracking_frames.clear()
@@ -1251,6 +1282,12 @@ class SceneRuntime:
                 "state": "stopped" if self._closed else "running",
                 "automatic_temporal_inference": self.automatic_temporal_inference
                 and not self._closed,
+                "inspection_expiry_clock": (
+                    "monotonic_execution"
+                    if self.tracking_mode == "batch"
+                    else "source_time"
+                ),
+                "inspection_timeout_seconds": _INSPECTION_TIMEOUT_SECONDS,
                 "event_labels": list(self.event_labels),
                 "scene": self.scene.snapshot(),
                 "inspections": [

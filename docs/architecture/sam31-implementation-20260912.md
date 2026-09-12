@@ -93,7 +93,16 @@ SAM31_INFERENCE_MAX_SIDE=640 HF_HUB_OFFLINE=1 \
 python -m uvicorn app:app --host 127.0.0.1 --port 8092 --workers 1
 ```
 
-确认 `/health/video/session` 的 `ready` 与 `gpu_ready` 都为 true 后，本地主程序使用：
+本地主程序也需要完整依赖。默认页面选中陌生人识别，因此仅安装 SAM 客户端或使用轻量测试环境
+会在正式启动时因缺少 InsightFace／ONNX Runtime 失败。使用独立虚拟环境安装项目 extras：
+
+```powershell
+python -m venv .venv-demo
+.venv-demo/Scripts/python.exe -m pip install -e ".[face,webrtc,vlm]" "opencv-python>=4.10,<5"
+```
+
+人脸模型仍从已有的 `FACE_MODEL_ROOT`／配置目录加载。确认本地人脸预热通过，以及远端
+`/health/video/session` 的 `ready` 与 `gpu_ready` 都为 true 后，在完整环境启动本地主程序：
 
 ```powershell
 $env:SCENE_ENGINE_MODE = 'active'
@@ -106,12 +115,17 @@ $env:SAM31_BATCH_FRAMES = '16'
 $env:SAM31_BATCH_SECONDS = '4'
 $env:SAM31_CLIENT_TIMEOUT_SECONDS = '75'
 $env:HARNESS_AUTOSTART = 'false'
-python -m goodvision_harness.service
+.venv-demo/Scripts/python.exe -m goodvision_harness.service
 ```
 
 沿用本地已有的模型与人脸配置，不在实验报告或 Git 中保存密钥。活动安全识别使用
 持续事件链路；选择陌生人能力时，独立人脸识别仍可运行。默认时序请求单次包含 2–4 张
 原始画面，15 秒总超时，最多一个请求在途；运行服务没有整场固定请求次数上限。
+
+原生视频结果的源时间可能已经落后于实时画面。事件任务准备后最多排队 20 秒，首次领取后
+另有 20 秒执行预算，按单调时钟计算；此前的原生追踪／网络耗时不会挤占模型执行时间。
+队列仍限 4 个任务、16 MiB；超时结果不会重新激活，证据源时间与画面滞后保持原值。
+状态会分别报告事件任务过期数和处理滞后；普通即时后端保留原有源时间过期规则。
 
 连续容器部署叠加专用 overlay：
 

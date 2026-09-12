@@ -329,18 +329,42 @@ def test_person_history_has_time_and_count_caps_but_keeps_pinned_source_evidence
     assert state.snapshot()["entities"][0]["observation_state"] == "occluded"
 
 
-def test_capture_expiration_releases_jobs_without_waiting_for_next_native_batch():
+def test_execution_expiration_releases_jobs_without_waiting_for_next_native_batch(
+    monkeypatch,
+):
+    clock = [100.0]
+    monkeypatch.setattr("goodvision_harness.scene_runtime.monotonic", lambda: clock[0])
     scene = runtime()
     capture(scene, 240)
     assert commit(scene, (track(0), track(30), track(60), track(90)))
     jobs = scene.take_inspections()
     assert jobs
     capture(scene, 720, start_sequence=241)
+    pending = scene.snapshot()
+    assert len(pending["inspections"]) == len(jobs) <= 4
+    assert pending["scene"]["source_pins"]["jobs"] == len(jobs)
+    assert pending["scene"]["entities"][0]["history"] == []
+    assert all(box == BOX for job in jobs for _, _, box in job.subject_boxes)
+    assert all(
+        frame.jpeg_bytes == f"jpeg-{frame.frame_sequence}".encode()
+        for job in jobs
+        for frame in job.frames
+    )
+    assert (
+        sum(len(frame.jpeg_bytes) for job in jobs for frame in job.frames)
+        <= 16 * 1024 * 1024
+    )
+    assert pending["tracking_completed_timestamp_seconds"] == 3
+    assert pending["tracking_lag_seconds"] == 21
+    # Source histories may expire while immutable claimed evidence remains
+    # pinned. Only the independent execution deadline retires this native job.
+    clock[0] += 20
+    capture(scene, 721, start_sequence=721)
     assert scene.snapshot()["inspections"] == []
     assert scene.snapshot()["scene"]["source_pins"]["jobs"] == 0
     assert not scene.complete_inspection(jobs[0].request.request_id, ())
     assert scene.snapshot()["tracking_completed_timestamp_seconds"] == 3
-    assert scene.snapshot()["tracking_lag_seconds"] == 21
+    assert scene.snapshot()["tracking_lag_seconds"] == pytest.approx(721 / 30 - 3)
 
 
 def test_native_metadata_whitelist_and_source_projection_are_detached():
