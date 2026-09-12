@@ -36,6 +36,29 @@ _PERSON_LABELS = frozenset(
     }
 )
 _SOURCE_FACE_MAX_GAP_SECONDS = 0.6
+_NATIVE_BACKEND = "sam3.1_video"
+
+
+def _native_metadata(value: object) -> tuple[str, str, str] | None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "backend",
+        "epoch",
+        "object_id",
+    }:
+        return None
+    parts = tuple(value[key] for key in ("backend", "epoch", "object_id"))
+    if (
+        any(
+            not isinstance(part, str)
+            or not part.strip()
+            or len(part) > 256
+            or part != part.strip()
+            for part in parts
+        )
+        or parts[0] != _NATIVE_BACKEND
+    ):
+        return None
+    return parts
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +89,7 @@ class _Subject:
     memory_confirmations: int = 0
     memory_frame: tuple[float, int] = (-1.0, -1)
     association_uncertain: bool = False
+    native_track: tuple[str, str, str] | None = None
 
 
 class PersonRegistry:
@@ -77,9 +101,12 @@ class PersonRegistry:
         source_id: str = "",
         *,
         max_gap_seconds: float = 3.0,
+        max_native_tracks: int = 4096,
     ) -> None:
         if not math.isfinite(max_gap_seconds) or max_gap_seconds <= 0:
             raise ValueError("max_gap_seconds must be positive and finite")
+        if type(max_native_tracks) is not int or not 1 <= max_native_tracks <= 4096:
+            raise ValueError("max_native_tracks must be within 1..4096")
         self.stream_session_id = stream_session_id
         self.source_id = source_id
         self.max_gap_seconds = max_gap_seconds
@@ -99,7 +126,54 @@ class PersonRegistry:
         self._latest_time = -1.0
         self._face_tracker = FaceIdentityTracker()
         self._removed_people: set[str] = set()
+        self._native_epoch: tuple[str, str] | None = None
+        self._native_tracks: dict[tuple[str, str, str, str, str], str] = {}
+        self._max_native_tracks = max_native_tracks
+        self._native_rejections: Counter[str] = Counter()
         self._lock = RLock()
+
+    def begin_native_epoch(self, backend: str, epoch: str) -> bool:
+        """Activate a host-validated video batch, including an empty batch.
+
+        The host serializes activation and rejects obsolete batch callbacks. Native
+        snapshots cannot switch epochs themselves. Reset discards active mappings,
+        never transfers their identities, and retains immutable source history.
+        """
+        metadata = _native_metadata(
+            {"backend": backend, "epoch": epoch, "object_id": "epoch-validation"}
+        )
+        if metadata is None:
+            return False
+        with self._lock:
+            if self._native_epoch == (backend, epoch):
+                return True
+            retired = set(self._native_tracks.values())
+            self._face_tracker.forget_bodies(retired)
+            for subject_id in retired:
+                self._subjects.pop(subject_id, None)
+            self._body_aliases = {
+                key: value
+                for key, value in self._body_aliases.items()
+                if value not in retired
+            }
+            self._face_aliases = {
+                key: value
+                for key, value in self._face_aliases.items()
+                if value not in retired
+            }
+            self._native_tracks.clear()
+            self._native_epoch = backend, epoch
+            return True
+
+    def native_tracking_stats(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "backend": self._native_epoch[0] if self._native_epoch else None,
+                "epoch": self._native_epoch[1] if self._native_epoch else None,
+                "tracks": len(self._native_tracks),
+                "capacity": self._max_native_tracks,
+                "rejections": dict(self._native_rejections),
+            }
 
     def forget_person(self, person_id: str) -> None:
         """Invalidate an enrollment immediately, including in-flight results."""
@@ -135,7 +209,8 @@ class PersonRegistry:
         self._subjects = {
             key: value
             for key, value in self._subjects.items()
-            if timestamp - value.seen_at <= self.max_gap_seconds
+            if value.native_track is not None
+            or timestamp - value.seen_at <= self.max_gap_seconds
         }
         self._body_aliases = {
             key: value
@@ -198,8 +273,37 @@ class PersonRegistry:
             key = (snapshot.timestamp_seconds, snapshot.frame_sequence)
             if key <= self._gpu_watermark:
                 return
+            native = {}
+            native_keys = set()
+            for item in snapshot.objects:
+                if "native_track" not in item.attributes:
+                    continue
+                metadata = _native_metadata(item.attributes["native_track"])
+                if metadata is None or metadata in native_keys:
+                    self._native_rejections["invalid_snapshot"] += 1
+                    return
+                if (
+                    self._native_epoch is not None
+                    and metadata[:2] != self._native_epoch
+                ):
+                    self._native_rejections["inactive_epoch"] += 1
+                    return
+                native[item.track_id] = metadata
+                native_keys.add(metadata)
+            if len({metadata[:2] for metadata in native.values()}) > 1:
+                self._native_rejections["invalid_snapshot"] += 1
+                return
+            if (native or self._native_epoch is not None) and (
+                key[0] <= self._gpu_watermark[0] or key[1] <= self._gpu_watermark[1]
+            ):
+                self._native_rejections["source_order"] += 1
+                return
+            if native and self._native_epoch is None:
+                backend, epoch, _ = next(iter(native.values()))
+                self.begin_native_epoch(backend, epoch)
             self._gpu_watermark = key
             observations = []
+            native_objects = []
             for item in snapshot.objects:
                 if item.label.casefold() not in {"person", "pedestrian"}:
                     continue
@@ -211,15 +315,59 @@ class PersonRegistry:
                     seen = item.attributes.get(
                         "last_observed_timestamp_seconds", snapshot.timestamp_seconds
                     )
-                if state != "observed" or not isinstance(seen, (float, int)):
+                if state != "observed" or type(seen) not in (float, int):
                     continue
-                if abs(float(seen) - snapshot.timestamp_seconds) > 0.001:
+                if (
+                    not math.isfinite(seen)
+                    or abs(float(seen) - snapshot.timestamp_seconds) > 0.001
+                ):
+                    continue
+                if item.track_id in native:
+                    if abs(float(seen) - snapshot.timestamp_seconds) > 1e-6:
+                        self._native_rejections["invalid_observation"] += 1
+                        continue
+                    sequence = item.last_observed_frame_sequence
+                    if sequence is None:
+                        sequence = item.attributes.get(
+                            "last_observed_frame_sequence", snapshot.frame_sequence
+                        )
+                    if type(sequence) is not int or sequence != snapshot.frame_sequence:
+                        self._native_rejections["invalid_observation"] += 1
+                        continue
+                    metadata = native[item.track_id]
+                    native_key = self.stream_session_id, self.source_id, *metadata
+                    subject_id = self._native_tracks.get(native_key)
+                    subject = self._subjects.get(subject_id)
+                    if subject is None:
+                        if len(self._native_tracks) >= self._max_native_tracks:
+                            self._native_rejections["capacity"] += 1
+                            continue
+                        subject = self._new_subject(
+                            item.bbox, snapshot.timestamp_seconds
+                        )
+                        subject.native_track = metadata
+                        self._native_tracks[native_key] = subject.subject_id
+                    subject.bbox = item.bbox
+                    subject.seen_at = snapshot.timestamp_seconds
+                    native_objects.append(
+                        replace(
+                            item,
+                            track_id=subject.subject_id,
+                            label="person",
+                            attributes={
+                                **item.attributes,
+                                "observation_state": "observed",
+                                "last_observed_timestamp_seconds": seen,
+                                "last_observed_frame_sequence": sequence,
+                            },
+                        )
+                    )
                     continue
                 observations.append((item.track_id, item.bbox, item.confidence or 0.0))
             assignments = self._observe_bodies(
                 observations, snapshot.timestamp_seconds, worker=True
             )
-            objects = tuple(
+            objects = tuple(native_objects) + tuple(
                 RichLabelObject(
                     track_id=assignments[key],
                     label="person",
@@ -246,8 +394,10 @@ class PersonRegistry:
     ) -> dict[str, str]:
         self._expire(timestamp)
         candidates = tuple(
-            item for item in self._subjects.values()
+            item
+            for item in self._subjects.values()
             if item.subject_id not in (excluded_subject_ids or ())
+            and item.native_track is None
         )
         assignments: dict[str, str] = {}
         proposals: dict[str, _Subject | None] = {}
@@ -524,12 +674,26 @@ class PersonRegistry:
                 if subject is None:
                     subject = self._new_subject(item.bbox, timestamp, "face")
                 if attributes.pop("identity_reset", False):
-                    old_id = subject.subject_id
-                    subject = self._new_subject(subject.bbox, timestamp, subject.kind)
-                    self._subjects.pop(old_id, None)
-                    self._replace_subject_aliases(old_id, subject.subject_id, timestamp)
+                    if subject.native_track is not None:
+                        # A face correction changes identity evidence, not the
+                        # authoritative video object's public subject identifier.
+                        subject.identity = {}
+                        subject.identity_at = -1.0
+                        subject.identity_embeddings = ()
+                    else:
+                        old_id = subject.subject_id
+                        subject = self._new_subject(
+                            subject.bbox, timestamp, subject.kind
+                        )
+                        self._subjects.pop(old_id, None)
+                        self._replace_subject_aliases(
+                            old_id, subject.subject_id, timestamp
+                        )
                 self._face_aliases[face_id] = subject.subject_id
-                if item.attributes.get("identity_source") != "track_history":
+                if (
+                    subject.native_track is None
+                    and item.attributes.get("identity_source") != "track_history"
+                ):
                     subject.seen_at = max(subject.seen_at, timestamp)
                 if subject.kind == "face":
                     subject.bbox = item.bbox
@@ -569,7 +733,8 @@ class PersonRegistry:
                 timestamp,
                 frame_sequence,
                 tuple(
-                    item for item in result
+                    item
+                    for item in result
                     if item.attributes.get("subject_id")
                     and item.attributes.get("face_observation_state") == "observed"
                 ),
@@ -595,24 +760,33 @@ class PersonRegistry:
             actors = _unique_actors(bundle.actors)
             face_actor_map = self._source_face_actors(actors, timestamp, sequence)
             source_snapshot = self.snapshot_at(timestamp, sequence)
+            native_actor_map = {}
             if source_snapshot is not None and (
-                source_snapshot.timestamp_seconds, source_snapshot.frame_sequence
+                source_snapshot.timestamp_seconds,
+                source_snapshot.frame_sequence,
             ) == (timestamp, sequence):
                 for actor in actors:
                     face_id = face_actor_map.get(actor.actor_id)
                     old_body = _unique_body(actor.bbox, source_snapshot.objects)
+                    if old_body is not None and "native_track" in old_body.attributes:
+                        native_actor_map[actor.actor_id] = old_body.track_id
+                        continue
                     if (
-                        face_id is not None and old_body is not None
+                        face_id is not None
+                        and old_body is not None
                         and old_body.track_id != face_id
                     ):
                         # Keep the next face from jumping back to the provisional
                         # body ID after this event receives its source-face owner.
                         self._subjects.pop(old_body.track_id, None)
                         self._replace_subject_aliases(
-                            old_body.track_id, face_id, timestamp,
+                            old_body.track_id,
+                            face_id,
+                            timestamp,
                             frame_sequence=sequence,
                         )
             actor_map: dict[str, str] = dict(face_actor_map)
+            actor_map.update(native_actor_map)
             latest_body_time = max(
                 (
                     item.seen_at
@@ -626,17 +800,22 @@ class PersonRegistry:
                 sequence,
             ) > self._actor_watermark and timestamp >= latest_body_time:
                 self._actor_watermark = (timestamp, sequence)
-                actor_map.update(self._observe_bodies(
-                    [
-                        (item.actor_id, item.bbox, item.confidence)
-                        for item in actors if item.actor_id not in face_actor_map
-                    ],
-                    timestamp,
-                    excluded_subject_ids=set(face_actor_map.values()) | {
-                        item.subject_id for item in self._subjects.values()
-                        if item.kind == "face"
-                    },
-                ))
+                actor_map.update(
+                    self._observe_bodies(
+                        [
+                            (item.actor_id, item.bbox, item.confidence)
+                            for item in actors
+                            if item.actor_id not in actor_map
+                        ],
+                        timestamp,
+                        excluded_subject_ids=set(face_actor_map.values())
+                        | {
+                            item.subject_id
+                            for item in self._subjects.values()
+                            if item.kind == "face"
+                        },
+                    )
+                )
                 body_objects = tuple(
                     RichLabelObject(
                         actor_map[item.actor_id],
@@ -649,6 +828,7 @@ class PersonRegistry:
                         },
                     )
                     for item in actors
+                    if item.actor_id not in native_actor_map
                 )
                 if actors:
                     self._record_snapshot(timestamp, sequence, body_objects)
@@ -659,7 +839,7 @@ class PersonRegistry:
                     and timestamp - snapshot.timestamp_seconds <= self.max_gap_seconds
                 ):
                     for actor in actors:
-                        if actor.actor_id in face_actor_map:
+                        if actor.actor_id in actor_map:
                             continue
                         match = _unique_body(actor.bbox, snapshot.objects)
                         if match is not None:
@@ -674,6 +854,7 @@ class PersonRegistry:
                 subject = self._subjects.get(actor_map.get(actor.actor_id, ""))
                 if (
                     subject is None
+                    or subject.native_track is not None
                     or subject.seen_at > timestamp
                     or subject.identity_at > timestamp
                     or subject.memory_frame >= (timestamp, sequence)
@@ -744,14 +925,17 @@ class PersonRegistry:
                     actor_id in face_actor_map
                     for actor_id in (
                         bundle.object_actor_ids[index]
-                        if index < len(bundle.object_actor_ids) else ()
+                        if index < len(bundle.object_actor_ids)
+                        else ()
                     )
                 ):
                     # A provisional body ID may already be public/archived. A
                     # source-face correction replaces it, never adds a second
                     # owner to the same event.
                     for key in (
-                        "subject_id", "subject_ids", "person_track_id",
+                        "subject_id",
+                        "subject_ids",
+                        "person_track_id",
                         "subject_identity",
                     ):
                         attributes.pop(key, None)
@@ -887,7 +1071,8 @@ def _needs_face_association(
 ) -> bool:
     positive_ids = {
         object_id
-        for judgment in result.judgments if judgment.detected
+        for judgment in result.judgments
+        if judgment.detected
         for object_id in judgment.object_ids
     }
     return any(

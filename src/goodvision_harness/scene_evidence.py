@@ -53,6 +53,34 @@ class SceneEvidenceBuffer:
     def __len__(self) -> int:
         return len(self._frames)
 
+    def advance(self, timestamp_seconds: float) -> None:
+        """Expire source images against capture time, including dropped JPEGs."""
+        self._latest = max(self._latest, _time(timestamp_seconds))
+        while self._frames and (
+            self._frames[0].timestamp_seconds < self._latest - self.history_seconds
+        ):
+            self.byte_count -= len(self._frames.pop(0).jpeg_bytes)
+
+    def source_frame(
+        self,
+        *,
+        stream_session_id: str,
+        frame_sequence: int,
+        timestamp_seconds: float,
+    ) -> EvidenceFrame | None:
+        """Match a completed track to its retained original, never a nearby JPEG."""
+        if stream_session_id != self._session:
+            return None
+        return next(
+            (
+                frame
+                for frame in self._frames
+                if frame.frame_sequence == frame_sequence
+                and frame.timestamp_seconds == timestamp_seconds
+            ),
+            None,
+        )
+
     def add(
         self,
         *,
@@ -102,13 +130,21 @@ class SceneEvidenceBuffer:
         start_seconds: float,
         end_seconds: float,
         limit: int = 4,
+        frame_sequences: set[int] | frozenset[int] | None = None,
     ) -> tuple[EvidenceFrame, ...]:
         start, end = _time(start_seconds), _time(end_seconds)
         if end < start or limit < 1:
             raise ValueError("evidence range must be ordered and limit positive")
         if stream_session_id != self._session:
             return ()
-        frames = [f for f in self._frames if start <= f.timestamp_seconds <= end]
+        # Filter before downsampling: sparse completed source frames may sit
+        # between the regularly spaced JPEGs selected from a faster capture feed.
+        frames = [
+            f
+            for f in self._frames
+            if start <= f.timestamp_seconds <= end
+            and (frame_sequences is None or f.frame_sequence in frame_sequences)
+        ]
         if len(frames) <= limit:
             return tuple(frames)
         if limit == 1:

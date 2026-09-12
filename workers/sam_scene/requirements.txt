@@ -1,6 +1,8 @@
-# Python 3.12. torch/torchvision are installed from the CUDA 12.8 index in Dockerfile.
+# Python 3.12. Dockerfile installs torch 2.10.0 / torchvision 0.25.0 from
+# TORCH_CUDA=cu128 (default) or the explicit cu126 build override.
 # Direct runtime dependencies pinned; SAM's upstream package dependencies remain
 # resolved by pip. This is not a complete transitive/hash lock.
+# SAM3.1 uses use_fa3=False and compile=False; no FlashAttention 3 package needed.
 fastapi==0.115.12
 uvicorn==0.34.2
 Pillow==11.2.1

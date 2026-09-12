@@ -15,9 +15,20 @@ repository.
 默认 `disabled` 保留原有流程；`shadow` 仅旁路观察，旧 `SCENE_ENGINE_ENABLED=true`
 兼容为 shadow。
 
-部署使用 [compose.scene.yaml](compose.scene.yaml) 和 [SAM worker](workers/sam_scene/README.md)。
-SAM 部分是固定官方版本的**图像关键帧检测 + 保守运动跟踪**，并非原生实时 SAM 3.1 视频会话。
-Hugging Face 权限和目标 GPU 实测仍待完成，不能把已通过的软件测试当作生产准确率验收。
+图像关键帧检测与运动跟踪使用 [compose.scene.yaml](compose.scene.yaml)；
+[compose.sam31.yaml](compose.sam31.yaml) 提供每批独立记忆的 SAM 3.1 视频对照。
+再叠加 [compose.sam31-stream.yaml](compose.sam31-stream.yaml) 可启用 `sam31_stream`：
+在同一个有界会话中追加已经收到的新帧，保持原生人物编号并回收过期模型历史。
+首批 16 帧、默认 14 帧确认缓冲；会话达到 65,536 帧或 2,048 个累计原生 ID 时需要重建。
+租用 RTX 4090 已完成严格权重加载、CUDA 预热和真实录像运行；48 帧追加以及
+128／256 帧历史回收的原生 ID 与 mask hash 对照全等，详见
+[真实 GPU 验证记录](docs/architecture/sam31-gpu-validation-20260912.md)。
+实测环境为驱动 560.35.03、CUDA 12.6、Ubuntu 24.04、Python 3.12.3，
+torch 2.10.0／torchvision 0.25.0 使用 `cu126`；镜像可传入
+`--build-arg TORCH_CUDA=cu126`，默认仍为 `cu128`。
+[worker 部署说明](workers/sam_scene/README.md) 和
+[SAM 3.1 实施记录](docs/architecture/sam31-implementation-20260912.md) 包含具体步骤。
+这些验证证明链路可运行及历史回收一致；人物、事件准确率和数小时运行仍需专项验收。
 [持续事件架构与运行指南](docs/architecture/entity-event-engine.md) 包含本地 active 配置、
 容器启动、录制视频验证、请求预算和具体边界。没有权重时可明确使用 `--recorded-tracks`
 验证上层链路，报告会标识这不验证 SAM。

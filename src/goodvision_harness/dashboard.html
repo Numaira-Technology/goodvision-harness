@@ -499,7 +499,7 @@ function renderScene(){
   const data=sceneView.snapshot||{},scene=data.scene||{},condition=sceneCondition();
   const entities=(Array.isArray(scene.entities)?scene.entities:[]).filter(Boolean).slice(0,64);
   const events=(Array.isArray(scene.events)?scene.events:[]).filter(Boolean).slice(-64).reverse();
-  sceneUi.mode.textContent=sceneActive()?"持续识别":"探索验证";
+  sceneUi.mode.textContent=data.tracking_mode==="batch"?(data.memory_scope==="session"?"连续人物追踪（实验）":"视频片段验证"):sceneActive()?"持续识别":"探索验证";
   sceneUi.status.textContent=condition==="stopped"?"观察已停止；以下保留最近一次记录。":
     condition==="unavailable"?"识别结果暂不可用，正在重试。":condition==="stale"?"画面未更新，当前人物与事件状态待核实。":
     condition==="waiting"?"等待当前视频的连续观察证据…":data.automatic_temporal_inference===true?"正在持续观察人物，按变化复核事件。":"正在记录人物状态，自动事件复核尚未就绪。";
@@ -508,7 +508,10 @@ function renderScene(){
   sceneUi.summary.textContent=entities.length+" 位人物 · "+events.filter(item=>item.phase==="confirmed").length+
     " 项已确认事件 · 最近画面 "+sceneMoment(scene.timestamp_seconds)+
     (Number.isFinite(worker.succeeded_requests)?" · 已完成 "+worker.succeeded_requests+" 次复核":"")+
-    (sceneActive()?"":" · 此面板用于探索验证");
+    (sceneActive()?"":" · 此面板用于探索验证")+
+    (data.tracking_mode==="batch"?" · "+(Number.isFinite(data.tracking_lag_seconds)&&data.tracking_lag_seconds>=0?
+      "分析落后画面 "+data.tracking_lag_seconds.toFixed(1)+" 秒":"等待首段分析")+
+      (data.memory_scope==="session"?" · 当前会话保持人物编号":" · 片段之间人物重新编号"):"");
   sceneUi.entities.replaceChildren();sceneUi.events.replaceChildren();
   for(const entity of entities){
     const identity=entity.identity&&typeof entity.identity==="object"?entity.identity:{};

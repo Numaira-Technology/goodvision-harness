@@ -121,6 +121,19 @@ from .scene_runtime import SceneRuntime
 from .scene_worker import SceneInspectionWorker
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
+from .video_tracking import (
+    BACKEND as NATIVE_VIDEO_BACKEND,
+)
+from .video_tracking import (
+    VideoTrackingBatch,
+    VideoTrackingCoordinator,
+    VideoTrackingHTTPClient,
+)
+from .video_tracking_session import (
+    VideoSessionTrackingCoordinator,
+    VideoSessionTrackingHTTPClient,
+    continuous_source_history_seconds,
+)
 from .visual_memory import (
     VisualMemoryRecord,
     VisualMemorySink,
@@ -137,6 +150,7 @@ FACE_ENROLLMENT_MAX_BYTES = 10_000_000
 DEPLOYMENT_VALUE_MAX_CHARS = 4096
 DEPLOYMENT_REQUEST_MAX_BYTES = 64 * 1024
 RICH_READINESS_RETRY_SECONDS = 5.0
+NATIVE_END_DRAIN_TIMEOUT_SECONDS = 180.0
 EVENT_ANALYSIS_MODE = "event"
 FACE_ANALYSIS_MODE = "face"
 MULTI_ANALYSIS_MODE = "multi"
@@ -263,7 +277,7 @@ class HarnessRuntime:
             self._rich_labels = rich_label_coordinator
         elif config is not None and config.rich_labeling.enabled:
             rich = config.rich_labeling
-            rich_client: RichLabelClient
+            rich_client: RichLabelClient | VideoTrackingHTTPClient
             if rich.backend == "vlm":
                 rich_client = VLMRichLabelClient(
                     replace(
@@ -287,6 +301,14 @@ class HarnessRuntime:
                     request_parameters=rich.vlm_request_parameters,
                     dry_run=self._rich_annotation_dry_run,
                 )
+            elif rich.backend in {"sam31", "sam31_stream"}:
+                client_class = (
+                    VideoSessionTrackingHTTPClient
+                    if rich.backend == "sam31_stream" else VideoTrackingHTTPClient
+                )
+                rich_client = client_class(
+                    rich.endpoint, timeout_seconds=rich.video_timeout_seconds,
+                )
             else:
                 rich_client = RichLabelHTTPClient(
                     rich.endpoint,
@@ -294,16 +316,7 @@ class HarnessRuntime:
                     mode="tracks", include_attributes=self._rich_requested,
                 )
             if rich.backend == "vlm" or rich_client.gpu_ready():
-                self._rich_labels = RichLabelCoordinator(
-                    rich_client,
-                    max_fps=rich.max_fps,
-                    history_size=rich.history_size,
-                    max_interpolation_gap_seconds=(
-                        rich.max_interpolation_gap_seconds
-                    ),
-                    max_hold_seconds=rich.max_hold_seconds,
-                    on_snapshot=self._on_tracking_snapshot,
-                )
+                self._rich_labels = self._tracking_coordinator(rich_client)
             else:
                 rich_client.close()
                 self._rich_labels = None
@@ -409,6 +422,7 @@ class HarnessRuntime:
             "results_published": 0,
             "last_error": config_error,
             "end_reason": None,
+            "scene_drain": None,
             "stream": None,
             "stream_session_id": None,
             "event_label": (
@@ -934,6 +948,74 @@ class HarnessRuntime:
                 self._events = EventArchive(self.config.events)
             return self._events
 
+    def _tracking_coordinator(self, client: Any) -> Any:
+        rich = self.config.rich_labeling
+        if rich.backend in {"sam31", "sam31_stream"}:
+            coordinator_class = (
+                VideoSessionTrackingCoordinator
+                if rich.backend == "sam31_stream" else VideoTrackingCoordinator
+            )
+            return coordinator_class(
+                client, max_fps=rich.max_fps, history_size=rich.history_size,
+                batch_frames=rich.video_batch_frames,
+                batch_seconds=rich.video_batch_seconds,
+                on_batch=self._on_tracking_batch,
+            )
+        return RichLabelCoordinator(
+            client, max_fps=rich.max_fps, history_size=rich.history_size,
+            max_interpolation_gap_seconds=rich.max_interpolation_gap_seconds,
+            max_hold_seconds=rich.max_hold_seconds,
+            on_snapshot=self._on_tracking_snapshot,
+        )
+
+    def _on_tracking_batch(self, batch: VideoTrackingBatch) -> None:
+        # Bounded in-memory commit. Lifecycle lock excludes source replacement
+        # between epoch activation, canonical mapping and scene submission.
+        with self._state_lock:
+            session = self._session
+            if session is None or batch.stream_session_id != session.stream_session_id:
+                return
+            registry = session.person_registry
+
+            def canonicalize(snapshots):
+                if not registry.begin_native_epoch(
+                    NATIVE_VIDEO_BACKEND, batch.predictor_epoch,
+                ):
+                    raise ValueError("native predictor epoch rejected")
+                canonical = []
+                for snapshot in snapshots:
+                    registry.observe_snapshot(snapshot)
+                    mapped = registry.snapshot_at(
+                        snapshot.timestamp_seconds, snapshot.frame_sequence,
+                    )
+                    if mapped is None or (
+                        mapped.timestamp_seconds, mapped.frame_sequence
+                    ) != (snapshot.timestamp_seconds, snapshot.frame_sequence):
+                        raise ValueError("native frame could not be mapped to source")
+                    canonical.append(mapped)
+                return tuple(canonical)
+
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                if not scene.commit_native_tracking_batch(
+                    batch.frames,
+                    completed_timestamp_seconds=batch.completed_timestamp_seconds,
+                    completed_frame_sequence=batch.completed_frame_sequence,
+                    canonicalize=canonicalize,
+                ):
+                    raise ValueError(
+                        "native batch lacks complete retained source evidence"
+                    )
+            else:
+                canonicalize(batch.frames)
+            for corrected in registry.drain_reassociated_results():
+                self._on_timeline_result(corrected)
+                if session.archive is not None:
+                    session.archive.submit_result(corrected)
+            worker = getattr(self, "_scene_worker", None)
+            if worker is not None:
+                worker.wake()
+
     def _on_tracking_snapshot(self, snapshot: Any) -> None:
         with self._state_lock:
             session = self._session
@@ -1087,10 +1169,19 @@ class HarnessRuntime:
             rich = self.config.rich_labeling
         client = None
         try:
-            client = RichLabelHTTPClient(
-                rich.endpoint, timeout_seconds=rich.timeout_seconds,
-                mode="tracks", include_attributes=self._rich_requested,
-            )
+            if rich.backend in {"sam31", "sam31_stream"}:
+                client_class = (
+                    VideoSessionTrackingHTTPClient
+                    if rich.backend == "sam31_stream" else VideoTrackingHTTPClient
+                )
+                client = client_class(
+                    rich.endpoint, timeout_seconds=rich.video_timeout_seconds,
+                )
+            else:
+                client = RichLabelHTTPClient(
+                    rich.endpoint, timeout_seconds=rich.timeout_seconds,
+                    mode="tracks", include_attributes=self._rich_requested,
+                )
             if not client.gpu_ready():
                 return False
             # Network I/O never holds either lifecycle lock. The active session
@@ -1098,16 +1189,7 @@ class HarnessRuntime:
             with self._control_lock:
                 if self._closed or self._rich_labels is not None:
                     return True
-                coordinator = RichLabelCoordinator(
-                    client,
-                    max_fps=rich.max_fps,
-                    history_size=rich.history_size,
-                    max_interpolation_gap_seconds=(
-                        rich.max_interpolation_gap_seconds
-                    ),
-                    max_hold_seconds=rich.max_hold_seconds,
-                    on_snapshot=self._on_tracking_snapshot,
-                )
+                coordinator = self._tracking_coordinator(client)
                 with self._state_lock:
                     coordinator.reset(self._active_rich_session_id)
                     self._rich_labels = coordinator
@@ -1503,6 +1585,22 @@ class HarnessRuntime:
                     mode=self._scene_mode,
                     event_labels=scene_labels,
                     event_sensitivities=selected_sensitivities,
+                    tracking_mode=(
+                        "batch" if self.config.rich_labeling.backend in {
+                            "sam31", "sam31_stream"
+                        }
+                        else "immediate"
+                    ),
+                    native_memory_scope=(
+                        "session" if self.config.rich_labeling.backend == "sam31_stream"
+                        else None
+                    ),
+                    tracking_history_seconds=(
+                        continuous_source_history_seconds(
+                            self.config.rich_labeling.max_fps
+                        )
+                        if self.config.rich_labeling.backend == "sam31_stream" else 12.0
+                    ),
                 )
                 if self._scene_enabled
                 else None
@@ -1592,6 +1690,7 @@ class HarnessRuntime:
                         "results_published": 0,
                         "last_error": None,
                         "end_reason": None,
+                        "scene_drain": None,
                         "stream": (
                             {
                                 "protocol": stream_protocol,
@@ -2205,9 +2304,34 @@ class HarnessRuntime:
         # Browser frames bypass StreamingSession's source decoder. Preserve all
         # presentation frames for evidence, not only the model samples.
         session = self._session
-        self._observe_scene(
-            "observe_frame", source_jpeg, media_timestamp, frame_sequence,
-        )
+        # Retain the exact samples admitted to a continuous model session. A
+        # high-rate preview must not evict its slower, still-pending source JPEGs.
+        # The callback takes this same lock, so it cannot precede source retention.
+        continuous_queued = False
+        with self._state_lock:
+            coordinator = self._rich_labels
+            if isinstance(coordinator, VideoSessionTrackingCoordinator):
+                continuous_queued = True
+                admitted = False
+                session_id = self._active_rich_session_id
+                if session_id is not None:
+                    try:
+                        admitted = coordinator.submit(
+                            source_jpeg,
+                            stream_session_id=session_id,
+                            frame_sequence=int(frame_sequence),
+                            timestamp_seconds=float(media_timestamp),
+                        )
+                    except Exception:
+                        LOGGER.warning("could not queue continuous tracking frame")
+                self._observe_scene(
+                    "observe_frame", source_jpeg, media_timestamp, frame_sequence,
+                    retain_source=admitted,
+                )
+            else:
+                self._observe_scene(
+                    "observe_frame", source_jpeg, media_timestamp, frame_sequence,
+                )
         if (
             session is not None and getattr(session, "mode", None) == CAMERA_MODE
             and getattr(session, "archive", None) is not None
@@ -2215,7 +2339,7 @@ class HarnessRuntime:
             session.archive.submit_frame(
                 source_jpeg, media_timestamp, frame_sequence, session.stream_session_id,
             )
-        if self._rich_labels is not None:
+        if self._rich_labels is not None and not continuous_queued:
             with self._state_lock:
                 session_id = self._active_rich_session_id
             if session_id is not None:
@@ -2389,6 +2513,88 @@ class HarnessRuntime:
             self._update_state(**values)
 
     def _on_end(self, reason: str, error: str | None) -> None:
+        # This callback also runs under _guarded_callback's state lock. Never
+        # wait here: native results need that same lock to reach the scene.
+        with self._state_lock:
+            coordinator = self._rich_labels
+            scene = getattr(self, "_scene", None)
+            if (
+                error is None
+                and reason in {"eof", "disconnected"}
+                and scene is not None
+                and isinstance(coordinator, VideoTrackingCoordinator)
+            ):
+                generation = self._generation
+                if getattr(self, "_end_drain_generation", None) == generation:
+                    return
+                self._end_drain_generation = generation
+                self._update_state(
+                    pipeline_state="draining", ready=False, end_reason=reason,
+                    scene_drain={"state": "running"},
+                )
+                coordinator.flush()
+                thread = Thread(
+                    target=self._drain_native_end,
+                    args=(generation, self._session, scene, coordinator, reason),
+                    name="scene-source-end", daemon=True,
+                )
+                self._end_drain_thread = thread
+                thread.start()
+                return
+            self._finish_scene_end(reason, error)
+
+    def _drain_native_end(self, generation, session, scene, coordinator, reason):
+        deadline = time.monotonic() + NATIVE_END_DRAIN_TIMEOUT_SECONDS
+        outcome = "completed"
+
+        def current():
+            with self._state_lock:
+                return (
+                    not self._closed and generation == self._generation
+                    and session is self._session and scene is self._scene
+                )
+
+        try:
+            while current():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    outcome = "timed_out"
+                    break
+                if coordinator.wait_until_idle(min(0.1, remaining)):
+                    if coordinator.stats().get("state") == "failed":
+                        outcome = "failed"
+                    break
+            if not current():
+                return
+            # Keep the temporal worker alive for jobs created by the final
+            # tracking output. Dry runs have no worker and need no model wait.
+            with self._state_lock:
+                worker = self._scene_worker
+            if worker is not None and outcome == "completed":
+                worker.wake()
+                while current() and scene.has_pending_inspections():
+                    if worker.stats()["state"] in {"failed", "stopped", "stopping"}:
+                        outcome = "failed"
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        outcome = "timed_out"
+                        break
+                    time.sleep(min(0.05, remaining))
+        except Exception:
+            outcome = "failed"
+            LOGGER.warning("native source end could not finish pending results")
+        with self._state_lock:
+            if not current():
+                return
+            if outcome != "completed":
+                # Retire in-flight callbacks before closing their evidence. The
+                # coordinator performs remote cleanup on its own bounded thread.
+                coordinator.reset(None)
+            self._update_state(scene_drain={"state": outcome})
+            self._finish_scene_end(reason, None)
+
+    def _finish_scene_end(self, reason: str, error: str | None) -> None:
         self._observe_scene("close")
         self._close_scene_workers()
         if getattr(self, "_scene", None) is not None:

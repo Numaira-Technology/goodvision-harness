@@ -58,7 +58,8 @@ def test_rich_labeling_environment_overrides_connection_and_backend(
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("backend", "unsupported", "backend must be paddle, vlm or sam"),
+        ("backend", "unsupported",
+         "backend must be paddle, vlm, sam, sam31 or sam31_stream"),
         ("vlm_wire_format", "unsupported",
          "vlm_wire_format must be objects or compact"),
         ("vlm_execution_mode", "unsupported",
@@ -137,7 +138,53 @@ def test_rich_labeling_invalid_environment_backend_is_rejected(
 ) -> None:
     monkeypatch.setenv("RICH_LABEL_BACKEND", "unsupported")
 
-    with pytest.raises(ValueError, match="backend must be paddle, vlm or sam"):
+    with pytest.raises(
+        ValueError, match="backend must be paddle, vlm, sam, sam31 or sam31_stream"
+    ):
+        load_config(ROOT / "config.yaml")
+
+
+def test_persistent_native_backend_is_opt_in_with_explicit_endpoint(monkeypatch):
+    monkeypatch.setenv("RICH_LABEL_BACKEND", "sam31_stream")
+    monkeypatch.setenv("RICH_LABEL_ENDPOINT", "http://localhost:18092/v1/video/sessions")
+    monkeypatch.setenv("SAM31_BATCH_FRAMES", "16")
+    monkeypatch.setenv("RICH_LABEL_MAX_FPS", "4")
+    settings = load_config(ROOT / "config.yaml").rich_labeling
+    assert settings.backend == "sam31_stream"
+    assert settings.endpoint.endswith("/v1/video/sessions")
+    assert settings.video_batch_frames == 16
+
+
+@pytest.mark.parametrize(("frames", "fps"), [(8, 4), (16, 0.1)])
+def test_persistent_native_startup_cannot_outgrow_retained_evidence(
+    monkeypatch, frames, fps
+):
+    monkeypatch.setenv("RICH_LABEL_BACKEND", "sam31_stream")
+    monkeypatch.setenv("SAM31_BATCH_FRAMES", str(frames))
+    monkeypatch.setenv("RICH_LABEL_MAX_FPS", str(fps))
+    with pytest.raises(ValueError, match="sam31_stream requires"):
+        load_config(ROOT / "config.yaml")
+
+
+def test_sam31_uses_separate_bounded_video_settings(monkeypatch):
+    monkeypatch.setenv("RICH_LABEL_BACKEND", "sam31")
+    monkeypatch.setenv("SAM31_BATCH_FRAMES", "8")
+    monkeypatch.setenv("SAM31_BATCH_SECONDS", "2")
+    monkeypatch.setenv("SAM31_CLIENT_TIMEOUT_SECONDS", "70")
+    rich = load_config(ROOT / "config.yaml").rich_labeling
+    assert rich.backend == "sam31"
+    assert (rich.video_batch_frames, rich.video_batch_seconds) == (8, 2)
+    assert rich.video_timeout_seconds == 70
+
+
+@pytest.mark.parametrize(("name", "value"), [
+    ("SAM31_BATCH_FRAMES", "0"), ("SAM31_BATCH_FRAMES", "17"),
+    ("SAM31_BATCH_FRAMES", "3.5"), ("SAM31_BATCH_SECONDS", "11"),
+    ("SAM31_CLIENT_TIMEOUT_SECONDS", "nan"),
+])
+def test_sam31_rejects_unbounded_configuration(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError):
         load_config(ROOT / "config.yaml")
 
 

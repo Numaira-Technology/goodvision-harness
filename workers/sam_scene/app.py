@@ -1,9 +1,4 @@
-"""SAM 3 image keyframes with conservative online association.
-
-The public SAM video API accepts completed resources, not live frame appends.
-This service therefore calls the official image model and labels motion-only
-updates as predictions. It does not claim to run SAM 3.1 video tracking.
-"""
+"""SAM image keyframes and optional native SAM3.1 finite video batches."""
 
 from __future__ import annotations
 
@@ -616,23 +611,65 @@ def decode_jpeg(payload: bytes, settings: Settings) -> Any:
         raise HTTPException(400, "invalid JPEG") from None
 
 
-def create_app(engine: SceneEngine | None = None) -> FastAPI:
+def create_app(
+    engine: SceneEngine | None = None, video_engine=None, session_engine=None
+) -> FastAPI:
+    # Both package tests and the standalone Docker /worker/app.py entry point.
+    if __package__:
+        from .continuous import SessionEngine, register_session_routes
+        from .sam31 import VideoEngine, register_video_routes
+    else:
+        from continuous import SessionEngine, register_session_routes
+        from sam31 import VideoEngine, register_video_routes
+
     selected = engine or SceneEngine()
+    selected_video = video_engine or VideoEngine()
+    selected_session = session_engine or SessionEngine(selected_video)
     production = engine is None
+    image_enabled = os.environ.get("SAM_SCENE_IMAGE_ENABLED", "true").lower() == "true"
     admission = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        if image_enabled:
+            try:
+                await asyncio.to_thread(selected.warmup)
+            except Exception:
+                selected.error_code = "model_initialization_failed"
+                LOGGER.exception("SAM scene initialization failed")
         try:
-            await asyncio.to_thread(selected.warmup)
+            await asyncio.to_thread(selected_video.warmup)
         except Exception:
-            selected.error_code = "model_initialization_failed"
-            LOGGER.exception("SAM scene initialization failed")
-        yield
+            LOGGER.exception("SAM3.1 video initialization failed")
+        try:
+            await asyncio.to_thread(selected_session.warmup)
+        except Exception:
+            LOGGER.exception("SAM3.1 session initialization failed")
+
+        async def reap_sessions():
+            while True:
+                await asyncio.sleep(5)
+                if admission.acquire(blocking=False):
+                    try:
+                        selected_session.expire()
+                    finally:
+                        admission.release()
+
+        reaper = asyncio.create_task(reap_sessions())
+        try:
+            yield
+        finally:
+            reaper.cancel()
+            try:
+                await reaper
+            except asyncio.CancelledError:
+                pass
         # Avoid model teardown while an abandoned CUDA request still uses it.
         if admission.acquire(blocking=False):
             try:
                 selected.close()
+                selected_session.close()
+                selected_video.close()
             finally:
                 admission.release()
 
@@ -643,6 +680,8 @@ def create_app(engine: SceneEngine | None = None) -> FastAPI:
         redoc_url=None,
     )
     app.state.engine = selected
+    register_video_routes(app, selected_video, admission, decode_jpeg)
+    register_session_routes(app, selected_session, admission, decode_jpeg)
 
     @app.get("/health/live")
     async def live():

@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from threading import RLock
 from typing import Any
+from uuid import uuid4
 
 from .contracts import AnalysisResult, NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities
@@ -26,6 +27,7 @@ from .scene_evidence import (
     SceneEvidenceBuffer,
 )
 from .scene_state import SceneState
+from .video_tracking import BACKEND as _NATIVE_VIDEO_BACKEND
 
 _EVENTS = frozenset(("fight", "smoking", "fall", "weapon", "stranger"))
 _PERSON_LABELS = frozenset(
@@ -82,6 +84,13 @@ class TemporalVerdict:
 
 
 @dataclass(frozen=True, slots=True)
+class _TrackingInterval:
+    request: InspectionRequest
+    source_frames: tuple[tuple[int, float], ...]
+    subject_boxes: tuple[tuple[int, str, NormalizedBBox], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _AcceptedEvidence:
     subject_ids: tuple[str, ...]
     detected: bool | None
@@ -111,19 +120,54 @@ class SceneRuntime:
         mode: str = "shadow",
         event_labels: tuple[str, ...] = ("fight", "smoking", "fall", "weapon"),
         event_sensitivities: Mapping[str, str] | None = None,
+        tracking_mode: str = "immediate",
+        tracking_history_seconds: float = 12.0,
+        native_memory_scope: str | None = None,
     ) -> None:
         if mode not in {"shadow", "active"}:
             raise ValueError("scene mode must be shadow or active")
         if not set(event_labels) <= _EVENTS - {"stranger"}:
             raise ValueError("unsupported temporal event label")
+        if tracking_mode not in {"immediate", "batch"}:
+            raise ValueError("tracking mode must be immediate or batch")
+        if native_memory_scope not in {None, "batch", "session"}:
+            raise ValueError("native memory scope must be batch or session")
+        if tracking_mode == "immediate" and native_memory_scope == "batch":
+            raise ValueError("immediate tracking cannot have batch native memory")
+        if (
+            type(tracking_history_seconds) not in (int, float)
+            or not math.isfinite(tracking_history_seconds)
+            or not 3 <= tracking_history_seconds <= 90
+        ):
+            raise ValueError("tracking history must be within 3..90 source seconds")
         self.mode = mode
+        self.tracking_mode = tracking_mode
+        self.native_memory_scope = native_memory_scope or (
+            "batch" if tracking_mode == "batch" else "session"
+        )
+        self.tracking_history_seconds = float(tracking_history_seconds)
         self.event_labels = tuple(dict.fromkeys(event_labels))
         self.event_sensitivities = tuple(
             normalize_event_sensitivities(event_sensitivities, event_labels).items()
         )
         self.automatic_temporal_inference = False
-        self.scene = SceneState(stream_session_id, source_id)
-        self.evidence = SceneEvidenceBuffer()
+        self.scene = SceneState(
+            stream_session_id,
+            source_id,
+            person_history_size=512 if tracking_mode == "batch" else None,
+            person_history_seconds=(
+                self.tracking_history_seconds if tracking_mode == "batch" else None
+            ),
+        )
+        self.evidence = (
+            SceneEvidenceBuffer(
+                max_frames=512,
+                max_bytes=64 * 1024 * 1024,
+                history_seconds=self.tracking_history_seconds,
+            )
+            if tracking_mode == "batch"
+            else SceneEvidenceBuffer()
+        )
         self.planner = InspectionPlanner(
             full_scene_interval_seconds=5.0 if mode == "active" else 15.0,
             refresh_seconds=3.0 if mode == "active" else 8.0,
@@ -132,6 +176,13 @@ class SceneRuntime:
         self.source_id = source_id
         self._lock = RLock()
         self._now = 0.0
+        self._tracking_completed_timestamp: float | None = None
+        self._tracking_completed_sequence: int | None = None
+        self._tracking_frames: OrderedDict[int, float] = OrderedDict()
+        self._tracking_rejections: dict[str, int] = {}
+        self._tracking_last_rejection: str | None = None
+        self._tracking_intervals: OrderedDict[str, _TrackingInterval] = OrderedDict()
+        self._tracking_interval_rejections: dict[str, int] = {}
         self._last_buffered = -math.inf
         self._closed = False
         self._jobs: OrderedDict[str, TemporalInspection] = OrderedDict()
@@ -152,6 +203,11 @@ class SceneRuntime:
             "failed_inspections": 0,
             "accepted_temporal_verdicts": 0,
             "rejected_temporal_verdicts": 0,
+            "completed_tracking_batches": 0,
+            "completed_tracking_frames": 0,
+            "rejected_tracking_batches": 0,
+            "queued_tracking_intervals": 0,
+            "rejected_tracking_intervals": 0,
         }
 
     def observe_frame(
@@ -161,14 +217,20 @@ class SceneRuntime:
         frame_sequence: int,
         *,
         force: bool = False,
+        retain_source: bool = True,
     ) -> None:
         with self._lock:
             if self._closed:
                 return
             self.scene.advance(timestamp_seconds)
             self._now = max(self._now, timestamp_seconds)
+            self.evidence.advance(self._now)
             # Keep several seconds of source evidence even on a 15+ FPS feed.
-            if force or timestamp_seconds - self._last_buffered >= 0.25:
+            if retain_source and (
+                self.tracking_mode == "batch"
+                or force
+                or timestamp_seconds - self._last_buffered >= 0.25
+            ):
                 if self.evidence.add(
                     stream_session_id=self.stream_session_id,
                     frame_sequence=frame_sequence,
@@ -176,12 +238,19 @@ class SceneRuntime:
                     jpeg_bytes=jpeg_bytes,
                 ):
                     self._last_buffered = max(self._last_buffered, timestamp_seconds)
-            self._plan()
+            self._expire_inspections()
+            self._prune_tracking_frames()
+            if self.tracking_mode == "immediate":
+                self._plan()
+            else:
+                self._drain_tracking_intervals()
 
     def observe_tracks(self, snapshot: RichLabelSnapshot) -> None:
         """Accept registry-canonical subjects, never raw detector track IDs."""
         with self._lock:
             if self._closed or snapshot.stream_session_id != self.stream_session_id:
+                return
+            if self.tracking_mode == "batch" and snapshot.timestamp_seconds > self._now:
                 return
             for item in snapshot.objects:
                 if item.label.lower() not in _PERSON_LABELS:
@@ -197,10 +266,459 @@ class SceneRuntime:
                     bbox=item.bbox,
                     observation_state=state,
                 )
-            self._now = max(self._now, snapshot.timestamp_seconds)
+            if self.tracking_mode == "immediate":
+                self._now = max(self._now, snapshot.timestamp_seconds)
             self.scene.advance(self._now)
             self._retry_results()
+            if self.tracking_mode == "immediate":
+                self._plan()
+
+    def _reject_tracking_batch(self, reason: str) -> bool:
+        self._stats["rejected_tracking_batches"] += 1
+        self._tracking_rejections[reason] = self._tracking_rejections.get(reason, 0) + 1
+        self._tracking_last_rejection = reason
+        return False
+
+    def _prune_tracking_frames(self) -> None:
+        while self._tracking_frames and (
+            next(iter(self._tracking_frames.values()))
+            < self._now - self.tracking_history_seconds
+            or len(self._tracking_frames) > 512
+        ):
+            self._tracking_frames.popitem(last=False)
+
+    def _tracking_source_error(
+        self,
+        snapshots: Sequence[RichLabelSnapshot],
+        timestamp: float,
+        sequence: int,
+    ) -> str | None:
+        if self._closed:
+            return "closed"
+        if self.tracking_mode != "batch":
+            return "wrong_tracking_mode"
+        if (
+            not isinstance(snapshots, (tuple, list))
+            or not 1 <= len(snapshots) <= 512
+            or any(not isinstance(item, RichLabelSnapshot) for item in snapshots)
+            or type(timestamp) not in (int, float)
+            or not math.isfinite(timestamp)
+            or timestamp < 0
+            or type(sequence) is not int
+            or sequence < 0
+        ):
+            return "invalid_batch"
+        if any(item.stream_session_id != self.stream_session_id for item in snapshots):
+            return "different_session"
+        if (timestamp, sequence) != (
+            snapshots[-1].timestamp_seconds,
+            snapshots[-1].frame_sequence,
+        ):
+            return "incomplete_watermark"
+        previous_time = self._tracking_completed_timestamp
+        previous_sequence = self._tracking_completed_sequence
+        for snapshot in snapshots:
+            if (
+                previous_time is not None and snapshot.timestamp_seconds < previous_time
+            ) or (
+                previous_sequence is not None
+                and snapshot.frame_sequence <= previous_sequence
+            ):
+                return "out_of_order"
+            previous_time = snapshot.timestamp_seconds
+            previous_sequence = snapshot.frame_sequence
+            if self._now - snapshot.timestamp_seconds > self.tracking_history_seconds:
+                return "evidence_expired"
+            if (
+                self.evidence.source_frame(
+                    stream_session_id=self.stream_session_id,
+                    frame_sequence=snapshot.frame_sequence,
+                    timestamp_seconds=snapshot.timestamp_seconds,
+                )
+                is None
+            ):
+                return "source_frame_missing"
+        return None
+
+    def observe_tracking_batch(
+        self,
+        snapshots: Sequence[RichLabelSnapshot],
+        *,
+        completed_timestamp_seconds: float,
+        completed_frame_sequence: int,
+    ) -> bool:
+        """Commit a complete, ordered native-video result against captured originals.
+
+        Sampling may skip source sequence numbers. A failed batch does not move
+        the tracking watermark, refresh capture time, or generate event negatives.
+        """
+        with self._lock:
+            error = self._tracking_source_error(
+                snapshots, completed_timestamp_seconds, completed_frame_sequence
+            )
+            if error is not None:
+                return self._reject_tracking_batch(error)
+
+            # Validate all object data and historical source ordering before any
+            # mutation, including a face observation that arrived ahead of SAM.
+            people = {
+                entity["subject_id"]: entity
+                for entity in self.scene.snapshot()["entities"]
+            }
+            new_subjects: set[str] = set()
+            observed_subjects: set[str] = set()
+            for snapshot in snapshots:
+                for item in snapshot.objects:
+                    if item.label.lower() not in _PERSON_LABELS:
+                        continue
+                    state = item.observation_state or item.attributes.get(
+                        "observation_state", "observed"
+                    )
+                    native = item.attributes.get("native_track")
+                    if (
+                        not item.track_id.strip()
+                        or item.track_id != item.track_id.strip()
+                        or len(item.track_id) > 256
+                        or not isinstance(state, str)
+                        or state
+                        not in {"observed", "predicted", "held", "occluded", "lost"}
+                        or (
+                            native is not None
+                            and (
+                                not isinstance(native, Mapping)
+                                or any(
+                                    key in native
+                                    and (
+                                        not isinstance(native[key], str)
+                                        or not native[key].strip()
+                                        or len(native[key]) > 256
+                                    )
+                                    for key in ("backend", "epoch", "object_id")
+                                )
+                            )
+                        )
+                    ):
+                        return self._reject_tracking_batch("invalid_observation")
+                    if state != "observed":
+                        continue
+                    observed_subjects.add(item.track_id)
+                    if item.track_id not in people:
+                        new_subjects.add(item.track_id)
+                    elif any(
+                        (
+                            record["frame_sequence"] < snapshot.frame_sequence
+                            and record["timestamp_seconds"] > snapshot.timestamp_seconds
+                        )
+                        or (
+                            record["frame_sequence"] > snapshot.frame_sequence
+                            and record["timestamp_seconds"] < snapshot.timestamp_seconds
+                        )
+                        or (
+                            record["frame_sequence"] == snapshot.frame_sequence
+                            and record["timestamp_seconds"]
+                            != snapshot.timestamp_seconds
+                        )
+                        for record in people[item.track_id]["history"]
+                    ):
+                        return self._reject_tracking_batch(
+                            "inconsistent_source_history"
+                        )
+            if len(people) + len(new_subjects) > self.scene.max_entities and not (
+                self.scene.reserve_person_capacity(tuple(observed_subjects))
+            ):
+                return self._reject_tracking_batch("subject_capacity")
+            for snapshot in snapshots:
+                for item in snapshot.objects:
+                    if item.label.lower() not in _PERSON_LABELS:
+                        continue
+                    self.scene.observe_person(
+                        item.track_id,
+                        timestamp_seconds=snapshot.timestamp_seconds,
+                        frame_sequence=snapshot.frame_sequence,
+                        bbox=item.bbox,
+                        observation_state=item.observation_state
+                        or item.attributes.get("observation_state", "observed"),
+                        allow_historical=True,
+                        native_track=item.attributes.get("native_track"),
+                    )
+                self._tracking_frames[snapshot.frame_sequence] = (
+                    snapshot.timestamp_seconds
+                )
+            self._tracking_completed_timestamp = float(completed_timestamp_seconds)
+            self._tracking_completed_sequence = completed_frame_sequence
+            self._stats["completed_tracking_batches"] += 1
+            self._stats["completed_tracking_frames"] += len(snapshots)
+            self._prune_tracking_frames()
+            self.scene.advance(self._now)
+            self._retry_results()
+            self._enqueue_tracking_intervals(snapshots)
             self._plan()
+            return True
+
+    def _reject_tracking_interval(self, reason: str) -> None:
+        self._stats["rejected_tracking_intervals"] += 1
+        self._tracking_interval_rejections[reason] = (
+            self._tracking_interval_rejections.get(reason, 0) + 1
+        )
+
+    def commit_native_tracking_batch(
+        self,
+        raw_snapshots: Sequence[RichLabelSnapshot],
+        *,
+        completed_timestamp_seconds: float,
+        completed_frame_sequence: int,
+        canonicalize: Callable[
+            [Sequence[RichLabelSnapshot]], Sequence[RichLabelSnapshot]
+        ],
+    ) -> bool:
+        """Validate source retention before a trusted registry allocates identities.
+
+        The callback runs under the scene lock and must only map native tracks to
+        canonical IDs, preserving source frames, observations, and geometry. This
+        prevents capture from evicting evidence between admission and commit.
+        """
+        with self._lock:
+            error = self._tracking_source_error(
+                raw_snapshots, completed_timestamp_seconds, completed_frame_sequence
+            )
+            if error is not None:
+                return self._reject_tracking_batch(error)
+            native_keys: set[tuple[str, str, str]] = set()
+            native_frames = []
+            for snapshot in raw_snapshots:
+                observations = {}
+                for item in snapshot.objects:
+                    native = item.attributes.get("native_track")
+                    state = item.observation_state or item.attributes.get(
+                        "observation_state", "observed"
+                    )
+                    seen_at = item.last_observed_timestamp_seconds
+                    if seen_at is None:
+                        seen_at = item.attributes.get(
+                            "last_observed_timestamp_seconds",
+                            snapshot.timestamp_seconds,
+                        )
+                    seen_sequence = item.last_observed_frame_sequence
+                    if seen_sequence is None:
+                        seen_sequence = item.attributes.get(
+                            "last_observed_frame_sequence", snapshot.frame_sequence
+                        )
+                    if (
+                        item.label.lower() not in _PERSON_LABELS
+                        or state != "observed"
+                        or type(seen_at) not in (int, float)
+                        or seen_at != snapshot.timestamp_seconds
+                        or type(seen_sequence) is not int
+                        or seen_sequence != snapshot.frame_sequence
+                        or not isinstance(native, Mapping)
+                        or set(native) != {"backend", "epoch", "object_id"}
+                        or native.get("backend") != _NATIVE_VIDEO_BACKEND
+                        or any(
+                            not isinstance(native.get(key), str)
+                            or not native[key].strip()
+                            or native[key] != native[key].strip()
+                            or len(native[key]) > 256
+                            for key in ("backend", "epoch", "object_id")
+                        )
+                    ):
+                        return self._reject_tracking_batch("invalid_native_observation")
+                    key = tuple(
+                        native[name] for name in ("backend", "epoch", "object_id")
+                    )
+                    if key in observations:
+                        return self._reject_tracking_batch(
+                            "duplicate_native_observation"
+                        )
+                    observations[key] = item.bbox
+                    native_keys.add(key)
+                native_frames.append(observations)
+            if len({key[:2] for key in native_keys}) > 1:
+                return self._reject_tracking_batch("mixed_native_epochs")
+            # Persistent native sessions reuse keys across commits. Reserve only
+            # unseen keys, before the callback can mutate canonical identities.
+            if not self.scene.can_reserve_native_person_slots(native_keys):
+                return self._reject_tracking_batch("subject_capacity")
+            canonical = canonicalize(raw_snapshots)
+            if not isinstance(canonical, (tuple, list)) or len(canonical) != len(
+                raw_snapshots
+            ):
+                raise ValueError("canonical mapping must preserve all source frames")
+            native_subjects = {}
+            for raw, mapped, expected in zip(
+                raw_snapshots, canonical, native_frames, strict=True
+            ):
+                if not isinstance(mapped, RichLabelSnapshot) or (
+                    mapped.stream_session_id,
+                    mapped.timestamp_seconds,
+                    mapped.frame_sequence,
+                ) != (raw.stream_session_id, raw.timestamp_seconds, raw.frame_sequence):
+                    raise ValueError("canonical mapping changed a source frame")
+                actual = {}
+                for item in mapped.objects:
+                    native = item.attributes.get("native_track")
+                    if not isinstance(native, Mapping):
+                        raise ValueError("canonical mapping removed native provenance")
+                    key = tuple(
+                        native.get(name) for name in ("backend", "epoch", "object_id")
+                    )
+                    if (
+                        key in actual
+                        or expected.get(key) != item.bbox
+                        or (
+                            item.observation_state
+                            or item.attributes.get("observation_state", "observed")
+                        )
+                        != "observed"
+                        or native_subjects.get(key, item.track_id) != item.track_id
+                    ):
+                        raise ValueError(
+                            "canonical mapping changed a source observation"
+                        )
+                    actual[key] = item.bbox
+                    native_subjects[key] = item.track_id
+                if actual != expected:
+                    raise ValueError("canonical mapping omitted a source observation")
+            if len(set(native_subjects.values())) != len(native_subjects):
+                raise ValueError("canonical mapping merged distinct native people")
+            return self.observe_tracking_batch(
+                canonical,
+                completed_timestamp_seconds=completed_timestamp_seconds,
+                completed_frame_sequence=completed_frame_sequence,
+            )
+
+    def _enqueue_tracking_intervals(
+        self, snapshots: Sequence[RichLabelSnapshot]
+    ) -> None:
+        if not self.event_labels:
+            return
+        # Native IDs are scoped to this completed batch. Independent, disjoint
+        # source windows let an event collect the usual two observations without
+        # falsely joining people across a tracker epoch or counting one frame twice.
+        midpoint = len(snapshots) // 2
+        windows = (snapshots,)
+        if (
+            len(snapshots) >= 8
+            and snapshots[midpoint - 1].timestamp_seconds
+            - snapshots[0].timestamp_seconds
+            >= 0.75
+            and snapshots[-1].timestamp_seconds - snapshots[midpoint].timestamp_seconds
+            >= 0.75
+        ):
+            windows = (snapshots[:midpoint], snapshots[midpoint:])
+        self._drain_tracking_intervals()
+        for window in windows:
+            observed = [
+                snapshot
+                for snapshot in window
+                if any(
+                    item.label.lower() in _PERSON_LABELS
+                    and (
+                        item.observation_state
+                        or item.attributes.get("observation_state", "observed")
+                    )
+                    == "observed"
+                    for item in snapshot.objects
+                )
+            ]
+            if (
+                len(observed) < 2
+                or observed[-1].timestamp_seconds - observed[0].timestamp_seconds < 0.75
+            ):
+                self._reject_tracking_interval("insufficient_observed_sources")
+                continue
+            if len(self._tracking_intervals) >= 4:
+                self._reject_tracking_interval("queue_capacity")
+                continue
+            if len(observed) > 4:
+                observed = [
+                    observed[round(index * (len(observed) - 1) / 3)]
+                    for index in range(4)
+                ]
+            request = InspectionRequest(
+                f"video-inspection-{uuid4().hex}",
+                (),
+                "full_scene_scan",
+                self.event_labels,
+                window[0].timestamp_seconds,
+                window[-1].timestamp_seconds,
+            )
+            self._tracking_intervals[request.request_id] = _TrackingInterval(
+                request,
+                tuple(
+                    (item.frame_sequence, item.timestamp_seconds) for item in observed
+                ),
+                tuple(
+                    (snapshot.frame_sequence, item.track_id, item.bbox)
+                    for snapshot in observed
+                    for item in snapshot.objects
+                    if item.label.lower() in _PERSON_LABELS
+                    and (
+                        item.observation_state
+                        or item.attributes.get("observation_state", "observed")
+                    )
+                    == "observed"
+                ),
+            )
+            self._stats["queued_tracking_intervals"] += 1
+            self._drain_tracking_intervals()
+
+    def _drain_tracking_intervals(self) -> None:
+        if self._closed or self.tracking_mode != "batch":
+            return
+        blocked = False
+        for request_id, interval in tuple(self._tracking_intervals.items()):
+            frames = tuple(
+                self.evidence.source_frame(
+                    stream_session_id=self.stream_session_id,
+                    frame_sequence=sequence,
+                    timestamp_seconds=timestamp,
+                )
+                for sequence, timestamp in interval.source_frames
+            )
+            if any(frame is None for frame in frames):
+                self._tracking_intervals.pop(request_id)
+                self._reject_tracking_interval("source_frame_missing_or_expired")
+                continue
+            interval_bytes = sum(len(frame.jpeg_bytes) for frame in frames)
+            if interval_bytes > 16 * 1024 * 1024:
+                self._tracking_intervals.pop(request_id)
+                self._reject_tracking_interval("image_budget")
+                continue
+            retained_bytes = sum(
+                len(frame.jpeg_bytes)
+                for job in self._jobs.values()
+                for frame in job.frames
+            )
+            if (
+                blocked
+                or len(self._jobs) >= 4
+                or retained_bytes + interval_bytes > 16 * 1024 * 1024
+            ):
+                # Preserve FIFO under pressure. Queued intervals hold source keys,
+                # not JPEG copies, and are revalidated after a slot becomes free.
+                blocked = True
+                continue
+            frame_times = dict(interval.source_frames)
+            if not self.scene.pin_source_observations(
+                request_id,
+                tuple(
+                    (sid, frame_times[sequence], sequence, bbox)
+                    for sequence, sid, bbox in interval.subject_boxes
+                ),
+            ):
+                self._tracking_intervals.pop(request_id)
+                self._reject_tracking_interval("source_observation_expired")
+                continue
+            self._jobs[request_id] = TemporalInspection(
+                self.stream_session_id,
+                self.source_id,
+                interval.request,
+                frames,
+                interval.subject_boxes,
+                self.event_sensitivities,
+            )
+            self._tracking_intervals.pop(request_id)
+            self._stats["prepared_inspections"] += 1
 
     def observe_result(self, result: AnalysisResult) -> None:
         with self._lock:
@@ -213,6 +731,8 @@ class SceneRuntime:
                 result.frame.timestamp_seconds,
                 result.frame.source_frame_index,
             )
+            if self.tracking_mode == "batch" and at > self._now:
+                return
             for item in result.objects:
                 ids = _subjects(item.attributes)
                 if len(ids) != 1 or item.label.lower() not in _PERSON_LABELS:
@@ -241,14 +761,16 @@ class SceneRuntime:
                     identity=identity,
                     observation_state=state,
                 )
-            self._now = max(self._now, at)
+            if self.tracking_mode == "immediate":
+                self._now = max(self._now, at)
             self.scene.advance(self._now)
             self._pending_results[result.message_id] = result
             self._pending_results.move_to_end(result.message_id)
             while len(self._pending_results) > 128:
                 self._pending_results.popitem(last=False)
             self._retry_results()
-            self._plan()
+            if self.tracking_mode == "immediate":
+                self._plan()
 
     def _retry_results(self) -> None:
         ordered = sorted(
@@ -389,38 +911,65 @@ class SceneRuntime:
                         and event["phase"] != "retracted"
                     }
 
-    def _plan(self) -> None:
-        if not self.event_labels:
-            return
+    def _planning_timestamp(self) -> float:
+        if self.tracking_mode == "batch":
+            return self._tracking_completed_timestamp or 0.0
+        return self._now
+
+    def _expire_inspections(self) -> None:
         for request_id, job in tuple(self._jobs.items()):
             if self._now - job.request.end_seconds >= 20.0:
                 self._jobs.pop(request_id)
                 self._claimed.discard(request_id)
                 self.scene.unpin_source_observations(request_id)
                 self.planner.complete(
-                    request_id, success=False, timestamp_seconds=self._now
+                    request_id,
+                    success=False,
+                    timestamp_seconds=self._planning_timestamp(),
                 )
+
+    def _plan(self) -> None:
+        if self.tracking_mode == "batch":
+            self._drain_tracking_intervals()
+            return
+        if not self.event_labels or (
+            self.tracking_mode == "batch" and self._tracking_completed_timestamp is None
+        ):
+            return
+        self._expire_inspections()
+        planning_timestamp = self._planning_timestamp()
         if len(self._jobs) >= 4 or len(self.evidence) < 2:
             return
         if self.mode == "active":
             recent = self.evidence.select(
                 stream_session_id=self.stream_session_id,
-                start_seconds=max(0.0, self._now - 3.0),
-                end_seconds=self._now,
+                start_seconds=max(0.0, planning_timestamp - 3.0),
+                end_seconds=planning_timestamp,
                 limit=48,
+                frame_sequences=(
+                    set(self._tracking_frames)
+                    if self.tracking_mode == "batch"
+                    else None
+                ),
             )
             if (
                 len(recent) < 2
                 or recent[-1].timestamp_seconds - recent[0].timestamp_seconds < 0.75
             ):
                 return
-        planning_scene = self.scene.snapshot(include_history=False)
+        planning_scene = (
+            self.scene.snapshot_at(planning_timestamp)
+            if self.tracking_mode == "batch"
+            else self.scene.snapshot(include_history=False)
+        )
         planning_scene["events"] = [
             event
             for event in planning_scene["events"]
             if event["event_label"] in self.event_labels
         ]
-        for request in self.planner.plan(planning_scene, timestamp_seconds=self._now):
+        for request in self.planner.plan(
+            planning_scene, timestamp_seconds=planning_timestamp
+        ):
             request = replace(
                 request,
                 event_labels=tuple(
@@ -428,12 +977,6 @@ class SceneRuntime:
                     for label in (request.event_labels or self.event_labels)
                     if label in self.event_labels
                 ),
-            )
-            frames = self.evidence.select(
-                stream_session_id=self.stream_session_id,
-                start_seconds=request.start_seconds,
-                end_seconds=request.end_seconds,
-                limit=48,
             )
             histories = self.scene.snapshot()["entities"]
             boxes = {
@@ -445,27 +988,26 @@ class SceneRuntime:
                 if request.start_seconds
                 <= record["timestamp_seconds"]
                 <= request.end_seconds
+                and (
+                    self.tracking_mode != "batch"
+                    or self._tracking_frames.get(record["frame_sequence"])
+                    == record["timestamp_seconds"]
+                )
             }
+            sequences = {sequence for sequence, _ in boxes}
             if request.subject_ids:
-                frames = tuple(
-                    frame
-                    for frame in frames
-                    if all(
-                        (frame.frame_sequence, sid) in boxes
-                        for sid in request.subject_ids
-                    )
-                )
-            else:
-                observed_sequences = {sequence for sequence, _ in boxes}
-                frames = tuple(
-                    frame
-                    for frame in frames
-                    if frame.frame_sequence in observed_sequences
-                )
-            if len(frames) > 4:
-                frames = tuple(
-                    frames[round(i * (len(frames) - 1) / 3)] for i in range(4)
-                )
+                sequences = {
+                    sequence
+                    for sequence in sequences
+                    if all((sequence, sid) in boxes for sid in request.subject_ids)
+                }
+            frames = self.evidence.select(
+                stream_session_id=self.stream_session_id,
+                start_seconds=request.start_seconds,
+                end_seconds=request.end_seconds,
+                limit=4,
+                frame_sequences=sequences,
+            )
             retained = sum(
                 len(frame.jpeg_bytes)
                 for job in self._jobs.values()
@@ -478,7 +1020,9 @@ class SceneRuntime:
                 > 16 * 1024 * 1024
             ):
                 self.planner.complete(
-                    request.request_id, success=False, timestamp_seconds=self._now
+                    request.request_id,
+                    success=False,
+                    timestamp_seconds=planning_timestamp,
                 )
                 continue
             job = TemporalInspection(
@@ -505,7 +1049,9 @@ class SceneRuntime:
                 ),
             ):
                 self.planner.complete(
-                    request.request_id, success=False, timestamp_seconds=self._now
+                    request.request_id,
+                    success=False,
+                    timestamp_seconds=planning_timestamp,
                 )
                 continue
             self._jobs[request.request_id] = job
@@ -614,7 +1160,9 @@ class SceneRuntime:
             if success:
                 self._latest_inspection = job
             self.planner.complete(
-                request_id, success=success, timestamp_seconds=self._now
+                request_id,
+                success=success,
+                timestamp_seconds=self._planning_timestamp(),
             )
             self._stats[
                 "completed_inspections" if success else "failed_inspections"
@@ -627,6 +1175,7 @@ class SceneRuntime:
                     accepted_verdicts=accepted_count,
                     rejected_verdicts=rejected_count,
                 )
+            self._drain_tracking_intervals()
             return True
 
     def latest_inspection(self) -> TemporalInspection | None:
@@ -645,6 +1194,8 @@ class SceneRuntime:
             self._claimed.clear()
             self._pending_results.clear()
             self.evidence.reset()
+            self._tracking_frames.clear()
+            self._tracking_intervals.clear()
 
     def forget_identity(self, person_id: str) -> None:
         with self._lock:
@@ -659,11 +1210,44 @@ class SceneRuntime:
         with self._lock:
             self._forgotten_identities.discard(person_id)
 
+    def has_pending_inspections(self) -> bool:
+        """Read pending work without copying retained source trajectories."""
+        with self._lock:
+            return bool(self._jobs or self._tracking_intervals)
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "enabled": True,
                 "mode": self.mode,
+                "tracking_mode": self.tracking_mode,
+                "memory_scope": self.native_memory_scope,
+                "capture_timestamp_seconds": self._now,
+                "tracking_completed_timestamp_seconds": (
+                    self._tracking_completed_timestamp
+                ),
+                "tracking_completed_frame_sequence": self._tracking_completed_sequence,
+                "tracking_lag_seconds": (
+                    None
+                    if self._tracking_completed_timestamp is None
+                    else max(0.0, self._now - self._tracking_completed_timestamp)
+                ),
+                "tracking_rejections": dict(self._tracking_rejections),
+                "tracking_last_rejection": self._tracking_last_rejection,
+                "tracking_interval_rejections": dict(
+                    self._tracking_interval_rejections
+                ),
+                "pending_tracking_intervals": [
+                    interval.request.as_dict()
+                    for interval in self._tracking_intervals.values()
+                ],
+                "evidence_buffer": {
+                    "frames": len(self.evidence),
+                    "bytes": self.evidence.byte_count,
+                    "max_frames": self.evidence.max_frames,
+                    "max_bytes": self.evidence.max_bytes,
+                    "history_seconds": self.evidence.history_seconds,
+                },
                 "state": "stopped" if self._closed else "running",
                 "automatic_temporal_inference": self.automatic_temporal_inference
                 and not self._closed,

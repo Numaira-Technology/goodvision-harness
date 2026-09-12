@@ -18,6 +18,7 @@ from .contracts import NormalizedBBox
 
 _EVENT_LABELS = frozenset({"fight", "smoking", "fall", "weapon", "stranger"})
 _IDENTITY_KEYS = ("status", "person_id", "name", "identity_source", "matched_memory_id")
+_NATIVE_TRACK_KEYS = ("backend", "epoch", "object_id")
 
 
 def _text(value: str, name: str) -> str:
@@ -54,6 +55,7 @@ class _Person:
     history: deque
     identity: dict = field(default_factory=dict)
     identity_source: tuple[float, int] = (-1.0, -1)
+    native_track: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -112,11 +114,26 @@ class SceneState:
         retention_seconds: float = 90.0,
         confirm_observations: int = 2,
         clear_observations: int = 2,
+        person_history_size: int | None = None,
+        person_history_seconds: float | None = None,
     ) -> None:
         self.stream_session_id = _text(stream_session_id, "stream_session_id")
         self.source_id = _text(source_id, "source_id")
         self.max_entities = _integer(max_entities, "max_entities", 1, 4096)
         self.history_size = _integer(history_size, "history_size", 1, 1024)
+        self.person_history_size = _integer(
+            history_size if person_history_size is None else person_history_size,
+            "person_history_size",
+            1,
+            1024,
+        )
+        self.person_history_seconds = (
+            None
+            if person_history_seconds is None
+            else _time(person_history_seconds, "person_history_seconds")
+        )
+        if self.person_history_seconds == 0:
+            raise ValueError("person_history_seconds must be positive")
         self.occlusion_seconds = _time(occlusion_seconds, "occlusion_seconds")
         self.retention_seconds = _time(retention_seconds, "retention_seconds")
         if (
@@ -162,6 +179,9 @@ class SceneState:
             for key in expired:
                 del self._people[key]
                 self._counters["entities_expired"] += 1
+            if self.person_history_seconds is not None:
+                for person in self._people.values():
+                    self._prune_person_history(person)
             if expired:
                 self._source_pins = {
                     key: tuple(item for item in observations if item[0] in self._people)
@@ -181,6 +201,93 @@ class SceneState:
                 self._record_groups.pop(evidence_key, None)
         self._events.pop(key, None)
 
+    def reserve_person_capacity(self, subject_ids: tuple[str, ...]) -> bool:
+        """Retire expired unpinned batch tracks only when new people need room.
+
+        Active event episodes retain their usual lifetime. Immediate tracking
+        keeps its existing retention policy; no eviction occurs without a
+        separately configured source-trajectory horizon.
+        """
+        subjects = {_text(subject, "subject_id") for subject in subject_ids}
+        with self._lock:
+            needed = len(set(self._people) | subjects) - self.max_entities
+            if needed <= 0:
+                return True
+            if self.person_history_seconds is None:
+                return False
+            protected = {
+                sid
+                for observations in self._source_pins.values()
+                for sid, _at, _sequence, _bbox in observations
+            } | {
+                sid
+                for event in self._events.values()
+                if event.phase in {"suspected", "confirmed"}
+                for sid in event.subject_ids
+            }
+            eligible = sorted(
+                (
+                    person
+                    for person in self._people.values()
+                    if person.subject_id not in subjects | protected
+                    and self._timestamp - person.last_seen > self.person_history_seconds
+                ),
+                key=lambda person: (person.last_seen, person.subject_id),
+            )
+            if len(eligible) < needed:
+                return False
+            retired = {person.subject_id for person in eligible[:needed]}
+            for subject in retired:
+                del self._people[subject]
+            for key, event in list(self._events.items()):
+                if retired.intersection(event.subject_ids):
+                    self._discard_group(key)
+            self._counters["expired_batch_entities_retired"] += len(retired)
+            return True
+
+    def can_reserve_native_person_slots(
+        self, keys: set[tuple[str, str, str]]
+    ) -> bool:
+        """A continuing native identity does not need a new scene entity slot."""
+        with self._lock:
+            existing = {
+                tuple(
+                    person.native_track.get(name)
+                    for name in ("backend", "epoch", "object_id")
+                )
+                for person in self._people.values()
+                if person.native_track
+            }
+            return self.can_reserve_person_slots(len(keys - existing))
+
+    def can_reserve_person_slots(self, new_people: int) -> bool:
+        """Read-only native-batch preflight, before registry identity allocation."""
+        new_people = _integer(new_people, "new_people", 0)
+        with self._lock:
+            needed = len(self._people) + new_people - self.max_entities
+            if needed <= 0:
+                return True
+            if self.person_history_seconds is None:
+                return False
+            protected = {
+                sid
+                for observations in self._source_pins.values()
+                for sid, _at, _sequence, _bbox in observations
+            } | {
+                sid
+                for event in self._events.values()
+                if event.phase in {"suspected", "confirmed"}
+                for sid in event.subject_ids
+            }
+            return (
+                sum(
+                    person.subject_id not in protected
+                    and self._timestamp - person.last_seen > self.person_history_seconds
+                    for person in self._people.values()
+                )
+                >= needed
+            )
+
     def observe_person(
         self,
         subject_id: str,
@@ -190,6 +297,8 @@ class SceneState:
         bbox: NormalizedBBox,
         identity: Mapping | None = None,
         observation_state: str = "observed",
+        allow_historical: bool = False,
+        native_track: Mapping | None = None,
     ) -> bool:
         subject_id = _text(subject_id, "subject_id")
         timestamp = _time(timestamp_seconds)
@@ -206,6 +315,15 @@ class SceneState:
             raise ValueError("unsupported observation_state")
         if identity is not None and not isinstance(identity, Mapping):
             raise ValueError("identity must be a mapping")
+        if type(allow_historical) is not bool:
+            raise ValueError("allow_historical must be a boolean")
+        if native_track is not None and not isinstance(native_track, Mapping):
+            raise ValueError("native_track must be a mapping")
+        safe_native_track = {
+            key: _text(native_track[key], f"native_track.{key}")
+            for key in _NATIVE_TRACK_KEYS
+            if native_track is not None and key in native_track
+        }
         safe_identity = {
             key: _text(identity[key], f"identity.{key}")
             for key in _IDENTITY_KEYS
@@ -217,9 +335,19 @@ class SceneState:
                 return self._reject("nonobserved_people_ignored")
             if self._timestamp - timestamp > self.retention_seconds:
                 return self._reject("stale_people_ignored")
+            if (
+                allow_historical
+                and self.person_history_seconds is not None
+                and self._timestamp - timestamp > self.person_history_seconds
+            ):
+                return self._reject("expired_person_history_ignored")
             person = self._people.get(subject_id)
             if person is not None:
                 if timestamp < person.last_seen or sequence < person.frame_sequence:
+                    if allow_historical:
+                        return self._insert_historical_person(
+                            person, timestamp, sequence, bbox, safe_native_track
+                        )
                     if self._has_source_observation(subject_id, timestamp, sequence):
                         if self._update_identity(
                             person, safe_identity, timestamp, sequence
@@ -239,13 +367,20 @@ class SceneState:
                     timestamp,
                     timestamp,
                     sequence,
-                    deque(maxlen=self.history_size),
+                    deque(maxlen=self.person_history_size),
                 )
                 self._people[subject_id] = person
                 self._counters["entities_created"] += 1
                 same_frame = False
             self._update_identity(person, safe_identity, timestamp, sequence)
+            if safe_native_track:
+                person.native_track = safe_native_track
             if same_frame:
+                if allow_historical:
+                    person.bbox = bbox
+                    self._insert_historical_person(
+                        person, timestamp, sequence, bbox, safe_native_track
+                    )
                 self._counters["same_frame_person_updates"] += 1
                 return True
             person.bbox, person.last_seen, person.frame_sequence = (
@@ -258,10 +393,66 @@ class SceneState:
                     "timestamp_seconds": timestamp,
                     "frame_sequence": sequence,
                     "bbox": bbox.as_dict(),
+                    **(
+                        {"native_track": safe_native_track} if safe_native_track else {}
+                    ),
                 }
             )
+            self._prune_person_history(person)
             self._counters["person_observations"] += 1
             return True
+
+    def _prune_person_history(self, person: _Person) -> None:
+        if self.person_history_seconds is not None:
+            while person.history and (
+                person.history[0]["timestamp_seconds"]
+                < self._timestamp - self.person_history_seconds
+            ):
+                person.history.popleft()
+
+    def _insert_historical_person(
+        self,
+        person: _Person,
+        timestamp: float,
+        sequence: int,
+        bbox: NormalizedBBox,
+        native_track: dict,
+    ) -> bool:
+        """Add completed source geometry without rewinding present-day location."""
+        if any(
+            (
+                record["frame_sequence"] < sequence
+                and record["timestamp_seconds"] > timestamp
+            )
+            or (
+                record["frame_sequence"] > sequence
+                and record["timestamp_seconds"] < timestamp
+            )
+            or (
+                record["frame_sequence"] == sequence
+                and record["timestamp_seconds"] != timestamp
+            )
+            for record in person.history
+        ):
+            return self._reject("inconsistent_person_history_ignored")
+        record = {
+            "timestamp_seconds": timestamp,
+            "frame_sequence": sequence,
+            "bbox": bbox.as_dict(),
+            **({"native_track": native_track} if native_track else {}),
+        }
+        records = [
+            item for item in person.history if item["frame_sequence"] != sequence
+        ]
+        records.append(record)
+        records.sort(
+            key=lambda item: (item["timestamp_seconds"], item["frame_sequence"])
+        )
+        person.history = deque(records, maxlen=self.person_history_size)
+        person.first_seen = min(person.first_seen, timestamp)
+        self._prune_person_history(person)
+        self._counters["historical_person_observations"] += 1
+        return record in person.history
 
     @staticmethod
     def _update_identity(
@@ -762,6 +953,11 @@ class SceneState:
                     "label": "person",
                     "bbox": person.bbox.as_dict(),
                     "identity": person.identity,
+                    **(
+                        {"native_track": person.native_track}
+                        if person.native_track
+                        else {}
+                    ),
                     "observation_state": "observed"
                     if person.subject_id in visible
                     else "occluded",
@@ -811,3 +1007,73 @@ class SceneState:
                     "counters": dict(self._counters),
                 }
             )
+
+    def snapshot_at(
+        self, timestamp_seconds: float, *, include_history: bool = False
+    ) -> dict:
+        """Project retained observations without aging the presentation clock backward.
+
+        This bounded source view is for planning, not event-history replay. Events
+        whose latest evidence is newer than the requested watermark are omitted.
+        """
+        timestamp = _time(timestamp_seconds)
+        with self._lock:
+            snapshot = self.snapshot(include_history=include_history)
+            snapshot["timestamp_seconds"] = timestamp
+            entities = []
+            visible = set()
+            for person in self._people.values():
+                history = [
+                    record
+                    for record in person.history
+                    if record["timestamp_seconds"] <= timestamp
+                ]
+                if not history:
+                    continue
+                latest = history[-1]
+                observed = (
+                    timestamp - latest["timestamp_seconds"] <= self.occlusion_seconds
+                )
+                if observed:
+                    visible.add(person.subject_id)
+                entities.append(
+                    {
+                        "entity_id": person.subject_id,
+                        "subject_id": person.subject_id,
+                        "label": "person",
+                        "bbox": latest["bbox"],
+                        "identity": person.identity
+                        if person.identity_source[0] <= timestamp
+                        else {},
+                        **(
+                            {"native_track": latest["native_track"]}
+                            if "native_track" in latest
+                            else {}
+                        ),
+                        "observation_state": "observed" if observed else "occluded",
+                        "first_observed_timestamp_seconds": person.first_seen,
+                        "last_observed_timestamp_seconds": latest["timestamp_seconds"],
+                        "frame_sequence": latest["frame_sequence"],
+                        **({"history": history} if include_history else {}),
+                    }
+                )
+            snapshot["entities"] = entities
+            snapshot["events"] = [
+                event
+                for event in snapshot["events"]
+                if event["last_evidence_timestamp_seconds"] <= timestamp
+            ]
+            for event in snapshot["events"]:
+                key = (event["event_label"], tuple(event["subject_ids"]))
+                event["observation_state"] = (
+                    "uncertain"
+                    if self._events[key].uncertain
+                    or any(subject not in visible for subject in event["subject_ids"])
+                    else "observed"
+                )
+            snapshot["transitions"] = [
+                item
+                for item in snapshot["transitions"]
+                if item.get("timestamp_seconds", timestamp) <= timestamp
+            ]
+            return deepcopy(snapshot)

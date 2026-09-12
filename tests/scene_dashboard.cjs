@@ -239,3 +239,26 @@ test("a timed-out request is aborted before the next poll", async () => {
   view.tick(); assert.equal(view.requests.length, 2);
   view.app.stopScenePolling(); await settle();
 });
+
+test("native video validation shows its memory boundary and actual processing lag", () => {
+  const view = dashboard();
+  view.app.acceptSceneSnapshot(snapshot({tracking_mode: "batch", memory_scope: "batch",
+    tracking_lag_seconds: 5.25}));
+  assert.equal(view.element("scene-mode").textContent, "视频片段验证");
+  assert.match(view.element("scene-summary").textContent, /分析落后画面 5\.3 秒/);
+  assert.match(view.element("scene-summary").textContent, /片段之间人物重新编号/);
+  view.app.acceptSceneSnapshot(snapshot({timestamp: 2, tracking_mode: "batch",
+    tracking_lag_seconds: null}));
+  assert.match(view.element("scene-summary").textContent, /等待首段分析/);
+  assert.doesNotMatch(view.element("scene-summary").textContent, /NaN|分析落后画面 0/);
+});
+
+test("persistent native memory is distinguished from batch resets and still shows lag", () => {
+  const view = dashboard();
+  view.app.acceptSceneSnapshot(snapshot({tracking_mode: "batch", memory_scope: "session",
+    tracking_lag_seconds: 6.25}));
+  assert.equal(view.element("scene-mode").textContent, "连续人物追踪（实验）");
+  assert.match(view.element("scene-summary").textContent, /分析落后画面 6\.3 秒/);
+  assert.match(view.element("scene-summary").textContent, /当前会话保持人物编号/);
+  assert.doesNotMatch(view.element("scene-summary").textContent, /片段之间人物重新编号/);
+});

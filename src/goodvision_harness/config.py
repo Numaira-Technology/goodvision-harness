@@ -78,6 +78,9 @@ class RichLabelSettings:
     max_interpolation_gap_seconds: float = 2.0
     max_hold_seconds: float = 2.0
     tracking_enabled: bool = True
+    video_batch_frames: int = 16
+    video_batch_seconds: float = 4.0
+    video_timeout_seconds: float = 75.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,8 +295,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             rich_label_section.get("backend", "paddle"), "rich_labeling.backend"
         )
     ).lower()
-    if rich_label_backend not in {"paddle", "vlm", "sam"}:
-        raise ValueError("rich_labeling.backend must be paddle, vlm or sam")
+    if rich_label_backend not in {"paddle", "vlm", "sam", "sam31", "sam31_stream"}:
+        raise ValueError(
+            "rich_labeling.backend must be paddle, vlm, sam, sam31 or sam31_stream"
+        )
     rich_label_model = rich_label_section.get("model")
     if rich_label_model is not None and not isinstance(rich_label_model, str):
         raise TypeError("rich_labeling.model must be a string or null")
@@ -364,6 +369,22 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             ),
         ),
         backend=rich_label_backend,
+        video_batch_frames=_bounded_int(
+            int(os.environ["SAM31_BATCH_FRAMES"])
+            if os.environ.get("SAM31_BATCH_FRAMES")
+            else rich_label_section.get("video_batch_frames", 16),
+            "rich_labeling.video_batch_frames", minimum=1, maximum=16,
+        ),
+        video_batch_seconds=_bounded_float(
+            os.environ.get("SAM31_BATCH_SECONDS")
+            or rich_label_section.get("video_batch_seconds", 4.0),
+            "rich_labeling.video_batch_seconds", minimum=0.01, maximum=10,
+        ),
+        video_timeout_seconds=_positive_float(
+            os.environ.get("SAM31_CLIENT_TIMEOUT_SECONDS")
+            or rich_label_section.get("video_timeout_seconds", 75.0),
+            "rich_labeling.video_timeout_seconds",
+        ),
         model=rich_label_model,
         vlm_wire_format=rich_wire_format,
         vlm_execution_mode=rich_execution_mode,
@@ -418,6 +439,14 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "rich_labeling.max_hold_seconds",
         ),
     )
+    if rich_labeling.backend in {"sam31", "sam31_stream"} and (
+        rich_labeling.max_fps > 30 or rich_labeling.history_size > 4096
+    ):
+        raise ValueError("sam31 max_fps must be <=30 and history_size must be <=4096")
+    if rich_labeling.backend == "sam31_stream" and (
+        rich_labeling.video_batch_frames != 16 or rich_labeling.max_fps < 0.5
+    ):
+        raise ValueError("sam31_stream requires video_batch_frames=16 and max_fps>=0.5")
     sliding_window = SlidingWindowSettings(
         size_frames=_positive_int(
             window_section.get("size_frames", 4), "sliding_window.size_frames"
