@@ -1,0 +1,17 @@
+{"type":"session","stream_session_id":"smoking-exploration","source_id":"offline-office"}
+{"type":"person","subject_id":"alice","timestamp_seconds":0,"frame_sequence":0,"bbox":[0.1,0.1,0.4,0.95],"identity":{"status":"known","person_id":"employee-alice","name":"Alice","identity_source":"face_match"}}
+{"type":"person","subject_id":"bob","timestamp_seconds":0,"frame_sequence":0,"bbox":[0.6,0.1,0.9,0.95]}
+{"type":"event","event_label":"smoking","subject_ids":["alice"],"detected":true,"evidence_id":"smoking-0","confidence":0.78,"timestamp_seconds":0,"frame_sequence":0}
+{"type":"person","subject_id":"alice","timestamp_seconds":1,"frame_sequence":10,"bbox":[0.12,0.1,0.42,0.95]}
+{"type":"event","event_label":"smoking","subject_ids":["alice"],"detected":true,"evidence_id":"smoking-1","confidence":0.94,"timestamp_seconds":1,"frame_sequence":10}
+{"type":"tick","timestamp_seconds":5}
+{"type":"person","subject_id":"bob","timestamp_seconds":5,"frame_sequence":50,"bbox":[0.6,0.1,0.9,0.95]}
+{"type":"person","subject_id":"alice","timestamp_seconds":5,"frame_sequence":50,"bbox":[0.15,0.1,0.45,0.95],"observation_state":"predicted"}
+{"type":"event","event_label":"smoking","subject_ids":["alice"],"detected":false,"evidence_id":"unseen-negative","confidence":0.99,"timestamp_seconds":5,"frame_sequence":50}
+{"type":"person","subject_id":"alice","timestamp_seconds":6,"frame_sequence":60,"bbox":[0.2,0.1,0.5,0.95]}
+{"type":"event","event_label":"smoking","subject_ids":["alice"],"detected":false,"evidence_id":"smoking-clear-6","confidence":0.94,"timestamp_seconds":6,"frame_sequence":60}
+{"type":"person","subject_id":"alice","timestamp_seconds":7,"frame_sequence":70,"bbox":[0.2,0.1,0.5,0.95]}
+{"type":"event","event_label":"smoking","subject_ids":["alice"],"detected":false,"evidence_id":"smoking-clear-7","confidence":0.96,"timestamp_seconds":7,"frame_sequence":70}
+{"type":"event","event_label":"smoking","subject_ids":["alice"],"detected":true,"evidence_id":"late-smoke","confidence":0.99,"timestamp_seconds":0.5,"frame_sequence":5}
+{"type":"event","event_label":"smoking","subject_ids":["alice"],"detected":true,"evidence_id":"smoking-1","confidence":0.94,"timestamp_seconds":1,"frame_sequence":10}
+{"type":"person","subject_id":"bob","timestamp_seconds":8,"frame_sequence":80,"bbox":[0.6,0.1,0.9,0.95]}

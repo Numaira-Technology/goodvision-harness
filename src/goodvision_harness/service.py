@@ -113,6 +113,7 @@ from .route_probe import (
     finish_result,
     probe_sample,
 )
+from .scene_runtime import SceneRuntime
 from .stream_adapter import parse_stream_source
 from .video_to_stream import encode_jpeg
 from .visual_memory import (
@@ -200,6 +201,9 @@ class HarnessRuntime:
             autostart = False
             config_error = config_error or "configuration error"
         self.config = config
+        self._scene_enabled = config is not None and config.runtime.scene_enabled
+        self._scene: SceneRuntime | None = None
+        self._scene_errors = 0
         self.config_error = config_error
         self.dry_run = dry_run
         self.autostart = autostart
@@ -898,10 +902,18 @@ class HarnessRuntime:
                 return
             registry = session.person_registry
         registry.observe_snapshot(snapshot)
+        canonical = (
+            registry.snapshot_at(snapshot.timestamp_seconds, snapshot.frame_sequence)
+            if getattr(self, "_scene", None) is not None else None
+        )
         corrections = registry.drain_reassociated_results()
         with self._state_lock:
             if self._session is not session:
                 return
+            if canonical is not None and (
+                canonical.timestamp_seconds, canonical.frame_sequence
+            ) == (snapshot.timestamp_seconds, snapshot.frame_sequence):
+                self._observe_scene("observe_tracks", canonical)
             for corrected in corrections:
                 self._on_timeline_result(corrected)
                 if session.archive is not None:
@@ -919,6 +931,8 @@ class HarnessRuntime:
         registry = getattr(session, "person_registry", None)
         if registry is not None:
             registry.allow_person(person_id)
+        with self._state_lock:
+            self._observe_scene("allow_identity", person_id)
         result = {
             "ready": True,
             "person": {
@@ -940,6 +954,8 @@ class HarnessRuntime:
             registry = getattr(session, "person_registry", None)
             if registry is not None:
                 registry.forget_person(person_id)
+            with self._state_lock:
+                self._observe_scene("forget_identity", person_id)
         return deleted
 
     def _ensure_face_runtime(self) -> FaceRecognitionRuntime:
@@ -1400,6 +1416,13 @@ class HarnessRuntime:
                 self.frames.reset()
                 self.preview_frames.reset()
                 self._session = session
+                if self._scene is not None:
+                    self._scene.close()
+                self._scene = (
+                    SceneRuntime(session.stream_session_id, self.source_id)
+                    if self._scene_enabled else None
+                )
+                self._scene_errors = 0
                 self._session_mode = mode
                 self._camera_owner = camera_owner if mode == CAMERA_MODE else None
                 self._camera_frame_sequence = 0
@@ -1462,6 +1485,9 @@ class HarnessRuntime:
                         self._rich_labels.reset(None)
                     self._active_rich_session_id = None
                     self._session = None
+                    if self._scene is not None:
+                        self._scene.close()
+                    self._scene = None
                     self._session_mode = None
                     self._camera_owner = None
                     self._state.update(
@@ -1530,6 +1556,8 @@ class HarnessRuntime:
                     )
                     return False
                 self._generation += 1
+                if self._scene is not None:
+                    self._scene.close()
                 self._state.update(
                     {
                         "pipeline_state": "stopping",
@@ -1717,6 +1745,35 @@ class HarnessRuntime:
         assert isinstance(safe, dict)
         return safe
 
+    def scene_snapshot(self) -> dict[str, Any]:
+        """Experimental scene state; no images or automatic inference side effects."""
+        with self._state_lock:
+            payload = (
+                self._scene.snapshot() if self._scene is not None else {
+                    "enabled": self._scene_enabled,
+                    "mode": "shadow",
+                    "state": "idle" if self._scene_enabled else "disabled",
+                    "automatic_temporal_inference": False,
+                    "scene": None, "inspections": [],
+                }
+            )
+            payload["observer_errors"] = self._scene_errors
+        safe = public_safe_value(payload)
+        assert isinstance(safe, dict)
+        return safe
+
+    def _observe_scene(self, method: str, *args: Any, **kwargs: Any) -> None:
+        scene = getattr(self, "_scene", None)
+        if scene is not None:
+            try:
+                getattr(scene, method)(*args, **kwargs)
+            except Exception:
+                self._scene_errors += 1
+                if self._scene_errors == 1:
+                    LOGGER.warning(
+                        "experimental scene observer rejected an observation"
+                    )
+
     def readiness(self) -> tuple[bool, str]:
         with self._state_lock:
             state = self._state["pipeline_state"]
@@ -1785,6 +1842,15 @@ class HarnessRuntime:
 
     def _on_analysis_frame(self, result: AnalysisResult, jpeg: bytes) -> None:
         source_jpeg = bytes(jpeg)
+        scene = getattr(self, "_scene", None)
+        if scene is not None and (
+            result.stream_session_id == scene.stream_session_id
+            and result.source_id == scene.source_id
+        ):
+            self._observe_scene(
+                "observe_frame", source_jpeg, result.frame.timestamp_seconds,
+                result.frame.source_frame_index, force=True,
+            )
         self._delayed_overlay.submit_analysis_frame(result, source_jpeg)
         if self._memory_sink is not None:
             try:
@@ -1862,6 +1928,20 @@ class HarnessRuntime:
             self._delivery.submit(payload)
 
     def _on_timeline_result(self, result: AnalysisResult) -> None:
+        if getattr(self, "_scene", None) is not None:
+            session = self._session
+            if (
+                session is not None
+                and session.stream_session_id == result.stream_session_id
+            ):
+                canonical = session.person_registry.snapshot_at(
+                    result.frame.timestamp_seconds, result.frame.source_frame_index,
+                )
+                if canonical is not None and (
+                    canonical.timestamp_seconds, canonical.frame_sequence
+                ) == (result.frame.timestamp_seconds, result.frame.source_frame_index):
+                    self._observe_scene("observe_tracks", canonical)
+            self._observe_scene("observe_result", result)
         coordinator = self._rich_labels
         if (
             coordinator is not None
@@ -1897,6 +1977,9 @@ class HarnessRuntime:
         # Browser frames bypass StreamingSession's source decoder. Preserve all
         # presentation frames for evidence, not only the model samples.
         session = self._session
+        self._observe_scene(
+            "observe_frame", source_jpeg, media_timestamp, frame_sequence,
+        )
         if (
             session is not None and getattr(session, "mode", None) == CAMERA_MODE
             and getattr(session, "archive", None) is not None
@@ -2069,6 +2152,7 @@ class HarnessRuntime:
             self._update_state(**values)
 
     def _on_end(self, reason: str, error: str | None) -> None:
+        self._observe_scene("close")
         next_state = "error" if error else "ended"
         self._update_state(
             pipeline_state=next_state,
@@ -2775,6 +2859,12 @@ def create_app(
         if payload is None:
             raise HTTPException(status_code=404, detail="no rich labels yet")
         return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @application.get("/v1/experimental/scene", include_in_schema=False)
+    async def experimental_scene(request: Request) -> JSONResponse:
+        return JSONResponse(
+            _runtime(request).scene_snapshot(), headers={"Cache-Control": "no-store"},
+        )
 
     @application.get("/v1/results/events")
     async def result_events(

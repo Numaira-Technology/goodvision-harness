@@ -9,6 +9,12 @@ delayed annotation stream for display.
 The harness has no runtime dependency on the original `goodvision`
 repository.
 
+An experimental persistent person/event engine is available behind
+`SCENE_ENGINE_ENABLED=true`. It maintains source-grounded event episodes and
+prepares temporal inspections alongside the existing pipeline. See the
+[architecture and replay guide](docs/architecture/entity-event-engine.md) for
+the implemented scope, offline example, and remaining SAM integration work.
+
 ## Harness behavior
 
 The service performs one external model request for whichever visual safety

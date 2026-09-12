@@ -119,6 +119,7 @@ class FaceSettings:
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
     max_concurrent_requests: int = 4
+    scene_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,9 +314,13 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         "rich_labeling.vlm_parallel_strategy",
     ).lower()
     if rich_parallel_strategy not in {"crops", "full_frame"}:
-        raise ValueError("rich_labeling.vlm_parallel_strategy must be crops or full_frame")
+        raise ValueError(
+            "rich_labeling.vlm_parallel_strategy must be crops or full_frame"
+        )
     if rich_parallel_strategy == "full_frame" and rich_execution_mode != "parallel":
-        raise ValueError("full_frame rich labeling requires vlm_execution_mode: parallel")
+        raise ValueError(
+            "full_frame rich labeling requires vlm_execution_mode: parallel"
+        )
     rich_structured_output = _bool(
         rich_label_section.get("vlm_structured_output", False),
         "rich_labeling.vlm_structured_output",
@@ -505,7 +510,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         max_concurrent_requests=_positive_int(
             runtime_section.get("max_concurrent_requests", 4),
             "runtime.max_concurrent_requests",
-        )
+        ),
+        scene_enabled=_environment_bool(
+            "SCENE_ENGINE_ENABLED",
+            _bool(runtime_section.get("scene_enabled", False), "runtime.scene_enabled"),
+        ),
     )
     server = ServerSettings(
         host=str(server_section.get("host", "127.0.0.1")),
