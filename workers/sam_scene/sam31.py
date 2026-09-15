@@ -701,7 +701,10 @@ def register_video_routes(
             raise HTTPException(503, "native video inference unavailable")
         if not admission.acquire(blocking=False):
             raise HTTPException(429, "inference busy", headers={"Retry-After": "1"})
-        session_engine = getattr(app.state, "session_engine", None)
+        session_engine = (
+            getattr(app.state, "perception_sessions", None)
+            or getattr(app.state, "session_engine", None)
+        )
         if session_engine is not None and session_engine.has_active_session:
             admission.release()
             raise HTTPException(

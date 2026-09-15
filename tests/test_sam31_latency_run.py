@@ -10,6 +10,8 @@ import httpx
 import numpy as np
 import pytest
 
+from goodvision_harness import perception
+
 
 def module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -85,7 +87,7 @@ def test_short_eof_with_real_coordinator_closes_client_and_annotations(
 ):
     source = video(tmp_path, count=2)
     server = doubles.SessionServer()
-    client_class = runner.MeasuredClient
+    client_class = perception.VideoSessionTrackingHTTPClient
     clients = []
 
     def client(endpoint, **kwargs):
@@ -95,7 +97,7 @@ def test_short_eof_with_real_coordinator_closes_client_and_annotations(
         clients.append(selected)
         return selected
 
-    monkeypatch.setattr(runner, "MeasuredClient", client)
+    monkeypatch.setattr(perception, "VideoSessionTrackingHTTPClient", client)
     args = SimpleNamespace(
         video=str(source),
         output=str(tmp_path / "run"),
@@ -119,9 +121,122 @@ def test_short_eof_with_real_coordinator_closes_client_and_annotations(
     assert result["annotation"]["rendered_after_measurement"]
     assert result["annotation"]["frames"] == 2
     assert result["requests"][0]["final"] and result["requests"][0]["succeeded"]
+    assert result["processing_method"] is None
+    assert result["backend"] == "sam3.1_video"
+    assert (
+        result["batch_frames"],
+        result["batch_seconds"],
+        result["pending_capacity"],
+    ) == (
+        4,
+        0.5,
+        16,
+    )
     assert clients[0]._client.is_closed
     saved = json.loads((Path(args.output) / "report.json").read_text())
     assert saved["elapsed_seconds"] == result["elapsed_seconds"]
+
+
+@pytest.mark.parametrize("method", tuple(perception.METHODS))
+def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
+    tmp_path, monkeypatch, method
+):
+    from test_perception_client import RouteServer
+
+    source = video(tmp_path, count=3)
+    server = RouteServer(method)
+    client_class = perception.PerceptionSessionHTTPClient
+    clients = []
+
+    def client(endpoint, **kwargs):
+        selected = client_class(
+            endpoint, transport=httpx.MockTransport(server), **kwargs
+        )
+        clients.append(selected)
+        return selected
+
+    monkeypatch.setattr(perception, "PerceptionSessionHTTPClient", client)
+    args = SimpleNamespace(
+        video=str(source),
+        output=str(tmp_path / method),
+        fps=4,
+        max_seconds=0.75,
+        sam_endpoint="http://mock.test/v1/video/sessions",
+        processing_method=method,
+        # Deliberately request legacy dispatch; console profile must override it.
+        batch_frames=16,
+        batch_seconds=4.0,
+        transport_max_side=128,
+        transport_jpeg_quality=65,
+        annotation=False,
+    )
+    result = runner.run(args)
+    assert result["ok"] and result["source_evidence_unchanged"]
+    assert result["tracking_coverage"]["all_capture_frames_processed"]
+    assert result["processing_method"] == method
+    assert result["backend"] == perception.METHODS[method].backend
+    assert (
+        result["batch_frames"],
+        result["batch_seconds"],
+        result["pending_capacity"],
+    ) == (
+        1,
+        0.1,
+        4,
+    )
+    assert result["startup_frames"] == 1 and result["max_append_frames"] == 4
+    assert result["requested_batch_frames"] == 16
+    assert result["requested_batch_seconds"] == 4.0
+    assert server.paths[0] == f"/health/perception/{method}"
+    assert all("/v1/video" not in path for path in server.paths)
+    assert any(path == f"/v1/perception/{method}/sessions" for path in server.paths)
+    assert not result["tracking_rejections"]
+    rows = [
+        json.loads(line)
+        for line in (Path(args.output) / "tracks.jsonl").read_text().splitlines()
+    ]
+    assert [
+        (row["native"]["frame_sequence"], row["native"]["timestamp_seconds"])
+        for row in rows
+    ] == [
+        (0, 0.0),
+        (1, 0.25),
+        (2, 0.5),
+    ]
+    objects = [obj for row in rows for obj in row["native"]["objects"]]
+    assert objects and all(
+        obj["attributes"]["native_track"]["backend"] == result["backend"]
+        and obj["attributes"]["tracking_confirmation"] == "provisional"
+        for obj in objects
+    )
+    assert all(
+        row["canonical"]["frame_sequence"] == row["native"]["frame_sequence"]
+        for row in rows
+    )
+    assert clients[0]._client.is_closed
+
+
+def test_parser_preserves_legacy_default_and_only_accepts_catalogued_routes():
+    parser = runner.argument_parser()
+    required = [
+        "source.avi",
+        "--sam-endpoint",
+        "http://mock.test",
+        "--output",
+        "unused",
+    ]
+    args = parser.parse_args(required)
+    assert args.processing_method is None
+    assert args.batch_frames == 4 and args.batch_seconds == 0.5
+    for method in perception.METHODS:
+        assert (
+            parser.parse_args(
+                [*required, "--processing-method", method]
+            ).processing_method
+            == method
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args([*required, "--processing-method", "unknown"])
 
 
 def test_unprocessed_preview_keeps_every_source_and_never_copies_boxes(tmp_path):

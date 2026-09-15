@@ -36,7 +36,7 @@ _PERSON_LABELS = frozenset(
     }
 )
 _SOURCE_FACE_MAX_GAP_SECONDS = 0.6
-_NATIVE_BACKEND = "sam3.1_video"
+_NATIVE_BACKENDS = frozenset({"sam3.1_video", "person_hybrid"})
 
 
 def _native_metadata(value: object) -> tuple[str, str, str] | None:
@@ -55,7 +55,7 @@ def _native_metadata(value: object) -> tuple[str, str, str] | None:
             or part != part.strip()
             for part in parts
         )
-        or parts[0] != _NATIVE_BACKEND
+        or parts[0] not in _NATIVE_BACKENDS
     ):
         return None
     return parts
@@ -168,6 +168,7 @@ class PersonRegistry:
             for item in snapshot.objects
             if item.label.casefold() in {"person", "pedestrian"}
             and _native_metadata(item.attributes.get("native_track")) is not None
+            and item.attributes.get("tracking_confirmation", "confirmed") == "confirmed"
             and (
                 item.observation_state
                 or item.attributes.get("observation_state", "observed")
@@ -831,12 +832,38 @@ class PersonRegistry:
             if snapshot is not None:
                 self.observe_snapshot(snapshot)
             canonical = self.snapshot_at(timestamp, frame_sequence)
+            # A displayed tentative box is not trusted face/body identity evidence.
+            # Reset held body links too, so a newly uncertain track cannot inherit
+            # an earlier face association merely because its ID is unchanged.
+            provisional_ids = (
+                {
+                    item.track_id
+                    for item in canonical.objects
+                    if item.attributes.get("tracking_confirmation", "confirmed")
+                    != "confirmed"
+                }
+                if canonical is not None
+                else set()
+            )
+            self._face_tracker.forget_bodies(provisional_ids)
+            face_snapshot = (
+                replace(
+                    canonical,
+                    objects=tuple(
+                        item
+                        for item in canonical.objects
+                        if item.track_id not in provisional_ids
+                    ),
+                )
+                if canonical is not None
+                else None
+            )
             resolved = self._face_tracker.resolve(
                 objects,
                 timestamp=timestamp,
                 frame_sequence=frame_sequence,
                 people=people,
-                snapshot=canonical,
+                snapshot=face_snapshot,
                 known_bodies={
                     key: {
                         "person_id": subject.identity["person_id"],
@@ -846,6 +873,7 @@ class PersonRegistry:
                     for key, subject in self._subjects.items()
                     if subject.identity.get("person_id") in people
                     and subject.identity_at <= timestamp
+                    and key not in provisional_ids
                 },
             )
             if canonical is not None and (
@@ -1382,6 +1410,8 @@ def _unique_body(
 ) -> RichLabelObject | None:
     scores = []
     for body in bodies:
+        if body.attributes.get("tracking_confirmation", "confirmed") != "confirmed":
+            continue
         score = _iou(box, body.bbox)
         if face:
             intersection = max(

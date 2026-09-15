@@ -147,7 +147,7 @@ def test_stream_yaml_delay_above_console_limit_fails_before_clients_start(monkey
     reached = []
     monkeypatch.setattr(
         service,
-        "VideoSessionTrackingHTTPClient",
+        "create_tracking_client",
         lambda *_args, **_kwargs: reached.append(True),
     )
     with pytest.raises(ValueError, match="between 0 and 30"):

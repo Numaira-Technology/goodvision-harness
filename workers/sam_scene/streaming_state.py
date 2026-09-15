@@ -7,6 +7,7 @@ or historical interactive edits are supported after expired frames are pruned.
 from __future__ import annotations
 
 import inspect
+from copy import deepcopy
 from dataclasses import dataclass
 
 INPUT_SLOTS = 16
@@ -101,14 +102,18 @@ def hotstart_parameters(delay):
     }
 
 
-def make_prod_model(native, *, hotstart_delay=15, postprocess_batch_size=1):
+def make_prod_model(
+    native, *, hotstart_delay=15, postprocess_batch_size=1, model_mixin=None
+):
     if type(postprocess_batch_size) is not int or postprocess_batch_size not in {1, 4}:
         raise ValueError("postprocess_batch_size must be 1 or 4")
     from sam3.model.sam3_multiplex_base import Sam3MultiplexBase
     from sam3.model.sam3_multiplex_tracking import Sam3MultiplexTrackingProd
 
-    class CountBoundedProd(CountBoundedProcessingOrder, Sam3MultiplexTrackingProd):
-        pass
+    bases = (CountBoundedProcessingOrder, Sam3MultiplexTrackingProd)
+    if model_mixin is not None:
+        bases = (model_mixin, *bases)
+    CountBoundedProd = type("CountBoundedProd", bases, {})
 
     existing = native.predictor.model
     kwargs = {}
@@ -156,10 +161,16 @@ class RingFrames:
     absolute_indices: list[int]
 
     @classmethod
-    def from_tensor(cls, tensor):
-        if len(tensor) != INPUT_SLOTS:
+    def from_tensor(cls, tensor, *, allow_partial=False):
+        if len(tensor) != INPUT_SLOTS and not (
+            allow_partial and 1 <= len(tensor) <= INPUT_SLOTS
+        ):
             raise ValueError("pruning probe requires 16 arrived startup frames")
-        return cls([frame.clone() for frame in tensor], list(range(INPUT_SLOTS)))
+        count = len(tensor)
+        return cls(
+            [frame.clone() for frame in tensor] + [None] * (INPUT_SLOTS - count),
+            list(range(count)) + [-1] * (INPUT_SLOTS - count),
+        )
 
     def __len__(self):
         return INPUT_SLOTS
@@ -176,6 +187,8 @@ class RingFrames:
         if type(index) is not int or index < 0:
             raise IndexError("ring supports nonnegative scalar frame indices only")
         slot = index % INPUT_SLOTS
+        if self.frames[slot] is None:
+            raise IndexError("native code requested a source frame not yet arrived")
         if index >= INPUT_SLOTS and self.absolute_indices[slot] != index:
             raise IndexError("native code requested an expired or future source frame")
         return self.frames[slot]
@@ -213,9 +226,24 @@ class BoundedRetention:
         self.history_frames = history_frames
         self.cond_limit = tracker.max_cond_frames_in_attn
 
-    def install(self, state):
+    def install(self, state, *, allow_partial=False):
         batch = state["input_batch"]
-        batch.img_batch.tensors = RingFrames.from_tensor(batch.img_batch.tensors)
+        batch.img_batch.tensors = RingFrames.from_tensor(
+            batch.img_batch.tensors, allow_partial=allow_partial
+        )
+        if allow_partial and 1 <= len(batch.find_inputs) < INPUT_SLOTS:
+            # These are prompt-address slots, not source images. Empty image slots
+            # raise until a real append installs their exact source tensor.
+            template = batch.find_inputs[0]
+            for slot in range(len(batch.find_inputs), INPUT_SLOTS):
+                stage = deepcopy(template)
+                stage.img_ids[...] = slot
+                stage.img_ids_np[...] = slot
+                batch.find_inputs.append(stage)
+            for name in ("find_targets", "find_metadatas"):
+                if hasattr(batch, name):
+                    values = getattr(batch, name)
+                    values.extend([None] * (INPUT_SLOTS - len(values)))
         if len(batch.find_inputs) != INPUT_SLOTS:
             raise ValueError("expected fixed 16 FindStage slots")
         for slot, stage in enumerate(batch.find_inputs):

@@ -132,6 +132,63 @@ class Session:
     last_response: bytes | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SessionProfile:
+    """Immutable wire and latency contract supplied by one perception plugin."""
+
+    route: str
+    backend_name: str
+    startup_frames: int = 1
+    max_append_frames: int = 4
+    output_delay_frames: int = 0
+    native_sam_video_tracking: bool = True
+
+    def __post_init__(self):
+        if not _identifier(self.route) or not _identifier(self.backend_name):
+            raise ValueError("invalid perception profile identifier")
+        for name, low, high in (
+            ("startup_frames", 1, 16),
+            ("max_append_frames", 1, 16),
+            ("output_delay_frames", 0, 14),
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError("invalid perception profile limit")
+        if self.startup_frames > self.max_append_frames:
+            raise ValueError("startup exceeds append capacity")
+
+
+class SessionRegistry:
+    """One ownership domain across legacy and pluggable session engines.
+
+    HTTP callers hold the existing GPU admission slot during create/append/delete.
+    This registry also serializes direct creation and keeps cancelled native state
+    owned until backend teardown has actually finished.
+    """
+
+    def __init__(self):
+        self.engines = []
+        self.mutex = threading.RLock()
+
+    def add(self, engine):
+        with self.mutex:
+            if engine not in self.engines:
+                self.engines.append(engine)
+                engine.registry = self
+
+    @property
+    def has_active_session(self):
+        return any(engine.has_active_session for engine in tuple(self.engines))
+
+    def expire(self):
+        for engine in tuple(self.engines):
+            engine.expire()
+
+    def close(self):
+        for engine in tuple(self.engines):
+            engine.close()
+
+
 def _json(payload):
     try:
         raw = json.loads(
@@ -166,7 +223,8 @@ def _parse_h264_batch(raw, settings):
     previous_sequence, previous_timestamp = -1, -1.0
     for frame in frames:
         if type(frame) is not dict or set(frame) != {
-            "frame_sequence", "timestamp_seconds"
+            "frame_sequence",
+            "timestamp_seconds",
         }:
             raise HTTPException(400, "invalid session frame metadata")
         sequence, timestamp = frame["frame_sequence"], frame["timestamp_seconds"]
@@ -224,9 +282,10 @@ def parse_append(payload, settings, *, h264_enabled=False):
     raw = _json(payload)
     expected = {"stream_session_id", "request_id", "frames", "is_last_batch"}
     is_video = "video" in raw
-    if set(raw) != (expected | {"video"} if is_video else expected) or type(
-        raw.get("is_last_batch")
-    ) is not bool:
+    if (
+        set(raw) != (expected | {"video"} if is_video else expected)
+        or type(raw.get("is_last_batch")) is not bool
+    ):
         raise HTTPException(400, "invalid session append fields")
     if not _identifier(raw["stream_session_id"]) or not _identifier(raw["request_id"]):
         raise HTTPException(400, "invalid session identifiers")
@@ -363,15 +422,40 @@ class NativeContinuation:
 
 
 class SessionEngine:
-    def __init__(self, video_engine, settings=None, backend=None):
+    def __init__(
+        self,
+        video_engine,
+        settings=None,
+        backend=None,
+        *,
+        profile=None,
+        production=None,
+        registry=None,
+    ):
         self.video = video_engine
         self.settings = settings or SessionSettings.from_env()
-        self._production = backend is None
+        self._production = backend is None if production is None else production
         self.backend = backend or NativeContinuation(video_engine, self.settings)
+        self.profile = profile
+        self.registry = registry
         self.session: Session | None = None
         self._mutex = threading.RLock()
         self.ready = False
         self.error_code = None
+        if registry is not None:
+            registry.add(self)
+
+    @property
+    def backend_name(self):
+        return self.profile.backend_name if self.profile is not None else BACKEND
+
+    @property
+    def max_pending_frames(self):
+        return (
+            self.profile.output_delay_frames
+            if self.profile is not None
+            else self.settings.hotstart_delay - 1
+        )
 
     @property
     def gpu_ready(self):
@@ -392,10 +476,10 @@ class SessionEngine:
 
     def limits(self):
         return self.video.settings.limits() | {
-            "startup_frames": 16,
-            "max_append_frames": 16,
-            "hotstart_delay": self.settings.hotstart_delay,
-            "max_pending_frames": self.settings.hotstart_delay - 1,
+            "startup_frames": self.profile.startup_frames if self.profile else 16,
+            "max_append_frames": self.profile.max_append_frames if self.profile else 16,
+            "hotstart_delay": self.max_pending_frames + 1,
+            "max_pending_frames": self.max_pending_frames,
             "history_frames": self.settings.history_frames,
             "max_session_frames": self.settings.max_session_frames,
             "max_cumulative_native_ids": self.settings.max_cumulative_native_ids,
@@ -424,7 +508,7 @@ class SessionEngine:
             "video_session_id": session.video_session_id,
             "stream_session_id": session.stream_session_id,
             "predictor_epoch": session.predictor_epoch,
-            "backend": BACKEND,
+            "backend": self.backend_name,
             "memory_scope": "session",
             "state": session.status,
         }
@@ -435,9 +519,17 @@ class SessionEngine:
             raw["stream_session_id"]
         ):
             raise HTTPException(400, "invalid session creation request")
-        with self._mutex:
-            self.expire()
-            if self.has_active_session:
+        ownership = self.registry.mutex if self.registry is not None else self._mutex
+        with ownership, self._mutex:
+            if self.registry is not None:
+                self.registry.expire()
+            else:
+                self.expire()
+            if (
+                self.registry.has_active_session
+                if self.registry is not None
+                else self.has_active_session
+            ):
                 raise HTTPException(409, "active_session_exists")
             self.session = Session(
                 uuid.uuid4().hex,
@@ -510,10 +602,16 @@ class SessionEngine:
                     return json.loads(session.last_response)
             if session.status != "active" or session.cancel.is_set():
                 raise HTTPException(409, "reset_required")
+            limits = self.limits()
+            if len(batch.frames) > limits["max_append_frames"]:
+                raise HTTPException(413, "append exceeds route frame capacity")
             if not session.total_frames and (
-                not batch.frames or (not final and len(batch.frames) != 16)
+                not batch.frames
+                or (not final and len(batch.frames) < limits["startup_frames"])
             ):
-                raise HTTPException(409, "startup_requires_16_frames")
+                raise HTTPException(
+                    409, f"startup_requires_{limits['startup_frames']}_frames"
+                )
             if (
                 batch.frames
                 and session.accepted is not None
@@ -610,8 +708,11 @@ class SessionEngine:
                     ):
                         raise RuntimeError("native output violates source prefix")
                     source = session.sources[index]
+                    serialize = getattr(
+                        self.backend, "serialize_snapshot", native_snapshot
+                    )
                     snapshots.append(
-                        native_snapshot(
+                        serialize(
                             output,
                             batch=VideoBatch(
                                 session.stream_session_id, batch.batch_id, (source,)
@@ -645,11 +746,17 @@ class SessionEngine:
                 raise RuntimeError("native EOF omitted arrived source frames")
             if (
                 len(session.sources) != session.total_frames - session.emitted_index - 1
-                or len(session.sources) > self.settings.hotstart_delay - 1
+                or len(session.sources) > self.max_pending_frames
             ):
                 raise RuntimeError("native pending count violated bound")
             self.backend.prune(session)
             check()
+            route_metadata = None
+            if self.profile is not None:
+                metadata = getattr(self.backend, "route_metadata", None)
+                route_metadata = (
+                    metadata(session, snapshots) if metadata is not None else {}
+                ) | {"route": self.profile.route}
             if final:
                 self._discard(session)
             accepted, emitted = session.accepted, session.emitted
@@ -666,6 +773,8 @@ class SessionEngine:
                 else None,
                 "pending_frame_count": len(session.sources),
             }
+            if self.profile is not None:
+                response["route_metadata"] = route_metadata
             encoded = json.dumps(
                 response, separators=(",", ":"), allow_nan=False
             ).encode()
@@ -711,29 +820,48 @@ class SessionEngine:
                 image.close()
 
 
-def register_session_routes(app, engine, admission, decode_jpeg):
-    app.state.session_engine = engine
+def register_session_routes(
+    app,
+    engine,
+    admission,
+    decode_jpeg,
+    *,
+    api_prefix="/v1/video",
+    health_path="/health/video/session",
+    legacy=True,
+):
+    if legacy:
+        app.state.session_engine = engine
 
-    @app.get("/health/video/session")
+    @app.get(health_path)
     async def health():
         return JSONResponse(
             {
                 "enabled": engine.settings.enabled,
                 "ready": engine.gpu_ready,
                 "gpu_ready": engine.gpu_ready,
-                "backend": BACKEND,
+                "backend": engine.backend_name,
                 "memory_scope": "session",
-                "native_sam_video_tracking": True,
+                "native_sam_video_tracking": (
+                    engine.profile.native_sam_video_tracking if engine.profile else True
+                ),
                 "sam3_commit": SAM3_COMMIT,
                 "limits": engine.limits(),
                 "error_code": engine.error_code,
-                "active_session": engine.has_active_session,
+                "active_session": (
+                    engine.registry.has_active_session
+                    if not legacy and engine.registry is not None
+                    else engine.has_active_session
+                ),
             },
             status_code=200 if engine.gpu_ready else 503,
         )
 
     async def handle(request, operation, token=None):
-        if (
+        # Cleanup must remain possible after a background/model failure removes
+        # readiness. DELETE still uses the same admission, token and deadline
+        # checks, and never runs inference or opens a replacement session.
+        if operation != "delete" and (
             not engine.settings.enabled
             or not engine.ready
             or (engine._production and not engine.gpu_ready)
@@ -865,14 +993,14 @@ def register_session_routes(app, engine, admission, decode_jpeg):
                 finally:
                     admission.release()
 
-    @app.post("/v1/video/sessions")
+    @app.post(api_prefix + "/sessions")
     async def create(request: Request):
         return await handle(request, "create")
 
-    @app.post("/v1/video/sessions/{video_session_id}/append")
+    @app.post(api_prefix + "/sessions/{video_session_id}/append")
     async def append(video_session_id: str, request: Request):
         return await handle(request, "append", video_session_id)
 
-    @app.delete("/v1/video/sessions/{video_session_id}")
+    @app.delete(api_prefix + "/sessions/{video_session_id}")
     async def delete(video_session_id: str, request: Request):
         return await handle(request, "delete", video_session_id)

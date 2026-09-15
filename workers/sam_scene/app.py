@@ -612,19 +612,39 @@ def decode_jpeg(payload: bytes, settings: Settings) -> Any:
 
 
 def create_app(
-    engine: SceneEngine | None = None, video_engine=None, session_engine=None
+    engine: SceneEngine | None = None,
+    video_engine=None,
+    session_engine=None,
+    perception_engines=None,
 ) -> FastAPI:
     # Both package tests and the standalone Docker /worker/app.py entry point.
     if __package__:
-        from .continuous import SessionEngine, register_session_routes
+        from .continuous import SessionEngine, SessionRegistry, register_session_routes
+        from .perception_routes import (
+            build_perception_engines,
+            register_perception_routes,
+        )
         from .sam31 import VideoEngine, register_video_routes
     else:
-        from continuous import SessionEngine, register_session_routes
+        from continuous import SessionEngine, SessionRegistry, register_session_routes
+        from perception_routes import (
+            build_perception_engines,
+            register_perception_routes,
+        )
         from sam31 import VideoEngine, register_video_routes
 
     selected = engine or SceneEngine()
     selected_video = video_engine or VideoEngine()
     selected_session = session_engine or SessionEngine(selected_video)
+    sessions = SessionRegistry()
+    sessions.add(selected_session)
+    selected_routes = (
+        build_perception_engines(selected_video, sessions)
+        if perception_engines is None
+        else perception_engines
+    )
+    for route_engine in selected_routes.values():
+        sessions.add(route_engine)
     production = engine is None
     image_enabled = os.environ.get("SAM_SCENE_IMAGE_ENABLED", "true").lower() == "true"
     admission = threading.Lock()
@@ -645,13 +665,20 @@ def create_app(
             await asyncio.to_thread(selected_session.warmup)
         except Exception:
             LOGGER.exception("SAM3.1 session initialization failed")
+        for route, route_engine in selected_routes.items():
+            try:
+                await asyncio.to_thread(route_engine.warmup)
+            except Exception:
+                LOGGER.exception(
+                    "Perception route initialization failed route=%s", route
+                )
 
         async def reap_sessions():
             while True:
                 await asyncio.sleep(5)
                 if admission.acquire(blocking=False):
                     try:
-                        selected_session.expire()
+                        sessions.expire()
                     finally:
                         admission.release()
 
@@ -668,7 +695,7 @@ def create_app(
         if admission.acquire(blocking=False):
             try:
                 selected.close()
-                selected_session.close()
+                sessions.close()
                 selected_video.close()
             finally:
                 admission.release()
@@ -680,8 +707,10 @@ def create_app(
         redoc_url=None,
     )
     app.state.engine = selected
+    app.state.perception_sessions = sessions
     register_video_routes(app, selected_video, admission, decode_jpeg)
     register_session_routes(app, selected_session, admission, decode_jpeg)
+    register_perception_routes(app, selected_routes, admission, decode_jpeg)
 
     @app.get("/health/live")
     async def live():
@@ -710,6 +739,9 @@ def create_app(
             raise HTTPException(503, "inference unavailable")
         if not admission.acquire(blocking=False):
             raise HTTPException(429, "inference busy", headers={"Retry-After": "1"})
+        if sessions.has_active_session:
+            admission.release()
+            raise HTTPException(409, "active_session_exists")
         task = None
         deadline = time.monotonic() + selected.settings.request_timeout_seconds
         try:

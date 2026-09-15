@@ -38,6 +38,11 @@ torch 2.10.0／torchvision 0.25.0 使用 `cu126`；镜像可传入
 解码缓冲限制再解码。该压缩模式需另行验证实际跟踪质量，不改变源时间或事件证据。
 本次 4090 实测、人物合并、源画面对齐和 Demo 采用的 3 FPS 配置见
 [SAM 3.1 优化与验证记录](docs/architecture/sam31-optimization-20260913.md)。
+Deployment console 现可在 `sam_live`（SAM 连续分析）和 `hybrid`（快速跟踪 + SAM 校准）
+之间选择，按“停止 → 保存 → 重新启动”切换；两种方法使用独立模型会话和共用人物／事件接口。
+部署准备、边界和后续 A/B 验证见
+[可切换的人物识别路线](docs/architecture/perception-methods-20260915.md)。
+本轮仅完成本地验证，GPU 保持停止，尚未验证新路线的真实速度与准确率。
 [持续事件架构与运行指南](docs/architecture/entity-event-engine.md) 包含本地 active 配置、
 容器启动、录制视频验证、请求预算和具体边界。没有权重时可明确使用 `--recorded-tracks`
 验证上层链路，报告会标识这不验证 SAM。

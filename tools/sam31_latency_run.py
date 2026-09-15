@@ -20,13 +20,17 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+from goodvision_harness.config import RichLabelSettings
+from goodvision_harness.perception import (
+    METHODS,
+    create_tracking_client,
+    create_tracking_coordinator,
+)
 from goodvision_harness.person_registry import PersonRegistry
 from goodvision_harness.rich_labeling import RichLabelSnapshot
 from goodvision_harness.scene_runtime import SceneRuntime
-from goodvision_harness.video_tracking import BACKEND, VideoFrame
+from goodvision_harness.video_tracking import VideoFrame
 from goodvision_harness.video_tracking_session import (
-    VideoSessionTrackingCoordinator,
-    VideoSessionTrackingHTTPClient,
     continuous_source_history_seconds,
 )
 
@@ -98,11 +102,16 @@ def load_source(video, *, fps, max_seconds):
         capture.release()
 
 
-class MeasuredClient(VideoSessionTrackingHTTPClient):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class MeasuredClient:
+    """Measure the selected production client without changing its protocol."""
+
+    def __init__(self, client):
+        self._wrapped = client
         self.measurements = []
         self.measurement_lock = threading.Lock()
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
 
     def append(
         self, frames, *, stream_session_id, is_last_batch=False, request_id=None
@@ -111,7 +120,7 @@ class MeasuredClient(VideoSessionTrackingHTTPClient):
         result = None
         error_type = None
         try:
-            result = super().append(
+            result = self._wrapped.append(
                 frames,
                 stream_session_id=stream_session_id,
                 is_last_batch=is_last_batch,
@@ -399,7 +408,9 @@ def _replay(args, frames, mapping, fps, client, output):
             canonical = []
 
             def canonicalize(snapshots):
-                if not registry.begin_native_epoch(BACKEND, batch.predictor_epoch):
+                if not registry.begin_native_epoch(
+                    batch.backend, batch.predictor_epoch
+                ):
                     raise ValueError("native epoch rejected")
                 for snapshot in snapshots:
                     registry.observe_snapshot(snapshot)
@@ -443,13 +454,8 @@ def _replay(args, frames, mapping, fps, client, output):
                     }
                 )
 
-    coordinator = VideoSessionTrackingCoordinator(
-        client,
-        max_fps=fps,
-        batch_frames=args.batch_frames,
-        batch_seconds=args.batch_seconds,
-        history_size=512,
-        on_batch=on_batch,
+    coordinator = create_tracking_coordinator(
+        client, replay_settings(args, fps), on_batch
     )
     coordinator.reset(runtime.stream_session_id)
 
@@ -511,6 +517,8 @@ def _replay(args, frames, mapping, fps, client, output):
             report = {
                 "ok": drained and stats["failed"] == 0 and bool(commits),
                 "source_video": str(Path(args.video).resolve()),
+                "processing_method": getattr(args, "processing_method", None),
+                "backend": client.backend,
                 "capture_frames": len(frames),
                 "capture_fps": fps,
                 "elapsed_seconds": measured_until - started,
@@ -535,8 +543,13 @@ def _replay(args, frames, mapping, fps, client, output):
                 "transport_jpeg_quality": args.transport_jpeg_quality,
                 "transport_codec": getattr(args, "transport_codec", "jpeg"),
                 "transport_crf": getattr(args, "transport_crf", 23),
-                "batch_frames": args.batch_frames,
-                "batch_seconds": args.batch_seconds,
+                "batch_frames": coordinator._batch_frames,
+                "batch_seconds": coordinator._batch_seconds,
+                "pending_capacity": stats["pending_capacity"],
+                "startup_frames": client.startup_frames,
+                "max_append_frames": client.max_append_frames,
+                "requested_batch_frames": args.batch_frames,
+                "requested_batch_seconds": args.batch_seconds,
                 "finished_idle": drained,
                 "coordinator": stats,
                 "requests": client.measurement_snapshot(),
@@ -571,6 +584,25 @@ def _replay(args, frames, mapping, fps, client, output):
         runtime.close()
 
 
+def replay_settings(args, fps):
+    """Use the console's factory and dispatch policy, including route overrides."""
+    return RichLabelSettings(
+        enabled=True,
+        backend="sam31_stream",
+        endpoint=args.sam_endpoint,
+        processing_method=getattr(args, "processing_method", None),
+        max_fps=fps,
+        history_size=512,
+        video_batch_frames=args.batch_frames,
+        video_batch_seconds=args.batch_seconds,
+        video_timeout_seconds=75,
+        video_transport_max_side=args.transport_max_side,
+        video_transport_jpeg_quality=args.transport_jpeg_quality,
+        video_transport_codec=getattr(args, "transport_codec", "jpeg"),
+        video_transport_crf=getattr(args, "transport_crf", 23),
+    )
+
+
 def run(args):
     frames, mapping, fps = load_source(
         args.video, fps=args.fps, max_seconds=args.max_seconds
@@ -579,16 +611,12 @@ def run(args):
     output.mkdir(parents=True, exist_ok=False)
     client = None
     try:
-        client = MeasuredClient(
-            args.sam_endpoint,
-            timeout_seconds=75,
-            transport_max_side=args.transport_max_side,
-            transport_jpeg_quality=args.transport_jpeg_quality,
-            transport_codec=getattr(args, "transport_codec", "jpeg"),
-            transport_crf=getattr(args, "transport_crf", 23),
-        )
-        if not client.gpu_ready():
-            raise RuntimeError("continuous GPU worker unavailable")
+        client = MeasuredClient(create_tracking_client(replay_settings(args, fps)))
+        ready = getattr(client, "ready_for_new_session", client.gpu_ready)
+        if not ready():
+            raise RuntimeError(
+                "selected GPU worker unavailable or session still occupied"
+            )
         report = _replay(args, frames, mapping, fps, client, output)
         if getattr(args, "annotation", False):
             tracks = [
@@ -615,11 +643,17 @@ def run(args):
             client.close()
 
 
-def main():
+def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("video")
     parser.add_argument("--sam-endpoint", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--processing-method",
+        choices=tuple(METHODS),
+        help="use the console route profile (dispatch 1 frame / 0.1s, queue 4); "
+        "omit for the legacy continuous SAM endpoint",
+    )
     parser.add_argument("--fps", type=float, default=4)
     parser.add_argument("--max-seconds", type=float, default=48)
     parser.add_argument("--batch-frames", type=int, default=4)
@@ -633,7 +667,11 @@ def main():
         action="store_true",
         help="render all sampled originals after the timed replay",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = argument_parser().parse_args()
     report = run(args)
     print(
         json.dumps(
@@ -641,6 +679,11 @@ def main():
                 key: report[key]
                 for key in (
                     "ok",
+                    "processing_method",
+                    "backend",
+                    "batch_frames",
+                    "batch_seconds",
+                    "pending_capacity",
                     "capture_frames",
                     "elapsed_seconds",
                     "first_output_seconds",

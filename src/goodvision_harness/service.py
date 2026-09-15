@@ -46,6 +46,7 @@ from .deployment_settings import (
     DeploymentSettingsStore,
     validate_buffer_delay_seconds,
     validate_camera_layout,
+    validate_processing_method,
 )
 from .event_archive import EventArchive
 from .event_routes import install_event_routes
@@ -81,6 +82,12 @@ from .overlay import (
     draw_rich_overlay,
 )
 from .overlay_fusion import OverlayFusionMatcher
+from .perception import (
+    create_tracking_client,
+    create_tracking_coordinator,
+    processing_methods,
+    processing_status,
+)
 from .person_event_overlay import PersonOverlayAnalysis
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
@@ -127,11 +134,9 @@ from .video_tracking import (
 from .video_tracking import (
     VideoTrackingBatch,
     VideoTrackingCoordinator,
-    VideoTrackingHTTPClient,
 )
 from .video_tracking_session import (
     VideoSessionTrackingCoordinator,
-    VideoSessionTrackingHTTPClient,
     continuous_source_history_seconds,
 )
 from .visual_memory import (
@@ -160,6 +165,15 @@ ANALYSIS_MODES = frozenset(
 INDEPENDENT_FACE_ANALYSIS_KINDS = frozenset(
     {"face_recognition", "face_reference_match"}
 )
+
+
+class ProcessingMethodUnavailableError(RuntimeError):
+    """A chosen perception plugin must be ready before opening a video source."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "人物处理服务尚未就绪或旧会话仍在收尾。当前检测未开始。请检查服务器连接后重试。"
+        )
 
 
 def _resolved_face_live_scheduler(*, provider: str, configured: str) -> str:
@@ -219,7 +233,27 @@ class HarnessRuntime:
             dry_run = False
             autostart = False
             config_error = config_error or "configuration error"
+        processing_method = (
+            self._deployment_settings.processing_method
+            if self._deployment_settings is not None
+            and self._deployment_settings.processing_method is not None
+            else config.rich_labeling.processing_method if config is not None else None
+        )
+        if processing_method is not None and config is not None:
+            config = replace(config, rich_labeling=replace(
+                config.rich_labeling,
+                processing_method=validate_processing_method(processing_method),
+            ))
+            if (config.rich_labeling.backend != "sam31_stream"
+                    or config.runtime.scene_mode != "active"):
+                config_error = config_error or (
+                    "processing methods require active scene mode and sam31_stream"
+                )
         self.config = config
+        self._rich_config_revision = 0
+        self._retiring_rich_labels = None
+        self._rich_retirement_thread: Thread | None = None
+        self._last_processing_stats: dict[str, Any] | None = None
         self._scene_mode = (
             config.runtime.scene_mode if config is not None else "disabled"
         )
@@ -276,16 +310,18 @@ class HarnessRuntime:
         )
         self._tracking_requested = self._rich_requested or (
             config is not None and config.rich_labeling.tracking_enabled
-        )
+        ) or processing_method is not None
         self._events: EventArchive | None = None
         self._rich_probe_thread: Thread | None = None
         self._rich_probe_stop = Event()
         self._active_rich_session_id: str | None = None
         if rich_label_coordinator is not None:
             self._rich_labels = rich_label_coordinator
-        elif config is not None and config.rich_labeling.enabled:
+        elif config is not None and config_error is None and (
+            config.rich_labeling.enabled or processing_method is not None
+        ):
             rich = config.rich_labeling
-            rich_client: RichLabelClient | VideoTrackingHTTPClient
+            rich_client: RichLabelClient | Any
             if rich.backend == "vlm":
                 rich_client = VLMRichLabelClient(
                     replace(
@@ -310,19 +346,7 @@ class HarnessRuntime:
                     dry_run=self._rich_annotation_dry_run,
                 )
             elif rich.backend in {"sam31", "sam31_stream"}:
-                client_class = (
-                    VideoSessionTrackingHTTPClient
-                    if rich.backend == "sam31_stream" else VideoTrackingHTTPClient
-                )
-                rich_client = client_class(
-                    rich.endpoint, timeout_seconds=rich.video_timeout_seconds,
-                    transport_max_side=rich.video_transport_max_side,
-                    transport_jpeg_quality=rich.video_transport_jpeg_quality,
-                    **({
-                        "transport_codec": rich.video_transport_codec,
-                        "transport_crf": rich.video_transport_crf,
-                    } if rich.backend == "sam31_stream" else {}),
-                )
+                rich_client = create_tracking_client(rich)
             else:
                 rich_client = RichLabelHTTPClient(
                     rich.endpoint,
@@ -681,6 +705,9 @@ class HarnessRuntime:
             "configured_stream_protocol": protocol,
             "stream_frame_crop": self.configured_frame_crop(),
             "camera_layout": self.configured_camera_layout(),
+            "processing_method": self._processing_method(),
+            "processing_methods": self._processing_methods(),
+            "processing_cleanup": self._state.get("processing_cleanup"),
             "dry_run": self.dry_run,
             "autostart": self.autostart,
             "buffer_delay_seconds": self._display_settings.delay_seconds,
@@ -688,6 +715,101 @@ class HarnessRuntime:
             "api_key_persisted": bool(self._persisted_api_key),
             "storage_error": self._deployment_error,
         }
+
+    def _processing_method(self) -> str | None:
+        return (
+            self.config.rich_labeling.processing_method
+            if self.config is not None else None
+        )
+
+    def _processing_methods(self) -> list[dict[str, Any]]:
+        if self.config is None:
+            return []
+        methods = processing_methods(self.config.rich_labeling)
+        if self._scene_mode != "active":
+            return [
+                dict(
+                    method, available=False,
+                    reason="此部署需要启用持续人物与事件分析。",
+                )
+                for method in methods
+            ]
+        return methods
+
+    def _processing_lifecycle_busy(self) -> bool:
+        """Capture end and native cleanup both belong to the old session."""
+        if self._retiring_rich_labels is not None:
+            return True
+        if self._session is not None and self._session.running:
+            return True
+        if self._state.get("pipeline_state") in {
+            "starting", "running", "stopping", "draining",
+        }:
+            return True
+        drain = getattr(self, "_end_drain_thread", None)
+        if drain is not None and drain.is_alive():
+            return True
+        coordinator = self._rich_labels
+        return isinstance(coordinator, VideoSessionTrackingCoordinator) and not (
+            coordinator.wait_until_idle(timeout_seconds=0)
+        )
+
+    def _replace_processing_method(self, method: str) -> None:
+        """Detach the old plugin under its revision before creating another."""
+        with self._state_lock:
+            previous_method = self._processing_method()
+            self._rich_config_revision += 1
+            self._generation += 1
+            previous = self._rich_labels
+            self._rich_labels = None
+            self._retiring_rich_labels = previous
+            self._active_rich_session_id = None
+            self._last_processing_stats = None
+            self._session = None
+            self._session_mode = None
+            self._camera_owner = None
+            self.config = replace(self.config, rich_labeling=replace(
+                self.config.rich_labeling, processing_method=method,
+            ))
+            self._tracking_requested = True
+            self._rich_disabled_reason = "gpu_required"
+            self._state.update(
+                pipeline_state="stopping" if previous is not None else "idle",
+                input_mode=None, ready=False, generation=self._generation,
+                stream_session_id=None, scene_drain=None,
+                processing_method=method, rich_labeling_enabled=False,
+                processing_cleanup="closing" if previous is not None else None,
+                processing_retiring_method=(
+                    previous_method if previous is not None else None
+                ),
+            )
+        if previous is not None:
+            previous.close(timeout_seconds=0)
+            if previous.close_complete():
+                self._complete_processing_retirement(previous)
+            else:
+                self._rich_retirement_thread = Thread(
+                    target=self._wait_processing_retirement, args=(previous,),
+                    name="perception-retirement", daemon=True,
+                )
+                self._rich_retirement_thread.start()
+
+    def _wait_processing_retirement(self, previous: Any) -> None:
+        while not self._rich_probe_stop.wait(0.05):
+            if previous.close_complete():
+                with self._control_lock:
+                    self._complete_processing_retirement(previous)
+                return
+
+    def _complete_processing_retirement(self, previous: Any) -> None:
+        with self._state_lock:
+            if self._retiring_rich_labels is not previous:
+                return
+            self._retiring_rich_labels = None
+            self._state.update(
+                pipeline_state="idle", processing_cleanup="remote_check_pending",
+                processing_retiring_method=None,
+            )
 
     def update_deployment_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist defaults; buffer-only updates also apply to the active session."""
@@ -702,13 +824,14 @@ class HarnessRuntime:
             "clear_api_key",
             "buffer_delay_seconds",
             "camera_layout",
+            "processing_method",
         }
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise ValueError("unknown deployment setting")
         with self._control_lock:
             buffer_only = set(payload) == {"buffer_delay_seconds"}
-            if self._session is not None and self._session.running and not buffer_only:
+            if self._processing_lifecycle_busy() and not buffer_only:
                 raise RuntimeError("stop the active session before saving settings")
             if self._route_probe["state"] == "running":
                 raise RuntimeError("wait for the route check before saving settings")
@@ -716,6 +839,7 @@ class HarnessRuntime:
             setting_fields = {
                 "stream_url", "dry_run", "autostart", "buffer_delay_seconds",
                 "camera_layout",
+                "processing_method",
             }
             settings: DeploymentSettings | None = None
             if setting_fields.intersection(payload):
@@ -741,11 +865,23 @@ class HarnessRuntime:
                     buffer_delay_seconds = validate_buffer_delay_seconds(
                         payload["buffer_delay_seconds"]
                     )
+                processing_method = (
+                    self._deployment_settings.processing_method
+                    if self._deployment_settings is not None else None
+                )
+                if "processing_method" in payload:
+                    processing_method = validate_processing_method(
+                        payload["processing_method"]
+                    )
+                    if not any(item["id"] == processing_method and item["available"]
+                               for item in self._processing_methods()):
+                        raise ValueError("此部署暂不支持所选人物处理方式。")
                 settings = DeploymentSettings(
                     stream_url=stream_url,
                     dry_run=dry_run,
                     autostart=autostart,
                     buffer_delay_seconds=buffer_delay_seconds,
+                    processing_method=processing_method,
                     camera_layout=(
                         validate_camera_layout(payload["camera_layout"])
                         if "camera_layout" in payload else (
@@ -784,6 +920,9 @@ class HarnessRuntime:
                 self._deployment_settings = settings
                 self.dry_run = settings.dry_run
                 self.autostart = settings.autostart
+                if (settings.processing_method is not None
+                        and settings.processing_method != self._processing_method()):
+                    self._replace_processing_method(settings.processing_method)
                 if "buffer_delay_seconds" in payload:
                     assert buffer_delay_seconds is not None
                     self._delayed_overlay.set_delay_seconds(buffer_delay_seconds)
@@ -867,6 +1006,8 @@ class HarnessRuntime:
             "configured_stream_protocol": protocol,
             "stream_frame_crop": self.configured_frame_crop(),
             "camera_layout": self.configured_camera_layout(),
+            "processing_method": self._processing_method(),
+            "processing_methods": self._processing_methods(),
             "deployment": self.deployment_settings(),
             "analysis_modes": sorted(ANALYSIS_MODES),
             "reference_memory": (
@@ -968,18 +1109,13 @@ class HarnessRuntime:
                 self._events = EventArchive(self.config.events)
             return self._events
 
-    def _tracking_coordinator(self, client: Any) -> Any:
-        rich = self.config.rich_labeling
+    def _tracking_coordinator(self, client: Any, rich: Any = None) -> Any:
+        rich = rich or self.config.rich_labeling
         if rich.backend in {"sam31", "sam31_stream"}:
-            coordinator_class = (
-                VideoSessionTrackingCoordinator
-                if rich.backend == "sam31_stream" else VideoTrackingCoordinator
-            )
-            return coordinator_class(
-                client, max_fps=rich.max_fps, history_size=rich.history_size,
-                batch_frames=rich.video_batch_frames,
-                batch_seconds=rich.video_batch_seconds,
-                on_batch=self._on_tracking_batch,
+            revision = self._rich_config_revision
+            return create_tracking_coordinator(
+                client, rich,
+                on_batch=lambda batch: self._on_processing_batch(revision, batch),
             )
         return RichLabelCoordinator(
             client, max_fps=rich.max_fps, history_size=rich.history_size,
@@ -987,6 +1123,12 @@ class HarnessRuntime:
             max_hold_seconds=rich.max_hold_seconds,
             on_snapshot=self._on_tracking_snapshot,
         )
+
+    def _on_processing_batch(self, revision: int, batch: VideoTrackingBatch) -> None:
+        with self._state_lock:
+            if revision != self._rich_config_revision:
+                return
+            self._on_tracking_batch(batch)
 
     def _on_tracking_batch(self, batch: VideoTrackingBatch) -> None:
         # Bounded in-memory commit. Lifecycle lock excludes source replacement
@@ -999,7 +1141,8 @@ class HarnessRuntime:
 
             def canonicalize(snapshots):
                 if not registry.begin_native_epoch(
-                    NATIVE_VIDEO_BACKEND, batch.predictor_epoch,
+                    getattr(batch, "backend", NATIVE_VIDEO_BACKEND),
+                    batch.predictor_epoch,
                 ):
                     raise ValueError("native predictor epoch rejected")
                 canonical = []
@@ -1152,6 +1295,8 @@ class HarnessRuntime:
                 pipeline_state="idle", last_error=PUBLIC_MISSING_API_KEY_ERROR,
                 ready=False,
             )
+        except ProcessingMethodUnavailableError as exc:
+            self._update_state(pipeline_state="idle", last_error=str(exc), ready=False)
         except Exception:
             LOGGER.error("could not start harness runtime")
             self._update_state(
@@ -1166,9 +1311,12 @@ class HarnessRuntime:
         with self._control_lock:
             if (
                 self._closed
+                or self.config_error is not None
+                or self._retiring_rich_labels is not None
                 or not self._tracking_requested
                 or self._rich_labels is not None
-                or self._rich_probe_thread is not None
+                or (self._rich_probe_thread is not None
+                    and self._rich_probe_thread.is_alive())
             ):
                 return
             self._rich_probe_thread = Thread(
@@ -1190,25 +1338,16 @@ class HarnessRuntime:
         with self._control_lock:
             if self._closed or self._rich_labels is not None:
                 return True
+            if self._retiring_rich_labels is not None:
+                return False
             if self.config is None or not self._tracking_requested:
                 return True
             rich = self.config.rich_labeling
+            revision = self._rich_config_revision
         client = None
         try:
             if rich.backend in {"sam31", "sam31_stream"}:
-                client_class = (
-                    VideoSessionTrackingHTTPClient
-                    if rich.backend == "sam31_stream" else VideoTrackingHTTPClient
-                )
-                client = client_class(
-                    rich.endpoint, timeout_seconds=rich.video_timeout_seconds,
-                    transport_max_side=rich.video_transport_max_side,
-                    transport_jpeg_quality=rich.video_transport_jpeg_quality,
-                    **({
-                        "transport_codec": rich.video_transport_codec,
-                        "transport_crf": rich.video_transport_crf,
-                    } if rich.backend == "sam31_stream" else {}),
-                )
+                client = create_tracking_client(rich)
             else:
                 client = RichLabelHTTPClient(
                     rich.endpoint, timeout_seconds=rich.timeout_seconds,
@@ -1221,7 +1360,10 @@ class HarnessRuntime:
             with self._control_lock:
                 if self._closed or self._rich_labels is not None:
                     return True
-                coordinator = self._tracking_coordinator(client)
+                if (revision != self._rich_config_revision
+                        or self._retiring_rich_labels is not None):
+                    return False
+                coordinator = self._tracking_coordinator(client, rich)
                 with self._state_lock:
                     coordinator.reset(self._active_rich_session_id)
                     self._rich_labels = coordinator
@@ -1236,6 +1378,39 @@ class HarnessRuntime:
         finally:
             if client is not None:
                 client.close()
+
+    def _require_processing_ready(self) -> tuple[int, Any] | None:
+        """Check a selected plugin without holding locks during network I/O."""
+        with self._control_lock:
+            if self._processing_method() is None:
+                return None
+            if self._closed:
+                raise RuntimeError("harness service is stopping")
+            if self._processing_lifecycle_busy():
+                raise RuntimeError(
+                    "stop the active session and wait for cleanup before starting"
+                )
+            revision = self._rich_config_revision
+            rich = self.config.rich_labeling
+            coordinator = self._rich_labels
+        if coordinator is None:
+            # The transfer inside this helper is revision-checked, including
+            # when a background warmup is trying to enable the same method.
+            self._try_enable_rich_labels()
+        # A new health-only client avoids competing with native cleanup or
+        # mutating an existing client's session state during a start check.
+        probe = create_tracking_client(rich)
+        try:
+            if not probe.ready_for_new_session():
+                raise ProcessingMethodUnavailableError()
+        finally:
+            probe.close()
+        with self._control_lock:
+            if revision != self._rich_config_revision:
+                raise RuntimeError("人物处理方式已变化。请重新开始检测。")
+            if self._rich_labels is None:
+                raise ProcessingMethodUnavailableError()
+            return revision, self._rich_labels
 
     def start_stream(
         self,
@@ -1344,6 +1519,8 @@ class HarnessRuntime:
             event_sensitivities, sensitivity_labels,
         )
 
+        processing_ready = self._require_processing_ready()
+
         with self._control_lock:
             if self._closed:
                 raise RuntimeError("harness service is stopping")
@@ -1353,6 +1530,11 @@ class HarnessRuntime:
                 raise RuntimeError(
                     "a harness session is already running; stop it first"
                 )
+            if processing_ready is not None and (
+                processing_ready != (self._rich_config_revision, self._rich_labels)
+                or self._processing_lifecycle_busy()
+            ):
+                raise RuntimeError("人物处理方式或会话状态已变化。请重新开始检测。")
             needs_model_key = selected_analysis == EVENT_ANALYSIS_MODE or (
                 selected_analysis == MULTI_ANALYSIS_MODE
                 and any(feature in SAFETY_EVENT_LABELS for feature in selected_features)
@@ -1719,6 +1901,7 @@ class HarnessRuntime:
                 self._session_started_monotonic = time.monotonic()
                 self._last_frame_monotonic = None
                 self._last_result_monotonic = None
+                self._last_processing_stats = None
                 self._state.update(
                     {
                         "pipeline_state": "starting",
@@ -1761,6 +1944,8 @@ class HarnessRuntime:
                         "event_sensitivities": dict(selected_sensitivities),
                         "model": PUBLIC_MODEL_NAME,
                         "dry_run": use_dry_run,
+                        "processing_method": self._processing_method(),
+                        "processing_cleanup": None,
                         "webhook_enabled": self._delivery is not None,
                         "pipeline": None,
                     }
@@ -1801,6 +1986,7 @@ class HarnessRuntime:
                 "event_label": label,
                 "model": PUBLIC_MODEL_NAME,
                 "dry_run": use_dry_run,
+                "processing_method": self._processing_method(),
                 "event_sensitivities": dict(selected_sensitivities),
             }
             if selected_analysis == MULTI_ANALYSIS_MODE:
@@ -1849,6 +2035,10 @@ class HarnessRuntime:
                     )
                     return False
                 self._generation += 1
+                if self._processing_method() is not None:
+                    self._last_processing_stats = processing_status(
+                        self._rich_labels, self._processing_method(),
+                    )
                 if self._scene is not None:
                     self._scene.close()
                 self._close_scene_workers()
@@ -1903,6 +2093,8 @@ class HarnessRuntime:
         self.stop_session()
         if self._rich_probe_thread is not None:
             self._rich_probe_thread.join(timeout=3.0)
+        if self._rich_retirement_thread is not None:
+            self._rich_retirement_thread.join(timeout=1.0)
         probe_thread = self._route_probe_thread
         if probe_thread is not None:
             probe_thread.join(timeout=1.0)
@@ -1993,6 +2185,15 @@ class HarnessRuntime:
         with self._state_lock:
             payload = copy.deepcopy(self._state)
             rich_labels = self._rich_labels
+            method = self._processing_method()
+            last_processing_stats = (
+                dict(self._last_processing_stats)
+                if self._last_processing_stats is not None else None
+            )
+            active_rich_session_id = self._active_rich_session_id
+            session = self._session
+            retiring = self._retiring_rich_labels is not None
+            payload["processing_method"] = method
             rich_disabled_reason = self._rich_disabled_reason
             payload["rich_labeling_enabled"] = (
                 self._rich_requested and rich_labels is not None
@@ -2028,6 +2229,18 @@ class HarnessRuntime:
                    if rich_disabled_reason else {}),
             }
         )
+        payload["processing"] = (
+            last_processing_stats
+            if active_rich_session_id is None
+            and last_processing_stats is not None
+            and last_processing_stats.get("method") == method
+            else processing_status(rich_labels, method)
+        )
+        if retiring or (method is not None and session is None
+                and isinstance(rich_labels, VideoSessionTrackingCoordinator)
+                and not rich_labels.wait_until_idle(timeout_seconds=0)):
+            payload["pipeline_state"] = "stopping"
+            payload["processing_cleanup"] = "closing"
         ready, reason = self.readiness()
         payload["ready"] = ready
         payload["readiness_reason"] = reason
@@ -3143,6 +3356,10 @@ def create_app(
                                 {"type": "error",
                                  "message": PUBLIC_MISSING_API_KEY_ERROR}
                             )
+                        except ProcessingMethodUnavailableError as exc:
+                            await websocket.send_json(
+                                {"type": "error", "message": str(exc)}
+                            )
                         except ValueError as exc:
                             await websocket.send_json(
                                 {
@@ -3265,6 +3482,8 @@ def create_app(
             raise HTTPException(
                 status_code=400, detail=PUBLIC_MISSING_API_KEY_ERROR,
             ) from exc
+        except ProcessingMethodUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,

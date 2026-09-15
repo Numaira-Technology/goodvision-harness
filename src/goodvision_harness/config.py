@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from dotenv import find_dotenv, load_dotenv
 
+from .deployment_settings import validate_processing_method
 from .event_archive import EventArchiveSettings
 from .model_api import ModelAPISettings
 from .model_routing import CUSTOMER_INFERENCE_PROFILE, resolve_model_route
@@ -85,6 +86,7 @@ class RichLabelSettings:
     video_transport_jpeg_quality: int | None = None
     video_transport_codec: str = "jpeg"
     video_transport_crf: int = 23
+    processing_method: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,8 +365,15 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     )
     if rich_label_history_size < 2:
         raise ValueError("rich_labeling.history_size must be at least 2")
+    processing_method = (
+        os.environ.get("PERCEPTION_METHOD", "").strip()
+        or rich_label_section.get("processing_method")
+    )
+    if processing_method is not None:
+        processing_method = validate_processing_method(processing_method)
     rich_labeling = RichLabelSettings(
         enabled=rich_label_enabled,
+        processing_method=processing_method,
         tracking_enabled=_environment_bool(
             "PERSON_TRACKING_ENABLED",
             _bool(

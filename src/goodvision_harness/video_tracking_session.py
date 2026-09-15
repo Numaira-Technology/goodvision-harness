@@ -92,7 +92,7 @@ def continuous_source_history_seconds(fps: float) -> float:
     return max(32.0, 32 / fps + 24.0)
 
 
-def _limits(value: Any) -> dict[str, Any]:
+def _limits(value: Any, *, causal: bool = False) -> dict[str, Any]:
     _require(
         isinstance(value, dict)
         and set(value) - {"h264_transport"}
@@ -108,7 +108,11 @@ def _limits(value: Any) -> dict[str, Any]:
                 else (int,)
             )
             and _finite_number(number)
-            and (number in (0, 1) if key == "h264_transport" else number > 0),
+            and (
+                number in (0, 1) if key == "h264_transport"
+                else number >= 0 if causal and key == "max_pending_frames"
+                else number > 0
+            ),
             "invalid session limit value",
         )
     for key, expected in {
@@ -123,7 +127,7 @@ def _limits(value: Any) -> dict[str, Any]:
     )
     if HOTSTART_LIMIT_FIELDS <= set(value):
         _require(
-            value["hotstart_delay"] in (3, 5, 15)
+            value["hotstart_delay"] in ((1,) if causal else (3, 5, 15))
             and value["max_pending_frames"] == value["hotstart_delay"] - 1,
             "unsupported session hotstart limits",
         )
@@ -205,6 +209,17 @@ class VideoSessionTrackingResult:
 class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
     """One native session, one HTTP operation, at most 32 delayed source stamps."""
 
+    backend = BACKEND
+    session_path = "/v1/video/sessions"
+    health_path = "/health/video/session"
+    native_sam_video_tracking = True
+    append_metadata_fields = frozenset()
+    validate_limits = staticmethod(_limits)
+
+    def prepare_snapshots(self, payload, snapshots):
+        """Extension point after source and native provenance validation."""
+        return snapshots
+
     def __init__(
         self,
         endpoint: str,
@@ -234,8 +249,8 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
         self._transport_codec = transport_codec
         self._transport_crf = transport_crf
         base = httpx.URL(self.endpoint)
-        self.endpoint = str(base.copy_with(path="/v1/video/sessions"))
-        self._health = str(base.copy_with(path="/health/video/session"))
+        self.endpoint = str(base.copy_with(path=self.session_path))
+        self._health = str(base.copy_with(path=self.health_path))
         self._session_operation = threading.Lock()
         self._session_state = threading.RLock()
         self._native_session: VideoSession | None = None
@@ -248,6 +263,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
             "startup_frames": 16,
             "max_append_frames": 16,
         }
+        self._health_active_session = None
 
     @property
     def startup_frames(self) -> int:
@@ -282,14 +298,14 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                 },
                 "invalid session health fields",
             )
-            limits = _limits(value["limits"])
+            limits = self.validate_limits(value["limits"])
             ready = (
                 value["enabled"] is True
                 and value["ready"] is True
                 and value["gpu_ready"] is True
-                and value["backend"] == BACKEND
+                and value["backend"] == self.backend
                 and value["memory_scope"] == "session"
-                and value["native_sam_video_tracking"] is True
+                and value["native_sam_video_tracking"] is self.native_sam_video_tracking
                 and (
                     self._transport_codec != "h264" or limits.get("h264_transport") == 1
                 )
@@ -297,6 +313,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
             if ready:
                 with self._session_state:
                     self._capabilities = limits
+                    self._health_active_session = value["active_session"]
             return ready
         except (httpx.HTTPError, ValueError, RichLabelProtocolError):
             return False
@@ -309,7 +326,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                     "video_session_id": session.video_session_id,
                     "stream_session_id": session.stream_session_id,
                     "predictor_epoch": session.predictor_epoch,
-                    "backend": BACKEND,
+                    "backend": self.backend,
                     "memory_scope": "session",
                 }.items()
             ),
@@ -334,7 +351,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                 )
                 _require(
                     payload["stream_session_id"] == stream_session_id
-                    and payload["backend"] == BACKEND
+                    and payload["backend"] == self.backend
                     and payload["memory_scope"] == "session"
                     and payload["state"] == "active",
                     "invalid session creation identity",
@@ -343,7 +360,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                     _text(payload["video_session_id"], "video_session_id"),
                     stream_session_id,
                     _text(payload["predictor_epoch"], "predictor_epoch"),
-                    _limits(payload["limits"]),
+                    self.validate_limits(payload["limits"]),
                 )
 
             result = self._request(
@@ -378,7 +395,8 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
             set(payload)
             == IDENTITY_FIELDS
             | WATERMARK_FIELDS
-            | {"request_id", "frames", "pending_frame_count"},
+            | {"request_id", "frames", "pending_frame_count"}
+            | self.append_metadata_fields,
             "invalid append response fields",
         )
         self._identity(payload, session)
@@ -425,7 +443,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                 )
                 native_id = _text(native["object_id"], "native object ID")
                 _require(
-                    native["backend"] == BACKEND
+                    native["backend"] == self.backend
                     and native["epoch"] == session.predictor_epoch
                     and obj.label == "person"
                     and obj.observation_state == "observed"
@@ -479,11 +497,12 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                 request_id,
                 session.predictor_epoch,
                 payload["state"],
-                snapshots,
+                self.prepare_snapshots(payload, snapshots),
                 *received,
                 *processed,
                 *(emitted if emitted is not None else (None, None)),
                 len(remaining),
+                backend=self.backend,
             ),
             remaining,
             native_ids,
@@ -722,7 +741,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
             return {
                 "state": self._state,
                 "memory_scope": "session",
-                "backend": BACKEND,
+                "backend": self.backend,
                 "continuous_identity": self._state == "active",
                 "pending_frame_count": len(self._sources),
                 "accepted_frames": self._accepted_count,
@@ -789,6 +808,13 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
             self._state = "closed"
         super().close()
 
+    def close_complete(self) -> bool:
+        """Local HTTP work has unwound; remote ownership needs fresh health."""
+        with self._lock:
+            return self._closed and (
+                self._thread is None or not self._thread.is_alive()
+            )
+
 
 class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
     """One append in flight and at most sixteen not-yet-accepted source JPEGs.
@@ -807,7 +833,12 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
         batch_seconds=4,
         history_size=128,
         on_batch=None,
+        pending_capacity=16,
     ):
+        if type(pending_capacity) is not int or not 1 <= pending_capacity <= 16:
+            raise ValueError("pending capacity must be an integer within 1..16")
+        self._pending_capacity = pending_capacity
+        self._source_arrivals: dict[int, float] = {}
         super().__init__(
             client,
             max_fps=max_fps,
@@ -828,12 +859,15 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
             emitted_frame_sequence=None,
             emitted_timestamp_seconds=None,
             pending_frame_count=0,
+            processed_frames=0,
+            source_to_result_seconds=None,
         )
 
     def reset(self, stream_session_id=None) -> None:
         with self._condition:
             super().reset(stream_session_id)
             self._failed_session = self._finished_session = False
+            self._source_arrivals.clear()
             self._cleanup_requested = self._server_generation is not None
             self._stats.update(
                 accepted_frame_sequence=None,
@@ -843,6 +877,8 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                 emitted_frame_sequence=None,
                 emitted_timestamp_seconds=None,
                 pending_frame_count=0,
+                processed_frames=0,
+                source_to_result_seconds=None,
             )
             self._condition.notify_all()
 
@@ -876,12 +912,18 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                 return False
             self._last_sample = timestamp_seconds
             while self._pending and (
-                len(self._pending) >= 16
+                len(self._pending) >= self._pending_capacity
                 or self._pending_bytes + len(jpeg_bytes) > MAX_BATCH_JPEG_BYTES
             ):
                 dropped, _ = self._pending.popleft()
                 self._pending_bytes -= len(dropped.jpeg_bytes)
                 self._stats["dropped_backpressure"] += 1
+                self._source_arrivals.pop(dropped.frame_sequence, None)
+            self._source_arrivals[frame_sequence] = time.monotonic()
+            # Includes pending requests and native delayed outputs, independent
+            # of the history capacity and stream duration.
+            while len(self._source_arrivals) > 64:
+                self._source_arrivals.pop(next(iter(self._source_arrivals)))
             self._pending.append((frame, time.monotonic()))
             self._pending_bytes += len(jpeg_bytes)
             self._stats["submitted"] += 1
@@ -1007,6 +1049,15 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                     with self._condition:
                         if not self._closed and generation == self._generation:
                             self._history.extend(result.frames)
+                            for snapshot in result.frames:
+                                arrival = self._source_arrivals.pop(
+                                    snapshot.frame_sequence, None,
+                                )
+                                if arrival is not None:
+                                    self._stats["source_to_result_seconds"] = (
+                                        time.monotonic() - arrival
+                                    )
+                            self._stats["processed_frames"] += len(result.frames)
                             self._stats.update(
                                 succeeded=self._stats["succeeded"] + 1,
                                 last_error=None,
@@ -1045,7 +1096,9 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
         with self._condition:
             result = super().stats()
             result.update(
+                backend=getattr(self._client, "backend", BACKEND),
                 memory_scope="session",
+                pending_capacity=self._pending_capacity,
                 startup_frames=self._client.startup_frames,
                 append_target_frames=min(
                     self._batch_frames, self._client.max_append_frames
@@ -1079,6 +1132,15 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                     return False
                 self._condition.wait(remaining)
             return True
+
+    def close_complete(self) -> bool:
+        """A close timeout is not completion of the inference/cleanup thread."""
+        with self._condition:
+            stopped = self._closed and (
+                self._thread is None or not self._thread.is_alive()
+            )
+        client_closed = getattr(self._client, "close_complete", None)
+        return stopped and (client_closed is None or client_closed())
 
     def snapshot_at(self, timestamp_seconds, frame_sequence=None):
         with self._condition:

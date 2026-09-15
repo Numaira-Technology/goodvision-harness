@@ -662,3 +662,70 @@ python tools/sam31_stream_prune_probe.py --checkpoint /models/sam3.1_multiplex.p
 工具最多接收 256 帧、64 MiB JPEG；为避免同时驻留两份模型，测试时暂停 serving 进程。
 `--empty-final` 专门对照有帧 final 与无新帧 EOF 的输出。后续验收还需要真实长录像中的
 进入/离开、遮挡、交叉、断网、取消和跨 epoch 恢复，以及人工标注的准确率评估。
+
+## 两种可插拔处理路线
+
+`perception_routes.py` 是插件目录；每项仅提供后端工厂和不可变 `SessionProfile`。
+`continuous.py` 统一负责请求限额、JPEG/H264 解码、源帧映射、截止时间、幂等重试、
+取消、会话关闭及状态清理。两种算法不嵌入 HTTP 或部署控制台的条件分支。
+
+| 路线 | 独立实现 | 启用变量 | 输出后端 |
+| --- | --- | --- | --- |
+| `sam_live` | `sam_live.py` | `SAM31_LIVE_ENABLED=true` | `sam3.1_video` |
+| `hybrid` | `hybrid.py`、`hybrid_tracker.py` | `HYBRID_ENABLED=true` | `person_hybrid` |
+
+启用变量默认 `false`。两条路线共享经过严格校验的本地 SAM 权重；hybrid 还须将官方
+`ssdlite320_mobilenet_v3_large_coco-a79551df.pth` 放在 `HYBRID_CHECKPOINT_PATH`
+指定位置，默认 `/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth`。
+后端校验本地文件摘要并严格加载，启动过程不会自动下载模型。
+
+接口目录为 `GET /v1/perception/routes`，返回协议版本、路由名称、各自 readiness、
+后端、端点和限额。单条路线接口如下：
+
+```text
+GET    /health/perception/{route}
+POST   /v1/perception/{route}/sessions
+POST   /v1/perception/{route}/sessions/{video_session_id}/append
+DELETE /v1/perception/{route}/sessions/{video_session_id}
+```
+
+创建／append／删除请求沿用现有有界会话协议。新路线的 `startup_frames=1`、
+`max_append_frames=4`、`hotstart_delay=1`、`max_pending_frames=0`，其中
+`hotstart_delay` 表示对外交付等待，不能据此认为一个人物已通过内部三次检测确认。
+HTTP 仍按请求返回 JSON；短请求减少批次等待，并未宣称已实现 HTTP 分块输出。
+旧 `/v1/video/sessions` 保留原有 16 帧启动和确认缓冲协议。
+
+新接口额外返回 `route_metadata`，与严格源帧对象协议分开：
+
+```json
+{
+  "route": "sam_live",
+  "confirmation_policy": "causal_native_three_detections",
+  "observations": [
+    {"frame_sequence": 12, "provisional_object_ids": ["4"]}
+  ]
+}
+```
+
+`sam_live` 保留原生三次检测确认及五帧早期淘汰规则，但只用当前及历史信息立即交付
+真实观测；暂未确认的人物明确标为 provisional。它不读取未来确认状态，也不回填或
+伪造源帧。首帧初始化仅安装文本提示，避免官方 `add_prompt` 先推理第零帧、后续又
+推理同一帧造成重复确认计数。输入环提前建立空的地址槽，只有真实到达的图像才能
+填入；未到达或过期的绝对源索引读取失败。路线启用后，CUDA warmup 必须实际走完
+首帧、四帧追加、输入环回绕、历史裁剪及空 EOF，才能报告 GPU ready。
+
+`hybrid` 用实时检测观测及自己的有界跟踪器交付当前位置，后台 SAM 持有至多一个
+正在处理和一个最新等待的源图像。校准结果对应历史源时间，不能把旧位置当成当前
+观测。其 `confirmation_policy` 为
+`detector_observations_with_async_sam_calibration`，额外有有界 `diagnostics`。
+关闭会话会取消待处理校准并等待已经运行的 SAM 工作完成，之后才释放路线所有权。
+
+整个进程只允许一个活动会话，覆盖旧路线和两条新路线。切换前须停止并关闭旧会话；
+新路线得到新的会话 ID 和 predictor epoch，不能延续其他算法的内部编号。活动会话
+期间，独立图片／批量视频入口也被阻止，避免与后台校准并发使用共享 SAM。
+新路线 health 的 `active_session` 报告全局占用，包含其他路线仍在关闭的状态；旧
+`/health/video/session` 保持原有语义。即使模型或后台校准已失去 readiness，DELETE
+仍可在原有 admission、身份及截止时间保护下清理会话，避免失效状态无法释放。
+
+当前两路线的本地协议、状态及隔离测试使用替身；新因果适配和 hybrid 的真实 GPU
+延迟、识别质量、长时运行和交叉遮挡效果尚未实测，不能沿用旧路线的实测数据。

@@ -1,0 +1,32 @@
+# Switchable perception plugins. Apply after compose.yaml + compose.sam31.yaml.
+# Models are explicit local mounts; this file does not download weights.
+services:
+  harness:
+    environment:
+      RICH_LABEL_BACKEND: sam31_stream
+      RICH_LABEL_ENDPOINT: http://sam31-worker:8092/v1/video/sessions
+      PERCEPTION_METHOD: "${PERCEPTION_METHOD:-sam_live}"
+      RICH_LABEL_MAX_FPS: "${RICH_LABEL_MAX_FPS:-3}"
+      SAM31_TRANSPORT_CODEC: h264
+      SAM31_TRANSPORT_MAX_SIDE: "512"
+      SAM31_TRANSPORT_CRF: "23"
+  sam31-worker:
+    environment:
+      SAM31_SESSION_ENABLED: "false"
+      SAM31_LIVE_ENABLED: "true"
+      HYBRID_ENABLED: "true"
+      HYBRID_CHECKPOINT_PATH: /models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth
+      SAM31_SESSION_H264_ENABLED: "true"
+    volumes:
+      - type: bind
+        source: ${HYBRID_CHECKPOINT_FILE:-./.models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth}
+        target: /models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8092/v1/perception/routes',timeout=2)); assert len(r['routes'])==2 and all(x['enabled'] and x['ready'] for x in r['routes'])"]
+      interval: 15s
+      timeout: 3s
+      start_period: 300s
+      retries: 4

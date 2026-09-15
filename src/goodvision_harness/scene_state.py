@@ -56,6 +56,7 @@ class _Person:
     identity: dict = field(default_factory=dict)
     identity_source: tuple[float, int] = (-1.0, -1)
     native_track: dict = field(default_factory=dict)
+    tracking_confirmation: str | None = None
 
 
 @dataclass
@@ -208,6 +209,7 @@ class SceneState:
                     current.bbox = previous.bbox
                     current.last_seen = previous.last_seen
                     current.frame_sequence = previous.frame_sequence
+                    current.tracking_confirmation = previous.tracking_confirmation
                 self._update_identity(
                     current, previous.identity, *previous.identity_source
                 )
@@ -423,6 +425,7 @@ class SceneState:
         observation_state: str = "observed",
         allow_historical: bool = False,
         native_track: Mapping | None = None,
+        tracking_confirmation: str | None = None,
     ) -> bool:
         subject_id = _text(subject_id, "subject_id")
         timestamp = _time(timestamp_seconds)
@@ -443,6 +446,11 @@ class SceneState:
             raise ValueError("allow_historical must be a boolean")
         if native_track is not None and not isinstance(native_track, Mapping):
             raise ValueError("native_track must be a mapping")
+        if tracking_confirmation is not None and (
+            not isinstance(tracking_confirmation, str)
+            or tracking_confirmation not in {"provisional", "confirmed"}
+        ):
+            raise ValueError("unsupported tracking_confirmation")
         safe_native_track = {
             key: _text(native_track[key], f"native_track.{key}")
             for key in _NATIVE_TRACK_KEYS
@@ -470,7 +478,12 @@ class SceneState:
                 if timestamp < person.last_seen or sequence < person.frame_sequence:
                     if allow_historical:
                         return self._insert_historical_person(
-                            person, timestamp, sequence, bbox, safe_native_track
+                            person,
+                            timestamp,
+                            sequence,
+                            bbox,
+                            safe_native_track,
+                            tracking_confirmation,
                         )
                     if self._has_source_observation(subject_id, timestamp, sequence):
                         if self._update_identity(
@@ -499,12 +512,23 @@ class SceneState:
             self._update_identity(person, safe_identity, timestamp, sequence)
             if safe_native_track:
                 person.native_track = safe_native_track
+            if tracking_confirmation is not None:
+                person.tracking_confirmation = tracking_confirmation
             if same_frame:
                 if allow_historical:
                     person.bbox = bbox
                     self._insert_historical_person(
-                        person, timestamp, sequence, bbox, safe_native_track
+                        person,
+                        timestamp,
+                        sequence,
+                        bbox,
+                        safe_native_track,
+                        tracking_confirmation,
                     )
+                elif tracking_confirmation is not None:
+                    for record in person.history:
+                        if record["frame_sequence"] == sequence:
+                            record["tracking_confirmation"] = tracking_confirmation
                 self._counters["same_frame_person_updates"] += 1
                 return True
             person.bbox, person.last_seen, person.frame_sequence = (
@@ -519,6 +543,11 @@ class SceneState:
                     "bbox": bbox.as_dict(),
                     **(
                         {"native_track": safe_native_track} if safe_native_track else {}
+                    ),
+                    **(
+                        {"tracking_confirmation": tracking_confirmation}
+                        if tracking_confirmation is not None
+                        else {}
                     ),
                 }
             )
@@ -541,6 +570,7 @@ class SceneState:
         sequence: int,
         bbox: NormalizedBBox,
         native_track: dict,
+        tracking_confirmation: str | None = None,
     ) -> bool:
         """Add completed source geometry without rewinding present-day location."""
         if any(
@@ -559,11 +589,24 @@ class SceneState:
             for record in person.history
         ):
             return self._reject("inconsistent_person_history_ignored")
+        previous = next(
+            (item for item in person.history if item["frame_sequence"] == sequence), {}
+        )
+        confirmation = (
+            tracking_confirmation
+            if tracking_confirmation is not None
+            else (previous.get("tracking_confirmation"))
+        )
         record = {
             "timestamp_seconds": timestamp,
             "frame_sequence": sequence,
             "bbox": bbox.as_dict(),
             **({"native_track": native_track} if native_track else {}),
+            **(
+                {"tracking_confirmation": confirmation}
+                if confirmation is not None
+                else {}
+            ),
         }
         if native_track:
             person.native_track = native_track
@@ -623,11 +666,22 @@ class SceneState:
     ) -> bool:
         if subject not in self._people:
             return False
-        return any(
-            item["frame_sequence"] == sequence
-            and abs(item["timestamp_seconds"] - timestamp) <= 0.6
+        records = [
+            item
             for item in self._people[subject].history
-        ) or any(
+            if (
+                item["frame_sequence"] == sequence
+                and abs(item["timestamp_seconds"] - timestamp) <= 0.6
+            )
+        ]
+        # If a retained observation was explicitly made uncertain, an older pin
+        # must not bypass that correction. Pins were confirmed when admitted.
+        if records:
+            return any(
+                item.get("tracking_confirmation", "confirmed") == "confirmed"
+                for item in records
+            )
+        return any(
             sid == subject and frame == sequence and abs(at - timestamp) <= 0.6
             for observations in self._source_pins.values()
             for sid, at, frame, _bbox in observations
@@ -680,6 +734,7 @@ class SceneState:
                     item["frame_sequence"] == sequence
                     and abs(item["timestamp_seconds"] - at) <= 1e-6
                     and item["bbox"] == bbox.as_dict()
+                    and item.get("tracking_confirmation", "confirmed") == "confirmed"
                     for item in person.history
                 ):
                     return self._reject("ungrounded_source_pin_ignored")
@@ -1080,6 +1135,11 @@ class SceneState:
                     "bbox": person.bbox.as_dict(),
                     "identity": person.identity,
                     **(
+                        {"tracking_confirmation": person.tracking_confirmation}
+                        if person.tracking_confirmation is not None
+                        else {}
+                    ),
+                    **(
                         {"native_track": person.native_track}
                         if person.native_track
                         else {}
@@ -1168,6 +1228,11 @@ class SceneState:
                         "subject_id": person.subject_id,
                         "label": "person",
                         "bbox": latest["bbox"],
+                        **(
+                            {"tracking_confirmation": latest["tracking_confirmation"]}
+                            if "tracking_confirmation" in latest
+                            else {}
+                        ),
                         "identity": person.identity
                         if person.identity_source[0] <= timestamp
                         else {},

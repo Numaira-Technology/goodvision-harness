@@ -10,7 +10,6 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
-
 SETTINGS_SCHEMA_VERSION = 1
 # Stable, neutral names keep each route's credentials independent. The original
 # record belongs to the default route so existing deployments remain usable.
@@ -30,6 +29,14 @@ class DeploymentSettings:
     autostart: bool
     buffer_delay_seconds: float | None = None
     camera_layout: str | None = None
+    processing_method: str | None = None
+
+
+def validate_processing_method(value: object) -> str:
+    """Use stable perception plugin IDs, independently of model API routes."""
+    if not isinstance(value, str) or value not in {"sam_live", "hybrid"}:
+        raise ValueError("processing_method must be sam_live or hybrid")
+    return value
 
 
 def validate_camera_layout(value: object) -> str:
@@ -93,6 +100,10 @@ class DeploymentSettingsStore:
                 validate_camera_layout(payload["camera_layout"])
                 if "camera_layout" in payload else None
             ),
+            processing_method=(
+                validate_processing_method(payload["processing_method"])
+                if "processing_method" in payload else None
+            ),
         )
 
     def save(self, settings: DeploymentSettings) -> None:
@@ -108,6 +119,10 @@ class DeploymentSettingsStore:
             )
         if settings.camera_layout is not None:
             payload["camera_layout"] = validate_camera_layout(settings.camera_layout)
+        if settings.processing_method is not None:
+            payload["processing_method"] = validate_processing_method(
+                settings.processing_method
+            )
         self._atomic_write(
             self.path,
             json.dumps(payload, indent=2, sort_keys=True) + "\n",

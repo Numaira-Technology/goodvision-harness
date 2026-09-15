@@ -376,6 +376,7 @@ class SceneRuntime:
                     frame_sequence=snapshot.frame_sequence,
                     bbox=item.bbox,
                     observation_state=state,
+                    tracking_confirmation=item.attributes.get("tracking_confirmation"),
                 )
             if self.tracking_mode == "immediate":
                 self._now = max(self._now, snapshot.timestamp_seconds)
@@ -493,6 +494,8 @@ class SceneRuntime:
                         or not isinstance(state, str)
                         or state
                         not in {"observed", "predicted", "held", "occluded", "lost"}
+                        or item.attributes.get("tracking_confirmation", "confirmed")
+                        not in ("confirmed", "provisional")
                         or (
                             native is not None
                             and (
@@ -551,6 +554,9 @@ class SceneRuntime:
                         or item.attributes.get("observation_state", "observed"),
                         allow_historical=True,
                         native_track=item.attributes.get("native_track"),
+                        tracking_confirmation=item.attributes.get(
+                            "tracking_confirmation"
+                        ),
                     )
                 self._tracking_frames[snapshot.frame_sequence] = (
                     snapshot.timestamp_seconds
@@ -623,7 +629,10 @@ class SceneRuntime:
                         or seen_sequence != snapshot.frame_sequence
                         or not isinstance(native, Mapping)
                         or set(native) != {"backend", "epoch", "object_id"}
-                        or native.get("backend") != _NATIVE_VIDEO_BACKEND
+                        or native.get("backend")
+                        not in {_NATIVE_VIDEO_BACKEND, "person_hybrid"}
+                        or item.attributes.get("tracking_confirmation", "confirmed")
+                        not in ("confirmed", "provisional")
                         or any(
                             not isinstance(native.get(key), str)
                             or not native[key].strip()
@@ -640,7 +649,10 @@ class SceneRuntime:
                         return self._reject_tracking_batch(
                             "duplicate_native_observation"
                         )
-                    observations[key] = item.bbox
+                    observations[key] = (
+                        item.bbox,
+                        item.attributes.get("tracking_confirmation", "confirmed"),
+                    )
                     native_keys.add(key)
                 native_frames.append(observations)
             if len({key[:2] for key in native_keys}) > 1:
@@ -674,7 +686,11 @@ class SceneRuntime:
                     )
                     if (
                         key in actual
-                        or expected.get(key) != item.bbox
+                        or expected.get(key)
+                        != (
+                            item.bbox,
+                            item.attributes.get("tracking_confirmation", "confirmed"),
+                        )
                         or (
                             item.observation_state
                             or item.attributes.get("observation_state", "observed")
@@ -685,7 +701,10 @@ class SceneRuntime:
                         raise ValueError(
                             "canonical mapping changed a source observation"
                         )
-                    actual[key] = item.bbox
+                    actual[key] = (
+                        item.bbox,
+                        item.attributes.get("tracking_confirmation", "confirmed"),
+                    )
                     native_subjects[key] = item.track_id
                 if actual != expected:
                     raise ValueError("canonical mapping omitted a source observation")
@@ -723,6 +742,8 @@ class SceneRuntime:
                 for snapshot in window
                 if any(
                     item.label.lower() in _PERSON_LABELS
+                    and item.attributes.get("tracking_confirmation", "confirmed")
+                    == "confirmed"
                     and (
                         item.observation_state
                         or item.attributes.get("observation_state", "observed")
@@ -763,6 +784,8 @@ class SceneRuntime:
                     for snapshot in observed
                     for item in snapshot.objects
                     if item.label.lower() in _PERSON_LABELS
+                    and item.attributes.get("tracking_confirmation", "confirmed")
+                    == "confirmed"
                     and (
                         item.observation_state
                         or item.attributes.get("observation_state", "observed")
@@ -1090,6 +1113,11 @@ class SceneRuntime:
             for event in planning_scene["events"]
             if event["event_label"] in self.event_labels
         ]
+        planning_scene["entities"] = [
+            entity
+            for entity in planning_scene["entities"]
+            if entity.get("tracking_confirmation", "confirmed") == "confirmed"
+        ]
         for request in self.planner.plan(
             planning_scene, timestamp_seconds=planning_timestamp
         ):
@@ -1111,6 +1139,7 @@ class SceneRuntime:
                 if request.start_seconds
                 <= record["timestamp_seconds"]
                 <= request.end_seconds
+                and record.get("tracking_confirmation", "confirmed") == "confirmed"
                 and (
                     self.tracking_mode != "batch"
                     or self._tracking_frames.get(record["frame_sequence"])
@@ -1375,20 +1404,24 @@ class SceneRuntime:
                 raise ValueError("invalid display source stamp")
             sequence, timestamp = source
             if (
-                type(sequence) is not int or sequence < 0
+                type(sequence) is not int
+                or sequence < 0
                 or type(timestamp) not in (int, float)
-                or not math.isfinite(timestamp) or timestamp < 0
+                or not math.isfinite(timestamp)
+                or timestamp < 0
             ):
                 raise ValueError("invalid display source stamp")
         with self._lock:
             return tuple(
-                sequence for sequence, timestamp in sources
+                sequence
+                for sequence, timestamp in sources
                 if self._closed
                 or self.evidence.source_frame(
                     stream_session_id=self.stream_session_id,
                     frame_sequence=sequence,
                     timestamp_seconds=timestamp,
-                ) is None
+                )
+                is None
                 or (
                     self._tracking_completed_sequence is not None
                     and sequence <= self._tracking_completed_sequence

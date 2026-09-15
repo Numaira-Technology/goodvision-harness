@@ -88,6 +88,14 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
       </div>
       <div class="deployment-options">
         <span class="metric-label">Defaults for future sessions</span>
+        <div id="processing-method-field" hidden>
+          <label class="field"><span>人物处理方式 · A / B 对比</span>
+            <select id="processing-method" aria-describedby="processing-method-note" disabled></select>
+          </label>
+          <div id="processing-method-selected" class="secret-status" style="margin-top:8px"></div>
+          <div id="processing-method-note" class="secret-status" role="status" aria-live="polite"></div>
+          <div class="secret-status" style="margin-top:8px">停止检测 → 选择方式 → 保存默认设置 → 重新开始。每次运行只使用一种方式。</div>
+        </div>
         <label class="field"><span>默认网络摄像头类型</span>
           <select id="default-camera-layout">
             <option value="mono">单目 · 完整画面</option>
@@ -106,6 +114,14 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
       <button id="clear-api-key-button" class="btn danger" disabled>Clear saved API key</button>
     </div>
     <div id="deployment-note" class="status deployment-note" role="status" aria-live="polite">Loading persistent settings...</div>
+    <div id="processing-comparison" hidden style="margin-top:14px">
+      <div class="section-title"><h2>两种方式 · 最近运行观测</h2></div>
+      <div class="note">当前页面记录每种方式最近一次运行的数据。人物结果延迟与画面延迟分开显示；比较时请使用相同视频、采样频率和缓存设置。事件判断另需时间。</div>
+      <div class="scroll"><table>
+        <thead><tr><th>处理方式</th><th>运行状态</th><th>人物结果延迟</th><th>画面实际延迟</th><th>已处理帧</th><th>丢弃帧</th></tr></thead>
+        <tbody id="processing-comparison-body"></tbody>
+      </table></div>
+    </div>
   </section>
 
   <section class="panel control-panel" aria-labelledby="route-title">
@@ -371,6 +387,9 @@ const ui={
   defaultApiKeyStatus:$("default-api-key-status"),defaultDryRun:$("default-dry-run"),
   defaultAutostart:$("default-autostart"),deploymentSourceStatus:$("deployment-source-status"),
   defaultCameraLayout:$("default-camera-layout"),cameraLayout:$("camera-layout"),
+  processingField:$("processing-method-field"),processingMethod:$("processing-method"),
+  processingSelected:$("processing-method-selected"),processingNote:$("processing-method-note"),
+  processingComparison:$("processing-comparison"),processingComparisonBody:$("processing-comparison-body"),
   saveDeployment:$("save-deployment-button"),resetDeployment:$("reset-deployment-button"),
   clearApiKey:$("clear-api-key-button"),deploymentNote:$("deployment-note"),
   bufferDelay:$("buffer-delay-seconds"),saveBufferDelay:$("save-buffer-delay-button"),
@@ -416,10 +435,12 @@ const sensitivityInputs=new Map();
 const clearAfterNegatives=10;
 const cameraAllowed=window.isSecureContext||localHosts.has(location.hostname);
 const activeStates=new Set(["starting","running"]);
+const sessionBusyStates=new Set([...activeStates,"stopping","draining"]);
 const state={
   routes:null,routeLoading:false,routeSubmitting:false,routeRevision:0,
   info:null,mode:"stream",sessionAnalysisMode:null,sessionFeatures:null,
   deployment:null,deploymentLoading:false,deploymentSaving:false,runOverridesDirty:false,
+  processingMethodDirty:false,processingStatus:null,processingRuns:new Map(),
   bufferDelayDirty:false,
   gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
   ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,count:0,
@@ -694,12 +715,15 @@ function reflectSessionSensitivities(values){
   }
 }
 function controls(){
-  const busy=state.running||state.pending;
+  const busy=state.running||state.pending||sessionBusyStates.has(state.processingStatus?.pipeline_state)||
+    state.processingStatus?.processing_cleanup==="closing";
   const routeBusy=state.routeSubmitting||state.routes&&state.routes.state==="running";
   const ready=state.mode==="camera"
     ?cameraAllowed&&cameraConfig()&&!!state.cameraStream
     :!!ui.streamUrl.value.trim()||configured();
-  ui.start.disabled=busy||routeBusy||!state.info||!ready||selectedFeatures().length===0;ui.stop.disabled=!busy;
+  const processingUnavailable=processingMethods().find(item=>item.id===savedProcessingMethod())?.available===false;
+  ui.start.disabled=busy||routeBusy||!state.info||!ready||selectedFeatures().length===0||
+    state.processingMethodDirty||state.deploymentSaving||processingUnavailable;ui.stop.disabled=!busy;
   $("route-check-button").disabled=busy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_probe;
   for(const button of $("route-results").querySelectorAll("button"))
     button.disabled=busy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_select||
@@ -714,6 +738,7 @@ function controls(){
   for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy;
   const persistenceReady=state.deployment&&state.deployment.persistence_available===true;
   const deploymentBusy=state.deploymentLoading||state.deploymentSaving||routeBusy;
+  ui.processingMethod.disabled=!persistenceReady||deploymentBusy||busy||processingMethods().length===0;
   for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart,ui.defaultCameraLayout])
     item.disabled=!persistenceReady||deploymentBusy;
   ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||busy;
@@ -723,6 +748,85 @@ function controls(){
   ui.saveBufferDelay.disabled=ui.bufferDelay.disabled;
   ui.clearApiKey.disabled=!persistenceReady||deploymentBusy||busy||
     state.deployment.api_key_persisted!==true
+}
+function processingMethods(){
+  const items=state.deployment?.processing_methods||state.info?.processing_methods;
+  return Array.isArray(items)?items.filter(item=>item&&["sam_live","hybrid"].includes(item.id)):[]
+}
+function savedProcessingMethod(){
+  return state.deployment?.processing_method||state.info?.processing_method||null
+}
+function processingLabel(method){
+  return processingMethods().find(item=>item.id===method)?.label||
+    ({sam_live:"SAM 连续分析",hybrid:"快速跟踪 + SAM 校准"})[method]||"未选择"
+}
+function renderProcessingSettings(){
+  const methods=processingMethods(),saved=savedProcessingMethod();
+  ui.processingField.hidden=methods.length===0;ui.processingComparison.hidden=methods.length===0;
+  if(!methods.length)return;
+  const selected=state.processingMethodDirty?ui.processingMethod.value:saved;
+  ui.processingMethod.replaceChildren();
+  for(const method of methods){
+    const option=document.createElement("option");option.value=method.id;
+    option.textContent=method.label+(method.available===false?" · 暂不可用":"");
+    option.disabled=method.available===false;ui.processingMethod.appendChild(option)
+  }
+  ui.processingMethod.value=selected||"";
+  updateProcessingSelection();renderProcessingComparison()
+}
+function updateProcessingSelection(){
+  const saved=savedProcessingMethod(),selected=ui.processingMethod.value;
+  const method=processingMethods().find(item=>item.id===selected);
+  const active=state.processingStatus&&sessionBusyStates.has(state.processingStatus.pipeline_state);
+  const closing=state.processingStatus?.processing_cleanup==="closing";
+  ui.processingSelected.textContent=(active?(closing?"正在停止：":"当前运行：")+
+    processingLabel(state.processingStatus.processing_retiring_method||state.processingStatus.processing?.method||
+      state.processingStatus.processing_method)+"。 ":"")+"已保存："+processingLabel(saved)+"。";
+  ui.processingNote.textContent=(method?.description||"")+
+    (method?.available===false?" 暂不可用："+(method.reason||"服务尚未就绪")+"。":"")+
+    (state.processingMethodDirty?" 尚未保存；保存后才能开始新测试。":" 下次新会话使用已保存的方式。")+
+    (state.processingStatus?.processing_cleanup==="closing"?" 旧方式正在收尾，请等待释放后再开始。":
+      state.processingStatus?.processing_cleanup==="remote_check_pending"?
+        " 本地已停止；开始检测时会确认服务器已释放旧会话。":"")
+}
+function processingMethodEdited(){
+  state.processingMethodDirty=ui.processingMethod.value!==savedProcessingMethod();
+  updateProcessingSelection();deploymentEdited()
+}
+function measuredSeconds(value){
+  return typeof value==="number"&&Number.isFinite(value)&&value>=0?number(value,2)+" 秒":"—"
+}
+function updateProcessingDiagnostics(data){
+  state.processingStatus=data;
+  const method=data.processing?.method||data.processing_method;
+  if(["sam_live","hybrid"].includes(method)&&data.stream_session_id){
+    const previous=state.processingRuns.get(method),sameSession=previous?.session_id===data.stream_session_id;
+    const current=data.processing||{},output=data.annotated_output||{};
+    state.processingRuns.set(method,{
+      session_id:data.stream_session_id,pipeline_state:data.pipeline_state,
+      source_to_result_seconds:current.source_to_result_seconds??(sameSession?previous.source_to_result_seconds:null),
+      display_delay_seconds:output.stream_delay_seconds??(sameSession?previous.display_delay_seconds:null),
+      processed_frames:current.processed_frames??(sameSession?previous.processed_frames:null),
+      dropped_frames:current.dropped_frames??(sameSession?previous.dropped_frames:null),
+    })
+  }
+  updateProcessingSelection();renderProcessingComparison()
+}
+function renderProcessingComparison(){
+  const methods=processingMethods();if(!methods.length)return;
+  ui.processingComparisonBody.replaceChildren();
+  for(const method of methods){
+    const run=state.processingRuns.get(method.id),row=document.createElement("tr");
+    const active=run&&sessionBusyStates.has(run.pipeline_state)&&
+      run.session_id===state.processingStatus?.stream_session_id;
+    const integer=value=>Number.isInteger(value)&&value>=0?String(value):"—";
+    for(const value of [method.label,run?(active?(activeStates.has(run.pipeline_state)?"运行中":"收尾中"):"最近一次运行"):"尚未运行",
+      measuredSeconds(run?.source_to_result_seconds),measuredSeconds(run?.display_delay_seconds),
+      integer(run?.processed_frames),integer(run?.dropped_frames)]){
+      const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)
+    }
+    ui.processingComparisonBody.appendChild(row)
+  }
 }
 function mode(next){
   if(state.running||state.pending)return;
@@ -901,6 +1005,7 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   ui.defaultDryRun.checked=data.dry_run===true;
   ui.defaultAutostart.checked=data.autostart===true;
   ui.defaultCameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono";
+  renderProcessingSettings();
   if(!state.bufferDelayDirty&&Number.isFinite(data.buffer_delay_seconds))
     ui.bufferDelay.value=String(data.buffer_delay_seconds);
   const available=data.persistence_available===true;
@@ -932,7 +1037,8 @@ async function loadDeploymentSettings(discarded=false){
   try{
     const response=await fetch("/v1/deployment/settings",{cache:"no-store"});
     if(!response.ok)throw new Error(await responseError(response));
-    state.deployment=await response.json();renderDeploymentSettings(true,!state.runOverridesDirty);
+    state.deployment=await response.json();state.processingMethodDirty=false;
+    renderDeploymentSettings(true,!state.runOverridesDirty);
     if(state.deployment.storage_error){
       deploymentSay("Persistent storage error: "+state.deployment.storage_error,true)
     }else if(state.deployment.persistence_available!==true){
@@ -959,8 +1065,11 @@ async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={
       method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)
     });
     if(!response.ok)throw new Error(await responseError(response));
-    state.deployment=await response.json();renderDeploymentSettings(true,syncRun);
+    state.deployment=await response.json();
+    if(Object.hasOwn(payload,"processing_method"))state.processingMethodDirty=false;
+    renderDeploymentSettings(true,syncRun);
     await info();renderDeploymentSettings(true,syncRun);
+    if(Object.hasOwn(payload,"processing_method"))await status();
     deploymentSay(successMessage);return true
   }catch(error){
     deploymentSay("Could not save persistent settings: "+error.message,true);return false
@@ -969,11 +1078,17 @@ async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={
 async function saveDeploymentSettings(){
   const payload={dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked,
     camera_layout:ui.defaultCameraLayout.value};
+  if(processingMethods().length&&ui.processingMethod.value){
+    const method=processingMethods().find(item=>item.id===ui.processingMethod.value);
+    if(!method||method.available===false){deploymentSay("请选择可用的人物处理方式。",true);return}
+    payload.processing_method=method.id
+  }
   const streamUrl=ui.defaultStreamUrl.value.trim(),apiKey=ui.defaultApiKey.value.trim();
   if(streamUrl)payload.stream_url=streamUrl;
   if(apiKey)payload.api_key=apiKey;
   await updateDeploymentSettings(payload,
-    "Deployment defaults saved. They will be used by the next session and container start; no running session was restarted.",
+    "Deployment defaults saved. They will be used by the next session and container start; no running session was restarted."+
+      (payload.processing_method?" 人物处理方式已保存："+processingLabel(payload.processing_method)+"。重新开始检测后生效。":""),
     {syncRun:true})
 }
 async function saveApiKey(){
@@ -1043,6 +1158,7 @@ async function info(){
       data.annotated_output.buffer_delay_seconds=Number(data.annotated_output.buffer_delay_seconds)
     }
     state.info=data;configureScene(data.scene_engine);
+    renderProcessingSettings();
     renderSensitivities();
     updateAnnotatedOutput(data.annotated_output);
     if(!state.runOverridesDirty&&!state.deployment){
@@ -1442,6 +1558,13 @@ function message(data){
 }
 async function start(){
   if(state.running||state.pending||!state.info)return;
+  if(state.processingMethodDirty||state.deploymentSaving){
+    say("请先保存或放弃人物处理方式的修改，再开始检测。",true);return
+  }
+  const processing=processingMethods().find(item=>item.id===savedProcessingMethod());
+  if(processing?.available===false){
+    say("所选人物处理方式暂不可用："+(processing.reason||"服务尚未就绪"),true);return
+  }
   const needsKey=selectedFeatures().some(feature=>feature!=="stranger");
   if(needsKey&&!ui.dryRun.checked&&!state.info.api_key_present){
     const message="请先在控制台填写并保存 API key，再启动正式检测；无需创建 .env。";
@@ -1530,7 +1653,8 @@ async function status(){
     const previousError=state.runtimeErrorMessage,error=runtimeErrorText(data);
     state.runtimeErrorMessage=error;
     ui.statusJson.textContent=JSON.stringify(data,null,2);updateAnnotatedOutput(data.annotated_output);updateRuntimeSummary(data);
-    const active=activeStates.has(data.pipeline_state);
+    updateProcessingDiagnostics(data);
+    const active=sessionBusyStates.has(data.pipeline_state);
     if(active){
       const sessionId=data.stream_session_id||state.sessionId,changedSession=sessionId!==state.sessionId;
       state.running=true;state.pending=false;state.sessionId=sessionId;
@@ -1900,6 +2024,7 @@ $("archive-feature").onchange=()=>loadEventArchive();
 $("archive-subject").onchange=()=>loadEventArchive();
 ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
 ui.defaultCameraLayout.onchange=deploymentEdited;
+ui.processingMethod.onchange=processingMethodEdited;
 ui.saveDeployment.onclick=saveDeploymentSettings;
 saveApiKeyButton.onclick=saveApiKey;
 ui.resetDeployment.onclick=()=>loadDeploymentSettings(true);
