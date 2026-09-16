@@ -257,13 +257,9 @@ class HarnessRuntime:
         self._scene_mode = (
             config.runtime.scene_mode if config is not None else "disabled"
         )
-        if (
-            self._scene_mode == "disabled"
-            and config is not None
-            and config.runtime.scene_enabled
-        ):
-            self._scene_mode = "shadow"
-        self._scene_enabled = self._scene_mode != "disabled"
+        if self._scene_mode not in {"disabled", "active"}:
+            raise ValueError("runtime.scene_mode must be disabled or active")
+        self._scene_enabled = self._scene_mode == "active"
         self._scene: SceneRuntime | None = None
         self._scene_worker: SceneInspectionWorker | None = None
         self._scene_display = None
@@ -2306,6 +2302,10 @@ class HarnessRuntime:
             return
         payload = self.scene_snapshot()
         self.scene_results.publish({"type": "scene", **payload})
+        if isinstance(self._scene_display, TrackedSceneDisplayWorker):
+            self._scene_display.notify_events(
+                payload.get("scene", {}).get("events", [])
+            )
         if self._scene_is_active() and self._scene_archive is not None:
             self._scene_archive.submit(payload)
         self._last_scene_publish_monotonic = time.monotonic()

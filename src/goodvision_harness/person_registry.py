@@ -552,13 +552,16 @@ class PersonRegistry:
             assignments = self._observe_bodies(
                 observations, snapshot.timestamp_seconds, worker=True
             )
+            source_objects = {item.track_id: item for item in snapshot.objects}
             objects = tuple(native_objects) + tuple(
-                RichLabelObject(
+                replace(
+                    source_objects[key],
                     track_id=assignments[key],
                     label="person",
                     bbox=box,
                     confidence=confidence,
                     attributes={
+                        **source_objects[key].attributes,
                         "observation_state": "observed",
                         "last_observed_timestamp_seconds": snapshot.timestamp_seconds,
                     },

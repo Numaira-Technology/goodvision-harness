@@ -87,7 +87,8 @@ def test_renderer_preserves_geometry_and_metadata_privacy(drawn_text):
         assert image.size == (360, 240)
         assert image.format == "JPEG"
         assert not image.getexif()
-        assert image.getpixel((72, 150))[1] > 100
+        red, green, blue = image.getpixel((72, 150))
+        assert red > green + 40 and red > blue + 40
     assert any("person-1 | Alice" in text for text in drawn_text)
     assert any("smoking: confirmed" in text for text in drawn_text)
     assert all("hold" not in text and "uncertain" not in text for text in drawn_text)
@@ -231,7 +232,7 @@ class Scene:
         self.value = _snapshot()
         self.read_threads = []
 
-    def snapshot(self):
+    def display_snapshot(self, timestamp_seconds):
         self.read_threads.append(current_thread().name)
         return self.value
 

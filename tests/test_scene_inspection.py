@@ -252,7 +252,7 @@ def test_worker_call_budget_is_bounded():
     assert counts.failed_requests == 2
 
 
-def test_real_runtime_counts_duplicate_evidence_separately_from_successful_requests():
+def test_distinct_inspections_of_one_source_frame_count_only_one_positive():
     runtime = SceneRuntime("session", "camera")
     for sequence, timestamp in enumerate((0.0, 1.0)):
         runtime.scene.observe_person(
@@ -278,8 +278,11 @@ def test_real_runtime_counts_duplicate_evidence_separately_from_successful_reque
     counts = run_pending_inspections(runtime, Inspector())
     assert counts.succeeded_requests == 2
     assert counts.submitted_verdicts == 2
-    assert counts.accepted_verdicts == counts.rejected_verdicts == 1
+    assert counts.accepted_verdicts == 2
+    assert counts.rejected_verdicts == 0
     events = runtime.snapshot()["scene"]["events"]
     assert len(events) == 1
     assert events[0]["positive_observations"] == 1
     assert events[0]["phase"] == "suspected"
+    assert len(events[0]["history"]) == 1
+    assert len(events[0]["history"][0]["evidence_ids"]) == 2

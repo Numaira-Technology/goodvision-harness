@@ -30,6 +30,7 @@ def evidence(
     subjects=("a",),
     label="smoking",
     evidence_id=None,
+    allow_historical=False,
 ):
     return scene.observe_event(
         label,
@@ -39,11 +40,12 @@ def evidence(
         detected=detected,
         evidence_id=evidence_id or f"e-{sequence}",
         confidence=0.9,
+        allow_historical=allow_historical,
     )
 
 
 def test_episode_survives_occlusion_and_requires_observed_negative_evidence():
-    scene = SceneState("session", "camera")
+    scene = SceneState("session", "camera", clear_observations=2)
     person(scene, 1, 1, identity={"status": "known", "person_id": "alice"})
     assert evidence(scene, 1, 1)
     assert scene.snapshot()["events"][0]["phase"] == "suspected"
@@ -128,7 +130,7 @@ def test_participant_sets_are_canonical_and_separate_from_single_person_events()
 
 
 def test_late_negative_can_use_matching_history_but_cannot_regress_newer_result():
-    scene = SceneState("session", "camera")
+    scene = SceneState("session", "camera", clear_observations=2)
     for sequence in range(1, 6):
         person(scene, sequence, sequence)
     assert evidence(scene, 1, 1)
@@ -423,7 +425,7 @@ def test_revision_transfers_evidence_and_withdraws_wrong_owner_episode():
 
 
 def test_late_correction_keeps_newer_ended_state_and_unchanged_episode_ids():
-    scene = SceneState("session", "camera")
+    scene = SceneState("session", "camera", clear_observations=2)
     for sequence, detected in enumerate((True, True, False, False, True, True), 1):
         person(scene, sequence, sequence)
         assert revise(scene, sequence, detected=detected)
@@ -444,7 +446,7 @@ def test_late_correction_keeps_newer_ended_state_and_unchanged_episode_ids():
 
 
 def test_revising_old_negative_replays_later_positive_and_retracts_merged_episode():
-    scene = SceneState("session", "camera")
+    scene = SceneState("session", "camera", clear_observations=2)
     for sequence, detected in enumerate((True, True, False, False, True, True), 1):
         person(scene, sequence, sequence)
         revise(scene, sequence, detected=detected)
@@ -534,7 +536,7 @@ def test_unretained_source_cannot_be_revised_or_counted_twice_after_seed_pruning
 
 
 def test_retained_correction_replays_against_immutable_pruned_prefix():
-    scene = SceneState("session", "camera", history_size=2)
+    scene = SceneState("session", "camera", history_size=2, clear_observations=2)
     for sequence in range(1, 6):
         person(scene, sequence, sequence)
         assert revise(scene, sequence)
@@ -620,3 +622,113 @@ def test_pins_are_bounded_immutable_and_cannot_invent_source_observations():
     assert scene.snapshot()["source_pins"]["observations"] == 0
     assert not evidence(scene, 1, 1)
     assert not scene.snapshot()["entities"]
+
+
+def test_default_ten_clear_frames_apply_only_to_the_same_subject_and_event():
+    scene = SceneState("session", "camera")
+    assert scene.clear_observations == 10
+    for subject in ("a", "b"):
+        person(scene, 1, 1, subject)
+        evidence(scene, 1, 1, subjects=(subject,), evidence_id=f"{subject}-smoking")
+    evidence(scene, 1, 1, label="weapon", evidence_id="a-weapon")
+    for sequence in range(2, 11):
+        person(scene, sequence, sequence)
+        evidence(scene, sequence, sequence, detected=False)
+    current = {
+        (event["event_label"], tuple(event["subject_ids"])): event
+        for event in scene.snapshot()["events"]
+    }
+    assert current[("smoking", ("a",))]["negative_observations"] == 9
+    assert all(event["phase"] == "suspected" for event in current.values())
+    person(scene, 11, 11)
+    evidence(scene, 11, 11, detected=False)
+    current = {
+        (event["event_label"], tuple(event["subject_ids"])): event
+        for event in scene.snapshot()["events"]
+    }
+    assert current[("smoking", ("a",))]["phase"] == "ended"
+    assert current[("smoking", ("b",))]["phase"] == "suspected"
+    assert current[("weapon", ("a",))]["phase"] == "suspected"
+
+
+def test_late_positive_replays_before_nine_clears_and_tenth_clear_ends_episode():
+    scene = SceneState("session", "camera")
+    for sequence in range(1, 12):
+        person(scene, sequence, sequence)
+    for sequence in range(2, 11):
+        assert evidence(scene, sequence, sequence, detected=False)
+    assert not scene.snapshot()["events"]
+    assert evidence(scene, 1, 1, allow_historical=True)
+    active = scene.snapshot()["events"][0]
+    assert active["phase"] == "suspected"
+    assert active["first_evidence_timestamp_seconds"] == 1
+    assert active["last_evidence_timestamp_seconds"] == 10
+    assert active["negative_observations"] == 9
+    assert evidence(scene, 11, 11, detected=False, allow_historical=True)
+    ended = scene.snapshot()["events"][0]
+    assert ended["phase"] == "ended"
+    assert ended["event_id"] == active["event_id"]
+
+
+def test_late_positive_never_revives_episode_already_followed_by_ten_clears():
+    scene = SceneState("session", "camera")
+    for sequence in range(1, 12):
+        person(scene, sequence, sequence)
+    for sequence in range(2, 12):
+        assert evidence(scene, sequence, sequence, detected=False)
+    assert evidence(scene, 1, 1, allow_historical=True)
+    ended = scene.snapshot()["events"][0]
+    assert ended["phase"] == "ended"
+    assert ended["negative_observations"] == 10
+    assert not evidence(scene, 1, 1, allow_historical=True)
+    assert evidence(scene, 1, 1, evidence_id="late-second-model", allow_historical=True)
+    current = scene.snapshot()["events"][0]
+    assert current["event_id"] == ended["event_id"]
+    assert current["phase"] == "ended"
+    assert current["negative_observations"] == 10
+
+
+def test_duplicate_temporal_endpoints_unknown_and_unseen_frames_are_not_extra_clears():
+    scene = SceneState("session", "camera", clear_observations=3)
+    person(scene, 1, 1)
+    evidence(scene, 1, 1)
+    person(scene, 2, 2)
+    for index in range(5):
+        assert evidence(
+            scene, 2, 2, detected=False, evidence_id=f"interval-{index}",
+            allow_historical=True,
+        )
+    assert scene.snapshot()["events"][0]["negative_observations"] == 1
+    scene.advance(7)
+    assert not evidence(scene, 7, 7, detected=False, allow_historical=True)
+    person(scene, 8, 8)
+    assert evidence(scene, 8, 8, detected=None, allow_historical=True)
+    current = scene.snapshot()["events"][0]
+    assert current["phase"] == "suspected"
+    assert current["negative_observations"] == 1
+    person(scene, 9, 9)
+    assert evidence(scene, 9, 9, allow_historical=True)
+    assert scene.snapshot()["events"][0]["negative_observations"] == 0
+
+
+def test_active_event_does_not_age_out_while_subject_is_still_retained():
+    scene = SceneState("session", "camera")
+    person(scene, 1, 1)
+    evidence(scene, 1, 1)
+    person(scene, 80, 80)
+    scene.advance(100)
+    current = scene.snapshot()["events"][0]
+    assert current["phase"] == "suspected"
+    assert current["observation_state"] == "uncertain"
+    assert current["negative_observations"] == 0
+    assert not any(item["type"] == "end" for item in scene.snapshot()["transitions"])
+
+
+def test_historical_opt_in_requires_boolean_and_cannot_reassign_existing_evidence():
+    scene = SceneState("session", "camera")
+    for subject in ("a", "b"):
+        person(scene, 1, 1, subject)
+    assert evidence(scene, 1, 1, allow_historical=True)
+    assert not evidence(scene, 1, 1, subjects=("b",), allow_historical=True)
+    with pytest.raises(ValueError, match="allow_historical"):
+        evidence(scene, 1, 1, allow_historical=1)

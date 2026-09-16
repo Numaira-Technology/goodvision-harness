@@ -6,6 +6,7 @@ and a tracker prediction is never evidence that a person or event was observed.
 
 from __future__ import annotations
 
+import heapq
 import math
 from collections import Counter, OrderedDict, deque
 from collections.abc import Mapping
@@ -14,11 +15,13 @@ from dataclasses import dataclass, field, replace
 from threading import RLock
 from uuid import uuid4
 
-from .contracts import NormalizedBBox
+from .contracts import NormalizedBBox, json_mapping_as_dict
+from .rich_labeling import validate_mask_contours
 
 _EVENT_LABELS = frozenset({"fight", "smoking", "fall", "weapon", "stranger"})
 _IDENTITY_KEYS = ("status", "person_id", "name", "identity_source", "matched_memory_id")
 _NATIVE_TRACK_KEYS = ("backend", "epoch", "object_id")
+_MAX_CONTOUR_HISTORY_POINTS = 131072
 
 
 def _text(value: str, name: str) -> str:
@@ -114,13 +117,18 @@ class SceneState:
         occlusion_seconds: float = 3.0,
         retention_seconds: float = 90.0,
         confirm_observations: int = 2,
-        clear_observations: int = 2,
+        clear_observations: int = 10,
         person_history_size: int | None = None,
         person_history_seconds: float | None = None,
+        max_contour_history_points: int = _MAX_CONTOUR_HISTORY_POINTS,
     ) -> None:
         self.stream_session_id = _text(stream_session_id, "stream_session_id")
         self.source_id = _text(source_id, "source_id")
         self.max_entities = _integer(max_entities, "max_entities", 1, 4096)
+        self.max_contour_history_points = _integer(
+            max_contour_history_points, "max_contour_history_points",
+            1, _MAX_CONTOUR_HISTORY_POINTS,
+        )
         self.history_size = _integer(history_size, "history_size", 1, 1024)
         self.person_history_size = _integer(
             history_size if person_history_size is None else person_history_size,
@@ -148,6 +156,12 @@ class SceneState:
         self.clear_observations = _integer(clear_observations, "clear_observations", 1)
         self.max_events = min(self.max_entities * len(_EVENT_LABELS), 2048)
         self._people: dict[str, _Person] = {}
+        # Masks are presentation-only: keep at most 128 maximum-size outlines,
+        # or thousands of usual small outlines, independently of bbox history.
+        self._contour_points = 0
+        self._contour_serial = 0
+        self._contour_records: dict[int, tuple[dict, int, int]] = {}
+        self._contour_order: list[tuple[float, int, int, int]] = []
         self._events: dict[tuple[str, tuple[str, ...]], _Event] = {}
         self._evidence: OrderedDict[tuple[str, str], tuple[str, ...]] = OrderedDict()
         self._ledgers: dict[tuple[str, tuple[str, ...]], _Ledger] = {}
@@ -190,6 +204,7 @@ class SceneState:
                 previous.subject_id = current_id
                 self._people[current_id] = previous
             else:
+                old_records = [*previous.history, *current.history]
                 records = {}
                 for person in (previous, current):
                     for record in person.history:
@@ -201,6 +216,10 @@ class SceneState:
                     (records[key] for key in sorted(records)),
                     maxlen=self.person_history_size,
                 )
+                retained = {id(record) for record in current.history}
+                for record in old_records:
+                    if id(record) not in retained:
+                        self._remove_contour_record(record)
                 current.first_seen = min(current.first_seen, previous.first_seen)
                 if (previous.last_seen, previous.frame_sequence) > (
                     current.last_seen,
@@ -215,6 +234,7 @@ class SceneState:
                 )
                 self._prune_person_history(current)
             del self._people[previous_id]
+            self._prune_contour_history()
 
             def subjects(values):
                 return tuple(
@@ -305,20 +325,24 @@ class SceneState:
                 if self._timestamp - person.last_seen > self.retention_seconds
             ]
             for key in expired:
+                for record in self._people[key].history:
+                    self._remove_contour_record(record)
                 del self._people[key]
                 self._counters["entities_expired"] += 1
             if self.person_history_seconds is not None:
                 for person in self._people.values():
                     self._prune_person_history(person)
+            self._prune_contour_history()
             if expired:
                 self._source_pins = {
                     key: tuple(item for item in observations if item[0] in self._people)
                     for key, observations in self._source_pins.items()
                 }
             for key, event in list(self._events.items()):
-                if self._timestamp - event.last_seen > self.retention_seconds or any(
-                    subject not in self._people for subject in event.subject_ids
-                ):
+                if (
+                    event.phase in {"ended", "retracted"}
+                    and self._timestamp - event.last_seen > self.retention_seconds
+                ) or any(subject not in self._people for subject in event.subject_ids):
                     self._discard_group(key)
                     self._counters["events_expired"] += 1
 
@@ -366,7 +390,10 @@ class SceneState:
                 return False
             retired = {person.subject_id for person in eligible[:needed]}
             for subject in retired:
+                for record in self._people[subject].history:
+                    self._remove_contour_record(record)
                 del self._people[subject]
+            self._prune_contour_history()
             for key, event in list(self._events.items()):
                 if retired.intersection(event.subject_ids):
                     self._discard_group(key)
@@ -426,6 +453,7 @@ class SceneState:
         allow_historical: bool = False,
         native_track: Mapping | None = None,
         tracking_confirmation: str | None = None,
+        mask_contours: Mapping | None = None,
     ) -> bool:
         subject_id = _text(subject_id, "subject_id")
         timestamp = _time(timestamp_seconds)
@@ -442,6 +470,16 @@ class SceneState:
             raise ValueError("unsupported observation_state")
         if identity is not None and not isinstance(identity, Mapping):
             raise ValueError("identity must be a mapping")
+        safe_contours = None
+        if mask_contours is not None:
+            validate_mask_contours(mask_contours)
+            if (
+                mask_contours["source_frame_sequence"] != sequence
+                or mask_contours["source_timestamp_seconds"] != timestamp
+                or observation_state != "observed"
+            ):
+                raise ValueError("mask_contours must match the observed source frame")
+            safe_contours = json_mapping_as_dict(mask_contours)
         if type(allow_historical) is not bool:
             raise ValueError("allow_historical must be a boolean")
         if native_track is not None and not isinstance(native_track, Mapping):
@@ -484,6 +522,7 @@ class SceneState:
                             bbox,
                             safe_native_track,
                             tracking_confirmation,
+                            safe_contours,
                         )
                     if self._has_source_observation(subject_id, timestamp, sequence):
                         if self._update_identity(
@@ -524,11 +563,20 @@ class SceneState:
                         bbox,
                         safe_native_track,
                         tracking_confirmation,
+                        safe_contours,
                     )
                 elif tracking_confirmation is not None:
                     for record in person.history:
                         if record["frame_sequence"] == sequence:
                             record["tracking_confirmation"] = tracking_confirmation
+                if safe_contours is not None:
+                    person.bbox = bbox
+                    for record in person.history:
+                        if record["frame_sequence"] == sequence:
+                            record["bbox"] = bbox.as_dict()
+                            record["mask_contours"] = safe_contours
+                            self._retain_contour_record(record)
+                self._prune_contour_history()
                 self._counters["same_frame_person_updates"] += 1
                 return True
             person.bbox, person.last_seen, person.frame_sequence = (
@@ -536,11 +584,14 @@ class SceneState:
                 timestamp,
                 sequence,
             )
+            if len(person.history) == person.history.maxlen:
+                self._remove_contour_record(person.history[0])
             person.history.append(
                 {
                     "timestamp_seconds": timestamp,
                     "frame_sequence": sequence,
                     "bbox": bbox.as_dict(),
+                    **({"mask_contours": safe_contours} if safe_contours else {}),
                     **(
                         {"native_track": safe_native_track} if safe_native_track else {}
                     ),
@@ -551,7 +602,9 @@ class SceneState:
                     ),
                 }
             )
+            self._retain_contour_record(person.history[-1])
             self._prune_person_history(person)
+            self._prune_contour_history()
             self._counters["person_observations"] += 1
             return True
 
@@ -561,7 +614,47 @@ class SceneState:
                 person.history[0]["timestamp_seconds"]
                 < self._timestamp - self.person_history_seconds
             ):
-                person.history.popleft()
+                self._remove_contour_record(person.history.popleft())
+
+    def _remove_contour_record(self, record: dict) -> None:
+        prior = self._contour_records.pop(id(record), None)
+        if prior is not None:
+            self._contour_points -= prior[1]
+
+    def _retain_contour_record(self, record: dict) -> None:
+        self._remove_contour_record(record)
+        contours = record.get("mask_contours")
+        if contours is None:
+            return
+        points = sum(len(polygon) for polygon in contours["polygons"])
+        self._contour_points += points
+        self._contour_serial += 1
+        serial = self._contour_serial
+        self._contour_records[id(record)] = (record, points, serial)
+        heapq.heappush(self._contour_order, (
+            record["timestamp_seconds"], record["frame_sequence"], serial, id(record),
+        ))
+
+    def _prune_contour_history(self) -> None:
+        """Drop oldest source masks only; never remove observation/event evidence."""
+        while self._contour_points > self.max_contour_history_points:
+            _timestamp, _sequence, serial, key = heapq.heappop(self._contour_order)
+            entry = self._contour_records.get(key)
+            if entry is None or entry[2] != serial:
+                continue
+            record, points, _serial = entry
+            record.pop("mask_contours", None)
+            self._remove_contour_record(record)
+            self._counters["contour_history_masks_evicted"] += 1
+            self._counters["contour_history_points_evicted"] += points
+        # Same-frame replacement and normal history expiration leave lazy heap
+        # entries. Compact them so auxiliary storage has its own strict bound.
+        if len(self._contour_order) > 2 * len(self._contour_records) + 64:
+            self._contour_order = [
+                (record["timestamp_seconds"], record["frame_sequence"], serial, key)
+                for key, (record, _points, serial) in self._contour_records.items()
+            ]
+            heapq.heapify(self._contour_order)
 
     def _insert_historical_person(
         self,
@@ -571,6 +664,7 @@ class SceneState:
         bbox: NormalizedBBox,
         native_track: dict,
         tracking_confirmation: str | None = None,
+        mask_contours: dict | None = None,
     ) -> bool:
         """Add completed source geometry without rewinding present-day location."""
         if any(
@@ -601,6 +695,7 @@ class SceneState:
             "timestamp_seconds": timestamp,
             "frame_sequence": sequence,
             "bbox": bbox.as_dict(),
+            **({"mask_contours": mask_contours} if mask_contours else {}),
             **({"native_track": native_track} if native_track else {}),
             **(
                 {"tracking_confirmation": confirmation}
@@ -617,9 +712,17 @@ class SceneState:
         records.sort(
             key=lambda item: (item["timestamp_seconds"], item["frame_sequence"])
         )
-        person.history = deque(records, maxlen=self.person_history_size)
+        retained = deque(records, maxlen=self.person_history_size)
+        retained_ids = {id(item) for item in retained}
+        for old_record in person.history:
+            if id(old_record) not in retained_ids:
+                self._remove_contour_record(old_record)
+        person.history = retained
+        if id(record) in retained_ids:
+            self._retain_contour_record(record)
         person.first_seen = min(person.first_seen, timestamp)
         self._prune_person_history(person)
+        self._prune_contour_history()
         self._counters["historical_person_observations"] += 1
         return record in person.history
 
@@ -777,8 +880,17 @@ class SceneState:
         detected: bool | None,
         evidence_id: str,
         confidence: float | None = None,
+        allow_historical: bool = False,
     ) -> bool:
-        """Accept a new monotonic source observation; never implicitly revise it."""
+        """Accept one immutable judgment grounded in one real source frame.
+
+        Temporal workers may opt into source-ordered replay for late completions.
+        One interval verdict contributes one judgment at its grounded endpoint,
+        not one invented vote per image in the interval. Duplicate source frames
+        never add votes, and later clear evidence still follows late positives.
+        """
+        if type(allow_historical) is not bool:
+            raise ValueError("allow_historical must be a boolean")
         return self._submit_event(
             event_label,
             subject_ids,
@@ -789,6 +901,7 @@ class SceneState:
             confidence=confidence,
             revision=0,
             revisable=False,
+            allow_historical=allow_historical,
         )
 
     def revise_event_evidence(
@@ -833,6 +946,7 @@ class SceneState:
         confidence: float | None,
         revision: int,
         revisable: bool,
+        allow_historical: bool = False,
     ) -> bool:
         if not isinstance(event_label, str) or event_label not in _EVENT_LABELS:
             raise ValueError("unsupported event_label")
@@ -890,6 +1004,7 @@ class SceneState:
             event = self._events.get(key)
             if (
                 not revisable
+                and not allow_historical
                 and event is not None
                 and (timestamp < event.last_seen or sequence <= event.frame_sequence)
             ):
@@ -1133,6 +1248,11 @@ class SceneState:
                     "subject_id": person.subject_id,
                     "label": "person",
                     "bbox": person.bbox.as_dict(),
+                    **(
+                        {"mask_contours": person.history[-1]["mask_contours"]}
+                        if person.history and "mask_contours" in person.history[-1]
+                        else {}
+                    ),
                     "identity": person.identity,
                     **(
                         {"tracking_confirmation": person.tracking_confirmation}
@@ -1228,6 +1348,10 @@ class SceneState:
                         "subject_id": person.subject_id,
                         "label": "person",
                         "bbox": latest["bbox"],
+                        **(
+                            {"mask_contours": latest["mask_contours"]}
+                            if "mask_contours" in latest else {}
+                        ),
                         **(
                             {"tracking_confirmation": latest["tracking_confirmation"]}
                             if "tracking_confirmation" in latest

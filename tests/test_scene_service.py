@@ -1,4 +1,4 @@
-"""Exercise the experimental scene observer through actual service lifecycle hooks."""
+"""Exercise active scene lifecycle and rejection of the removed observer mode."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ def _isolate_environment(monkeypatch):
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
     for name in (
         "SCENE_ENGINE_ENABLED",
+        "SCENE_ENGINE_MODE",
         "RESULT_WEBHOOK_URL",
         "RICH_LABEL_ENABLED",
         "RICH_LABEL_TRACKING_ENABLED",
@@ -59,7 +60,9 @@ def runtime_factory(tmp_path, monkeypatch):
         config = load_config(ROOT / "config.yaml")
         config = replace(
             config,
-            runtime=replace(config.runtime, scene_enabled=enabled),
+            runtime=replace(
+                config.runtime, scene_mode="active" if enabled else "disabled"
+            ),
             rich_labeling=replace(
                 config.rich_labeling,
                 enabled=False,
@@ -132,11 +135,50 @@ def _result(runtime, subject_id, *, at=1.0, sequence=10, detected=True):
 
 
 def test_scene_config_is_disabled_by_default_and_environment_can_enable(monkeypatch):
-    assert load_config(ROOT / "config.yaml").runtime.scene_enabled is False
-    monkeypatch.setenv("SCENE_ENGINE_ENABLED", "true")
-    assert load_config(ROOT / "config.yaml").runtime.scene_enabled is True
+    assert load_config(ROOT / "config.yaml").runtime.scene_mode == "disabled"
+    monkeypatch.setenv("SCENE_ENGINE_MODE", "active")
+    assert load_config(ROOT / "config.yaml").runtime.scene_mode == "active"
+    monkeypatch.setenv("SCENE_ENGINE_MODE", "disabled")
     monkeypatch.setenv("SCENE_ENGINE_ENABLED", "false")
-    assert load_config(ROOT / "config.yaml").runtime.scene_enabled is False
+    assert load_config(ROOT / "config.yaml").runtime.scene_mode == "disabled"
+
+
+@pytest.mark.parametrize("mode", ["disabled", "active"])
+def test_removed_legacy_enable_flag_never_enables_an_observer(monkeypatch, mode):
+    monkeypatch.setenv("SCENE_ENGINE_MODE", mode)
+    monkeypatch.setenv("SCENE_ENGINE_ENABLED", "true")
+    with pytest.raises(ValueError, match=r"removed.*SCENE_ENGINE_MODE=active"):
+        load_config(ROOT / "config.yaml")
+
+
+@pytest.mark.parametrize("mode_source", ["environment", "yaml", "direct"])
+def test_shadow_mode_is_rejected(tmp_path, monkeypatch, mode_source):
+    config_path = ROOT / "config.yaml"
+    if mode_source == "environment":
+        monkeypatch.setenv("SCENE_ENGINE_MODE", "shadow")
+    elif mode_source == "yaml":
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        payload["runtime"]["scene_mode"] = "shadow"
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="scene_mode must be disabled or active"):
+        config = load_config(config_path)
+        HarnessRuntime(
+            replace(config, runtime=replace(config.runtime, scene_mode="shadow"))
+        )
+
+
+@pytest.mark.parametrize("legacy_enabled", [True, False])
+def test_legacy_yaml_enable_flag_cannot_activate_scene(tmp_path, legacy_enabled):
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    payload["runtime"]["scene_enabled"] = legacy_enabled
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    if legacy_enabled:
+        with pytest.raises(ValueError, match="scene_enabled was removed"):
+            load_config(path)
+    else:
+        assert load_config(path).runtime.scene_mode == "disabled"
 
 
 @pytest.mark.parametrize("value", ["true", 1, None, [], {}])
@@ -179,21 +221,21 @@ def test_real_dry_run_camera_feeds_scene_and_releases_evidence_on_stop(
     runtime = runtime_factory()
     assert runtime.scene_snapshot()["state"] == "idle"
     received = Event()
-    original = runtime._on_timeline_result
+    original = runtime._on_display_frame
 
-    def record(result):
-        original(result)
+    def record(*args):
+        original(*args)
         received.set()
 
-    monkeypatch.setattr(runtime, "_on_timeline_result", record)
+    monkeypatch.setattr(runtime, "_on_display_frame", record)
     _start(runtime)
     scene = runtime._scene
     assert runtime.push_camera_frame(_jpeg(), width=240, height=160)
-    assert received.wait(3), "dry-run camera inference should reach the scene callback"
+    assert received.wait(3), "dry-run camera source should reach the scene callback"
     assert scene.evidence.byte_count > 0
     snapshot = runtime.scene_snapshot()
     assert snapshot["state"] == "running"
-    assert snapshot["mode"] == "shadow"
+    assert snapshot["mode"] == "active"
     assert snapshot["automatic_temporal_inference"] is False
     assert runtime.stop_session()
     assert scene.evidence.byte_count == 0
@@ -218,7 +260,7 @@ def test_tracking_callback_exports_registry_subjects_and_ignores_old_sessions(
     assert runtime.scene_snapshot()["scene"]["entities"] == entities
 
 
-def test_timeline_receives_exact_registry_visibility_before_positive_and_negative(
+def test_legacy_timeline_safety_results_do_not_create_scene_events(
     runtime_factory,
 ):
     runtime = runtime_factory()
@@ -245,12 +287,11 @@ def test_timeline_receives_exact_registry_visibility_before_positive_and_negativ
             )
         )
     events = runtime.scene_snapshot()["scene"]["events"]
-    assert len(events) == 1
-    assert events[0]["subject_ids"] == [subject_id]
-    assert events[0]["phase"] == "ended"
+    assert events == []
+    assert runtime.scene_snapshot()["scene"]["entities"][0]["subject_id"] == subject_id
 
 
-def test_timeline_owner_correction_withdraws_old_person_event(runtime_factory):
+def test_legacy_timeline_owner_corrections_do_not_create_scene_events(runtime_factory):
     runtime = runtime_factory()
     _start(runtime)
     right_box = NormalizedBBox(0.6, 0.1, 0.9, 0.95)
@@ -277,9 +318,7 @@ def test_timeline_owner_correction_withdraws_old_person_event(runtime_factory):
         tuple(event["subject_ids"]): event
         for event in runtime.scene_snapshot()["scene"]["events"]
     }
-    assert events[(first_id,)]["phase"] == "retracted"
-    assert events[(second_id,)]["phase"] == "confirmed"
-    assert runtime.scene_snapshot()["stats"]["association_revisions_applied"] == 2
+    assert events == {}
 
 
 def test_stale_generation_cannot_add_frames_or_people_to_new_scene(runtime_factory):
@@ -332,7 +371,7 @@ def test_scene_frame_failure_does_not_drop_public_preview(runtime_factory, monke
     assert runtime.status()["source_frames_received"] == 1
 
 
-def test_scene_result_failure_does_not_drop_existing_timeline(
+def test_scene_result_failure_keeps_active_mode_out_of_legacy_timeline(
     runtime_factory, monkeypatch
 ):
     runtime = runtime_factory()
@@ -346,10 +385,10 @@ def test_scene_result_failure_does_not_drop_existing_timeline(
     monkeypatch.setattr(runtime._scene, "observe_result", broken)
     result = _result(runtime, "subject-test")
     runtime._on_timeline_result(result)
-    assert submitted == [result]
+    assert submitted == []
 
 
-def test_scene_tracking_failure_does_not_drop_registry_corrections(
+def test_scene_tracking_failure_keeps_active_mode_out_of_legacy_overlay(
     runtime_factory, monkeypatch
 ):
     runtime = runtime_factory()
@@ -368,7 +407,7 @@ def test_scene_tracking_failure_does_not_drop_registry_corrections(
 
     monkeypatch.setattr(runtime._scene, "observe_tracks", broken)
     runtime._on_tracking_snapshot(_tracks(runtime))
-    assert submitted == [correction]
+    assert submitted == []
     assert runtime._session.person_registry.history()
 
 
@@ -401,7 +440,10 @@ def test_end_callback_releases_evidence_without_claiming_event_clear(runtime_fac
     runtime._on_display_frame(_jpeg(), 1, 10)
     runtime._on_tracking_snapshot(_tracks(runtime))
     subject = runtime.scene_snapshot()["scene"]["entities"][0]["subject_id"]
-    runtime._on_timeline_result(_result(runtime, subject))
+    runtime._scene.scene.observe_event(
+        "smoking", (subject,), timestamp_seconds=1, frame_sequence=10,
+        detected=True, evidence_id="temporal-event",
+    )
     runtime._on_end("disconnected", None)
     assert runtime._scene.evidence.byte_count == 0
     snapshot = runtime.scene_snapshot()

@@ -128,7 +128,6 @@ class FaceSettings:
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
     max_concurrent_requests: int = 4
-    scene_enabled: bool = False
     scene_mode: str = "disabled"
     scene_timeout_seconds: float = 15.0
     scene_max_image_side: int = 720
@@ -592,8 +591,21 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         .strip()
         .lower()
     )
-    if scene_mode not in {"disabled", "shadow", "active"}:
-        raise ValueError("runtime.scene_mode must be disabled, shadow or active")
+    if scene_mode not in {"disabled", "active"}:
+        raise ValueError(
+            "runtime.scene_mode must be disabled or active; shadow mode was removed"
+        )
+    # A false legacy switch is harmless in an existing deployment. It must no
+    # longer enable an observer alongside the original per-frame pipeline.
+    legacy_scene_enabled = _bool(
+        runtime_section.get("scene_enabled", False), "runtime.scene_enabled"
+    )
+    legacy_scene_environment = _environment_bool("SCENE_ENGINE_ENABLED", False)
+    if legacy_scene_enabled or legacy_scene_environment:
+        raise ValueError(
+            "SCENE_ENGINE_ENABLED/runtime.scene_enabled was removed; "
+            "use SCENE_ENGINE_MODE=active or runtime.scene_mode: active"
+        )
     scene_timeout = _positive_float(
         os.environ.get("SCENE_TIMEOUT_SECONDS")
         or runtime_section.get("scene_timeout_seconds", 15),
@@ -605,10 +617,6 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         max_concurrent_requests=_positive_int(
             runtime_section.get("max_concurrent_requests", 4),
             "runtime.max_concurrent_requests",
-        ),
-        scene_enabled=_environment_bool(
-            "SCENE_ENGINE_ENABLED",
-            _bool(runtime_section.get("scene_enabled", False), "runtime.scene_enabled"),
         ),
         scene_mode=scene_mode,
         scene_timeout_seconds=scene_timeout,

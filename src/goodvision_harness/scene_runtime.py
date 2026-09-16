@@ -1,9 +1,9 @@
-"""Bounded continuous scene state shared by shadow and active live pipelines.
+"""Bounded continuous scene state for the active live pipeline.
 
 Prepare temporal inspections from real source observations. A separate worker
 claims these immutable intervals and completes them without running model calls
-under video callback locks. Shadow mode also accepts legacy safety observations;
-active mode obtains safety verdicts exclusively through temporal inspections.
+under video callback locks. Safety verdicts come exclusively from temporal
+inspections; face observations supply identities and stranger judgments.
 """
 
 from __future__ import annotations
@@ -119,15 +119,15 @@ class SceneRuntime:
         stream_session_id: str,
         source_id: str,
         *,
-        mode: str = "shadow",
+        mode: str = "active",
         event_labels: tuple[str, ...] = ("fight", "smoking", "fall", "weapon"),
         event_sensitivities: Mapping[str, str] | None = None,
         tracking_mode: str = "immediate",
         tracking_history_seconds: float = 12.0,
         native_memory_scope: str | None = None,
     ) -> None:
-        if mode not in {"shadow", "active"}:
-            raise ValueError("scene mode must be shadow or active")
+        if mode != "active":
+            raise ValueError("scene mode must be active")
         if not set(event_labels) <= _EVENTS - {"stranger"}:
             raise ValueError("unsupported temporal event label")
         if tracking_mode not in {"immediate", "batch"}:
@@ -171,8 +171,8 @@ class SceneRuntime:
             else SceneEvidenceBuffer()
         )
         self.planner = InspectionPlanner(
-            full_scene_interval_seconds=5.0 if mode == "active" else 15.0,
-            refresh_seconds=3.0 if mode == "active" else 8.0,
+            full_scene_interval_seconds=5.0,
+            refresh_seconds=3.0,
         )
         self.stream_session_id = stream_session_id
         self.source_id = source_id
@@ -377,6 +377,7 @@ class SceneRuntime:
                     bbox=item.bbox,
                     observation_state=state,
                     tracking_confirmation=item.attributes.get("tracking_confirmation"),
+                    mask_contours=item.attributes.get("mask_contours"),
                 )
             if self.tracking_mode == "immediate":
                 self._now = max(self._now, snapshot.timestamp_seconds)
@@ -557,6 +558,7 @@ class SceneRuntime:
                         tracking_confirmation=item.attributes.get(
                             "tracking_confirmation"
                         ),
+                        mask_contours=item.attributes.get("mask_contours"),
                     )
                 self._tracking_frames[snapshot.frame_sequence] = (
                     snapshot.timestamp_seconds
@@ -957,7 +959,7 @@ class SceneRuntime:
                 if message_id == result.message_id
             }
             for label in sorted(labels):
-                if self.mode == "active" and label != "stranger":
+                if label != "stranger":
                     continue
                 judgment = judgments.get(label)
                 desired: dict[
@@ -1359,6 +1361,7 @@ class SceneRuntime:
                             detected=detected,
                             confidence=confidence,
                             evidence_id=f"inspection:{request_id}:{index}",
+                            allow_historical=True,
                         )
             finally:
                 self.scene.unpin_source_observations(request_id)
@@ -1470,12 +1473,50 @@ class SceneRuntime:
                 )
                 if frame is None:
                     continue
-                view = self.scene.snapshot_at(timestamp)
+                view = self.display_snapshot(timestamp, frame_sequence=sequence)
+                return frame, view
+            return None
+
+    def display_snapshot(
+        self, timestamp_seconds: float, *, frame_sequence: int | None = None,
+        source_entities: Sequence[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Pair source-aligned geometry with the latest accepted event state.
+
+        Presentation must surface late verdicts immediately. The separate event
+        clock deliberately does not change the source time of boxes or masks;
+        evidence/planning keep using SceneState.snapshot_at unchanged.
+        """
+        with self._lock:
+            view = self.scene.snapshot_at(timestamp_seconds)
+            current = self.scene.snapshot(include_history=False)
+            if source_entities is not None:
+                # A displayed source can outlive geometry history. Keep its
+                # positions, but follow registry-proven identity associations.
+                identities = {
+                    entity["subject_id"]: entity["identity"]
+                    for entity in current["entities"]
+                }
+                retained = {}
+                for entity in sorted(source_entities, key=lambda item: (
+                    bool(item.get("native_track")), bool(item.get("mask_contours")),
+                    item["subject_id"] == self._canonical_subject(item["subject_id"]),
+                )):
+                    subject = self._canonical_subject(entity["subject_id"])
+                    retained[subject] = {
+                        **entity, "subject_id": subject, "entity_id": subject,
+                        "identity": identities.get(subject, {}),
+                    }
+                view["entities"] = list(retained.values())
+            view["events"] = current["events"]
+            view["event_state_timestamp_seconds"] = current["timestamp_seconds"]
+            if frame_sequence is not None:
                 exact_people = set()
                 for entity in view["entities"]:
                     if (
-                        entity["frame_sequence"] == sequence
-                        and entity["last_observed_timestamp_seconds"] == timestamp
+                        entity["frame_sequence"] == frame_sequence
+                        and entity["last_observed_timestamp_seconds"]
+                        == timestamp_seconds
                     ):
                         exact_people.add(entity["subject_id"])
                     else:
@@ -1483,12 +1524,12 @@ class SceneRuntime:
                 for event in view["events"]:
                     if not set(event["subject_ids"]) <= exact_people:
                         event["observation_state"] = "uncertain"
-                view["capture_timestamp_seconds"] = self._now
-                view["tracking_completed_timestamp_seconds"] = (
-                    self._tracking_completed_timestamp
-                )
-                return frame, view
-            return None
+            view["capture_timestamp_seconds"] = self._now
+            view["tracking_completed_timestamp_seconds"] = (
+                self._tracking_completed_timestamp
+            )
+            view["state"] = "stopped" if self._closed else "running"
+            return view
 
     def close(self) -> None:
         """Stop observations and release images; loss is not an event clear."""

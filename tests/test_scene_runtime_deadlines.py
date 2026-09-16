@@ -123,7 +123,7 @@ def test_immediate_mode_still_expires_by_source_time(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(scene_runtime, "monotonic", lambda: clock[0])
     runtime = SceneRuntime("session", "camera")
-    for sequence, at in enumerate((0.0, 0.5)):
+    for sequence, at in enumerate((0.0, 1.0)):
         runtime.observe_tracks(
             RichLabelSnapshot(
                 "session",
@@ -141,6 +141,6 @@ def test_immediate_mode_still_expires_by_source_time(monkeypatch):
     assert jobs
     clock[0] += 1000
     assert all(runtime.inspection_active(job.request.request_id) for job in jobs)
-    runtime.observe_frame(b"source", 20.5, 100)
+    runtime.observe_frame(b"source", 21, 100)
     assert all(not runtime.inspection_active(job.request.request_id) for job in jobs)
     assert runtime.snapshot()["inspection_expiry_clock"] == "source_time"

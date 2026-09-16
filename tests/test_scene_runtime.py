@@ -79,140 +79,91 @@ def result(
     )
 
 
-def test_duplicate_source_and_late_result_do_not_resurrect_ended_event():
+@pytest.mark.parametrize("label", ["fight", "smoking", "fall", "weapon"])
+def test_per_frame_safety_results_cannot_create_or_clear_scene_events(label):
     runtime = SceneRuntime("s", "camera")
-    for at, detected in ((1, True), (2, True), (3, False), (4, False)):
-        tracks(runtime, at)
-        current = result(at, (("a",),) if detected else (), detected=detected)
-        runtime.observe_result(current)
-        runtime.observe_result(current)
-    runtime.observe_result(result(1, (("a",),), message="late"))
-    event = runtime.scene.snapshot()["events"][0]
-    assert event["phase"] == "ended"
-    assert len(event["history"]) == 4
-
-
-def test_negative_waits_for_exact_source_people_and_never_uses_future_people():
-    runtime = SceneRuntime("s", "camera")
-    for at in (1, 2):
-        tracks(runtime, at)
-        runtime.observe_result(result(at, (("a",),)))
-    runtime.observe_result(result(3, detected=False))
-    assert runtime.scene.snapshot()["events"][0]["negative_observations"] == 0
-    tracks(runtime, 3)
-    assert runtime.scene.snapshot()["events"][0]["negative_observations"] == 1
-    runtime.observe_result(result(4, detected=False))
-    tracks(runtime, 5)
-    assert runtime.scene.snapshot()["events"][0]["phase"] == "confirmed"
-
-
-def test_explicit_targeted_negative_does_not_clear_another_person():
-    runtime = SceneRuntime("s", "camera")
-    for at, groups, detected in (
-        (1, (("a",), ("b",)), True),
-        (2, (("a",), ("b",)), True),
-        (3, (("a",),), False),
-        (4, (("a",),), False),
-    ):
-        tracks(runtime, at, ("a", "b"))
-        runtime.observe_result(result(at, groups, detected=detected))
-    events = {
-        tuple(e["subject_ids"]): e["phase"] for e in runtime.scene.snapshot()["events"]
-    }
-    assert events == {("a",): "ended", ("b",): "confirmed"}
-
-
-def test_same_message_regrouping_retracts_old_groups_without_counting_new_frames():
-    runtime = SceneRuntime("s", "camera")
-    tracks(runtime, 1, ("a", "b", "c", "d"))
-    runtime.observe_result(result(1, (("a", "b"), ("c", "d")), label="fight"))
-    runtime.observe_result(result(1, (("a", "c"), ("b", "d")), label="fight"))
-    events = {
-        tuple(event["subject_ids"]): event
-        for event in runtime.scene.snapshot()["events"]
-    }
-    assert events[("a", "b")]["phase"] == "retracted"
-    assert events[("c", "d")]["phase"] == "retracted"
-    assert events[("a", "c")]["phase"] == "suspected"
-    assert events[("b", "d")]["phase"] == "suspected"
-    assert events[("a", "c")]["positive_observations"] == 1
-    assert runtime.snapshot()["stats"]["association_revisions_applied"] == 2
-
-
-def test_removed_object_slot_is_withdrawn_and_reordered_slots_keep_stable_identity():
-    runtime = SceneRuntime("s", "camera")
-    tracks(runtime, 1, ("a", "b"))
-    initial = result(1, (("a",), ("b",)))
-    runtime.observe_result(initial)
-    original = runtime.scene.snapshot()["events"]
-    reordered = replace(
-        initial,
-        objects=tuple(reversed(initial.objects)),
-        judgments=(
-            replace(
-                initial.judgments[0],
-                object_ids=tuple(reversed(initial.judgments[0].object_ids)),
-            ),
-        ),
+    tracks(runtime, 1)
+    runtime.observe_result(result(1, (("a",),), label=label))
+    assert not runtime.scene.snapshot()["events"]
+    assert runtime.scene.observe_event(
+        label, ("a",), timestamp_seconds=1, frame_sequence=10,
+        detected=True, evidence_id="temporal-positive",
     )
-    runtime.observe_result(reordered)
-    assert runtime.scene.snapshot()["events"] == original
-    runtime.observe_result(result(1, (("a",),)))
-    events = {
-        tuple(event["subject_ids"]): event
-        for event in runtime.scene.snapshot()["events"]
-    }
-    assert events[("a",)]["phase"] == "suspected"
-    assert events[("b",)]["phase"] == "retracted"
-    runtime.observe_result(result(1, (("a",),)))
-    assert runtime.snapshot()["stats"]["association_revisions_applied"] == 1
+    for at in range(2, 13):
+        tracks(runtime, at)
+        runtime.observe_result(result(at, detected=False, label=label))
+    event = runtime.scene.snapshot()["events"][0]
+    assert event["phase"] == "suspected"
+    assert event["negative_observations"] == 0
 
 
-def test_object_slots_merged_into_one_group_count_one_source_observation():
-    runtime = SceneRuntime("s", "camera")
-    tracks(runtime, 1, ("a", "b"))
-    runtime.observe_result(result(1, (("a",), ("b",)), label="fight"))
-    runtime.observe_result(result(1, (("a", "b"), ("a", "b")), label="fight"))
-    active = [
-        event
-        for event in runtime.scene.snapshot()["events"]
-        if event["phase"] != "retracted"
-    ]
-    assert len(active) == 1
-    assert active[0]["positive_observations"] == 1
-    assert active[0]["subject_ids"] == ["a", "b"]
+def test_removed_shadow_mode_is_rejected():
+    with pytest.raises(ValueError, match="active"):
+        SceneRuntime("s", "camera", mode="shadow")
 
 
-def test_late_owner_correction_replays_subsequent_whole_frame_negatives():
-    runtime = SceneRuntime("s", "camera")
-    for at, detected in ((1, True), (2, True), (3, False), (4, False)):
-        tracks(runtime, at, ("a", "b"))
-        runtime.observe_result(
-            result(at, (("a",),) if detected else (), detected=detected)
-        )
-    runtime.observe_result(result(1, (("b",),)))
-    runtime.observe_result(result(2, (("b",),)))
-    events = {
-        tuple(event["subject_ids"]): event
-        for event in runtime.scene.snapshot()["events"]
-    }
-    assert events[("a",)]["phase"] == "retracted"
-    assert events[("b",)]["phase"] == "ended"
-    assert events[("b",)]["frame_sequence"] == 40
+def prepare_batch(runtime, start, subjects=("a",)):
+    snapshots = []
+    for at in (start, start + 1):
+        sequence = int(at * 10)
+        runtime.observe_frame(b"jpeg", at, sequence)
+        snapshots.append(RichLabelSnapshot(
+            runtime.stream_session_id, sequence, at,
+            tuple(RichLabelObject(subject, "person", BOX) for subject in subjects),
+        ))
+    assert runtime.observe_tracking_batch(
+        tuple(snapshots), completed_timestamp_seconds=start + 1,
+        completed_frame_sequence=int((start + 1) * 10),
+    )
+    jobs = runtime.take_inspections()
+    assert len(jobs) == 1
+    return jobs[0]
 
 
-def test_same_message_source_cannot_be_retimed_during_regrouping():
-    runtime = SceneRuntime("s", "camera")
-    tracks(runtime, 1, ("a", "b"))
-    runtime.observe_result(result(1, (("a",),), message="fixed-source"))
-    original = runtime.scene.snapshot()["events"]
-    tracks(runtime, 2, ("a", "b"))
-    runtime.observe_result(result(2, (("b",),), message="fixed-source"))
-    assert runtime.scene.snapshot()["events"] == original
-    assert runtime.snapshot()["stats"]["association_revisions_ignored"] > 0
+def test_temporal_clear_requires_ten_distinct_endpoints_for_same_entity():
+    runtime = SceneRuntime("s", "camera", tracking_mode="batch")
+    job = prepare_batch(runtime, 0, ("a", "b"))
+    assert runtime.complete_inspection(job.request.request_id, [
+        TemporalVerdict("smoking", ("a",), True),
+        TemporalVerdict("weapon", ("a",), True),
+        TemporalVerdict("smoking", ("b",), True),
+    ])
+    for index in range(1, 11):
+        job = prepare_batch(runtime, index * 2, ("a", "b"))
+        assert len(job.frames) == 2
+        verdicts = [TemporalVerdict("smoking", ("a",), False)]
+        assert runtime.complete_inspection(job.request.request_id, verdicts)
+        assert not runtime.complete_inspection(job.request.request_id, verdicts)
+        events = {
+            (event["event_label"], tuple(event["subject_ids"])): event
+            for event in runtime.scene.snapshot()["events"]
+        }
+        smoking = events[("smoking", ("a",))]
+        assert smoking["negative_observations"] == index
+        assert smoking["phase"] == ("ended" if index == 10 else "suspected")
+        assert events[("smoking", ("b",))]["phase"] == "suspected"
+        assert events[("weapon", ("a",))]["phase"] == "suspected"
 
 
-def test_active_scene_legacy_bridge_only_accepts_stranger_verdicts():
+def test_late_temporal_positive_is_replayed_before_newer_clear_endpoint():
+    runtime = SceneRuntime("s", "camera", tracking_mode="batch")
+    old = prepare_batch(runtime, 0)
+    newer = prepare_batch(runtime, 2)
+    assert runtime.complete_inspection(newer.request.request_id, [
+        TemporalVerdict("smoking", ("a",), False),
+    ])
+    assert not runtime.scene.snapshot()["events"]
+    assert runtime.complete_inspection(old.request.request_id, [
+        TemporalVerdict("smoking", ("a",), True),
+    ])
+    event = runtime.scene.snapshot()["events"][0]
+    assert event["phase"] == "suspected"
+    assert event["negative_observations"] == 1
+    assert event["first_evidence_timestamp_seconds"] == 1
+    assert event["last_evidence_timestamp_seconds"] == 3
+
+
+def test_face_bridge_only_accepts_stranger_verdicts():
     runtime = SceneRuntime("s", "camera", mode="active")
     tracks(runtime, 1, ("a", "b"))
     runtime.observe_result(result(1, (("a",),)))
@@ -234,9 +185,9 @@ def test_active_scene_legacy_bridge_only_accepts_stranger_verdicts():
 def test_unassigned_positive_can_be_completed_by_same_message_correction():
     runtime = SceneRuntime("s", "camera")
     tracks(runtime, 1)
-    runtime.observe_result(result(1, ((),)))
+    runtime.observe_result(result(1, ((),), label="stranger"))
     assert not runtime.scene.snapshot()["events"]
-    runtime.observe_result(result(1, (("a",),)))
+    runtime.observe_result(result(1, (("a",),), label="stranger"))
     assert runtime.scene.snapshot()["events"][0]["phase"] == "suspected"
 
 
@@ -245,8 +196,8 @@ def test_source_and_session_isolation_and_predictions():
     tracks(runtime, 1, state="predicted")
     assert not runtime.scene.snapshot()["entities"]
     tracks(runtime, 1)
-    runtime.observe_result(result(1, (("a",),), session="old"))
-    runtime.observe_result(result(1, (("a",),), source="other"))
+    runtime.observe_result(result(1, (("a",),), session="old", label="stranger"))
+    runtime.observe_result(result(1, (("a",),), source="other", label="stranger"))
     assert not runtime.scene.snapshot()["events"]
 
 
@@ -307,7 +258,7 @@ def test_unusable_face_is_not_stranger_clear():
 
 def prepared():
     runtime = SceneRuntime("s", "camera")
-    for at in (0, 0.5):
+    for at in (0, 1):
         tracks(runtime, at)
         runtime.observe_frame(b"jpeg", at, int(at * 10))
     jobs = runtime.take_inspections()
@@ -330,24 +281,24 @@ def test_temporal_inspection_has_multiple_exact_source_frames_and_claims_once():
         completion_counts=counts,
     )
     assert counts == {"accepted_verdicts": 1, "rejected_verdicts": 0}
-    assert runtime.scene.snapshot()["events"][0]["frame_sequence"] == 5
+    assert runtime.scene.snapshot()["events"][0]["frame_sequence"] == 10
     assert not runtime.complete_inspection(job.request.request_id, [])
 
 
 def test_slow_temporal_completion_uses_pinned_evidence_after_15fps_history_rollover():
     runtime, job = prepared()
-    for sequence in range(6, 100):
+    for sequence in range(11, 110):
         runtime.observe_tracks(
             RichLabelSnapshot(
                 runtime.stream_session_id,
                 sequence,
-                0.5 + (sequence - 5) / 15,
+                1 + (sequence - 10) / 15,
                 (RichLabelObject("a", "person", BOX),),
             )
         )
     before = runtime.scene.snapshot()["entities"][0]
     assert before["last_observed_timestamp_seconds"] > 6
-    assert not any(item["frame_sequence"] == 5 for item in before["history"])
+    assert not any(item["frame_sequence"] == 10 for item in before["history"])
     counts = {}
     assert runtime.complete_inspection(
         job.request.request_id,
@@ -356,7 +307,7 @@ def test_slow_temporal_completion_uses_pinned_evidence_after_15fps_history_rollo
     )
     assert counts == {"accepted_verdicts": 1, "rejected_verdicts": 0}
     assert runtime.scene.snapshot()["entities"][0] == before
-    assert runtime.scene.snapshot()["events"][0]["frame_sequence"] == 5
+    assert runtime.scene.snapshot()["events"][0]["frame_sequence"] == 10
     assert job.request.request_id not in runtime.scene._source_pins
     runtime.close()
     assert runtime.scene.snapshot()["source_pins"] == {"jobs": 0, "observations": 0}
@@ -395,7 +346,7 @@ def test_failed_and_invalid_inspections_do_not_replace_latest_success():
 
 def full_scene_with_partial_appearances(first=("a", "b"), second=("a",)):
     runtime = SceneRuntime("s", "camera")
-    for at, subjects in ((0, first), (0.5, second)):
+    for at, subjects in ((0, first), (1, second)):
         tracks(runtime, at, subjects)
         runtime.observe_frame(b"jpeg", at, int(at * 10))
     job = next(job for job in runtime.take_inspections() if not job.request.subject_ids)
@@ -439,12 +390,12 @@ def test_full_scene_group_without_any_shared_frame_cannot_create_fight():
 
 def test_old_full_scene_negative_cannot_override_newer_positive_evidence():
     runtime, job = full_scene_with_partial_appearances()
-    tracks(runtime, 1, ("b",))
+    tracks(runtime, 2, ("b",))
     assert runtime.scene.observe_event(
         "smoking",
         ("b",),
-        timestamp_seconds=1,
-        frame_sequence=10,
+        timestamp_seconds=2,
+        frame_sequence=20,
         detected=True,
         evidence_id="newer",
     )
@@ -455,7 +406,7 @@ def test_old_full_scene_negative_cannot_override_newer_positive_evidence():
         [TemporalVerdict("smoking", ("b",), False, 0.9)],
         completion_counts=counts,
     )
-    assert counts == {"accepted_verdicts": 0, "rejected_verdicts": 1}
+    assert counts == {"accepted_verdicts": 1, "rejected_verdicts": 0}
     assert runtime.scene.snapshot()["events"] == before
 
 
@@ -484,7 +435,7 @@ def test_invalid_temporal_batch_is_atomic_and_still_can_be_failed(bad):
 
 def test_inspection_expires_and_close_releases_all_images():
     runtime, job = prepared()
-    runtime.observe_frame(b"new", 20.5, 205)
+    runtime.observe_frame(b"new", 21, 210)
     assert not runtime.complete_inspection(job.request.request_id, [])
     assert job.request.request_id not in runtime.scene._source_pins
     runtime.close()
@@ -507,7 +458,7 @@ def test_inspection_ids_do_not_collide_between_session_instances():
 
 def test_stranger_refresh_is_not_sent_to_temporal_safety_worker():
     runtime = SceneRuntime("s", "camera")
-    for at in (0, 0.5):
+    for at in (0, 1):
         tracks(runtime, at)
         runtime.observe_result(result(at, (("a",),), label="stranger"))
         runtime.observe_frame(b"jpeg", at, int(at * 10))

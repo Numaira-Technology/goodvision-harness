@@ -23,7 +23,7 @@ def _event(snapshot):
 def test_smoking_replay_tracks_one_episode_through_occlusion_and_clear():
     with FIXTURE.open("rb") as source:
         rows = list(replay(source))
-    assert len(rows) == 17
+    assert len(rows) == 33
     assert _event(rows[3])["phase"] == "suspected"
     assert _event(rows[5])["phase"] == "confirmed"
     assert _event(rows[6])["phase"] == "confirmed"
@@ -31,10 +31,12 @@ def test_smoking_replay_tracks_one_episode_through_occlusion_and_clear():
     assert rows[8]["accepted"] is False  # A predicted box is no observation.
     assert rows[9]["accepted"] is False  # An unseen negative cannot clear Alice.
     assert _event(rows[9])["phase"] == "confirmed"
-    assert _event(rows[11])["phase"] == "confirmed"
-    assert _event(rows[13])["phase"] == "ended"
-    assert rows[14]["accepted"] is False  # Delayed positive cannot resurrect it.
-    assert rows[15]["accepted"] is False  # Duplicate evidence cannot confirm it.
+    assert all(_event(row)["phase"] == "confirmed" for row in rows[11:29])
+    assert _event(rows[27])["negative_observations"] == 9
+    assert _event(rows[29])["phase"] == "ended"
+    assert _event(rows[29])["negative_observations"] == 10
+    assert rows[30]["accepted"] is False  # Delayed positive cannot resurrect it.
+    assert rows[31]["accepted"] is False  # Duplicate evidence cannot confirm it.
     assert _event(rows[-1])["phase"] == "ended"
     assert len({_event(row)["event_id"] for row in rows[3:]}) == 1
     assert all(

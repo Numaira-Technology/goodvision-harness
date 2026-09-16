@@ -45,10 +45,10 @@ unit tests do not constitute its own real-checkpoint GPU acceptance.
   and force a new detection. Long source gaps and resolution changes also create
   fresh IDs. There is no appearance ReID, face identity, pose, optical flow,
   cross-camera identity, or event classification in this worker.
-- SAM computes masks as part of its supported image API. This version exports
-  bounding boxes only. Person-specific high-resolution evidence stays in the
-  Harness; SAM's own input is capped at a 1280-pixel longest side by default to
-  bound the processor's mask upsampling memory.
+- SAM exports simplified external mask contours on observed source frames,
+  alongside bounding boxes. Predicted frames retain box-only geometry.
+  Person-specific high-resolution evidence stays in the Harness; SAM's own input
+  is capped at a 1280-pixel longest side by default to bound mask memory.
 
 Official references verified 2026-09-12:
 
@@ -93,6 +93,11 @@ installing missing or mismatched dependencies. Cached SAM weights are reused;
 hybrid weights are verified before deciding whether a download is needed.
 Failure and normal shutdown both release the selected instance, preserving the
 normal replacement flow: the next default launch selects and rents a new GPU.
+During creation, an explicit refusal that an offer is missing, already rented,
+or unavailable advances to the next candidate, up to three different machines.
+Authentication, credit, and parameter errors stop immediately with the provider's
+redacted diagnostic. Timeouts and uncertain responses stop selection and reconcile
+the unique instance label before cleanup, avoiding a second ambiguous rental.
 An existing instance with broken SSH permissions still needs its startup hook
 repaired separately; recovery does not silently alter its cloud configuration.
 
@@ -422,7 +427,17 @@ matching `last_observed_frame_sequence` / `last_observed_timestamp_seconds`, and
 }
 ```
 
-Bounding boxes are derived from the actual nonempty native masks. Duplicate IDs,
+Bounding boxes and `attributes.mask_contours` are derived from the actual nonempty
+native masks; disconnected components of at most four pixels are ignored for
+display geometry. Each contour payload contains `coordinate_system="normalized"`,
+`source_frame_sequence`, `source_timestamp_seconds`, and `polygons` as arrays of
+`[x, y]` points. Coordinates use six decimal places and are bounded to `[0, 1]`;
+geometry is limited to 16 exterior polygons, 128 points per polygon and 1024
+points total. Contours are drawn only on their own source frame. Held/interpolated
+geometry and Hybrid's detection-only observations fall back to bounding boxes.
+The Harness bounds complete video responses to 16 MiB to accommodate masks.
+
+Duplicate IDs,
 malformed masks/scores, missing source outputs or an incorrect native frame order
 fail the entire response and quarantine the model until restart. No partial batch
 is published as successful. A deadline discards all late results while retaining

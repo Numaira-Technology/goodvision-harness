@@ -99,11 +99,9 @@ test("active mode points to temporal source evidence and hides the legacy frame 
   const html = fs.readFileSync(path.join(__dirname, "../src/goodvision_harness/dashboard.html"), "utf8");
   assert.match(html, /id="scene-evidence-latest"[^>]*href="\/v1\/scene\/evidence"/);
   assert.match(html, /evidence\.href="\/v1\/scene\/evidence"/);
-  view.app.configureScene({enabled: true, mode: "shadow"});
+  view.app.configureScene({enabled: false, mode: "disabled"});
   assert.equal(view.element("legacy-evidence-stream").hidden, false);
   assert.equal(view.element("legacy-evidence-latest").hidden, false);
-  assert.equal(view.element("scene-evidence-latest").hidden, true);
-  view.app.configureScene({enabled: false, mode: "disabled"});
   assert.equal(view.element("scene-evidence-latest").hidden, true);
 });
 
@@ -155,12 +153,17 @@ test("face-only messages update face diagnostics without replacing event verdict
   assert.equal(view.element("event-statuses").hidden, false);
 });
 
-test("shadow panel does not overwrite legacy classification", () => {
-  const view = dashboard(); view.app.sceneView.mode = "shadow";
+test("removed shadow mode cannot enable a scene panel or accept snapshots", () => {
+  const view = dashboard();
+  view.app.configureScene({enabled: true, mode: "shadow"});
   view.element("verdict").textContent = "legacy verdict";
-  view.app.acceptSceneSnapshot(snapshot({events: [event()], mode: "shadow"}));
+  assert.equal(view.app.acceptSceneSnapshot(snapshot({events: [event()], mode: "shadow"})), false);
+  assert.equal(view.app.sceneView.mode, "disabled");
+  assert.equal(view.app.sceneView.enabled, false);
+  assert.equal(view.app.sceneView.snapshot, null);
+  assert.equal(view.element("scene-panel").hidden, true);
+  assert.equal(view.requests.length, 0);
   assert.equal(view.element("verdict").textContent, "legacy verdict");
-  assert.equal(view.element("scene-mode").textContent, "探索验证");
 });
 
 test("stopped and stalled sources never imply current clear or current observation", () => {

@@ -415,6 +415,11 @@ def test_real_adapter_uses_official_image_api_and_strict_local_checkpoint(
         def tolist(self):
             return self.data
 
+        def numpy(self):
+            import numpy as np
+
+            return np.asarray(self.data)
+
     class ModelFixture:
         def state_dict(self):
             return image_weights
@@ -441,13 +446,19 @@ def test_real_adapter_uses_official_image_api_and_strict_local_checkpoint(
             calls["resets"] = calls.get("resets", 0) + 1
 
         def set_text_prompt(self, *, state, prompt):
+            import numpy as np
+
             width, height = state["size"]
             calls.setdefault("prompts", []).append(prompt)
+            masks = np.zeros((1, 1, height, width), dtype=bool)
+            masks[:, :, int(height * 0.2):int(height * 0.7),
+                  int(width * 0.1):int(width * 0.4)] = True
             return {
                 "boxes": TensorFixture(
                     [[width * 0.1, height * 0.2, width * 0.4, height * 0.7]]
                 ),
                 "scores": TensorFixture([0.91]),
+                "masks": TensorFixture(masks),
             }
 
     def build_model(**kwargs):
@@ -506,6 +517,19 @@ def test_real_adapter_uses_official_image_api_and_strict_local_checkpoint(
     assert detector.detect(Image.new("RGB", (1600, 900)))[0].bbox == pytest.approx(
         (0.1, 0.2, 0.4, 0.7)
     )
+    assert detector.detect(Image.new("RGB", (1600, 900)))[0].contours
+
+
+def test_image_mask_contours_only_leave_worker_on_the_observed_source():
+    contours = (((0.1, 0.1), (0.3, 0.1), (0.25, 0.5), (0.1, 0.7)),)
+    engine, _ = engine_for([[replace(detection(), contours=contours)]])
+    observed = RichLabelSnapshot.from_dict(infer(engine, 1, 0.0))
+    outline = observed.objects[0].attributes["mask_contours"]
+    assert outline["polygons"] == contours
+    assert outline["source_frame_sequence"] == 1
+    predicted = RichLabelSnapshot.from_dict(infer(engine, 2, 0.1))
+    assert predicted.objects[0].observation_state == "predicted"
+    assert "mask_contours" not in predicted.objects[0].attributes
 
 
 def official_neck_checkpoint_fixture():

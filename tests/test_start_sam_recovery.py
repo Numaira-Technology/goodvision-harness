@@ -75,7 +75,7 @@ def test_new_instance_gets_ssh_permissions_before_first_connection(
 ):
     monkeypatch.setattr(sys, "argv", ["start_sam.py"])
     recovery.search_offers.return_value = [{"id": 10, "dph_total": 0.5}]
-    recovery.create_instance.return_value = {"new_contract": 42}
+    recovery.create_instance.return_value = {"success": True, "new_contract": 42}
     assert launcher.main() == 1  # The simulated worker exits after readiness.
     onstart = recovery.create_instance.call_args.kwargs["onstart_cmd"]
     assert onstart == launcher.SSH_ONSTART
@@ -190,3 +190,200 @@ def test_direct_timeout_tries_gateway_with_the_same_key(monkeypatch):
     assert calls[1] == [
         "ssh", *options, "-p", "11302", "root@ssh.example.test", "true",
     ]
+
+
+@pytest.fixture
+def rental(recovery, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["start_sam.py"])
+    recovery.search_offers.return_value = [
+        {"id": 10, "machine_id": 100, "dph_total": 0.3},
+        {"id": 11, "machine_id": 100, "dph_total": 0.31},
+        {"id": 20, "machine_id": 200, "dph_total": 0.4},
+        {"id": 30, "machine_id": 300, "dph_total": 0.5},
+        {"id": 40, "machine_id": 400, "dph_total": 0.6},
+    ]
+    recovery.create_instance.return_value = {"success": True, "new_contract": 42}
+    recovery.show_instances.return_value = []
+    return recovery
+
+
+def http_failure(status, payload):
+    # Real requests responses are false-y for HTTP errors; exercise that contract.
+    class Response:
+        status_code = status
+
+        def json(self):
+            return payload
+
+        def __bool__(self):
+            return False
+
+    failure = RuntimeError("request URL may contain a secret: do not log this")
+    failure.response = Response()
+    return failure
+
+
+@pytest.mark.parametrize("refusal", [
+    http_failure(400, {"success": False, "error": "no_such_ask"}),
+    {"success": False, "message": "Offer 10 is already rented"},
+    http_failure(409, {"error": {"code": "offer_unavailable"}}),
+])
+def test_offer_refusal_tries_next_machine_and_releases_successful_rental(
+    rental, refusal,
+):
+    rental.create_instance.side_effect = [
+        refusal, {"success": True, "new_contract": 42},
+    ]
+    assert launcher.main() == 1  # Worker exits in this fixture.
+    ids = [call.kwargs["id"] for call in rental.create_instance.call_args_list]
+    assert ids == [10, 20]
+    labels = {call.kwargs["label"] for call in rental.create_instance.call_args_list}
+    assert len(labels) == 1
+    rental.show_instances.assert_not_called()
+    rental.destroy_instance.assert_called_once_with(id=42)
+
+
+def test_unavailable_offers_stop_after_three_machines(rental, capsys):
+    rental.create_instance.return_value = {
+        "success": False, "error": "offer_unavailable",
+    }
+    assert launcher.main() == 1
+    ids = [call.kwargs["id"] for call in rental.create_instance.call_args_list]
+    assert ids == [10, 20, 30]
+    rental.show_instances.assert_not_called()
+    rental.destroy_instance.assert_not_called()
+    output = capsys.readouterr()
+    assert "at most 3 machines" in output.err
+    assert "unconfirmed" not in output.err
+    assert "offer_unavailable" in output.out
+
+
+def test_offers_with_unknown_machine_identity_are_not_repeated(rental):
+    rental.search_offers.return_value = [
+        {"id": 10, "dph_total": 0.3}, {"id": 20, "dph_total": 0.4},
+    ]
+    rental.create_instance.return_value = {"success": False, "error": "no_such_ask"}
+    assert launcher.main() == 1
+    rental.create_instance.assert_called_once()
+    rental.show_instances.assert_not_called()
+
+
+@pytest.mark.parametrize("refusal,diagnostic", [
+    (http_failure(401, {"error": "unauthorized"}), "HTTP 401"),
+    (http_failure(403, {"error": "offer_unavailable"}), "HTTP 403"),
+    (http_failure(400, {
+        "code": "insufficient_credit", "message": "Add funds",
+    }), "Add funds"),
+    (http_failure(400, {
+        "code": "invalid_args", "message": "Offer is unavailable",
+    }), "invalid_args"),
+    (http_failure(400, {"error": {
+        "code": "insufficient_credit", "message": "Offer is unavailable",
+    }}), "insufficient_credit"),
+    (http_failure(400, {
+        "error": "insufficient_credit", "msg": "Machine unavailable due to funds",
+    }), "insufficient_credit"),
+    (http_failure(400, {
+        "error": "unauthorized", "msg": "Machine unavailable for this account",
+    }), "unauthorized"),
+    (http_failure(400, {
+        "error": "invalid_args", "msg": "Offer is unavailable with these parameters",
+    }), "invalid_args"),
+    (http_failure(400, {"message": "Image not found for offer 10"}), "Image not found"),
+    ({"success": False, "error": "invalid_image"}, "invalid_image"),
+])
+def test_other_explicit_refusals_stop_without_uncertain_creation(
+    rental, capsys, refusal, diagnostic,
+):
+    rental.create_instance.side_effect = [refusal]
+    assert launcher.main() == 1
+    rental.create_instance.assert_called_once()
+    rental.show_instances.assert_not_called()
+    rental.destroy_instance.assert_not_called()
+    output = capsys.readouterr().err
+    assert diagnostic in output
+    assert "No instance created" in output
+    assert "unconfirmed" not in output
+
+
+@pytest.mark.parametrize("failure", [
+    TimeoutError("unknown create result"),
+    http_failure(408, {"error": "offer_unavailable"}),
+    http_failure(503, {"success": False, "error": "offer_unavailable"}),
+    {"success": True},
+    {"new_contract": 42},
+    {"success": True, "new_contract": True},
+    {"success": True, "new_contract": -42},
+    {"success": False, "new_contract": 42, "error": "offer_unavailable"},
+])
+def test_unknown_creation_reconciles_label_without_another_rental(
+    rental, capsys, failure,
+):
+    rental.create_instance.side_effect = [failure]
+    assert launcher.main() == 1
+    rental.create_instance.assert_called_once()
+    rental.show_instances.assert_called_once()
+    rental.destroy_instance.assert_not_called()
+    output = capsys.readouterr().err
+    assert "Creation outcome unknown" in output
+    assert "Creation remains unconfirmed" in output
+
+
+def test_lost_creation_response_releases_only_matching_label(rental, capsys):
+    rental.create_instance.side_effect = TimeoutError("lost response")
+    rental.show_instances.side_effect = lambda: [
+        {"id": 99, "label": "unrelated-instance"},
+        {"id": 42, "label": rental.create_instance.call_args.kwargs["label"]},
+    ]
+    assert launcher.main() == 1
+    rental.create_instance.assert_called_once()
+    rental.destroy_instance.assert_called_once_with(id=42)
+    assert "Creation remains unconfirmed" not in capsys.readouterr().err
+
+
+def test_failed_reconciliation_does_not_rent_again_or_expose_credentials(
+    rental, monkeypatch, capsys,
+):
+    monkeypatch.setenv("VAST_API_KEY", "test-api-secret")
+    rental.create_instance.side_effect = TimeoutError("lost response")
+    rental.show_instances.side_effect = RuntimeError(
+        "HTTP 503: https://example.invalid/instances?api_key=test-api-secret",
+    )
+    assert launcher.main() == 1
+    rental.create_instance.assert_called_once()
+    rental.destroy_instance.assert_not_called()
+    output = capsys.readouterr().err
+    assert "Could not look up" in output
+    assert "Creation remains unconfirmed" in output
+    assert "test-api-secret" not in output
+
+
+def test_provider_diagnostics_redact_credentials_and_omit_other_fields(
+    rental, monkeypatch, capsys,
+):
+    monkeypatch.setenv("VAST_API_KEY", "vast-secret-value")
+    monkeypatch.setenv("HF_TOKEN", "hf_secretvalue")
+    rental.create_instance.side_effect = http_failure(400, {
+        "error": {
+            "code": "invalid_args",
+            "message": (
+                "Rejected vast-secret-value hf_secretvalue; "
+                "Authorization: Bearer other-token; api_key=unconfigured-secret; "
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-data\n"
+                "-----END OPENSSH PRIVATE KEY-----"
+            ),
+        },
+        "request": {"api_key": "must-not-appear"},
+        "access_token": "also-must-not-appear",
+    })
+    assert launcher.main() == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    for secret in (
+        "vast-secret-value", "hf_secretvalue", "other-token", "unconfigured-secret",
+        "private-key-data", "must-not-appear", "also-must-not-appear",
+    ):
+        assert secret not in output
+    assert "invalid_args" in output
+    assert "HTTP 400" in output
+    assert "[redacted]" in output

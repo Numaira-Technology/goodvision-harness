@@ -229,18 +229,28 @@ def strict_checkpoint_state(
 def _native_bbox_without_speckles(
     mask: Any,
 ) -> tuple[tuple[int, int, int, int] | None, int, int]:
-    """Ignore <=4-pixel 8-connected islands for exported box geometry only.
+    bbox, _, ignored_count, ignored_pixels = native_mask_geometry(mask)
+    return bbox, ignored_count, ignored_pixels
+
+
+def native_mask_geometry(mask: Any) -> tuple[
+    tuple[int, int, int, int] | None, list[list[list[float]]], int, int
+]:
+    """Ignore <=4-pixel 8-connected islands for exported geometry only.
 
     Four is an absolute area in the actual output mask's pixels, at every
     resolution. Retain every larger component, including disconnected visible
-    body parts. The native mask and tracking memory are never modified.
+    body parts. Bound simplified external outlines to 16 polygons, 128 points
+    per polygon and 1024 total points. The native mask is never modified.
     """
     import cv2
     import numpy as np
 
+    if mask.ndim != 2 or mask.dtype != np.bool_ or not all(mask.shape):
+        raise RuntimeError("native mask must be a nonempty boolean image")
     if not mask.any():
-        return None, 0, 0
-    _, _, stats, _ = cv2.connectedComponentsWithStats(
+        return None, [], 0, 0
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(
         mask.astype(np.uint8), connectivity=8
     )
     components = stats[1:]
@@ -250,13 +260,43 @@ def _native_bbox_without_speckles(
     ignored_pixels = int(areas[ignored].sum())
     retained = components[~ignored]
     if not len(retained):
-        return None, ignored_count, ignored_pixels
+        return None, [], ignored_count, ignored_pixels
     x = retained[:, cv2.CC_STAT_LEFT]
     y = retained[:, cv2.CC_STAT_TOP]
     right = x + retained[:, cv2.CC_STAT_WIDTH]
     bottom = y + retained[:, cv2.CC_STAT_HEIGHT]
+    # One lookup keeps all retained components without allocating an image per
+    # component. Exterior contours deliberately do not paint/fill mask holes.
+    retained_labels = np.concatenate(([False], ~ignored))
+    contours, _ = cv2.findContours(
+        retained_labels[labels].astype(np.uint8),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+    height, width = mask.shape
+    polygons = []
+    remaining = 1024
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:16]:
+        limit = min(128, remaining)
+        if limit < 3:
+            break
+        epsilon = max(0.5, cv2.arcLength(contour, True) * 0.002)
+        simplified = cv2.approxPolyDP(contour, epsilon, True)
+        while len(simplified) > limit:
+            epsilon *= 1.5
+            simplified = cv2.approxPolyDP(contour, epsilon, True)
+        if len(simplified) < 3 or cv2.contourArea(simplified) <= 0:
+            continue
+        # OpenCV traces pixel centers; normalization preserves that geometry.
+        polygons.append([
+            [round(float((px + 0.5) / width), 6),
+             round(float((py + 0.5) / height), 6)]
+            for px, py in simplified[:, 0, :]
+        ])
+        remaining -= len(simplified)
     return (
         (int(x.min()), int(y.min()), int(right.max()), int(bottom.max())),
+        polygons,
         ignored_count,
         ignored_pixels,
     )
@@ -304,7 +344,7 @@ def native_snapshot(
     for object_id, score, mask in zip(
         ids.tolist(), scores.tolist(), masks, strict=True
     ):
-        bbox, ignored_count, ignored_pixels = _native_bbox_without_speckles(mask)
+        bbox, polygons, ignored_count, ignored_pixels = native_mask_geometry(mask)
         if bbox is None:
             continue
         x1, y1, x2, y2 = bbox
@@ -331,6 +371,12 @@ def native_snapshot(
                         "ignored_component_count": ignored_count,
                         "ignored_component_pixels": ignored_pixels,
                     },
+                    **({"mask_contours": {
+                        "coordinate_system": "normalized",
+                        "source_frame_sequence": source.frame_sequence,
+                        "source_timestamp_seconds": source.timestamp_seconds,
+                        "polygons": polygons,
+                    }} if polygons else {}),
                 },
                 "observation_state": "observed",
                 "last_observed_frame_sequence": source.frame_sequence,

@@ -448,7 +448,7 @@ const state={
   classificationJudgments:new Map(),classificationResult:null,classificationHistory:new Map(),
   notifiedResults:new Set(),runtimeErrorMessage:""
 };
-const sceneView={enabled:false,mode:"shadow",snapshot:null,error:false,timer:null,
+const sceneView={enabled:false,mode:"disabled",snapshot:null,error:false,timer:null,
   controller:null,generation:0,polling:false,closed:false,sourceKey:null,sourceTimestamp:null,
   advancedAt:null,receivedAt:null,aliases:new Map(),nextAlias:1};
 const sceneEventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人"};
@@ -520,7 +520,7 @@ function renderScene(){
   const data=sceneView.snapshot||{},scene=data.scene||{},condition=sceneCondition();
   const entities=(Array.isArray(scene.entities)?scene.entities:[]).filter(Boolean).slice(0,64);
   const events=(Array.isArray(scene.events)?scene.events:[]).filter(Boolean).slice(-64).reverse();
-  sceneUi.mode.textContent=data.tracking_mode==="batch"?(data.memory_scope==="session"?"连续人物追踪（实验）":"视频片段验证"):sceneActive()?"持续识别":"探索验证";
+  sceneUi.mode.textContent=data.tracking_mode==="batch"?(data.memory_scope==="session"?"连续人物追踪（实验）":"视频片段验证"):"持续识别";
   sceneUi.status.textContent=condition==="stopped"?"观察已停止；以下保留最近一次记录。":
     condition==="unavailable"?"识别结果暂不可用，正在重试。":condition==="stale"?"画面未更新，当前人物与事件状态待核实。":
     condition==="waiting"?"等待当前视频的连续观察证据…":data.automatic_temporal_inference===true?"正在持续观察人物，按变化复核事件。":"正在记录人物状态，自动事件复核尚未就绪。";
@@ -529,7 +529,6 @@ function renderScene(){
   sceneUi.summary.textContent=entities.length+" 位人物 · "+events.filter(item=>item.phase==="confirmed").length+
     " 项已确认事件 · 最近画面 "+sceneMoment(scene.timestamp_seconds)+
     (Number.isFinite(worker.succeeded_requests)?" · 已完成 "+worker.succeeded_requests+" 次复核":"")+
-    (sceneActive()?"":" · 此面板用于探索验证")+
     (data.tracking_mode==="batch"?" · "+(Number.isFinite(data.tracking_lag_seconds)&&data.tracking_lag_seconds>=0?
       "分析落后画面 "+data.tracking_lag_seconds.toFixed(1)+" 秒":"等待首段分析")+
       (data.memory_scope==="session"?" · 当前会话保持人物编号":" · 片段之间人物重新编号"):"");
@@ -559,7 +558,7 @@ function renderScene(){
   renderSceneDecision()
 }
 function acceptSceneSnapshot(data){
-  if(!data||typeof data!=="object"||data.enabled!==true)return false;
+  if(!sceneActive()||!data||typeof data!=="object"||data.enabled!==true||data.mode!=="active")return false;
   const scene=data.scene;
   if(scene){
     if(typeof scene.stream_session_id!=="string"||
@@ -604,8 +603,8 @@ async function pollScene(generation){
   }
 }
 function configureScene(config){
-  sceneView.enabled=!!(config&&config.enabled===true);
-  sceneView.mode=config&&config.mode==="active"?"active":"shadow";
+  sceneView.enabled=!!(config&&config.enabled===true&&config.mode==="active");
+  sceneView.mode=sceneView.enabled?"active":"disabled";
   $("legacy-evidence-stream").hidden=sceneActive();
   $("legacy-evidence-latest").hidden=sceneActive();
   $("scene-evidence-latest").hidden=!sceneActive();

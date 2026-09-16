@@ -35,7 +35,9 @@ BACKEND = "sam3.1_video"
 MAX_BATCH_FRAMES = 16
 MAX_JPEG_BYTES = 8 * 1024 * 1024
 MAX_BATCH_JPEG_BYTES = 20 * 1024 * 1024
-MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+# A release can include pending source frames plus the current append, each
+# with bounded SAM contour polygons for every visible person.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 def _text(value: Any, name: str) -> str:

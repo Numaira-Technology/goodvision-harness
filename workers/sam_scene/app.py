@@ -110,6 +110,7 @@ class Detection:
     label: str
     bbox: BBox
     confidence: float
+    contours: tuple[tuple[tuple[float, float], ...], ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -230,6 +231,13 @@ class SamImageDetector:
     def detect(self, image: Any) -> tuple[Detection, ...]:
         if self.processor is None:
             raise RuntimeError("SAM model not initialized")
+        import numpy as np
+
+        if __package__:
+            from .sam31 import native_mask_geometry
+        else:
+            from sam31 import native_mask_geometry
+
         torch = self._torch
         # SAM's processor upsamples masks to input dimensions. Bounding the
         # supplied image bounds mask memory; normalized boxes still map to source.
@@ -249,7 +257,14 @@ class SamImageDetector:
                 result = self.processor.set_text_prompt(state=state, prompt=label)
                 boxes = result["boxes"].detach().float().cpu().tolist()
                 scores = result["scores"].detach().float().cpu().tolist()
-                for box, score in zip(boxes, scores, strict=True):
+                masks = result["masks"].detach().cpu().numpy()
+                if masks.shape == (len(boxes), 1, height, width):
+                    masks = masks[:, 0]
+                if masks.shape != (len(boxes), height, width):
+                    raise RuntimeError("SAM image masks do not match source dimensions")
+                if masks.dtype != np.bool_:
+                    raise RuntimeError("SAM image masks must be binary")
+                for box, score, mask in zip(boxes, scores, masks, strict=True):
                     normalized = tuple(
                         max(0.0, min(1.0, value / scale))
                         for value, scale in zip(
@@ -257,7 +272,12 @@ class SamImageDetector:
                         )
                     )
                     try:
-                        found.append(Detection(label, normalized, float(score)))
+                        _, polygons, _, _ = native_mask_geometry(mask)
+                        found.append(Detection(
+                            label, normalized, float(score),
+                            tuple(tuple(tuple(point) for point in polygon)
+                                  for polygon in polygons),
+                        ))
                     except ValueError:
                         continue
             del state
@@ -279,6 +299,7 @@ class Track:
     observed_sequence: int
     observed_timestamp: float
     velocity: tuple[float, float] = (0.0, 0.0)
+    contours: tuple[tuple[tuple[float, float], ...], ...] = ()
 
     def predicted_bbox(self, timestamp: float) -> BBox:
         dt = max(0.0, timestamp - self.observed_timestamp)
@@ -441,7 +462,12 @@ class SceneEngine:
                     "label": track.label,
                     "bbox": dict(zip(("x1", "y1", "x2", "y2"), bbox, strict=True)),
                     "confidence": track.confidence,
-                    "attributes": {},
+                    "attributes": ({"mask_contours": {
+                        "coordinate_system": "normalized",
+                        "source_frame_sequence": sequence,
+                        "source_timestamp_seconds": timestamp,
+                        "polygons": track.contours,
+                    }} if observed and track.contours else {}),
                     "observation_state": "observed" if observed else "predicted",
                     "last_observed_timestamp_seconds": track.observed_timestamp,
                     "last_observed_frame_sequence": track.observed_sequence,
@@ -580,6 +606,7 @@ class SceneEngine:
                 sequence,
                 timestamp,
                 velocity,
+                detection.contours,
             )
         # Keep recent unmatched predictions only when capacity permits.
         if len(session.tracks) > self.settings.max_tracks:

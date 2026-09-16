@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
+import re
 import shlex
 import shutil
 import signal
@@ -13,10 +13,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
-
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = "/workspace/goodvision-sam"
@@ -111,6 +111,164 @@ def required(name: str) -> str:
     if not value:
         raise RuntimeError(f"Set {name} in the repository .env or your terminal.")
     return value
+
+
+class CreationRejected(RuntimeError):
+    """Vast explicitly refused creation; no contract needs reconciliation."""
+
+
+def creation_diagnostic(payload, *, status: int | None = None) -> str:
+    """Keep the provider's error fields without logging requests or credentials."""
+    fields = []
+
+    def collect(value, depth=0):
+        if not isinstance(value, dict) or depth > 2:
+            return
+        for name in ("code", "error_code", "error", "message", "msg", "detail"):
+            item = value.get(name)
+            if isinstance(item, dict):
+                collect(item, depth + 1)
+            elif isinstance(item, (str, int)) and not isinstance(item, bool):
+                fields.append(f"{name}={item}")
+
+    collect(payload)
+    detail = "; ".join(fields) or "No structured error details returned"
+    # Redact before truncating so a clipped credential cannot escape replacement.
+    for name in ("VAST_API_KEY", "HF_TOKEN", "SAM_SSH_KEY"):
+        secret = os.environ.get(name, "")
+        if secret:
+            detail = detail.replace(secret, "[redacted]")
+    detail = re.sub(
+        r"-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|$)",
+        "[redacted private key]", detail, flags=re.DOTALL,
+    )
+    detail = re.sub(
+        r"(?i)\b(?:bearer\s+|hf_)[a-z0-9._~+/=-]+", "[redacted]", detail,
+    )
+    detail = re.sub(
+        r"(?i)\b(api[_ -]?key|token|password|secret|authorization)\s*[:=]\s*"
+        r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"\1=[redacted]", detail,
+    )
+    detail = " ".join(detail.split())[:1000]
+    return f"HTTP {status}: {detail}" if status is not None else detail
+
+
+def offer_was_unavailable(payload) -> bool:
+    """Only recognize explicit capacity/offer refusals, never generic HTTP 400s."""
+    if not isinstance(payload, dict):
+        return False
+    codes = {
+        "no_such_ask", "no_such_offer", "ask_not_found", "offer_not_found",
+        "ask_unavailable", "offer_unavailable", "machine_unavailable",
+        "offer_already_rented", "ask_already_rented", "offer_taken",
+    }
+    for name in ("code", "error_code"):
+        value = payload.get(name)
+        if isinstance(value, str) and value.lower() not in codes:
+            return False
+    error = payload.get("error")
+    if (
+        isinstance(error, str) and re.fullmatch(r"[A-Za-z0-9_.-]+", error)
+        and error.lower() not in codes
+    ):
+        return False
+    if isinstance(payload.get("error"), dict):
+        return offer_was_unavailable(payload["error"])
+    for name in ("code", "error_code", "error"):
+        value = payload.get(name)
+        if isinstance(value, str) and value.lower() in codes:
+            return True
+    # Keep the unavailable phrase adjacent to its subject: "image not found"
+    # or "invalid parameters for offer 123" must not trigger another rental.
+    message = creation_diagnostic(payload).lower()
+    return re.search(
+        r"\b(?:offer|ask|machine)(?:\s+(?:id\s+)?#?\d+)?\s+"
+        r"(?:(?:is|was|has been)\s+)?(?:not found|does not exist|no longer exists|"
+        r"not available|unavailable|no longer available|already (?:rented|taken))\b",
+        message,
+    ) is not None
+
+
+def create_from_offers(vast, offers: list[dict], *, disk_gb: int, label: str) -> int:
+    """Try at most three machines, advancing only after a definite refusal."""
+    seen_machines = set()
+    seen_offers = set()
+    attempts = 0
+    for offer in sorted(offers, key=lambda item: float(item["dph_total"])):
+        offer_id = int(offer["id"])
+        # Without a machine identity we cannot prove that another unknown offer
+        # is a different host, so try at most one such candidate.
+        machine = str(offer.get("machine_id") or "unknown")
+        if offer_id in seen_offers or machine in seen_machines:
+            continue
+        if attempts == 3:
+            break
+        seen_offers.add(offer_id)
+        seen_machines.add(machine)
+        attempts += 1
+        print(
+            f"Selected offer: {offer_id}; estimated total hourly price: "
+            f"${float(offer['dph_total']):.4f}; candidate {attempts}/3", flush=True,
+        )
+        print(f"Creating instance with label: {label}", flush=True)
+        status = None
+        try:
+            created = vast.create_instance(
+                id=offer_id, image=IMAGE, disk=disk_gb,
+                label=label, ssh=True, direct=True, cancel_unavail=True,
+                onstart_cmd=SSH_ONSTART,
+            )
+        except Exception as error:
+            response = getattr(error, "response", None)
+            status = getattr(response, "status_code", None)
+            try:
+                created = response.json() if response is not None else None
+            except (ValueError, TypeError):
+                created = None
+            detail = creation_diagnostic(created, status=status)
+            # A timeout, server error or lost response may hide a successful
+            # creation. Stop here; main reconciles this unique label before exit.
+            if not isinstance(status, int) or not 400 <= status < 500 or status == 408:
+                raise RuntimeError(
+                    f"Creation outcome unknown for offer {offer_id} "
+                    f"({type(error).__name__}); {detail}"
+                ) from None
+        else:
+            contract = (
+                created.get("new_contract") if isinstance(created, dict) else None
+            )
+            if (
+                isinstance(created, dict) and created.get("success") is True
+                and isinstance(contract, int) and not isinstance(contract, bool)
+                and contract > 0
+            ):
+                return contract
+            if not isinstance(created, dict) or created.get("success") is not False:
+                raise RuntimeError(
+                    f"Creation outcome unknown for offer {offer_id}: "
+                    "invalid creation response; "
+                    + creation_diagnostic(created)
+                )
+        detail = creation_diagnostic(created, status=status)
+        if isinstance(created, dict) and created.get("new_contract"):
+            raise RuntimeError(
+                f"Creation outcome unknown for offer {offer_id}: "
+                f"refusal includes a contract; {detail}"
+            )
+        if status in {None, 400, 404, 409, 410} and offer_was_unavailable(created):
+            print(
+                f"Offer {offer_id} was refused: {detail}; skipping this machine.",
+                flush=True,
+            )
+            continue
+        raise CreationRejected(
+            f"Creation refused for offer {offer_id}; {detail}. No instance created."
+        )
+    raise CreationRejected(
+        f"No instance created: all {attempts} attempted machines refused their offers "
+        "(at most 3 machines per launch)."
+    )
 
 
 def prepare_ssh_key(source: Path, directory: Path) -> Path:
@@ -295,16 +453,14 @@ def main() -> int:
             )
             if not offers:
                 raise RuntimeError(f"No eligible {gpu_name} offer is available. No instance was created.")
-            offer = min(offers, key=lambda item: float(item["dph_total"]))
-            print(f"Selected offer: {offer['id']}; estimated total hourly price: ${float(offer['dph_total']):.4f}", flush=True)
-            print(f"Creating instance with label: {label}", flush=True)
             creation_attempted = True
-            created = vast.create_instance(
-                id=int(offer["id"]), image=IMAGE, disk=args.disk_gb,
-                label=label, ssh=True, direct=True, cancel_unavail=True,
-                onstart_cmd=SSH_ONSTART,
-            )
-            instance_id = int(created["new_contract"])
+            try:
+                instance_id = create_from_offers(
+                    vast, offers, disk_gb=args.disk_gb, label=label,
+                )
+            except CreationRejected:
+                creation_attempted = False
+                raise
             print(f"Created instance: {instance_id}", flush=True)
         print("Waiting for SSH...", flush=True)
         options = [
@@ -394,7 +550,11 @@ def main() -> int:
                 if len(matches) == 1:
                     instance_id = int(matches[0]["id"])
             except Exception as error:
-                print(f"Could not look up the unconfirmed creation: {error}", file=sys.stderr, flush=True)
+                detail = creation_diagnostic({"message": str(error)})
+                print(
+                    f"Could not look up the unconfirmed creation: {detail}",
+                    file=sys.stderr, flush=True,
+                )
             if instance_id is None:
                 print(
                     f"Creation remains unconfirmed. Check Vast Instances for label {label} before retrying.\n"

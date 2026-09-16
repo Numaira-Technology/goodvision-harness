@@ -12,8 +12,14 @@ repository.
 新增持续人物／事件链路：`SCENE_ENGINE_MODE=active` 先通过 SAM 发现和关联人物，再以
 多个时刻的画面检查事件，维护疑似、确认、遮挡、结束及修订。它已接入独立后台时序请求、
 控制台、视频叠加、SSE、最近原始证据和事件元数据记录；选择陌生人时继续运行独立人脸识别。
-默认 `disabled` 保留原有流程；`shadow` 仅旁路观察，旧 `SCENE_ENGINE_ENABLED=true`
-兼容为 shadow。
+默认 `disabled` 保留原有流程；`active` 启用持续人物与时序事件链路。
+`shadow` 旁路模式已移除；旧 `SCENE_ENGINE_ENABLED=true` 配置会报错，请改用 `SCENE_ENGINE_MODE=active`。
+
+持续场景视频优先描出 SAM 在对应源帧生成的人物 mask 轮廓；没有同源 mask 的
+跟踪观察使用人物框。事件首次阳性就将对应实体的描边／框标黄，并在左上角显示事件。
+迟到判断更新当前事件提示，不把旧轮廓移到新画面。同一实体、同一事件需要累计
+10 个不同源帧的有效 clear 判定才结束，新的阳性重置计数；缺失、遮挡和模型失败不算 clear。
+一个时序请求只贡献一个实际观察终点的判定，不按其中输入图片的数量重复计数。
 
 图像关键帧检测与运动跟踪使用 [compose.scene.yaml](compose.scene.yaml)；
 [compose.sam31.yaml](compose.sam31.yaml) 提供每批独立记忆的 SAM 3.1 视频对照。
@@ -49,7 +55,7 @@ Deployment console 现可在 `sam_live`（SAM 连续分析）和 `hybrid`（快�
 
 ## Harness behavior
 
-本节描述 `disabled`／`shadow` 的原有逐帧流程。`active` 停止旧逐帧安全请求，
+本节描述 `disabled` 的原有逐帧流程。`active` 停止旧逐帧安全请求，
 使用最多四张、默认 720 最长边的时序输入与单个后台在途请求，默认总超时 15 秒；
 事件状态由持续引擎驱动。空事件列表、遮挡与模型失败都不会显示全部安全。
 

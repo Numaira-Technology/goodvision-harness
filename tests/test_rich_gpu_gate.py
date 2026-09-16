@@ -87,17 +87,25 @@ def test_cpu_gate_never_constructs_coordinator_or_submits_frames(monkeypatch):
 
     monkeypatch.setattr(service, "RichLabelHTTPClient", Client)
     monkeypatch.setattr(service, "RichLabelCoordinator", forbidden)
+    # This test covers the synchronous startup gate. Separate tests below cover
+    # readiness retries, which status/session helpers may start in the background.
+    monkeypatch.setattr(
+        service.HarnessRuntime, "_ensure_rich_readiness_probe", lambda self: None,
+    )
     runtime = service.HarnessRuntime(config)
-    assert runtime._rich_labels is None
-    assert runtime.ui_info()["rich_labeling"]["enabled"] is False
-    assert runtime.status()["rich_labeling_enabled"] is False
-    assert runtime.status()["rich_labeling"] == {
-        "state": "disabled", "disabled_reason": "gpu_required",
-    }
-    runtime._active_rich_session_id = "sample-session"
-    runtime._on_display_frame(b"frame-not-submitted-to-rich", 1.0, 1)
-    assert calls == ["client", "probe", "close"]
-    assert runtime.preview_frames.latest() is not None
+    try:
+        assert runtime._rich_labels is None
+        assert runtime.ui_info()["rich_labeling"]["enabled"] is False
+        assert runtime.status()["rich_labeling_enabled"] is False
+        assert runtime.status()["rich_labeling"] == {
+            "state": "disabled", "disabled_reason": "gpu_required",
+        }
+        runtime._active_rich_session_id = "sample-session"
+        runtime._on_display_frame(b"frame-not-submitted-to-rich", 1.0, 1)
+        assert calls == ["client", "probe", "close"]
+        assert runtime.preview_frames.latest() is not None
+    finally:
+        runtime.stop()
 
 
 def test_explicit_disabled_setting_does_not_even_probe_worker(monkeypatch):

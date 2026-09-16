@@ -14,6 +14,8 @@ from typing import Any
 from PIL import ImageDraw, ImageFont
 
 from .result_bus import FramePacket
+from .rich_labeling import validate_mask_contours
+from .scene_evidence import EvidenceFrame
 from .scene_inspection import _read_image
 from .scene_runtime import SceneRuntime
 
@@ -23,11 +25,11 @@ _MAX_EVENTS = 2048  # Same hard ceiling as SceneState's event registry.
 _MAX_LINES = 8
 _HOLD_SECONDS = 1.0
 _GREEN = (73, 220, 138)
-_AMBER = (255, 192, 76)
-_RED = (250, 104, 99)
+_YELLOW = (255, 214, 64)
+_RED = (239, 68, 68)
 _GRAY = (190, 198, 211)
 _PHASE_COLORS = {
-    "suspected": _AMBER,
+    "suspected": _YELLOW,
     "confirmed": _RED,
     "ended": _GRAY,
     "retracted": _GRAY,
@@ -98,15 +100,15 @@ def _dashed_box(draw, bounds: tuple[int, ...], color: tuple[int, ...], width: in
         draw.line((x2, y, x2, bottom), fill=color, width=width)
 
 
-def _event_lines(
-    snapshot: Mapping[str, Any],
-    timestamp: float,
-    visible_ids: set[str],
-) -> list[tuple[str, tuple[int, ...]]]:
+def _display_events(snapshot: Mapping[str, Any], timestamp: float) -> list[Mapping]:
+    """Use the current event clock only when explicitly supplied by the runtime."""
+    clock = _scene(snapshot).get("event_state_timestamp_seconds", timestamp)
+    if not _finite(clock) or clock < 0:
+        clock = timestamp
     events = _scene(snapshot).get("events", ())
     if not isinstance(events, (tuple, list)):
         return []
-    candidates = []
+    result = []
     for event in events[:_MAX_EVENTS]:
         if not isinstance(event, Mapping):
             continue
@@ -114,8 +116,31 @@ def _event_lines(
         at = event.get("last_evidence_timestamp_seconds")
         if not isinstance(phase, str) or phase not in _PHASE_COLORS:
             continue
-        if not _finite(at) or at < 0 or at > timestamp:
+        if not _finite(at) or at < 0 or at > clock:
             continue
+        subjects = event.get("subject_ids")
+        if (
+            event.get("event_label")
+            not in ("fight", "smoking", "fall", "weapon", "stranger")
+            or not isinstance(subjects, (list, tuple))
+            or not subjects
+            or len(subjects) > _MAX_PEOPLE
+            or not all(isinstance(subject, str) and subject for subject in subjects)
+        ):
+            continue
+        result.append(event)
+    return result
+
+
+def _event_lines(
+    snapshot: Mapping[str, Any],
+    timestamp: float,
+    visible_ids: set[str],
+) -> list[tuple[str, tuple[int, ...]]]:
+    candidates = []
+    for event in _display_events(snapshot, timestamp):
+        phase = event["phase"]
+        at = event["last_evidence_timestamp_seconds"]
         candidates.append(
             (
                 0 if phase in ("confirmed", "suspected") else 1,
@@ -156,6 +181,27 @@ def _event_lines(
     return lines
 
 
+def _source_contours(entity, timestamp, width, height):
+    """Only draw masks derived from this exact source, never held geometry."""
+    value = entity.get("mask_contours")
+    if value is None:
+        return ()
+    try:
+        validate_mask_contours(value)
+    except (TypeError, ValueError):
+        return ()
+    if (
+        value["source_timestamp_seconds"] != timestamp
+        or value["source_frame_sequence"] != entity.get("frame_sequence")
+        or entity.get("last_observed_timestamp_seconds") != timestamp
+    ):
+        return ()
+    return tuple(
+        tuple((round(x * (width - 1)), round(y * (height - 1))) for x, y in polygon)
+        for polygon in value["polygons"]
+    )
+
+
 def render_scene_jpeg(
     jpeg: bytes,
     snapshot: Mapping[str, Any],
@@ -164,7 +210,7 @@ def render_scene_jpeg(
 ) -> bytes:
     """Render presentation state only; held geometry is never event evidence.
 
-    Boxes come from observations at or before the source frame timestamp. A
+    SAM contours come from the exact source mask; other observations use boxes. A
     one-second visual hold is dashed and age-labelled; older/future geometry is
     omitted. Event text can persist independently and explicitly shows uncertain
     visibility. Metadata and credentials are not copied into the JPEG.
@@ -183,6 +229,15 @@ def render_scene_jpeg(
         width, height = image.size
         stroke = max(1, min(4, round(min(width, height) / 300)))
         people = _people(snapshot, media_timestamp)
+        subject_phases: dict[str, str] = {}
+        for event in _display_events(snapshot, media_timestamp):
+            phase = event["phase"]
+            if phase not in {"suspected", "confirmed"}:
+                continue
+            for subject in event["subject_ids"]:
+                # A suspected event must not override another confirmed event.
+                if subject_phases.get(subject) != "confirmed":
+                    subject_phases[subject] = phase
         visible_ids: set[str] = set()
         for entity, box, age in people:
             subject = _safe_text(entity.get("subject_id"), fallback="person")
@@ -201,14 +256,20 @@ def render_scene_jpeg(
                 # Place stale-position status first so clipping a long identity
                 # label cannot make held geometry look like a current observation.
                 label = f"hold {age:.1f}s | {label}"
-            color = _AMBER if held else _GREEN
+            color = _PHASE_COLORS.get(
+                subject_phases.get(raw_subject), _GRAY if held else _GREEN
+            )
             bounds = (
                 round(box[0] * (width - 1)),
                 round(box[1] * (height - 1)),
                 round(box[2] * (width - 1)),
                 round(box[3] * (height - 1)),
             )
-            if held:
+            contours = _source_contours(entity, media_timestamp, width, height)
+            if contours:
+                for contour in contours:
+                    draw.line((*contour, contour[0]), fill=color, width=stroke)
+            elif held:
                 _dashed_box(draw, bounds, color, stroke)
             else:
                 draw.rectangle(bounds, outline=color, width=stroke)
@@ -328,7 +389,7 @@ class SceneDisplayWorker:
             started = time.monotonic()
             next_render = started + self._interval
             try:
-                snapshot = self.scene.snapshot()
+                snapshot = self.scene.display_snapshot(packet.media_timestamp)
                 if self._stop.is_set() or snapshot.get("state") == "stopped":
                     with self._condition:
                         self._stats["discarded_frames"] += 1
@@ -411,9 +472,10 @@ class _SourceStamp:
 class TrackedSceneDisplayWorker(SceneDisplayWorker):
     """Display completed sampled sources, after their minimum presentation delay.
 
-    JPEGs remain in the scene's bounded evidence cache. This worker retains only
-    512 admitted-source stamps and one in-progress render. Capture packets update
-    presentation freshness but are never substituted for missing source images.
+    Pending JPEGs remain in the scene's bounded evidence cache. This worker keeps
+    512 source stamps and the last displayed source JPEG and geometry, so late
+    events can repaint it even after evidence eviction. Capture packets update
+    freshness but are never substituted for missing source images.
     """
 
     def __init__(self, scene, publish, *, quality=85, max_fps=4, delay_seconds=0.0):
@@ -425,8 +487,12 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
         self._delay_seconds = float(delay_seconds)
         self._sources: deque[_SourceStamp] = deque(maxlen=512)
         self._displayed_source: _SourceStamp | None = None
+        self._displayed_frame: tuple[EvidenceFrame, list[dict[str, Any]]] | None = None
         self._stopped_at: float | None = None
         self._last_published_sequence = -1
+        self._event_revision = 0
+        self._displayed_event_revision = 0
+        self._event_signature: tuple | None = None
         self._display_state = "buffering"
         self._stats.update(
             source_stamps_dropped=0,
@@ -483,13 +549,35 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
         with self._condition:
             self._condition.notify_all()
 
+    def notify_events(self, events=None) -> None:
+        """Refresh the already displayed source when a late verdict arrives."""
+        signature = None if events is None else tuple(
+            (
+                event.get("event_id"), event.get("phase"),
+                event.get("observation_state"),
+                event.get("last_evidence_timestamp_seconds"),
+                tuple(event.get("subject_ids", ())),
+            )
+            for event in events[:_MAX_EVENTS]
+        )
+        with self._condition:
+            if signature is not None and signature == self._event_signature:
+                return
+            self._event_signature = signature
+            self._event_revision += 1
+            self._condition.notify_all()
+
     def _run(self) -> None:
         next_render = 0.0
         while not self._stop.is_set():
             with self._condition:
                 if self._stop.is_set():
                     return
-                if not self._sources:
+                refresh = (
+                    self._displayed_source
+                    if self._event_revision > self._displayed_event_revision else None
+                )
+                if not self._sources and refresh is None:
                     self._condition.wait()
                     continue
                 pending = tuple(
@@ -520,32 +608,51 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                     source for source in self._sources
                     if source.received_at + self._delay_seconds <= now
                 )
-                if not ready or now < next_render:
+                refresh = (
+                    self._displayed_source
+                    if self._event_revision > self._displayed_event_revision else None
+                )
+                if (not ready and refresh is None) or now < next_render:
                     self._condition.wait(
-                        max(0.001, min(0.25, next_render - now)) if ready else 0.25
+                        max(0.001, min(0.25, next_render - now))
+                        if ready or refresh is not None else 0.25
                     )
                     continue
                 after_sequence = self._last_published_sequence
                 capture_timestamp = self._last_timestamp
+                event_revision = self._event_revision
+                displayed_frame = self._displayed_frame
                 self._stats["active_frames"] = 1
             started = time.monotonic()
             next_render = started + self._interval
             source = output = selected = None
             try:
-                selected = self.scene.tracked_display_frame(
-                    before_timestamp_seconds=ready[-1].timestamp,
-                    after_frame_sequence=after_sequence,
-                )
+                if ready:
+                    selected = self.scene.tracked_display_frame(
+                        before_timestamp_seconds=ready[-1].timestamp,
+                        after_frame_sequence=after_sequence,
+                    )
+                if (
+                    selected is None and refresh is not None
+                    and displayed_frame is not None
+                ):
+                    frame, entities = displayed_frame
+                    snapshot = self.scene.display_snapshot(
+                        refresh.timestamp, frame_sequence=refresh.sequence,
+                        source_entities=entities,
+                    )
+                    selected = frame, snapshot
                 if selected is None:
                     with self._condition:
                         self._display_state = "buffering"
                         self._stats["unavailable_sources"] += 1
+                        self._displayed_event_revision = event_revision
                     continue
                 source, snapshot = selected
                 stamp = next(
                     (
                         item
-                        for item in ready
+                        for item in (*ready, *((refresh,) if refresh else ()))
                         if item.sequence == source.frame_sequence
                         and item.timestamp == source.timestamp_seconds
                     ),
@@ -596,6 +703,8 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                     with self._condition:
                         self._last_published_sequence = stamp.sequence
                         self._displayed_source = stamp
+                        self._displayed_frame = source, snapshot["entities"]
+                        self._displayed_event_revision = event_revision
                         while (
                             self._sources
                             and self._sources[0].sequence <= stamp.sequence
@@ -645,6 +754,10 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                 "pending_frames": len(self._sources),
                 "max_pending_frames": self._sources.maxlen,
                 "pending_bytes": 0,
+                "retained_display_bytes": (
+                    len(self._displayed_frame[0].jpeg_bytes)
+                    if self._displayed_frame is not None else 0
+                ),
                 "last_displayed_frame_sequence": self._last_published_sequence
                 if self._last_published_sequence >= 0
                 else None,
@@ -656,7 +769,13 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
             raise ValueError("display drain timeout must be finite and nonnegative")
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
-            while self._sources or self._stats["active_frames"]:
+            while (
+                self._sources or self._stats["active_frames"]
+                or (
+                    self._displayed_source is not None
+                    and self._event_revision > self._displayed_event_revision
+                )
+            ):
                 if self._stop.is_set():
                     return False
                 remaining = deadline - time.monotonic()
@@ -674,4 +793,5 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                 self._stopped_at = time.monotonic()
             self._stats["discarded_frames"] += len(self._sources)
             self._sources.clear()
+            self._displayed_frame = None
         super().close(timeout_seconds)
