@@ -35,6 +35,7 @@ services:
       VAST_API_KEY: "${VAST_API_KEY:?Set your Vast team API key in .env}"
       HF_TOKEN: "${HF_TOKEN:?Set your approved SAM Hugging Face token in .env}"
       SAM_SSH_KEY: /run/secrets/sam_ssh_key
+      SAM_GPU_NAME: "${SAM_GPU_NAME:-RTX_4090}"
       SAM_DISK_GB: "${SAM_DISK_GB:-50}"
     volumes:
       - type: bind

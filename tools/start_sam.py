@@ -160,6 +160,7 @@ def main() -> int:
                 "Missing controller dependencies; rebuild the sam-remote image with Docker Compose."
             ) from error
         load_dotenv(ROOT / ".env", override=False)
+        gpu_name = os.environ.get("SAM_GPU_NAME", "").strip().replace(" ", "_") or "RTX_4090"
         for program in ("ssh", "scp"):
             if shutil.which(program) is None:
                 raise RuntimeError(f"Required command is not on PATH: {program}")
@@ -173,18 +174,18 @@ def main() -> int:
             if not (ROOT / "workers" / "sam_scene" / filename).is_file():
                 raise RuntimeError(f"Missing SAM worker source: {filename}")
 
-        print("Searching for one on-demand RTX 4090 (CUDA >= 12.6)...", flush=True)
+        print(f"Searching for one on-demand {gpu_name} (CUDA >= 12.6)...", flush=True)
         # vastai 1.5.6 counts attempts, so retry=1 sends exactly one request.
         vast = VastAI(api_key=api_key, retry=1)
         offers = vast.search_offers(
             query=(
-                "gpu_name=RTX_4090 num_gpus=1 rentable=true direct_port_count>=1 "
+                f"gpu_name={gpu_name} num_gpus=1 rentable=true direct_port_count>=1 "
                 f"cuda_max_good>=12.6 disk_space>={args.disk_gb}"
             ),
             type="on-demand", order="dph_total", storage=float(args.disk_gb), limit=10,
         )
         if not offers:
-            raise RuntimeError("No eligible RTX 4090 offer is available. No instance was created.")
+            raise RuntimeError(f"No eligible {gpu_name} offer is available. No instance was created.")
         offer = min(offers, key=lambda item: float(item["dph_total"]))
         print(f"Selected offer: {offer['id']}; estimated total hourly price: ${float(offer['dph_total']):.4f}", flush=True)
         print(f"Creating instance with label: {label}", flush=True)
