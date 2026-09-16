@@ -12,6 +12,7 @@ services:
       PERSON_TRACKING_ENABLED: "true"
       RICH_LABEL_ENABLED: "true"
       RICH_LABEL_BACKEND: sam31_stream
+      PERCEPTION_METHOD: sam_live
       RICH_LABEL_ENDPOINT: http://sam-remote:8092/v1/video/sessions
       RICH_LABEL_MAX_FPS: "3"
       SAM31_BATCH_FRAMES: "4"

@@ -22,29 +22,87 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE = "/workspace/goodvision-sam"
 IMAGE = "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04"
 SAM_COMMIT = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
+# Runs through Vast before the controller needs SSH. Putting this in SETUP
+# would be too late when sshd rejects the injected authorized_keys permissions.
+# Preserve the existing keys; never replace them or disable StrictModes.
+SSH_ONSTART = """set -eu
+chown root:root /root/.ssh /root/.ssh/authorized_keys
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/authorized_keys
+"""
 WORKER_FILES = (
     "app.py", "sam31.py", "continuous.py", "streaming_state.py",
+    "perception_routes.py", "sam_live.py", "hybrid.py", "hybrid_tracker.py",
     "h264_transport.py", "requirements.txt",
 )
+WORKER_ROUTES = ("sam_live", "hybrid")
+HYBRID_CHECKPOINT = f"{REMOTE}/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth"
+WORKER_ENV = {
+    "SAM31_ENABLED": "true",
+    "SAM31_SESSION_ENABLED": "false",
+    "SAM31_LIVE_ENABLED": "true",
+    "HYBRID_ENABLED": "true",
+    "HYBRID_CHECKPOINT_PATH": HYBRID_CHECKPOINT,
+    "SAM_SCENE_IMAGE_ENABLED": "false",
+    "SAM31_SESSION_H264_ENABLED": "true",
+    "SAM31_SESSION_HOTSTART_DELAY": "5",
+    "SAM31_SESSION_POSTPROCESS_BATCH_SIZE": "1",
+    "SAM31_COMPILE_MODE": "off",
+    "SAM31_INFERENCE_MAX_SIDE": "640",
+    "SAM31_CHECKPOINT_PATH": f"{REMOTE}/models/sam3.1_multiplex.pt",
+    "HF_HUB_OFFLINE": "1",
+    "PYTHONUNBUFFERED": "1",
+}
+
+# Validate the installed versions and pinned SAM source before skipping setup.
+# A directory alone does not prove that a previous installation completed.
+RUNTIME_CHECK = f"""import json, sys
+from importlib import metadata
+from pathlib import Path
+assert sys.version_info[:2] == (3, 12), 'Python 3.12 required'
+assert metadata.version('torch') == '2.10.0+cu126', 'PyTorch CUDA build mismatch'
+assert metadata.version('torchvision') == '0.25.0+cu126', 'torchvision build mismatch'
+for line in Path('requirements.txt').read_text().splitlines():
+    line = line.split('#', 1)[0].strip()
+    if line:
+        name, expected = line.split('==')
+        assert metadata.version(name) == expected, f'Runtime dependency mismatch: {{name}}'
+source = json.loads(metadata.distribution('sam3').read_text('direct_url.json') or '{{}}')
+assert source.get('vcs_info', {{}}).get('commit_id') == {SAM_COMMIT!r}, 'SAM source mismatch'
+from sam3.model_builder import build_sam3_multiplex_video_predictor
+import app, sam_live, hybrid
+"""
 
 # Execute inside the rented container, without nesting another Docker daemon.
 # Keep credentials out of this script and out of remote command arguments.
 SETUP = f"""set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export PIP_DISABLE_PIP_VERSION_CHECK=1
+cd {REMOTE}/worker
+if [ -x {REMOTE}/env/bin/python ] && {REMOTE}/env/bin/python -c {shlex.quote(RUNTIME_CHECK)}; then
+  echo 'Reusing verified SAM runtime; installation skipped.'
+  exit 0
+fi
 apt-get update
 apt-get install -y --no-install-recommends curl ca-certificates git build-essential libgomp1 libglib2.0-0
 cd {REMOTE}
-curl --fail --location --retry 3 \\
+if [ ! -x {REMOTE}/conda/bin/conda ]; then
+  curl --fail --location --retry 3 \\
   https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \\
   -o miniforge.sh
-bash miniforge.sh -b -p {REMOTE}/conda
-{REMOTE}/conda/bin/conda create -y -p {REMOTE}/env python=3.12 pip
+  bash miniforge.sh -b -p {REMOTE}/conda
+fi
+if [ ! -x {REMOTE}/env/bin/python ]; then
+  {REMOTE}/conda/bin/conda create -y -p {REMOTE}/env python=3.12 pip
+fi
 {REMOTE}/env/bin/python -m pip install --no-cache-dir \\
   torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu126
 {REMOTE}/env/bin/python -m pip install --no-cache-dir -r worker/requirements.txt
 {REMOTE}/env/bin/python -m pip install --no-cache-dir \\
   git+https://github.com/facebookresearch/sam3.git@{SAM_COMMIT}
+# Check the standalone upload before downloading weights or starting the tunnel.
+cd {REMOTE}/worker
+{REMOTE}/env/bin/python -c {shlex.quote(RUNTIME_CHECK)}
 """
 
 
@@ -53,6 +111,28 @@ def required(name: str) -> str:
     if not value:
         raise RuntimeError(f"Set {name} in the repository .env or your terminal.")
     return value
+
+
+def prepare_ssh_key(source: Path, directory: Path) -> Path:
+    """Copy a host-mounted key with private permissions and validate before renting."""
+    key = directory / "identity"
+    # Windows Docker bind mounts may report 0777. Create a 0600 copy in the
+    # controller's private temporary directory without changing the host file.
+    descriptor = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as target, source.open("rb") as original:
+        shutil.copyfileobj(original, target)
+    key.chmod(0o600)
+    result = subprocess.run(
+        ["ssh-keygen", "-y", "-P", "", "-f", str(key)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, timeout=10,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            "SAM_SSH_KEY must be a valid private key usable without a passphrase; "
+            "SSH key validation failed before renting a GPU."
+        )
+    return key
 
 
 def stop_process(process: subprocess.Popen | None) -> None:
@@ -91,12 +171,16 @@ def wait_for_ssh(vast, instance_id: int, options: list[str]) -> tuple[str, int]:
         instance = vast.show_instance(id=instance_id) or {}
         if instance.get("actual_status") in {"offline", "exited", "stopped", "frozen"}:
             raise RuntimeError(f"Instance stopped before SSH was ready: {instance.get('status_msg', '')}")
+        targets = []
         host, port = instance.get("ssh_host"), instance.get("ssh_port")
         ssh_ports = (instance.get("ports") or {}).get("22/tcp", [])
         if instance.get("public_ipaddr") and ssh_ports:
-            # Prefer the published port over Vast's shared SSH gateway.
-            host, port = instance["public_ipaddr"], ssh_ports[0]["HostPort"]
-        if host and port:
+            targets.append((instance["public_ipaddr"], ssh_ports[0]["HostPort"]))
+        if host and port and (host, port) not in targets:
+            targets.append((host, port))
+        # Prefer direct access, but a blocked direct port must not prevent use
+        # of the ordinary Vast SSH gateway with the same configured key.
+        for host, port in targets:
             command = ["ssh", *options, "-p", str(port), f"root@{host}", "true"]
             try:
                 result = subprocess.run(
@@ -119,14 +203,19 @@ def wait_for_worker(process: subprocess.Popen, port: int) -> None:
         if process.poll() is not None:
             raise RuntimeError(f"SAM worker/SSH exited with status {process.returncode}; see logs above.")
         try:
-            with opener.open(f"http://127.0.0.1:{port}/health/video/session", timeout=3) as response:
-                state = json.load(response)
-            if state.get("ready") and state.get("gpu_ready"):
+            for route in WORKER_ROUTES:
+                with opener.open(
+                    f"http://127.0.0.1:{port}/health/perception/{route}", timeout=3,
+                ) as response:
+                    state = json.load(response)
+                if not all(state.get(name) for name in ("enabled", "ready", "gpu_ready")):
+                    break
+            else:
                 return
         except (URLError, TimeoutError, OSError):
             pass
         time.sleep(2)
-    raise RuntimeError("SAM did not finish loading within 10 minutes; see logs above.")
+    raise RuntimeError("SAM live and hybrid analysis did not both become ready within 10 minutes; see logs above.")
 
 
 def main() -> int:
@@ -134,6 +223,11 @@ def main() -> int:
     parser.add_argument("--ssh-key", type=Path, help="SSH private key; defaults to SAM_SSH_KEY.")
     parser.add_argument("--disk-gb", type=int, default=os.environ.get("SAM_DISK_GB", "50"), help="Rented disk size; defaults to SAM_DISK_GB or 50 GB.")
     parser.add_argument("--sam-port", type=int, default=8092, help="SSH forwarding port inside the controller (default: 8092).")
+    parser.add_argument(
+        "--resume-instance-id", type=int,
+        help="Recover an existing GoodVision instance without renting another. "
+        "Failure or normal shutdown releases it, as with a new rental.",
+    )
     args = parser.parse_args()
 
     vast = None
@@ -161,7 +255,7 @@ def main() -> int:
             ) from error
         load_dotenv(ROOT / ".env", override=False)
         gpu_name = os.environ.get("SAM_GPU_NAME", "").strip().replace(" ", "_") or "RTX_4090"
-        for program in ("ssh", "scp"):
+        for program in ("ssh", "scp", "ssh-keygen"):
             if shutil.which(program) is None:
                 raise RuntimeError(f"Required command is not on PATH: {program}")
         api_key, hf_token = required("VAST_API_KEY"), required("HF_TOKEN")
@@ -174,29 +268,45 @@ def main() -> int:
             if not (ROOT / "workers" / "sam_scene" / filename).is_file():
                 raise RuntimeError(f"Missing SAM worker source: {filename}")
 
-        print(f"Searching for one on-demand {gpu_name} (CUDA >= 12.6)...", flush=True)
+        ssh_directory = tempfile.TemporaryDirectory(prefix="goodvision-sam-ssh-")
+        ssh_key = prepare_ssh_key(ssh_key, Path(ssh_directory.name))
         # vastai 1.5.6 counts attempts, so retry=1 sends exactly one request.
         vast = VastAI(api_key=api_key, retry=1)
-        offers = vast.search_offers(
-            query=(
-                f"gpu_name={gpu_name} num_gpus=1 rentable=true direct_port_count>=1 "
-                f"cuda_max_good>=12.6 disk_space>={args.disk_gb}"
-            ),
-            type="on-demand", order="dph_total", storage=float(args.disk_gb), limit=10,
-        )
-        if not offers:
-            raise RuntimeError(f"No eligible {gpu_name} offer is available. No instance was created.")
-        offer = min(offers, key=lambda item: float(item["dph_total"]))
-        print(f"Selected offer: {offer['id']}; estimated total hourly price: ${float(offer['dph_total']):.4f}", flush=True)
-        print(f"Creating instance with label: {label}", flush=True)
-        creation_attempted = True
-        created = vast.create_instance(
-            id=int(offer["id"]), image=IMAGE, disk=args.disk_gb,
-            label=label, ssh=True, direct=True, cancel_unavail=True,
-        )
-        instance_id = int(created["new_contract"])
-        print(f"Created instance: {instance_id}\nWaiting for SSH...", flush=True)
-        ssh_directory = tempfile.TemporaryDirectory(prefix="goodvision-sam-ssh-")
+        if args.resume_instance_id is not None:
+            if args.resume_instance_id <= 0:
+                raise RuntimeError("Resume instance ID must be positive.")
+            existing = vast.show_instance(id=args.resume_instance_id) or {}
+            if (
+                existing.get("id") != args.resume_instance_id
+                or not str(existing.get("label", "")).startswith("goodvision-sam-")
+                or existing.get("actual_status") != "running"
+            ):
+                raise RuntimeError("Resume requires an existing running GoodVision SAM instance.")
+            instance_id = args.resume_instance_id
+            print(f"Recovering existing instance: {instance_id}; no new rental.", flush=True)
+        else:
+            print(f"Searching for one on-demand {gpu_name} (CUDA >= 12.6)...", flush=True)
+            offers = vast.search_offers(
+                query=(
+                    f"gpu_name={gpu_name} num_gpus=1 rentable=true direct_port_count>=1 "
+                    f"cuda_max_good>=12.6 disk_space>={args.disk_gb}"
+                ),
+                type="on-demand", order="dph_total", storage=float(args.disk_gb), limit=10,
+            )
+            if not offers:
+                raise RuntimeError(f"No eligible {gpu_name} offer is available. No instance was created.")
+            offer = min(offers, key=lambda item: float(item["dph_total"]))
+            print(f"Selected offer: {offer['id']}; estimated total hourly price: ${float(offer['dph_total']):.4f}", flush=True)
+            print(f"Creating instance with label: {label}", flush=True)
+            creation_attempted = True
+            created = vast.create_instance(
+                id=int(offer["id"]), image=IMAGE, disk=args.disk_gb,
+                label=label, ssh=True, direct=True, cancel_unavail=True,
+                onstart_cmd=SSH_ONSTART,
+            )
+            instance_id = int(created["new_contract"])
+            print(f"Created instance: {instance_id}", flush=True)
+        print("Waiting for SSH...", flush=True)
         options = [
             "-i", str(ssh_key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10",
@@ -214,7 +324,7 @@ def main() -> int:
         ])
         print("Installing the remote Conda environment (logs follow)...", flush=True)
         run([*ssh, "bash -s"], input=SETUP, timeout=45 * 60)
-        print("Downloading approved SAM 3.1 weights on the GPU instance...", flush=True)
+        print("Checking cached SAM 3.1 weights; downloading if needed...", flush=True)
         download = (
             "import sys; from huggingface_hub import hf_hub_download; "
             "hf_hub_download(repo_id='facebook/sam3.1', filename='sam3.1_multiplex.pt', "
@@ -223,13 +333,26 @@ def main() -> int:
         run([
             *ssh, f"HF_HUB_OFFLINE=0 {REMOTE}/env/bin/python -c {shlex.quote(download)}",
         ], input=hf_token, timeout=30 * 60)
+        print("Checking cached hybrid weights; downloading if needed...", flush=True)
+        hybrid_download = (
+            "from urllib.request import urlretrieve\n"
+            "from hybrid import CHECKPOINT_URL, verify_checkpoint\n"
+            f"path={HYBRID_CHECKPOINT!r}\n"
+            "try:\n"
+            "    verify_checkpoint(path)\n"
+            "except (OSError, RuntimeError):\n"
+            "    urlretrieve(CHECKPOINT_URL, path)\n"
+            "    verify_checkpoint(path)\n"
+        )
+        run([
+            *ssh, f"cd {REMOTE}/worker && {REMOTE}/env/bin/python -c {shlex.quote(hybrid_download)}",
+        ], timeout=5 * 60)
+        worker_environment = " ".join(
+            f"{name}={shlex.quote(value)}" for name, value in WORKER_ENV.items()
+        )
         worker_command = (
             f"cd {REMOTE}/worker && exec env "
-            "SAM31_ENABLED=true SAM31_SESSION_ENABLED=true SAM_SCENE_IMAGE_ENABLED=false "
-            "SAM31_SESSION_H264_ENABLED=true SAM31_SESSION_HOTSTART_DELAY=5 "
-            "SAM31_SESSION_POSTPROCESS_BATCH_SIZE=1 SAM31_COMPILE_MODE=off "
-            "SAM31_INFERENCE_MAX_SIDE=640 HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1 "
-            f"SAM31_CHECKPOINT_PATH={REMOTE}/models/sam3.1_multiplex.pt "
+            f"{worker_environment} "
             f"{REMOTE}/env/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8092 --workers 1"
         )
         print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
@@ -241,7 +364,8 @@ def main() -> int:
         ], stdin=subprocess.DEVNULL, start_new_session=True)
         wait_for_worker(worker, args.sam_port)
         print(
-            f"SAM is ready at http://sam-remote:{args.sam_port}/v1/video/sessions.\n"
+            "SAM is ready: both sam_live and hybrid passed their GPU health checks.\n"
+            f"Perception routes: http://sam-remote:{args.sam_port}/v1/perception/routes\n"
             "Stop the Compose application to release this GPU. Closing the browser does not release it.",
             flush=True,
         )

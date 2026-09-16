@@ -61,6 +61,41 @@ Official references verified 2026-09-12:
 - [Model access request](https://huggingface.co/facebook/sam3)
 - [SAM License](https://github.com/facebookresearch/sam3/blob/660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7/LICENSE)
 
+## Remote GPU startup and recovery
+
+From the repository root, `docker compose -f compose.yaml -f
+compose.sam31-remote.yaml up --build` runs `tools/start_sam.py`. The controller
+owns the remote GPU lifecycle and uploads the current worker source. Startup
+has three stages:
+
+1. Before renting, copy the host-mounted SSH private key into a private temporary
+   file with mode `0600` and validate it. The Windows source key is unchanged.
+2. When creating the instance, pass a Vast `onstart_cmd` that restores root
+   ownership and `700/600` permissions on `/root/.ssh` and `authorized_keys`.
+   Existing public keys are preserved. This runs before the controller needs
+   SSH; the later remote installation script cannot repair a blocked login.
+   Try direct SSH first, then the ordinary Vast gateway with the same key.
+3. Upload the worker, install dependencies, download checkpoints, and enable
+   both `sam_live` and `hybrid`. Report ready only after **both** route health
+   responses confirm `enabled`, `ready`, and `gpu_ready`.
+
+The cloud startup hook uses Vast's documented
+[SSH onstart mechanism](https://docs.vast.ai/api-reference/creating-instances-with-api).
+It does not add keys, loosen SSH checks, or automatically rebuild an existing
+instance when a connection fails.
+
+For an existing running instance labelled `goodvision-sam-*`, run the controller
+with `--resume-instance-id <id>` instead of its default command. This skips offer
+selection and rental. A complete environment with the expected Python, PyTorch,
+runtime dependency versions, SAM commit, and successful imports skips installation.
+An incomplete environment reuses the existing Conda/Python executables while
+installing missing or mismatched dependencies. Cached SAM weights are reused;
+hybrid weights are verified before deciding whether a download is needed.
+Failure and normal shutdown both release the selected instance, preserving the
+normal replacement flow: the next default launch selects and rents a new GPU.
+An existing instance with broken SSH permissions still needs its startup hook
+repaired separately; recovery does not silently alter its cloud configuration.
+
 ## Build and run
 
 Build context is this directory. The Linux image uses Python 3.12, PyTorch 2.10.0,

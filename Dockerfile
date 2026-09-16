@@ -14,6 +14,8 @@ WORKDIR /app
 COPY tools/start_sam.py ./tools/start_sam.py
 COPY workers/sam_scene/app.py workers/sam_scene/sam31.py \
     workers/sam_scene/continuous.py workers/sam_scene/streaming_state.py \
+    workers/sam_scene/perception_routes.py workers/sam_scene/sam_live.py \
+    workers/sam_scene/hybrid.py workers/sam_scene/hybrid_tracker.py \
     workers/sam_scene/h264_transport.py workers/sam_scene/requirements.txt \
     ./workers/sam_scene/
 
