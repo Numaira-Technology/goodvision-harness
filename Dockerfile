@@ -1,3 +1,25 @@
+# Optional CPU-only controller; the default final stage remains Harness.
+FROM python:3.11-slim AS sam-remote
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir vastai==1.5.6 'python-dotenv>=1,<2'
+
+WORKDIR /app
+COPY tools/start_sam.py ./tools/start_sam.py
+COPY workers/sam_scene/app.py workers/sam_scene/sam31.py \
+    workers/sam_scene/continuous.py workers/sam_scene/streaming_state.py \
+    workers/sam_scene/h264_transport.py workers/sam_scene/requirements.txt \
+    ./workers/sam_scene/
+
+STOPSIGNAL SIGTERM
+CMD ["python", "-u", "tools/start_sam.py"]
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -27,7 +49,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m pip install --no-cache-dir '.[face,webrtc,vlm]'
+RUN python -m pip install --no-cache-dir '.[face,webrtc,vlm,video]'
 
 # InsightFace also requests GUI OpenCV; both distributions overwrite cv2.
 # Ship one server variant so dependency updates cannot silently select OpenCV 5.

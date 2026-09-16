@@ -42,6 +42,104 @@ torch 2.10.0／torchvision 0.25.0 使用 `cu126`；镜像可传入
 容器启动、录制视频验证、请求预算和具体边界。没有权重时可明确使用 `--recorded-tracks`
 验证上层链路，报告会标识这不验证 SAM。
 
+## Remote SAM on Vast.ai
+
+The remote Compose overlay runs Harness locally and rents one RTX 4090 for
+SAM 3.1. Its `sam-remote` container runs `tools/start_sam.py` to install the GPU
+worker, keep an SSH tunnel open, and release the instance on shutdown.
+Harness keeps its existing entry point, UI and event-model provider.
+
+### Configure once
+
+Install Docker with Linux containers and Compose v2; you need no host Python or
+Conda environment. Join the Vast team, register your SSH public key, and obtain
+a team API key with create/destroy permission. Your Hugging Face account must
+have download access to [facebook/sam3.1](https://huggingface.co/facebook/sam3.1).
+Fill the repository `.env` (copy `.env.example` if needed):
+
+```dotenv
+VAST_API_KEY=your-team-api-key
+SAM_SSH_KEY=/absolute/path/to/your/private-key
+HF_TOKEN=your-approved-hugging-face-token
+SAM_DISK_GB=50
+```
+
+Use an absolute private-key path and a key that needs no passphrase prompt;
+the controller does not inherit your host's SSH agent. Only the controller gets
+the rental credentials. It sends the HF token over SSH for downloading weights;
+the Vast key and private key stay on the Docker host. `SAM_DISK_GB` is the rented
+instance's temporary storage, deleted on release.
+
+Keep your existing `INFERENCE_PROVIDER` and event-model credentials. SAM tracks
+people; the event-model API judges actions. To reuse custom data/model volumes,
+set `HARNESS_DATA_VOLUME` and `HARNESS_MODELS_VOLUME` to their existing names;
+otherwise Compose uses its project volumes. Stop any other session using the
+same data before starting this deployment.
+
+### Start
+
+Run from the repository root. **This command rents a paid GPU:**
+
+```bash
+docker compose -f compose.yaml -f compose.sam31-remote.yaml up --build
+```
+
+The first build and each fresh GPU setup take time. The controller selects the
+cheapest eligible RTX 4090 by total hourly price, uploads this checkout's worker
+files, and installs SAM; no Git push is needed. Open
+[the UI](http://localhost:8080/) (or `HARNESS_PORT`) and wait for `SAM is ready`
+before starting video analysis. If saved autostart runs too early, start the
+video again after readiness. Watch setup from another terminal with:
+
+```bash
+docker compose -f compose.yaml -f compose.sam31-remote.yaml logs -f sam-remote
+```
+
+The profile uses `sam31_stream`, 3 FPS, H.264 at 512 px / CRF23, and the SAM
+branch's hotstart-5 settings. The tunnel stays inside the Compose network;
+it publishes no GPU API port on the host. Use this overlay **instead of** the
+local SAM overlays. Ordinary `compose.yaml` does not rent a GPU.
+
+### Stop and release
+
+Press **Ctrl+C in the `up` terminal** and wait for the containers to stop. Read
+the controller log afterwards and confirm `Released instance: <id>`; Compose
+may hide the final service output while stopping:
+
+```bash
+docker compose -f compose.yaml -f compose.sam31-remote.yaml logs --tail 60 sam-remote
+```
+
+For a background run (`up -d`), stop and check the same log:
+
+```bash
+docker compose -f compose.yaml -f compose.sam31-remote.yaml stop
+docker compose -f compose.yaml -f compose.sam31-remote.yaml logs --tail 60 sam-remote
+```
+
+Keep both Compose files in shutdown commands. After confirming release, you can
+replace `stop` with `down` to remove the stopped containers; direct `down` removes
+their logs too. Local data volumes remain unless you add `-v`.
+
+Closing the browser, pausing video or sleeping the laptop does not release the
+GPU. Startup errors and SSH disconnects trigger cleanup; the controller does not
+restart and rent again. If release fails, destroy the printed instance ID in Vast
+Instances. For an unconfirmed creation, check its printed label before retrying.
+Power loss or forced termination can prevent cleanup.
+
+Validation on 2026-09-15 used a rented RTX 4090 and OpenCV's public `vtest.avi`.
+The Harness H.264 client received all 24 requested frames in order, with person
+boxes and a shared tracking epoch; the final batch left no pending frames.
+A 30-second replay through Harness received 300 source frames, completed 28 SAM
+requests without failure, and delivered 53 annotated MJPEG frames. The browser
+displayed person boxes. Event-model calls stayed disabled during this check.
+Stopping the controller released the instance; a Vast API query confirmed removal.
+
+The successful run excluded one faulty host through a one-off runtime override
+after repeated GPU device-mount failures. The launcher does not skip failed hosts
+or switch offers on its own. It prefers the published direct SSH port because
+one host accepted that connection but rejected Vast's shared SSH gateway.
+
 ## Harness behavior
 
 本节描述 `disabled`／`shadow` 的原有逐帧流程。`active` 停止旧逐帧安全请求，
