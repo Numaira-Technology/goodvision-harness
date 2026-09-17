@@ -37,8 +37,7 @@ COPY streaming_state.py ./streaming_state.py
 COPY h264_transport.py ./h264_transport.py
 COPY perception_routes.py ./perception_routes.py
 COPY sam_live.py ./sam_live.py
-COPY hybrid.py ./hybrid.py
-COPY hybrid_tracker.py ./hybrid_tracker.py
+COPY multistream.py ./multistream.py
 COPY smoke.py ./smoke.py
 COPY video_smoke.py ./video_smoke.py
 RUN groupadd --system --gid 10003 samscene \

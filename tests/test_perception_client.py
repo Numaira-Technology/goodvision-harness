@@ -80,7 +80,8 @@ class RouteServer(SessionServer):
 
 
 @pytest.fixture(params=tuple(METHODS))
-def route(request):
+def route(request, tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "sam-spool"))
     server = RouteServer(request.param)
     client = PerceptionSessionHTTPClient(
         "http://worker.test/v1/video/sessions",
@@ -192,7 +193,7 @@ def test_legacy_client_does_not_accept_causal_limits_or_route_metadata():
         client.close()
 
 
-def test_route_dispatches_first_frame_and_bounds_queue_without_gpu(route):
+def test_route_dispatches_first_frame_and_preserves_ordered_backlog_without_gpu(route):
     server, client = route
     rich = replace(
         RichLabelSettings(),
@@ -208,16 +209,23 @@ def test_route_dispatches_first_frame_and_bounds_queue_without_gpu(route):
         assert server.entered.wait(2)  # no 16-frame startup or output wait
         submit(coordinator, frames(2, 10))
         status = processing_status(coordinator, rich.processing_method)
-        assert status["queue_frames"] == 4
-        assert status["dropped_frames"] == 6
+        assert status["queue_frames"] == 10
+        assert status["dropped_frames"] == 0
         assert status["source_to_result_seconds"] is None
         assert status["processed_frames"] == 0
         server.release.set()
-        wait_for(lambda: coordinator.stats()["processed_frames"] == 5)
+        wait_for(lambda: coordinator.stats()["processed_frames"] == 11)
         status = processing_status(coordinator, rich.processing_method)
         assert status["source_to_result_seconds"] >= 0
-        assert status["processed_frames"] == 5
+        assert status["processed_frames"] == 11
         assert coordinator.stats()["backend"] == server.method.backend
+        assert server.requests[0]["frames"][0]["frame_sequence"] == 3
+        assert all(1 <= len(request["frames"]) <= 4 for request in server.requests)
+        assert [frame["frame_sequence"] for request in server.requests
+                for frame in request["frames"]] == list(range(3, 34, 3))
+        assert [
+            snapshot.frame_sequence for batch in received for snapshot in batch.frames
+        ] == list(range(3, 34, 3))
         coordinator.flush()
         assert coordinator.wait_until_idle(2)
         coordinator.reset("new-source")
@@ -237,8 +245,15 @@ def test_route_dispatches_first_frame_and_bounds_queue_without_gpu(route):
 
 
 @pytest.mark.parametrize("method", tuple(METHODS))
-def test_real_worker_route_and_real_client_agree_on_source_contract(method):
+@pytest.mark.parametrize("transport_mode", ["direct", "prepared_jpeg", "prepared_h264"])
+def test_real_worker_route_and_real_client_agree_on_source_contract(
+    method, transport_mode,
+):
     selected = causal_engine(method)
+    codec = "h264" if transport_mode == "prepared_h264" else "jpeg"
+    if codec == "h264":
+        pytest.importorskip("av")
+        selected.settings = replace(selected.settings, h264_enabled=True)
     selected.backend.route_metadata = lambda session, snapshots: {
         "confirmation_policy": METHODS[method].confirmation_policy,
         "observations": [
@@ -260,6 +275,7 @@ def test_real_worker_route_and_real_client_agree_on_source_contract(method):
         "http://test",
         method=method,
         transport=httpx.ASGITransport(app=app),
+        transport_codec=codec,
     )
     try:
         assert not client.gpu_ready()  # actual worker does not attest a double
@@ -270,7 +286,11 @@ def test_real_worker_route_and_real_client_agree_on_source_contract(method):
             row["timestamp_seconds"],
             base64.b64decode(row["jpeg_base64"]),
         )
-        result = client.append((frame,), stream_session_id="camera")
+        prepared = (
+            client.prepare_append((frame,), stream_session_id="camera")
+            if transport_mode != "direct" else None
+        )
+        result = client.append((frame,), stream_session_id="camera", prepared=prepared)
         assert result.backend == METHODS[method].backend
         assert (
             result.frames[0].objects[0].attributes["tracking_confirmation"]
@@ -287,12 +307,13 @@ def test_real_worker_route_and_real_client_agree_on_source_contract(method):
 
 def test_factory_and_offline_catalog_require_no_model_packages():
     rich = replace(
-        RichLabelSettings(), backend="sam31_stream", processing_method="hybrid"
+        RichLabelSettings(), backend="sam31_stream", processing_method="sam_live"
     )
     client = create_tracking_client(rich)
     try:
         assert isinstance(client, PerceptionSessionHTTPClient)
-        assert client.backend == "person_hybrid"
+        assert client.backend == "sam3.1_video"
+        assert [row["id"] for row in processing_methods(rich)] == ["sam_live"]
         assert all(row["available"] for row in processing_methods(rich))
         assert not any(row["available"] for row in processing_methods(None))
     finally:

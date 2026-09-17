@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import threading
 import time
 from dataclasses import replace
@@ -16,6 +17,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from workers.sam_scene import continuous
 from workers.sam_scene.app import decode_jpeg
 from workers.sam_scene.continuous import (
     SessionEngine,
@@ -234,7 +236,7 @@ def test_health_double_never_attests_real_cuda():
         )
 
 
-def test_http_timeout_keeps_single_gpu_slot_until_native_cleanup():
+def test_http_timeout_keeps_single_gpu_slot_until_native_cleanup(caplog):
     selected = engine()
     selected.video.settings = replace(
         selected.video.settings, request_timeout_seconds=0.05
@@ -262,6 +264,15 @@ def test_http_timeout_keeps_single_gpu_slot_until_native_cleanup():
             while lock.locked() and time.monotonic() < limit:
                 time.sleep(0.005)
             assert not lock.locked() and not selected.has_active_session
+            timeout_fields = [
+                record.sam_timing for record in caplog.records
+                if hasattr(record, "sam_timing")
+                and record.sam_timing["outcome"] == "timeout"
+            ]
+            assert len(timeout_fields) == 1
+            assert timeout_fields[0]["request_id"] == "r0"
+            assert timeout_fields[0]["status_code"] == 504
+            assert timeout_fields[0]["phase"] == "processing"
     finally:
         selected.backend.release.set()
 
@@ -411,3 +422,206 @@ def test_empty_finalizer_uses_exact_confirmation_horizon_without_new_inference()
     )
     assert calls[-3:] == [(13, [15]), (14, [15]), (15, [15])]
     assert state["generator_state"]["hotstart_buffer"] == []
+
+
+def test_append_timing_separates_iterator_wait_and_snapshot_conversion(
+    monkeypatch, caplog
+):
+    """Charge each actual boundary independently, including iterator EOF work."""
+    selected = engine()
+    token, body = create(selected), payload(4, final=True)
+    clock = [0.0]
+
+    def charge(seconds):
+        clock[0] += seconds
+
+    original_run = selected.backend.run
+
+    def run(*args, **kwargs):
+        for result in original_run(*args, **kwargs):
+            charge(1.0)
+            yield result
+        # Existing backend final waits happen when next() observes EOF.
+        charge(7.0)
+
+    def snapshot(*args, **kwargs):
+        charge(3.0)
+        return continuous.native_snapshot(*args, **kwargs)
+
+    def decode(*args):
+        charge(2.0)
+        return decode_jpeg(*args)
+
+    def dumps(*args, **kwargs):
+        charge(11.0)
+        return json.dumps(*args, **kwargs)
+
+    monkeypatch.setattr(
+        continuous, "time",
+        SimpleNamespace(perf_counter=lambda: clock[0], monotonic=time.monotonic),
+    )
+    monkeypatch.setattr(
+        continuous, "json", SimpleNamespace(dumps=dumps, loads=json.loads)
+    )
+    selected.backend.run = run
+    selected.backend.serialize_snapshot = snapshot
+    selected.backend.prune = lambda _session: charge(5.0)
+    with caplog.at_level("INFO", logger="goodvision.sam31.session"):
+        result = selected.append(
+            token, body, deadline=time.monotonic() + 5, decode_jpeg=decode
+        )
+    assert len(result["frames"]) == 4
+    fields = next(
+        record.sam_timing for record in caplog.records
+        if record.getMessage().startswith("Native session append timing")
+    )
+    assert fields["decode_seconds"] == 8.0
+    assert fields["native_advance_seconds"] == 11.0
+    assert fields["snapshot_seconds"] == 12.0
+    assert fields["retention_seconds"] == 5.0
+    assert fields["response_serialize_seconds"] == 11.0
+    assert fields["total_seconds"] == sum(
+        fields[f"{phase}_seconds"] for phase in continuous._AppendTiming.phases
+    )
+    assert fields["timing_basis"] == "host_wall_clock"
+    assert fields["output_first_frame_sequence"] == 0
+    assert fields["output_last_frame_sequence"] == 6
+    assert fields["accepted_frame_sequence"] == fields["emitted_frame_sequence"] == 6
+
+
+def test_http_append_timing_correlates_eof_and_replay_without_double_count(caplog):
+    selected = engine()
+    app = FastAPI()
+    register_session_routes(app, selected, threading.Lock(), decode_jpeg)
+    with caplog.at_level("INFO", logger="goodvision.sam31.session"):
+        with TestClient(app) as client:
+            token = client.post(
+                "/v1/video/sessions", json={"stream_session_id": "camera"}
+            ).json()["video_session_id"]
+            url = f"/v1/video/sessions/{token}/append"
+            for body in (
+                payload(), payload(), payload(0, request_id="eof", final=True)
+            ):
+                assert client.post(url, content=body).status_code == 200
+    append_records = [
+        record.sam_timing for record in caplog.records
+        if record.getMessage().startswith("Native session append timing")
+    ]
+    http_records = [
+        record.sam_timing for record in caplog.records
+        if record.getMessage().startswith("Native session request completed")
+        and record.sam_timing["operation"] == "append"
+    ]
+    assert len(append_records) == len(http_records) == 3
+    for worker, http in zip(append_records, http_records, strict=True):
+        assert worker["request_id"] == http["request_id"]
+        assert worker["route"] == http["route"] == "sam31_session"
+        assert http["body_read_seconds"] >= 0
+        assert http["worker_dispatch_seconds"] >= 0
+        assert http["http_response_encode_seconds"] >= 0
+        assert http["outcome"] == "completed"
+    assert append_records[1]["replayed"] is True
+    assert append_records[1]["output_frames"] == 0
+    assert append_records[1]["native_advance_seconds"] == 0
+    eof = append_records[2]
+    assert eof["request_id"] == "eof" and eof["is_last_batch"] is True
+    assert eof["input_frames"] == 0 and eof["output_frames"] == 14
+    assert eof["pending_frames"] == 0
+    assert eof["accepted_frame_sequence"] == eof["emitted_frame_sequence"] == 30
+    assert token not in "\n".join(
+        record.getMessage() for record in caplog.records
+        if record.name == "goodvision.sam31.session"
+    )
+
+
+@pytest.mark.parametrize("failure", ["decode", "native", "invalid_id"])
+def test_failed_append_logs_safe_correlation_and_phase(failure, caplog):
+    selected = engine()
+    body = json.loads(payload(request_id="safe-request-id"))
+    expected_status = 400
+    if failure == "decode":
+        body["frames"][0]["jpeg_base64"] = base64.b64encode(b"invalid").decode()
+    elif failure == "native":
+        selected.backend.fail = True
+        expected_status = 503
+    else:
+        body["request_id"] = "private\nforged-log-line"
+    app = FastAPI()
+    register_session_routes(app, selected, threading.Lock(), decode_jpeg)
+    with caplog.at_level("INFO", logger="goodvision.sam31.session"):
+        with TestClient(app) as client:
+            token = client.post(
+                "/v1/video/sessions", json={"stream_session_id": "camera"}
+            ).json()["video_session_id"]
+            response = client.post(
+                f"/v1/video/sessions/{token}/append", content=json.dumps(body)
+            )
+    assert response.status_code == expected_status
+    fields = [
+        record.sam_timing for record in caplog.records
+        if hasattr(record, "sam_timing") and record.sam_timing["outcome"] == "failed"
+    ]
+    assert len(fields) == 2
+    assert all(item["status_code"] == expected_status for item in fields)
+    assert all(
+        item["request_id"] == (None if failure == "invalid_id" else "safe-request-id")
+        for item in fields
+    )
+    assert "private" not in caplog.text and "forged-log-line" not in caplog.text
+    if failure != "invalid_id":
+        assert fields[0]["failure_phase"] == (
+            "native_advance" if failure == "native" else "decode"
+        )
+
+
+@pytest.fixture
+def broken_timing_handler(caplog):
+    class BrokenHandler(logging.Handler):
+        def emit(self, record):
+            raise RuntimeError("logging storage unavailable")
+
+    handler = BrokenHandler()
+    continuous.LOGGER.addHandler(handler)
+    try:
+        with caplog.at_level("INFO", logger=continuous.LOGGER.name):
+            yield
+    finally:
+        continuous.LOGGER.removeHandler(handler)
+
+
+@pytest.mark.parametrize("native_failure", [False, True])
+def test_worker_timing_handler_preserves_append_result(
+    native_failure, broken_timing_handler
+):
+    selected = engine()
+    token = create(selected)
+    selected.backend.fail = native_failure
+    if native_failure:
+        with pytest.raises(RuntimeError, match=r"^native failed$"):
+            append(selected, token, payload())
+        assert not selected.ready and not selected.has_active_session
+    else:
+        result = append(selected, token, payload())
+        assert result["accepted_frame_sequence"] == 30
+        assert [frame["frame_sequence"] for frame in result["frames"]] == [0, 2]
+        assert append(selected, token, payload()) == result
+        assert selected.backend.calls == 1
+        assert selected.ready and selected.has_active_session
+
+
+def test_worker_http_timing_handler_preserves_response(broken_timing_handler):
+    selected = engine()
+    app = FastAPI()
+    register_session_routes(app, selected, threading.Lock(), decode_jpeg)
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/video/sessions", json={"stream_session_id": "camera"}
+        )
+        assert created.status_code == 200
+        token = created.json()["video_session_id"]
+        result = client.post(
+            f"/v1/video/sessions/{token}/append", content=payload(4, final=True)
+        )
+        assert result.status_code == 200
+        assert result.json()["state"] == "closed"
+        assert len(result.json()["frames"]) == 4

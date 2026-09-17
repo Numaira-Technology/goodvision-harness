@@ -758,6 +758,13 @@ class RichLabelCoordinator:
         )
         self._thread.start()
 
+    def close_complete(self) -> bool:
+        """Allow route changes to wait until the previous worker has retired."""
+        with self._condition:
+            return self._closed and (
+                self._thread is None or not self._thread.is_alive()
+            )
+
     def _run(self) -> None:
         try:
             while True:
@@ -785,7 +792,6 @@ class RichLabelCoordinator:
                 latency = max(0.0, completed_at - started_at)
                 accepted = False
                 with self._condition:
-                    self._in_flight = False
                     if (
                         item.generation != self._generation
                         or item.stream_session_id != self._stream_session_id
@@ -832,6 +838,12 @@ class RichLabelCoordinator:
                         self._on_snapshot(snapshot)
                     except Exception:
                         LOGGER.warning("tracking snapshot consumer failed")
+                # Identity/scene commits are part of this accepted work. A
+                # lifecycle drain must not pass while the callback still owns
+                # the final tracking result.
+                with self._condition:
+                    self._in_flight = False
+                    self._condition.notify_all()
         finally:
             self._close_client()
             with self._condition:

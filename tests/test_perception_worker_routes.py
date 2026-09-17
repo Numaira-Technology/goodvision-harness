@@ -52,7 +52,7 @@ class CausalBackend(Backend):
 
 
 def causal_engine(route="sam_live", *, registry=None):
-    backend_name = "sam3.1_video" if route == "sam_live" else "person_hybrid"
+    backend_name = "sam3.1_video"
     selected = SessionEngine(
         SimpleNamespace(
             settings=replace(VideoSettings(), enabled=True), gpu_ready=True
@@ -101,45 +101,41 @@ def test_route_capacity_is_enforced_before_decode_and_does_not_advance():
     assert result["accepted_frame_sequence"] == 0
 
 
-def test_shared_ownership_prevents_cross_route_and_legacy_sessions():
+def test_shared_ownership_prevents_sam_and_legacy_sessions_overlapping():
     registry = SessionRegistry()
     legacy = engine()
     registry.add(legacy)
     live = causal_engine(registry=registry)
-    hybrid = causal_engine("hybrid", registry=registry)
     token = create(live)
     append(live, token, payload(1))
-    for sibling in (legacy, hybrid):
-        with pytest.raises(HTTPException, match="active_session_exists"):
-            create(sibling)
+    with pytest.raises(HTTPException, match="active_session_exists"):
+        create(legacy)
     live.invalidate(token)
-    assert registry.has_active_session  # native state still owned until teardown
+    assert registry.has_active_session
     registry.expire()
     assert not registry.has_active_session
-    hybrid_token = create(hybrid)
-    assert hybrid_token != token
+    legacy_token = create(legacy)
+    assert legacy_token != token
     with pytest.raises(HTTPException) as error:
-        append(live, hybrid_token, payload(1))
+        append(live, legacy_token, payload(1))
     assert error.value.status_code == 404
-    assert hybrid.session.status == "active"
-    hybrid.delete(hybrid_token)
-    assert create(legacy)
+    assert legacy.session.status == "active"
+    legacy.delete(legacy_token)
+    assert create(live)
 
 
-def test_route_http_mounts_keep_legacy_contract_and_switch_requires_teardown():
+def test_production_routes_mount_only_sam_live_and_preserve_legacy_contract():
     registry = SessionRegistry()
     legacy = engine()
     registry.add(legacy)
-    routes = {
-        name: causal_engine(name, registry=registry) for name in ("sam_live", "hybrid")
-    }
+    routes = {"sam_live": causal_engine(registry=registry)}
     app = FastAPI()
     admission = threading.Lock()
     register_session_routes(app, legacy, admission, decode_jpeg)
     register_perception_routes(app, routes, admission, decode_jpeg)
     with TestClient(app) as client:
         catalog = client.get("/v1/perception/routes").json()
-        assert [entry["id"] for entry in catalog["routes"]] == ["sam_live", "hybrid"]
+        assert [entry["id"] for entry in catalog["routes"]] == ["sam_live"]
         assert all(not entry["ready"] for entry in catalog["routes"])
         first = client.post(
             "/v1/perception/sam_live/sessions", json={"stream_session_id": "camera"}
@@ -151,10 +147,17 @@ def test_route_http_mounts_keep_legacy_contract_and_switch_requires_teardown():
         assert first["backend"] == "sam3.1_video"
         assert (
             client.post(
-                "/v1/perception/hybrid/sessions", json={"stream_session_id": "camera"}
+                "/v1/video/sessions", json={"stream_session_id": "camera"}
             ).status_code
             == 409
         )
+        assert (
+            client.post(
+                "/v1/perception/hybrid/sessions", json={"stream_session_id": "camera"}
+            ).status_code
+            == 404
+        )
+        assert client.get("/health/perception/hybrid").status_code == 404
         token = first["video_session_id"]
         assert (
             client.post(
@@ -162,22 +165,14 @@ def test_route_http_mounts_keep_legacy_contract_and_switch_requires_teardown():
             ).status_code
             == 404
         )
-        assert (
-            client.delete(f"/v1/perception/sam_live/sessions/{token}").status_code
-            == 200
-        )
-        second = client.post(
-            "/v1/perception/hybrid/sessions", json={"stream_session_id": "camera"}
-        ).json()
-        token = second["video_session_id"]
         result = client.post(
-            f"/v1/perception/hybrid/sessions/{token}/append",
+            f"/v1/perception/sam_live/sessions/{token}/append",
             content=payload(1, final=True),
         ).json()
-        assert result["backend"] == "person_hybrid"
+        assert result["backend"] == "sam3.1_video"
         assert (
             result["frames"][0]["objects"][0]["attributes"]["native_track"]["backend"]
-            == "person_hybrid"
+            == "sam3.1_video"
         )
         legacy_create = client.post(
             "/v1/video/sessions", json={"stream_session_id": "camera"}
@@ -186,7 +181,7 @@ def test_route_http_mounts_keep_legacy_contract_and_switch_requires_teardown():
         assert legacy_create["limits"]["startup_frames"] == 16
 
 
-@pytest.mark.parametrize("route", ["legacy", "sam_live", "hybrid"])
+@pytest.mark.parametrize("route", ["legacy", "sam_live"])
 @pytest.mark.parametrize("failure", ["engine", "backend"])
 def test_failed_readiness_still_allows_owned_cleanup_under_shared_admission(
     route, failure
@@ -232,37 +227,34 @@ def test_failed_readiness_still_allows_owned_cleanup_under_shared_admission(
         assert selected.session.native_state is None
 
 
-def test_new_route_health_reports_global_ownership_until_old_teardown_finishes():
+def test_sam_health_reports_global_ownership_until_legacy_teardown_finishes():
     registry = SessionRegistry()
     legacy = engine()
     registry.add(legacy)
-    routes = {
-        name: causal_engine(name, registry=registry) for name in ("sam_live", "hybrid")
-    }
+    routes = {"sam_live": causal_engine(registry=registry)}
     app, admission = FastAPI(), threading.Lock()
     register_session_routes(app, legacy, admission, decode_jpeg)
     register_perception_routes(app, routes, admission, decode_jpeg)
     with TestClient(app) as client:
-        token = create(routes["hybrid"])
-        append(routes["hybrid"], token, payload(1))
-        routes["hybrid"].invalidate(token)
+        token = create(legacy)
+        append(legacy, token, payload(16))
+        legacy.invalidate(token)
         assert (
             client.get("/health/perception/sam_live").json()["active_session"] is True
         )
-        assert client.get("/health/perception/hybrid").json()["active_session"] is True
-        assert client.get("/health/video/session").json()["active_session"] is False
-        routes["hybrid"].delete(token)
+        legacy.delete(token)
         assert (
             client.get("/health/perception/sam_live").json()["active_session"] is False
         )
-        legacy_token = create(legacy)
+        token = create(routes["sam_live"])
         assert (
             client.get("/health/perception/sam_live").json()["active_session"] is True
         )
-        assert client.get("/health/perception/hybrid").json()["active_session"] is True
-        assert client.get("/health/video/session").json()["active_session"] is True
-        legacy.delete(legacy_token)
-        assert client.get("/health/perception/hybrid").json()["active_session"] is False
+        assert client.get("/health/video/session").json()["active_session"] is False
+        routes["sam_live"].delete(token)
+        assert (
+            client.get("/health/perception/sam_live").json()["active_session"] is False
+        )
 
 
 class Frame:

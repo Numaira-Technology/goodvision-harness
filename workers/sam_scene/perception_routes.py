@@ -42,14 +42,6 @@ def _sam_live(video, settings):
     return SamLiveContinuation(video, settings)
 
 
-def _hybrid(video, settings):
-    if __package__:
-        from .hybrid import HybridContinuation
-    else:
-        from hybrid import HybridContinuation
-    return HybridContinuation(video, settings)
-
-
 class DisabledBackend:
     gpu_ready = False
 
@@ -76,15 +68,9 @@ class PerceptionPlugin:
 PLUGINS = (
     PerceptionPlugin(
         SessionProfile("sam_live", "sam3.1_video"),
-        "SAM 持续识别",
+        "SAM 连续分析",
         "SAM31_LIVE_ENABLED",
         _sam_live,
-    ),
-    PerceptionPlugin(
-        SessionProfile("hybrid", "person_hybrid", native_sam_video_tracking=False),
-        "快速跟踪 + SAM 校准",
-        "HYBRID_ENABLED",
-        _hybrid,
     ),
 )
 

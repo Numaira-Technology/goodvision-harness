@@ -2,14 +2,16 @@
 
 The transport reuses the batch client's absolute deadline and cancellation loop.
 Only frames acknowledged by this session can become delayed observations. An
-uncertain append result invalidates the session; recovery requires an explicit
-reset, never an automatic retry or continuation of an uncertain native epoch.
+uncertain append result invalidates the session. A route with an explicit
+idempotent append contract may retry the identical request within its original
+deadline; it never advances to a later source while an outcome is uncertain.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import math
 import threading
@@ -22,10 +24,12 @@ from uuid import uuid4
 
 import httpx
 
+from .latency_trace import log_timing, trace_id
 from .rich_labeling import RichLabelProtocolError, RichLabelSnapshot
 from .video_tracking import (
     BACKEND,
     MAX_BATCH_JPEG_BYTES,
+    SerializedVideoPayload,
     VideoFrame,
     VideoTrackingCoordinator,
     VideoTrackingHTTPClient,
@@ -176,6 +180,19 @@ class VideoSession:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedSessionAppend:
+    """Encoding has no authority to advance the native session watermarks."""
+
+    video_session_id: str
+    stream_session_id: str
+    request_id: str
+    frames: tuple[VideoFrame, ...]
+    payload: SerializedVideoPayload
+    payload_hash: str
+    deadline: float
+
+
+@dataclass(frozen=True, slots=True)
 class VideoSessionTrackingResult:
     video_session_id: str
     stream_session_id: str
@@ -214,6 +231,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
     health_path = "/health/video/session"
     native_sam_video_tracking = True
     append_metadata_fields = frozenset()
+    append_transport_retries = 0
     validate_limits = staticmethod(_limits)
 
     def prepare_snapshots(self, payload, snapshots):
@@ -508,6 +526,91 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
             native_ids,
         )
 
+    def prepare_append(
+        self, frames: Sequence[VideoFrame], *, stream_session_id: str,
+        request_id: str | None = None,
+    ) -> PreparedSessionAppend:
+        """Prepare one nonfinal batch independently of the previous append.
+
+        Only immutable source frames and negotiated limits are read here. The
+        ordered append path still validates provenance and updates all native
+        state. EOF is sent separately after every prepared batch has finished.
+        """
+        frames = tuple(frames)
+        _validate_frames(frames)
+        request_id = _text(request_id or uuid4().hex, "request_id")
+        with self._session_state:
+            session = self._native_session
+            _require(session is not None, "native session is not active")
+            _require(stream_session_id == session.stream_session_id,
+                     "source session mismatch")
+            _require(len(frames) <= session.limits["max_append_frames"],
+                     "append exceeds worker frame limits")
+        started = time.monotonic()
+        deadline = started + self._timeout_seconds
+        metadata = {
+            "stream_session_id": stream_session_id,
+            "request_id": request_id,
+            "frames": [
+                {"frame_sequence": f.frame_sequence,
+                 "timestamp_seconds": f.timestamp_seconds} for f in frames
+            ],
+            "is_last_batch": False,
+        }
+        metrics = {}
+        if self._transport_codec == "h264":
+            from .video_transport import encode_h264_batch
+
+            _require(session.limits.get("h264_transport") == 1,
+                     "worker does not advertise H264 transport")
+            encoded = encode_h264_batch(
+                frames, max_side=self._transport_max_side or 512,
+                crf=self._transport_crf, deadline=deadline,
+            )
+            _require(len(encoded.data) <= session.limits["max_total_jpeg_bytes"],
+                     "H264 exceeds worker byte limits")
+            payload = metadata | {"video": {
+                "format": "h264_annexb",
+                "data_base64": base64.b64encode(encoded.data).decode("ascii"),
+            }}
+            self._record_transport(
+                frames, len(encoded.data), encoded.total_seconds,
+                codec="h264", encode_seconds=encoded.encode_seconds,
+            )
+            metrics = {
+                "compression_seconds": encoded.total_seconds,
+                "video_encode_seconds": encoded.encode_seconds,
+                "transport_bytes": len(encoded.data), "transport_codec": "h264",
+            }
+        else:
+            transport_started = time.monotonic()
+            wire_frames = self._transport_frames(frames, deadline=deadline)
+            _require(all(len(f.jpeg_bytes) <= session.limits["max_jpeg_bytes"]
+                         for f in wire_frames)
+                     and sum(len(f.jpeg_bytes) for f in wire_frames)
+                     <= session.limits["max_total_jpeg_bytes"],
+                     "JPEG append exceeds worker byte limits")
+            payload = metadata | {"frames": [
+                {**stamp, "jpeg_base64": base64.b64encode(f.jpeg_bytes).decode("ascii")}
+                for stamp, f in zip(metadata["frames"], wire_frames, strict=True)
+            ]}
+            metrics = {
+                "compression_seconds": time.monotonic() - transport_started,
+                "video_encode_seconds": 0.0,
+                "transport_bytes": sum(len(f.jpeg_bytes) for f in wire_frames),
+                "transport_codec": "jpeg",
+            }
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        _require(len(body) <= session.limits["max_request_bytes"],
+                 "append exceeds worker request limit")
+        if time.monotonic() >= deadline:
+            raise httpx.TimeoutException("video preparation exceeded total deadline")
+        return PreparedSessionAppend(
+            session.video_session_id, stream_session_id, request_id, frames,
+            SerializedVideoPayload(body, metadata, time.monotonic() - started, metrics),
+            hashlib.sha256(body).hexdigest(), deadline,
+        )
+
     def append(
         self,
         frames: Sequence[VideoFrame],
@@ -515,6 +618,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
         stream_session_id: str,
         is_last_batch: bool = False,
         request_id: str | None = None,
+        prepared: PreparedSessionAppend | None = None,
     ) -> VideoSessionTrackingResult:
         if not self._session_operation.acquire(blocking=False):
             raise httpx.PoolTimeout("session operation already active")
@@ -529,7 +633,10 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
             if frames:
                 _validate_frames(frames)
             _require(type(is_last_batch) is bool, "final flag must be boolean")
-            request_id = _text(request_id or uuid4().hex, "request_id")
+            request_id = _text(
+                request_id or (prepared.request_id if prepared else uuid4().hex),
+                "request_id",
+            )
             with self._session_state:
                 session = self._native_session
                 _require(
@@ -577,9 +684,28 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                     "append exceeds worker frame limits",
                 )
                 accepted = candidates[-1] if frames else self._accepted
+                if prepared is not None:
+                    _require(
+                        not is_last_batch and prepared.frames == frames
+                        and prepared.stream_session_id == stream_session_id
+                        and prepared.video_session_id == session.video_session_id
+                        and prepared.request_id == request_id
+                        and hashlib.sha256(prepared.payload.body).hexdigest()
+                        == prepared.payload_hash,
+                        "prepared append source/session mismatch",
+                    )
+                    deadline = min(deadline, prepared.deadline)
+
+            wire_payload = None
 
             def payload_factory():
-                nonlocal sent
+                nonlocal sent, wire_payload
+                if wire_payload is not None:
+                    return wire_payload
+                if prepared is not None:
+                    sent = True
+                    wire_payload = prepared.payload
+                    return wire_payload
                 if self._transport_codec == "h264" and frames:
                     from .video_transport import encode_h264_batch
 
@@ -634,7 +760,8 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                     "append exceeds worker request limit",
                 )
                 sent = True
-                return payload
+                wire_payload = payload
+                return wire_payload
 
             def jpeg_payload():
                 wire_frames = self._transport_frames(frames, deadline=deadline)
@@ -663,15 +790,39 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                     "is_last_batch": is_last_batch,
                 }
 
-            result, remaining, native_ids = self._request(
-                "POST",
-                f"{self.endpoint}/{quote(session.video_session_id, safe='')}/append",
-                deadline=deadline,
-                payload_factory=payload_factory,
-                result_parser=lambda payload: self._parse_append(
-                    payload, session, request_id, candidates, accepted, is_last_batch
-                ),
-            )
+            for attempt in range(1, self.append_transport_retries + 2):
+                try:
+                    result, remaining, native_ids = self._request(
+                        "POST",
+                        f"{self.endpoint}/"
+                        f"{quote(session.video_session_id, safe='')}/append",
+                        deadline=deadline,
+                        payload_factory=payload_factory,
+                        result_parser=lambda payload: self._parse_append(
+                            payload, session, request_id, candidates,
+                            accepted, is_last_batch,
+                        ),
+                    )
+                    if attempt > 1:
+                        log_timing("sam_client_append_recovered",
+                                   stream_session_id=trace_id(stream_session_id),
+                                   request_id=trace_id(request_id), attempt=attempt)
+                    break
+                except (httpx.RemoteProtocolError, httpx.ConnectError,
+                        httpx.ReadError, httpx.WriteError) as exc:
+                    # The causal worker caches the last request by ID and payload
+                    # digest. Keep the session-operation lock and exact payload:
+                    # a lost response can be replayed without advancing SAM twice.
+                    # HTTP status, validation and deadline failures still fail closed.
+                    if (attempt > self.append_transport_retries
+                            or time.monotonic() + 0.2 >= deadline):
+                        raise
+                    log_timing("sam_client_append_retry",
+                               stream_session_id=trace_id(stream_session_id),
+                               request_id=trace_id(request_id), attempt=attempt,
+                               next_attempt=attempt + 1, error_type=type(exc).__name__,
+                               remaining_seconds=max(0.0, deadline - time.monotonic()))
+                    time.sleep(0.2)
             with self._session_state:
                 self._sources, self._native_ids = remaining, native_ids
                 self._accepted = accepted
@@ -839,6 +990,9 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
             raise ValueError("pending capacity must be an integer within 1..16")
         self._pending_capacity = pending_capacity
         self._source_arrivals: dict[int, float] = {}
+        self._capture_started_at: float | None = None
+        self._capture_finished_at: float | None = None
+        self._last_completion_at: float | None = None
         super().__init__(
             client,
             max_fps=max_fps,
@@ -861,6 +1015,12 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
             pending_frame_count=0,
             processed_frames=0,
             source_to_result_seconds=None,
+            session_source_frames=0,
+            session_admitted_frames=0,
+            session_sampled_out=0,
+            session_dropped_backpressure=0,
+            completed_during_capture=0,
+            completed_after_capture=0,
         )
 
     def reset(self, stream_session_id=None) -> None:
@@ -868,6 +1028,8 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
             super().reset(stream_session_id)
             self._failed_session = self._finished_session = False
             self._source_arrivals.clear()
+            self._capture_started_at = self._capture_finished_at = None
+            self._last_completion_at = None
             self._cleanup_requested = self._server_generation is not None
             self._stats.update(
                 accepted_frame_sequence=None,
@@ -879,6 +1041,12 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                 pending_frame_count=0,
                 processed_frames=0,
                 source_to_result_seconds=None,
+                session_source_frames=0,
+                session_admitted_frames=0,
+                session_sampled_out=0,
+                session_dropped_backpressure=0,
+                completed_during_capture=0,
+                completed_after_capture=0,
             )
             self._condition.notify_all()
 
@@ -887,6 +1055,7 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
     ):
         frame = VideoFrame(frame_sequence, timestamp_seconds, jpeg_bytes)
         _text(stream_session_id, "stream_session_id")
+        dropped_sequences = []
         with self._condition:
             if (
                 self._closed
@@ -907,8 +1076,12 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                 self._stats["rejected_order"] += 1
                 return False
             self._last_input = frame_sequence, timestamp_seconds
+            if self._capture_started_at is None:
+                self._capture_started_at = time.monotonic()
+            self._stats["session_source_frames"] += 1
             if timestamp_seconds - self._last_sample < 1 / self.max_fps - 1e-8:
                 self._stats["sampled_out"] += 1
+                self._stats["session_sampled_out"] += 1
                 return False
             self._last_sample = timestamp_seconds
             while self._pending and (
@@ -916,8 +1089,10 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                 or self._pending_bytes + len(jpeg_bytes) > MAX_BATCH_JPEG_BYTES
             ):
                 dropped, _ = self._pending.popleft()
+                dropped_sequences.append(dropped.frame_sequence)
                 self._pending_bytes -= len(dropped.jpeg_bytes)
                 self._stats["dropped_backpressure"] += 1
+                self._stats["session_dropped_backpressure"] += 1
                 self._source_arrivals.pop(dropped.frame_sequence, None)
             self._source_arrivals[frame_sequence] = time.monotonic()
             # Includes pending requests and native delayed outputs, independent
@@ -927,21 +1102,49 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
             self._pending.append((frame, time.monotonic()))
             self._pending_bytes += len(jpeg_bytes)
             self._stats["submitted"] += 1
+            self._stats["session_admitted_frames"] += 1
             if self._thread is None:
                 self._thread = threading.Thread(
                     target=self._run, name="native-video-session", daemon=True
                 )
                 self._thread.start()
             self._condition.notify_all()
-            return True
+        if dropped_sequences:
+            log_timing(
+                "sam_queue_overflow",
+                stream_session_id=trace_id(stream_session_id),
+                dropped_sequences=dropped_sequences,
+                admitted_sequence=frame_sequence,
+                pending_capacity=self._pending_capacity,
+                reason="existing_pending_capacity_or_byte_limit",
+            )
+        return True
 
     submit_frame = submit
+
+    def mark_capture_finished(self, *, stream_session_id, generation) -> bool:
+        """Freeze the live-rate denominator without flushing or closing ingress.
+
+        Camera uploads may have finished while accepted downstream work still
+        drains. Stale run signals cannot alter a replacement run's clock.
+        """
+        with self._condition:
+            if (
+                self._closed or stream_session_id != self._session
+                or generation != self._generation
+            ):
+                return False
+            if self._capture_finished_at is None:
+                self._capture_finished_at = time.monotonic()
+            return True
 
     def flush(self) -> None:
         """Finish this source, including the native delayed tail; reject new input."""
         with self._condition:
             if self._closed or self._failed_session or self._finished_session:
                 return
+            if self._capture_finished_at is None:
+                self._capture_finished_at = time.monotonic()
             if (
                 not self._pending
                 and self._server_generation is None
@@ -1017,6 +1220,13 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                         )
                         self._in_flight = True
                         self._stats["started"] += 1
+                        dispatch_counts = {
+                            key: self._stats[key] for key in (
+                                "session_source_frames", "session_admitted_frames",
+                                "session_sampled_out", "session_dropped_backpressure",
+                            )
+                        }
+                        dispatch_counts["pending_frames"] = len(self._pending)
                 if cleanup:
                     self._discard()
                     with self._condition:
@@ -1024,30 +1234,63 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                         self._condition.notify_all()
                     continue
                 started = time.monotonic()
+                timing = {
+                    "stream_session_id": trace_id(session),
+                    "generation": generation,
+                    "input_sequences": [frame.frame_sequence for frame in frames],
+                    "input_frames": len(frames),
+                    "final": final,
+                    "queue_oldest_seconds": age,
+                    "outcome": "error",
+                    **dispatch_counts,
+                }
+                log_timing(
+                    "sam_coordinator_dispatch", **(timing | {"outcome": "started"}),
+                )
                 try:
+                    setup_started = time.monotonic()
                     if self._server_generation != generation:
                         self._discard()
                         self._client.open_session(session)
                         self._server_generation = generation
+                    timing["session_setup_seconds"] = time.monotonic() - setup_started
                     with self._condition:
                         stale = self._closed or generation != self._generation
                     if stale:
+                        timing["outcome"] = "stale"
                         self._discard()
                         continue
+                    append_started = time.monotonic()
                     result = self._client.append(
                         frames, stream_session_id=session, is_last_batch=final
                     )
+                    timing["append_seconds"] = time.monotonic() - append_started
+                    timing["request_id"] = trace_id(result.request_id)
+                    timing["output_sequences"] = [
+                        frame.frame_sequence for frame in result.frames
+                    ]
+                    timing["output_frames"] = len(result.frames)
                     with self._condition:
                         stale = self._closed or generation != self._generation
                         if stale:
                             self._stats["stale_results"] += 1
                     if stale:
+                        timing["outcome"] = "stale"
                         self._discard()
                         continue
+                    commit_started = time.monotonic()
                     if result.frames and self._on_batch is not None:
                         self._on_batch(result)
+                    timing["commit_seconds"] = time.monotonic() - commit_started
                     with self._condition:
                         if not self._closed and generation == self._generation:
+                            completed_at = time.monotonic()
+                            timing["completion_interval_seconds"] = (
+                                completed_at - self._last_completion_at
+                                if self._last_completion_at is not None else None
+                            )
+                            self._last_completion_at = completed_at
+                            timing["source_to_result"] = []
                             self._history.extend(result.frames)
                             for snapshot in result.frames:
                                 arrival = self._source_arrivals.pop(
@@ -1055,9 +1298,21 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                                 )
                                 if arrival is not None:
                                     self._stats["source_to_result_seconds"] = (
-                                        time.monotonic() - arrival
+                                        completed_at - arrival
                                     )
+                                    timing["source_to_result"].append({
+                                        "sequence": snapshot.frame_sequence,
+                                        "seconds": completed_at - arrival,
+                                    })
                             self._stats["processed_frames"] += len(result.frames)
+                            self._stats[
+                                "completed_during_capture"
+                                if self._capture_finished_at is None
+                                else "completed_after_capture"
+                            ] += len(result.frames)
+                            timing["during_capture"] = self._capture_finished_at is None
+                            timing["outcome"] = "ok"
+                            timing["pending_frames_at_completion"] = len(self._pending)
                             self._stats.update(
                                 succeeded=self._stats["succeeded"] + 1,
                                 last_error=None,
@@ -1073,6 +1328,7 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                                 self._finished_session = True
                                 self._flush = False
                 except Exception as exc:
+                    timing["error_type"] = type(exc).__name__
                     with self._condition:
                         if generation == self._generation and not self._closed:
                             self._stats["failed"] += 1
@@ -1084,10 +1340,12 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                             self._generation += 1
                     self._discard()
                 finally:
+                    timing["total_seconds"] = time.monotonic() - started
                     with self._condition:
                         self._stats["last_latency_seconds"] = time.monotonic() - started
                         self._in_flight = False
                         self._condition.notify_all()
+                    log_timing("sam_coordinator_timing", **timing)
         finally:
             self._discard()
             self._client.close()
@@ -1095,7 +1353,20 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
     def stats(self):
         with self._condition:
             result = super().stats()
+            capture_seconds = (
+                max(0.0, (
+                    self._capture_finished_at
+                    if self._capture_finished_at is not None else time.monotonic()
+                ) - self._capture_started_at)
+                if self._capture_started_at is not None else 0.0
+            )
             result.update(
+                capture_elapsed_seconds=capture_seconds,
+                # EOF catch-up never improves the live analysis rate.
+                completed_analysis_fps=(
+                    self._stats["completed_during_capture"] / capture_seconds
+                    if capture_seconds > 0 else None
+                ),
                 backend=getattr(self._client, "backend", BACKEND),
                 memory_scope="session",
                 pending_capacity=self._pending_capacity,
@@ -1117,6 +1388,12 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                 and not self._finished_session,
             )
             return result
+
+    def close(self, timeout_seconds: float = 2.0) -> None:
+        with self._condition:
+            if self._capture_finished_at is None:
+                self._capture_finished_at = time.monotonic()
+        super().close(timeout_seconds)
 
     def wait_until_idle(self, timeout_seconds=2.0):
         end = time.monotonic() + timeout_seconds

@@ -114,7 +114,8 @@ class MeasuredClient:
         return getattr(self._wrapped, name)
 
     def append(
-        self, frames, *, stream_session_id, is_last_batch=False, request_id=None
+        self, frames, *, stream_session_id, is_last_batch=False, request_id=None,
+        prepared=None,
     ):
         before = time.perf_counter()
         result = None
@@ -125,6 +126,7 @@ class MeasuredClient:
                 stream_session_id=stream_session_id,
                 is_last_batch=is_last_batch,
                 request_id=request_id,
+                prepared=prepared,
             )
             return result
         except Exception as error:
@@ -138,6 +140,10 @@ class MeasuredClient:
                 "source_sequences": [frame.frame_sequence for frame in frames],
                 "source_jpeg_bytes": sum(len(frame.jpeg_bytes) for frame in frames),
                 "elapsed_seconds": time.perf_counter() - before,
+                "prepared_payload_seconds": (
+                    prepared.payload.preparation_seconds
+                    if prepared is not None else None
+                ),
                 "emitted_sequences": [frame.frame_sequence for frame in result.frames]
                 if result
                 else [],

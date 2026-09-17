@@ -49,6 +49,100 @@ LOGGER = logging.getLogger("goodvision.sam31.session")
 MAX_H264_BYTES = 8 * 1024 * 1024
 
 
+def _timing_log(message, fields, *, level=logging.INFO):
+    """Selected scalar diagnostics must never change the operation's result."""
+    try:
+        values = " ".join(
+            f"{key}={value:.6f}" if isinstance(value, float) else f"{key}={value}"
+            for key, value in fields.items()
+        )
+        LOGGER.log(level, "%s %s", message, values, extra={"sam_timing": fields})
+    except Exception:
+        pass
+
+
+class _AppendTiming:
+    """Disjoint host wall-clock spans; these are not CUDA kernel timings.
+
+    Advancing the native iterator includes its existing waits/synchronization.
+    Snapshot conversion can also wait for device-to-host transfers. No extra
+    CUDA synchronization is introduced for measurement.
+    """
+
+    phases = (
+        "validation", "decode", "native_advance", "snapshot", "retention",
+        "response_build", "response_serialize", "cleanup",
+    )
+
+    def __init__(self, route, diagnostics):
+        self.started = self.changed = time.perf_counter()
+        self.phase = "validation"
+        self.seconds = dict.fromkeys(self.phases, 0.0)
+        self.fields = diagnostics if diagnostics is not None else {}
+        self.fields.update(
+            route=route,
+            request_id=None,
+            input_frames=0,
+            output_frames=0,
+            pending_frames=0,
+            input_first_frame_sequence=None,
+            input_last_frame_sequence=None,
+            output_first_frame_sequence=None,
+            output_last_frame_sequence=None,
+            accepted_frame_sequence=None,
+            emitted_frame_sequence=None,
+            total_session_frames=0,
+            is_last_batch=None,
+            replayed=False,
+            response_bytes=0,
+        )
+
+    def mark(self, phase):
+        now = time.perf_counter()
+        self.seconds[self.phase] += now - self.changed
+        self.changed, self.phase = now, phase
+
+    def observe_session(self, session):
+        self.fields.update(
+            pending_frames=len(session.sources),
+            accepted_frame_sequence=(
+                session.accepted.frame_sequence if session.accepted else None
+            ),
+            emitted_frame_sequence=(
+                session.emitted.frame_sequence if session.emitted else None
+            ),
+            total_session_frames=session.total_frames,
+        )
+
+    def finish(self, outcome, status_code):
+        self.mark(self.phase)
+        fields = self.fields | {
+            "outcome": outcome,
+            "status_code": status_code,
+            "phase": self.phase,
+            "timing_basis": "host_wall_clock",
+            **{f"{key}_seconds": value for key, value in self.seconds.items()},
+            "total_seconds": self.changed - self.started,
+        }
+        # Preserve coarse names consumed by existing diagnostic tooling.
+        fields.update(
+            validation_decode_seconds=(
+                self.seconds["validation"] + self.seconds["decode"]
+            ),
+            native_output_seconds=(
+                self.seconds["native_advance"] + self.seconds["snapshot"]
+            ),
+            retention_response_seconds=sum(
+                self.seconds[key]
+                for key in ("retention", "response_build", "response_serialize")
+            ),
+        )
+        _timing_log(
+            "Native session append timing", fields,
+            level=logging.INFO if outcome == "completed" else logging.WARNING,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class SessionSettings:
     enabled: bool = False
@@ -276,7 +370,7 @@ def _h264_transport():
     return h264_transport
 
 
-def parse_append(payload, settings, *, h264_enabled=False):
+def parse_append(payload, settings, *, h264_enabled=False, diagnostics=None):
     if not payload or len(payload) > settings.max_request_bytes:
         raise HTTPException(413, "session request exceeds byte bound")
     raw = _json(payload)
@@ -289,6 +383,10 @@ def parse_append(payload, settings, *, h264_enabled=False):
         raise HTTPException(400, "invalid session append fields")
     if not _identifier(raw["stream_session_id"]) or not _identifier(raw["request_id"]):
         raise HTTPException(400, "invalid session identifiers")
+    if diagnostics is not None:
+        diagnostics.update(
+            request_id=raw["request_id"], is_last_batch=raw["is_last_batch"]
+        )
     if is_video:
         if not h264_enabled:
             raise HTTPException(400, "session video transport is disabled")
@@ -584,14 +682,45 @@ class SessionEngine:
             self.session = None
         self.backend.close()
 
-    def append(self, token, payload, *, deadline, decode_jpeg):
-        started = time.perf_counter()
+    def append(self, token, payload, *, deadline, decode_jpeg, diagnostics=None):
+        timing = _AppendTiming(
+            self.profile.route if self.profile else "sam31_session", diagnostics
+        )
+        outcome, status_code = "completed", 200
+        try:
+            return self._append(
+                token, payload, deadline=deadline, decode_jpeg=decode_jpeg,
+                timing=timing,
+            )
+        except BaseException as exc:
+            outcome = "failed"
+            status_code = (
+                exc.status_code if isinstance(exc, HTTPException)
+                else 504 if isinstance(exc, TimeoutError)
+                else 503
+            )
+            raise
+        finally:
+            timing.finish(outcome, status_code)
+
+    def _append(self, token, payload, *, deadline, decode_jpeg, timing):
         batch, final, digest = parse_append(
-            payload, self.video.settings, h264_enabled=self.settings.h264_enabled
+            payload, self.video.settings, h264_enabled=self.settings.h264_enabled,
+            diagnostics=timing.fields,
+        )
+        timing.fields.update(
+            input_frames=len(batch.frames),
+            input_first_frame_sequence=(
+                batch.frames[0].frame_sequence if batch.frames else None
+            ),
+            input_last_frame_sequence=(
+                batch.frames[-1].frame_sequence if batch.frames else None
+            ),
         )
         with self._mutex:
             self.expire()
             session = self._get(token)
+            timing.observe_session(session)
             if batch.stream_session_id != session.stream_session_id:
                 raise HTTPException(409, "source_session_mismatch")
             if session.last_request_id == batch.batch_id:
@@ -599,7 +728,13 @@ class SessionEngine:
                     raise HTTPException(409, "request_id_conflict")
                 if session.last_response is not None:
                     session.touched = time.monotonic()
-                    return json.loads(session.last_response)
+                    timing.mark("response_build")
+                    timing.fields.update(
+                        replayed=True, response_bytes=len(session.last_response)
+                    )
+                    response = json.loads(session.last_response)
+                    # Replays return cached output without advancing inference.
+                    return response
             if session.status != "active" or session.cancel.is_set():
                 raise HTTPException(409, "reset_required")
             limits = self.limits()
@@ -641,6 +776,7 @@ class SessionEngine:
             total_pixels = 0
             source_size, output_size = session.source_size, session.output_size
             check()
+            timing.mark("decode")
             if isinstance(batch, SessionVideoBatch):
                 transport = _h264_transport()
                 try:
@@ -679,6 +815,7 @@ class SessionEngine:
                 if output_size is not None and image.size != output_size:
                     raise RuntimeError("session output resolution changed")
                 output_size = image.size
+            timing.mark("validation")
             start = session.total_frames
             sources = dict(session.sources)
             for offset, frame in enumerate(batch.frames):
@@ -694,12 +831,19 @@ class SessionEngine:
                 session.sources = sources
                 committed_inputs = True
             snapshots = []
-            native_started = time.perf_counter()
             check()
             began_native = True
+            timing.mark("native_advance")
             outputs = self.backend.run(session, images, final=final)
             try:
-                for index, output in outputs:
+                output_iterator = iter(outputs)
+                while True:
+                    timing.mark("native_advance")
+                    try:
+                        index, output = next(output_iterator)
+                    except StopIteration:
+                        break
+                    timing.mark("validation")
                     check()
                     if (
                         type(index) is not int
@@ -711,6 +855,7 @@ class SessionEngine:
                     serialize = getattr(
                         self.backend, "serialize_snapshot", native_snapshot
                     )
+                    timing.mark("snapshot")
                     snapshots.append(
                         serialize(
                             output,
@@ -723,6 +868,7 @@ class SessionEngine:
                             max_objects=self.video.settings.max_objects,
                         )
                     )
+                    timing.mark("validation")
                     if any(
                         int(item["attributes"]["native_track"]["object_id"])
                         >= self.settings.max_cumulative_native_ids
@@ -732,10 +878,20 @@ class SessionEngine:
                     session.emitted_index = index
                     session.emitted = source
                     del session.sources[index]
+                    timing.fields["output_frames"] += 1
+                    if timing.fields["output_first_frame_sequence"] is None:
+                        timing.fields["output_first_frame_sequence"] = (
+                            source.frame_sequence
+                        )
+                    timing.fields["output_last_frame_sequence"] = source.frame_sequence
+            except BaseException:
+                timing.fields["failure_phase"] = timing.phase
+                raise
             finally:
+                timing.mark("native_advance")
                 if hasattr(outputs, "close"):
                     outputs.close()
-            native_finished = time.perf_counter()
+            timing.mark("validation")
             session.total_frames += len(batch.frames)
             if batch.frames:
                 last = batch.frames[-1]
@@ -749,8 +905,10 @@ class SessionEngine:
                 or len(session.sources) > self.max_pending_frames
             ):
                 raise RuntimeError("native pending count violated bound")
+            timing.mark("retention")
             self.backend.prune(session)
             check()
+            timing.mark("response_build")
             route_metadata = None
             if self.profile is not None:
                 metadata = getattr(self.backend, "route_metadata", None)
@@ -758,7 +916,9 @@ class SessionEngine:
                     metadata(session, snapshots) if metadata is not None else {}
                 ) | {"route": self.profile.route}
             if final:
+                timing.mark("retention")
                 self._discard(session)
+                timing.mark("response_build")
             accepted, emitted = session.accepted, session.emitted
             response = self._base(session) | {
                 "request_id": batch.batch_id,
@@ -775,9 +935,12 @@ class SessionEngine:
             }
             if self.profile is not None:
                 response["route_metadata"] = route_metadata
+            timing.mark("response_serialize")
             encoded = json.dumps(
                 response, separators=(",", ":"), allow_nan=False
             ).encode()
+            timing.fields["response_bytes"] = len(encoded)
+            timing.mark("validation")
             if len(encoded) > 2 * 1024 * 1024:
                 raise RuntimeError("session response exceeded byte bound")
             check()
@@ -788,21 +951,11 @@ class SessionEngine:
                 session.last_request_id = batch.batch_id
                 session.last_payload_hash = digest
                 session.last_response = encoded
-                LOGGER.info(
-                    "Native session append completed input_frames=%d "
-                    "output_frames=%d pending_frames=%d "
-                    "validation_decode_seconds=%.6f native_output_seconds=%.6f "
-                    "retention_response_seconds=%.6f",
-                    len(batch.frames),
-                    len(snapshots),
-                    len(session.sources),
-                    native_started - started,
-                    native_finished - native_started,
-                    time.perf_counter() - native_finished,
-                )
                 session.touched = time.monotonic()
             return response
         except BaseException as exc:
+            timing.fields.setdefault("failure_phase", timing.phase)
+            timing.mark("cleanup")
             if began_native or committed_inputs or session.cancel.is_set():
                 self.invalidate(token)
                 self._discard(session)
@@ -816,8 +969,10 @@ class SessionEngine:
                     self.video.error_code = "native_session_failed"
             raise
         finally:
+            timing.mark("cleanup")
             for image in images:
                 image.close()
+            timing.observe_session(session)
 
 
 def register_session_routes(
@@ -829,6 +984,7 @@ def register_session_routes(
     api_prefix="/v1/video",
     health_path="/health/video/session",
     legacy=True,
+    queued_admission=False,
 ):
     if legacy:
         app.state.session_engine = engine
@@ -858,6 +1014,47 @@ def register_session_routes(
         )
 
     async def handle(request, operation, token=None):
+        started = time.perf_counter()
+        received_bytes = 0
+        admission_finished = body_finished = worker_started = processing_finished = None
+        response_encode_seconds = 0.0
+        diagnostics = {
+            "route": engine.profile.route if engine.profile else "sam31_session",
+            "request_id": None,
+        }
+        phase = "admission"
+
+        def log_request(message, outcome, status_code):
+            finished = time.perf_counter()
+            _timing_log(
+                message,
+                diagnostics | {
+                    "operation": operation,
+                    "outcome": outcome,
+                    "status_code": status_code,
+                    "phase": phase,
+                    "received_bytes": received_bytes,
+                    "queue_wait_seconds": (admission_finished or finished) - started,
+                    "body_read_seconds": (
+                        (body_finished or finished) - admission_finished
+                        if admission_finished is not None else 0.0
+                    ),
+                    "worker_dispatch_seconds": (
+                        worker_started - body_finished
+                        if worker_started is not None and body_finished is not None
+                        else None
+                    ),
+                    "processing_seconds": (
+                        (processing_finished or finished) - body_finished
+                        if body_finished is not None else 0.0
+                    ),
+                    "http_response_encode_seconds": response_encode_seconds,
+                    "total_seconds": finished - started,
+                    "timing_basis": "host_wall_clock",
+                },
+                level=logging.INFO if outcome == "completed" else logging.WARNING,
+            )
+
         # Cleanup must remain possible after a background/model failure removes
         # readiness. DELETE still uses the same admission, token and deadline
         # checks, and never runs inference or opens a replacement session.
@@ -866,12 +1063,23 @@ def register_session_routes(
             or not engine.ready
             or (engine._production and not engine.gpu_ready)
         ):
+            log_request("Native session request rejected", "rejected", 503)
             raise HTTPException(503, "native video sessions unavailable")
-        if not admission.acquire(blocking=False):
-            raise HTTPException(429, "inference busy", headers={"Retry-After": "1"})
         deadline = time.monotonic() + engine.video.settings.request_timeout_seconds
-        started = time.perf_counter()
-        received_bytes = 0
+        if queued_admission:
+            try:
+                acquired = await admission.acquire_async(deadline)
+            except TimeoutError:
+                log_request("Native session queue deadline exceeded", "timeout", 504)
+                raise HTTPException(
+                    504, "native session queue deadline exceeded"
+                ) from None
+        else:
+            acquired = admission.acquire(blocking=False)
+        if not acquired:
+            log_request("Native session request rejected", "rejected", 429)
+            raise HTTPException(429, "inference busy", headers={"Retry-After": "1"})
+        admission_finished = time.perf_counter()
         transferred = False
         abandoned = threading.Event()
         task = None
@@ -922,6 +1130,8 @@ def register_session_routes(
             phase = "processing"
 
             def invoke():
+                nonlocal worker_started
+                worker_started = time.perf_counter()
                 try:
                     if abandoned.is_set() or time.monotonic() >= deadline:
                         raise TimeoutError("session operation abandoned")
@@ -930,7 +1140,8 @@ def register_session_routes(
                     if operation == "delete":
                         return engine.delete(token)
                     return engine.append(
-                        token, payload, deadline=deadline, decode_jpeg=decode_jpeg
+                        token, payload, deadline=deadline, decode_jpeg=decode_jpeg,
+                        diagnostics=diagnostics,
                     )
                 finally:
                     admission.release()
@@ -947,30 +1158,19 @@ def register_session_routes(
             result = await asyncio.wait_for(
                 asyncio.shield(task), max(0, deadline - time.monotonic())
             )
-            finished = time.perf_counter()
-            LOGGER.info(
-                "Native session request completed operation=%s received_bytes=%d "
-                "body_read_seconds=%.6f processing_seconds=%.6f total_seconds=%.6f",
-                operation,
-                received_bytes,
-                body_finished - started,
-                finished - body_finished,
-                finished - started,
-            )
-            return JSONResponse(result)
+            processing_finished = time.perf_counter()
+            phase = "response_encode"
+            response = JSONResponse(result)
+            response_encode_seconds = time.perf_counter() - processing_finished
+            log_request("Native session request completed", "completed", 200)
+            return response
         except TimeoutError:
             abandoned.set()
             if task is not None:
                 retire_abandoned_create(task)
             if token is not None:
                 engine.invalidate(token)
-            LOGGER.warning(
-                "native session deadline exceeded phase=%s received_bytes=%d "
-                "elapsed_seconds=%.6f",
-                phase,
-                received_bytes,
-                time.perf_counter() - started,
-            )
+            log_request("native session deadline exceeded", "timeout", 504)
             raise HTTPException(504, "native session deadline exceeded") from None
         except asyncio.CancelledError:
             abandoned.set()
@@ -978,13 +1178,15 @@ def register_session_routes(
                 retire_abandoned_create(task)
             if token is not None:
                 engine.invalidate(token)
+            log_request("Native session request cancelled", "cancelled", 499)
             raise
-        except HTTPException:
+        except HTTPException as exc:
+            log_request("Native session request failed", "failed", exc.status_code)
             raise
         except Exception:
             if token is not None:
                 engine.invalidate(token)
-            LOGGER.error("native session operation failed phase=%s", phase)
+            log_request("native session operation failed", "failed", 503)
             raise HTTPException(503, "native session unavailable") from None
         finally:
             if not transferred:

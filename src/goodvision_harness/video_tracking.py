@@ -24,6 +24,7 @@ from uuid import uuid4
 
 import httpx
 
+from .latency_trace import log_timing, trace_id
 from .rich_labeling import (
     RichLabelProtocolError,
     RichLabelSelection,
@@ -38,6 +39,20 @@ MAX_BATCH_JPEG_BYTES = 20 * 1024 * 1024
 # A release can include pending source frames plus the current append, each
 # with bounded SAM contour polygons for every visible person.
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+
+class TrackingCommitBackpressure(RuntimeError):
+    """No live state changed; an ordered retained result may be retried later."""
+
+
+@dataclass(frozen=True, slots=True)
+class SerializedVideoPayload:
+    """An immutable request encoded before the single HTTP operation starts."""
+
+    body: bytes
+    metadata: Mapping[str, Any]
+    preparation_seconds: float
+    transport_metrics: Mapping[str, Any]
 
 
 def _text(value: Any, name: str) -> str:
@@ -389,6 +404,75 @@ class VideoTrackingHTTPClient:
         *,
         deadline: float,
     ) -> Any:
+        started = time.monotonic()
+        timing: dict[str, Any] = {
+            "phase": "client_setup", "outcome": "error",
+            "route": "sam_live"
+            if getattr(getattr(self, "method", None), "id", None) == "sam_live"
+            else "legacy",
+        }
+        try:
+            result = await self._exchange_timed(
+                method, url, payload_factory, result_parser,
+                deadline=deadline, timing=timing,
+            )
+            if time.monotonic() >= deadline:
+                # The existing _finish_operation/_request checks will reject
+                # this late result. Classify it without changing that path.
+                timing.update(outcome="timeout", deadline_exceeded=True)
+            else:
+                timing.update(outcome="ok", phase="complete")
+            return result
+        except BaseException as exc:
+            timing["error_type"] = type(exc).__name__
+            if isinstance(exc, httpx.RemoteProtocolError):
+                detail = str(exc).lower()
+                timing["protocol_error_reason"] = (
+                    "eof_before_headers" if "without sending a response" in detail
+                    else "incomplete_body"
+                    if "incomplete" in detail and "body" in detail
+                    else "malformed_headers"
+                    if "illegal header" in detail or "illegal status line" in detail
+                    else "other"
+                )
+                timing["cause_type"] = (
+                    type(exc.__cause__).__name__ if exc.__cause__ else None
+                )
+            if isinstance(exc, httpx.TimeoutException) or (
+                isinstance(exc, asyncio.CancelledError)
+                and time.monotonic() >= deadline
+            ):
+                timing["outcome"] = "timeout"
+            raise
+        finally:
+            # A cancellation may interrupt the transport without its .failed
+            # callback. Retain elapsed work while distinguishing incomplete IO.
+            for metric, phase_started in timing.pop("_transport_starts", {}).values():
+                timing[metric] = timing.get(metric, 0.0) + max(
+                    0.0, time.monotonic() - phase_started
+                )
+            phase_started = timing.pop("_phase_started_at", None)
+            phase = timing["phase"]
+            if phase_started is not None and phase in {
+                "http_until_headers", "response_read",
+            }:
+                timing.setdefault(
+                    f"{phase}_seconds", time.monotonic() - phase_started,
+                )
+            if method == "POST" and url.endswith("/append"):
+                timing["total_seconds"] = time.monotonic() - started
+                log_timing("sam_client_http_timing", **timing)
+
+    async def _exchange_timed(
+        self,
+        method: str,
+        url: str,
+        payload_factory: Callable[[], dict[str, Any]] | None,
+        result_parser: Callable[[dict[str, Any]], Any] | None,
+        *,
+        deadline: float,
+        timing: dict[str, Any],
+    ) -> Any:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(
@@ -399,14 +483,123 @@ class VideoTrackingHTTPClient:
                 headers={"Accept-Encoding": "identity"},
                 limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
             )
-        kwargs = {"json": payload_factory()} if payload_factory is not None else {}
+        timing["phase"] = "payload_prepare"
+        prepare_started = time.monotonic()
+        transport_requests = self.transport_stats()["requests"]
+        prepared = None
+        try:
+            value = payload_factory() if payload_factory is not None else None
+            if isinstance(value, SerializedVideoPayload):
+                prepared = value
+                kwargs = {
+                    "content": value.body,
+                    "headers": {"Content-Type": "application/json"},
+                }
+            else:
+                kwargs = {"json": value} if payload_factory is not None else {}
+        finally:
+            timing["payload_prepare_seconds"] = time.monotonic() - prepare_started
+        transport = self.transport_stats()
+        if prepared is not None:
+            # Preparation ran on another stage, outside this request's elapsed
+            # time. Do not add it to the HTTP duration or read another batch's
+            # concurrently updated transport counters.
+            timing["prepared_payload_seconds"] = prepared.preparation_seconds
+            timing.update(prepared.transport_metrics)
+        elif transport["requests"] > transport_requests:
+            # Detail within payload_prepare_seconds, not an extra additive stage.
+            timing.update(
+                compression_seconds=transport["last_compression_seconds"],
+                video_encode_seconds=transport["last_encode_seconds"],
+                transport_bytes=transport["last_transport_bytes"],
+                transport_codec=transport["codec"],
+            )
+        payload = (
+            dict(prepared.metadata) if prepared is not None else kwargs.get("json", {})
+        )
+        if isinstance(payload, dict):
+            timing["request_id"] = trace_id(payload.get("request_id"))
+            timing["stream_session_id"] = trace_id(payload.get("stream_session_id"))
+            rows = payload.get("frames", ())
+            if isinstance(rows, (list, tuple)):
+                timing["input_frames"] = len(rows)
+                if rows:
+                    for name, row in (("first", rows[0]), ("last", rows[-1])):
+                        if not isinstance(row, dict):
+                            continue
+                        sequence = row.get("frame_sequence")
+                        timestamp = row.get("timestamp_seconds")
+                        if type(sequence) is int:
+                            timing[f"{name}_source_sequence"] = sequence
+                        if type(timestamp) in (int, float) and math.isfinite(timestamp):
+                            timing[f"{name}_source_timestamp_seconds"] = timestamp
+            timing["final"] = payload.get("is_last_batch") is True
         if time.monotonic() >= deadline:
             raise httpx.TimeoutException("video preparation exceeded total deadline")
         # Deliver a queued cancellation before opening the network stream after
         # bounded CPU preparation, which cannot itself yield to the event loop.
         await asyncio.sleep(0)
+        # httpcore trace reports client IO boundaries, not remote receipt or
+        # pure wire time. In particular, send_request_body can complete before
+        # the server has read its body. Never retain trace info (URLs, headers,
+        # credentials and body objects can all occur there).
+        transport_starts = timing["_transport_starts"] = {}
+        timing["transport_trace_observed"] = False
+        transport_metrics = {
+            "connect_tcp": "tcp_connect_seconds",
+            "start_tls": "tls_handshake_seconds",
+            "send_request_headers": "send_request_headers_seconds",
+            "send_request_body": "send_request_body_seconds",
+            "receive_response_headers": "receive_response_headers_seconds",
+        }
+
+        async def transport_trace(name, _info):
+            parts = name.split(".")
+            if (
+                len(parts) != 3
+                or parts[0] not in {"connection", "proxy", "http11", "http2"}
+                or parts[2] not in {"started", "complete", "failed"}
+            ):
+                return
+            metric = transport_metrics.get(parts[1])
+            if metric is None:
+                return
+            timing["transport_trace_observed"] = True
+            identity, state = ".".join(parts[:2]), parts[2]
+            now = time.monotonic()
+            if state == "started":
+                transport_starts[identity] = (metric, now)
+                if parts[1] == "send_request_body":
+                    timing["request_body_completed"] = False
+            else:
+                started = transport_starts.pop(identity, None)
+                if started is not None:
+                    timing[metric] = timing.get(metric, 0.0) + max(
+                        0.0, now - started[1]
+                    )
+                if parts[1] == "connect_tcp" and state == "complete":
+                    timing["tcp_connections_opened"] = timing.get(
+                        "tcp_connections_opened", 0
+                    ) + 1
+                if parts[1] == "send_request_body" and state == "complete":
+                    timing["request_body_completed"] = True
+
+        kwargs["extensions"] = {"trace": transport_trace}
+        timing["phase"] = "http_until_headers"
+        http_started = time.monotonic()
+        timing["_phase_started_at"] = http_started
         async with self._client.stream(method, url, **kwargs) as response:
+            # Includes httpx serialization, upload, worker execution, and response
+            # headers; this is deliberately NOT labelled pure network time.
+            timing["http_until_headers_seconds"] = time.monotonic() - http_started
+            timing["http_status"] = response.status_code
+            size = response.request.headers.get("content-length", "")
+            if size.isascii() and size.isdigit() and len(size) <= 12:
+                timing["request_bytes"] = int(size)
             response.raise_for_status()
+            timing["phase"] = "response_read"
+            read_started = time.monotonic()
+            timing["_phase_started_at"] = read_started
             # Reject compressed bodies before any decoder can expand them.
             if response.headers.get(
                 "content-encoding", "identity"
@@ -439,6 +632,10 @@ class VideoTrackingHTTPClient:
                             "video response exceeds byte limit"
                         )
                     data.extend(chunk)
+            timing["response_read_seconds"] = time.monotonic() - read_started
+            timing["response_bytes"] = len(data)
+            timing["phase"] = "response_json"
+            json_started = time.monotonic()
             try:
                 value = json.loads(
                     data,
@@ -447,9 +644,16 @@ class VideoTrackingHTTPClient:
                 )
             except (ValueError, RecursionError) as exc:
                 raise RichLabelProtocolError("invalid video response JSON") from exc
+            finally:
+                timing["response_json_seconds"] = time.monotonic() - json_started
         if not isinstance(value, dict):
             raise RichLabelProtocolError("video response must be an object")
-        return result_parser(value) if result_parser is not None else value
+        timing["phase"] = "result_validation"
+        validation_started = time.monotonic()
+        try:
+            return result_parser(value) if result_parser is not None else value
+        finally:
+            timing["result_validation_seconds"] = time.monotonic() - validation_started
 
     async def _watch_deadline(
         self, operation: concurrent.futures.Future, task: asyncio.Task, deadline: float
@@ -977,3 +1181,10 @@ class VideoTrackingCoordinator:
             self._client.close()
         elif thread is not threading.current_thread():
             thread.join(timeout_seconds)
+
+    def close_complete(self) -> bool:
+        """A replacement route must wait for the last old batch to finish."""
+        with self._condition:
+            return self._closed and (
+                self._thread is None or not self._thread.is_alive()
+            )

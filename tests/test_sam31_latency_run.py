@@ -143,6 +143,8 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
 ):
     from test_perception_client import RouteServer
 
+    monkeypatch.setenv("GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "sam-spool"))
+
     source = video(tmp_path, count=3)
     server = RouteServer(method)
     client_class = perception.PerceptionSessionHTTPClient

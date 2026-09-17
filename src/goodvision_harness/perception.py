@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, replace
 from typing import Any
+from urllib.parse import urlparse
 
+from .sam_tracking_pipeline import PipelinedVideoSessionTrackingCoordinator
 from .video_tracking import VideoTrackingCoordinator, VideoTrackingHTTPClient
 from .video_tracking_session import (
     VideoSessionTrackingCoordinator,
@@ -36,19 +39,11 @@ METHODS = {
     for method in (
         ProcessingMethod(
             "sam_live",
-            "SAM 连续分析",
-            "SAM 持续跟踪。先返回当前观察，再确认新人物。",  # noqa: RUF001
+            "人员追踪模块",
+            "人员追踪模块持续跟踪。先返回当前观察，再确认新人物。",  # noqa: RUF001
             "sam3.1_video",
             "causal_native_three_detections",
             True,
-        ),
-        ProcessingMethod(
-            "hybrid",
-            "快速跟踪 + SAM 校准",
-            "轻量人物检测与持续跟踪。SAM 在后台校准。",
-            "person_hybrid",
-            "detector_observations_with_async_sam_calibration",
-            False,
         ),
     )
 }
@@ -58,6 +53,9 @@ class PerceptionSessionHTTPClient(VideoSessionTrackingHTTPClient):
     """The route extension is explicit; legacy endpoints never accept it."""
 
     append_metadata_fields = frozenset({"route_metadata"})
+    # The causal SAM route replays the last identical request without inference.
+    # Legacy session clients retain their fail-closed, non-retrying behavior.
+    append_transport_retries = 1
 
     def __init__(self, endpoint, *, method: str, **kwargs):
         self.method = METHODS[method]
@@ -65,6 +63,17 @@ class PerceptionSessionHTTPClient(VideoSessionTrackingHTTPClient):
         self.native_sam_video_tracking = self.method.native_sam_video_tracking
         self.session_path = f"/v1/perception/{method}/sessions"
         self.health_path = f"/health/perception/{method}"
+        path = urlparse(endpoint).path
+        if path.startswith("/v1/cameras/"):
+            lane = re.fullmatch(
+                rf"/v1/cameras/(camera-(?:0[1-9]|[1-9][0-9]+))/perception/{method}/sessions/?",
+                path,
+            )
+            if lane is None:
+                raise ValueError("invalid local camera tracking endpoint")
+            camera = lane.group(1)
+            self.session_path = f"/v1/cameras/{camera}/perception/{method}/sessions"
+            self.health_path = f"/health/cameras/{camera}/perception/{method}"
         super().__init__(endpoint, **kwargs)
         self._capabilities = {"startup_frames": 1, "max_append_frames": 4}
 
@@ -195,11 +204,13 @@ def create_tracking_coordinator(client, rich, on_batch):
         batch_seconds=rich.video_batch_seconds,
     )
     if rich.processing_method is not None:
-        # Immediate dispatch when idle; up to four accumulated source frames
-        # per append. Backpressure keeps the newest bounded waiting window.
+        # Dispatch as soon as HTTP is idle; prepare at most four accumulated
+        # sources ahead. SAM's durable ingress never overwrites pending samples.
         options.update(batch_frames=1, batch_seconds=0.1, pending_capacity=4)
     coordinator = (
-        VideoSessionTrackingCoordinator
+        PipelinedVideoSessionTrackingCoordinator
+        if rich.processing_method == "sam_live"
+        else VideoSessionTrackingCoordinator
         if rich.backend == "sam31_stream"
         else VideoTrackingCoordinator
     )
@@ -230,6 +241,10 @@ def processing_status(coordinator, method):
         "method": method,
         "label": METHODS[method].label if method in METHODS else "现有处理方式",
         "source_to_result_seconds": stats.get("source_to_result_seconds"),
+        "completed_analysis_fps": stats.get("completed_analysis_fps"),
+        "completed_during_capture": stats.get("completed_during_capture", 0),
+        "completed_after_capture": stats.get("completed_after_capture", 0),
+        "capture_elapsed_seconds": stats.get("capture_elapsed_seconds", 0),
         "queue_frames": stats.get("pending_frames", 0),
         "processed_frames": stats.get("processed_frames", 0),
         "dropped_frames": stats.get("dropped_backpressure", 0),

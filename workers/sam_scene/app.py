@@ -647,6 +647,12 @@ def create_app(
     # Both package tests and the standalone Docker /worker/app.py entry point.
     if __package__:
         from .continuous import SessionEngine, SessionRegistry, register_session_routes
+        from .multistream import (
+            CameraFleet,
+            FairGPUAdmission,
+            camera_count_from_env,
+            register_camera_routes,
+        )
         from .perception_routes import (
             build_perception_engines,
             register_perception_routes,
@@ -654,6 +660,12 @@ def create_app(
         from .sam31 import VideoEngine, register_video_routes
     else:
         from continuous import SessionEngine, SessionRegistry, register_session_routes
+        from multistream import (
+            CameraFleet,
+            FairGPUAdmission,
+            camera_count_from_env,
+            register_camera_routes,
+        )
         from perception_routes import (
             build_perception_engines,
             register_perception_routes,
@@ -674,7 +686,15 @@ def create_app(
         sessions.add(route_engine)
     production = engine is None
     image_enabled = os.environ.get("SAM_SCENE_IMAGE_ENABLED", "true").lower() == "true"
-    admission = threading.Lock()
+    camera_count = camera_count_from_env()
+    camera_fleet = (
+        CameraFleet(selected_routes["sam_live"], sessions, camera_count)
+        if camera_count > 1 else None
+    )
+    admission = (
+        FairGPUAdmission(max_waiters=camera_count * 2)
+        if camera_fleet is not None else threading.Lock()
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -699,6 +719,11 @@ def create_app(
                 LOGGER.exception(
                     "Perception route initialization failed route=%s", route
                 )
+        if camera_fleet is not None:
+            try:
+                await asyncio.to_thread(camera_fleet.warmup)
+            except Exception:
+                LOGGER.exception("SAM camera lanes initialization failed")
 
         async def reap_sessions():
             while True:
@@ -738,6 +763,8 @@ def create_app(
     register_video_routes(app, selected_video, admission, decode_jpeg)
     register_session_routes(app, selected_session, admission, decode_jpeg)
     register_perception_routes(app, selected_routes, admission, decode_jpeg)
+    if camera_fleet is not None:
+        register_camera_routes(app, camera_fleet, admission, decode_jpeg)
 
     @app.get("/health/live")
     async def live():
