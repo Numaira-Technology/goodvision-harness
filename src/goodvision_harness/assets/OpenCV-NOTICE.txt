@@ -1,0 +1,15 @@
+OpenCV.js 4.13.0 (official prebuilt distribution)
+
+Source: https://docs.opencv.org/4.13.0/opencv.js
+Upstream: https://github.com/opencv/opencv/tree/4.13.0
+Downloaded: 2026-09-17
+SHA-256: 63366510248ADF3A7EDDF3E793DD825404EFB7DF3749F4D6F8557C7FA4CA8AA0
+
+This unmodified file contains its WebAssembly runtime. It is served locally;
+camera images and motion frames are not sent to OpenCV or any CDN.
+The upstream Apache-2.0 license is included as OpenCV-LICENSE.txt.
+Upstream third-party source and notices: https://github.com/opencv/opencv/tree/4.13.0/3rdparty
+
+Runtime loading: this build exposes a legacy self-returning thenable, not a
+native Promise. Use onRuntimeInitialized and test cv.Mat before use; do not
+await the module object itself. The recorded build version is 4.13.0.
