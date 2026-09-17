@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request
 
+import cv2
+import numpy as np
 import pytest
 import yaml
 
@@ -28,6 +30,14 @@ from goodvision_harness.model_api import (
     environment_api_key,
 )
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
+
+
+def _model_jpeg(shade: int = 0) -> bytes:
+    """A decodable frame already at the configured 360x202 model canvas."""
+
+    ok, encoded = cv2.imencode(".jpg", np.full((202, 360, 3), shade, np.uint8))
+    assert ok
+    return encoded.tobytes()
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTES = (
@@ -96,9 +106,9 @@ def _window() -> FrameWindow:
         sample_index=0,
         source_frame_index=0,
         timestamp_seconds=0.0,
-        jpeg_bytes=b"synthetic-jpeg",
-        width=10,
-        height=10,
+        jpeg_bytes=_model_jpeg(),
+        width=360,
+        height=202,
     ),))
 
 

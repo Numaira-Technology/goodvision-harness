@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -33,6 +33,7 @@ from .contracts import (
     FrameReference,
     GroundedObject,
 )
+from .diagnostics import SessionDiagnostics, capture_call
 from .event_archive import EventArchive
 from .frame_crop import FrameCropSelector
 from .grounding import (
@@ -53,7 +54,14 @@ from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
     UNKNOWN_FACE_EVENT_LABEL,
 )
-from .sliding_window import FrameWindow, SampledFrame, iter_sliding_windows
+from .sliding_window import (
+    BranchCadence,
+    BranchSampling,
+    BranchWindowBuilder,
+    FrameWindow,
+    SampledFrame,
+    iter_sliding_windows,
+)
 from .stream_adapter import NetworkStreamAdapter, StreamAdapterError
 from .video_to_stream import (
     PushSampledSource,
@@ -151,6 +159,13 @@ class StreamingSession:
         self._independent_branches = (
             getattr(client, "independent_live_branches", False) is True
         )
+        # Per-branch cadences apply only when both branches are scheduled
+        # independently; otherwise the shared sliding window is authoritative.
+        self._branch_sampling = (
+            config.branch_sampling if self._independent_branches else None
+        )
+        self._branch_builders: dict[str, BranchWindowBuilder] = {}
+        self.diagnostics = SessionDiagnostics()
         self.organizer = ResultOrganizer(
             ",".join(label for label in event_labels if label != "stranger")
             if self._independent_branches else self.event_label
@@ -322,14 +337,18 @@ class StreamingSession:
                 thread_name_prefix="analysis-face",
             )
         try:
-            windows = iter_sliding_windows(
-                self._sampled_frames(),
-                size_frames=self.config.sliding_window.size_frames,
-                stride_frames=self.config.sliding_window.stride_frames,
-                include_partial_final_window=(
-                    self.config.sliding_window.include_partial_final_window
-                ),
-            )
+            if self._branch_sampling is not None:
+                self._run_branch_windows(executor)
+                windows: Iterator[FrameWindow] = iter(())
+            else:
+                windows = iter_sliding_windows(
+                    self._sampled_frames(),
+                    size_frames=self.config.sliding_window.size_frames,
+                    stride_frames=self.config.sliding_window.stride_frames,
+                    include_partial_final_window=(
+                        self.config.sliding_window.include_partial_final_window
+                    ),
+                )
             for window in windows:
                 if self._stop.is_set():
                     break
@@ -404,6 +423,7 @@ class StreamingSession:
             )
             source_height, source_width = frame_bgr.shape[:2]
             yield SampledFrame(
+                captured_monotonic=time.monotonic(),
                 sample_index=sample_index,
                 source_frame_index=frame.index,
                 timestamp_seconds=frame.timestamp_seconds,
@@ -423,6 +443,41 @@ class StreamingSession:
                 return
 
     # -------------------------------------------------------------- windows
+
+    def _run_branch_windows(self, executor: ThreadPoolExecutor) -> None:
+        """Share one sample stream; each branch keeps its own rate and window."""
+
+        sampling = self._branch_sampling
+        assert sampling is not None and self._face_executor is not None
+        self._branch_builders = {
+            branch: BranchWindowBuilder(
+                sampling.cadence(branch), base_fps=sampling.base_fps,
+            )
+            for branch in ("stranger", "safety")
+        }
+        for frame in self._sampled_frames():
+            if self._stop.is_set():
+                return
+            # Keep the original order: local faces are offered the sample first.
+            face_window = self._branch_builders["stranger"].push(frame)
+            if face_window is not None:
+                self._schedule_branch(face_window, self._face_executor, "stranger")
+            safety_window = self._branch_builders["safety"].push(frame)
+            if safety_window is not None:
+                self._schedule_branch(safety_window, executor, "safety")
+
+    def branch_sampling_status(self) -> dict[str, Any] | None:
+        """Configured and observed per-branch sampling for diagnostics."""
+
+        if self._branch_sampling is None:
+            return None
+        status = self._branch_sampling.as_dict()
+        for branch, builder in self._branch_builders.items():
+            entry = status.get(branch)
+            if isinstance(entry, dict):
+                entry["selected_frames"] = builder.selected_frames
+                entry["skipped_frames"] = builder.skipped_frames
+        return status
 
     def _schedule_window(
         self, window: FrameWindow, executor: ThreadPoolExecutor
@@ -467,6 +522,7 @@ class StreamingSession:
                 break
             if self._drop_when_saturated:
                 # A live feed cannot wait for the model; skip, don't queue.
+                self.diagnostics.note_dropped(_diagnostic_key(branch), window)
                 record, snapshot = organizer.note_dropped(
                     window, elapsed_seconds=self._elapsed()
                 )
@@ -489,7 +545,10 @@ class StreamingSession:
             classify = self.client.classify_safety_window
         elif branch == "stranger":
             classify = self.client.classify_stranger_window
-        future = executor.submit(classify, window)
+        self.diagnostics.note_submitted(_diagnostic_key(branch), window)
+        future = executor.submit(
+            self._classify_with_diagnostics, classify, window, branch,
+        )
         with self._pending_lock:
             pending.add(future)
         future.add_done_callback(
@@ -497,6 +556,39 @@ class StreamingSession:
                 done, window, branch=branch,
             )
         )
+
+    def _classify_with_diagnostics(
+        self,
+        classify: Callable[[FrameWindow], Any],
+        window: FrameWindow,
+        branch: str | None,
+    ) -> Any:
+        with capture_call() as capture:
+            try:
+                return classify(window)
+            finally:
+                try:
+                    self.diagnostics.note_call(
+                        _diagnostic_key(branch), window, capture,
+                    )
+                except Exception:
+                    LOGGER.warning("could not record analysis diagnostics")
+
+    def sampling_status(self) -> dict[str, Any]:
+        """Per-branch cadences, or the shared sliding window when they share one."""
+
+        return self.branch_sampling_status() or {
+            "base_fps": self.config.video.fps,
+            "window": {
+                "size_frames": self.config.sliding_window.size_frames,
+                "stride_frames": self.config.sliding_window.stride_frames,
+            },
+        }
+
+    def diagnostics_snapshot(self) -> dict[str, Any]:
+        snapshot = self.diagnostics.snapshot()
+        snapshot["sampling"] = self.sampling_status()
+        return snapshot
 
     def _on_window_done(
         self, future: Future[Any], window: FrameWindow, *, branch: str | None = None,
@@ -730,6 +822,9 @@ class StreamingSession:
                 timeline_result=timeline_result,
                 analysis_frame_jpeg=analysis_frame_jpeg,
             )
+            self._note_completion_diagnostics(
+                window, branch, response, internal_error=exc is not None,
+            )
             corrections = (
                 self.person_registry.drain_reassociated_results()
                 if timeline_result is not None and self._emit_open else ()
@@ -764,6 +859,46 @@ class StreamingSession:
                         )
                 else:
                     self._archive_window(window, "failed", branch=branch)
+
+    def _note_completion_diagnostics(
+        self,
+        window: FrameWindow,
+        branch: str | None,
+        response: Any,
+        *,
+        internal_error: bool,
+    ) -> None:
+        try:
+            classification = getattr(response, "classification", None)
+            detected: list[str] = []
+            if isinstance(classification, MultiGroundedClassification):
+                detected = [
+                    judgment.event_label
+                    for judgment in classification.judgments
+                    if judgment.detected
+                ]
+            elif classification is not None and classification.detected:
+                detected = [
+                    "stranger" if branch == "stranger" else str(self.event_label)
+                ]
+            parse_diagnostics = getattr(response, "classification_diagnostics", None)
+            parse_category = (
+                parse_diagnostics.get("category")
+                if isinstance(parse_diagnostics, Mapping) else None
+            )
+            self.diagnostics.note_completed(
+                _diagnostic_key(branch),
+                window,
+                ok=classification is not None,
+                model_latency_seconds=getattr(response, "latency_seconds", None),
+                classification_category=(
+                    str(parse_category) if parse_category else None
+                ),
+                detected_labels=tuple(detected),
+                internal_error=internal_error,
+            )
+        except Exception:
+            LOGGER.warning("could not record analysis completion diagnostics")
 
     def _branch_snapshot(self, branch: str, snapshot: dict[str, Any]) -> dict[str, Any]:
         safety = snapshot if branch == "safety" else self.organizer.snapshot()
@@ -883,6 +1018,36 @@ class StreamingSession:
                 self.callbacks.on_analysis_result,
                 analysis_result,
             )
+
+
+def mixed_branch_sampling(
+    config: HarnessConfig, selected_features: Collection[str],
+) -> BranchSampling | None:
+    """Independent cadences when safety events and stranger run together.
+
+    Safety keeps ``video.fps`` and the configured sliding window; local faces
+    keep ``face.sample_fps`` with one-frame windows. The shared source is
+    sampled at the faster of the two rates.
+    """
+
+    if "stranger" not in selected_features or not any(
+        feature != "stranger" for feature in selected_features
+    ):
+        return None
+    window = config.sliding_window
+    safety = BranchCadence(
+        fps=config.video.fps,
+        size_frames=window.size_frames,
+        stride_frames=window.stride_frames,
+    )
+    stranger = BranchCadence(fps=config.face.sample_fps)
+    return BranchSampling(
+        base_fps=max(safety.fps, stranger.fps), safety=safety, stranger=stranger,
+    )
+
+
+def _diagnostic_key(branch: str | None) -> str:
+    return branch or "analysis"
 
 
 def _invoke_callback(

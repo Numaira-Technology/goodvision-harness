@@ -19,11 +19,13 @@ import numpy as np
 
 from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
+from .diagnostics import bind_capture, note_failure, note_model_input
 from .event_sensitivity import (
     SENSITIVITY_SYSTEM_PROMPT,
     normalize_event_sensitivities,
     sensitivity_policy_text,
 )
+from .letterbox import classify_letterboxed
 from .model_api import ModelAPIClient, ModelAPIError, ModelAPISettings
 from .privacy import PUBLIC_ANALYSIS_ERROR, PUBLIC_FACE_ERROR
 from .reference_memory import (
@@ -516,6 +518,7 @@ def _record_analysis_failure(
     if isinstance(error, ModelAPIError):
         code = error.code
         status_code = error.status_code
+    note_failure(branch=branch, stage=stage, code=code, http_status=status_code)
     _LOGGER.warning(
         "analysis_failure branch=%s stage=%s window=%d code=%s http_status=%s",
         branch,
@@ -1188,6 +1191,15 @@ class AIClubGroundingClient:
         )
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
+        if self.settings.image_size is None:
+            return self._classify_window(window)
+        return classify_letterboxed(
+            self._classify_window, window,
+            self.settings.image_size, self.settings.image_jpeg_quality,
+            observe=lambda prepared: note_model_input("safety", prepared),
+        )
+
+    def _classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
         try:
             response = self._transport.chat_completion(
@@ -1269,6 +1281,15 @@ class DryRunGroundingClient:
         self.memory_context = memory_context
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
+        if self.settings.image_size is None:
+            return self._classify_window(window)
+        return classify_letterboxed(
+            self._classify_window, window,
+            self.settings.image_size, self.settings.image_jpeg_quality,
+            observe=lambda prepared: note_model_input("safety", prepared),
+        )
+
+    def _classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
         time.sleep(0.35 + (window.index * 13 % 40) / 100.0)
         detected = window.index % 6 in {2, 3, 4}
@@ -1342,6 +1363,15 @@ class AIClubMultiGroundingClient:
         self._transport = transport
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
+        if self.settings.image_size is None:
+            return self._classify_window(window)
+        return classify_letterboxed(
+            self._classify_window, window,
+            self.settings.image_size, self.settings.image_jpeg_quality,
+            observe=lambda prepared: note_model_input("safety", prepared),
+        )
+
+    def _classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
         multi_prompt = str(getattr(self.settings, "multi_event_prompt", "")).strip()
         # The configured multi-event prompt contains a fully expanded four-label
@@ -1445,6 +1475,15 @@ class DryRunMultiGroundingClient:
         self.model_name = PUBLIC_MODEL_NAME
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
+        if self.settings.image_size is None:
+            return self._classify_window(window)
+        return classify_letterboxed(
+            self._classify_window, window,
+            self.settings.image_size, self.settings.image_jpeg_quality,
+            observe=lambda prepared: note_model_input("safety", prepared),
+        )
+
+    def _classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
         judgments: list[GroundedEventClassification] = []
         active_index = window.index % (len(self.event_labels) + 2)
@@ -1659,6 +1698,8 @@ class SelectedFeaturesGroundingClient:
                 error=PUBLIC_ANALYSIS_ERROR,
                 branch_errors=(("safety", code),),
             )
+        if self._safety_client.settings.image_size is None:
+            note_model_input("safety", resized_window)
         response = None
         error = None
         try:
@@ -1680,6 +1721,7 @@ class SelectedFeaturesGroundingClient:
         if self._stranger_client is None:
             raise ValueError("stranger branch is not selected")
         started = time.monotonic()
+        note_model_input("stranger", window)
         response = None
         error = None
         try:
@@ -1732,6 +1774,11 @@ class SelectedFeaturesGroundingClient:
                     branch_errors=(("safety", code),),
                 )
 
+        if (
+            resized_window is not None
+            and self._safety_client.settings.image_size is None
+        ):
+            note_model_input("safety", resized_window)
         safety_response: GroundingResponse | None = None
         stranger_response: GroundingResponse | None = None
         safety_error: Exception | None = None
@@ -1745,13 +1792,14 @@ class SelectedFeaturesGroundingClient:
             )
         ):
             assert resized_window is not None
+            note_model_input("stranger", window)
             with ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="selected-features-face",
             ) as executor:
                 try:
                     stranger_future = executor.submit(
-                        (
+                        bind_capture(
                             self._classify_stranger_with_slot
                             if self.face_live_scheduler == "single_flight"
                             else self._stranger_client.classify_window
@@ -1790,6 +1838,7 @@ class SelectedFeaturesGroundingClient:
                 safety_error = exc
         else:
             assert self._stranger_client is not None
+            note_model_input("stranger", window)
             try:
                 stranger_response = self._stranger_client.classify_window(window)
             except Exception as exc:

@@ -53,6 +53,7 @@ from .deployment_settings import (
     validate_buffer_delay_seconds,
     validate_camera_layout,
 )
+from .diagnostics import SessionDiagnostics
 from .event_archive import EventArchive
 from .event_routes import install_event_routes
 from .event_sensitivity import (
@@ -85,7 +86,13 @@ from .overlay import (
     draw_rich_overlay,
 )
 from .overlay_fusion import OverlayFusionMatcher
-from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
+from .pipeline import (
+    CAMERA_MODE,
+    STREAM_MODE,
+    SessionCallbacks,
+    StreamingSession,
+    mixed_branch_sampling,
+)
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
     PUBLIC_FACE_ERROR,
@@ -322,6 +329,12 @@ class HarnessRuntime:
         self._state_lock = RLock()
         self._control_lock = RLock()
         self._session: StreamingSession | None = None
+        # A missed alarm is diagnosed after the fact, so a finished session is
+        # kept as its diagnostics and sampling alone, never as the pipeline.
+        self._diagnostics_session: StreamingSession | None = None
+        self._diagnostics_probe: SessionDiagnostics | None = None
+        self._diagnostics_sampling: dict[str, Any] | None = None
+        self._diagnostics_context: dict[str, Any] = {}
         self._session_mode: str | None = None
         self._camera_owner: str | None = None
         self._camera_frame_sequence = 0
@@ -789,6 +802,7 @@ class HarnessRuntime:
             **sensitivity_ui_info(),
             "sample_fps": self.config.video.fps,
             "max_image_side": self.config.video.max_image_side,
+            "model_image_size": self.config.inference.image_size,
             "jpeg_quality": self.config.video.jpeg_quality,
             "window": {
                 "size_frames": self.config.sliding_window.size_frames,
@@ -824,10 +838,21 @@ class HarnessRuntime:
                 ),
             },
             "multi": {
-                "sample_fps": self.config.face.sample_fps,
+                # Shared camera/stream sampling rate for mixed sessions.
+                "sample_fps": max(
+                    self.config.video.fps, self.config.face.sample_fps,
+                ),
                 "max_image_side": self.config.face.max_image_side,
                 "jpeg_quality": self.config.face.jpeg_quality,
                 "safety_max_image_side": self.config.video.max_image_side,
+                "model_image_size": self.config.inference.image_size,
+                "safety_jpeg_quality": self.config.video.jpeg_quality,
+                "safety_sample_fps": self.config.video.fps,
+                "safety_window": {
+                    "size_frames": self.config.sliding_window.size_frames,
+                    "stride_frames": self.config.sliding_window.stride_frames,
+                },
+                "face_sample_fps": self.config.face.sample_fps,
             },
             "annotated_output": {
                 "output_fps": self._annotated_output_fps,
@@ -1253,11 +1278,21 @@ class HarnessRuntime:
                         face_session = FaceRecognitionSession(face_runtime)
                 session_config = self.config
                 if include_stranger:
+                    branch_sampling = mixed_branch_sampling(
+                        self.config, selected_features,
+                    )
                     session_config = replace(
                         self.config,
                         video=replace(
                             self.config.video,
-                            fps=face.sample_fps,
+                            # Mixed sessions sample once at the faster branch
+                            # rate; each branch then keeps its own cadence and
+                            # window instead of inheriting the face settings.
+                            fps=(
+                                branch_sampling.base_fps
+                                if branch_sampling is not None
+                                else face.sample_fps
+                            ),
                             max_image_side=face.max_image_side,
                             jpeg_quality=face.jpeg_quality,
                         ),
@@ -1267,6 +1302,7 @@ class HarnessRuntime:
                             stride_frames=1,
                             include_partial_final_window=False,
                         ),
+                        branch_sampling=branch_sampling,
                         # CPU single-flight keeps stranger-only sessions at one
                         # request and drops only busy face branches in mixed
                         # sessions. Full mode keeps the configured request
@@ -1403,6 +1439,35 @@ class HarnessRuntime:
                 self.frames.reset()
                 self.preview_frames.reset()
                 self._session = session
+                self._diagnostics_session = session
+                self._diagnostics_probe = None
+                self._diagnostics_sampling = None
+                self._diagnostics_context = {
+                    "stream_session_id": session.stream_session_id,
+                    "started_at": _utc_now(),
+                    "input_mode": mode,
+                    "analysis_mode": selected_analysis,
+                    "features": (
+                        list(selected_features)
+                        if selected_analysis == MULTI_ANALYSIS_MODE
+                        else [label]
+                    ),
+                    "event_sensitivities": dict(selected_sensitivities),
+                    "dry_run": use_dry_run,
+                    "sample_fps": session_config.video.fps,
+                    "sample_max_image_side": session_config.video.max_image_side,
+                    "sample_jpeg_quality": session_config.video.jpeg_quality,
+                    "safety_max_image_side": self.config.video.max_image_side,
+                    "model_image_size": self.config.inference.image_size,
+                    "safety_jpeg_quality": self.config.video.jpeg_quality,
+                    "max_concurrent_requests": (
+                        session_config.runtime.max_concurrent_requests
+                    ),
+                    "frame_crop": (
+                        session_config.stream.frame_crop
+                        if mode == STREAM_MODE else "none"
+                    ),
+                }
                 self._session_mode = mode
                 self._camera_owner = camera_owner if mode == CAMERA_MODE else None
                 self._camera_frame_sequence = 0
@@ -1555,6 +1620,7 @@ class HarnessRuntime:
             if self._rich_labels is not None:
                 self._rich_labels.reset(None)
             self.annotated_frames.reset()
+            self._retain_diagnostics()
 
             with self._state_lock:
                 self._active_rich_session_id = None
@@ -1667,6 +1733,76 @@ class HarnessRuntime:
                 sequence,
             )
             return True
+
+    def _retain_diagnostics(self) -> None:
+        """Release a finished session, keeping only what diagnoses it."""
+
+        with self._state_lock:
+            session = self._diagnostics_session
+            if session is None:
+                return
+            # The diagnostics object keeps recording, so results that land
+            # after the source ended are still counted.
+            self._diagnostics_probe = session.diagnostics
+            self._diagnostics_sampling = session.sampling_status()
+            self._diagnostics_session = None
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Where analysis coverage, failures and latency stand for the session."""
+
+        with self._state_lock:
+            session = self._diagnostics_session
+            probe = self._diagnostics_probe
+            sampling = self._diagnostics_sampling
+            context = dict(self._diagnostics_context)
+            active = session is not None and session is self._session
+            service_state = {
+                key: self._state.get(key)
+                for key in (
+                    "pipeline_state",
+                    "source_frames_received",
+                    "analysis_frames_published",
+                    "results_published",
+                    "last_frame_at",
+                    "last_result_at",
+                    "end_reason",
+                )
+            }
+        if session is not None:
+            payload: dict[str, Any] = {
+                "state": "active" if active and session.running else "finished",
+                "session": context,
+                "service": service_state,
+                **session.diagnostics_snapshot(),
+            }
+        elif probe is not None:
+            payload = {
+                "state": "finished",
+                "session": context,
+                "service": service_state,
+                **probe.snapshot(),
+                "sampling": sampling,
+            }
+        else:
+            payload = {
+                "state": "no_session",
+                "service": service_state,
+            }
+        safe = public_safe_value(payload)
+        assert isinstance(safe, dict)
+        return safe
+
+    def diagnostics_model_input_jpeg(
+        self, input_id: int, frame_index: int = -1,
+    ) -> bytes | None:
+        with self._state_lock:
+            session = self._diagnostics_session
+            probe = session.diagnostics if session is not None else (
+                self._diagnostics_probe
+            )
+        if probe is None:
+            return None
+        return probe.model_input_jpeg(input_id, frame_index)
 
     def status(self) -> dict[str, Any]:
         with self._state_lock:
@@ -2082,6 +2218,7 @@ class HarnessRuntime:
             end_reason=reason,
             last_error=(public_error_message(error) if error else None),
         )
+        self._retain_diagnostics()
 
     def _update_state(self, **values: Any) -> None:
         with self._state_lock:
@@ -2836,6 +2973,27 @@ def create_app(
             feature_events_endpoint(feature),
             methods=["GET"],
             name=f"{feature}_result_events",
+        )
+
+    @application.get("/v1/diagnostics")
+    async def analysis_diagnostics(request: Request) -> dict[str, Any]:
+        """Analysis coverage, failure categories and latency for the session."""
+
+        return _runtime(request).diagnostics()
+
+    @application.get(
+        "/v1/diagnostics/model-inputs/{input_id}/frames/{frame_index}.jpg"
+    )
+    async def diagnostics_model_input(
+        input_id: int, frame_index: int, request: Request,
+    ) -> Response:
+        """Exact JPEG sent for one recent analysis request."""
+
+        jpeg = _runtime(request).diagnostics_model_input_jpeg(input_id, frame_index)
+        if jpeg is None:
+            raise HTTPException(status_code=404, detail="model input not available")
+        return Response(
+            jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"},
         )
 
     @application.get("/v1/video/latest.jpg")

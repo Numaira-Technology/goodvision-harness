@@ -25,8 +25,10 @@ runs one blank inference to remove its first-frame cold start; dry-run skips
 that warmup. The default runtime settings are:
 
 - source/face sampling: 2.5 FPS, 1280 px maximum image side, JPEG quality 90;
-- safety input: 320 px maximum image side, JPEG quality 75, for the single
-  remote safety request;
+- safety input: 360 px maximum image side, then fitted into a fixed 360×202
+  canvas with centered black padding (`video.model_image_size`; boxes are
+  mapped back to the source frame), JPEG quality 75, for the single remote
+  safety request;
 - display output: up to 30 FPS using original source frames after camera-view selection,
   JPEG quality 90, delayed
   2.5 seconds, with intervening frames inheriting the preceding annotations;
@@ -39,7 +41,7 @@ that warmup. The default runtime settings are:
   event before starting. Smoking defaults to high: plausible smoking gestures
   and context can trigger an alert without identifying a smoking item. Standard
   smoking requires an identifiable item. Other events default to standard.
-  Safety requests retain full-scene, one-frame, 320 px inputs; sensitivity does
+  Safety requests retain full-scene, one-frame, 360×202 inputs; sensitivity does
   not change Paddle or face recognition. Validate both missed events and false
   alarms on fixed test recordings when choosing a sensitivity.
 
@@ -617,6 +619,8 @@ enabled for that session).
 | `GET /health/live` | HTTP-process liveness. |
 | `GET /health/ready` | Ready only with fresh source video and a fresh successful analysis. Used by the Docker healthcheck. |
 | `GET /v1/status` | Sanitized source, pipeline, counters, and delivery state. |
+| `GET /v1/diagnostics` | Per-branch analysis coverage, unanalyzed gaps, failure categories and capture-to-result latency; kept after the session stops. |
+| `GET /v1/diagnostics/model-inputs/{id}/frames/{i}.jpg` | Exact JPEG sent for one of the last eight analysis requests. |
 | `POST /v1/sessions/start` | Start one network-stream session; JSON accepts the optional `features` array. Browser cameras start over `/ws`. |
 | `POST /v1/sessions/stop` | Stop the active session. |
 | `GET /v1/events` | List persistent continuous events and available video evidence. |

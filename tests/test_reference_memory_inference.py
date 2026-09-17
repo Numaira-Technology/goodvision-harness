@@ -6,6 +6,8 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import pytest
 
 from goodvision_harness.config import load_config
@@ -58,15 +60,23 @@ def _memory_context(
     )
 
 
+def _model_jpeg(shade: int = 0) -> bytes:
+    """A decodable frame already at the configured 360x202 model canvas."""
+
+    ok, encoded = cv2.imencode(".jpg", np.full((202, 360, 3), shade, np.uint8))
+    assert ok
+    return encoded.tobytes()
+
+
 def _window(index: int = 3) -> FrameWindow:
     frames = tuple(
         SampledFrame(
             sample_index=index,
             source_frame_index=index,
             timestamp_seconds=float(index),
-            jpeg_bytes=f"frame-{index}".encode(),
-            width=20,
-            height=10,
+            jpeg_bytes=_model_jpeg(40 * (index + 1)),
+            width=360,
+            height=202,
         )
         for index in range(2)
     )
@@ -110,7 +120,8 @@ def test_binary_memory_prompt_prefix_and_newest_frame_only() -> None:
     assert "same stranger-detection semantics as InsightFace" in content[4]["text"]
     assert len(content) == 6
     assert content[-1]["image_url"]["url"] == (
-        "data:image/jpeg;base64," + base64.b64encode(b"frame-1").decode()
+        "data:image/jpeg;base64,"
+        + base64.b64encode(_window().frames[-1].jpeg_bytes).decode()
     )
 
 

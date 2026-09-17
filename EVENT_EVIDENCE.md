@@ -61,7 +61,7 @@ run. HTTP and WebSocket start accept `event_sensitivities`, for example
 reported in its response/status. Smoking defaults to high; other safety events
 default to standard. Standard smoking requires an identifiable smoking item;
 high smoking accepts plausible actions and context without that requirement.
-Neither mode changes the full-scene 320 px input or local face resolution.
+Neither mode changes the full-scene 360×202 input or local face resolution.
 For display with or without face tracking, a pending clear retains both the event
 title and its latest positive boxes until the tenth valid clear. Exact evidence and
 per-frame JSON remain the original model observations.

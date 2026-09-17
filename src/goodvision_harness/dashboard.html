@@ -35,6 +35,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
 .frame-summary{display:grid;gap:7px;padding:13px 15px;background:#f8fafc;border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:10px}.frame-summary-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:5px 12px}.frame-summary h3{font-size:12px;font-weight:750;color:var(--text)}.frame-summary-meta{color:var(--muted);font-size:11px}.frame-summary-text{color:#334155;font-size:14px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap;max-height:150px;overflow:auto}
 .analysis-workspace.fullscreen-active .frame-summary{position:absolute;z-index:7;left:16px;right:360px;bottom:16px;background:rgba(8,15,27,.82);border-color:rgba(255,255,255,.2);border-left-color:#60a5fa;backdrop-filter:blur(14px)}.analysis-workspace.fullscreen-active .frame-summary h3,.analysis-workspace.fullscreen-active .frame-summary-text{color:#f1f5f9}.analysis-workspace.fullscreen-active .frame-summary-meta{color:#cbd5e1}.analysis-workspace.fullscreen-active .frame-summary-text{max-height:18vh}
 @media(max-width:720px){.analysis-workspace.fullscreen-active .frame-summary{left:10px;right:10px;bottom:auto;top:110px;padding:10px 12px}.analysis-workspace.fullscreen-active .frame-summary-text{font-size:12px;max-height:15vh}}
+.diagnostics-panel{margin-top:18px;display:flex;flex-direction:column;gap:10px}.diag-table td{vertical-align:top}.diag-table td.diag-bad,.diag-bad{color:var(--red);font-weight:700}.diag-table td.diag-warn,.diag-warn{color:var(--amber);font-weight:700}.diag-subhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:4px}.diag-subhead h3{font-size:12px;font-weight:750;color:var(--text)}.diag-inputs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(200px,42vw),1fr));gap:10px}.diag-input{display:flex;flex-direction:column;gap:6px;padding:8px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;font-size:11.5px;color:var(--muted)}.diag-input b{color:var(--text)}.diag-strip{display:flex;gap:4px}.diag-strip img{flex:1 1 0;min-width:0;width:100%;height:auto;background:#0b0f16;border-radius:6px}.diag-empty{color:var(--muted);font-size:12.5px}
 </style>
 </head>
 <body>
@@ -285,6 +286,25 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
       <a class="endpoint" href="/v1/results/events" target="_blank" rel="noreferrer">Result event stream <small>SSE</small></a>
       <a class="endpoint" href="/v1/status" target="_blank" rel="noreferrer">Runtime status <small>API</small></a>
     </div>
+  </section>
+
+  <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
+    <div class="head debug-head">
+      <div class="section-title"><h2 id="diagnostics-title">分析诊断 · Analysis diagnostics</h2></div>
+      <div class="channel-row">
+        <span id="diag-state" class="channel">Diagnostics · waiting</span>
+        <a class="muted-link" href="/v1/diagnostics" target="_blank" rel="noreferrer">GET /v1/diagnostics ↗</a>
+      </div>
+    </div>
+    <div class="note">用来区分“画面里没有识别出事件”和“系统根本没分析到”：成功分析速率、最长未分析间隔、按原因统计的失败次数、从收到画面到发出结果的延迟，以及最近实际送去分析的图片。会话结束后数据保留到下一次启动。</div>
+    <div id="diag-sampling" class="note">暂无会话</div>
+    <div class="scroll"><table class="diag-table">
+      <thead><tr><th>分支</th><th>成功/秒</th><th>最长未分析间隔</th><th>当前未分析</th><th>成功 / 失败 / 丢弃</th><th>失败原因</th><th>采集→结果 P50 / P95</th><th>单次分析 P50</th></tr></thead>
+      <tbody id="diag-rows"><tr><td colspan="8" class="diag-empty">暂无会话</td></tr></tbody>
+    </table></div>
+    <div id="diag-last-failure" class="note"></div>
+    <div class="diag-subhead"><h3>最近送去分析的图片 · Model inputs</h3><span class="note">实际送出的尺寸与编码，不是原始画面</span></div>
+    <div id="diag-inputs" class="diag-inputs"><span class="diag-empty">暂无</span></div>
   </section>
 
   <div class="data">
@@ -551,7 +571,8 @@ function mode(next){
 function samplingText(settings){
   return settings&&Number.isFinite(settings.sample_fps)&&Number.isInteger(settings.max_image_side)&&
     Number.isFinite(settings.jpeg_quality)
-    ?number(settings.sample_fps,1)+" fps | "+settings.max_image_side+" px | Q"+settings.jpeg_quality
+    ?number(settings.sample_fps,1)+" fps | "+settings.max_image_side+" px | Q"+settings.jpeg_quality+
+      (Array.isArray(settings.model_image_size)?" | 行为送模 "+settings.model_image_size.join("×")+"（等比补边）":"")
     :"camera settings unavailable"
 }
 function annotatedOutputText(output){
@@ -1741,8 +1762,113 @@ window.addEventListener("beforeunload",()=>{
   if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
   if(state.ws)state.ws.close()
 });
+const diagFailureNames={auth:"鉴权",rate_limited:"限流",timeout:"超时",connection:"连接",server_error:"服务端错误",http_error:"HTTP 错误",bad_response:"空/异常响应",parse:"结果解析",input:"输入图片",internal:"内部错误",unknown:"其他"};
+const diagBranchNames={safety:"行为事件",stranger:"陌生人",analysis:"分析"};
+const diagState={inputKey:""};
+function diagSeconds(value){return value===null||value===undefined||!Number.isFinite(Number(value))?"–":Number(value).toFixed(2)+" s"}
+function diagCell(text,cls){const td=document.createElement("td");td.textContent=text;if(cls)td.className=cls;return td}
+function diagFailureText(failures){
+  const parts=Object.entries(failures||{}).filter(([,count])=>Number(count)>0).map(([name,count])=>(diagFailureNames[name]||name)+" "+count);
+  return parts.length?parts.join(" · "):"无"
+}
+function diagExpectedPeriod(sampling,branch){
+  const cadence=sampling&&sampling[branch];
+  const fps=cadence&&Number(cadence.fps)||sampling&&Number(sampling.base_fps)||0;
+  return fps>0?1/fps:null
+}
+function diagGapWarnings(branch,period){
+  // A healthy session still has frames in flight, so the current gap may
+  // legitimately reach the model latency on top of normal sampling spacing.
+  const result={gap:"",current:""};
+  if(!branch||!(period>0))return result;
+  const latency=branch.latency_seconds||{},model=latency.model||{};
+  const inFlight=Number(model.p95)>0?Number(model.p95):0;
+  if(Number(branch.longest_unanalyzed_gap_seconds)>2.5*period)result.gap="diag-warn";
+  if(Number(branch.current_unanalyzed_gap_seconds)>2.5*period+inFlight)result.current="diag-warn";
+  return result
+}
+function renderDiagnostics(data){
+  const stateNames={active:"运行中",finished:"已结束",no_session:"暂无会话"};
+  setChannel($("diag-state"),"Diagnostics · "+(stateNames[data.state]||data.state),data.state==="active"?"good":"");
+  const rows=$("diag-rows");rows.replaceChildren();
+  const branches=data.branches||{},sampling=data.sampling||null,session=data.session||null;
+  if(session){
+    const parts=[];
+    if(sampling&&sampling.safety){
+      parts.push("行为事件 "+number(sampling.safety.fps,1)+" fps · 窗口 "+sampling.safety.size_frames+" 帧 / 步长 "+sampling.safety.stride_frames);
+      parts.push("陌生人 "+number(sampling.stranger.fps,1)+" fps");
+    }else if(sampling){
+      parts.push("采样 "+number(sampling.base_fps,1)+" fps · 窗口 "+(sampling.window?sampling.window.size_frames:1)+" 帧");
+    }
+    parts.push("行为送模 "+session.safety_max_image_side+" px / Q"+session.safety_jpeg_quality);
+    if(session.dry_run)parts.push("DRY RUN");
+    $("diag-sampling").textContent=parts.join(" | ");
+  }else{$("diag-sampling").textContent="暂无会话"}
+  const names=Object.keys(branches);
+  if(!names.length){const tr=document.createElement("tr");tr.appendChild(diagCell("暂无分析记录","diag-empty")).colSpan=8;rows.appendChild(tr)}
+  let lastFailure=null;
+  for(const name of names){
+    const b=branches[name],tr=document.createElement("tr"),period=diagExpectedPeriod(sampling,name);
+    const failed=Number(b.failed)||0,latency=(b.latency_seconds||{}),e2e=latency.capture_to_result||{},model=latency.model||{};
+    const warnings=diagGapWarnings(b,period),gapWarn=warnings.gap,currentWarn=warnings.current;
+    tr.append(
+      diagCell(diagBranchNames[name]||name),
+      diagCell(number(b.analyzed_per_second,2)),
+      diagCell(diagSeconds(b.longest_unanalyzed_gap_seconds)+(b.gap_scope==="recent"?"（最近 "+b.gap_history_size+" 次）":""),gapWarn),
+      diagCell(diagSeconds(b.current_unanalyzed_gap_seconds),currentWarn),
+      diagCell((b.succeeded||0)+" / "+failed+" / "+(b.dropped||0),failed?"diag-bad":(b.dropped?"diag-warn":"")),
+      diagCell(diagFailureText(b.failures),failed?"diag-bad":""),
+      diagCell(diagSeconds(e2e.p50)+" / "+diagSeconds(e2e.p95)),
+      diagCell(diagSeconds(model.p50))
+    );
+    rows.appendChild(tr);
+    if(b.last_failure&&(!lastFailure||String(b.last_failure.at)>String(lastFailure.at)))lastFailure={...b.last_failure,branch:name};
+  }
+  const failureNote=$("diag-last-failure");
+  if(lastFailure){
+    failureNote.className="note diag-bad";
+    failureNote.textContent="最近一次失败："+(diagBranchNames[lastFailure.branch]||lastFailure.branch)+" · "+(diagFailureNames[lastFailure.category]||lastFailure.category)+
+      (lastFailure.http_status?" · HTTP "+lastFailure.http_status:"")+" · 源帧 "+diagSeconds(lastFailure.source_timestamp_seconds)+" · "+(lastFailure.at||"");
+  }else{failureNote.className="note";failureNote.textContent=""}
+  renderDiagnosticInputs(data.model_inputs||[]);
+}
+function renderDiagnosticInputs(inputs){
+  const box=$("diag-inputs");
+  const key=inputs.map(entry=>entry.id+":"+entry.outcome).join(",");
+  if(key===diagState.inputKey)return;
+  diagState.inputKey=key;box.replaceChildren();
+  if(!inputs.length){const empty=document.createElement("span");empty.className="diag-empty";empty.textContent="暂无";box.appendChild(empty);return}
+  for(const entry of inputs){
+    const card=document.createElement("div");card.className="diag-input";
+    const strip=document.createElement("div");strip.className="diag-strip";
+    (entry.frames||[]).forEach((frame,index)=>{
+      const img=document.createElement("img");img.loading="lazy";img.alt="model input "+entry.id+" frame "+index;
+      img.onerror=()=>{const gone=document.createElement("span");gone.className="diag-empty";gone.textContent="图片已过期";img.replaceWith(gone)};img.src="/v1/diagnostics/model-inputs/"+encodeURIComponent(entry.id)+"/frames/"+index+".jpg";strip.appendChild(img)
+    });
+    const frames=entry.frames||[],newest=frames[frames.length-1]||{};
+    const title=document.createElement("div");
+    const label=document.createElement("b");label.textContent=(diagBranchNames[entry.role]||entry.role)+" #"+entry.id;title.appendChild(label);
+    const outcome=document.createElement("span");
+    const ok=entry.outcome==="ok",pending=entry.outcome==="pending";
+    outcome.className=ok||pending?"":"diag-bad";
+    outcome.textContent=" · "+(ok?((entry.detected_labels||[]).length?"检出 "+entry.detected_labels.join(","):"阴性"):pending?"等待结果":(diagFailureNames[entry.outcome]||entry.outcome));
+    title.appendChild(outcome);
+    const meta=document.createElement("div");
+    meta.textContent=(newest.width||"?")+"×"+(newest.height||"?")+" · "+Math.round((newest.bytes||0)/1024*10)/10+" KB · "+frames.length+" 帧 · 源 "+
+      (entry.source_width||"?")+"×"+(entry.source_height||"?")+" · 源帧 "+diagSeconds(newest.timestamp_seconds)+
+      (entry.model_latency_seconds!==undefined?" · 耗时 "+diagSeconds(entry.model_latency_seconds):"");
+    card.append(strip,title,meta);box.appendChild(card)
+  }
+}
+async function diagnostics(){
+  try{
+    const response=await fetch("/v1/diagnostics",{cache:"no-store"});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    renderDiagnostics(await response.json())
+  }catch(error){setChannel($("diag-state"),"Diagnostics · unavailable","warn")}
+}
 mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
-loadRoutes();setInterval(loadRoutes,1500);
+loadRoutes();setInterval(loadRoutes,1500);diagnostics();setInterval(diagnostics,2000);
 loadEventArchive();
 </script>
 </body>

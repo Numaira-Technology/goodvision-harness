@@ -1,0 +1,3386 @@
+diff --git a/README.md b/README.md
+index 91ff4d4..e2ac2ff 100644
+--- a/README.md
++++ b/README.md
+@@ -617,6 +617,8 @@ enabled for that session).
+ | `GET /health/live` | HTTP-process liveness. |
+ | `GET /health/ready` | Ready only with fresh source video and a fresh successful analysis. Used by the Docker healthcheck. |
+ | `GET /v1/status` | Sanitized source, pipeline, counters, and delivery state. |
++| `GET /v1/diagnostics` | Per-branch analysis coverage, unanalyzed gaps, failure categories and capture-to-result latency; kept after the session stops. |
++| `GET /v1/diagnostics/model-inputs/{id}/frames/{i}.jpg` | Exact JPEG sent for one of the last eight analysis requests. |
+ | `POST /v1/sessions/start` | Start one network-stream session; JSON accepts the optional `features` array. Browser cameras start over `/ws`. |
+ | `POST /v1/sessions/stop` | Stop the active session. |
+ | `GET /v1/events` | List persistent continuous events and available video evidence. |
+diff --git a/docs/validation/robustness-diagnostics-20260916.md b/docs/validation/robustness-diagnostics-20260916.md
+new file mode 100644
+index 0000000..603ff3f
+--- /dev/null
++++ b/docs/validation/robustness-diagnostics-20260916.md
+@@ -0,0 +1,132 @@
++# 鲁棒性诊断与连续回放（2026-09-16）
++
++目标：机器人实机表现未知时，先能分清一次“没报警”到底发生在哪一步——动作没被抽到、请求被丢弃、
++请求失败（鉴权 / 超时 / 解析等），还是模型看到了但没认出来。本轮只改诊断、采样和测试工具，
++没有改动线上默认采样率、图片尺寸、提示词或模型线路。
++
++## 1. 事件采样与人脸采样解耦（缺陷修复）
++
++此前在多能力会话中勾选陌生人后，服务会把事件分支的采样率改成 `face.sample_fps`，并把滑动窗口
++强制改成 1 帧。因此调整 `video.fps` 或 `sliding_window` 在勾选陌生人时不生效。
++
++现在混合会话（行为事件 + 陌生人）只对源画面采样一次，采样率取两者较快者；随后各分支按自己的
++节奏选帧、建窗口：
++
++- 行为事件：`video.fps` + `sliding_window.size_frames / stride_frames`；
++- 陌生人：`face.sample_fps`，始终单帧。
++
++默认配置两者都是 2.5 FPS、单帧窗口，行为与之前一致。只选陌生人或只选行为事件时保持原逻辑。
++浏览器摄像头推帧速率改用两者较快者（`/v1/ui/info` 的 `multi.sample_fps`），同时新增
++`multi.safety_sample_fps`、`multi.safety_window`、`multi.face_sample_fps`。
++
++## 2. 分析诊断
++
++新增 `GET /v1/diagnostics`，控制台“分析诊断”面板每 2 秒刷新。会话停止后保留到下一次启动。
++按分支（行为事件 / 陌生人）给出：
++
++| 指标 | 回答的问题 |
++| --- | --- |
++| 最近送去分析的图片（`/v1/diagnostics/model-inputs/{id}/frames/{i}.jpg`）、实际尺寸、字节数、源帧时间、源画面尺寸、结果 | 模型到底看到了什么？ |
++| `analyzed_per_second`（最近 10 秒）、`longest_unanalyzed_gap_seconds`、`current_unanalyzed_gap_seconds` | 快动作是否可能整段没被分析？ |
++| `gap_scope`、`gap_history_size` | 最长间隔是整段会话（`session`）还是只统计最近 512 次结果（`recent`）？ |
++| `failures`：auth / rate_limited / timeout / connection / server_error / http_error / bad_response / parse / input / internal / unknown，以及 `last_failure`（含 HTTP 状态码） | 是系统错误还是识别漏检？ |
++| `latency_seconds.capture_to_result`、`capture_to_submit`、`model`（P50 / P95 / 最大） | 报警来不来得及？ |
++
++诊断只保存有界的数字和最近 8 次送模图片，不保存供应商原文。分析时间只保留最近 512 个；长会话超出后，
++最长间隔改为只在这 512 个结果之间计算，并标记 `gap_scope: recent`，面板显示“（最近 N 次）”，
++不会把已淘汰的记录误算成一段很长的空白。面板上“当前未分析间隔”的告警阈值会再加上模型延迟 P95，
++避免请求正常在途时误报。
++
++## 3. 连续视频回放工具
++
++`tools/replay_stress.py` 让本地视频按真实时间进入完整检测流程（采样、分支窗口、真实提示词构建与
++解析、结果整理、诊断），只把远程分析服务换成模拟器：
++
++- 模拟器是“神谕”：收到的帧落在标注区间内就报阳性，所以漏报只可能来自没抽到、被丢弃、请求失败或
++  结果没发布，与模型认不认得无关；
++- 可注入延迟分布、慢请求（造成乱序）、超时、401、不可解析回复和随机误报；
++- `--speed N` 把时间轴压缩 N 倍，用来模拟快动作（`video.playback_speed` 只改变播放节奏，
++  采样仍按源时间，不能用来模拟快动作）；
++- `--real` 改为调用已配置的真实服务（会产生费用，陌生人分支仍为模拟），未识别的事件标记为
++  `not_recognized`。事件灵敏度与线上服务默认一致（吸烟为 `high`），可用
++  `--event-sensitivity smoking=standard` 逐项覆盖，报告里记录实际使用的 `event_sensitivities`；
++- `--real` 有请求上限 `--max-requests`（默认 300）：启动前按“每个采样窗口一次请求”估算上界，
++  超过就直接退出、不创建客户端；运行中也按上限硬截断，超出的窗口记为 `budget_exhausted`
++  （计入请求失败，不当作阴性），报告里的 `paid_requests` 是实际发出的请求数。
++
++每个标注事件输出 `detected / not_sampled / dropped / request_failed / not_recognized`，以及首次报警
++延迟、误报数、乱序结果数和整段诊断。
++
++```bash
++# 单段视频，两个标注事件，正常速度与 3 倍速对比，带故障注入
++python tools/replay_stress.py clip.mp4 --event smoking:2.2-2.8 --event fight:4.0-4.3 \
++  --speed 1 --speed 3 --latency-ms 700 --slow-rate 0.2 --timeout-rate 0.1 \
++  --safety-side 360 --output tmp/replay/smoke.json
++
++# 负例素材清单（无 events 字段即全阴性），五项能力全开
++python tools/replay_stress.py --manifest tmp/robustness-media/negatives/robot_360x202/manifest.json \
++  --features fight,smoking,fall,weapon,stranger --safety-side 360 --safety-quality 90 \
++  --output tmp/replay/negatives.json
++```
++
++## 4. 机器人画幅素材（360×202）
++
++素材都来自 Pexels 的摆拍库存视频，放在被 Git 忽略的 `tmp/robustness-media/` 下。清单里的路径
++相对仓库根目录，请在仓库根目录运行命令。两份清单都能同时被 `replay_stress.py` 和
++`low_resolution_model_eval.py` 使用；后者只读 `samples`，会忽略 `events` 和 `ignore`。
++
++| 目录 | 内容 |
++| --- | --- |
++| `negatives/robot_360x202/` | 喝水、吃东西、摸嘴（打哈欠、咳嗽）各 2 段，全部为阴性；`eat_02` 是手指夹细长饼干棒，最接近香烟 |
++| `positives/robot_360x202/` | 抽烟、打架、持械各 2 段，带事件区间 `events` 和过渡帧 `ignore` 区间 |
++
++`ignore` 区间用于动作起止的过渡帧（例如香烟刚举起、枪刚拔出），落在这些区间里的阳性不计为误报。
++`fight_02` 的 `key_actions` 标出了 3.25–4.5 秒的快速踢击，可以单独用来测快动作：
++
++```bash
++python tools/replay_stress.py tmp/robustness-media/positives/robot_360x202/fight_02_pexels7777758_360x202.mp4 \
++  --event fight:3.25-4.5 --speed 1 --speed 2 --speed 4 --speed 6 --safety-side 360
++```
++
++模拟服务、默认 2.5 FPS 采样下的结果：踢击在 1 倍速（1.25 秒）和 2 倍速（0.63 秒）时能被抽到并报警；
++4 倍速（0.31 秒）和 6 倍速（0.21 秒）时一帧都没被抽到（`not_sampled`）。六段正例在 1 倍速下全部
++报警，六段负例没有误报；这两项在模拟服务下是预期结果，只证明素材和标注能被流程正确使用。
++
++按机器人画幅比较单帧图片参数（真实服务，会产生费用；长边 `0` 表示保持 360×202 原尺寸）：
++
++```bash
++python tools/low_resolution_model_eval.py \
++  --manifest tmp/robustness-media/positives/robot_360x202/manifest.json \
++  --sizes 0,320 --quality 75 --workers 1 --max-requests 60 \
++  --output tmp/eval/positives-q75.json
++python tools/low_resolution_model_eval.py \
++  --manifest tmp/robustness-media/positives/robot_360x202/manifest.json \
++  --sizes 0 --quality 90 --workers 1 --max-requests 30 \
++  --output tmp/eval/positives-q90.json
++# 把 positives 换成 negatives 再各跑一次，看误报
++```
++
++注意：`low_resolution_model_eval.py` 没有灵敏度参数，用的是严格的吸烟证据规则（相当于
++`smoking=standard`），而线上服务默认吸烟为 `high`。它适合在同一规则下比较图片尺寸和质量；
++要贴近线上吸烟命中率，用 `replay_stress.py --real`（默认即 `high`）。
++
++## 验证
++
++- 全量回归：**2121 passed、6 skipped**（基线 2069 passed、6 skipped；新增 52 项）。
++  浏览器控制台 JS 测试 6 个文件通过（新增诊断面板告警阈值测试）。全仓 Ruff 发现数与基线相同（89），`git diff --check` 通过。
++- 新增测试覆盖：分支窗口与原滑动窗口语义一致、慢分支抗到帧抖动、服务端混合会话不再覆盖事件
++  采样、实时管线中行为 3 帧窗口与陌生人半速同时生效；401 / 超时 / 解析失败分别计数、实际送模
++  图片为 320×180（源 640×360）、HTTP 端点与会话结束后保留；模拟回复通过真实解析器、压缩时间轴下
++  短事件变为 `not_sampled`、真实模式的未识别标记；长会话淘汰历史后最长间隔仍真实、面板当前间隔
++  告警计入在途延迟；`--real` 默认吸烟为 `high`、可覆盖为 `standard`，请求上限在创建客户端前
++  拦截、运行中硬截断。
++- 以 360×202 机器人画幅素材做的模拟回放：3 倍速下 0.3 秒的动作压缩到 0.1 秒，没有被 2.5 FPS
++  采样抽到；并发 1、单次 1.2 秒、5 FPS 三帧窗口时，43 个事件窗口中 37 个被丢弃，最长未分析间隔
++  2.0 秒。这些是流程层面的结论，不代表真实模型的识别率。
++
++## 边界
++
++- 模拟器不评价识别准确率。模型能否认出吸烟，仍需带标注素材配合 `--real` 或
++  `tools/low_resolution_model_eval.py` 另测。
++- 默认行为事件送模长边仍是 320；机器人画幅 360×202 会被缩到 320×180。是否改为 360 / Q90，
++  应按计划用同一批素材逐项对比后再决定。
+diff --git a/src/goodvision_harness/config.py b/src/goodvision_harness/config.py
+index 5cdf2fa..eb87181 100644
+--- a/src/goodvision_harness/config.py
++++ b/src/goodvision_harness/config.py
+@@ -16,6 +16,7 @@ from .event_archive import EventArchiveSettings
+ from .model_api import ModelAPISettings
+ from .model_routing import CUSTOMER_INFERENCE_PROFILE, resolve_model_route
+ from .reference_memory import MemoryContext, load_memory_context
++from .sliding_window import BranchSampling
+ 
+ DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
+ 
+@@ -164,6 +165,9 @@ class HarnessConfig:
+     server: ServerSettings
+     service: ServiceSettings
+     events: EventArchiveSettings = field(default_factory=EventArchiveSettings)
++    # Session-only: set when a mixed safety + stranger session samples each
++    # branch at its own cadence. Never loaded from YAML.
++    branch_sampling: BranchSampling | None = None
+ 
+     @property
+     def model_api(self) -> ModelAPISettings:
+diff --git a/src/goodvision_harness/dashboard.html b/src/goodvision_harness/dashboard.html
+index 84b5264..b62fc35 100644
+--- a/src/goodvision_harness/dashboard.html
++++ b/src/goodvision_harness/dashboard.html
+@@ -35,6 +35,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
+ .frame-summary{display:grid;gap:7px;padding:13px 15px;background:#f8fafc;border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:10px}.frame-summary-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:5px 12px}.frame-summary h3{font-size:12px;font-weight:750;color:var(--text)}.frame-summary-meta{color:var(--muted);font-size:11px}.frame-summary-text{color:#334155;font-size:14px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap;max-height:150px;overflow:auto}
+ .analysis-workspace.fullscreen-active .frame-summary{position:absolute;z-index:7;left:16px;right:360px;bottom:16px;background:rgba(8,15,27,.82);border-color:rgba(255,255,255,.2);border-left-color:#60a5fa;backdrop-filter:blur(14px)}.analysis-workspace.fullscreen-active .frame-summary h3,.analysis-workspace.fullscreen-active .frame-summary-text{color:#f1f5f9}.analysis-workspace.fullscreen-active .frame-summary-meta{color:#cbd5e1}.analysis-workspace.fullscreen-active .frame-summary-text{max-height:18vh}
+ @media(max-width:720px){.analysis-workspace.fullscreen-active .frame-summary{left:10px;right:10px;bottom:auto;top:110px;padding:10px 12px}.analysis-workspace.fullscreen-active .frame-summary-text{font-size:12px;max-height:15vh}}
++.diagnostics-panel{margin-top:18px;display:flex;flex-direction:column;gap:10px}.diag-table td{vertical-align:top}.diag-table td.diag-bad,.diag-bad{color:var(--red);font-weight:700}.diag-table td.diag-warn,.diag-warn{color:var(--amber);font-weight:700}.diag-subhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:4px}.diag-subhead h3{font-size:12px;font-weight:750;color:var(--text)}.diag-inputs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(200px,42vw),1fr));gap:10px}.diag-input{display:flex;flex-direction:column;gap:6px;padding:8px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;font-size:11.5px;color:var(--muted)}.diag-input b{color:var(--text)}.diag-strip{display:flex;gap:4px}.diag-strip img{flex:1 1 0;min-width:0;width:100%;height:auto;background:#0b0f16;border-radius:6px}.diag-empty{color:var(--muted);font-size:12.5px}
+ </style>
+ </head>
+ <body>
+@@ -287,6 +288,25 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
+     </div>
+   </section>
+ 
++  <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
++    <div class="head debug-head">
++      <div class="section-title"><h2 id="diagnostics-title">分析诊断 · Analysis diagnostics</h2></div>
++      <div class="channel-row">
++        <span id="diag-state" class="channel">Diagnostics · waiting</span>
++        <a class="muted-link" href="/v1/diagnostics" target="_blank" rel="noreferrer">GET /v1/diagnostics ↗</a>
++      </div>
++    </div>
++    <div class="note">用来区分“画面里没有识别出事件”和“系统根本没分析到”：成功分析速率、最长未分析间隔、按原因统计的失败次数、从收到画面到发出结果的延迟，以及最近实际送去分析的图片。会话结束后数据保留到下一次启动。</div>
++    <div id="diag-sampling" class="note">暂无会话</div>
++    <div class="scroll"><table class="diag-table">
++      <thead><tr><th>分支</th><th>成功/秒</th><th>最长未分析间隔</th><th>当前未分析</th><th>成功 / 失败 / 丢弃</th><th>失败原因</th><th>采集→结果 P50 / P95</th><th>单次分析 P50</th></tr></thead>
++      <tbody id="diag-rows"><tr><td colspan="8" class="diag-empty">暂无会话</td></tr></tbody>
++    </table></div>
++    <div id="diag-last-failure" class="note"></div>
++    <div class="diag-subhead"><h3>最近送去分析的图片 · Model inputs</h3><span class="note">实际送出的尺寸与编码，不是原始画面</span></div>
++    <div id="diag-inputs" class="diag-inputs"><span class="diag-empty">暂无</span></div>
++  </section>
++
+   <div class="data">
+     <section class="panel">
+       <div class="head"><h2>Service status</h2><a class="muted-link" href="/v1/status" target="_blank" rel="noreferrer">GET /v1/status ↗</a></div>
+@@ -1741,8 +1761,113 @@ window.addEventListener("beforeunload",()=>{
+   if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
+   if(state.ws)state.ws.close()
+ });
++const diagFailureNames={auth:"鉴权",rate_limited:"限流",timeout:"超时",connection:"连接",server_error:"服务端错误",http_error:"HTTP 错误",bad_response:"空/异常响应",parse:"结果解析",input:"输入图片",internal:"内部错误",unknown:"其他"};
++const diagBranchNames={safety:"行为事件",stranger:"陌生人",analysis:"分析"};
++const diagState={inputKey:""};
++function diagSeconds(value){return value===null||value===undefined||!Number.isFinite(Number(value))?"–":Number(value).toFixed(2)+" s"}
++function diagCell(text,cls){const td=document.createElement("td");td.textContent=text;if(cls)td.className=cls;return td}
++function diagFailureText(failures){
++  const parts=Object.entries(failures||{}).filter(([,count])=>Number(count)>0).map(([name,count])=>(diagFailureNames[name]||name)+" "+count);
++  return parts.length?parts.join(" · "):"无"
++}
++function diagExpectedPeriod(sampling,branch){
++  const cadence=sampling&&sampling[branch];
++  const fps=cadence&&Number(cadence.fps)||sampling&&Number(sampling.base_fps)||0;
++  return fps>0?1/fps:null
++}
++function diagGapWarnings(branch,period){
++  // A healthy session still has frames in flight, so the current gap may
++  // legitimately reach the model latency on top of normal sampling spacing.
++  const result={gap:"",current:""};
++  if(!branch||!(period>0))return result;
++  const latency=branch.latency_seconds||{},model=latency.model||{};
++  const inFlight=Number(model.p95)>0?Number(model.p95):0;
++  if(Number(branch.longest_unanalyzed_gap_seconds)>2.5*period)result.gap="diag-warn";
++  if(Number(branch.current_unanalyzed_gap_seconds)>2.5*period+inFlight)result.current="diag-warn";
++  return result
++}
++function renderDiagnostics(data){
++  const stateNames={active:"运行中",finished:"已结束",no_session:"暂无会话"};
++  setChannel($("diag-state"),"Diagnostics · "+(stateNames[data.state]||data.state),data.state==="active"?"good":"");
++  const rows=$("diag-rows");rows.replaceChildren();
++  const branches=data.branches||{},sampling=data.sampling||null,session=data.session||null;
++  if(session){
++    const parts=[];
++    if(sampling&&sampling.safety){
++      parts.push("行为事件 "+number(sampling.safety.fps,1)+" fps · 窗口 "+sampling.safety.size_frames+" 帧 / 步长 "+sampling.safety.stride_frames);
++      parts.push("陌生人 "+number(sampling.stranger.fps,1)+" fps");
++    }else if(sampling){
++      parts.push("采样 "+number(sampling.base_fps,1)+" fps · 窗口 "+(sampling.window?sampling.window.size_frames:1)+" 帧");
++    }
++    parts.push("行为送模 "+session.safety_max_image_side+" px / Q"+session.safety_jpeg_quality);
++    if(session.dry_run)parts.push("DRY RUN");
++    $("diag-sampling").textContent=parts.join(" | ");
++  }else{$("diag-sampling").textContent="暂无会话"}
++  const names=Object.keys(branches);
++  if(!names.length){const tr=document.createElement("tr");tr.appendChild(diagCell("暂无分析记录","diag-empty")).colSpan=8;rows.appendChild(tr)}
++  let lastFailure=null;
++  for(const name of names){
++    const b=branches[name],tr=document.createElement("tr"),period=diagExpectedPeriod(sampling,name);
++    const failed=Number(b.failed)||0,latency=(b.latency_seconds||{}),e2e=latency.capture_to_result||{},model=latency.model||{};
++    const warnings=diagGapWarnings(b,period),gapWarn=warnings.gap,currentWarn=warnings.current;
++    tr.append(
++      diagCell(diagBranchNames[name]||name),
++      diagCell(number(b.analyzed_per_second,2)),
++      diagCell(diagSeconds(b.longest_unanalyzed_gap_seconds)+(b.gap_scope==="recent"?"（最近 "+b.gap_history_size+" 次）":""),gapWarn),
++      diagCell(diagSeconds(b.current_unanalyzed_gap_seconds),currentWarn),
++      diagCell((b.succeeded||0)+" / "+failed+" / "+(b.dropped||0),failed?"diag-bad":(b.dropped?"diag-warn":"")),
++      diagCell(diagFailureText(b.failures),failed?"diag-bad":""),
++      diagCell(diagSeconds(e2e.p50)+" / "+diagSeconds(e2e.p95)),
++      diagCell(diagSeconds(model.p50))
++    );
++    rows.appendChild(tr);
++    if(b.last_failure&&(!lastFailure||String(b.last_failure.at)>String(lastFailure.at)))lastFailure={...b.last_failure,branch:name};
++  }
++  const failureNote=$("diag-last-failure");
++  if(lastFailure){
++    failureNote.className="note diag-bad";
++    failureNote.textContent="最近一次失败："+(diagBranchNames[lastFailure.branch]||lastFailure.branch)+" · "+(diagFailureNames[lastFailure.category]||lastFailure.category)+
++      (lastFailure.http_status?" · HTTP "+lastFailure.http_status:"")+" · 源帧 "+diagSeconds(lastFailure.source_timestamp_seconds)+" · "+(lastFailure.at||"");
++  }else{failureNote.className="note";failureNote.textContent=""}
++  renderDiagnosticInputs(data.model_inputs||[]);
++}
++function renderDiagnosticInputs(inputs){
++  const box=$("diag-inputs");
++  const key=inputs.map(entry=>entry.id+":"+entry.outcome).join(",");
++  if(key===diagState.inputKey)return;
++  diagState.inputKey=key;box.replaceChildren();
++  if(!inputs.length){const empty=document.createElement("span");empty.className="diag-empty";empty.textContent="暂无";box.appendChild(empty);return}
++  for(const entry of inputs){
++    const card=document.createElement("div");card.className="diag-input";
++    const strip=document.createElement("div");strip.className="diag-strip";
++    (entry.frames||[]).forEach((frame,index)=>{
++      const img=document.createElement("img");img.loading="lazy";img.alt="model input "+entry.id+" frame "+index;
++      img.onerror=()=>{const gone=document.createElement("span");gone.className="diag-empty";gone.textContent="图片已过期";img.replaceWith(gone)};img.src="/v1/diagnostics/model-inputs/"+encodeURIComponent(entry.id)+"/frames/"+index+".jpg";strip.appendChild(img)
++    });
++    const frames=entry.frames||[],newest=frames[frames.length-1]||{};
++    const title=document.createElement("div");
++    const label=document.createElement("b");label.textContent=(diagBranchNames[entry.role]||entry.role)+" #"+entry.id;title.appendChild(label);
++    const outcome=document.createElement("span");
++    const ok=entry.outcome==="ok",pending=entry.outcome==="pending";
++    outcome.className=ok||pending?"":"diag-bad";
++    outcome.textContent=" · "+(ok?((entry.detected_labels||[]).length?"检出 "+entry.detected_labels.join(","):"阴性"):pending?"等待结果":(diagFailureNames[entry.outcome]||entry.outcome));
++    title.appendChild(outcome);
++    const meta=document.createElement("div");
++    meta.textContent=(newest.width||"?")+"×"+(newest.height||"?")+" · "+Math.round((newest.bytes||0)/1024*10)/10+" KB · "+frames.length+" 帧 · 源 "+
++      (entry.source_width||"?")+"×"+(entry.source_height||"?")+" · 源帧 "+diagSeconds(newest.timestamp_seconds)+
++      (entry.model_latency_seconds!==undefined?" · 耗时 "+diagSeconds(entry.model_latency_seconds):"");
++    card.append(strip,title,meta);box.appendChild(card)
++  }
++}
++async function diagnostics(){
++  try{
++    const response=await fetch("/v1/diagnostics",{cache:"no-store"});
++    if(!response.ok)throw new Error("HTTP "+response.status);
++    renderDiagnostics(await response.json())
++  }catch(error){setChannel($("diag-state"),"Diagnostics · unavailable","warn")}
++}
+ mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
+-loadRoutes();setInterval(loadRoutes,1500);
++loadRoutes();setInterval(loadRoutes,1500);diagnostics();setInterval(diagnostics,2000);
+ loadEventArchive();
+ </script>
+ </body>
+diff --git a/src/goodvision_harness/diagnostics.py b/src/goodvision_harness/diagnostics.py
+new file mode 100644
+index 0000000..6098cd5
+--- /dev/null
++++ b/src/goodvision_harness/diagnostics.py
+@@ -0,0 +1,421 @@
++"""Per-session analysis diagnostics: what was analyzed, when, and why it failed.
++
++The goal is to tell a missed alarm apart from a system problem: whether the
++action was ever sampled, whether a request failed (authentication, timeout,
++parse, ...), and how long a frame took from capture to a published result.
++Everything is bounded and in memory; no provider text is stored. Model-input
++JPEGs are kept only for the last few requests so an operator can see exactly
++what the analysis engine received.
++"""
++
++from __future__ import annotations
++
++import itertools
++import math
++import threading
++import time
++from collections import Counter, deque
++from collections.abc import Callable, Iterator, Mapping
++from contextlib import contextmanager
++from dataclasses import dataclass, field
++from datetime import datetime, timezone
++from typing import TYPE_CHECKING, Any
++
++if TYPE_CHECKING:  # pragma: no cover - typing only
++    from .sliding_window import FrameWindow
++
++FAILURE_CATEGORIES = (
++    "auth",
++    "rate_limited",
++    "timeout",
++    "connection",
++    "server_error",
++    "http_error",
++    "bad_response",
++    "parse",
++    "input",
++    "internal",
++    "unknown",
++)
++_MAX_CAPTURED_FAILURES = 16
++_MAX_CAPTURED_INPUTS = 4
++
++
++# ------------------------------------------------------------ call capture
++
++@dataclass(slots=True)
++class CallCapture:
++    """Facts noted by a client while one pipeline call runs on this thread."""
++
++    failures: list[dict[str, Any]] = field(default_factory=list)
++    model_inputs: list[tuple[str, FrameWindow]] = field(default_factory=list)
++
++
++_local = threading.local()
++
++
++@contextmanager
++def capture_call() -> Iterator[CallCapture]:
++    """Collect failures and model inputs noted by code running in this call."""
++
++    previous = getattr(_local, "capture", None)
++    capture = CallCapture()
++    _local.capture = capture
++    try:
++        yield capture
++    finally:
++        _local.capture = previous
++
++
++def note_failure(
++    *, branch: str, stage: str, code: str, http_status: int | None = None,
++) -> None:
++    capture = getattr(_local, "capture", None)
++    if capture is None or len(capture.failures) >= _MAX_CAPTURED_FAILURES:
++        return
++    capture.failures.append({
++        "branch": str(branch),
++        "stage": str(stage),
++        "code": str(code),
++        "http_status": http_status if isinstance(http_status, int) else None,
++    })
++
++
++def note_model_input(role: str, window: FrameWindow) -> None:
++    """Record the exact window (after any re-encoding) sent for analysis."""
++
++    capture = getattr(_local, "capture", None)
++    if capture is None or len(capture.model_inputs) >= _MAX_CAPTURED_INPUTS:
++        return
++    capture.model_inputs.append((str(role), window))
++
++
++def failure_category(failure: Mapping[str, Any] | None) -> str:
++    """Map a bounded failure record to one operator-facing category."""
++
++    if not failure:
++        return "unknown"
++    stage = failure.get("stage")
++    code = failure.get("code")
++    status = failure.get("http_status")
++    if stage == "classification":
++        return "parse"
++    if stage == "input":
++        return "input"
++    if stage in {"branch", "merge"}:
++        return "internal"
++    if code == "timeout":
++        return "timeout"
++    if code == "connection":
++        return "connection"
++    if code == "http_error":
++        if status in {401, 403}:
++            return "auth"
++        if status == 429:
++            return "rate_limited"
++        if isinstance(status, int) and status >= 500:
++            return "server_error"
++        return "http_error"
++    if code in {"invalid_response", "empty_response"}:
++        return "bad_response"
++    return "unknown"
++
++
++# ---------------------------------------------------------------- summary
++
++def _percentile(values: list[float], fraction: float) -> float | None:
++    if not values:
++        return None
++    ordered = sorted(values)
++    rank = max(0, min(len(ordered) - 1, math.ceil(fraction * len(ordered)) - 1))
++    return round(ordered[rank], 4)
++
++
++def _latency_summary(values: deque[float]) -> dict[str, Any]:
++    data = list(values)
++    return {
++        "count": len(data),
++        "last": round(data[-1], 4) if data else None,
++        "p50": _percentile(data, 0.5),
++        "p95": _percentile(data, 0.95),
++        "max": round(max(data), 4) if data else None,
++    }
++
++
++def _utc_now() -> str:
++    return (
++        datetime.now(timezone.utc).isoformat(timespec="milliseconds")
++        .replace("+00:00", "Z")
++    )
++
++
++@dataclass(slots=True)
++class _Pending:
++    submitted_at: float
++    capture: CallCapture | None = None
++
++
++class _BranchStats:
++    def __init__(self, *, history: int) -> None:
++        self.submitted = 0
++        self.dropped = 0
++        self.succeeded = 0
++        self.failed = 0
++        self.failures: Counter[str] = Counter()
++        self.parse_failures: Counter[str] = Counter()
++        self.last_failure: dict[str, Any] | None = None
++        self.success_times: deque[float] = deque(maxlen=history)
++        self.analyzed_timestamps: deque[float] = deque(maxlen=history)
++        # Once old analyzed timestamps are evicted, the session start no longer
++        # bounds the retained history and must not be used as a gap endpoint.
++        self.analyzed_history_truncated = False
++        self.first_source_timestamp: float | None = None
++        self.newest_source_timestamp: float | None = None
++        self.end_to_end: deque[float] = deque(maxlen=history)
++        self.queue_wait: deque[float] = deque(maxlen=history)
++        self.model_latency: deque[float] = deque(maxlen=history)
++        self.pending: dict[int, _Pending] = {}
++
++    def see_source(self, timestamp: float) -> None:
++        if self.first_source_timestamp is None:
++            self.first_source_timestamp = timestamp
++        newest = self.newest_source_timestamp
++        if newest is None or timestamp > newest:
++            self.newest_source_timestamp = timestamp
++
++
++class SessionDiagnostics:
++    """Thread-safe, bounded diagnostics for one streaming session."""
++
++    def __init__(
++        self,
++        *,
++        clock: Callable[[], float] = time.monotonic,
++        rate_window_seconds: float = 10.0,
++        history: int = 512,
++        model_input_history: int = 8,
++    ) -> None:
++        if rate_window_seconds <= 0:
++            raise ValueError("rate_window_seconds must be positive")
++        self._clock = clock
++        self._rate_window = float(rate_window_seconds)
++        self._history = int(history)
++        self._lock = threading.Lock()
++        self._started = clock()
++        self._branches: dict[str, _BranchStats] = {}
++        self._inputs: deque[dict[str, Any]] = deque(maxlen=model_input_history)
++        self._input_ids = itertools.count(1)
++
++    def _branch(self, key: str) -> _BranchStats:
++        stats = self._branches.get(key)
++        if stats is None:
++            stats = self._branches[key] = _BranchStats(history=self._history)
++        return stats
++
++    # ----------------------------------------------------------- recording
++
++    def note_submitted(self, key: str, window: FrameWindow) -> None:
++        now = self._clock()
++        with self._lock:
++            stats = self._branch(key)
++            stats.submitted += 1
++            stats.see_source(window.end_timestamp)
++            stats.pending[window.index] = _Pending(submitted_at=now)
++            # Bound pending state if completions were never reported.
++            while len(stats.pending) > self._history:
++                stats.pending.pop(next(iter(stats.pending)))
++
++    def note_dropped(self, key: str, window: FrameWindow) -> None:
++        with self._lock:
++            stats = self._branch(key)
++            stats.dropped += 1
++            stats.see_source(window.end_timestamp)
++
++    def note_call(
++        self, key: str, window: FrameWindow, capture: CallCapture,
++    ) -> None:
++        """Store what the worker observed; called before the result is applied."""
++
++        inputs = capture.model_inputs or [(key, window)]
++        with self._lock:
++            pending = self._branch(key).pending.get(window.index)
++            if pending is not None:
++                pending.capture = capture
++            for role, sent in inputs:
++                frames = [
++                    {
++                        "sample_index": frame.sample_index,
++                        "source_frame_index": frame.source_frame_index,
++                        "timestamp_seconds": round(frame.timestamp_seconds, 4),
++                        "width": frame.width,
++                        "height": frame.height,
++                        "bytes": len(frame.jpeg_bytes),
++                        "jpeg": frame.jpeg_bytes,
++                    }
++                    for frame in sent.frames
++                ]
++                newest = window.newest_frame
++                source_width, source_height = newest.original_dimensions
++                self._inputs.append({
++                    "id": next(self._input_ids),
++                    "branch": key,
++                    "role": role,
++                    "window_index": window.index,
++                    "sent_at": _utc_now(),
++                    "source_width": source_width,
++                    "source_height": source_height,
++                    "frames": frames,
++                    "outcome": "pending",
++                })
++
++    def note_completed(
++        self,
++        key: str,
++        window: FrameWindow,
++        *,
++        ok: bool,
++        model_latency_seconds: float | None = None,
++        classification_category: str | None = None,
++        detected_labels: tuple[str, ...] = (),
++        internal_error: bool = False,
++    ) -> None:
++        now = self._clock()
++        newest = window.newest_frame
++        captured = getattr(newest, "captured_monotonic", None)
++        with self._lock:
++            stats = self._branch(key)
++            pending = stats.pending.pop(window.index, None)
++            capture = pending.capture if pending is not None else None
++            failures = list(capture.failures) if capture is not None else []
++            category: str | None = None
++            if ok:
++                stats.succeeded += 1
++                stats.success_times.append(now)
++                history = stats.analyzed_timestamps
++                if len(history) == history.maxlen:
++                    stats.analyzed_history_truncated = True
++                history.append(window.end_timestamp)
++                if captured is not None:
++                    stats.end_to_end.append(max(0.0, now - captured))
++                    if pending is not None:
++                        stats.queue_wait.append(
++                            max(0.0, pending.submitted_at - captured)
++                        )
++                if model_latency_seconds is not None and model_latency_seconds > 0:
++                    stats.model_latency.append(float(model_latency_seconds))
++            else:
++                stats.failed += 1
++                if internal_error:
++                    category = "internal"
++                elif failures:
++                    category = failure_category(failures[0])
++                else:
++                    category = "parse" if classification_category else "unknown"
++                stats.failures[category] += 1
++                if category == "parse" and classification_category:
++                    stats.parse_failures[classification_category] += 1
++                first = failures[0] if failures else {}
++                stats.last_failure = {
++                    "category": category,
++                    "stage": first.get("stage"),
++                    "code": first.get("code"),
++                    "http_status": first.get("http_status"),
++                    "source_timestamp_seconds": round(window.end_timestamp, 4),
++                    "at": _utc_now(),
++                }
++            for entry in self._inputs:
++                if entry["branch"] == key and entry["window_index"] == window.index:
++                    entry["outcome"] = "ok" if ok else category
++                    entry["detected_labels"] = list(detected_labels)
++                    if model_latency_seconds is not None:
++                        entry["model_latency_seconds"] = round(
++                            float(model_latency_seconds), 4
++                        )
++
++    # ------------------------------------------------------------- reading
++
++    def _branch_snapshot(self, stats: _BranchStats, now: float) -> dict[str, Any]:
++        recent = [t for t in stats.success_times if now - t <= self._rate_window]
++        elapsed = min(self._rate_window, max(now - self._started, 1e-6))
++        analyzed = sorted(stats.analyzed_timestamps)
++        longest_gap = None
++        if stats.analyzed_history_truncated:
++            points = analyzed
++        elif stats.first_source_timestamp is not None:
++            points = [stats.first_source_timestamp, *analyzed]
++        else:
++            points = []
++        gaps = [b - a for a, b in itertools.pairwise(points)]
++        if gaps:
++            longest_gap = round(max(gaps), 4)
++        current_gap = None
++        if stats.newest_source_timestamp is not None:
++            reference = analyzed[-1] if analyzed else stats.first_source_timestamp
++            if reference is not None:
++                current_gap = round(
++                    max(0.0, stats.newest_source_timestamp - reference), 4
++                )
++        return {
++            "submitted": stats.submitted,
++            "dropped": stats.dropped,
++            "succeeded": stats.succeeded,
++            "failed": stats.failed,
++            "in_flight": len(stats.pending),
++            "analyzed_per_second": round(len(recent) / elapsed, 3),
++            "rate_window_seconds": self._rate_window,
++            "longest_unanalyzed_gap_seconds": longest_gap,
++            # "session" spans the whole session; "recent" spans only the last
++            # gap_history_size analyzed frames after older ones were evicted.
++            "gap_scope": "recent" if stats.analyzed_history_truncated else "session",
++            "gap_history_size": len(analyzed),
++            "current_unanalyzed_gap_seconds": current_gap,
++            "newest_analyzed_source_seconds": (
++                round(analyzed[-1], 4) if analyzed else None
++            ),
++            "newest_sampled_source_seconds": (
++                round(stats.newest_source_timestamp, 4)
++                if stats.newest_source_timestamp is not None else None
++            ),
++            "failures": {
++                name: stats.failures.get(name, 0) for name in FAILURE_CATEGORIES
++            },
++            "parse_failures": dict(stats.parse_failures),
++            "last_failure": dict(stats.last_failure) if stats.last_failure else None,
++            "latency_seconds": {
++                "capture_to_result": _latency_summary(stats.end_to_end),
++                "capture_to_submit": _latency_summary(stats.queue_wait),
++                "model": _latency_summary(stats.model_latency),
++            },
++        }
++
++    def snapshot(self) -> dict[str, Any]:
++        now = self._clock()
++        with self._lock:
++            return {
++                "uptime_seconds": round(now - self._started, 3),
++                "branches": {
++                    key: self._branch_snapshot(stats, now)
++                    for key, stats in self._branches.items()
++                },
++                "model_inputs": [
++                    {
++                        **{k: v for k, v in entry.items() if k != "frames"},
++                        "frames": [
++                            {k: v for k, v in frame.items() if k != "jpeg"}
++                            for frame in entry["frames"]
++                        ],
++                    }
++                    for entry in reversed(self._inputs)
++                ],
++            }
++
++    def model_input_jpeg(self, input_id: int, frame: int = -1) -> bytes | None:
++        with self._lock:
++            for entry in self._inputs:
++                if entry["id"] == input_id:
++                    frames = entry["frames"]
++                    try:
++                        return frames[frame]["jpeg"]
++                    except IndexError:
++                        return None
++        return None
+diff --git a/src/goodvision_harness/grounding.py b/src/goodvision_harness/grounding.py
+index 084fa3a..115b481 100644
+--- a/src/goodvision_harness/grounding.py
++++ b/src/goodvision_harness/grounding.py
+@@ -19,6 +19,7 @@ import numpy as np
+ 
+ from .config import InferenceSettings
+ from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
++from .diagnostics import note_failure, note_model_input
+ from .event_sensitivity import (
+     SENSITIVITY_SYSTEM_PROMPT,
+     normalize_event_sensitivities,
+@@ -516,6 +517,7 @@ def _record_analysis_failure(
+     if isinstance(error, ModelAPIError):
+         code = error.code
+         status_code = error.status_code
++    note_failure(branch=branch, stage=stage, code=code, http_status=status_code)
+     _LOGGER.warning(
+         "analysis_failure branch=%s stage=%s window=%d code=%s http_status=%s",
+         branch,
+@@ -1659,6 +1661,7 @@ class SelectedFeaturesGroundingClient:
+                 error=PUBLIC_ANALYSIS_ERROR,
+                 branch_errors=(("safety", code),),
+             )
++        note_model_input("safety", resized_window)
+         response = None
+         error = None
+         try:
+@@ -1680,6 +1683,7 @@ class SelectedFeaturesGroundingClient:
+         if self._stranger_client is None:
+             raise ValueError("stranger branch is not selected")
+         started = time.monotonic()
++        note_model_input("stranger", window)
+         response = None
+         error = None
+         try:
+@@ -1732,6 +1736,8 @@ class SelectedFeaturesGroundingClient:
+                     branch_errors=(("safety", code),),
+                 )
+ 
++        if resized_window is not None:
++            note_model_input("safety", resized_window)
+         safety_response: GroundingResponse | None = None
+         stranger_response: GroundingResponse | None = None
+         safety_error: Exception | None = None
+diff --git a/src/goodvision_harness/pipeline.py b/src/goodvision_harness/pipeline.py
+index 10fad4c..4b49107 100644
+--- a/src/goodvision_harness/pipeline.py
++++ b/src/goodvision_harness/pipeline.py
+@@ -17,7 +17,7 @@ import sys
+ import threading
+ import time
+ from collections import OrderedDict
+-from collections.abc import Callable, Iterator, Mapping
++from collections.abc import Callable, Collection, Iterator, Mapping
+ from concurrent.futures import Future, ThreadPoolExecutor
+ from dataclasses import dataclass, replace
+ from datetime import datetime, timezone
+@@ -33,6 +33,7 @@ from .contracts import (
+     FrameReference,
+     GroundedObject,
+ )
++from .diagnostics import SessionDiagnostics, capture_call
+ from .event_archive import EventArchive
+ from .frame_crop import FrameCropSelector
+ from .grounding import (
+@@ -53,7 +54,14 @@ from .reference_memory import (
+     FACE_RECOGNITION_PURPOSE,
+     UNKNOWN_FACE_EVENT_LABEL,
+ )
+-from .sliding_window import FrameWindow, SampledFrame, iter_sliding_windows
++from .sliding_window import (
++    BranchCadence,
++    BranchSampling,
++    BranchWindowBuilder,
++    FrameWindow,
++    SampledFrame,
++    iter_sliding_windows,
++)
+ from .stream_adapter import NetworkStreamAdapter, StreamAdapterError
+ from .video_to_stream import (
+     PushSampledSource,
+@@ -151,6 +159,13 @@ class StreamingSession:
+         self._independent_branches = (
+             getattr(client, "independent_live_branches", False) is True
+         )
++        # Per-branch cadences apply only when both branches are scheduled
++        # independently; otherwise the shared sliding window is authoritative.
++        self._branch_sampling = (
++            config.branch_sampling if self._independent_branches else None
++        )
++        self._branch_builders: dict[str, BranchWindowBuilder] = {}
++        self.diagnostics = SessionDiagnostics()
+         self.organizer = ResultOrganizer(
+             ",".join(label for label in event_labels if label != "stranger")
+             if self._independent_branches else self.event_label
+@@ -322,14 +337,18 @@ class StreamingSession:
+                 thread_name_prefix="analysis-face",
+             )
+         try:
+-            windows = iter_sliding_windows(
+-                self._sampled_frames(),
+-                size_frames=self.config.sliding_window.size_frames,
+-                stride_frames=self.config.sliding_window.stride_frames,
+-                include_partial_final_window=(
+-                    self.config.sliding_window.include_partial_final_window
+-                ),
+-            )
++            if self._branch_sampling is not None:
++                self._run_branch_windows(executor)
++                windows: Iterator[FrameWindow] = iter(())
++            else:
++                windows = iter_sliding_windows(
++                    self._sampled_frames(),
++                    size_frames=self.config.sliding_window.size_frames,
++                    stride_frames=self.config.sliding_window.stride_frames,
++                    include_partial_final_window=(
++                        self.config.sliding_window.include_partial_final_window
++                    ),
++                )
+             for window in windows:
+                 if self._stop.is_set():
+                     break
+@@ -404,6 +423,7 @@ class StreamingSession:
+             )
+             source_height, source_width = frame_bgr.shape[:2]
+             yield SampledFrame(
++                captured_monotonic=time.monotonic(),
+                 sample_index=sample_index,
+                 source_frame_index=frame.index,
+                 timestamp_seconds=frame.timestamp_seconds,
+@@ -424,6 +444,41 @@ class StreamingSession:
+ 
+     # -------------------------------------------------------------- windows
+ 
++    def _run_branch_windows(self, executor: ThreadPoolExecutor) -> None:
++        """Share one sample stream; each branch keeps its own rate and window."""
++
++        sampling = self._branch_sampling
++        assert sampling is not None and self._face_executor is not None
++        self._branch_builders = {
++            branch: BranchWindowBuilder(
++                sampling.cadence(branch), base_fps=sampling.base_fps,
++            )
++            for branch in ("stranger", "safety")
++        }
++        for frame in self._sampled_frames():
++            if self._stop.is_set():
++                return
++            # Keep the original order: local faces are offered the sample first.
++            face_window = self._branch_builders["stranger"].push(frame)
++            if face_window is not None:
++                self._schedule_branch(face_window, self._face_executor, "stranger")
++            safety_window = self._branch_builders["safety"].push(frame)
++            if safety_window is not None:
++                self._schedule_branch(safety_window, executor, "safety")
++
++    def branch_sampling_status(self) -> dict[str, Any] | None:
++        """Configured and observed per-branch sampling for diagnostics."""
++
++        if self._branch_sampling is None:
++            return None
++        status = self._branch_sampling.as_dict()
++        for branch, builder in self._branch_builders.items():
++            entry = status.get(branch)
++            if isinstance(entry, dict):
++                entry["selected_frames"] = builder.selected_frames
++                entry["skipped_frames"] = builder.skipped_frames
++        return status
++
+     def _schedule_window(
+         self, window: FrameWindow, executor: ThreadPoolExecutor
+     ) -> None:
+@@ -467,6 +522,7 @@ class StreamingSession:
+                 break
+             if self._drop_when_saturated:
+                 # A live feed cannot wait for the model; skip, don't queue.
++                self.diagnostics.note_dropped(_diagnostic_key(branch), window)
+                 record, snapshot = organizer.note_dropped(
+                     window, elapsed_seconds=self._elapsed()
+                 )
+@@ -489,7 +545,10 @@ class StreamingSession:
+             classify = self.client.classify_safety_window
+         elif branch == "stranger":
+             classify = self.client.classify_stranger_window
+-        future = executor.submit(classify, window)
++        self.diagnostics.note_submitted(_diagnostic_key(branch), window)
++        future = executor.submit(
++            self._classify_with_diagnostics, classify, window, branch,
++        )
+         with self._pending_lock:
+             pending.add(future)
+         future.add_done_callback(
+@@ -498,6 +557,34 @@ class StreamingSession:
+             )
+         )
+ 
++    def _classify_with_diagnostics(
++        self,
++        classify: Callable[[FrameWindow], Any],
++        window: FrameWindow,
++        branch: str | None,
++    ) -> Any:
++        with capture_call() as capture:
++            try:
++                return classify(window)
++            finally:
++                try:
++                    self.diagnostics.note_call(
++                        _diagnostic_key(branch), window, capture,
++                    )
++                except Exception:
++                    LOGGER.warning("could not record analysis diagnostics")
++
++    def diagnostics_snapshot(self) -> dict[str, Any]:
++        snapshot = self.diagnostics.snapshot()
++        snapshot["sampling"] = self.branch_sampling_status() or {
++            "base_fps": self.config.video.fps,
++            "window": {
++                "size_frames": self.config.sliding_window.size_frames,
++                "stride_frames": self.config.sliding_window.stride_frames,
++            },
++        }
++        return snapshot
++
+     def _on_window_done(
+         self, future: Future[Any], window: FrameWindow, *, branch: str | None = None,
+     ) -> None:
+@@ -730,6 +817,9 @@ class StreamingSession:
+                 timeline_result=timeline_result,
+                 analysis_frame_jpeg=analysis_frame_jpeg,
+             )
++            self._note_completion_diagnostics(
++                window, branch, response, internal_error=exc is not None,
++            )
+             corrections = (
+                 self.person_registry.drain_reassociated_results()
+                 if timeline_result is not None and self._emit_open else ()
+@@ -765,6 +855,46 @@ class StreamingSession:
+                 else:
+                     self._archive_window(window, "failed", branch=branch)
+ 
++    def _note_completion_diagnostics(
++        self,
++        window: FrameWindow,
++        branch: str | None,
++        response: Any,
++        *,
++        internal_error: bool,
++    ) -> None:
++        try:
++            classification = getattr(response, "classification", None)
++            detected: list[str] = []
++            if isinstance(classification, MultiGroundedClassification):
++                detected = [
++                    judgment.event_label
++                    for judgment in classification.judgments
++                    if judgment.detected
++                ]
++            elif classification is not None and classification.detected:
++                detected = [
++                    "stranger" if branch == "stranger" else str(self.event_label)
++                ]
++            parse_diagnostics = getattr(response, "classification_diagnostics", None)
++            parse_category = (
++                parse_diagnostics.get("category")
++                if isinstance(parse_diagnostics, Mapping) else None
++            )
++            self.diagnostics.note_completed(
++                _diagnostic_key(branch),
++                window,
++                ok=classification is not None,
++                model_latency_seconds=getattr(response, "latency_seconds", None),
++                classification_category=(
++                    str(parse_category) if parse_category else None
++                ),
++                detected_labels=tuple(detected),
++                internal_error=internal_error,
++            )
++        except Exception:
++            LOGGER.warning("could not record analysis completion diagnostics")
++
+     def _branch_snapshot(self, branch: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+         safety = snapshot if branch == "safety" else self.organizer.snapshot()
+         face = snapshot if branch == "stranger" else self._face_organizer.snapshot()
+@@ -885,6 +1015,36 @@ class StreamingSession:
+             )
+ 
+ 
++def mixed_branch_sampling(
++    config: HarnessConfig, selected_features: Collection[str],
++) -> BranchSampling | None:
++    """Independent cadences when safety events and stranger run together.
++
++    Safety keeps ``video.fps`` and the configured sliding window; local faces
++    keep ``face.sample_fps`` with one-frame windows. The shared source is
++    sampled at the faster of the two rates.
++    """
++
++    if "stranger" not in selected_features or not any(
++        feature != "stranger" for feature in selected_features
++    ):
++        return None
++    window = config.sliding_window
++    safety = BranchCadence(
++        fps=config.video.fps,
++        size_frames=window.size_frames,
++        stride_frames=window.stride_frames,
++    )
++    stranger = BranchCadence(fps=config.face.sample_fps)
++    return BranchSampling(
++        base_fps=max(safety.fps, stranger.fps), safety=safety, stranger=stranger,
++    )
++
++
++def _diagnostic_key(branch: str | None) -> str:
++    return branch or "analysis"
++
++
+ def _invoke_callback(
+     name: str,
+     callback: Callable[..., None],
+diff --git a/src/goodvision_harness/service.py b/src/goodvision_harness/service.py
+index ba4868a..7ab7b19 100644
+--- a/src/goodvision_harness/service.py
++++ b/src/goodvision_harness/service.py
+@@ -85,7 +85,13 @@ from .overlay import (
+     draw_rich_overlay,
+ )
+ from .overlay_fusion import OverlayFusionMatcher
+-from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
++from .pipeline import (
++    CAMERA_MODE,
++    STREAM_MODE,
++    SessionCallbacks,
++    StreamingSession,
++    mixed_branch_sampling,
++)
+ from .privacy import (
+     PUBLIC_ANALYSIS_ERROR,
+     PUBLIC_FACE_ERROR,
+@@ -322,6 +328,9 @@ class HarnessRuntime:
+         self._state_lock = RLock()
+         self._control_lock = RLock()
+         self._session: StreamingSession | None = None
++        # Kept after a session stops so a missed alarm can be diagnosed later.
++        self._diagnostics_session: StreamingSession | None = None
++        self._diagnostics_context: dict[str, Any] = {}
+         self._session_mode: str | None = None
+         self._camera_owner: str | None = None
+         self._camera_frame_sequence = 0
+@@ -824,10 +833,20 @@ class HarnessRuntime:
+                 ),
+             },
+             "multi": {
+-                "sample_fps": self.config.face.sample_fps,
++                # Shared camera/stream sampling rate for mixed sessions.
++                "sample_fps": max(
++                    self.config.video.fps, self.config.face.sample_fps,
++                ),
+                 "max_image_side": self.config.face.max_image_side,
+                 "jpeg_quality": self.config.face.jpeg_quality,
+                 "safety_max_image_side": self.config.video.max_image_side,
++                "safety_jpeg_quality": self.config.video.jpeg_quality,
++                "safety_sample_fps": self.config.video.fps,
++                "safety_window": {
++                    "size_frames": self.config.sliding_window.size_frames,
++                    "stride_frames": self.config.sliding_window.stride_frames,
++                },
++                "face_sample_fps": self.config.face.sample_fps,
+             },
+             "annotated_output": {
+                 "output_fps": self._annotated_output_fps,
+@@ -1253,11 +1272,21 @@ class HarnessRuntime:
+                         face_session = FaceRecognitionSession(face_runtime)
+                 session_config = self.config
+                 if include_stranger:
++                    branch_sampling = mixed_branch_sampling(
++                        self.config, selected_features,
++                    )
+                     session_config = replace(
+                         self.config,
+                         video=replace(
+                             self.config.video,
+-                            fps=face.sample_fps,
++                            # Mixed sessions sample once at the faster branch
++                            # rate; each branch then keeps its own cadence and
++                            # window instead of inheriting the face settings.
++                            fps=(
++                                branch_sampling.base_fps
++                                if branch_sampling is not None
++                                else face.sample_fps
++                            ),
+                             max_image_side=face.max_image_side,
+                             jpeg_quality=face.jpeg_quality,
+                         ),
+@@ -1267,6 +1296,7 @@ class HarnessRuntime:
+                             stride_frames=1,
+                             include_partial_final_window=False,
+                         ),
++                        branch_sampling=branch_sampling,
+                         # CPU single-flight keeps stranger-only sessions at one
+                         # request and drops only busy face branches in mixed
+                         # sessions. Full mode keeps the configured request
+@@ -1403,6 +1433,32 @@ class HarnessRuntime:
+                 self.frames.reset()
+                 self.preview_frames.reset()
+                 self._session = session
++                self._diagnostics_session = session
++                self._diagnostics_context = {
++                    "stream_session_id": session.stream_session_id,
++                    "started_at": _utc_now(),
++                    "input_mode": mode,
++                    "analysis_mode": selected_analysis,
++                    "features": (
++                        list(selected_features)
++                        if selected_analysis == MULTI_ANALYSIS_MODE
++                        else [label]
++                    ),
++                    "event_sensitivities": dict(selected_sensitivities),
++                    "dry_run": use_dry_run,
++                    "sample_fps": session_config.video.fps,
++                    "sample_max_image_side": session_config.video.max_image_side,
++                    "sample_jpeg_quality": session_config.video.jpeg_quality,
++                    "safety_max_image_side": self.config.video.max_image_side,
++                    "safety_jpeg_quality": self.config.video.jpeg_quality,
++                    "max_concurrent_requests": (
++                        session_config.runtime.max_concurrent_requests
++                    ),
++                    "frame_crop": (
++                        session_config.stream.frame_crop
++                        if mode == STREAM_MODE else "none"
++                    ),
++                }
+                 self._session_mode = mode
+                 self._camera_owner = camera_owner if mode == CAMERA_MODE else None
+                 self._camera_frame_sequence = 0
+@@ -1668,6 +1724,50 @@ class HarnessRuntime:
+             )
+             return True
+ 
++    def diagnostics(self) -> dict[str, Any]:
++        """Where analysis coverage, failures and latency stand for the session."""
++
++        with self._state_lock:
++            session = self._diagnostics_session
++            context = dict(self._diagnostics_context)
++            active = session is not None and session is self._session
++            service_state = {
++                key: self._state.get(key)
++                for key in (
++                    "pipeline_state",
++                    "source_frames_received",
++                    "analysis_frames_published",
++                    "results_published",
++                    "last_frame_at",
++                    "last_result_at",
++                    "end_reason",
++                )
++            }
++        if session is None:
++            payload: dict[str, Any] = {
++                "state": "no_session",
++                "service": service_state,
++            }
++        else:
++            payload = {
++                "state": "active" if active and session.running else "finished",
++                "session": context,
++                "service": service_state,
++                **session.diagnostics_snapshot(),
++            }
++        safe = public_safe_value(payload)
++        assert isinstance(safe, dict)
++        return safe
++
++    def diagnostics_model_input_jpeg(
++        self, input_id: int, frame_index: int = -1,
++    ) -> bytes | None:
++        with self._state_lock:
++            session = self._diagnostics_session
++        if session is None:
++            return None
++        return session.diagnostics.model_input_jpeg(input_id, frame_index)
++
+     def status(self) -> dict[str, Any]:
+         with self._state_lock:
+             payload = copy.deepcopy(self._state)
+@@ -2838,6 +2938,27 @@ def create_app(
+             name=f"{feature}_result_events",
+         )
+ 
++    @application.get("/v1/diagnostics")
++    async def analysis_diagnostics(request: Request) -> dict[str, Any]:
++        """Analysis coverage, failure categories and latency for the session."""
++
++        return _runtime(request).diagnostics()
++
++    @application.get(
++        "/v1/diagnostics/model-inputs/{input_id}/frames/{frame_index}.jpg"
++    )
++    async def diagnostics_model_input(
++        input_id: int, frame_index: int, request: Request,
++    ) -> Response:
++        """Exact JPEG sent for one recent analysis request."""
++
++        jpeg = _runtime(request).diagnostics_model_input_jpeg(input_id, frame_index)
++        if jpeg is None:
++            raise HTTPException(status_code=404, detail="model input not available")
++        return Response(
++            jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"},
++        )
++
+     @application.get("/v1/video/latest.jpg")
+     async def latest_frame(request: Request) -> Response:
+         return _snapshot_response(
+diff --git a/src/goodvision_harness/sliding_window.py b/src/goodvision_harness/sliding_window.py
+index b84e573..f2188dc 100644
+--- a/src/goodvision_harness/sliding_window.py
++++ b/src/goodvision_harness/sliding_window.py
+@@ -4,7 +4,7 @@ from __future__ import annotations
+ 
+ from collections import deque
+ from collections.abc import Iterable, Iterator
+-from dataclasses import dataclass
++from dataclasses import dataclass, field, replace
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -21,6 +21,8 @@ class SampledFrame:
+     source_height: int | None = None
+     observed_at: str | None = None
+     presentation_jpeg_bytes: bytes | None = None
++    # Local monotonic time the pipeline received this sample; diagnostics only.
++    captured_monotonic: float | None = field(default=None, compare=False)
+ 
+     def __post_init__(self) -> None:
+         if self.sample_index < 0 or self.source_frame_index < 0:
+@@ -162,3 +164,122 @@ def iter_sliding_windows(
+             frames=partial_frames,
+             is_partial=True,
+         )
++
++
++@dataclass(frozen=True, slots=True)
++class BranchCadence:
++    """Sampling rate and window shape for one independently scheduled branch."""
++
++    fps: float
++    size_frames: int = 1
++    stride_frames: int = 1
++
++    def __post_init__(self) -> None:
++        if not isinstance(self.fps, (int, float)) or isinstance(self.fps, bool):
++            raise TypeError("branch fps must be numeric")
++        if not self.fps > 0:
++            raise ValueError("branch fps must be positive")
++        if self.size_frames < 1:
++            raise ValueError("branch size_frames must be at least 1")
++        if self.stride_frames < 1:
++            raise ValueError("branch stride_frames must be at least 1")
++
++
++@dataclass(frozen=True, slots=True)
++class BranchSampling:
++    """Per-branch cadences for a mixed safety + local-face session.
++
++    The session samples the source once at ``base_fps`` (the faster branch) and
++    each branch selects its own frames and builds its own windows, so selecting
++    ``stranger`` no longer replaces the safety sampling rate or window size.
++    """
++
++    base_fps: float
++    safety: BranchCadence
++    stranger: BranchCadence
++
++    def __post_init__(self) -> None:
++        if not self.base_fps > 0:
++            raise ValueError("base_fps must be positive")
++        slowest_needed = max(self.safety.fps, self.stranger.fps)
++        if self.base_fps + 1e-9 < slowest_needed:
++            raise ValueError("base_fps must cover the fastest branch")
++
++    def cadence(self, branch: str) -> BranchCadence:
++        if branch == "safety":
++            return self.safety
++        if branch == "stranger":
++            return self.stranger
++        raise ValueError(f"unknown branch: {branch}")
++
++    def as_dict(self) -> dict[str, object]:
++        return {
++            "base_fps": self.base_fps,
++            "safety": {
++                "fps": self.safety.fps,
++                "size_frames": self.safety.size_frames,
++                "stride_frames": self.safety.stride_frames,
++            },
++            "stranger": {
++                "fps": self.stranger.fps,
++                "size_frames": self.stranger.size_frames,
++                "stride_frames": self.stranger.stride_frames,
++            },
++        }
++
++
++class BranchWindowBuilder:
++    """Select one branch's frames from a shared sample stream and window them.
++
++    Frames are re-indexed per branch so every emitted window keeps contiguous
++    sample indexes. A branch whose rate matches the shared stream keeps every
++    frame, so its indexes equal the shared sample indexes.
++    """
++
++    def __init__(self, cadence: BranchCadence, *, base_fps: float) -> None:
++        if not base_fps > 0:
++            raise ValueError("base_fps must be positive")
++        self.cadence = cadence
++        self._select_all = cadence.fps + 1e-9 >= base_fps
++        self._period = 1.0 / cadence.fps
++        # Arrival jitter must not push a due frame into the next slot and halve
++        # the branch rate; half a shared-sample period is the tolerance.
++        self._tolerance = 0.5 / base_fps
++        self._next_due: float | None = None
++        self._buffer: deque[SampledFrame] = deque(maxlen=cadence.size_frames)
++        self._local_index = 0
++        self._window_index = 0
++        self._frames_until_window = cadence.size_frames
++        self.selected_frames = 0
++        self.skipped_frames = 0
++
++    def _due(self, timestamp: float) -> bool:
++        if self._select_all:
++            return True
++        if self._next_due is None:
++            self._next_due = timestamp
++        if timestamp + self._tolerance < self._next_due:
++            return False
++        while self._next_due <= timestamp + self._tolerance:
++            self._next_due += self._period
++        return True
++
++    def push(self, frame: SampledFrame) -> FrameWindow | None:
++        if not self._due(frame.timestamp_seconds):
++            self.skipped_frames += 1
++            return None
++        self.selected_frames += 1
++        local = (
++            frame
++            if frame.sample_index == self._local_index
++            else replace(frame, sample_index=self._local_index)
++        )
++        self._local_index += 1
++        self._buffer.append(local)
++        self._frames_until_window -= 1
++        if self._frames_until_window > 0:
++            return None
++        self._frames_until_window = self.cadence.stride_frames
++        window = FrameWindow(index=self._window_index, frames=tuple(self._buffer))
++        self._window_index += 1
++        return window
+diff --git a/src/goodvision_harness/video_to_stream.py b/src/goodvision_harness/video_to_stream.py
+index 10b243b..5a92e9f 100644
+--- a/src/goodvision_harness/video_to_stream.py
++++ b/src/goodvision_harness/video_to_stream.py
+@@ -270,6 +270,7 @@ class PushSampledSource:
+                 jpeg_bytes=jpeg_bytes,
+                 width=width,
+                 height=height,
++                captured_monotonic=time.monotonic(),
+             )
+             try:
+                 self._queue.put_nowait(frame)
+diff --git a/tests/dashboard_diagnostics.cjs b/tests/dashboard_diagnostics.cjs
+new file mode 100644
+index 0000000..da353b6
+--- /dev/null
++++ b/tests/dashboard_diagnostics.cjs
+@@ -0,0 +1,47 @@
++const assert=require("node:assert/strict");
++const fs=require("node:fs");
++const path=require("node:path");
++const vm=require("node:vm");
++const {test}=require("node:test");
++
++function helper(){
++  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
++  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
++  const start=script.indexOf("function diagGapWarnings(");
++  const end=script.indexOf("function renderDiagnostics(");
++  assert.ok(start>=0&&end>start,"diagnostics helper must exist");
++  const context=vm.createContext({});
++  vm.runInContext(script.slice(start,end)+"globalThis.diagGapWarnings=diagGapWarnings;",context);
++  return context.diagGapWarnings
++}
++
++const branch=(longest,current,p95)=>({
++  longest_unanalyzed_gap_seconds:longest,
++  current_unanalyzed_gap_seconds:current,
++  latency_seconds:{model:{p95}},
++});
++
++test("frames still in flight under normal model latency are not a warning",()=>{
++  const warn=helper();
++  // 2.5 FPS, 1.5 s model latency: a healthy current gap of 1.6 s.
++  assert.deepEqual({...warn(branch(0.4,1.6,1.5),0.4)},{gap:"",current:""});
++});
++
++test("a current gap beyond sampling spacing plus model latency warns",()=>{
++  const warn=helper();
++  assert.equal(warn(branch(0.4,3.0,1.5),0.4).current,"diag-warn");
++  // Without latency data the sampling spacing alone is the threshold.
++  assert.equal(warn(branch(0.4,1.2,null),0.4).current,"diag-warn");
++});
++
++test("the longest analyzed gap ignores in-flight latency",()=>{
++  const warn=helper();
++  assert.equal(warn(branch(1.2,0,5),0.4).gap,"diag-warn");
++  assert.equal(warn(branch(0.8,0,5),0.4).gap,"");
++});
++
++test("missing period or branch data never warns",()=>{
++  const warn=helper();
++  assert.deepEqual({...warn(branch(9,9,0),null)},{gap:"",current:""});
++  assert.deepEqual({...warn(null,0.4)},{gap:"",current:""});
++});
+diff --git a/tests/test_branch_sampling.py b/tests/test_branch_sampling.py
+new file mode 100644
+index 0000000..171469d
+--- /dev/null
++++ b/tests/test_branch_sampling.py
+@@ -0,0 +1,234 @@
++"""Mixed safety + stranger sessions keep independent sampling and windows.
++
++Regression: selecting ``stranger`` used to replace the safety sampling rate and
++force one-frame safety windows with the face settings. No model is called.
++"""
++
++from __future__ import annotations
++
++import threading
++import time
++from dataclasses import replace
++from pathlib import Path
++
++import cv2
++import numpy as np
++import pytest
++
++from goodvision_harness.config import load_config
++from goodvision_harness.contracts import NormalizedBBox
++from goodvision_harness.grounding import (
++    GroundedClassification,
++    GroundedEventClassification,
++    GroundingResponse,
++    ModelObject,
++    MultiGroundedClassification,
++    SelectedFeaturesGroundingClient,
++)
++from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
++from goodvision_harness.service import HarnessRuntime
++from goodvision_harness.sliding_window import (
++    BranchCadence,
++    BranchSampling,
++    BranchWindowBuilder,
++    SampledFrame,
++    iter_sliding_windows,
++)
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def _jpeg(value: int = 0) -> bytes:
++    ok, encoded = cv2.imencode(".jpg", np.full((36, 64, 3), value % 256, np.uint8))
++    assert ok
++    return encoded.tobytes()
++
++
++def _frames(timestamps):
++    return [
++        SampledFrame(index, index * 3, ts, _jpeg(index), 64, 36)
++        for index, ts in enumerate(timestamps)
++    ]
++
++
++def test_same_rate_branch_keeps_every_frame_and_index():
++    frames = _frames([i * 0.4 for i in range(6)])
++    builder = BranchWindowBuilder(BranchCadence(2.5), base_fps=2.5)
++    windows = [w for w in map(builder.push, frames) if w is not None]
++    assert [w.index for w in windows] == list(range(6))
++    assert [w.newest_frame for w in windows] == frames
++    assert builder.skipped_frames == 0
++
++
++@pytest.mark.parametrize(("size", "stride"), [(4, 2), (1, 3), (2, 3), (3, 1)])
++def test_branch_windows_match_shared_sliding_window_semantics(size, stride):
++    frames = _frames([i * 0.2 for i in range(13)])
++    builder = BranchWindowBuilder(BranchCadence(5.0, size, stride), base_fps=5.0)
++    built = [w for w in map(builder.push, frames) if w is not None]
++    expected = list(
++        iter_sliding_windows(frames, size_frames=size, stride_frames=stride)
++    )
++    assert [(w.index, w.frames) for w in built] == [
++        (w.index, w.frames) for w in expected
++    ]
++
++
++def test_slower_branch_tolerates_arrival_jitter_without_halving():
++    jitter = [0.0, 0.03, -0.03, 0.02, -0.02, 0.0, 0.03, -0.03, 0.01, -0.01]
++    timestamps = [max(0.0, i * 0.2 + jitter[i % 10]) for i in range(20)]
++    builder = BranchWindowBuilder(BranchCadence(2.5), base_fps=5.0)
++    windows = [w for w in map(builder.push, _frames(timestamps)) if w is not None]
++    assert len(windows) == 10
++    # Re-indexed per branch so windows stay contiguous.
++    assert [w.newest_frame.sample_index for w in windows] == list(range(10))
++    gaps = np.diff([w.end_timestamp for w in windows])
++    assert gaps.max() < 0.61
++
++
++def test_branch_sampling_rejects_base_slower_than_a_branch():
++    with pytest.raises(ValueError):
++        BranchSampling(2.5, BranchCadence(5.0), BranchCadence(2.5))
++    with pytest.raises(ValueError):
++        BranchCadence(0)
++
++
++def _decoupled_config():
++    config = load_config(ROOT / "config.yaml")
++    return replace(
++        config,
++        video=replace(config.video, fps=5.0),
++        sliding_window=replace(config.sliding_window, size_frames=3, stride_frames=1),
++        face=replace(config.face, sample_fps=2.5),
++    )
++
++
++def test_selecting_stranger_keeps_safety_rate_and_window(monkeypatch):
++    monkeypatch.delenv("RESULT_WEBHOOK_URL", raising=False)
++    runtime = HarnessRuntime(_decoupled_config())
++    try:
++        runtime.start_camera(
++            analysis_mode="multi",
++            features=["smoking", "stranger"],
++            dry_run=True,
++            owner="branch-sampling-test",
++        )
++        session = runtime._session
++        assert session is not None
++        sampling = session.config.branch_sampling
++        assert sampling == BranchSampling(
++            5.0, BranchCadence(5.0, 3, 1), BranchCadence(2.5, 1, 1)
++        )
++        # Camera/stream sampling runs at the faster branch; face resolution
++        # stays the source for both branches (safety re-encodes it smaller).
++        assert session.config.video.fps == 5.0
++        assert session.config.video.max_image_side == 1280
++        assert session.branch_sampling_status()["safety"]["size_frames"] == 3
++        info = runtime.ui_info()["multi"]
++        assert info["sample_fps"] == 5.0
++        assert info["safety_sample_fps"] == 5.0
++        assert info["face_sample_fps"] == 2.5
++        assert info["safety_window"] == {"size_frames": 3, "stride_frames": 1}
++    finally:
++        runtime.stop()
++
++
++@pytest.mark.parametrize(
++    ("features", "expected_fps", "expected_size"),
++    [(["stranger"], 2.5, 1), (["smoking"], 5.0, 3)],
++)
++def test_single_branch_sessions_keep_their_existing_sampling(
++    monkeypatch, features, expected_fps, expected_size,
++):
++    monkeypatch.delenv("RESULT_WEBHOOK_URL", raising=False)
++    runtime = HarnessRuntime(_decoupled_config())
++    try:
++        runtime.start_camera(
++            analysis_mode="multi", features=features, dry_run=True, owner="single",
++        )
++        session = runtime._session
++        assert session is not None
++        assert session.config.branch_sampling is None
++        assert session.config.video.fps == expected_fps
++        assert session.config.sliding_window.size_frames == expected_size
++    finally:
++        runtime.stop()
++
++
++class _Safety:
++    def __init__(self, settings):
++        self.settings = settings
++        self.sizes: list[int] = []
++        self.lock = threading.Lock()
++
++    def classify_window(self, window):
++        with self.lock:
++            self.sizes.append(len(window.frames))
++        return GroundingResponse(
++            window,
++            MultiGroundedClassification(
++                (GroundedEventClassification("smoking", False, 0.9, "none"),)
++            ),
++            0.0,
++        )
++
++
++class _Face:
++    def __init__(self, settings):
++        self.settings = settings
++        self.timestamps: list[float] = []
++        self.lock = threading.Lock()
++
++    def classify_window(self, window):
++        with self.lock:
++            assert len(window.frames) == 1
++            self.timestamps.append(window.end_timestamp)
++        objects = (
++            ModelObject(
++                "unknown_person",
++                NormalizedBBox(0.2, 0.1, 0.4, 0.4),
++                attributes={"status": "unknown"},
++            ),
++        )
++        return GroundingResponse(
++            window,
++            GroundedClassification(
++                True, 0.9, "face", objects,
++                event_object_indexes=(0,), face_observations=objects,
++            ),
++            0.0,
++        )
++
++
++def test_live_pipeline_sends_multi_frame_safety_and_half_rate_faces():
++    config = _decoupled_config()
++    config = replace(
++        config,
++        branch_sampling=BranchSampling(
++            5.0, BranchCadence(5.0, 3, 1), BranchCadence(2.5, 1, 1)
++        ),
++    )
++    safety, face = _Safety(config.inference), _Face(config.inference)
++    client = SelectedFeaturesGroundingClient(
++        safety, face, safety_event_labels=("smoking",), face_live_scheduler="full",
++    )
++    ended = threading.Event()
++    session = StreamingSession.for_camera(
++        config, client, SessionCallbacks(on_end=lambda *_: ended.set()),
++    )
++    session.start()
++    for index in range(10):
++        assert session.push_camera_frame(
++            _jpeg(index), width=64, height=36,
++            timestamp_seconds=index * 0.2, source_frame_index=index,
++        )
++        time.sleep(0.01)
++    assert session.camera_source is not None
++    session.camera_source.close()
++    assert ended.wait(5), "session did not finish"
++    session.join(5)
++    # Ten frames at 5 FPS: the first full 3-frame window is at frame 2.
++    assert safety.sizes == [3] * 8
++    assert face.timestamps == pytest.approx([0.0, 0.4, 0.8, 1.2, 1.6])
++    status = session.branch_sampling_status()
++    assert status["stranger"]["selected_frames"] == 5
++    assert status["stranger"]["skipped_frames"] == 5
+diff --git a/tests/test_dashboard_classification.py b/tests/test_dashboard_classification.py
+index 56e71ea..ca69e22 100644
+--- a/tests/test_dashboard_classification.py
++++ b/tests/test_dashboard_classification.py
+@@ -15,6 +15,7 @@ import pytest
+         "dashboard_buffer_delay.cjs",
+         "dashboard_camera_layout.cjs",
+         "dashboard_routes.cjs",
++        "dashboard_diagnostics.cjs",
+     ]
+ )
+ def test_dashboard_handlers(script_name: str) -> None:
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+new file mode 100644
+index 0000000..91f8258
+--- /dev/null
++++ b/tests/test_diagnostics.py
+@@ -0,0 +1,310 @@
++"""Session diagnostics separate missed events from system failures.
++
++No real model, camera or network is used; transports raise the bounded
++errors the real client produces.
++"""
++
++from __future__ import annotations
++
++import json
++import threading
++import time
++from dataclasses import replace
++from pathlib import Path
++from typing import Any
++
++import cv2
++import numpy as np
++import pytest
++from fastapi.testclient import TestClient
++
++from goodvision_harness.config import load_config
++from goodvision_harness.diagnostics import (
++    SessionDiagnostics,
++    capture_call,
++    failure_category,
++    note_failure,
++)
++from goodvision_harness.grounding import (
++    AIClubMultiGroundingClient,
++    SelectedFeaturesGroundingClient,
++)
++from goodvision_harness.model_api import ModelAPIError
++from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
++from goodvision_harness.privacy import contains_private_implementation_detail
++from goodvision_harness.service import HarnessRuntime, create_app
++from goodvision_harness.sliding_window import FrameWindow, SampledFrame
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++@pytest.mark.parametrize(
++    ("failure", "category"),
++    [
++        ({"stage": "request", "code": "http_error", "http_status": 401}, "auth"),
++        ({"stage": "request", "code": "http_error", "http_status": 403}, "auth"),
++        ({"stage": "request", "code": "http_error", "http_status": 429},
++         "rate_limited"),
++        ({"stage": "request", "code": "http_error", "http_status": 503},
++         "server_error"),
++        ({"stage": "request", "code": "http_error", "http_status": 404},
++         "http_error"),
++        ({"stage": "request", "code": "timeout"}, "timeout"),
++        ({"stage": "request", "code": "connection"}, "connection"),
++        ({"stage": "request", "code": "empty_response"}, "bad_response"),
++        ({"stage": "classification", "code": "invalid_response"}, "parse"),
++        ({"stage": "input", "code": "invalid_response"}, "input"),
++        ({"stage": "merge", "code": "invalid_response"}, "internal"),
++        (None, "unknown"),
++    ],
++)
++def test_failure_categories(failure, category):
++    assert failure_category(failure) == category
++
++
++def test_failures_are_only_captured_inside_a_call():
++    note_failure(branch="safety", stage="request", code="timeout")
++    with capture_call() as capture:
++        note_failure(branch="safety", stage="request", code="timeout")
++    assert len(capture.failures) == 1
++
++
++def _frame(index: float, ts: float, captured: float | None = None) -> SampledFrame:
++    return SampledFrame(
++        int(index), int(index), ts, b"jpeg", 8, 8, captured_monotonic=captured,
++    )
++
++
++def _single(index: int, ts: float, captured: float | None = None) -> FrameWindow:
++    return FrameWindow(index, (_frame(index, ts, captured),))
++
++
++def test_coverage_gap_rate_and_latency_from_a_fake_clock():
++    now = [100.0]
++    diag = SessionDiagnostics(clock=lambda: now[0], rate_window_seconds=10.0)
++    outcomes = [True, False, False, False, True, True]  # frames 0..5 at 0.4 s
++    for index, ok in enumerate(outcomes):
++        window = _single(index, index * 0.4, captured=now[0])
++        diag.note_submitted("safety", window)
++        with capture_call() as capture:
++            if not ok:
++                note_failure(
++                    branch="safety", stage="request", code="http_error",
++                    http_status=401,
++                )
++        diag.note_call("safety", window, capture)
++        now[0] += 0.5
++        diag.note_completed(
++            "safety", window, ok=ok, model_latency_seconds=0.3,
++        )
++    diag.note_dropped("safety", _single(6, 2.4))
++    snap = diag.snapshot()["branches"]["safety"]
++    assert snap["succeeded"] == 3
++    assert snap["failed"] == 3
++    assert snap["dropped"] == 1
++    assert snap["failures"]["auth"] == 3
++    assert snap["last_failure"]["http_status"] == 401
++    # Analyzed at 0.0, 1.6, 2.0: the 1.6 s hole is the longest.
++    assert snap["longest_unanalyzed_gap_seconds"] == pytest.approx(1.6)
++    # Newest sampled frame (dropped) is 2.4 s; newest analyzed is 2.0 s.
++    assert snap["current_unanalyzed_gap_seconds"] == pytest.approx(0.4)
++    # Three successes during the first three seconds of the session.
++    assert snap["analyzed_per_second"] == pytest.approx(1.0)
++    assert snap["latency_seconds"]["capture_to_result"]["p50"] == pytest.approx(0.5)
++    assert snap["latency_seconds"]["model"]["count"] == 3
++    now[0] += 30.0
++    assert diag.snapshot()["branches"]["safety"]["analyzed_per_second"] == 0.0
++    inputs = diag.snapshot()["model_inputs"]
++    assert [entry["outcome"] for entry in inputs][:2] == ["ok", "ok"]
++    assert "jpeg" not in json.dumps(inputs)
++    assert diag.model_input_jpeg(inputs[0]["id"]) == b"jpeg"
++
++
++def _analyze_all(diag, now, count, *, period=0.4, latency=0.8, skip=()):
++    for index in range(count):
++        timestamp = index * period
++        window = _single(index, timestamp, captured=timestamp)
++        now[0] = timestamp
++        if index in skip:
++            diag.note_dropped("safety", window)
++            continue
++        diag.note_submitted("safety", window)
++        with capture_call() as capture:
++            pass
++        diag.note_call("safety", window, capture)
++        now[0] = timestamp + latency
++        diag.note_completed("safety", window, ok=True, model_latency_seconds=latency)
++
++
++def test_longest_gap_stays_real_after_history_is_evicted():
++    now = [0.0]
++    diag = SessionDiagnostics(clock=lambda: now[0], history=16)
++    _analyze_all(diag, now, 10)
++    short = diag.snapshot()["branches"]["safety"]
++    assert short["gap_scope"] == "session"
++    assert short["longest_unanalyzed_gap_seconds"] == pytest.approx(0.4)
++    # Ten minutes at 2.5 FPS with no missing frame: previously the session
++    # start was paired with the oldest retained frame (a 395 s false gap).
++    now = [0.0]
++    diag = SessionDiagnostics(clock=lambda: now[0], history=512)
++    _analyze_all(diag, now, 1500)
++    long = diag.snapshot()["branches"]["safety"]
++    assert long["gap_scope"] == "recent"
++    assert long["gap_history_size"] == 512
++    assert long["longest_unanalyzed_gap_seconds"] == pytest.approx(0.4)
++    # A real hole inside the retained history is still reported.
++    now = [0.0]
++    diag = SessionDiagnostics(clock=lambda: now[0], history=16)
++    _analyze_all(diag, now, 40, skip={33, 34, 35})
++    holed = diag.snapshot()["branches"]["safety"]
++    assert holed["gap_scope"] == "recent"
++    assert holed["longest_unanalyzed_gap_seconds"] == pytest.approx(1.6)
++    assert holed["dropped"] == 3
++    assert holed["in_flight"] == 0
++
++
++def _jpeg(width: int, height: int, value: int = 40) -> bytes:
++    ok, encoded = cv2.imencode(".jpg", np.full((height, width, 3), value, np.uint8))
++    assert ok
++    return encoded.tobytes()
++
++
++class _FailingTransport:
++    def __init__(self, error: Exception | None = None, text: str | None = None):
++        self.error = error
++        self.text = text
++        self.calls = 0
++
++    def chat_completion(self, **_kwargs: Any) -> dict:
++        self.calls += 1
++        if self.error is not None:
++            raise self.error
++        return {}
++
++    def assistant_text(self, _response: dict) -> str:
++        return self.text or ""
++
++
++def _run_camera_session(transport, frames: int = 4):
++    config = load_config(ROOT / "config.yaml")
++    safety = AIClubMultiGroundingClient(
++        config.inference, transport, event_labels=("smoking",),
++    )
++    client = SelectedFeaturesGroundingClient(
++        safety, None, safety_event_labels=("smoking",), include_stranger=False,
++        safety_max_image_side=320, safety_jpeg_quality=75,
++    )
++    ended = threading.Event()
++    config = replace(
++        config, sliding_window=replace(config.sliding_window, size_frames=1),
++    )
++    session = StreamingSession.for_camera(
++        config, client, SessionCallbacks(on_end=lambda *_: ended.set()),
++    )
++    session.start()
++    for index in range(frames):
++        assert session.push_camera_frame(
++            _jpeg(640, 360, index * 20), width=640, height=360,
++            timestamp_seconds=index * 0.4, source_frame_index=index,
++        )
++        time.sleep(0.02)
++    assert session.camera_source is not None
++    session.camera_source.close()
++    assert ended.wait(5)
++    session.join(5)
++    return session
++
++
++def test_auth_failures_are_counted_and_the_sent_image_is_kept():
++    transport = _FailingTransport(
++        ModelAPIError("HTTP 401", code="http_error", status_code=401)
++    )
++    session = _run_camera_session(transport)
++    snap = session.diagnostics_snapshot()
++    branch = snap["branches"]["analysis"]
++    assert transport.calls == 4
++    assert branch["failures"]["auth"] == 4
++    assert branch["succeeded"] == 0
++    assert branch["longest_unanalyzed_gap_seconds"] is None
++    assert branch["current_unanalyzed_gap_seconds"] == pytest.approx(1.2)
++    entry = snap["model_inputs"][0]
++    assert entry["role"] == "safety"
++    assert entry["outcome"] == "auth"
++    # The engine received the 320 px re-encoded frame, not the 640 px source.
++    assert (entry["frames"][0]["width"], entry["frames"][0]["height"]) == (320, 180)
++    assert (entry["source_width"], entry["source_height"]) == (640, 360)
++    jpeg = session.diagnostics.model_input_jpeg(entry["id"])
++    decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
++    assert decoded.shape[:2] == (180, 320)
++
++
++@pytest.mark.parametrize(
++    ("transport", "category"),
++    [
++        (_FailingTransport(ModelAPIError("slow", code="timeout")), "timeout"),
++        (_FailingTransport(text="not json at all"), "parse"),
++    ],
++)
++def test_timeout_and_parse_failures_are_separated(transport, category):
++    session = _run_camera_session(transport, frames=2)
++    branch = session.diagnostics_snapshot()["branches"]["analysis"]
++    assert branch["failures"][category] == 2
++    assert sum(branch["failures"].values()) == 2
++
++
++def test_successful_results_report_capture_to_result_latency():
++    text = json.dumps({"no_events": 0.9})
++    session = _run_camera_session(_FailingTransport(text=text), frames=3)
++    branch = session.diagnostics_snapshot()["branches"]["analysis"]
++    assert branch["succeeded"] == 3
++    latency = branch["latency_seconds"]["capture_to_result"]
++    assert latency["count"] == 3
++    assert 0 <= latency["p95"] < 5
++    assert branch["longest_unanalyzed_gap_seconds"] == pytest.approx(0.4)
++
++
++def test_diagnostics_http_surface(monkeypatch):
++    monkeypatch.delenv("RESULT_WEBHOOK_URL", raising=False)
++    runtime = HarnessRuntime(load_config(ROOT / "config.yaml"))
++    client = TestClient(create_app(lambda: runtime))
++    with client:
++        empty = client.get("/v1/diagnostics")
++        assert empty.status_code == 200
++        assert empty.json()["state"] == "no_session"
++        assert client.get(
++            "/v1/diagnostics/model-inputs/1/frames/-1.jpg"
++        ).status_code == 404
++        runtime.start_camera(
++            analysis_mode="multi", features=["smoking", "stranger"],
++            dry_run=True, owner="diag",
++        )
++        for _ in range(3):
++            runtime.push_camera_frame(
++                _jpeg(640, 360), width=640, height=360, owner="diag",
++            )
++            time.sleep(0.45)
++        deadline = time.monotonic() + 5
++        while time.monotonic() < deadline:
++            body = client.get("/v1/diagnostics").json()
++            inputs = body.get("model_inputs") or []
++            if any(entry["role"] == "safety" for entry in inputs):
++                break
++            time.sleep(0.05)
++        assert body["state"] == "active"
++        assert body["session"]["features"] == ["smoking", "stranger"]
++        assert set(body["branches"]) <= {"safety", "stranger"}
++        assert body["sampling"]["safety"]["fps"] == 2.5
++        safety_input = next(e for e in inputs if e["role"] == "safety")
++        image = client.get(
++            f"/v1/diagnostics/model-inputs/{safety_input['id']}/frames/-1.jpg"
++        )
++        assert image.status_code == 200
++        assert image.headers["content-type"] == "image/jpeg"
++        assert image.headers["cache-control"] == "no-store"
++        runtime.stop_session()
++        finished = client.get("/v1/diagnostics").json()
++        assert finished["state"] == "finished"
++        assert not contains_private_implementation_detail(json.dumps(finished))
++        spec = client.get("/openapi.json").text
++        assert "/v1/diagnostics" in spec
++        assert not contains_private_implementation_detail(spec)
+diff --git a/tests/test_replay_stress.py b/tests/test_replay_stress.py
+new file mode 100644
+index 0000000..5f5b641
+--- /dev/null
++++ b/tests/test_replay_stress.py
+@@ -0,0 +1,366 @@
++"""The replay tool drives the real pipeline with a deterministic simulator."""
++
++from __future__ import annotations
++
++import argparse
++import importlib.util
++import json
++import sys
++from dataclasses import replace
++from pathlib import Path
++
++import cv2
++import numpy as np
++import pytest
++
++from goodvision_harness.config import load_config
++from goodvision_harness.grounding import AIClubMultiGroundingClient
++from goodvision_harness.model_api import ModelAPIError
++from goodvision_harness.sliding_window import FrameWindow, SampledFrame
++
++ROOT = Path(__file__).resolve().parents[1]
++SPEC = importlib.util.spec_from_file_location(
++    "replay_stress", ROOT / "tools/replay_stress.py",
++)
++assert SPEC and SPEC.loader
++replay = importlib.util.module_from_spec(SPEC)
++sys.modules[SPEC.name] = replay
++SPEC.loader.exec_module(replay)
++
++
++def _no_sleep(_seconds: float) -> None:
++    return None
++
++
++def test_event_arguments_are_validated():
++    event = replay.parse_event("smoking:1.5-2")
++    assert (event.label, event.start, event.end) == ("smoking", 1.5, 2.0)
++    assert event.scaled(2).end == 1.0
++    for bad in ("smoking", "dance:1-2", "fight:3-2"):
++        with pytest.raises(argparse.ArgumentTypeError):
++            replay.parse_event(bad)
++
++
++def _window(*timestamps: float) -> FrameWindow:
++    ok, jpeg = cv2.imencode(".jpg", np.zeros((36, 64, 3), np.uint8))
++    assert ok
++    return FrameWindow(0, tuple(
++        SampledFrame(i, i, ts, jpeg.tobytes(), 64, 36)
++        for i, ts in enumerate(timestamps)
++    ))
++
++
++def _client(transport):
++    settings = load_config(ROOT / "config.yaml").inference
++    return AIClubMultiGroundingClient(
++        settings, transport, event_labels=("fight", "smoking"),
++    )
++
++
++def test_simulated_replies_pass_the_real_parser():
++    events = [replay.LabelledEvent("smoking", 1.0, 1.4)]
++    profile = replay.SimulationProfile(latency_ms=0)
++    transport = replay.SimulatedAnalysisTransport(
++        profile, events, ("fight", "smoking"), sleep=_no_sleep,
++    )
++    client = _client(transport)
++    positive = client.classify_window(_window(0.6, 1.2))
++    judgments = {j.event_label: j.detected for j in positive.classification.judgments}
++    assert judgments == {"fight": False, "smoking": True}
++    negative = client.classify_window(_window(2.0))
++    assert not any(j.detected for j in negative.classification.judgments)
++    assert [c.timestamps for c in transport.calls] == [(0.6, 1.2), (2.0,)]
++
++
++@pytest.mark.parametrize(
++    ("rates", "outcome"),
++    [({"auth_rate": 1.0}, "auth"), ({"timeout_rate": 1.0}, "timeout"),
++     ({"parse_error_rate": 1.0}, "parse")],
++)
++def test_simulated_failures_use_the_real_error_paths(rates, outcome):
++    profile = replay.SimulationProfile(latency_ms=0, timeout_ms=0, **rates)
++    transport = replay.SimulatedAnalysisTransport(
++        profile, [], ("smoking",), sleep=_no_sleep,
++    )
++    if outcome == "parse":
++        response = _client(transport).classify_window(_window(0.0))
++        assert response.classification is None
++    else:
++        with pytest.raises(ModelAPIError):
++            transport.chat_completion(messages=[{"content": []}])
++    assert transport.calls[-1].outcome == outcome
++
++
++def test_profile_rejects_impossible_rates():
++    with pytest.raises(ValueError):
++        replay.SimulationProfile(auth_rate=0.6, timeout_rate=0.6).validate()
++
++
++@pytest.fixture(scope="module")
++def synthetic_video(tmp_path_factory) -> Path:
++    path = tmp_path_factory.mktemp("replay") / "clip.avi"
++    writer = cv2.VideoWriter(
++        str(path), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (64, 36),
++    )
++    assert writer.isOpened()
++    for index in range(30):
++        writer.write(np.full((36, 64, 3), index * 8, np.uint8))
++    writer.release()
++    return path
++
++
++def _run(video, features, speed, **overrides):
++    config = replay.session_config(
++        load_config(ROOT / "config.yaml"), features, **overrides,
++    )
++    clip = replay.Clip("synthetic", video, (
++        replay.LabelledEvent("smoking", 1.55, 1.75),
++    ))
++    profile = replay.SimulationProfile(latency_ms=0, face_latency_ms=0)
++    return replay.replay_clip(
++        clip, config, features, profile, speed=speed, realtime=False,
++    )
++
++
++def test_short_event_is_sampled_at_normal_speed_but_not_when_compressed(
++    synthetic_video,
++):
++    normal = _run(synthetic_video, ("smoking",), 1.0, window_size=1)
++    assert normal["summary"]["detected"] == 1
++    assert normal["summary"]["false_alarms"] == 0
++    fast = _run(synthetic_video, ("smoking",), 3.0, window_size=1)
++    assert fast["events"][0]["verdict"] == "not_sampled"
++    assert fast["events"][0]["duration_seconds"] == pytest.approx(0.0667, abs=1e-3)
++
++
++def test_mixed_replay_keeps_independent_branch_cadences(synthetic_video):
++    report = _run(
++        synthetic_video, ("smoking", "stranger"), 1.0,
++        event_fps=5.0, window_size=3, face_fps=2.5,
++    )
++    sampling = report["diagnostics"]["sampling"]
++    assert sampling["safety"]["fps"] == 5.0
++    assert sampling["safety"]["size_frames"] == 3
++    safety_frames = sampling["safety"]["selected_frames"]
++    assert sampling["stranger"]["selected_frames"] < safety_frames
++    assert report["summary"]["detected"] == 1
++    assert set(report["diagnostics"]["branches"]) == {"safety", "stranger"}
++
++
++def test_cli_writes_a_report(synthetic_video, tmp_path, capsys):
++    output = tmp_path / "report.json"
++    code = replay.main([
++        str(synthetic_video), "--event", "smoking:1.55-1.75", "--no-realtime",
++        "--latency-ms", "0", "--features", "smoking", "--output", str(output),
++    ])
++    assert code == 0
++    assert output.is_file()
++    assert "1/1 detected" in capsys.readouterr().out
++
++
++class _RealService:
++    """Stands in for ModelAPIClient: always an all-negative verdict."""
++
++    def __init__(self, error=None):
++        self.error = error
++
++    def chat_completion(self, **_kwargs):
++        if self.error is not None:
++            raise self.error
++        return {"text": '{"no_events": 0.9}'}
++
++    def assistant_text(self, response):
++        return response["text"]
++
++
++def test_recording_transport_classifies_real_service_failures():
++    events = [replay.LabelledEvent("smoking", 0.0, 1.0)]
++    failing = replay.RecordingTransport(
++        _RealService(ModelAPIError("x", code="http_error", status_code=401)),
++        events, ("smoking",),
++    )
++    assert _client(failing).classify_window(_window(0.5)).classification is None
++    assert failing.calls[0].outcome == "auth"
++    working = replay.RecordingTransport(_RealService(), events, ("smoking",))
++    working.chat_completion(messages=[{"content": [
++        {"type": "text", "text": "Sample timestamps: f0=0.500s"},
++    ]}])
++    assert working.calls[0].outcome == "ok"
++    assert working.calls[0].oracle_positives == ("smoking",)
++
++
++def test_real_mode_reports_evidence_the_service_did_not_recognize(synthetic_video):
++    config = replay.session_config(
++        load_config(ROOT / "config.yaml"), ("smoking",), window_size=1,
++    )
++    clip = replay.Clip("synthetic", synthetic_video, (
++        replay.LabelledEvent("smoking", 1.55, 1.75),
++    ))
++    report = replay.replay_clip(
++        clip, config, ("smoking",), replay.SimulationProfile(),
++        realtime=False, real_transport=_RealService(),
++    )
++    assert report["analysis_service"] == "real"
++    assert report["events"][0]["verdict"] == "not_recognized"
++    assert report["events"][0]["request_outcomes"] == {"ok": 1}
++
++
++def test_manifest_ignore_intervals_suppress_boundary_false_alarms(
++    synthetic_video, tmp_path,
++):
++    manifest = tmp_path / "manifest.json"
++    manifest.write_text(json.dumps({"clips": [{
++        "id": "synthetic", "path": str(synthetic_video),
++        "events": [{"label": "smoking", "start": 1.55, "end": 1.75}],
++        "ignore": [{"start": 0.0, "end": 1.0}],
++    }]}), encoding="utf-8")
++    clip = replay.load_manifest(manifest)[0]
++    assert clip.ignore == ((0.0, 1.0),)
++    config = replay.session_config(
++        load_config(ROOT / "config.yaml"), ("smoking",), window_size=1,
++    )
++    # Every successful simulated reply is positive.
++    profile = replay.SimulationProfile(latency_ms=0, false_positive_rate=1.0)
++    with_ignore = replay.replay_clip(
++        clip, config, ("smoking",), profile, realtime=False,
++    )
++    without = replay.replay_clip(
++        replace(clip, ignore=()), config, ("smoking",), profile, realtime=False,
++    )
++    # Samples at 0.0, 0.4, 0.8 fall in the ignored span; 2.0-2.8 do not.
++    assert without["summary"]["false_alarms"] - with_ignore["summary"][
++        "false_alarms"
++    ] == 3
++    assert with_ignore["summary"]["detected"] == 1
++
++
++class _CapturingService(_RealService):
++    def __init__(self):
++        super().__init__()
++        self.messages = []
++
++    def chat_completion(self, **kwargs):
++        self.messages.append(json.dumps(kwargs["messages"], ensure_ascii=False))
++        return super().chat_completion(**kwargs)
++
++
++@pytest.mark.parametrize(
++    ("override", "expected", "absent"),
++    [(None, "SMOKING_HIGH_RULE", "SMOKING_EVIDENCE_RULE"),
++     ({"smoking": "standard"}, "SMOKING_EVIDENCE_RULE", "SMOKING_HIGH_RULE")],
++)
++def test_real_mode_uses_the_service_smoking_policy(
++    synthetic_video, override, expected, absent,
++):
++    from goodvision_harness import event_sensitivity, grounding
++
++    rules = {
++        "SMOKING_HIGH_RULE": event_sensitivity.SMOKING_HIGH_RULE,
++        "SMOKING_EVIDENCE_RULE": grounding.SMOKING_EVIDENCE_RULE,
++    }
++    config = replay.session_config(
++        load_config(ROOT / "config.yaml"), ("smoking",), window_size=1,
++    )
++    clip = replay.Clip("synthetic", synthetic_video, ())
++    service = _CapturingService()
++    report = replay.replay_clip(
++        clip, config, ("smoking",), replay.SimulationProfile(),
++        realtime=False, real_transport=service, event_sensitivities=override,
++    )
++    assert service.messages
++    assert all(rules[expected] in text for text in service.messages)
++    assert not any(rules[absent] in text for text in service.messages)
++    level = "high" if override is None else "standard"
++    assert report["event_sensitivities"]["smoking"] == level
++
++
++def test_request_budget_stops_sending_once_spent():
++    service = _CapturingService()
++    budget = replay.RequestBudget(1)
++    transport = replay.RecordingTransport(
++        service, [], ("smoking",), budget=budget,
++    )
++    message = [{"content": [{"type": "text", "text": "f0=0.500s"}]}]
++    transport.chat_completion(messages=message)
++    with pytest.raises(ModelAPIError):
++        transport.chat_completion(messages=message)
++    assert len(service.messages) == 1
++    assert [c.outcome for c in transport.calls] == ["ok", "budget_exhausted"]
++    assert (budget.used, budget.limit) == (1, 1)
++    with pytest.raises(ValueError):
++        replay.RequestBudget(0)
++
++
++def test_real_budget_is_shared_across_a_replay(synthetic_video):
++    config = replay.session_config(
++        load_config(ROOT / "config.yaml"), ("smoking",), window_size=1,
++    )
++    clip = replay.Clip("synthetic", synthetic_video, ())
++    service = _CapturingService()
++    budget = replay.RequestBudget(2)
++    report = replay.replay_clip(
++        clip, config, ("smoking",), replay.SimulationProfile(),
++        realtime=False, real_transport=service, request_budget=budget,
++    )
++    assert len(service.messages) == 2
++    outcomes = report["summary"]["request_outcomes"]
++    assert outcomes["ok"] == 2
++    assert outcomes["budget_exhausted"] >= 1
++
++
++def test_request_estimate_bounds_the_replayed_windows(synthetic_video):
++    config = replay.session_config(
++        load_config(ROOT / "config.yaml"), ("smoking",), window_size=1,
++    )
++    clip = replay.Clip("synthetic", synthetic_video, ())
++    estimate = replay.estimate_safety_requests([clip], config, [1.0])
++    report = replay.replay_clip(
++        clip, config, ("smoking",), replay.SimulationProfile(latency_ms=0),
++        realtime=False,
++    )
++    sent = sum(report["summary"]["request_outcomes"].values())
++    assert 0 < sent <= estimate
++    assert replay.estimate_safety_requests([clip], config, [1.0, 2.0]) > estimate
++    assert replay.estimate_safety_requests([clip, clip], config, [1.0]) == (
++        2 * estimate
++    )
++
++
++def test_real_cli_refuses_before_creating_a_client(
++    synthetic_video, monkeypatch, capsys,
++):
++    def forbidden(*_args, **_kwargs):
++        raise AssertionError("the analysis client must not be created")
++
++    monkeypatch.setattr(replay, "ModelAPIClient", forbidden)
++    with pytest.raises(SystemExit) as exc:
++        replay.main([
++            str(synthetic_video), "--real", "--no-realtime",
++            "--features", "smoking", "--max-requests", "1",
++        ])
++    assert "exceed --max-requests 1" in str(exc.value)
++    with pytest.raises(SystemExit):
++        replay.main([str(synthetic_video), "--real", "--max-requests", "0"])
++    assert "real service" not in capsys.readouterr().out
++
++
++def test_real_cli_reports_paid_requests(synthetic_video, monkeypatch, tmp_path):
++    service = _CapturingService()
++    monkeypatch.setattr(replay, "ModelAPIClient", lambda _settings: service)
++    output = tmp_path / "real.json"
++    code = replay.main([
++        str(synthetic_video), "--real", "--no-realtime", "--features", "smoking",
++        "--event-sensitivity", "smoking=standard", "--output", str(output),
++    ])
++    assert code == 0
++    report = json.loads(output.read_text(encoding="utf-8"))
++    assert report["analysis_service"] == "real"
++    assert report["event_sensitivities"] == {"smoking": "standard"}
++    assert report["paid_requests"] == len(service.messages) > 0
++
++
++def test_event_sensitivity_arguments_are_validated():
++    assert replay._event_sensitivity(" smoking = high ") == ("smoking", "high")
++    for bad in ("smoking", "smoking=max", "stranger=high", "dance=standard"):
++        with pytest.raises(argparse.ArgumentTypeError):
++            replay._event_sensitivity(bad)
+diff --git a/tools/replay_stress.py b/tools/replay_stress.py
+new file mode 100644
+index 0000000..f9e382c
+--- /dev/null
++++ b/tools/replay_stress.py
+@@ -0,0 +1,961 @@
++"""Replay local videos in real time through the full live pipeline.
++
++Each video is paced like a camera and passes through the real sampler, the
++per-branch windows, the real prompt builder and response parser, the result
++organizer and the session diagnostics. Only the remote analysis service is
++replaced by a simulator, which can be slowed down, time out, fail
++authentication, return unparseable text, or finish out of order.
++
++The simulator behaves as an *oracle*: it reports an event exactly when a frame
++it received lies inside a labelled interval. A miss therefore means the action
++evidence never reached the analysis request (not sampled, dropped, failed or
++too late), not that a model failed to recognise it. Real recognition quality
++still needs labelled footage and the real service.
++
++``--speed`` compresses the timeline: a 2 s action replayed at ``--speed 3``
++lasts 0.67 s for the sampler, which is how fast events are emulated. The
++sampling rate stays the configured rate in compressed time.
++
++Example::
++
++    python tools/replay_stress.py clip.mp4 --event smoking:2.0-3.5 \\
++        --speed 2 --latency-ms 900 --slow-rate 0.1 --timeout-rate 0.05 \\
++        --output tmp/replay/report.json
++
++With ``--real`` the safety branch calls the configured analysis service with
++the same per-event sensitivity policy as the live service (smoking defaults to
++high; override with ``--event-sensitivity smoking=standard``). Paid requests
++are capped by ``--max-requests``: the run is refused up front when the
++estimated count exceeds it, and any request beyond it fails without being
++sent.
++
++Manifests use ``{"clips": [{"id", "path", "events": [{"label", "start",
++"end"}], "ignore": [{"start", "end"}]}]}``. Clips without ``events`` are
++treated as all-negative; positives inside ``ignore`` intervals are not counted
++as false alarms. Relative paths resolve against the manifest's directory, then
++the working directory.
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import math
++import random
++import re
++import sys
++import threading
++import time
++from collections import Counter
++from collections.abc import Iterator, Mapping, Sequence
++from dataclasses import asdict, dataclass, field, replace
++from pathlib import Path
++from typing import Any
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / "src"))
++
++from goodvision_harness.config import HarnessConfig, load_config  # noqa: E402
++from goodvision_harness.diagnostics import failure_category  # noqa: E402
++from goodvision_harness.event_sensitivity import (  # noqa: E402
++    normalize_event_sensitivities,
++)
++from goodvision_harness.grounding import (  # noqa: E402
++    DETECTION_EVENT_LABELS,
++    SAFETY_EVENT_LABELS,
++    DryRunStrangerGroundingClient,
++    build_selected_features_grounding_client,
++)
++from goodvision_harness.model_api import ModelAPIClient, ModelAPIError  # noqa: E402
++from goodvision_harness.pipeline import (  # noqa: E402
++    FILE_MODE,
++    SessionCallbacks,
++    StreamingSession,
++    mixed_branch_sampling,
++)
++from goodvision_harness.video_to_stream import (  # noqa: E402
++    LiveFrame,
++    VideoFileStream,
++    probe_video,
++)
++
++_TIMESTAMP_PATTERN = re.compile(r"f\d+=(\d+(?:\.\d+)?)s")
++_OBJECT_LABELS = {
++    "fight": "person",
++    "smoking": "cigarette",
++    "fall": "person",
++    "weapon": "knife",
++}
++_ZH_NAMES = {"fight": "打架", "smoking": "吸烟", "fall": "跌倒", "weapon": "持械"}
++
++
++# ------------------------------------------------------------------ inputs
++
++@dataclass(frozen=True, slots=True)
++class LabelledEvent:
++    label: str
++    start: float
++    end: float
++
++    def __post_init__(self) -> None:
++        if self.label not in SAFETY_EVENT_LABELS:
++            raise ValueError(f"unsupported event label: {self.label}")
++        if not 0 <= self.start <= self.end:
++            raise ValueError("event interval must satisfy 0 <= start <= end")
++
++    def scaled(self, speed: float) -> LabelledEvent:
++        return LabelledEvent(self.label, self.start / speed, self.end / speed)
++
++
++@dataclass(frozen=True, slots=True)
++class Clip:
++    clip_id: str
++    path: Path
++    events: tuple[LabelledEvent, ...] = ()
++    # Ambiguous source intervals (e.g. an item half-raised): positives inside
++    # them are neither hits nor false alarms.
++    ignore: tuple[tuple[float, float], ...] = ()
++
++
++def parse_event(text: str) -> LabelledEvent:
++    """Parse ``label:start-end`` in source seconds."""
++
++    match = re.fullmatch(r"\s*([a-z]+)\s*:\s*([\d.]+)\s*-\s*([\d.]+)\s*", text)
++    if match is None:
++        raise argparse.ArgumentTypeError("events use label:start-end, e.g. fight:2-3.5")
++    try:
++        return LabelledEvent(match[1], float(match[2]), float(match[3]))
++    except ValueError as exc:
++        raise argparse.ArgumentTypeError(str(exc)) from exc
++
++
++def load_manifest(path: Path) -> list[Clip]:
++    data = json.loads(path.read_text(encoding="utf-8"))
++    clips = []
++    for item in data.get("clips", []):
++        clip_path = Path(item["path"]).expanduser()
++        if not clip_path.is_absolute():
++            beside = path.parent / clip_path
++            clip_path = beside if beside.exists() else Path.cwd() / clip_path
++        events = tuple(
++            LabelledEvent(str(e["label"]), float(e["start"]), float(e["end"]))
++            for e in item.get("events", [])
++        )
++        ignore = tuple(
++            (float(span["start"]), float(span["end"]))
++            for span in item.get("ignore", [])
++        )
++        if any(not 0 <= start <= end for start, end in ignore):
++            raise ValueError("ignore intervals must satisfy 0 <= start <= end")
++        clips.append(Clip(
++            str(item.get("id") or clip_path.stem), clip_path, events, ignore,
++        ))
++    if not clips:
++        raise ValueError("manifest contains no clips")
++    return clips
++
++
++# -------------------------------------------------------------- simulation
++
++def oracle_labels(
++    events: Sequence[LabelledEvent],
++    labels: Sequence[str],
++    timestamps: Sequence[float],
++) -> tuple[str, ...]:
++    """Labels whose interval contains any of the sent frame timestamps."""
++
++    hits = {
++        event.label
++        for event in events
++        for ts in timestamps
++        # Timestamps are printed with millisecond precision.
++        if event.start - 0.0005 <= ts <= event.end + 0.0005
++    }
++    return tuple(label for label in labels if label in hits)
++
++
++def _timestamps_from_messages(
++    messages: Sequence[Mapping[str, Any]],
++) -> tuple[float, ...]:
++    text = ""
++    for part in messages[-1].get("content", []) if messages else []:
++        if isinstance(part, Mapping) and part.get("type") == "text":
++            text += str(part.get("text", ""))
++    return tuple(float(v) for v in _TIMESTAMP_PATTERN.findall(text))
++
++@dataclass(slots=True)
++class SimulationProfile:
++    latency_ms: float = 800.0
++    latency_sigma: float = 0.35
++    slow_rate: float = 0.0
++    slow_ms: float = 4000.0
++    timeout_rate: float = 0.0
++    timeout_ms: float = 8000.0
++    auth_rate: float = 0.0
++    parse_error_rate: float = 0.0
++    false_positive_rate: float = 0.0
++    face_latency_ms: float = 150.0
++    seed: int = 7
++
++    def validate(self) -> None:
++        for name in (
++            "slow_rate", "timeout_rate", "auth_rate", "parse_error_rate",
++            "false_positive_rate",
++        ):
++            value = getattr(self, name)
++            if not 0 <= value <= 1:
++                raise ValueError(f"{name} must be between 0 and 1")
++        if self.auth_rate + self.timeout_rate + self.parse_error_rate > 1:
++            raise ValueError("failure rates must not add up to more than 1")
++        for name in ("latency_ms", "slow_ms", "timeout_ms", "face_latency_ms"):
++            if getattr(self, name) < 0:
++                raise ValueError(f"{name} must not be negative")
++
++
++@dataclass(slots=True)
++class CallRecord:
++    call_id: int
++    started: float
++    timestamps: tuple[float, ...]
++    outcome: str = "pending"
++    finished: float | None = None
++    positives: tuple[str, ...] = ()
++    oracle_positives: tuple[str, ...] = ()
++
++
++class SimulatedAnalysisTransport:
++    """Stands in for the remote service behind the real multi-event client."""
++
++    def __init__(
++        self,
++        profile: SimulationProfile,
++        events: Sequence[LabelledEvent],
++        labels: Sequence[str],
++        *,
++        sleep=time.sleep,
++        clock=time.monotonic,
++    ) -> None:
++        profile.validate()
++        self.profile = profile
++        self.events = tuple(events)
++        self.labels = tuple(labels)
++        self._sleep = sleep
++        self._clock = clock
++        self._rng = random.Random(profile.seed)
++        self._lock = threading.Lock()
++        self.calls: list[CallRecord] = []
++
++    def _draw(self) -> tuple[str, float, bool]:
++        p = self.profile
++        with self._lock:
++            roll = self._rng.random()
++            latency = p.latency_ms * math.exp(self._rng.gauss(0.0, p.latency_sigma))
++            if self._rng.random() < p.slow_rate:
++                latency = max(latency, p.slow_ms)
++            false_positive = self._rng.random() < p.false_positive_rate
++        if roll < p.auth_rate:
++            return "auth", min(latency, 150.0), False
++        roll -= p.auth_rate
++        if roll < p.timeout_rate:
++            return "timeout", p.timeout_ms, False
++        roll -= p.timeout_rate
++        if roll < p.parse_error_rate:
++            return "parse", latency, False
++        return "ok", latency, false_positive
++
++    def oracle(self, timestamps: Sequence[float]) -> tuple[str, ...]:
++        return oracle_labels(self.events, self.labels, timestamps)
++
++    def chat_completion(self, *, messages: Sequence[Mapping[str, Any]], **_: Any):
++        timestamps = _timestamps_from_messages(messages)
++        with self._lock:
++            record = CallRecord(len(self.calls) + 1, self._clock(), timestamps)
++            self.calls.append(record)
++        outcome, latency_ms, false_positive = self._draw()
++        self._sleep(latency_ms / 1000.0)
++        record.finished = self._clock()
++        record.outcome = outcome
++        if outcome == "auth":
++            raise ModelAPIError("simulated 401", code="http_error", status_code=401)
++        if outcome == "timeout":
++            raise ModelAPIError("simulated timeout", code="timeout")
++        if outcome == "parse":
++            return {"text": "simulated unparseable reply"}
++        record.oracle_positives = self.oracle(timestamps)
++        positives = set(record.oracle_positives)
++        if false_positive and self.labels:
++            with self._lock:
++                positives.add(self._rng.choice(self.labels))
++        record.positives = tuple(label for label in self.labels if label in positives)
++        return {"text": self._reply(record.positives)}
++
++    def assistant_text(self, response: Mapping[str, Any]) -> str:
++        return str(response["text"])
++
++    def _reply(self, positives: Sequence[str]) -> str:
++        if not positives:
++            return json.dumps({"no_events": 0.95})
++        events = []
++        for label in self.labels:
++            detected = label in positives
++            zh = _ZH_NAMES[label]
++            events.append({
++                "event_label": label,
++                "detected": detected,
++                "confidence": 0.9 if detected else 0.95,
++                "description": (
++                    f"模拟{zh}事件。 / Simulated {label} event."
++                    if detected
++                    else f"未发现{zh}。 / No simulated {label}."
++                ),
++                "objects": (
++                    [{
++                        "label": _OBJECT_LABELS[label],
++                        "confidence": 0.9,
++                        "bbox_2d": [300, 200, 600, 900],
++                    }]
++                    if detected else []
++                ),
++            })
++        return json.dumps({"events": events}, ensure_ascii=False)
++
++
++class RequestBudget:
++    """Hard cap on paid requests shared by every replayed clip and speed."""
++
++    def __init__(self, limit: int) -> None:
++        if limit < 1:
++            raise ValueError("request budget must be at least 1")
++        self.limit = int(limit)
++        self.used = 0
++        self._lock = threading.Lock()
++
++    def take(self) -> bool:
++        with self._lock:
++            if self.used >= self.limit:
++                return False
++            self.used += 1
++            return True
++
++
++class RecordingTransport:
++    """The configured real service, with the simulator's per-request records."""
++
++    def __init__(
++        self,
++        inner: Any,
++        events: Sequence[LabelledEvent],
++        labels: Sequence[str],
++        *,
++        budget: RequestBudget | None = None,
++        clock=time.monotonic,
++    ) -> None:
++        self._inner = inner
++        self.events = tuple(events)
++        self.labels = tuple(labels)
++        self._budget = budget
++        self._clock = clock
++        self._lock = threading.Lock()
++        self.calls: list[CallRecord] = []
++
++    def chat_completion(self, *, messages: Sequence[Mapping[str, Any]], **params):
++        timestamps = _timestamps_from_messages(messages)
++        with self._lock:
++            record = CallRecord(len(self.calls) + 1, self._clock(), timestamps)
++            self.calls.append(record)
++        if self._budget is not None and not self._budget.take():
++            record.finished = self._clock()
++            record.outcome = "budget_exhausted"
++            # Never sent; reported as a failed request, not as a negative.
++            raise ModelAPIError("replay request budget exhausted")
++        try:
++            response = self._inner.chat_completion(messages=messages, **params)
++        except ModelAPIError as exc:
++            record.finished = self._clock()
++            record.outcome = failure_category({
++                "stage": "request", "code": exc.code, "http_status": exc.status_code,
++            })
++            raise
++        except Exception:
++            record.finished = self._clock()
++            record.outcome = "internal"
++            raise
++        record.finished = self._clock()
++        record.outcome = "ok"
++        record.oracle_positives = oracle_labels(self.events, self.labels, timestamps)
++        return response
++
++    def assistant_text(self, response: Any) -> str:
++        return self._inner.assistant_text(response)
++
++
++class SimulatedFaceClient:
++    """Local-face stand-in with its own latency; never reports a stranger."""
++
++    def __init__(self, settings, latency_ms: float, *, sleep=time.sleep) -> None:
++        self._inner = DryRunStrangerGroundingClient(settings)
++        self.settings = self._inner.settings
++        self.memory_context = None
++        self.model_name = self._inner.model_name
++        self._latency = latency_ms / 1000.0
++        self._sleep = sleep
++
++    def classify_window(self, window):
++        self._sleep(self._latency)
++        # Window index 0 is a known-person dry-run observation.
++        response = self._inner.classify_window(replace(window, index=0))
++        return replace(response, window=window)
++
++
++class CompressedTimelineStream:
++    """A file stream whose timeline runs ``speed`` times faster."""
++
++    def __init__(
++        self, path: Path, *, speed: float, display_fps: float, realtime: bool,
++    ) -> None:
++        if speed <= 0:
++            raise ValueError("speed must be positive")
++        self.speed = float(speed)
++        self._inner = VideoFileStream(
++            path,
++            display_fps=display_fps * speed,
++            playback_speed=speed,
++            realtime=realtime,
++        )
++        self.info = self._inner.info
++
++    @property
++    def realtime(self) -> bool:
++        return self._inner.realtime
++
++    @property
++    def dropped_frames(self) -> int:
++        return self._inner.dropped_frames
++
++    @property
++    def stopped(self) -> bool:
++        return self._inner.stopped
++
++    def stop(self) -> None:
++        self._inner.stop()
++
++    def frames(self) -> Iterator[LiveFrame]:
++        for frame in self._inner.frames():
++            yield replace(frame, timestamp_seconds=frame.timestamp_seconds / self.speed)
++
++
++# ------------------------------------------------------------------ session
++
++def session_config(
++    config: HarnessConfig,
++    features: Sequence[str],
++    *,
++    event_fps: float | None = None,
++    face_fps: float | None = None,
++    window_size: int | None = None,
++    window_stride: int | None = None,
++    safety_side: int | None = None,
++    safety_quality: int | None = None,
++    concurrency: int | None = None,
++) -> HarnessConfig:
++    """Mirror the service's multi-feature session configuration."""
++
++    video = replace(
++        config.video,
++        fps=event_fps or config.video.fps,
++        max_image_side=safety_side or config.video.max_image_side,
++        jpeg_quality=safety_quality or config.video.jpeg_quality,
++        realtime=True,
++        playback_speed=1.0,
++    )
++    window = replace(
++        config.sliding_window,
++        size_frames=window_size or config.sliding_window.size_frames,
++        stride_frames=window_stride or config.sliding_window.stride_frames,
++        include_partial_final_window=False,
++    )
++    base = replace(
++        config,
++        video=video,
++        sliding_window=window,
++        face=replace(config.face, sample_fps=face_fps or config.face.sample_fps),
++        runtime=replace(
++            config.runtime,
++            max_concurrent_requests=(
++                concurrency or config.runtime.max_concurrent_requests
++            ),
++        ),
++    )
++    if "stranger" not in features:
++        return base
++    sampling = mixed_branch_sampling(base, features)
++    return replace(
++        base,
++        video=replace(
++            base.video,
++            fps=sampling.base_fps if sampling else base.face.sample_fps,
++            max_image_side=base.face.max_image_side,
++            jpeg_quality=base.face.jpeg_quality,
++        ),
++        sliding_window=replace(base.sliding_window, size_frames=1, stride_frames=1),
++        branch_sampling=sampling,
++    )
++
++
++@dataclass(slots=True)
++class ReplayObservations:
++    arrivals: list[tuple[float, float]] = field(default_factory=list)
++    windows: list[dict[str, Any]] = field(default_factory=list)
++    results: list[dict[str, Any]] = field(default_factory=list)
++    lock: threading.Lock = field(default_factory=threading.Lock)
++
++    def on_display_frame(self, _jpeg: bytes, timestamp: float, _index: int) -> None:
++        with self.lock:
++            self.arrivals.append((timestamp, time.monotonic()))
++
++    def on_event(self, record: Mapping[str, Any]) -> None:
++        if record.get("type") == "window" and record.get("state") in {
++            "submitted", "dropped",
++        }:
++            with self.lock:
++                self.windows.append(dict(record))
++
++    def on_analysis_result(self, result) -> None:
++        with self.lock:
++            self.results.append({
++                "emitted": time.monotonic(),
++                "timestamp": result.frame.timestamp_seconds,
++                "judgments": [
++                    (j.event_label, j.detected) for j in result.judgments
++                ],
++            })
++
++    def arrival_at(self, timestamp: float) -> float | None:
++        with self.lock:
++            for ts, wall in self.arrivals:
++                if ts >= timestamp - 1e-6:
++                    return wall
++        return None
++
++
++def _percentile(values: Sequence[float], fraction: float) -> float | None:
++    if not values:
++        return None
++    ordered = sorted(values)
++    return round(ordered[max(0, math.ceil(fraction * len(ordered)) - 1)], 4)
++
++
++def _event_report(
++    event: LabelledEvent,
++    observations: ReplayObservations,
++    calls: Sequence[CallRecord],
++    *,
++    window_span: float,
++    real: bool = False,
++) -> dict[str, Any]:
++    def overlaps(start: float, end: float) -> bool:
++        return start <= event.end + 1e-6 and end >= event.start - 1e-6
++
++    safety_windows = [
++        w for w in observations.windows
++        if w.get("branch", "safety") != "stranger"
++        and overlaps(float(w["start_seconds"]), float(w["end_seconds"]))
++    ]
++    sent = [
++        c for c in calls
++        if any(event.start - 0.0005 <= ts <= event.end + 0.0005 for ts in c.timestamps)
++    ]
++    ok = [c for c in sent if c.outcome == "ok"]
++    alarms = [
++        r for r in observations.results
++        if (event.label, True) in r["judgments"]
++        and event.start - 1e-6 <= r["timestamp"] <= event.end + window_span + 1e-6
++    ]
++    delay = None
++    if alarms:
++        first = min(alarms, key=lambda r: r["emitted"])
++        arrival = observations.arrival_at(event.start)
++        if arrival is not None:
++            delay = round(first["emitted"] - arrival, 4)
++    outcomes = Counter(c.outcome for c in sent)
++    if alarms:
++        verdict = "detected"
++    elif not safety_windows:
++        verdict = "not_sampled"
++    elif not sent:
++        verdict = "dropped"
++    elif not ok:
++        verdict = "request_failed"
++    else:
++        # The oracle always reports sent evidence; a real service may not.
++        verdict = "not_recognized" if real else "result_not_published"
++    return {
++        "label": event.label,
++        "start_seconds": round(event.start, 4),
++        "end_seconds": round(event.end, 4),
++        "duration_seconds": round(event.end - event.start, 4),
++        "windows_touching_event": len(safety_windows),
++        "windows_dropped": sum(1 for w in safety_windows if w["state"] == "dropped"),
++        "requests_with_event_frame": len(sent),
++        "request_outcomes": dict(outcomes),
++        "alarms": len(alarms),
++        "first_alarm_delay_seconds": delay,
++        "verdict": verdict,
++    }
++
++
++def replay_clip(
++    clip: Clip,
++    config: HarnessConfig,
++    features: Sequence[str],
++    profile: SimulationProfile,
++    *,
++    speed: float = 1.0,
++    realtime: bool = True,
++    safety_side: int = 320,
++    safety_quality: int = 75,
++    real_transport: Any | None = None,
++    event_sensitivities: Mapping[str, str] | None = None,
++    request_budget: RequestBudget | None = None,
++) -> dict[str, Any]:
++    labels = tuple(f for f in features if f in SAFETY_EVENT_LABELS)
++    events = tuple(e.scaled(speed) for e in clip.events if e.label in labels)
++    ignored = tuple((start / speed, end / speed) for start, end in clip.ignore)
++    # Same policy as the live service: unspecified events use its defaults.
++    sensitivities = normalize_event_sensitivities(event_sensitivities, labels)
++    real = real_transport is not None
++    transport = (
++        RecordingTransport(real_transport, events, labels, budget=request_budget)
++        if real else SimulatedAnalysisTransport(profile, events, labels)
++    )
++    face_client = (
++        SimulatedFaceClient(config.inference, profile.face_latency_ms)
++        if "stranger" in features else None
++    )
++    client = build_selected_features_grounding_client(
++        config.inference,
++        config.model_api,
++        features=tuple(features),
++        stranger_client=face_client,
++        safety_max_image_side=safety_side,
++        safety_jpeg_quality=safety_quality,
++        face_live_scheduler="single_flight",
++        transport=transport,  # type: ignore[arg-type]
++        event_sensitivities=sensitivities,
++    )
++    stream = CompressedTimelineStream(
++        clip.path,
++        speed=speed,
++        display_fps=max(config.display.fps, config.video.fps),
++        realtime=realtime,
++    )
++    observations = ReplayObservations()
++    ended = threading.Event()
++    end_reason: dict[str, Any] = {}
++
++    def on_end(reason: str, error: str | None) -> None:
++        end_reason.update(reason=reason, error=error)
++        ended.set()
++
++    session = StreamingSession(
++        config,
++        client,
++        SessionCallbacks(
++            on_event=observations.on_event,
++            on_analysis_result=observations.on_analysis_result,
++            on_display_frame=observations.on_display_frame,
++            on_end=on_end,
++        ),
++        mode=FILE_MODE,
++        video_stream=stream,  # type: ignore[arg-type]
++        source_id=f"replay-{clip.clip_id}",
++    )
++    wall_started = time.monotonic()
++    session.start()
++    request_timeout = (
++        config.model_api.timeout_seconds if real else profile.timeout_ms / 1000
++    )
++    timeout = stream.info.duration_seconds / speed + request_timeout + 30
++    if not ended.wait(timeout):
++        session.stop()
++        ended.wait(10)
++    session.join(10)
++    wall = time.monotonic() - wall_started
++
++    sampling = config.branch_sampling
++    cadence = sampling.safety if sampling else None
++    fps = cadence.fps if cadence else config.video.fps
++    size = cadence.size_frames if cadence else config.sliding_window.size_frames
++    window_span = (size - 1) / fps
++    event_reports = [
++        _event_report(
++            e, observations, transport.calls, window_span=window_span, real=real,
++        )
++        for e in events
++    ]
++    false_alarms = [
++        r for r in observations.results
++        for label, detected in r["judgments"]
++        if detected and label in labels
++        and not any(
++            e.label == label
++            and e.start - 1e-6 <= r["timestamp"] <= e.end + window_span + 1e-6
++            for e in events
++        )
++        and not any(
++            start - 1e-6 <= r["timestamp"] <= end + window_span + 1e-6
++            for start, end in ignored
++        )
++    ]
++    order_violations = 0
++    newest = -math.inf
++    for result in sorted(observations.results, key=lambda r: r["emitted"]):
++        if not any(label in labels for label, _ in result["judgments"]):
++            continue
++        if result["timestamp"] < newest - 1e-9:
++            order_violations += 1
++        newest = max(newest, result["timestamp"])
++    detected = sum(1 for r in event_reports if r["verdict"] == "detected")
++    delays = [
++        r["first_alarm_delay_seconds"] for r in event_reports
++        if r["first_alarm_delay_seconds"] is not None
++    ]
++    return {
++        "clip": clip.clip_id,
++        "path": str(clip.path),
++        "analysis_service": "real" if real else "simulated",
++        "event_sensitivities": dict(sensitivities),
++        "speed": speed,
++        "source_duration_seconds": round(stream.info.duration_seconds, 3),
++        "replay_wall_seconds": round(wall, 3),
++        "end_reason": end_reason.get("reason"),
++        "source_frames_dropped_by_pacing": stream.dropped_frames,
++        "summary": {
++            "events": len(event_reports),
++            "detected": detected,
++            "missed": len(event_reports) - detected,
++            "miss_reasons": dict(Counter(
++                r["verdict"] for r in event_reports if r["verdict"] != "detected"
++            )),
++            "first_alarm_delay_p50": _percentile(delays, 0.5),
++            "first_alarm_delay_p95": _percentile(delays, 0.95),
++            "false_alarms": len(false_alarms),
++            "requests": len(transport.calls),
++            "request_outcomes": dict(Counter(c.outcome for c in transport.calls)),
++            "late_results_out_of_order": order_violations,
++        },
++        "events": event_reports,
++        "diagnostics": {
++            key: value
++            for key, value in session.diagnostics_snapshot().items()
++            if key != "model_inputs"
++        },
++    }
++
++
++def estimate_safety_requests(
++    clips: Sequence[Clip],
++    config: HarnessConfig,
++    speeds: Sequence[float],
++) -> int:
++    """Upper bound on safety requests: one per sampled safety window."""
++
++    sampling = config.branch_sampling
++    fps = sampling.safety.fps if sampling else config.video.fps
++    size = sampling.safety.size_frames if sampling else (
++        config.sliding_window.size_frames
++    )
++    stride = sampling.safety.stride_frames if sampling else (
++        config.sliding_window.stride_frames
++    )
++    total = 0
++    for speed in speeds:
++        for clip in clips:
++            duration = probe_video(clip.path).duration_seconds / speed
++            frames = math.floor(duration * fps) + 1
++            if frames >= size:
++                total += (frames - size) // stride + 1
++    return total
++
++
++def _event_sensitivity(text: str) -> tuple[str, str]:
++    label, _, level = text.partition("=")
++    label, level = label.strip(), level.strip()
++    if label not in SAFETY_EVENT_LABELS or level not in {"standard", "high"}:
++        raise argparse.ArgumentTypeError(
++            "use label=standard|high with fight, smoking, fall or weapon"
++        )
++    return label, level
++
++
++# ---------------------------------------------------------------------- cli
++
++def _features(text: str) -> tuple[str, ...]:
++    selected = {item.strip() for item in text.split(",") if item.strip()}
++    unknown = selected - set(DETECTION_EVENT_LABELS)
++    if unknown or not selected:
++        raise argparse.ArgumentTypeError(
++            "features must be a non-empty subset of " + ",".join(DETECTION_EVENT_LABELS)
++        )
++    return tuple(label for label in DETECTION_EVENT_LABELS if label in selected)
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
++    parser.add_argument("videos", nargs="*", type=Path)
++    parser.add_argument("--manifest", type=Path)
++    parser.add_argument(
++        "--event", action="append", type=parse_event, default=[],
++        help="label:start-end in source seconds (single video only)",
++    )
++    parser.add_argument("--config", type=Path, default=ROOT / "config.yaml")
++    parser.add_argument(
++        "--features", type=_features, default=("fight", "smoking", "fall", "weapon"),
++    )
++    parser.add_argument("--speed", type=float, action="append", default=None,
++                        help="timeline compression; repeat to sweep")
++    parser.add_argument("--no-realtime", action="store_true",
++                        help="decode as fast as possible (no pacing, no drops)")
++    parser.add_argument("--event-fps", type=float)
++    parser.add_argument("--face-fps", type=float)
++    parser.add_argument("--window-size", type=int)
++    parser.add_argument("--window-stride", type=int)
++    parser.add_argument("--safety-side", type=int)
++    parser.add_argument("--safety-quality", type=int)
++    parser.add_argument("--concurrency", type=int)
++    sim = parser.add_argument_group("simulated analysis service")
++    for name, default in (
++        ("latency-ms", 800.0), ("latency-sigma", 0.35), ("slow-rate", 0.0),
++        ("slow-ms", 4000.0), ("timeout-rate", 0.0), ("timeout-ms", 8000.0),
++        ("auth-rate", 0.0), ("parse-error-rate", 0.0),
++        ("false-positive-rate", 0.0), ("face-latency-ms", 150.0),
++    ):
++        sim.add_argument(f"--{name}", type=float, default=default)
++    sim.add_argument("--seed", type=int, default=7)
++    parser.add_argument(
++        "--real", action="store_true",
++        help=(
++            "send safety requests to the configured analysis service (uses the "
++            "API key from the environment/.env and incurs cost); stranger stays "
++            "simulated"
++        ),
++    )
++    parser.add_argument(
++        "--event-sensitivity", action="append", type=_event_sensitivity,
++        default=[], metavar="LABEL=LEVEL",
++        help="per-event policy; unspecified events use the service defaults",
++    )
++    parser.add_argument(
++        "--max-requests", type=int, default=300,
++        help="upper bound on paid requests with --real (default 300)",
++    )
++    parser.add_argument("--output", type=Path)
++    return parser
++
++
++def main(argv: Sequence[str] | None = None) -> int:
++    args = build_parser().parse_args(argv)
++    if args.manifest:
++        clips = load_manifest(args.manifest)
++    elif args.videos:
++        if args.event and len(args.videos) != 1:
++            raise SystemExit("--event applies to exactly one video; use --manifest")
++        clips = [
++            Clip(path.stem, path, tuple(args.event) if args.event else ())
++            for path in args.videos
++        ]
++    else:
++        raise SystemExit("give at least one video or --manifest")
++    for clip in clips:
++        if not clip.path.is_file():
++            raise SystemExit(f"video not found: {clip.path}")
++
++    profile = SimulationProfile(
++        latency_ms=args.latency_ms, latency_sigma=args.latency_sigma,
++        slow_rate=args.slow_rate, slow_ms=args.slow_ms,
++        timeout_rate=args.timeout_rate, timeout_ms=args.timeout_ms,
++        auth_rate=args.auth_rate, parse_error_rate=args.parse_error_rate,
++        false_positive_rate=args.false_positive_rate,
++        face_latency_ms=args.face_latency_ms, seed=args.seed,
++    )
++    profile.validate()
++    base = load_config(args.config)
++    config = session_config(
++        base, args.features,
++        event_fps=args.event_fps, face_fps=args.face_fps,
++        window_size=args.window_size, window_stride=args.window_stride,
++        safety_side=args.safety_side, safety_quality=args.safety_quality,
++        concurrency=args.concurrency,
++    )
++    safety_side = args.safety_side or base.video.max_image_side
++    safety_quality = args.safety_quality or base.video.jpeg_quality
++    safety_labels = tuple(f for f in args.features if f in SAFETY_EVENT_LABELS)
++    sensitivities = normalize_event_sensitivities(
++        dict(args.event_sensitivity), safety_labels,
++    )
++    speeds = args.speed or [1.0]
++    real_transport = None
++    budget = None
++    if args.real:
++        if args.max_requests < 1:
++            raise SystemExit("--max-requests must be at least 1")
++        estimate = estimate_safety_requests(clips, config, speeds)
++        if estimate > args.max_requests:
++            raise SystemExit(
++                f"about {estimate} paid requests exceed --max-requests "
++                f"{args.max_requests}; raise the limit or replay fewer clips"
++            )
++        print(f"real service: up to {estimate} requests", flush=True)
++        # Created only after the bound check: construction needs the API key.
++        real_transport = ModelAPIClient(base.model_api)
++        budget = RequestBudget(args.max_requests)
++    runs = []
++    for speed in speeds:
++        for clip in clips:
++            report = replay_clip(
++                clip, config, args.features, profile,
++                speed=speed, realtime=not args.no_realtime,
++                safety_side=safety_side, safety_quality=safety_quality,
++                real_transport=real_transport,
++                event_sensitivities=sensitivities,
++                request_budget=budget,
++            )
++            runs.append(report)
++            summary = report["summary"]
++            print(
++                f"{clip.clip_id} x{speed:g}: {summary['detected']}/{summary['events']}"
++                f" detected, misses={summary['miss_reasons']},"
++                f" false_alarms={summary['false_alarms']},"
++                f" requests={summary['request_outcomes']},"
++                f" delay_p50={summary['first_alarm_delay_p50']}",
++                flush=True,
++            )
++    output = {
++        "tool": "replay_stress",
++        "features": list(args.features),
++        "analysis_service": "real" if args.real else "simulated",
++        "simulation": None if args.real else asdict(profile),
++        "event_sensitivities": sensitivities,
++        "paid_requests": budget.used if budget is not None else 0,
++        "settings": {
++            "event_fps": config.branch_sampling.safety.fps
++            if config.branch_sampling else config.video.fps,
++            "window_size": config.branch_sampling.safety.size_frames
++            if config.branch_sampling else config.sliding_window.size_frames,
++            "safety_side": safety_side,
++            "safety_quality": safety_quality,
++            "concurrency": config.runtime.max_concurrent_requests,
++        },
++        "runs": runs,
++    }
++    if args.output:
++        args.output.parent.mkdir(parents=True, exist_ok=True)
++        args.output.write_text(
++            json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8",
++        )
++        print(f"report: {args.output}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

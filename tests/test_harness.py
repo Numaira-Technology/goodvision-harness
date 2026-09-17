@@ -196,7 +196,8 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.video.fps,
         config.video.max_image_side,
         config.video.jpeg_quality,
-    ) == (2.5, 320, 75)
+    ) == (2.5, 360, 75)
+    assert config.inference.image_size == (360, 202)
     assert (
         config.display.fps,
         config.display.max_image_side,
@@ -443,9 +444,9 @@ def test_grounded_dry_run_preserves_original_pattern_latency_and_confidence(
         sample_index=0,
         source_frame_index=0,
         timestamp_seconds=0.0,
-        jpeg_bytes=b"jpeg",
-        width=320,
-        height=180,
+        jpeg_bytes=_jpeg(width=360, height=202),
+        width=360,
+        height=202,
     )
 
     responses = [
@@ -1088,7 +1089,8 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert info["model"] == PUBLIC_MODEL_NAME
     assert status["model"] == PUBLIC_MODEL_NAME
     assert info["sample_fps"] == 2.5
-    assert info["max_image_side"] == 320
+    assert info["max_image_side"] == 360
+    assert info["model_image_size"] == [360, 202]
     assert info["jpeg_quality"] == 75
     assert info["max_concurrent_requests"] == 6
     assert info["annotated_output"] == {

@@ -3,6 +3,11 @@
 This tool sends only the manifest's images to the configured inference endpoint.
 It never connects to the camera URL, uses a webhook, or modifies a face gallery.
 Frame truth describes visible evidence at original resolution, not guessed motion.
+
+Each image is sent at exactly the requested long side and JPEG quality. The
+service's fixed model canvas (``video.model_image_size``) is off here unless
+``--model-canvas WIDTHxHEIGHT`` asks for it, because it would otherwise resize
+every tested size to the same canvas.
 """
 
 from __future__ import annotations
@@ -35,6 +40,24 @@ from goodvision_harness.grounding import (  # noqa: E402
 )
 from goodvision_harness.model_api import ModelAPIClient  # noqa: E402
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame  # noqa: E402
+
+
+def parse_model_canvas(text: str) -> tuple[int, int] | None:
+    value = text.strip().lower()
+    if value == "none":
+        return None
+    width, sep, height = value.partition("x")
+    if not sep or not width.isdigit() or not height.isdigit():
+        raise argparse.ArgumentTypeError("use none or WIDTHxHEIGHT, e.g. 360x202")
+    if int(width) < 1 or int(height) < 1:
+        raise argparse.ArgumentTypeError("canvas dimensions must be positive")
+    return int(width), int(height)
+
+
+def evaluation_settings(inference, canvas: tuple[int, int] | None, quality: int):
+    """The configured prompts with the canvas this run asked for, not the config's."""
+
+    return replace(inference, image_size=canvas, image_jpeg_quality=quality)
 
 
 class MeasuredTransport(ModelAPIClient):
@@ -173,6 +196,11 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=35)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
+        "--model-canvas", type=parse_model_canvas, default=None,
+        help="none (default: send each size as-is) or WIDTHxHEIGHT to pad "
+        "like the service",
+    )
+    parser.add_argument(
         "--actor-mode", choices=("enabled", "disabled", "both"), default="enabled"
     )
     args = parser.parse_args()
@@ -190,7 +218,10 @@ def main() -> int:
             max_retries=0,
         )
     )
-    client = AIClubMultiGroundingClient(config.inference, transport)
+    client = AIClubMultiGroundingClient(
+        evaluation_settings(config.inference, args.model_canvas, args.quality),
+        transport,
+    )
     jobs = []
     for clip in manifest["clips"]:
         if not clip.get("public_source_url"):
@@ -218,6 +249,7 @@ def main() -> int:
         "provider": config.model_api.provider,
         "sizes": sizes,
         "quality": args.quality,
+        "model_canvas": list(args.model_canvas) if args.model_canvas else None,
         "actor_mode": args.actor_mode,
         "timeout": args.timeout,
         "workers": args.workers,
@@ -227,6 +259,7 @@ def main() -> int:
                 "tools/low_resolution_model_eval.py",
                 "src/goodvision_harness/grounding.py",
                 "src/goodvision_harness/model_api.py",
+                "src/goodvision_harness/letterbox.py",
             )
         },
         "source_sha256": {
@@ -257,6 +290,8 @@ def main() -> int:
         key = f"{clip['id']}:{timestamp:g}:{size}:q{args.quality}"
         if not include_actors:
             key += ":noactors"
+        if args.model_canvas:
+            key += ":canvas{}x{}".format(*args.model_canvas)
         jpeg, width, height, original, actual_timestamp, actual_index = prepare_frame(
             Path(clip["path"]),
             timestamp,

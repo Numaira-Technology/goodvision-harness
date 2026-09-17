@@ -17,7 +17,9 @@ video:
   realtime: true
   playback_speed: 1.0
   max_sampled_frames: null
-  max_image_side: 320
+  max_image_side: 360
+  # Exact behavior-model canvas; fit the full image and center black padding.
+  model_image_size: [360, 202]
   jpeg_quality: 75
 
 display:

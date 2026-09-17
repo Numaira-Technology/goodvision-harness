@@ -270,6 +270,7 @@ class PushSampledSource:
                 jpeg_bytes=jpeg_bytes,
                 width=width,
                 height=height,
+                captured_monotonic=time.monotonic(),
             )
             try:
                 self._queue.put_nowait(frame)

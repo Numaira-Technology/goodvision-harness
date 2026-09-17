@@ -124,3 +124,59 @@ def test_actor_cost_control_changes_only_optional_text(monkeypatch, include_acto
         evaluation.ACTOR_ASSOCIATION_RULE in sent["messages"][1]["content"][0]["text"]
     ) == include_actors
     assert evaluation.ACTOR_ASSOCIATION_RULE in original[1]["content"][0]["text"]
+
+
+def _payload_sizes(settings, width, height):
+    import base64
+
+    from goodvision_harness.grounding import AIClubMultiGroundingClient
+    from goodvision_harness.sliding_window import FrameWindow, SampledFrame
+
+    sizes = []
+
+    class Transport:
+        def chat_completion(self, *, messages, **_kwargs):
+            for part in messages[1]["content"]:
+                if part.get("type") == "image_url":
+                    data = base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
+                    buffer = np.frombuffer(data, np.uint8)
+                    image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+                    sizes.append((image.shape[1], image.shape[0]))
+            return {"text": '{"no_events": 0.9}'}
+
+        def assistant_text(self, response):
+            return response["text"]
+
+    ok, jpeg = cv2.imencode(".jpg", np.full((height, width, 3), 128, np.uint8))
+    assert ok
+    client = AIClubMultiGroundingClient(settings, Transport())
+    frame = SampledFrame(0, 0, 0.0, jpeg.tobytes(), width, height)
+    assert client.classify_window(FrameWindow(0, (frame,))).ok
+    return sizes
+
+
+def test_tested_sizes_are_sent_unchanged_unless_a_canvas_is_requested():
+    from goodvision_harness.config import load_config
+
+    inference = load_config(ROOT / "config.yaml").inference
+    assert inference.image_size == (360, 202)
+    plain = evaluation.evaluation_settings(inference, None, 90)
+    assert _payload_sizes(plain, 96, 54) == [(96, 54)]
+    canvas = evaluation.evaluation_settings(inference, (360, 202), 90)
+    assert _payload_sizes(canvas, 96, 54) == [(360, 202)]
+    assert canvas.image_jpeg_quality == 90
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"), [("none", None), ("360x202", (360, 202)), ("NONE", None)],
+)
+def test_model_canvas_argument(text, expected):
+    assert evaluation.parse_model_canvas(text) == expected
+
+
+@pytest.mark.parametrize("text", ["360", "0x202", "axb", "360x"])
+def test_model_canvas_argument_rejects_bad_values(text):
+    import argparse
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        evaluation.parse_model_canvas(text)

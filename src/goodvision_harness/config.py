@@ -16,6 +16,7 @@ from .event_archive import EventArchiveSettings
 from .model_api import ModelAPISettings
 from .model_routing import CUSTOMER_INFERENCE_PROFILE, resolve_model_route
 from .reference_memory import MemoryContext, load_memory_context
+from .sliding_window import BranchSampling
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 
@@ -95,6 +96,8 @@ class InferenceSettings:
     prompt: str
     request_parameters: Mapping[str, Any] = field(default_factory=dict)
     multi_event_prompt: str = ""
+    image_size: tuple[int, int] | None = None
+    image_jpeg_quality: int = 75
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +167,9 @@ class HarnessConfig:
     server: ServerSettings
     service: ServiceSettings
     events: EventArchiveSettings = field(default_factory=EventArchiveSettings)
+    # Session-only: set when a mixed safety + stranger session samples each
+    # branch at its own cadence. Never loaded from YAML.
+    branch_sampling: BranchSampling | None = None
 
     @property
     def model_api(self) -> ModelAPISettings:
@@ -444,6 +450,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         prompt=prompt,
         request_parameters=dict(request_parameters),
         multi_event_prompt=multi_event_prompt,
+        image_size=_model_image_size(video_section.get("model_image_size")),
+        image_jpeg_quality=video.jpeg_quality,
     )
     memory = load_memory_context(
         memory_section,
@@ -852,3 +860,14 @@ def _face_live_scheduler(value: Any) -> str:
             "face.live_scheduler must be auto, full, or single_flight"
         )
     return scheduler
+
+
+def _model_image_size(value: Any) -> tuple[int, int] | None:
+    """Optional exact model canvas size, preserving aspect ratio with padding."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError("video.model_image_size must be [width, height] or null")
+    if any(type(side) is not int or side < 1 for side in value):
+        raise ValueError("video.model_image_size dimensions must be positive integers")
+    return value[0], value[1]
