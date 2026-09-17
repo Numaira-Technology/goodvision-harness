@@ -55,6 +55,50 @@ def test_compact_negative_expands_without_another_model_call(labels, config_path
     assert sent["max_tokens"] == 1200  # Positive events retain their output budget.
 
 
+def test_compact_alerts_are_completed_positives_without_boxes():
+    result = parse_multi_grounded_classification(
+        '{"alerts":{"smoking":0.82}}',
+        event_labels=("smoking", "weapon"),
+        require_bilingual=True,
+    )
+    smoking, weapon = result.judgments
+    assert smoking.detected is True
+    assert smoking.confidence == 0.82
+    assert smoking.objects == ()
+    assert smoking.ungrounded is True
+    assert " / " in smoking.description
+    assert weapon.detected is False
+    assert weapon.objects == ()
+    assert result.detected is True
+    assert result.actors == ()
+
+
+def test_compact_alert_prompt_is_sent_with_the_negative_exception(monkeypatch):
+    settings = load_config(ROOT / "config.yaml").inference
+    transport = Mock(spec=ModelAPIClient)
+    transport.assistant_text.return_value = '{"alerts":{"smoking":0.9}}'
+    client = AIClubMultiGroundingClient(settings, transport, ("smoking", "weapon"))
+    response = client.classify_window(probe_window())
+    assert response.ok
+    assert response.classification.detected
+    assert response.classification.judgments[0].objects == ()
+    sent = transport.chat_completion.call_args.kwargs["messages"][0]["content"]
+    assert COMPACT_NO_EVENTS_RULE in sent
+    assert "alerts" in sent
+
+
+@pytest.mark.parametrize("payload", [
+    '{"alerts":{}}', '{"alerts":{"smoking":1.2}}', '{"alerts":{"smoking":-0.1}}',
+    '{"alerts":{"unknown":0.9}}', '{"no_events":0.9,"alerts":{"smoking":0.8}}',
+    '{"alerts":{"smoking":0.8},"events":[]}', '{"alerts":null}',
+])
+def test_incomplete_or_contradictory_alerts_are_not_a_clear_verdict(payload):
+    with pytest.raises((TypeError, ValueError)):
+        parse_multi_grounded_classification(
+            payload, event_labels=("smoking", "weapon"), require_bilingual=True,
+        )
+
+
 @pytest.mark.parametrize("payload", [
     "{}", '{"events":[]}', '{"no_events":false}', '{"no_events":null}',
     '{"no_events":"0.9"}', '{"no_events":-0.1}', '{"no_events":1.1}',

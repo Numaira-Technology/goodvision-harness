@@ -1267,6 +1267,8 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert "/v1/video/annotated/stream.mjpeg" in paths
         assert "/v1/video/stream.mjpeg" in paths
         assert "/v1/video/live/stream.mjpeg" in paths
+        assert "/v1/video/live-overlay/stream.mjpeg" in paths
+        assert "/v1/video/live-overlay/latest.jpg" in paths
     assert stub.started and stub.stopped
 
     degraded = HarnessRuntime(None, config_error="bad config")

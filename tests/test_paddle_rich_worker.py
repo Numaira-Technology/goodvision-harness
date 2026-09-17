@@ -143,10 +143,26 @@ def test_iou_tracker_recovers_same_id_after_short_missed_detection() -> None:
     )
 
     assert missed[0].track_id == moving[0].track_id
-    assert missed[0].bbox == moving[0].bbox
+    assert missed[0].bbox[0] > moving[0].bbox[0]
     assert cleared == ()
     assert first[0].track_id == moving[0].track_id == recovered[0].track_id
     assert tracker._next_id == 2
+
+
+def test_iou_tracker_emits_motion_predicted_bbox_while_occluded() -> None:
+    tracker = IoUTracker(match_iou=0.3, max_idle_frames=5)
+    tracker.update(
+        (Detection("person", 0.9, (0.0, 0.0, 20.0, 40.0)),),
+        frame_sequence=0,
+    )
+    moving = tracker.update(
+        (Detection("person", 0.91, (12.0, 0.0, 32.0, 40.0)),),
+        frame_sequence=1,
+    )
+    occluded = tracker.update((), frame_sequence=2)
+    assert occluded[0].track_id == moving[0].track_id
+    assert occluded[0].bbox[0] == pytest.approx(24.0)
+    assert occluded[0].bbox[2] == pytest.approx(44.0)
 
 
 def test_iou_tracker_holds_only_the_track_missing_from_partial_detection() -> None:

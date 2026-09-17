@@ -21,12 +21,14 @@ def _rich(
     bbox: tuple[float, float, float, float],
     *,
     label: str = "person",
+    attributes: dict | None = None,
 ) -> RichLabelObject:
     return RichLabelObject(
         track_id=track_id,
         label=label,
         bbox=NormalizedBBox(*bbox),
         confidence=0.9,
+        attributes=attributes or {},
     )
 
 
@@ -431,6 +433,42 @@ def test_smoking_person_evidence_is_not_used_as_a_person_alert_or_fallback() -> 
     assert plan.matched_event_object_ids == ()
     assert plan.unmatched_event_object_ids == ()
     assert plan.alerts_by_unmatched_object_id() == {}
+
+
+def test_subject_id_pins_smoking_item_to_the_owning_person() -> None:
+    cigarette = replace(
+        _analysis(
+            bbox=(0.24, 0.20, 0.28, 0.26),
+            object_label="cigarette",
+            alerts=(("smoking", 0.95),),
+            object_id="cigarette",
+        ).objects[0],
+        attributes={"subject_id": "subject-cam-1", "subject_ids": ["subject-cam-1"]},
+    )
+    analysis = replace(
+        _analysis(
+            bbox=(0.24, 0.20, 0.28, 0.26),
+            object_label="cigarette",
+            alerts=(("smoking", 0.95),),
+            object_id="cigarette",
+        ),
+        objects=(cigarette,),
+    )
+    plan = OverlayFusionMatcher().plan(
+        analysis,
+        (
+            _rich(
+                "P0001",
+                (0.10, 0.05, 0.45, 0.95),
+                attributes={"subject_id": "subject-cam-1"},
+            ),
+        ),
+    )
+    assert plan.matched_event_object_ids == ("cigarette",)
+    assert plan.unmatched_event_object_ids == ()
+    assert tuple(
+        alert.event_label for alert in plan.alerts_by_track_id()["P0001"]
+    ) == ("smoking",)
 
 
 def test_unmatched_smoking_item_retains_alert_for_rich_style_fallback() -> None:

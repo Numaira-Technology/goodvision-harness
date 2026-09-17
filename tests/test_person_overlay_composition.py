@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import replace
+from threading import RLock
 from types import SimpleNamespace
 
 import cv2
@@ -17,8 +18,14 @@ from goodvision_harness.contracts import (
     GroundedObject,
     NormalizedBBox,
 )
-from goodvision_harness.delayed_overlay import DelayedOverlayComposer, select_overlay
+from goodvision_harness.delayed_overlay import (
+    DelayedOverlayComposer,
+    OverlaySelection,
+    select_overlay,
+)
+from goodvision_harness.grounding import ModelActor, ObservationBundle
 from goodvision_harness.overlay_fusion import OverlayFusionMatcher
+from goodvision_harness.person_registry import PersonRegistry
 from goodvision_harness.result_bus import FramePacket
 from goodvision_harness.service import (
     HarnessRuntime,
@@ -328,3 +335,99 @@ def test_thirty_original_frames_inherit_sparse_face_annotations():
         assert composer.stats()["frames_dropped"] == 0
     finally:
         composer.close()
+
+
+def test_fused_overlay_strokes_registry_people_without_a_gpu_worker() -> None:
+    registry = PersonRegistry("session", "camera")
+    registry.prepare_analysis(
+        AnalysisResult(
+            "msg-0", "camera", "session", 1, "2026-09-10T10:00:00Z",
+            FrameReference(0, 0.0, "2026-09-10T10:00:00Z", 320, 240),
+            (EventJudgment("smoking", True, 0.9, "Smoking", ("o1",)),),
+            (GroundedObject(
+                "o1", "cigarette", NormalizedBBox(0.12, 0.18, 0.18, 0.24), 0.9,
+            ),),
+            "test", 0.1,
+        ),
+        ObservationBundle(
+            (ModelActor("a1", NormalizedBBox(0.08, 0.05, 0.42, 0.95), 0.9),),
+            (("a1",),),
+        ),
+    )
+    runtime = object.__new__(HarnessRuntime)
+    runtime._rich_labels = None
+    runtime._overlay_fusion = OverlayFusionMatcher()
+    runtime.settings = type("Settings", (), {"overlay_jpeg_quality": 95})()
+    runtime._state_lock = RLock()
+    runtime._session = SimpleNamespace(person_registry=registry)
+    runtime._active_rich_session_id = "session"
+    source = np.full((240, 320, 3), 40, dtype=np.uint8)
+    ok, encoded = cv2.imencode(".jpg", source)
+    assert ok
+    rendered = cv2.imdecode(
+        np.frombuffer(
+            runtime._render_fused_label_jpeg(
+                encoded.tobytes(),
+                OverlaySelection(None, "none"),
+                0.0,
+                0,
+            ),
+            np.uint8,
+        ),
+        cv2.IMREAD_COLOR,
+    )
+    x1, y1, x2, y2 = NormalizedBBox(0.08, 0.05, 0.42, 0.95).to_pixels(320, 240)
+    assert not np.array_equal(rendered[y1, (x1 + x2) // 2], source[y1, (x1 + x2) // 2])
+    assert not np.array_equal(rendered[(y1 + y2) // 2, x1], source[(y1 + y2) // 2, x1])
+
+
+def test_live_overlay_draws_people_without_waiting_for_display_delay() -> None:
+    from goodvision_harness.config import load_config
+
+    registry = PersonRegistry("session", "camera")
+    registry.prepare_analysis(
+        AnalysisResult(
+            "msg-0", "camera", "session", 1, "2026-09-10T10:00:00Z",
+            FrameReference(0, 0.0, "2026-09-10T10:00:00Z", 320, 240),
+            (EventJudgment("smoking", False, 0.9, "Clear"),),
+            (),
+            "test", 0.1,
+        ),
+        ObservationBundle(
+            (ModelActor("a1", NormalizedBBox(0.08, 0.05, 0.42, 0.95), 0.9),),
+            (("a1",),),
+        ),
+    )
+    runtime = HarnessRuntime(load_config())
+    try:
+        runtime._session = SimpleNamespace(
+            person_registry=registry,
+            mode=None,
+            archive=None,
+            running=False,
+            stop=lambda: None,
+            join=lambda timeout=None: None,
+        )
+        runtime._tracking_requested = True
+        runtime._rich_labels = None
+        source = np.full((240, 320, 3), 40, dtype=np.uint8)
+        ok, encoded = cv2.imencode(".jpg", source)
+        assert ok
+        runtime._on_display_frame(encoded.tobytes(), 0.0, 0)
+        live = runtime.live_overlay_frames.latest()
+        assert live is not None
+        _, packet = live
+        rendered = cv2.imdecode(np.frombuffer(packet.jpeg, np.uint8), cv2.IMREAD_COLOR)
+        x1, y1, x2, y2 = NormalizedBBox(0.08, 0.05, 0.42, 0.95).to_pixels(320, 240)
+        assert not np.array_equal(
+            rendered[y1, (x1 + x2) // 2], source[y1, (x1 + x2) // 2],
+        )
+        assert runtime.annotated_frames.latest() is None
+        raw = runtime.preview_frames.latest()
+        assert raw is not None
+        raw_image = cv2.imdecode(
+            np.frombuffer(raw[1].jpeg, np.uint8), cv2.IMREAD_COLOR,
+        )
+        assert abs(int(raw_image[120, 10, 0]) - 40) < 8
+    finally:
+        runtime.stop()

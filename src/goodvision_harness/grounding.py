@@ -101,9 +101,13 @@ COMPACT_NO_EVENTS_RULE = (
     "the all-negative verdict. Include no other keys, events, descriptions, "
     "actors, boxes, or prose. This is a completed negative verdict for every "
     "requested label, never a substitute for an error or an unperformed check. "
-    "If ANY requested event is positive, do NOT use no_events: return the full "
-    "events array for every requested label, with bilingual descriptions and "
-    "grounded target boxes as specified."
+    "If ANY requested event is positive, do NOT use no_events. You MAY return "
+    "ONLY {\"alerts\":{\"smoking\":0.82}} listing each positive event_label with "
+    "confidence 0..1, omitting boxes, actors, descriptions, and negative labels. "
+    "Omitted requested labels are completed negatives. A later full events array "
+    "may add boxes; alerts is already a completed positive verdict. Otherwise "
+    "return the full events array for every requested label, with bilingual "
+    "descriptions and grounded target boxes as specified."
 )
 ACTOR_ASSOCIATION_RULE = (
     "Additional optional tracking metadata, without changing any event verdict "
@@ -279,6 +283,7 @@ class GroundedEventClassification:
     description: str
     objects: tuple[ModelObject, ...] = ()
     matched_memory_ids: tuple[str, ...] = ()
+    ungrounded: bool = False
 
     def __post_init__(self) -> None:
         event_label = str(self.event_label).strip()
@@ -297,7 +302,7 @@ class GroundedEventClassification:
         object.__setattr__(self, "description", description)
 
         objects = tuple(self.objects)
-        if self.detected and not objects:
+        if self.detected and not objects and not self.ungrounded:
             raise ValueError("detected=true requires at least one grounded object")
         if not self.detected and objects:
             raise ValueError("detected=false requires objects=[]")
@@ -311,6 +316,56 @@ class GroundedEventClassification:
         if len(set(memory_ids)) != len(memory_ids):
             raise ValueError("matched_memory_ids must not contain duplicates")
         object.__setattr__(self, "matched_memory_ids", memory_ids)
+
+
+def _parse_compact_alerts(
+    payload: Mapping[str, Any],
+    *,
+    requested_labels: tuple[str, ...],
+    analysis_kind: str,
+) -> MultiGroundedClassification:
+    if set(payload) != {"alerts"}:
+        raise ValueError("alerts must be the only response field")
+    raw_alerts = payload["alerts"]
+    if not isinstance(raw_alerts, Mapping) or not raw_alerts:
+        raise TypeError("alerts must be a non-empty object")
+    positives: dict[str, float] = {}
+    for raw_label, raw_confidence in raw_alerts.items():
+        if not isinstance(raw_label, str) or not raw_label.strip():
+            raise TypeError("alerts keys must be non-empty event labels")
+        event_label = raw_label.strip()
+        if event_label not in requested_labels:
+            raise ValueError(f"unknown event_label: {event_label}")
+        if event_label in positives:
+            raise ValueError(f"duplicate event_label: {event_label}")
+        confidence = _number(raw_confidence, f"alerts.{event_label}")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("alerts confidences must be between 0 and 1")
+        positives[event_label] = confidence
+    return MultiGroundedClassification(
+        judgments=tuple(
+            GroundedEventClassification(
+                event_label=label,
+                detected=label in positives,
+                confidence=positives.get(label, 0.95),
+                description=(
+                    (
+                        f"检测到{_EVENT_NAMES_ZH.get(label, label)}。 / "
+                        f"{label} detected."
+                    )
+                    if label in positives
+                    else (
+                        f"未检测到{_EVENT_NAMES_ZH.get(label, label)}。 / "
+                        f"No {label} detected."
+                    )
+                ),
+                objects=(),
+                ungrounded=label in positives,
+            )
+            for label in requested_labels
+        ),
+        analysis_kind=analysis_kind,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -874,6 +929,12 @@ def parse_multi_grounded_classification(
                 )
                 for label in requested_labels
             ),
+            analysis_kind=analysis_kind,
+        )
+    if "alerts" in payload:
+        return _parse_compact_alerts(
+            payload,
+            requested_labels=requested_labels,
             analysis_kind=analysis_kind,
         )
     raw_events = payload.get("events")

@@ -38,8 +38,8 @@ def test_rich_overlay_draws_brackets_and_a_translucent_card_on_a_copy() -> None:
     )
     assert not np.array_equal(rendered[y1, x1], source[y1, x1])
     assert not np.array_equal(rendered[y2 - 1, x2 - 1], source[y2 - 1, x2 - 1])
-    assert np.array_equal(rendered[y1, (x1 + x2) // 2], source[y1, (x1 + x2) // 2])
-    assert np.array_equal(rendered[(y1 + y2) // 2, x1], source[(y1 + y2) // 2, x1])
+    assert not np.array_equal(rendered[y1, (x1 + x2) // 2], source[y1, (x1 + x2) // 2])
+    assert not np.array_equal(rendered[(y1 + y2) // 2, x1], source[(y1 + y2) // 2, x1])
 
     card_pixel = rendered[y1 - 38, x1 + 6]
     assert np.all(card_pixel < source[y1 - 38, x1 + 6])
@@ -80,22 +80,23 @@ def test_rich_overlay_promotes_one_track_card_with_multiple_alerts(
     captured_text: list[str] = []
     captured_colors: list[tuple[int, int, int]] = []
     original_put_text = overlay_module.cv2.putText
-    original_corner = overlay_module._draw_corner_bbox
+    original_stroke = overlay_module.draw_person_stroke
 
     def capture_text(image: Any, text: str, *args: Any, **kwargs: Any) -> Any:
         captured_text.append(text)
         return original_put_text(image, text, *args, **kwargs)
 
-    def capture_corner(
+    def capture_stroke(
         image: Any,
         bbox: tuple[int, int, int, int],
         color: tuple[int, int, int],
+        contour: Any = None,
     ) -> None:
         captured_colors.append(color)
-        original_corner(image, bbox, color)
+        original_stroke(image, bbox, color, contour)
 
     monkeypatch.setattr(overlay_module.cv2, "putText", capture_text)
-    monkeypatch.setattr(overlay_module, "_draw_corner_bbox", capture_corner)
+    monkeypatch.setattr(overlay_module, "draw_person_stroke", capture_stroke)
     image = np.zeros((260, 640, 3), dtype=np.uint8)
     person = SimpleNamespace(
         bbox=NormalizedBBox(0.2, 0.35, 0.75, 0.9),
@@ -477,7 +478,7 @@ def test_vlm_cards_keep_crowded_people_readable_and_preserve_source_boxes(
     overlay_module.draw_rich_overlay(source, objects)
 
     assert np.all(source == 80)
-    assert corners == [item.bbox.to_pixels(720, 405) for item in objects]
+    assert corners == [item.bbox.to_pixels(720, 405) for item in chairs]
     assert len(cards) == len(leaders) == len(objects)
     person_titles = [index for index, text in enumerate(texts) if "PERSON" in text]
     object_titles = [index for index, text in enumerate(texts) if "OFFICE CHAIR" in text]

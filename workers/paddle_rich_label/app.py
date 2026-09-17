@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import cv2
@@ -252,7 +252,8 @@ class IoUTracker:
                 and self._update_tick - track.last_update_tick
                 <= self.visible_idle_frames
             ):
-                visible[track_id] = track
+                predicted = replace(track, bbox=_predicted_bbox(track, frame_sequence))
+                visible[track_id] = predicted
         return tuple(sorted(visible.values(), key=lambda item: item.track_id))
 
 

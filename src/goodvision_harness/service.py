@@ -40,6 +40,8 @@ from .config import (
     load_config,
 )
 from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
+from .adaptive_delay import LatencyTracker
+from .alarm_log import AlarmLogger
 from .delayed_overlay import (
     DelayedOverlayComposer,
     DisplayAnalysis,
@@ -218,6 +220,7 @@ class HarnessRuntime:
         self.frames = FrameBus()
         self.preview_frames = FrameBus()
         self.annotated_frames = FrameBus()
+        self.live_overlay_frames = FrameBus()
         display = config.display if config is not None else DisplaySettings()
         if (
             self._deployment_settings is not None
@@ -293,6 +296,12 @@ class HarnessRuntime:
             self._rich_labels = None
         self._rich_history = DeferredRichLabelHistory(lambda: self._rich_labels)
         self._overlay_fusion = OverlayFusionMatcher()
+        self._alarm_logger = AlarmLogger()
+        self._latency_tracker = LatencyTracker()
+        self._buffer_delay_pinned = (
+            self._deployment_settings is not None
+            and self._deployment_settings.buffer_delay_seconds is not None
+        )
         self._annotated_output_fps = (
             max(display.fps, config.video.fps, config.face.sample_fps)
             if config is not None
@@ -315,7 +324,7 @@ class HarnessRuntime:
             ),
             compose=(
                 partial(self._render_fused_label_jpeg, interpolate=False)
-                if self._rich_requested
+                if self._tracking_requested
                 else None
             ),
         )
@@ -738,6 +747,7 @@ class HarnessRuntime:
                 self.autostart = settings.autostart
                 if "buffer_delay_seconds" in payload:
                     assert buffer_delay_seconds is not None
+                    self._buffer_delay_pinned = True
                     self._delayed_overlay.set_delay_seconds(buffer_delay_seconds)
                     self._display_settings = replace(
                         self._display_settings, delay_seconds=buffer_delay_seconds,
@@ -1397,11 +1407,14 @@ class HarnessRuntime:
                     session.stream_session_id if self._tracking_requested else None
                 )
                 self._overlay_fusion.reset()
+                self._alarm_logger.reset()
+                self._latency_tracker.reset()
                 self._delayed_overlay.reset()
                 self.annotated_frames.reset()
                 self.results.reset()
                 self.frames.reset()
                 self.preview_frames.reset()
+                self.live_overlay_frames.reset()
                 self._session = session
                 self._session_mode = mode
                 self._camera_owner = camera_owner if mode == CAMERA_MODE else None
@@ -1555,6 +1568,7 @@ class HarnessRuntime:
             if self._rich_labels is not None:
                 self._rich_labels.reset(None)
             self.annotated_frames.reset()
+            self.live_overlay_frames.reset()
 
             with self._state_lock:
                 self._active_rich_session_id = None
@@ -1676,7 +1690,7 @@ class HarnessRuntime:
             payload["rich_labeling_enabled"] = (
                 self._rich_requested and rich_labels is not None
             )
-            payload["person_tracking_enabled"] = rich_labels is not None
+            payload["person_tracking_enabled"] = self._tracking_requested
             selector = getattr(
                 getattr(self, "_session", None), "frame_crop_selector", None,
             )
@@ -1863,7 +1877,35 @@ class HarnessRuntime:
         if self._delivery is not None:
             self._delivery.submit(payload)
 
+    def _maybe_adapt_display_delay(self, result: AnalysisResult) -> None:
+        if getattr(self, "_buffer_delay_pinned", True):
+            return
+        if result.analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS:
+            return
+        tracker = getattr(self, "_latency_tracker", None)
+        overlay = getattr(self, "_delayed_overlay", None)
+        if tracker is None or overlay is None:
+            return
+        tracker.observe(result.model_latency_seconds)
+        delay = tracker.recommended_delay()
+        if delay is None:
+            return
+        overlay.set_delay_seconds(delay)
+        display = getattr(self, "_display_settings", None)
+        if display is not None:
+            self._display_settings = replace(display, delay_seconds=delay)
+
     def _on_timeline_result(self, result: AnalysisResult) -> None:
+        logger = getattr(self, "_alarm_logger", None)
+        if logger is not None:
+            try:
+                alarms = logger.observe(result)
+            except Exception:
+                LOGGER.warning("could not record person alarm")
+                alarms = ()
+            for alarm in alarms:
+                LOGGER.info(alarm.message)
+        self._maybe_adapt_display_delay(result)
         coordinator = self._rich_labels
         if (
             coordinator is not None
@@ -1926,6 +1968,21 @@ class HarnessRuntime:
             observed_at=observed_at,
         )
         self.preview_frames.publish(packet)
+        if getattr(self, "_tracking_requested", False) and hasattr(
+            self, "live_overlay_frames"
+        ):
+            try:
+                live_jpeg = self._render_fused_label_jpeg(
+                    source_jpeg,
+                    OverlaySelection(None, "none"),
+                    float(media_timestamp),
+                    int(frame_sequence),
+                    interpolate=False,
+                )
+            except Exception:
+                LOGGER.warning("could not render live person overlay")
+                live_jpeg = source_jpeg
+            self.live_overlay_frames.publish(replace(packet, jpeg=live_jpeg))
         self._delayed_overlay.submit_frame(packet)
         frame_count = int(self._state["source_frames_received"]) + 1
         self._last_frame_monotonic = time.monotonic()
@@ -1936,6 +1993,22 @@ class HarnessRuntime:
             last_media_timestamp=round(float(media_timestamp), 3),
             last_frame_sequence=int(frame_sequence),
         )
+
+    def _display_person_objects(
+        self, media_timestamp: float, frame_sequence: int
+    ) -> tuple[Any, ...]:
+        with self._state_lock:
+            session = self._session
+        registry = getattr(session, "person_registry", None)
+        if registry is None:
+            return ()
+        try:
+            return registry.display_snapshot(
+                float(media_timestamp), int(frame_sequence),
+            )
+        except Exception:
+            LOGGER.warning("could not load person overlay snapshot")
+            return ()
 
     def _render_rich_label_jpeg(
         self,
@@ -2000,8 +2073,23 @@ class HarnessRuntime:
                 )
                 rich_objects = rich_selection.objects
 
+        person_objects = self._display_person_objects(
+            float(media_timestamp), int(frame_sequence),
+        )
+        if person_objects:
+            person_labels = {"person", "pedestrian", "human"}
+            others = tuple(
+                item for item in rich_objects
+                if str(getattr(item, "label", "")).casefold() not in person_labels
+            )
+            rich_objects = tuple(person_objects) + others
+
         if not rich_objects and analysis is None:
             return jpeg
+        if not rich_objects:
+            return _render_analysis_jpeg(
+                jpeg, analysis, quality=self.settings.overlay_jpeg_quality,
+            )
 
         encoded = np.frombuffer(jpeg, dtype=np.uint8)
         image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
@@ -2014,10 +2102,9 @@ class HarnessRuntime:
             analysis.analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS
             and not _has_safety_annotations(analysis)
         ):
-            rendered = (
-                draw_rich_overlay(image, rich_objects) if rich_objects else image
-            )
-            rendered = _draw_analysis_overlay(rendered, analysis)
+            rendered = draw_rich_overlay(image, rich_objects)
+            if not person_objects:
+                rendered = _draw_analysis_overlay(rendered, analysis)
         else:
             plan = self._overlay_fusion.plan(
                 analysis,
@@ -2042,6 +2129,8 @@ class HarnessRuntime:
             )
             arguments = _analysis_overlay_arguments(analysis)
             arguments["objects"] = ()
+            if person_objects:
+                arguments["face_objects"] = ()
             rendered = draw_overlay(rendered, **arguments)
 
         ok, output = cv2.imencode(
@@ -2870,6 +2959,17 @@ def create_app(
     @application.get("/v1/video/annotated/stream.mjpeg")
     async def annotated_video_stream(request: Request) -> StreamingResponse:
         return _mjpeg_response(request, _runtime(request).annotated_frames)
+
+    @application.get("/v1/video/live-overlay/latest.jpg")
+    async def latest_live_overlay_frame(request: Request) -> Response:
+        return _snapshot_response(
+            _runtime(request).live_overlay_frames,
+            missing_detail="no live overlay frame yet",
+        )
+
+    @application.get("/v1/video/live-overlay/stream.mjpeg")
+    async def live_overlay_video_stream(request: Request) -> StreamingResponse:
+        return _mjpeg_response(request, _runtime(request).live_overlay_frames)
 
     return application
 

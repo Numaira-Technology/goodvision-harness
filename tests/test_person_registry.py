@@ -91,12 +91,112 @@ def test_negative_frames_preserve_subject_without_holding_event_positive() -> No
     assert again.objects[0].attributes["subject_id"] == subject_id
 
 
-def test_long_absence_allocates_new_subject_and_session_namespaces_do_not_leak() -> (
-    None
-):
+def test_unique_reappearance_keeps_subject_after_a_short_occlusion() -> None:
     registry = PersonRegistry("session", "camera")
     first = registry.prepare_analysis(_result(0), _bundle())
-    later = registry.prepare_analysis(_result(3.1), _bundle())
+    later = registry.prepare_analysis(_result(4.2), _bundle(actor_id="new-id"))
+    assert later.objects[0].attributes["subject_id"] == first.objects[0].attributes[
+        "subject_id"
+    ]
+
+
+def _embedded_face(
+    embedding: tuple[float, ...],
+    box: NormalizedBBox,
+    *,
+    person_id: str,
+) -> ModelObject:
+    return ModelObject(
+        "known_person",
+        box,
+        0.9,
+        {
+            "status": "known",
+            "person_id": person_id,
+            "name": person_id,
+        },
+        identity_embedding=embedding,
+        identity_quality=True,
+    )
+
+
+def test_distinct_embeddings_reclaim_lost_ids_after_a_spatial_swap() -> None:
+    registry = PersonRegistry("session", "camera")
+    people = {"alice": "Alice", "bob": "Bob"}
+    left = NormalizedBBox(0.10, 0.08, 0.28, 0.28)
+    right = NormalizedBBox(0.72, 0.08, 0.90, 0.28)
+    first = registry.resolve_faces(
+        [
+            _embedded_face((1.0, 0.0), left, person_id="alice"),
+            _embedded_face((0.0, 1.0), right, person_id="bob"),
+        ],
+        timestamp=0,
+        frame_sequence=0,
+        people=people,
+    )
+    alice_id = next(
+        item.attributes["subject_id"]
+        for item in first
+        if item.attributes.get("person_id") == "alice"
+    )
+    bob_id = next(
+        item.attributes["subject_id"]
+        for item in first
+        if item.attributes.get("person_id") == "bob"
+    )
+    registry.prepare_analysis(_result(4.0, detected=False), ObservationBundle())
+    swapped = registry.resolve_faces(
+        [
+            _embedded_face((1.0, 0.0), right, person_id="alice"),
+            _embedded_face((0.0, 1.0), left, person_id="bob"),
+        ],
+        timestamp=5.0,
+        frame_sequence=50,
+        people=people,
+    )
+    by_person = {
+        item.attributes["person_id"]: item.attributes["subject_id"]
+        for item in swapped
+        if item.attributes.get("person_id") in {"alice", "bob"}
+    }
+    assert by_person["alice"] == alice_id
+    assert by_person["bob"] == bob_id
+    assert by_person["alice"] != by_person["bob"]
+
+
+def test_ambiguous_embeddings_do_not_reclaim_lost_ids_after_a_spatial_swap() -> None:
+    registry = PersonRegistry("session", "camera")
+    people = {"alice": "Alice", "bob": "Bob"}
+    left = NormalizedBBox(0.10, 0.08, 0.28, 0.28)
+    right = NormalizedBBox(0.72, 0.08, 0.90, 0.28)
+    first = registry.resolve_faces(
+        [
+            _embedded_face((1.0, 0.0), left, person_id="alice"),
+            _embedded_face((1.0, 0.02), right, person_id="bob"),
+        ],
+        timestamp=0,
+        frame_sequence=0,
+        people=people,
+    )
+    old_ids = {item.attributes["subject_id"] for item in first}
+    registry.prepare_analysis(_result(4.0, detected=False), ObservationBundle())
+    swapped = registry.resolve_faces(
+        [
+            _embedded_face((1.0, 0.0), right, person_id="alice"),
+            _embedded_face((1.0, 0.02), left, person_id="bob"),
+        ],
+        timestamp=5.0,
+        frame_sequence=50,
+        people=people,
+    )
+    new_ids = {item.attributes["subject_id"] for item in swapped}
+    assert not new_ids.intersection(old_ids)
+
+
+def test_long_absence_or_a_new_session_allocates_a_new_subject() -> None:
+    registry = PersonRegistry("session", "camera")
+    first = registry.prepare_analysis(_result(0), _bundle())
+    later = registry.prepare_analysis(_result(12.1), _bundle())
     other = PersonRegistry("session", "camera").prepare_analysis(_result(0), _bundle())
     assert (
         len(
@@ -120,6 +220,8 @@ def test_gpu_upgrade_keeps_subject_and_predictions_do_not_refresh_it() -> None:
     assert registry.history()[-1].objects[0].track_id == subject_id
     registry.observe_snapshot(_snapshot(2, predicted=True))
     registry.observe_snapshot(_snapshot(3.3))
+    assert registry.history()[-1].objects[0].track_id == subject_id
+    registry.observe_snapshot(_snapshot(12.0))
     assert registry.history()[-1].objects[0].track_id != subject_id
 
 
@@ -630,3 +732,41 @@ def test_memory_identity_change_requires_consecutive_uninterrupted_confirmation(
     assert (
         current.objects[0].attributes["subject_identity"]["matched_memory_id"] == "bob"
     )
+
+
+def test_prepare_analysis_exposes_stable_person_index() -> None:
+    registry = PersonRegistry("session", "camera")
+    first = registry.prepare_analysis(_result(0), _bundle())
+    assert first.objects[0].attributes["person_index"] == "P0001"
+    later = registry.prepare_analysis(_result(4.2), _bundle(actor_id="new-id"))
+    assert later.objects[0].attributes["person_index"] == "P0001"
+    assert later.objects[0].attributes["subject_id"] == first.objects[0].attributes[
+        "subject_id"
+    ]
+
+
+def test_display_snapshot_holds_person_through_occlusion_then_drops() -> None:
+    registry = PersonRegistry("session", "camera")
+    registry.prepare_analysis(_result(0), _bundle())
+    held = registry.display_snapshot(2.0)
+    assert len(held) == 1
+    person = held[0]
+    assert person.track_id == "P0001"
+    assert person.attributes["person_index"] == "P0001"
+    assert person.attributes["observation_state"] == "predicted"
+    assert person.bbox == BODY
+    assert registry.display_snapshot(12.0) == ()
+
+
+def test_display_snapshot_expands_a_face_into_a_body_stroke_box() -> None:
+    registry = PersonRegistry("session", "camera")
+    registry.resolve_faces(
+        [_face("known")], timestamp=0, frame_sequence=0, people={"alice": "Alice"}
+    )
+    people = registry.display_snapshot(0)
+    assert len(people) == 1
+    body = people[0].bbox
+    assert body.y1 <= FACE.y1
+    assert body.y2 > FACE.y2 + 0.2
+    assert people[0].attributes["person_index"] == "P0001"
+    assert people[0].attributes["person_id"] == "alice"

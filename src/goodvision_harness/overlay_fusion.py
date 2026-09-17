@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from threading import RLock
 
@@ -237,6 +237,40 @@ class OverlayFusionMatcher:
         }
         assignments: dict[tuple[int, str], int] = {}
         occupied: set[tuple[str, int]] = set()
+        rich_by_subject: dict[str, list[int]] = {}
+        for rich_index, rich_object in enumerate(rich_objects):
+            for subject_id in _item_subject_ids(rich_object):
+                rich_by_subject.setdefault(subject_id, []).append(rich_index)
+
+        for event_index, event_object in enumerate(event_objects):
+            subjects = _item_subject_ids(event_object)
+            if not subjects:
+                continue
+            pinned = list(dict.fromkeys(
+                rich_index
+                for subject_id in subjects
+                for rich_index in rich_by_subject.get(subject_id, ())
+            ))
+            if len(pinned) != 1:
+                continue
+            rich_index = pinned[0]
+            for alert in event_alerts[event_object.object_id]:
+                assignment_key = (event_index, alert.event_label)
+                occupancy_key = (alert.event_label, rich_index)
+                if occupancy_key in occupied:
+                    continue
+                assignments[assignment_key] = rich_index
+                occupied.add(occupancy_key)
+                cache_key = (
+                    session_id,
+                    str(event_object.attributes.get(
+                        "annotation_source_message_id", anchor_id
+                    )),
+                    _association_object_id(event_object),
+                    alert.event_label,
+                )
+                self._associations[cache_key] = rich_objects[rich_index].track_id
+                self._associations.move_to_end(cache_key)
 
         for event_index, event_object in enumerate(event_objects):
             for alert in event_alerts[event_object.object_id]:
@@ -325,6 +359,22 @@ class OverlayFusionMatcher:
         while len(self._associations) > self._max_cached_associations:
             self._associations.popitem(last=False)
         return assignments
+
+
+def _item_subject_ids(item: object) -> tuple[str, ...]:
+    attributes = getattr(item, "attributes", {}) or {}
+    if not isinstance(attributes, Mapping):
+        return ()
+    ids: list[str] = []
+    value = attributes.get("subject_id")
+    if isinstance(value, str) and value.strip():
+        ids.append(value)
+    extra = attributes.get("subject_ids") or ()
+    if isinstance(extra, Sequence) and not isinstance(extra, (str, bytes)):
+        ids.extend(
+            entry for entry in extra if isinstance(entry, str) and entry.strip()
+        )
+    return tuple(dict.fromkeys(ids))
 
 
 def _association_object_id(item: GroundedObject) -> str:

@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from .person_outline import draw_person_stroke, extract_person_contour
 from .privacy import redact_public_text
 
 _RICH_COLORS: tuple[tuple[int, int, int], ...] = (
@@ -222,7 +223,12 @@ def draw_rich_overlay(
         alert_text = _rich_alert_text(alerts)
         color = _ALERT_COLOR if alert_text else _rich_track_color(color_key)
 
-        _draw_corner_bbox(rendered, bbox, color)
+        label = _public_hud_text(_object_value(item, "label", "object"))
+        if label.casefold() in _PERSON_LABELS:
+            contour = extract_person_contour(rendered, bbox)
+            draw_person_stroke(rendered, bbox, color, contour)
+        else:
+            _draw_corner_bbox(rendered, bbox, color)
         primary, detail, appearance = _rich_label_lines(
             item,
             attributes=attributes,
@@ -509,7 +515,10 @@ def _rich_label_lines(
     if is_person:
         identity = _public_hud_text(name or person_id)
         primary_parts: list[str] = []
-        track_text = _public_hud_text(track_id, limit=24)
+        track_text = _public_hud_text(
+            _first_scalar(attributes, ("person_index",)) or track_id,
+            limit=24,
+        )
         if track_text:
             track_token = (
                 track_text.upper()

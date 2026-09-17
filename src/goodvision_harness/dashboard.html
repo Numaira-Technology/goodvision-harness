@@ -276,9 +276,11 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
       <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">Waiting for delayed frames</span></div>
     </div>
     <div class="endpoint-grid" aria-label="Output and API shortcuts">
+      <a class="endpoint" href="/v1/video/live-overlay/stream.mjpeg" target="_blank" rel="noreferrer">Live tracking stream <small>MJPEG</small></a>
       <a class="endpoint" href="/v1/video/annotated/stream.mjpeg" target="_blank" rel="noreferrer">Annotated stream <small>MJPEG</small></a>
       <a class="endpoint" href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Exact evidence stream <small>MJPEG</small></a>
       <a class="endpoint" href="/v1/video/live/stream.mjpeg" target="_blank" rel="noreferrer">Raw source stream <small>MJPEG</small></a>
+      <a class="endpoint" href="/v1/video/live-overlay/latest.jpg" target="_blank" rel="noreferrer">Latest live overlay <small>JPEG</small></a>
       <a class="endpoint" href="/v1/video/annotated/latest.jpg" target="_blank" rel="noreferrer">Latest annotated frame <small>JPEG</small></a>
       <a class="endpoint" href="/v1/video/latest.jpg" target="_blank" rel="noreferrer">Latest exact evidence <small>JPEG</small></a>
       <a class="endpoint" href="/v1/results/latest" target="_blank" rel="noreferrer">Latest result <small>JSON</small></a>
@@ -567,8 +569,9 @@ function updateAnnotatedOutput(output){
     ui.bufferDelayCurrent.textContent="当前缓存："+delay+" 秒";
     if(!state.bufferDelayDirty)ui.bufferDelay.value=String(delay)
   }
+  const tracking=!!(state.info&&state.info.person_tracking_enabled);
   const stateLabel=value.state==="running"?mode.toUpperCase():"BUFFERING";
-  ui.rawBadgeText.textContent="DELAYED | "+stateLabel;
+  ui.rawBadgeText.textContent=(tracking?"LIVE | TRACKING":"DELAYED")+" | "+stateLabel;
   ui.streamMeta.textContent=annotatedOutputText(value);
   ui.annotatedState.textContent=stateLabel;
   ui.annotatedNote.textContent=annotatedOutputText(value)+(mode!=="none"?" · "+mode:" · no frame yet");
@@ -652,7 +655,10 @@ async function pullLatestFrame(generation){
   try{
     // Request one complete JPEG at a time so a slow viewer cannot replay a
     // backlog already written into a continuous MJPEG response.
-    const response=await fetch("/v1/video/annotated/latest.jpg",{cache:"no-store",signal:controller.signal});
+    const path=state.info&&state.info.person_tracking_enabled
+      ?"/v1/video/live-overlay/latest.jpg"
+      :"/v1/video/annotated/latest.jpg";
+    const response=await fetch(path,{cache:"no-store",signal:controller.signal});
     if(!response.ok)throw new Error("Frame unavailable");
     nextUrl=URL.createObjectURL(await response.blob());
     const decoded=new Image();decoded.src=nextUrl;await decoded.decode();

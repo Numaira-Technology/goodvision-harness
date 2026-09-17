@@ -204,8 +204,6 @@ class EventJudgment:
             raise ValueError("matched_memory_ids must contain non-empty text")
         if len(set(self.matched_memory_ids)) != len(self.matched_memory_ids):
             raise ValueError("matched_memory_ids must be unique")
-        if self.detected and not self.object_ids:
-            raise ValueError("detected judgments must reference at least one object")
 
     def as_dict(self) -> dict[str, object]:
         record: dict[str, object] = {

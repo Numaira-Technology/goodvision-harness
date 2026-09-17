@@ -17,6 +17,7 @@ from uuid import uuid4
 from .contracts import AnalysisResult, NormalizedBBox
 from .face_tracking import FaceIdentityTracker
 from .grounding import ModelActor, ModelObject, ObservationBundle
+from .person_outline import estimate_body_from_face
 from .rich_labeling import RichLabelObject, RichLabelSnapshot
 
 _PERSON_LABELS = frozenset(
@@ -36,6 +37,8 @@ _PERSON_LABELS = frozenset(
     }
 )
 _SOURCE_FACE_MAX_GAP_SECONDS = 0.6
+_REID_MIN_SCORE = 0.35
+_REID_MARGIN = 0.15
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +69,7 @@ class _Subject:
     memory_confirmations: int = 0
     memory_frame: tuple[float, int] = (-1.0, -1)
     association_uncertain: bool = False
+    index: int = 0
 
 
 class PersonRegistry:
@@ -77,15 +81,20 @@ class PersonRegistry:
         source_id: str = "",
         *,
         max_gap_seconds: float = 3.0,
+        reappear_seconds: float = 8.0,
     ) -> None:
         if not math.isfinite(max_gap_seconds) or max_gap_seconds <= 0:
             raise ValueError("max_gap_seconds must be positive and finite")
+        if not math.isfinite(reappear_seconds) or reappear_seconds < max_gap_seconds:
+            raise ValueError("reappear_seconds must be finite and at least max_gap_seconds")
         self.stream_session_id = stream_session_id
         self.source_id = source_id
         self.max_gap_seconds = max_gap_seconds
+        self.reappear_seconds = float(reappear_seconds)
         self._namespace = uuid4().hex[:12]
         self._counter = 0
         self._subjects: dict[str, _Subject] = {}
+        self._lost: dict[str, _Subject] = {}
         self._body_aliases: dict[str, str] = {}
         self._face_aliases: dict[str, str] = {}
         self._history: deque[RichLabelSnapshot] = deque(maxlen=1024)
@@ -99,6 +108,7 @@ class PersonRegistry:
         self._latest_time = -1.0
         self._face_tracker = FaceIdentityTracker()
         self._removed_people: set[str] = set()
+        self._indices: dict[str, int] = {}
         self._lock = RLock()
 
     def forget_person(self, person_id: str) -> None:
@@ -125,27 +135,46 @@ class PersonRegistry:
     ) -> _Subject:
         self._counter += 1
         subject = _Subject(
-            f"subject-{self._namespace}-{self._counter}", bbox, timestamp, kind
+            f"subject-{self._namespace}-{self._counter}",
+            bbox,
+            timestamp,
+            kind,
+            index=self._counter,
         )
         self._subjects[subject.subject_id] = subject
+        self._indices[subject.subject_id] = self._counter
         return subject
+
+    def _public_index(self, subject_id: str) -> str | None:
+        index = self._indices.get(subject_id)
+        if not index:
+            return None
+        return f"P{index:04d}"
 
     def _expire(self, timestamp: float) -> None:
         self._latest_time = max(self._latest_time, timestamp)
-        self._subjects = {
+        live: dict[str, _Subject] = {}
+        for key, value in self._subjects.items():
+            if timestamp - value.seen_at <= self.max_gap_seconds:
+                live[key] = value
+            else:
+                self._lost[key] = value
+        self._subjects = live
+        self._lost = {
             key: value
-            for key, value in self._subjects.items()
-            if timestamp - value.seen_at <= self.max_gap_seconds
+            for key, value in self._lost.items()
+            if key not in self._subjects
+            and timestamp - value.seen_at <= self.reappear_seconds
         }
         self._body_aliases = {
             key: value
             for key, value in self._body_aliases.items()
-            if value in self._subjects
+            if value in self._subjects or value in self._lost
         }
         self._face_aliases = {
             key: value
             for key, value in self._face_aliases.items()
-            if value in self._subjects
+            if value in self._subjects or value in self._lost
         }
 
     def _replace_subject_aliases(
@@ -185,6 +214,44 @@ class PersonRegistry:
             ),
             maxlen=1024,
         )
+
+    def _adopt_lost_subject(
+        self, current: _Subject, lost: _Subject, timestamp: float
+    ) -> _Subject:
+        self._subjects.pop(current.subject_id, None)
+        self._lost.pop(lost.subject_id, None)
+        lost.bbox = current.bbox
+        lost.seen_at = timestamp
+        lost.kind = current.kind
+        lost.vx = current.vx
+        lost.vy = current.vy
+        if current.identity:
+            lost.identity = dict(current.identity)
+            lost.identity_at = max(lost.identity_at, current.identity_at)
+        if current.identity_embeddings:
+            lost.identity_embeddings = (
+                *lost.identity_embeddings[-4:],
+                *current.identity_embeddings[-4:],
+            )[-4:]
+        self._subjects[lost.subject_id] = lost
+        self._replace_subject_aliases(current.subject_id, lost.subject_id, timestamp)
+        return lost
+
+    def _reclaim_lost_by_embedding(self, subject: _Subject) -> _Subject:
+        query = subject.identity_embeddings[-1] if subject.identity_embeddings else ()
+        scores: list[tuple[float, _Subject]] = []
+        for lost in self._lost.values():
+            if lost.subject_id == subject.subject_id:
+                continue
+            score = _embedding_similarity(query, lost.identity_embeddings)
+            if score is not None:
+                scores.append((score, lost))
+        scores.sort(key=lambda item: item[0], reverse=True)
+        if not scores or scores[0][0] < _REID_MIN_SCORE:
+            return subject
+        if len(scores) > 1 and scores[0][0] - scores[1][0] < _REID_MARGIN:
+            return subject
+        return self._adopt_lost_subject(subject, scores[0][1], subject.seen_at)
 
     def observe_snapshot(self, snapshot: RichLabelSnapshot) -> None:
         with self._lock:
@@ -245,10 +312,23 @@ class PersonRegistry:
         excluded_subject_ids: set[str] | None = None,
     ) -> dict[str, str]:
         self._expire(timestamp)
-        candidates = tuple(
+        excluded = excluded_subject_ids or ()
+        live = tuple(
             item for item in self._subjects.values()
-            if item.subject_id not in (excluded_subject_ids or ())
+            if item.subject_id not in excluded
         )
+        # Resurrecting multiple lost people at once reattaches them by last
+        # location, which swaps identities after a crossing. A single return
+        # can reuse the held ID; a crowd starts fresh public numbers.
+        lost = (
+            tuple(
+                item for item in self._lost.values()
+                if item.subject_id not in excluded
+            )
+            if len(observations) == 1
+            else ()
+        )
+        candidates = (*live, *lost)
         assignments: dict[str, str] = {}
         proposals: dict[str, _Subject | None] = {}
         disputed: set[str] = set()
@@ -257,9 +337,14 @@ class PersonRegistry:
         for local_id, box, _confidence in observations:
             scores: list[tuple[float, _Subject]] = []
             for subject in candidates:
+                gap_limit = (
+                    self.reappear_seconds
+                    if subject.subject_id in self._lost
+                    else self.max_gap_seconds
+                )
                 if (
                     timestamp < subject.seen_at
-                    or timestamp - subject.seen_at > self.max_gap_seconds
+                    or timestamp - subject.seen_at > gap_limit
                 ):
                     continue
                 score = (
@@ -319,6 +404,9 @@ class PersonRegistry:
                 # a fresh association after the ambiguous observation.
                 subject.association_uncertain = local_id in uncertain_observations
             else:
+                self._lost.pop(subject.subject_id, None)
+                if subject.subject_id not in self._subjects:
+                    self._subjects[subject.subject_id] = subject
                 gap = timestamp - subject.seen_at
                 if gap > 0 and subject.kind == "body":
                     previous, current = _center(subject.bbox), _center(box)
@@ -391,6 +479,91 @@ class PersonRegistry:
                 key=lambda item: (item.timestamp_seconds, item.frame_sequence),
                 default=None,
             )
+
+    def display_snapshot(
+        self, timestamp: float, frame_sequence: int | None = None
+    ) -> tuple[RichLabelObject, ...]:
+        """Person boxes for the delayed display clock, including occluded holds."""
+
+        with self._lock:
+            latest: dict[str, tuple[float, int, NormalizedBBox, float | None]] = {}
+            for snapshot in self._history:
+                if snapshot.timestamp_seconds > timestamp + 1e-9:
+                    continue
+                if (
+                    frame_sequence is not None
+                    and snapshot.timestamp_seconds == timestamp
+                    and snapshot.frame_sequence > frame_sequence
+                ):
+                    continue
+                for item in snapshot.objects:
+                    if item.label.casefold() not in {"person", "pedestrian"}:
+                        continue
+                    latest[item.track_id] = (
+                        snapshot.timestamp_seconds,
+                        snapshot.frame_sequence,
+                        item.bbox,
+                        item.confidence,
+                    )
+            for snapshot in self._face_history:
+                if snapshot.timestamp > timestamp + 1e-9:
+                    continue
+                if (
+                    frame_sequence is not None
+                    and snapshot.timestamp == timestamp
+                    and snapshot.sequence > frame_sequence
+                ):
+                    continue
+                for face in snapshot.faces:
+                    previous = latest.get(face.subject_id)
+                    if previous is not None and previous[0] >= snapshot.timestamp:
+                        continue
+                    latest[face.subject_id] = (
+                        snapshot.timestamp,
+                        snapshot.sequence,
+                        estimate_body_from_face(face.bbox),
+                        None,
+                    )
+            objects = []
+            for subject_id, (seen, sequence, box, confidence) in latest.items():
+                if timestamp - seen > self.reappear_seconds:
+                    continue
+                person_index = self._public_index(subject_id)
+                if person_index is None:
+                    continue
+                state = "observed" if timestamp - seen <= 0.05 else "predicted"
+                subject = self._subjects.get(subject_id) or self._lost.get(subject_id)
+                identity = (
+                    dict(subject.identity)
+                    if subject is not None and subject.identity_at <= timestamp
+                    else {}
+                )
+                attributes: dict[str, object] = {
+                    "subject_id": subject_id,
+                    "subject_ids": [subject_id],
+                    "person_index": person_index,
+                    "observation_state": state,
+                    "person_track_id": subject_id,
+                }
+                person_id = identity.get("person_id")
+                if isinstance(person_id, str) and person_id.strip():
+                    attributes["person_id"] = person_id
+                name = identity.get("name")
+                if isinstance(name, str) and name.strip():
+                    attributes["name"] = name
+                objects.append(
+                    RichLabelObject(
+                        person_index,
+                        "person",
+                        box,
+                        confidence,
+                        attributes,
+                        observation_state=state,
+                        last_observed_timestamp_seconds=seen,
+                        last_observed_frame_sequence=sequence,
+                    )
+                )
+            return tuple(objects)
 
     def history(self) -> tuple[RichLabelSnapshot, ...]:
         with self._lock:
@@ -518,12 +691,20 @@ class PersonRegistry:
                     result.append(replace(item, attributes=attributes))
                     continue
                 body_id = str(attributes.get("person_track_id", ""))
-                subject = self._subjects.get(body_id) or self._subjects.get(
-                    self._face_aliases.get(face_id, "")
+                alias_id = self._face_aliases.get(face_id, "")
+                subject = (
+                    self._subjects.get(body_id)
+                    or self._lost.get(body_id)
+                    or self._subjects.get(alias_id)
+                    or self._lost.get(alias_id)
                 )
                 if subject is None:
                     subject = self._new_subject(item.bbox, timestamp, "face")
-                if attributes.pop("identity_reset", False):
+                elif subject.subject_id in self._lost:
+                    self._lost.pop(subject.subject_id, None)
+                    self._subjects[subject.subject_id] = subject
+                identity_reset = attributes.pop("identity_reset", False)
+                if identity_reset:
                     old_id = subject.subject_id
                     subject = self._new_subject(subject.bbox, timestamp, subject.kind)
                     self._subjects.pop(old_id, None)
@@ -547,21 +728,25 @@ class PersonRegistry:
                     }
                     if attributes.get("identity_source") != "track_history":
                         subject.identity_at = timestamp
-                    if (
-                        item.identity_quality
-                        and item.identity_embedding
-                        and attributes.get("identity_source") == "face_match"
-                    ):
-                        subject.identity_embeddings = (
-                            *subject.identity_embeddings[-4:],
-                            item.identity_embedding,
-                        )
                 elif subject.identity.get("person_id") not in people:
                     subject.identity = {}
+                if (
+                    item.identity_quality
+                    and item.identity_embedding
+                    and attributes.get("identity_source") != "track_history"
+                ):
+                    subject.identity_embeddings = (
+                        *subject.identity_embeddings[-4:],
+                        item.identity_embedding,
+                    )
+                if not identity_reset:
+                    subject = self._reclaim_lost_by_embedding(subject)
+                    self._face_aliases[face_id] = subject.subject_id
                 attributes.update(
                     subject_id=subject.subject_id,
                     subject_ids=[subject.subject_id],
                     person_track_id=subject.subject_id,
+                    person_index=f"P{subject.index:04d}",
                 )
                 result.append(replace(item, attributes=attributes))
             self._expire(timestamp)
@@ -574,6 +759,53 @@ class PersonRegistry:
                     and item.attributes.get("face_observation_state") == "observed"
                 ),
             )
+            existing = next(
+                (
+                    item
+                    for item in self._history
+                    if (
+                        item.timestamp_seconds == timestamp
+                        and item.frame_sequence == frame_sequence
+                    )
+                ),
+                None,
+            )
+            occupied = {
+                obj.track_id for obj in existing.objects
+            } if existing is not None else set()
+            face_bodies = []
+            for item in result:
+                if item.attributes.get("face_observation_state") != "observed":
+                    continue
+                subject_id = item.attributes.get("subject_id")
+                if not isinstance(subject_id, str) or subject_id in occupied:
+                    continue
+                subject = self._subjects.get(subject_id)
+                box = (
+                    estimate_body_from_face(item.bbox)
+                    if subject is None or subject.kind == "face"
+                    else subject.bbox
+                )
+                face_bodies.append(
+                    RichLabelObject(
+                        subject_id,
+                        "person",
+                        box,
+                        item.confidence,
+                        {
+                            "observation_state": "observed",
+                            "last_observed_timestamp_seconds": timestamp,
+                            "subject_id": subject_id,
+                            **(
+                                {"person_index": person_index}
+                                if (person_index := self._public_index(subject_id))
+                                else {}
+                            ),
+                        },
+                    )
+                )
+            if face_bodies:
+                self._record_snapshot(timestamp, frame_sequence, tuple(face_bodies))
             return tuple(result)
 
     def prepare_analysis(
@@ -770,6 +1002,9 @@ class PersonRegistry:
                     attributes["subject_ids"] = ids
                     if len(ids) == 1:
                         attributes.update(subject_id=ids[0], person_track_id=ids[0])
+                        person_index = self._public_index(ids[0])
+                        if person_index is not None:
+                            attributes["person_index"] = person_index
                         subject = self._subjects.get(ids[0])
                         if (
                             subject is not None
@@ -865,6 +1100,20 @@ class PersonRegistry:
             finally:
                 self._reassociating = False
             return tuple(updates)
+
+
+def _embedding_similarity(
+    embedding: tuple[float, ...],
+    samples: Sequence[tuple[float, ...]],
+) -> float | None:
+    if not embedding or not samples:
+        return None
+    scores = [
+        sum(left * right for left, right in zip(embedding, sample, strict=True))
+        for sample in samples
+        if len(sample) == len(embedding)
+    ]
+    return max(scores) if scores else None
 
 
 def _has_unassociated_positive(result: AnalysisResult) -> bool:

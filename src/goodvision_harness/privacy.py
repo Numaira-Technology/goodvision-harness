@@ -29,7 +29,7 @@ _IDENTIFIER_FIELDS = frozenset({
     "object_id", "track_id", "person_id", "stranger_id", "memory_id",
     "analysis_message_id", "next_analysis_message_id", "association_message_id",
     "subject_id", "event_id", "canonical_event_id", "requested_event_id",
-    "person_track_id", "face_track_id", "actor_id",
+    "person_track_id", "face_track_id", "actor_id", "person_index",
 })
 _IDENTIFIER_LIST_FIELDS = frozenset({
     "object_ids", "memory_ids", "matched_memory_ids",
