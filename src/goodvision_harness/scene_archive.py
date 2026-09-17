@@ -70,6 +70,7 @@ class SceneArchive:
         self._closing = Event()
         self._ready = Event()
         self._cache: list[dict[str, Any]] = []
+        self._failed_events: set[tuple[str, str]] = set()
         self._stats: dict[str, Any] = {
             "state": "starting",
             "submitted": 0,
@@ -125,7 +126,7 @@ class SceneArchive:
             record["confidence"] = confidence
         return record
 
-    def submit(self, snapshot: dict) -> bool:
+    def submit(self, snapshot: dict, *, timeout_seconds: float = 0) -> bool:
         """Copy only allowlisted metadata; enqueue without waiting for disk I/O."""
         if self._closing.is_set():
             return False
@@ -189,13 +190,17 @@ class SceneArchive:
         with self._lock:
             if self._closing.is_set() or self._stats["state"] == "failed":
                 return False
-            try:
-                self._queue.put_nowait(batch)
-            except queue.Full:
+        # Do not hold the status lock during background-only admission waits:
+        # the writer needs that lock before it can consume the next batch.
+        try:
+            self._queue.put(batch, timeout=max(0.0, timeout_seconds))
+        except queue.Full:
+            with self._lock:
                 self._stats["queue_dropped"] += 1
-                return False
+            return False
+        with self._lock:
             self._stats["submitted"] += 1
-            return True
+        return True
 
     def list_events(self, limit: int = 100) -> list[dict]:
         if type(limit) is not int or not 1 <= limit <= 1000:
@@ -206,6 +211,26 @@ class SceneArchive:
     def stats(self) -> dict:
         with self._lock:
             return {**self._stats, "queued": self._queue.qsize()}
+
+    def failed_for_run(self, stream_session_id: str) -> bool:
+        with self._lock:
+            return any(run == stream_session_id for run, _ in self._failed_events)
+
+    def flush(self, timeout_seconds: float = 10.0) -> bool:
+        """Wait until accepted scene corrections have been persisted."""
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while True:
+            with self._lock:
+                if self._stats["state"] == "failed":
+                    return False
+                if (
+                    self._queue.unfinished_tasks == 0
+                    and self._stats["state"] != "starting"
+                ):
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
 
     def close(self, timeout_seconds: float = 1) -> None:
         timeout = float(_number(timeout_seconds))
@@ -341,10 +366,18 @@ class SceneArchive:
                     with self._lock:
                         self._stats["failures"] += 1
                         self._stats["last_error"] = type(exc).__name__
+                        self._failed_events.update(
+                            (row["stream_session_id"], row["event_id"])
+                            for row in records
+                        )
                 else:
                     with self._lock:
                         self._stats["persisted_batches"] += 1
                         self._stats["persisted_events"] += len(records)
+                        self._failed_events.difference_update(
+                            (row["stream_session_id"], row["event_id"])
+                            for row in records
+                        )
                 finally:
                     self._queue.task_done()
             with self._lock:

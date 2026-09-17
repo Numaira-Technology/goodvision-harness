@@ -212,11 +212,36 @@ def test_existing_native_late_match_merges_face_and_keeps_identity_and_event_his
     assert after["phase"] == "confirmed"
     assert after["subject_ids"] == [canonical]
     assert after["history"] == before["history"]
-    assert scene["entities"][0]["last_observed_timestamp_seconds"] == 3
+    entity = scene["entities"][0]
+    # Source-aligned native geometry remains at its true frame. Face evidence
+    # at t=3 retains its identity/event history, but is not a new body frame.
+    assert entity["last_observed_timestamp_seconds"] == 0
+    assert entity["frame_sequence"] == 0
+    assert entity["bbox"] == BODY.as_dict()
+    assert entity["native_track"] == NATIVE
+    assert [(row["timestamp_seconds"], row.get("identity_only", False))
+            for row in entity["history"]] == [(0, False), (2, True), (3, True)]
+    assert after["last_evidence_timestamp_seconds"] == 3
     # Delayed old messages and current face aliases cannot recreate the entity.
     runtime.observe_result(observation(3, old))
     assert len(runtime.scene.snapshot()["entities"]) == 1
     assert face(registry, 4)[0].attributes["subject_id"] == canonical
+    runtime.observe_frame(b"next face source", 4, 40)
+    runtime.observe_result(observation(4, old))
+    current = runtime.scene.snapshot()
+    assert current["entities"][0]["last_observed_timestamp_seconds"] == 0
+    assert current["entities"][0]["bbox"] == BODY.as_dict()
+    assert current["events"][0]["positive_observations"] == 3
+    assert current["events"][0]["last_evidence_timestamp_seconds"] == 4
+    assert runtime.scene.snapshot_at(4)["entities"][0]["frame_sequence"] == 0
+    # Only an actual native observation advances the body's source watermark.
+    runtime.scene.observe_person(
+        canonical, timestamp_seconds=3, frame_sequence=30, bbox=BODY,
+        native_track=NATIVE, allow_historical=True,
+    )
+    caught_up = runtime.scene.snapshot()["entities"][0]
+    assert caught_up["last_observed_timestamp_seconds"] == 3
+    assert runtime.scene.snapshot_at(3)["entities"][0]["frame_sequence"] == 30
 
 
 def test_exact_current_body_rebinds_preexisting_face_alias_in_both_arrival_orders():
@@ -406,6 +431,10 @@ def test_service_callbacks_merge_before_publishing_the_completed_native_source()
     )
     service._scene = scene
     service._scene_worker = None
+    service._rich_labels = None
+    service._camera_display_metadata = SimpleNamespace(
+        observe_batch=lambda _batch: None,
+    )
     service._scene_errors = 0
     service._scene_is_active = lambda: True
     published = []

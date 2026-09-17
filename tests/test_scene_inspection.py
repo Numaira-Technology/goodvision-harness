@@ -116,9 +116,8 @@ def test_messages_preserve_order_times_all_images_and_source_boxes():
     assert json.loads(content[0]["text"])["allowed_subject_ids"] == ["person-1"]
     assert json.loads(content[1]["text"])["frame_sequence"] == 10
     assert json.loads(content[3]["text"])["source_timestamp_seconds"] == 1
-    assert json.loads(content[3]["text"])["offset_seconds"] == 1
     assert json.loads(content[1]["text"])["subject_boxes"] == [
-        {"subject_id": "person-1", "bbox": BOX.as_dict()},
+        {"subject_id": "person-1", "bbox": [0.1, 0.1, 0.4, 0.9]},
     ]
     for part in (content[2], content[4]):
         data = base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
@@ -126,6 +125,50 @@ def test_messages_preserve_order_times_all_images_and_source_boxes():
             assert image.size == (720, 360)
     assert "every supplied frame" in messages[0]["content"]
     assert "detected=null" in messages[0]["content"]
+
+
+def test_compact_metadata_preserves_each_frames_own_people_boxes_and_time():
+    job = _job(targeted=False)
+    second = NormalizedBBox(0.312345678, 0.2, 0.712345678, 0.8)
+    job = replace(job, subject_boxes=(
+        (10, "person-1", BOX), (11, "person-2", second),
+    ))
+    messages = build_temporal_messages(job)
+    context, first, last = [
+        json.loads(part["text"]) for part in messages[1]["content"]
+        if part["type"] == "text"
+    ]
+    assert context == {
+        "allowed_event_labels": ["smoking", "fight"],
+        "allowed_subject_ids": ["person-1", "person-2"],
+    }
+    assert first == {
+        "frame_sequence": 10, "source_timestamp_seconds": 0,
+        "subject_boxes": [{"subject_id": "person-1", "bbox": [0.1, 0.1, 0.4, 0.9]}],
+    }
+    assert last == {
+        "frame_sequence": 11, "source_timestamp_seconds": 1,
+        "subject_boxes": [{
+            "subject_id": "person-2", "bbox": [0.312346, 0.2, 0.712346, 0.8],
+        }],
+    }
+    assert job.subject_boxes[1][2] == second
+
+
+@pytest.mark.parametrize("level", ["standard", "high"])
+def test_temporal_policy_has_no_grounding_output_instructions(level):
+    job = _job()
+    labels = ("smoking", "fight", "fall", "weapon")
+    job = replace(job, request=replace(job.request, event_labels=labels),
+                  event_sensitivities=tuple((label, level) for label in labels))
+    prompt = build_temporal_messages(job)[0]["content"]
+    assert "Return only a JSON array" in prompt
+    assert "Do not output new\nbounding boxes, descriptions" in prompt
+    assert "Box the actual item" not in prompt
+    assert "box the visible" not in prompt
+    assert "box the actual smoking item" not in prompt
+    assert "Report suspected weapon" not in prompt
+    assert "describe a suspected smoking action" not in prompt
 
 
 def test_message_builder_strips_jpeg_metadata_and_source_secrets():
@@ -146,6 +189,31 @@ def test_message_builder_strips_jpeg_metadata_and_source_secrets():
     assert b"SECRET-EXIF-CREDENTIAL" not in raw
     with Image.open(io.BytesIO(raw)) as image:
         assert not image.getexif()
+
+
+def test_configured_quality_changes_only_jpeg_encoding_and_preserves_default():
+    job = _job()
+    default = build_temporal_messages(job)
+    assert default == build_temporal_messages(job, jpeg_quality=90)
+    reduced = build_temporal_messages(job, jpeg_quality=70)
+    assert reduced[0] == default[0]  # Exact prompt and event criteria are unchanged.
+    for original, changed in zip(
+        default[1]["content"], reduced[1]["content"], strict=True,
+    ):
+        if original["type"] != "image_url":
+            assert changed == original
+            continue
+        data = base64.b64decode(changed["image_url"]["url"].split(",", 1)[1])
+        with Image.open(io.BytesIO(data)) as image:
+            assert image.size == (720, 360)
+            assert image.quantization[0][0] == 10
+            assert not image.getexif()
+
+
+@pytest.mark.parametrize("quality", [0, 101, True, 70.5, "70"])
+def test_message_builder_rejects_invalid_jpeg_quality(quality):
+    with pytest.raises(ValueError, match="jpeg_quality"):
+        build_temporal_messages(_job(), jpeg_quality=quality)
 
 
 def test_full_scene_without_boxes_never_invents_subject_ids():

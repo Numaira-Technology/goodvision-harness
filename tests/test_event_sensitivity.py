@@ -1,6 +1,7 @@
 """Console choices must change evidence policy without changing JSON safety."""
 
 from dataclasses import replace
+from itertools import product
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -8,7 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from goodvision_harness.config import load_config
-from goodvision_harness.event_sensitivity import normalize_event_sensitivities
+from goodvision_harness.event_sensitivity import (
+    normalize_event_sensitivities,
+    sensitivity_policy_text,
+)
 from goodvision_harness.grounding import (
     SAFETY_EVENT_LABELS,
     AIClubMultiGroundingClient,
@@ -87,6 +91,62 @@ def test_each_other_event_has_distinct_real_policy(label, standard, high):
     assert standard in standard_text
     assert high in high_text
     assert standard_text != high_text
+
+
+@pytest.mark.parametrize("levels", product(("standard", "high"), repeat=4))
+def test_evidence_only_policies_preserve_each_level_without_output_conflicts(levels):
+    choices = dict(zip(("fight", "smoking", "fall", "weapon"), levels, strict=True))
+    standard_smoking = (
+        "Smoking STANDARD: require an identifiable smoking item and smoking action."
+    )
+    text = sensitivity_policy_text(
+        choices, smoking_standard_rule=standard_smoking,
+        include_output_guidance=False,
+    )
+    criteria = {
+        ("fight", "standard"): "raised fists",
+        ("fight", "high"): "plausible early confrontation",
+        ("smoking", "standard"): standard_smoking,
+        ("smoking", "high"): "an identifiable smoking item is NOT required",
+        ("fall", "standard"): "require visible loss of balance/support",
+        ("fall", "high"): "plausible imminent fall",
+        ("weapon", "standard"): "visible firearm",
+        ("weapon", "high"): "partly obscured weapon-like item",
+    }
+    for label, level in choices.items():
+        assert criteria[(label, level)] in text
+        other_level = "high" if level == "standard" else "standard"
+        assert criteria[(label, other_level)] not in text
+    for output_instruction in ("box", "describe", "description", "report suspected"):
+        assert output_instruction not in text.lower()
+    if choices["smoking"] == "high":
+        assert "Lower confidence when uncertain" in text
+        assert "do not claim an identifiable cigarette, smoke" in text
+        assert "eating, drinking, or wiping the face remains negative" in text
+    if choices["weapon"] == "high":
+        assert "Lower confidence if uncertain" in text
+        assert "Bare-hand gestures without a visible item" in text
+        assert "Never invent a hidden weapon" in text
+
+
+@pytest.mark.parametrize("label,level,instructions", [
+    ("smoking", "high", (
+        "describe a suspected smoking action",
+        "box the visible hand/mouth action region (label smoking_action)",
+        "Never fabricate a cigarette box",
+    )),
+    ("weapon", "standard", ("Box the actual item.",)),
+    ("weapon", "high", (
+        "Report suspected weapon and lower confidence if uncertain.",
+        "Box only the visible item, never an invented hidden weapon.",
+    )),
+])
+def test_grounding_policy_keeps_output_guidance_by_default(label, level, instructions):
+    text = sensitivity_policy_text(
+        {label: level}, smoking_standard_rule="Unused smoking standard policy.",
+    )
+    for instruction in instructions:
+        assert instruction in text
 
 
 def test_multi_client_uses_selected_policies_instead_of_legacy_fixed_prompt():

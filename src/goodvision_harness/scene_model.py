@@ -15,7 +15,14 @@ from typing import Any
 
 import httpx
 
-from .model_api import ModelAPIClient, ModelAPIError, ModelAPISettings
+from .latency_trace import log_timing, trace_id
+from .model_api import (
+    ModelAPIClient,
+    ModelAPIError,
+    ModelAPISettings,
+    environment_api_key,
+    model_request_headers,
+)
 from .scene_inspection import (
     _validate_job,
     _validate_verdicts,
@@ -28,23 +35,120 @@ _MAX_RESPONSE_BYTES = 256 * 1024
 _FIELDS = {"event_label", "subject_ids", "detected", "confidence"}
 
 
+class _ResponseValidationError(ValueError):
+    """Closed diagnostic vocabulary; response values never enter the message."""
+
+    def __init__(self, reason: str, stage: str = "") -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.stage = stage
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError("duplicate JSON field")
+            raise _ResponseValidationError("duplicate_json_field")
         result[key] = value
     return result
 
 
 def _invalid_constant(value: str) -> None:
-    raise ValueError("non-finite JSON number")
+    raise _ResponseValidationError("nonfinite_json_number")
 
 
-def _json(value: str | bytes) -> Any:
-    return json.loads(
-        value, object_pairs_hook=_unique_object, parse_constant=_invalid_constant
+def _json(value: str | bytes, *, stage: str) -> Any:
+    try:
+        return json.loads(
+            value, object_pairs_hook=_unique_object, parse_constant=_invalid_constant
+        )
+    except _ResponseValidationError as error:
+        error.stage = stage
+        raise
+    except json.JSONDecodeError:
+        raise _ResponseValidationError("invalid_json_syntax", stage) from None
+    except UnicodeDecodeError:
+        raise _ResponseValidationError("invalid_json_encoding", stage) from None
+    except RecursionError:
+        raise _ResponseValidationError("json_nesting_limit", stage) from None
+
+
+def _verdict_rejection_reason(job, verdicts, allowed) -> str:
+    """Explain an already rejected batch without relaxing the shared validator."""
+    seen = set()
+    for verdict in verdicts:
+        if verdict.event_label not in job.request.event_labels:
+            return "unrequested_event_label"
+        ids = verdict.subject_ids
+        if not ids:
+            return "empty_subject_ids"
+        if any(not isinstance(value, str) or not value for value in ids):
+            return "invalid_subject_id_type"
+        if not set(ids) <= allowed:
+            return "unknown_subject_id"
+        if len(set(ids)) != len(ids):
+            return "duplicate_subject_id"
+        if type(verdict.detected) not in (bool, type(None)):
+            return "invalid_detected_type"
+        if verdict.confidence is not None:
+            if type(verdict.confidence) not in (int, float):
+                return "invalid_confidence_type"
+            if (
+                not math.isfinite(verdict.confidence)
+                or not 0 <= verdict.confidence <= 1
+            ):
+                return "invalid_confidence_range"
+        key = (verdict.event_label, tuple(sorted(ids)))
+        if key in seen:
+            return "duplicate_verdict"
+        seen.add(key)
+    return "invalid_or_ungrounded_verdict"
+
+
+def _response_shape(response: object) -> dict[str, object]:
+    """Only fixed enums and aggregate sizes; no model text or arbitrary keys."""
+    if not isinstance(response, Mapping):
+        return {}
+    choices = response.get("choices")
+    if not isinstance(choices, list):
+        return {"choices_count": None}
+    result: dict[str, object] = {"choices_count": len(choices)}
+    if not choices or not isinstance(choices[0], Mapping):
+        return result
+    choice = choices[0]
+    finish = choice.get("finish_reason")
+    result["finish_reason"] = (
+        finish
+        if isinstance(finish, str)
+        and finish
+        in {
+            "stop",
+            "length",
+            "content_filter",
+            "tool_calls",
+            "function_call",
+        }
+        else "missing"
+        if finish is None
+        else "other"
     )
+    message = choice.get("message")
+    if isinstance(message, Mapping):
+        content = message.get("content")
+        result["content_kind"] = (
+            "text"
+            if isinstance(content, str)
+            else "parts"
+            if isinstance(content, list)
+            else "missing"
+            if content is None
+            else "other"
+        )
+        if isinstance(content, str):
+            result["content_characters"] = len(content)
+        elif isinstance(content, list):
+            result["content_parts"] = len(content)
+    return result
 
 
 class TemporalVLMInspector:
@@ -61,10 +165,11 @@ class TemporalVLMInspector:
         settings: ModelAPISettings,
         *,
         model: str,
-        api_key: str | Callable[[], str],
+        api_key: str | Callable[[], str] = "",
         request_parameters: Mapping[str, Any] | None = None,
         max_tokens: int = 1600,
         max_image_side: int = 720,
+        jpeg_quality: int = 90,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("temporal model must be configured")
@@ -80,6 +185,8 @@ class TemporalVLMInspector:
             raise ValueError("max_tokens must be an integer from 1 through 16384")
         if type(max_image_side) is not int or not 1 <= max_image_side <= 2048:
             raise ValueError("max_image_side must be an integer from 1 through 2048")
+        if type(jpeg_quality) is not int or not 1 <= jpeg_quality <= 100:
+            raise ValueError("jpeg_quality must be an integer from 1 through 100")
         if request_parameters is not None and not isinstance(
             request_parameters, Mapping
         ):
@@ -107,6 +214,7 @@ class TemporalVLMInspector:
         self._api_key = api_key
         self._parameters = parameters
         self._max_image_side = max_image_side
+        self._jpeg_quality = jpeg_quality
         self._call_lock = RLock()
         self._stats_lock = RLock()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -131,25 +239,45 @@ class TemporalVLMInspector:
         with self._call_lock:
             if self._closed:
                 raise ModelAPIError("temporal inspector is closed")
-            messages = build_temporal_messages(job, max_image_side=self._max_image_side)
-            messages[0]["content"] += (
-                '\nAn object with the single field "verdicts" containing that same '
-                "array is also accepted. Every verdict must include all four fields."
+            response_format = self._parameters.get("response_format")
+            messages = build_temporal_messages(
+                job,
+                max_image_side=self._max_image_side,
+                jpeg_quality=self._jpeg_quality,
+                verdicts_wrapper=(
+                    isinstance(response_format, Mapping)
+                    and response_format.get("type") == "json_object"
+                ),
             )
             key = self._api_key() if callable(self._api_key) else self._api_key
-            if not isinstance(key, str) or not key.strip():
+            if self.settings.provider == "local" and not key:
+                key = environment_api_key(self.settings)
+            if not isinstance(key, str) or (
+                not key.strip() and self.settings.provider != "local"
+            ):
                 raise ModelAPIError("temporal model credential is unavailable")
             payload = {**self._parameters, "model": self.model, "messages": messages}
-            headers = httpx.Headers(self.settings.extra_headers)
-            headers.update(
-                {
-                    "Authorization": f"Bearer {key.strip()}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": "goodvision-harness/1",
-                }
-            )
+            # These data URLs were just built locally from bounded JPEGs. Count
+            # decoded bytes from Base64 length without copying/decoding pixels.
+            encoded_image_bytes = 0
+            for part in messages[1]["content"]:
+                if part["type"] == "image_url":
+                    data = part["image_url"]["url"].split(",", 1)[1]
+                    encoded_image_bytes += len(data) // 4 * 3 - (
+                        len(data) - len(data.rstrip("="))
+                    )
+            http_timing = {
+                "stream_session_id": trace_id(job.stream_session_id),
+                "request_id": trace_id(job.request.request_id),
+                "frame_count": len(job.frames),
+                "encoded_image_bytes": encoded_image_bytes,
+                "max_image_side": self._max_image_side,
+                "jpeg_quality": self._jpeg_quality,
+            }
+            headers = httpx.Headers(model_request_headers(self.settings, key.strip()))
             started = time.monotonic()
+            response = None
+            validation_stage = validation_reason = None
             with self._stats_lock:
                 self._stats["requests"] += 1
             try:
@@ -159,7 +287,7 @@ class TemporalVLMInspector:
                     self._http = create_vlm_http_client()
                 response = self._loop.run_until_complete(
                     asyncio.wait_for(
-                        self._request(payload, headers),
+                        self._request(payload, headers, timing=http_timing),
                         timeout=self.settings.timeout_seconds,
                     )
                 )
@@ -175,7 +303,22 @@ class TemporalVLMInspector:
                 )
             except ModelAPIError as failure:
                 error = failure
-            except (ValueError, TypeError, KeyError, IndexError, RecursionError):
+                validation_stage = getattr(failure, "validation_stage", None)
+                validation_reason = getattr(failure, "validation_reason", None)
+            except (
+                ValueError,
+                TypeError,
+                KeyError,
+                IndexError,
+                RecursionError,
+            ) as failure:
+                if isinstance(failure, _ResponseValidationError):
+                    validation_stage, validation_reason = failure.stage, failure.reason
+                else:
+                    validation_stage, validation_reason = (
+                        "response",
+                        "unexpected_response_shape",
+                    )
                 error = ModelAPIError(
                     "temporal model returned an invalid response",
                     code="invalid_response",
@@ -184,19 +327,106 @@ class TemporalVLMInspector:
                 self._record_completion(started, verdicts=verdicts)
                 return verdicts
             self._record_completion(started, error=error)
+            if error.code in {"invalid_response", "empty_response"}:
+                log_timing(
+                    "vlm_response_validation",
+                    stream_session_id=trace_id(job.stream_session_id),
+                    request_id=trace_id(job.request.request_id),
+                    error_code=error.code,
+                    validation_stage=validation_stage or "response",
+                    validation_reason=validation_reason or "invalid_response_shape",
+                    **_response_shape(response),
+                )
             raise error from None
 
     async def _request(
-        self, payload: Mapping[str, Any], headers: httpx.Headers
+        self, payload: Mapping[str, Any], headers: httpx.Headers, *, timing: dict
     ) -> dict[str, Any]:
         assert self._http is not None
-        async with self._http.stream(
-            "POST",
-            self.settings.endpoint,
-            json=payload,
-            headers=headers,
-            timeout=self.settings.timeout_seconds,
-        ) as response:
+        started = time.monotonic()
+        transport_starts = {}
+        timing.update(
+            outcome="error",
+            transport_trace_observed=False,
+            response_read_seconds=None,
+            response_chunks=0,
+            response_bytes=0,
+            response_first_chunk_seconds=None,
+            response_last_chunk_seconds=None,
+        )
+        response = None
+        transport_metrics = {
+            "connect_tcp": "tcp_connect_seconds",
+            "start_tls": "tls_handshake_seconds",
+            "send_request_headers": "send_request_headers_seconds",
+            "send_request_body": "send_request_body_seconds",
+            "receive_response_headers": "receive_response_headers_seconds",
+        }
+
+        async def transport_trace(name, _info):
+            # Trace info can contain credentials, endpoints and body objects.
+            # Only fixed event names and monotonic durations are inspected.
+            parts = name.split(".")
+            if (
+                len(parts) != 3
+                or parts[0]
+                not in {
+                    "connection",
+                    "proxy",
+                    "http11",
+                    "http2",
+                }
+                or parts[2] not in {"started", "complete", "failed"}
+            ):
+                return
+            metric = transport_metrics.get(parts[1])
+            if metric is None:
+                return
+            timing["transport_trace_observed"] = True
+            identity, state, now = ".".join(parts[:2]), parts[2], time.monotonic()
+            if state == "started":
+                transport_starts[identity] = (metric, now)
+                if parts[1] == "send_request_body":
+                    timing["request_body_completed"] = False
+            else:
+                phase = transport_starts.pop(identity, None)
+                if phase is not None:
+                    timing[metric] = timing.get(metric, 0.0) + max(0.0, now - phase[1])
+                if parts[1] == "send_request_body" and state == "complete":
+                    timing["request_body_completed"] = True
+
+        try:
+            if self.settings.provider == "local":
+                # Do not inherit credentials, cookies, query parameters or
+                # private headers from a previously configured cloud pool.
+                request = httpx.Request(
+                    "POST", self.settings.endpoint, json=payload, headers=headers,
+                    extensions={
+                        "trace": transport_trace,
+                        "timeout": httpx.Timeout(
+                            self.settings.timeout_seconds
+                        ).as_dict(),
+                    },
+                )
+            else:
+                request = self._http.build_request(
+                    "POST",
+                    self.settings.endpoint,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.settings.timeout_seconds,
+                    extensions={"trace": transport_trace},
+                )
+            # Use the exact HTTPX serialization sent, including Base64 and JSON.
+            timing["request_bytes"] = len(request.content)
+            if self.settings.provider == "local":
+                response = await self._http.send(
+                    request, stream=True, auth=None, follow_redirects=False,
+                )
+            else:
+                response = await self._http.send(request, stream=True)
+            timing["http_until_headers_seconds"] = time.monotonic() - started
+            timing["http_status"] = response.status_code
             if not 200 <= response.status_code < 300:
                 raise ModelAPIError(
                     "temporal model HTTP request failed",
@@ -204,20 +434,65 @@ class TemporalVLMInspector:
                     status_code=response.status_code,
                 )
             body = bytearray()
-            async for chunk in response.aiter_bytes():
-                if len(body) + len(chunk) > _MAX_RESPONSE_BYTES:
-                    raise ModelAPIError(
-                        "temporal response exceeds size limit", code="invalid_response"
-                    )
-                body.extend(chunk)
+            read_started = time.monotonic()
+            try:
+                async for chunk in response.aiter_bytes():
+                    if chunk:
+                        # Offsets start when body reading starts. A chunk can be
+                        # whitespace/keepalive data, not necessarily model output.
+                        elapsed = time.monotonic() - read_started
+                        if timing["response_first_chunk_seconds"] is None:
+                            timing["response_first_chunk_seconds"] = elapsed
+                        timing["response_last_chunk_seconds"] = elapsed
+                        timing["response_chunks"] += 1
+                        timing["response_bytes"] += len(chunk)
+                    if len(body) + len(chunk) > _MAX_RESPONSE_BYTES:
+                        raise _ResponseValidationError(
+                            "response_size_limit", "envelope_body"
+                        )
+                    body.extend(chunk)
+            finally:
+                # Preserve partial progress when the total deadline cancels a
+                # stalled body read, and exclude response cleanup from this phase.
+                timing["response_read_seconds"] = time.monotonic() - read_started
             if not body.strip():
-                raise ModelAPIError(
+                error = ModelAPIError(
                     "temporal model response is empty", code="empty_response"
                 )
-            decoded = _json(bytes(body))
+                error.validation_stage = "envelope_body"
+                error.validation_reason = "empty_response_body"
+                raise error
+            decoded = _json(bytes(body), stage="envelope_json")
             if not isinstance(decoded, dict):
-                raise ValueError("completion must be a JSON object")
+                raise _ResponseValidationError("envelope_not_object", "envelope_schema")
+            usage = decoded.get("usage")
+            if isinstance(usage, Mapping):
+                for field in ("prompt_tokens", "completion_tokens"):
+                    value = usage.get(field)
+                    if type(value) is int and value >= 0:
+                        timing[field] = value
+                details = usage.get("completion_tokens_details")
+                if isinstance(details, Mapping):
+                    value = details.get("reasoning_tokens")
+                    if type(value) is int and value >= 0:
+                        timing["reasoning_tokens"] = value
+            timing["outcome"] = "completed"
             return decoded
+        except asyncio.CancelledError:
+            timing["outcome"] = "cancelled"
+            raise
+        finally:
+            for metric, phase_started in transport_starts.values():
+                timing[metric] = timing.get(metric, 0.0) + max(
+                    0.0,
+                    time.monotonic() - phase_started,
+                )
+            try:
+                if response is not None:
+                    await response.aclose()
+            finally:
+                timing["total_seconds"] = time.monotonic() - started
+                log_timing("vlm_http_timing", **timing)
 
     @staticmethod
     def _parse(
@@ -225,33 +500,49 @@ class TemporalVLMInspector:
     ) -> tuple[TemporalVerdict, ...]:
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise ValueError("completion has no choices")
+            raise _ResponseValidationError("missing_choices", "envelope_schema")
         choice = choices[0]
         if not isinstance(choice, dict):
-            raise ValueError("completion choice must be an object")
+            raise _ResponseValidationError("choice_not_object", "envelope_schema")
         if choice.get("finish_reason") not in (None, "stop"):
-            raise ValueError("incomplete or refused temporal completion")
-        content = ModelAPIClient.assistant_text(response).strip()
+            raise _ResponseValidationError("completion_not_finished", "envelope_schema")
+        try:
+            content = ModelAPIClient.assistant_text(response).strip()
+        except ModelAPIError as error:
+            error.validation_stage = "assistant_content"
+            error.validation_reason = (
+                "empty_assistant_text"
+                if error.code == "empty_response"
+                else "invalid_assistant_text"
+            )
+            raise
         # Some vision routes wrap otherwise valid JSON in one Markdown fence.
         # Remove only a whole-message wrapper; prose, partial JSON, nested fences,
         # extra fields and type coercions remain invalid.
         fenced = re.fullmatch(
             r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL
         )
-        raw = _json(fenced.group(1) if fenced else content)
+        raw = _json(fenced.group(1) if fenced else content, stage="verdict_json")
         if isinstance(raw, dict) and set(raw) == {"verdicts"}:
             raw = raw["verdicts"]
         if not isinstance(raw, list) or len(raw) > 64:
-            raise ValueError("temporal completion must be a bounded verdict array")
+            raise _ResponseValidationError(
+                "verdict_array_required_or_limit", "verdict_schema"
+            )
         verdicts = []
         for item in raw:
-            if (
-                not isinstance(item, dict)
-                or set(item) != _FIELDS
-                or not isinstance(item["event_label"], str)
-                or not isinstance(item["subject_ids"], list)
-            ):
-                raise ValueError("temporal verdict fields are invalid")
+            if not isinstance(item, dict):
+                raise _ResponseValidationError("non_object", "verdict_schema")
+            if _FIELDS - set(item):
+                raise _ResponseValidationError("missing_fields", "verdict_schema")
+            if set(item) - _FIELDS:
+                raise _ResponseValidationError("extra_fields", "verdict_schema")
+            if not isinstance(item["event_label"], str):
+                raise _ResponseValidationError(
+                    "event_label_not_string", "verdict_schema"
+                )
+            if not isinstance(item["subject_ids"], list):
+                raise _ResponseValidationError("subject_ids_not_list", "verdict_schema")
             verdicts.append(
                 TemporalVerdict(
                     event_label=item["event_label"],
@@ -260,7 +551,13 @@ class TemporalVLMInspector:
                     confidence=item["confidence"],
                 )
             )
-        return _validate_verdicts(job, verdicts, _validate_job(job))
+        allowed = _validate_job(job)
+        try:
+            return _validate_verdicts(job, verdicts, allowed)
+        except ValueError:
+            raise _ResponseValidationError(
+                _verdict_rejection_reason(job, verdicts, allowed), "verdict_grounding"
+            ) from None
 
     def _record_usage(self, response: Mapping[str, Any]) -> None:
         usage = response.get("usage")

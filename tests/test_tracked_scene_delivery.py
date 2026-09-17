@@ -2,6 +2,8 @@
 
 import copy
 import io
+import json
+import logging
 import time
 from threading import Event
 from types import SimpleNamespace
@@ -295,4 +297,155 @@ def test_delay_configuration_is_bounded(delay):
         with pytest.raises(ValueError):
             TrackedSceneDisplayWorker(scene, lambda frame: None, delay_seconds=delay)
     finally:
+        scene.close()
+
+
+def test_display_timing_distinguishes_new_sources_from_late_event_repaints(
+    monkeypatch, caplog,
+):
+    now = [100.0]
+    monkeypatch.setattr(
+        scene_delivery, "time", SimpleNamespace(monotonic=lambda: now[0])
+    )
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    scene, published = runtime(), []
+    original_select = scene.tracked_display_frame
+    original_snapshot = scene.display_snapshot
+
+    def select(**kwargs):
+        now[0] += 0.01
+        return original_select(**kwargs)
+
+    def snapshot(*args, **kwargs):
+        # Included in the selection phase for both new frames and late events.
+        now[0] += 0.02
+        return original_snapshot(*args, **kwargs)
+
+    def render(source, *_args, **_kwargs):
+        now[0] += 0.03
+        return source
+
+    def publish(frame):
+        now[0] += 0.04
+        published.append(frame)
+
+    monkeypatch.setattr(scene, "tracked_display_frame", select)
+    monkeypatch.setattr(scene, "display_snapshot", snapshot)
+    monkeypatch.setattr(scene_delivery, "render_scene_jpeg", render)
+    worker = TrackedSceneDisplayWorker(scene, publish, max_fps=60)
+
+    def timings():
+        return [
+            json.loads(record.getMessage())
+            for record in caplog.records
+            if record.name == "uvicorn.error"
+        ]
+
+    # FPS starts with the first valid capture, even before a SAM admission.
+    capture(scene, worker, packet(0, 0), admitted=False)
+    now[0] = 101.0
+    source = packet(1, 1)
+    capture(scene, worker, source)
+    tracked(scene, (source,))
+    worker.start()
+    try:
+        wait_for(lambda: len(timings()) == 1)
+        first = timings()[0]
+        assert first.pop("recorded_at").endswith("+00:00")
+        assert first == {
+            "event": "sam_display_timing",
+            "source_frame_sequence": 1,
+            "source_timestamp_seconds": 1,
+            "source_to_publish_seconds": 0.1,
+            "snapshot_seconds": 0.03,
+            "render_seconds": 0.03,
+            "publish_seconds": 0.04,
+            "late_event_repaint": False,
+            "distinct_source_frames": 1,
+            "same_source_repaints": 0,
+            "distinct_source_fps": round(1 / 1.1, 6),
+            "stream_session_id": "s",
+        }
+        now[0] = 102.0
+        worker.notify_events()
+        wait_for(lambda: len(timings()) == 2)
+        repaint = timings()[1]
+        assert repaint["late_event_repaint"] is True
+        assert repaint["source_frame_sequence"] == 1
+        assert repaint["source_to_publish_seconds"] == 1.09
+        assert repaint["snapshot_seconds"] == 0.02
+        assert repaint["distinct_source_frames"] == 1
+        assert repaint["same_source_repaints"] == 1
+        assert repaint["distinct_source_fps"] == round(1 / 2.09, 6)
+        assert [frame.frame_sequence for frame in published] == [1, 1]
+
+        now[0] = 103.0
+        second = packet(2, 3)
+        capture(scene, worker, second)
+        tracked(scene, (second,))
+        worker.notify_tracking()
+        wait_for(lambda: len(timings()) == 3)
+        stats = worker.stats()
+        assert stats["published_frames"] == 3
+        assert stats["distinct_source_frames"] == 2
+        assert stats["same_source_repaints"] == 1
+        assert stats["distinct_source_fps"] == round(2 / 3.1, 6)
+        assert stats["last_snapshot_seconds"] == 0.03
+        assert stats["last_jpeg_render_seconds"] == 0.03
+        assert stats["last_publish_seconds"] == 0.04
+        assert stats["last_source_to_publish_seconds"] == 0.1
+        assert stats["render_failures"] == stats["publish_failures"] == 0
+        now[0] = 104.0
+        worker.close()
+        assert worker.stats()["distinct_source_fps"] == 0.5
+        now[0] = 110.0
+        assert worker.stats()["display_elapsed_seconds"] == 4.0
+        assert worker.stats()["distinct_source_fps"] == 0.5
+    finally:
+        worker.close()
+        scene.close()
+
+
+def test_display_timing_omits_unsafe_session_ids(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    scene = runtime()
+    worker = TrackedSceneDisplayWorker(scene, lambda frame: None)
+    try:
+        monkeypatch.setattr(scene, "stream_session_id", "rtsp://user:secret@camera")
+        worker._log_display_timing({"event": "sam_display_timing"})
+        record = caplog.records[-1]
+        assert record.name == "uvicorn.error"
+        fields = json.loads(record.getMessage())
+        assert fields.pop("recorded_at").endswith("+00:00")
+        assert fields == {"event": "sam_display_timing"}
+        assert "secret" not in record.getMessage()
+        assert worker.stats()["timing_log_failures"] == 0
+    finally:
+        worker.close()
+        scene.close()
+
+
+def test_timing_logger_failure_does_not_fail_or_retry_a_successful_publish(monkeypatch):
+    def fail_log(*_args, **_kwargs):
+        raise OSError("diagnostic sink unavailable")
+
+    monkeypatch.setattr(scene_delivery._DISPLAY_LOGGER, "info", fail_log)
+    scene, published = runtime(), []
+    worker = TrackedSceneDisplayWorker(scene, published.append, max_fps=60)
+    source = packet(1, 0)
+    capture(scene, worker, source)
+    tracked(scene, (source,))
+    worker.start()
+    try:
+        wait_for(lambda: worker.stats()["timing_log_failures"] == 1)
+        stats = worker.stats()
+        assert len(published) == stats["published_frames"] == 1
+        assert stats["distinct_source_frames"] == 1
+        assert stats["same_source_repaints"] == 0
+        assert stats["render_failures"] == stats["publish_failures"] == 0
+        assert worker.wait_until_idle()
+        time.sleep(0.03)
+        assert len(published) == 1
+    finally:
+        worker.close()
         scene.close()

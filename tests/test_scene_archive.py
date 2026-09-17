@@ -54,6 +54,30 @@ def persisted(archive, count=1):
     assert archive.stats()["failures"] == 0, archive.stats()
 
 
+def test_flush_waits_for_final_scene_write_without_adding_queue_barriers(tmp_path):
+    archive = SceneArchive(tmp_path)
+    gate, entered = Event(), Event()
+    write = archive._write
+
+    def delayed_write(connection, records):
+        entered.set()
+        assert gate.wait(3)
+        write(connection, records)
+
+    archive._write = delayed_write
+    try:
+        assert archive.submit(snapshot(phase="ended"), timeout_seconds=0.1)
+        assert entered.wait(3)
+        assert not archive.flush(0.02)
+        assert archive.stats()["queued"] == 0
+        gate.set()
+        assert archive.flush(3)
+        assert archive.list_events()[0]["phase"] == "ended"
+    finally:
+        gate.set()
+        archive.close()
+
+
 def test_event_upsert_retraction_and_restart_keep_session_history(tmp_path):
     archive = SceneArchive(tmp_path)
     try:
@@ -233,8 +257,11 @@ def test_failed_disk_write_is_counted_and_can_be_retried(tmp_path, monkeypatch):
         assert archive.stats()["persisted_batches"] == 0
         assert not archive.list_events()
         assert archive.stats()["last_error"] == "OperationalError"
+        assert archive.failed_for_run("session-1")
+        assert not archive.failed_for_run("next-run")
         assert archive.submit(snapshot())
         wait_for(lambda: archive.stats()["persisted_batches"] == 1)
+        assert not archive.failed_for_run("session-1")
         assert len(archive.list_events()) == 1
     finally:
         archive.close()

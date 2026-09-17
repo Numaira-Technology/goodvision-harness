@@ -76,6 +76,11 @@ class _Event:
     negatives: int = 0
     uncertain: bool = False
     confidence: float | None = None
+    last_positive_timestamp: float | None = None
+    confirmed_since_timestamp: float | None = None
+    ended_since_timestamp: float | None = None
+    missing_observations: int = 0
+    ended_reason: str | None = None
 
 
 @dataclass
@@ -121,10 +126,18 @@ class SceneState:
         person_history_size: int | None = None,
         person_history_seconds: float | None = None,
         max_contour_history_points: int = _MAX_CONTOUR_HISTORY_POINTS,
+        max_source_pin_jobs: int = 4,
+        retain_pinned_sources: bool = False,
     ) -> None:
         self.stream_session_id = _text(stream_session_id, "stream_session_id")
         self.source_id = _text(source_id, "source_id")
         self.max_entities = _integer(max_entities, "max_entities", 1, 4096)
+        self.max_source_pin_jobs = _integer(
+            max_source_pin_jobs, "max_source_pin_jobs", 1, 64,
+        )
+        if type(retain_pinned_sources) is not bool:
+            raise ValueError("retain_pinned_sources must be a boolean")
+        self.retain_pinned_sources = retain_pinned_sources
         self.max_contour_history_points = _integer(
             max_contour_history_points, "max_contour_history_points",
             1, _MAX_CONTOUR_HISTORY_POINTS,
@@ -169,19 +182,91 @@ class SceneState:
         self._source_pins: dict[
             str, tuple[tuple[str, float, int, NormalizedBBox], ...]
         ] = {}
+        # Completed tracking facts share the event replay timeline. Pins retain
+        # the prefix needed by an already admitted, late model judgment.
+        self._tracking_presence: OrderedDict[int, tuple[float, frozenset[str]]] = (
+            OrderedDict()
+        )
+        self._presence_watermark = (-1.0, -1)
+        self._presence_floor = (-1.0, -1)
         self._transitions: deque = deque(maxlen=self.history_size)
         self._counters: Counter = Counter()
         self._timestamp = 0.0
         self._namespace = uuid4().hex[:12]
         self._episode = 0
         self._transition_sequence = 0
+        self._review_complete = False
         self._lock = RLock()
 
     def _reject(self, reason: str) -> bool:
         self._counters[reason] += 1
         return False
 
-    def merge_subject(self, previous_id: str, current_id: str) -> bool:
+    @staticmethod
+    def _same_gallery_identity(left: _Person, right: _Person) -> bool:
+        return bool(
+            left.identity.get("status") == right.identity.get("status") == "known"
+            and left.identity.get("person_id")
+            and left.identity.get("person_id") == right.identity.get("person_id")
+            and left.identity.get("identity_source") in {"face_match", "track_history"}
+            and right.identity.get("identity_source") in {"face_match", "track_history"}
+        )
+
+    @staticmethod
+    def _gallery_merge_conflict(left: _Person, right: _Person) -> bool:
+        """Same gallery ID is evidence; simultaneous distinct observations veto it.
+
+        Face and body observations of one person naturally overlap in time. A
+        face contained by its body must not be confused with two people simply
+        because their first/last observation envelopes overlap.
+        """
+        sources = {
+            (item["timestamp_seconds"], item["frame_sequence"]): item
+            for item in left.history
+        }
+        for item in right.history:
+            other = sources.get((item["timestamp_seconds"], item["frame_sequence"]))
+            if other is None:
+                continue
+            a, b = other.get("native_track"), item.get("native_track")
+            if bool(a) == bool(b):
+                if a and a != b:
+                    return True
+                if a:
+                    continue
+                left_box, right_box = other["bbox"], item["bbox"]
+                intersection = max(
+                    0,
+                    min(left_box["x2"], right_box["x2"])
+                    - max(left_box["x1"], right_box["x1"]),
+                ) * max(
+                    0,
+                    min(left_box["y2"], right_box["y2"])
+                    - max(left_box["y1"], right_box["y1"]),
+                )
+                union = (
+                    sum(
+                        (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
+                        for box in (left_box, right_box)
+                    )
+                    - intersection
+                )
+                if intersection < 0.8 * union:
+                    return True
+                continue
+            body, face = (other, item) if a else (item, other)
+            body, face = body["bbox"], face["bbox"]
+            intersection = max(
+                0, min(body["x2"], face["x2"]) - max(body["x1"], face["x1"])
+            ) * max(0, min(body["y2"], face["y2"]) - max(body["y1"], face["y1"]))
+            area = (face["x2"] - face["x1"]) * (face["y2"] - face["y1"])
+            if intersection < 0.9 * area:
+                return True
+        return False
+
+    def merge_subject(
+        self, previous_id: str, current_id: str, *, reviewed_identity: bool = False
+    ) -> bool:
         """Apply a registry-proven association; never infer one from geometry.
 
         Source times and evidence IDs do not change. Replaying combined ledgers
@@ -189,6 +274,8 @@ class SceneState:
         """
         previous_id = _text(previous_id, "previous_id")
         current_id = _text(current_id, "current_id")
+        if type(reviewed_identity) is not bool:
+            raise ValueError("reviewed_identity must be a boolean")
         with self._lock:
             if previous_id == current_id:
                 return False
@@ -196,18 +283,61 @@ class SceneState:
             current = self._people.get(current_id)
             if previous is None:
                 return False
-            if previous.native_track and (
-                current is None or previous.native_track != current.native_track
+            if (
+                not reviewed_identity
+                and previous.native_track
+                and (current is None or previous.native_track != current.native_track)
             ):
                 return self._reject("native_subject_merge_rejected")
+            if reviewed_identity and current is not None:
+                same_gallery = self._same_gallery_identity(previous, current)
+                overlapping = max(previous.first_seen, current.first_seen) <= min(
+                    previous.last_seen, current.last_seen
+                )
+                if (
+                    (overlapping and not same_gallery)
+                    or (
+                        same_gallery and self._gallery_merge_conflict(previous, current)
+                    )
+                    or (
+                        previous.identity.get("person_id")
+                        and current.identity.get("person_id")
+                        and previous.identity["person_id"]
+                        != current.identity["person_id"]
+                    )
+                ):
+                    return self._reject("conflicting_identity_merge_rejected")
             if current is None:
                 previous.subject_id = current_id
                 self._people[current_id] = previous
             else:
+                # A newly reviewed face fragment carries identity, not a new
+                # full-body location. Keep the native person's geometry intact.
+                native_person = (
+                    current
+                    if current.native_track
+                    else previous
+                    if previous.native_track
+                    else None
+                )
+                geometry = (
+                    (
+                        native_person.bbox,
+                        native_person.last_seen,
+                        native_person.frame_sequence,
+                        native_person.tracking_confirmation,
+                        native_person.native_track,
+                    )
+                    if native_person is not None
+                    and bool(previous.native_track) != bool(current.native_track)
+                    else None
+                )
                 old_records = [*previous.history, *current.history]
                 records = {}
                 for person in (previous, current):
                     for record in person.history:
+                        if geometry is not None and not record.get("native_track"):
+                            record["identity_only"] = True
                         key = (record["timestamp_seconds"], record["frame_sequence"])
                         # Native full-body geometry wins over a same-frame face.
                         if key not in records or record.get("native_track"):
@@ -229,6 +359,15 @@ class SceneState:
                     current.last_seen = previous.last_seen
                     current.frame_sequence = previous.frame_sequence
                     current.tracking_confirmation = previous.tracking_confirmation
+                    current.native_track = previous.native_track
+                if geometry is not None:
+                    (
+                        current.bbox,
+                        current.last_seen,
+                        current.frame_sequence,
+                        current.tracking_confirmation,
+                        current.native_track,
+                    ) = geometry
                 self._update_identity(
                     current, previous.identity, *previous.identity_source
                 )
@@ -250,6 +389,10 @@ class SceneState:
                 )
                 for key, values in self._source_pins.items()
             }
+            self._tracking_presence = OrderedDict(
+                (sequence, (at, frozenset(subjects(present))))
+                for sequence, (at, present) in self._tracking_presence.items()
+            )
             self._evidence = OrderedDict(
                 (key, subjects(values)) for key, values in self._evidence.items()
             )
@@ -263,7 +406,12 @@ class SceneState:
                 ids = subjects(old_key[1])
                 key = (old_key[0], ids)
                 collapsed_fight = old_key[0] == "fight" and len(ids) < 2
-                old.seed = replace(old.seed, subject_ids=ids)
+                old.seed = replace(
+                    old.seed, subject_ids=ids,
+                    missing_observations=(
+                        0 if current is not None else old.seed.missing_observations
+                    ),
+                )
                 if collapsed_fight:
                     old.seed = replace(
                         old.seed, phase="retracted", positives=0, uncertain=True
@@ -283,7 +431,10 @@ class SceneState:
                     floor = seed_ledger.floor
                     records = {**existing.records, **old.records}
                     self._ledgers[key] = _Ledger(
-                        replace(seed_ledger.seed, subject_ids=ids),
+                        replace(
+                            seed_ledger.seed, subject_ids=ids,
+                            missing_observations=0,
+                        ),
                         {
                             evidence_key: record
                             for evidence_key, record in records.items()
@@ -319,10 +470,15 @@ class SceneState:
         timestamp = _time(timestamp_seconds)
         with self._lock:
             self._timestamp = max(self._timestamp, timestamp)
+            pinned_people = {
+                subject for observations in self._source_pins.values()
+                for subject, _at, _sequence, _bbox in observations
+            }
             expired = [
                 key
                 for key, person in self._people.items()
                 if self._timestamp - person.last_seen > self.retention_seconds
+                and (not self.retain_pinned_sources or key not in pinned_people)
             ]
             for key in expired:
                 for record in self._people[key].history:
@@ -345,6 +501,87 @@ class SceneState:
                 ) or any(subject not in self._people for subject in event.subject_ids):
                     self._discard_group(key)
                     self._counters["events_expired"] += 1
+            self._prune_tracking_presence()
+
+    def observe_tracking_presence(
+        self, subject_ids: tuple[str, ...], *, timestamp_seconds: float,
+        frame_sequence: int,
+    ) -> bool:
+        """Accept one complete SAM result, including a successful empty frame.
+
+        Capture ticks, display interpolation and failed requests never call this.
+        Presence is not a VLM negative; both facts use the same event lifecycle.
+        """
+        at = _time(timestamp_seconds)
+        sequence = _integer(frame_sequence, "frame_sequence", 0)
+        if (not isinstance(subject_ids, (tuple, list))
+                or len(subject_ids) > self.max_entities):
+            raise ValueError("tracking presence must contain bounded subject IDs")
+        present = frozenset(_text(sid, "subject_id") for sid in subject_ids)
+        with self._lock:
+            if (sequence <= self._presence_watermark[1]
+                    or at < self._presence_watermark[0]):
+                return self._reject("stale_tracking_presence_ignored")
+            if not present <= self._people.keys():
+                return self._reject("unknown_tracking_presence_ignored")
+            self._timestamp = max(self._timestamp, at)
+            self._tracking_presence[sequence] = (at, present)
+            self._presence_watermark = (at, sequence)
+            for event in self._events.values():
+                prior = event.phase
+                self._fold_presence(event, at, sequence, present)
+                if prior != "ended" and event.phase == "ended":
+                    self._transition(event, "end")
+            self._prune_tracking_presence()
+            return True
+
+    def _fold_presence(self, event, at, sequence, present) -> None:
+        if (event.event_label == "stranger" or event.event_id is None
+                or event.phase in {"ended", "retracted"}
+                or sequence < event.frame_sequence):
+            return
+        if present.intersection(event.subject_ids):
+            event.missing_observations = 0
+        else:
+            event.missing_observations += 1
+            if event.missing_observations >= self.clear_observations:
+                event.phase = "ended"
+                event.ended_reason = "all_subjects_absent"
+                event.ended_since_timestamp = at
+                event.last_seen = at
+                event.frame_sequence = sequence
+
+    def _prune_tracking_presence(self) -> None:
+        # The size target may be exceeded while a bounded in-flight inspection
+        # pins an older source. Its existing timeout releases that dependency.
+        pinned = min(
+            (seq for values in self._source_pins.values()
+             for _sid, _at, seq, _box in values), default=math.inf,
+        )
+        prefix = []
+        for sequence, (at, _present) in self._tracking_presence.items():
+            if sequence >= pinned or not (
+                len(self._tracking_presence) - len(prefix) > self.person_history_size
+                or at < self._timestamp - self.retention_seconds
+            ):
+                break
+            prefix.append((at, sequence))
+        if not prefix:
+            return
+        floor = prefix[-1]
+        for key, ledger in self._ledgers.items():
+            if key[0] == "stranger" or ledger.floor[1] >= floor[1]:
+                continue
+            seed, _ = self._replay(key, through_sequence=floor[1])
+            ledger.seed = replace(seed, history=deque(maxlen=0))
+            ledger.floor = floor
+            for evidence_key, record in tuple(ledger.records.items()):
+                if record.sequence <= floor[1]:
+                    del ledger.records[evidence_key]
+                    self._record_groups.pop(evidence_key, None)
+        for _at, sequence in prefix:
+            del self._tracking_presence[sequence]
+        self._presence_floor = floor
 
     def _discard_group(self, key: tuple[str, tuple[str, ...]]) -> None:
         ledger = self._ledgers.pop(key, None)
@@ -513,6 +750,29 @@ class SceneState:
                 return self._reject("expired_person_history_ignored")
             person = self._people.get(subject_id)
             if person is not None:
+                if (
+                    person.native_track
+                    and not safe_native_track
+                    and safe_identity.get("identity_source")
+                    in {"face_match", "track_history"}
+                ):
+                    # A canonical person's face result can arrive after the
+                    # body's result. Refresh its name/identity without moving
+                    # the body to a face rectangle or fabricating a body frame.
+                    # Unknown observations still need their true source record
+                    # for stranger votes; identity confidence is not geometry.
+                    if not any(
+                        record["frame_sequence"] == sequence
+                        and record["timestamp_seconds"] == timestamp
+                        for record in person.history
+                    ) and not self._insert_historical_person(
+                        person, timestamp, sequence, bbox, {},
+                        identity_only=True,
+                    ):
+                        return False
+                    self._update_identity(person, safe_identity, timestamp, sequence)
+                    self._counters["native_identity_updates"] += 1
+                    return True
                 if timestamp < person.last_seen or sequence < person.frame_sequence:
                     if allow_historical:
                         return self._insert_historical_person(
@@ -665,6 +925,8 @@ class SceneState:
         native_track: dict,
         tracking_confirmation: str | None = None,
         mask_contours: dict | None = None,
+        *,
+        identity_only: bool = False,
     ) -> bool:
         """Add completed source geometry without rewinding present-day location."""
         if any(
@@ -695,6 +957,7 @@ class SceneState:
             "timestamp_seconds": timestamp,
             "frame_sequence": sequence,
             "bbox": bbox.as_dict(),
+            **({"identity_only": True} if identity_only else {}),
             **({"mask_contours": mask_contours} if mask_contours else {}),
             **({"native_track": native_track} if native_track else {}),
             **(
@@ -741,7 +1004,13 @@ class SceneState:
             or sequence < person.identity_source[1]
         ):
             return False
-        if identity.get("status") != "known" and person.identity:
+        if (
+            identity.get("status") != "known"
+            and person.identity.get("status") == "known"
+        ) or (
+            identity.get("status") not in {"known", "unknown"}
+            and person.identity.get("status") == "unknown"
+        ):
             return False
         if any(
             key in identity and identity[key] != person.identity.get(key)
@@ -829,17 +1098,24 @@ class SceneState:
                 if self._source_pins[pin_id] == values:
                     return True
                 return self._reject("changed_source_pin_ignored")
-            if len(self._source_pins) >= 4:
+            if len(self._source_pins) >= self.max_source_pin_jobs:
                 return self._reject("source_pin_capacity_rejected")
             for subject, at, sequence, bbox in values:
                 person = self._people.get(subject)
-                if person is None or not any(
+                in_history = person is not None and any(
                     item["frame_sequence"] == sequence
                     and abs(item["timestamp_seconds"] - at) <= 1e-6
                     and item["bbox"] == bbox.as_dict()
                     and item.get("tracking_confirmation", "confirmed") == "confirmed"
                     for item in person.history
-                ):
+                )
+                in_retained_source = any(
+                    sid == subject and seq == sequence and abs(source_at - at) <= 1e-6
+                    and source_bbox == bbox
+                    for observations in self._source_pins.values()
+                    for sid, source_at, seq, source_bbox in observations
+                )
+                if person is None or not (in_history or in_retained_source):
                     return self._reject("ungrounded_source_pin_ignored")
             self._source_pins[pin_id] = values
             self._counters["source_pins_created"] += 1
@@ -850,6 +1126,7 @@ class SceneState:
         with self._lock:
             if self._source_pins.pop(pin_id, None) is not None:
                 self._counters["source_pins_released"] += 1
+                self._prune_tracking_presence()
 
     def _transition(self, event: _Event, kind: str) -> None:
         self._transition_sequence += 1
@@ -996,6 +1273,8 @@ class SceneState:
                         return self._reject("retimed_revision_ignored")
             if self._timestamp - timestamp > self.retention_seconds:
                 return self._reject("stale_evidence_ignored")
+            if event_label != "stranger" and sequence <= self._presence_floor[1]:
+                return self._reject("pruned_source_revision_ignored")
             if any(subject not in self._people for subject in participants):
                 return self._reject("unknown_participants_ignored")
             if not participants:
@@ -1040,7 +1319,10 @@ class SceneState:
             previous_ids = {item: self._episode_ids(item) for item in affected}
             if ledger is None:
                 seed = _Event(event_label, key[1], deque(maxlen=self.history_size))
-                ledger = _Ledger(seed)
+                ledger = _Ledger(
+                    seed, floor=self._presence_floor
+                    if event_label != "stranger" else (-1.0, -1),
+                )
                 self._ledgers[key] = ledger
             if old_ledger is not None:
                 del old_ledger.records[evidence_key]
@@ -1080,6 +1362,9 @@ class SceneState:
                         event_id=prior.event_id,
                         phase="retracted",
                         first_seen=prior.first_seen,
+                        confirmed_since_timestamp=prior.confirmed_since_timestamp,
+                        ended_since_timestamp=prior.ended_since_timestamp,
+                        last_positive_timestamp=prior.last_positive_timestamp,
                     )
                 self._events[affected_key] = current
                 if current.event_id and current.phase != "retracted":
@@ -1166,15 +1451,20 @@ class SceneState:
         event.confidence = max(confidences) if confidences else None
         event.uncertain = detected is None
         if detected is True:
+            event.last_positive_timestamp = timestamp
             event.positives += 1
             event.negatives = 0
             if event.positives >= self.confirm_observations:
                 event.phase = "confirmed"
+                if event.confirmed_since_timestamp is None:
+                    event.confirmed_since_timestamp = timestamp
         elif detected is False:
             event.negatives += 1
             event.positives = 0
             if event.event_id and event.negatives >= self.clear_observations:
                 event.phase = "ended"
+                if event.ended_since_timestamp is None:
+                    event.ended_since_timestamp = timestamp
         for record in active:
             record.episode_id = event.event_id
         event.history.append(
@@ -1191,12 +1481,30 @@ class SceneState:
         )
         return event
 
-    def _replay(self, key: tuple[str, tuple[str, ...]]) -> tuple[_Event, set[str]]:
+    def _replay(
+        self, key: tuple[str, tuple[str, ...]], *, through_sequence: int | None = None,
+    ) -> tuple[_Event, set[str]]:
         ledger = self._ledgers[key]
         event = replace(ledger.seed, history=deque(maxlen=self.history_size))
         used_ids = {event.event_id} if event.event_id else set()
-        batches = self._source_batches(ledger)
-        for index, records in enumerate(batches):
+        batches = [
+            batch for batch in self._source_batches(ledger)
+            if through_sequence is None or batch[0].sequence <= through_sequence
+        ]
+        judgments = {batch[0].sequence: (index, batch)
+                     for index, batch in enumerate(batches)}
+        presence = {
+            sequence: value for sequence, value in self._tracking_presence.items()
+            if sequence > ledger.floor[1]
+            and (through_sequence is None or sequence <= through_sequence)
+        }
+        for sequence in sorted(presence.keys() | judgments.keys()):
+            if sequence in presence:
+                at, present = presence[sequence]
+                self._fold_presence(event, at, sequence, present)
+            if sequence not in judgments:
+                continue
+            index, records = judgments[sequence]
             preferred = next(
                 (
                     record.episode_id
@@ -1210,8 +1518,9 @@ class SceneState:
                 None,
             )
             event = self._fold_source(event, records, used_ids, preferred)
-        event.last_seen = max(event.last_seen, ledger.watermark[0])
-        event.frame_sequence = max(event.frame_sequence, ledger.watermark[1])
+        if through_sequence is None:
+            event.last_seen = max(event.last_seen, ledger.watermark[0])
+            event.frame_sequence = max(event.frame_sequence, ledger.watermark[1])
         return event, used_ids
 
     def _prune_ledger(self, key: tuple[str, tuple[str, ...]]) -> None:
@@ -1219,8 +1528,7 @@ class SceneState:
         while len(ledger.records) > self.history_size:
             # Prune whole source frames so duplicate IDs cannot cross the replay seed.
             batch = self._source_batches(ledger)[0]
-            used_ids = {ledger.seed.event_id} if ledger.seed.event_id else set()
-            seed = self._fold_source(ledger.seed, batch, used_ids)
+            seed, _ = self._replay(key, through_sequence=batch[0].sequence)
             ledger.seed = replace(seed, history=deque(maxlen=0))
             ledger.floor = (
                 max(record.timestamp for record in batch),
@@ -1232,6 +1540,11 @@ class SceneState:
                 self._record_groups.pop(evidence_key, None)
                 self._counters["evidence_records_pruned"] += 1
 
+    def finish_review(self) -> None:
+        """Finish work without inventing evidence that an event stopped occurring."""
+        with self._lock:
+            self._review_complete = True
+
     def snapshot(self, *, include_history: bool = True) -> dict:
         """Copy scene state; internal scheduling can omit evidence histories."""
         if type(include_history) is not bool:
@@ -1242,6 +1555,17 @@ class SceneState:
                 for key, person in self._people.items()
                 if self._timestamp - person.last_seen <= self.occlusion_seconds
             }
+            positions = {
+                person.subject_id: next(
+                    (
+                        item
+                        for item in reversed(person.history)
+                        if not item.get("identity_only")
+                    ),
+                    {},
+                )
+                for person in self._people.values()
+            }
             entities = [
                 {
                     "entity_id": person.subject_id,
@@ -1249,8 +1573,8 @@ class SceneState:
                     "label": "person",
                     "bbox": person.bbox.as_dict(),
                     **(
-                        {"mask_contours": person.history[-1]["mask_contours"]}
-                        if person.history and "mask_contours" in person.history[-1]
+                        {"mask_contours": positions[person.subject_id]["mask_contours"]}
+                        if "mask_contours" in positions[person.subject_id]
                         else {}
                     ),
                     "identity": person.identity,
@@ -1280,12 +1604,27 @@ class SceneState:
                     "event_label": event.event_label,
                     "subject_ids": list(event.subject_ids),
                     "phase": event.phase,
+                    **(
+                        {
+                            "review_state": "complete",
+                            "review_outcome": "unconfirmed"
+                            if event.phase == "suspected" else event.phase,
+                        }
+                        if self._review_complete else {}
+                    ),
                     "observation_state": "uncertain"
                     if event.uncertain
                     or any(subject not in visible for subject in event.subject_ids)
                     else "observed",
                     "first_evidence_timestamp_seconds": event.first_seen,
                     "last_evidence_timestamp_seconds": event.last_seen,
+                    "last_positive_timestamp_seconds": event.last_positive_timestamp,
+                    "confirmed_since_timestamp_seconds": (
+                        event.confirmed_since_timestamp
+                    ),
+                    "ended_since_timestamp_seconds": event.ended_since_timestamp,
+                    **({"ended_reason": event.ended_reason}
+                       if event.ended_reason is not None else {}),
                     "frame_sequence": event.frame_sequence,
                     "confidence": event.confidence,
                     "positive_observations": event.positives,
@@ -1333,6 +1672,7 @@ class SceneState:
                     record
                     for record in person.history
                     if record["timestamp_seconds"] <= timestamp
+                    and not record.get("identity_only")
                 ]
                 if not history:
                     continue

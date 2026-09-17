@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import io
+import json
+import logging
 import math
+import re
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from threading import Condition, Event, Thread, current_thread
 from typing import Any
 
@@ -24,6 +28,8 @@ _MAX_PEOPLE = 128
 _MAX_EVENTS = 2048  # Same hard ceiling as SceneState's event registry.
 _MAX_LINES = 8
 _HOLD_SECONDS = 1.0
+_DISPLAY_LOGGER = logging.getLogger("uvicorn.error")
+_SAFE_SESSION_IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _GREEN = (73, 220, 138)
 _YELLOW = (255, 214, 64)
 _RED = (239, 68, 68)
@@ -489,6 +495,7 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
         self._displayed_source: _SourceStamp | None = None
         self._displayed_frame: tuple[EvidenceFrame, list[dict[str, Any]]] | None = None
         self._stopped_at: float | None = None
+        self._first_source_received_at: float | None = None
         self._last_published_sequence = -1
         self._event_revision = 0
         self._displayed_event_revision = 0
@@ -500,6 +507,13 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
             unavailable_source_frames=0,
             displayed_source_timestamp_seconds=None,
             stream_delay_seconds=None,
+            distinct_source_frames=0,
+            same_source_repaints=0,
+            last_snapshot_seconds=None,
+            last_jpeg_render_seconds=None,
+            last_publish_seconds=None,
+            last_source_to_publish_seconds=None,
+            timing_log_failures=0,
         )
 
     def set_delay_seconds(self, delay_seconds: float) -> None:
@@ -532,6 +546,9 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
             self._last_timestamp = packet.media_timestamp
             self._last_sequence = packet.frame_sequence
             self._stats["submitted_frames"] += 1
+            received_at = time.monotonic()
+            if self._first_source_received_at is None:
+                self._first_source_received_at = received_at
             if retain_source:
                 if len(self._sources) == self._sources.maxlen:
                     self._stats["source_stamps_dropped"] += 1
@@ -540,7 +557,7 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                         packet.frame_sequence,
                         packet.media_timestamp,
                         packet.observed_at,
-                        time.monotonic(),
+                        received_at,
                     )
                 )
             self._condition.notify_all()
@@ -566,6 +583,28 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
             self._event_signature = signature
             self._event_revision += 1
             self._condition.notify_all()
+
+    def _display_elapsed_seconds(self, now: float) -> float:
+        """Caller holds the condition; include startup and waiting after capture."""
+        if self._first_source_received_at is None:
+            return 0.0
+        end = self._stopped_at if self._stopped_at is not None else now
+        return max(0.0, end - self._first_source_received_at)
+
+    def _log_display_timing(self, timing: dict[str, Any]) -> None:
+        """Diagnostics must never turn a successful publication into a failure."""
+        try:
+            timing["recorded_at"] = datetime.now(timezone.utc).isoformat()
+            session_id = self.scene.stream_session_id
+            if (
+                isinstance(session_id, str)
+                and _SAFE_SESSION_IDENTIFIER.fullmatch(session_id)
+            ):
+                timing["stream_session_id"] = session_id
+            _DISPLAY_LOGGER.info("%s", json.dumps(timing, separators=(",", ":")))
+        except Exception:
+            with self._condition:
+                self._stats["timing_log_failures"] += 1
 
     def _run(self) -> None:
         next_render = 0.0
@@ -627,6 +666,8 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
             next_render = started + self._interval
             source = output = selected = None
             try:
+                late_event_repaint = False
+                snapshot_started = time.monotonic()
                 if ready:
                     selected = self.scene.tracked_display_frame(
                         before_timestamp_seconds=ready[-1].timestamp,
@@ -642,6 +683,8 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                         source_entities=entities,
                     )
                     selected = frame, snapshot
+                    late_event_repaint = True
+                snapshot_seconds = time.monotonic() - snapshot_started
                 if selected is None:
                     with self._condition:
                         self._display_state = "buffering"
@@ -666,12 +709,14 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                     with self._condition:
                         self._stats["discarded_frames"] += 1
                     continue
+                render_started = time.monotonic()
                 rendered = render_scene_jpeg(
                     source.jpeg_bytes,
                     snapshot,
                     source.timestamp_seconds,
                     quality=self._quality,
                 )
+                render_seconds = time.monotonic() - render_started
                 with self._condition:
                     capture_timestamp = max(capture_timestamp, self._last_timestamp)
                     # Settings can change while rendering. Never publish sooner
@@ -695,12 +740,23 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                         self._stats["discarded_frames"] += 1
                     continue
                 try:
+                    publish_started = time.monotonic()
                     self._publish(output)
                 except Exception:
                     with self._condition:
                         self._stats["publish_failures"] += 1
                 else:
+                    published_at = time.monotonic()
+                    publish_seconds = published_at - publish_started
+                    source_to_publish_seconds = max(
+                        0.0, published_at - stamp.received_at
+                    )
                     with self._condition:
+                        same_source = stamp.sequence == self._last_published_sequence
+                        self._stats[
+                            "same_source_repaints" if same_source
+                            else "distinct_source_frames"
+                        ] += 1
                         self._last_published_sequence = stamp.sequence
                         self._displayed_source = stamp
                         self._displayed_frame = source, snapshot["entities"]
@@ -715,7 +771,34 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                             published_frames=self._stats["published_frames"] + 1,
                             displayed_source_timestamp_seconds=stamp.timestamp,
                             stream_delay_seconds=round(delay, 3),
+                            last_snapshot_seconds=round(snapshot_seconds, 6),
+                            last_jpeg_render_seconds=round(render_seconds, 6),
+                            last_publish_seconds=round(publish_seconds, 6),
+                            last_source_to_publish_seconds=round(
+                                source_to_publish_seconds, 6
+                            ),
                         )
+                        elapsed = self._display_elapsed_seconds(published_at)
+                        timing = {
+                            "event": "sam_display_timing",
+                            "source_frame_sequence": stamp.sequence,
+                            "source_timestamp_seconds": stamp.timestamp,
+                            "source_to_publish_seconds": round(
+                                source_to_publish_seconds, 6
+                            ),
+                            "snapshot_seconds": round(snapshot_seconds, 6),
+                            "render_seconds": round(render_seconds, 6),
+                            "publish_seconds": round(publish_seconds, 6),
+                            "late_event_repaint": late_event_repaint,
+                            "distinct_source_frames": self._stats[
+                                "distinct_source_frames"
+                            ],
+                            "same_source_repaints": self._stats["same_source_repaints"],
+                            "distinct_source_fps": round(
+                                self._stats["distinct_source_frames"] / elapsed, 6
+                            ) if elapsed > 0 else 0.0,
+                        }
+                    self._log_display_timing(timing)
             except Exception:
                 with self._condition:
                     self._stats["render_failures"] += 1
@@ -731,6 +814,12 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
     def stats(self) -> dict[str, Any]:
         with self._condition:
             result = super().stats()
+            now = time.monotonic()
+            elapsed = self._display_elapsed_seconds(now)
+            result["display_elapsed_seconds"] = round(elapsed, 6)
+            result["distinct_source_fps"] = round(
+                self._stats["distinct_source_frames"] / elapsed, 6
+            ) if elapsed > 0 else 0.0
             if self._thread and not self._stop.is_set():
                 result["state"] = self._display_state
             if self._displayed_source is not None:
