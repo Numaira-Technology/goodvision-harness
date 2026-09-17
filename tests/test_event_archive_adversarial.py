@@ -288,7 +288,9 @@ def test_long_episode_storage_updates_are_incremental(tmp_path):
         archive.close()
 
 
-def test_frame_ingress_memory_budget_includes_waiting_jpegs(tmp_path, monkeypatch):
+def test_blocked_archive_keeps_waiting_jpegs_on_disk_without_dropping(
+    tmp_path, monkeypatch,
+):
     entered, release = threading.Event(), threading.Event()
     original = EventArchive._open_store
 
@@ -310,16 +312,13 @@ def test_frame_ingress_memory_budget_includes_waiting_jpegs(tmp_path, monkeypatc
         jpeg = _jpeg()
         for index in range(32):
             archive.submit_frame(jpeg, index / 5, index, "session")
-        with archive._queue.mutex:
-            queued_bytes = sum(
-                len(payload[1].jpeg)
-                for kind, payload in archive._queue.queue
-                if kind == "frame"
-            )
-        assert queued_bytes <= archive.settings.buffer_max_bytes, (
-            f"{queued_bytes} queued JPEG bytes exceed "
-            f"{archive.settings.buffer_max_bytes} budget"
-        )
+        # Accepted images live on disk while the heavy owner is blocked; the
+        # old in-memory queue's byte cap must no longer discard source evidence.
+        assert archive._queue.qsize() == 32
+        retained = archive._queue.source_window("session", 0, 32 / 5)
+        assert len(retained) == 32
+        assert [f.source_frame_index for f in retained] == list(range(32))
+        assert not hasattr(archive._queue, "queue")
     finally:
         release.set()
         archive.close()

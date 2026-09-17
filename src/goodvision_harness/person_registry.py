@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, OrderedDict, deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from threading import RLock
 from uuid import uuid4
@@ -17,6 +17,7 @@ from uuid import uuid4
 from .contracts import AnalysisResult, NormalizedBBox
 from .face_tracking import FaceIdentityTracker
 from .grounding import ModelActor, ModelObject, ObservationBundle
+from .identity_review import IdentityReview
 from .rich_labeling import RichLabelObject, RichLabelSnapshot
 
 _PERSON_LABELS = frozenset(
@@ -133,7 +134,23 @@ class PersonRegistry:
         self._native_rejections: Counter[str] = Counter()
         self._subject_merges: OrderedDict[str, str] = OrderedDict()
         self._subject_aliases: OrderedDict[str, str] = OrderedDict()
+        self._identity_review = IdentityReview()
         self._lock = RLock()
+
+    def review_pending_identities(
+        self, *, accept_merge: Callable[[str, str], bool] | None = None
+    ) -> int:
+        """Run private face comparisons on the service's background review worker."""
+        with self._lock:
+            return self._identity_review.review(accept_merge)
+
+    def drain_identity_merges(self) -> tuple[tuple[str, str], ...]:
+        with self._lock:
+            return self._identity_review.drain()
+
+    def identity_review_stats(self) -> dict:
+        with self._lock:
+            return self._identity_review.stats()
 
     def drain_subject_merges(self) -> tuple[tuple[str, str], ...]:
         """Consume trusted same-source face-to-native associations for scene state."""
@@ -144,7 +161,9 @@ class PersonRegistry:
 
     def canonical_subject_id(self, subject_id: str) -> str:
         with self._lock:
-            return self._subject_aliases.get(subject_id, subject_id)
+            return self._identity_review.canonical(
+                self._subject_aliases.get(subject_id, subject_id)
+            )
 
     def _exact_source_face_matches(
         self, snapshot: RichLabelSnapshot, faces: tuple[_SourceFace, ...] | None = None
@@ -265,6 +284,7 @@ class PersonRegistry:
         )
         self._subject_merges[old_id] = native_id
         self._subject_aliases[old_id] = native_id
+        self._identity_review.rebind(old_id, native_id)
         while len(self._subject_aliases) > 4096:
             self._subject_aliases.popitem(last=False)
         # Service drains after each result/batch. Bound abandoned consumers too.
@@ -345,6 +365,7 @@ class PersonRegistry:
 
     def _clear_person(self, person_id: str) -> None:
         self._face_tracker.forget_person(person_id)
+        self._identity_review.forget_person(person_id)
         for subject in self._subjects.values():
             if subject.identity.get("person_id") == person_id:
                 subject.identity = {}
@@ -686,6 +707,17 @@ class PersonRegistry:
         snapshot = RichLabelSnapshot(
             self.stream_session_id or self._namespace, sequence, timestamp, objects
         )
+        for observed in objects:
+            state = observed.observation_state or observed.attributes.get(
+                "observation_state", "observed"
+            )
+            if state == "observed":
+                self._identity_review.observe(
+                    observed.track_id, timestamp, sequence=sequence,
+                    bbox=observed.bbox,
+                    native=_native_metadata(observed.attributes.get("native_track"))
+                    is not None,
+                )
         # Same-frame sources may fill in missing observations, without duplicating IDs.
         existing = next(
             (
@@ -993,18 +1025,25 @@ class PersonRegistry:
             ) == (timestamp, frame_sequence):
                 self._associate_source_faces(source_body)
                 result = [self._canonical_face(item) for item in result]
-            return tuple(result)
+            for item in result:
+                if item.attributes.get("face_observation_state") == "observed":
+                    self._identity_review.observe_face(item, timestamp, frame_sequence)
+            return tuple(self._canonical_face(item) for item in result)
 
     def _canonical_face(self, item: ModelObject) -> ModelObject:
         attributes = dict(item.attributes)
         for key in ("subject_id", "person_track_id"):
             value = attributes.get(key)
             if isinstance(value, str):
-                attributes[key] = self._subject_aliases.get(value, value)
+                attributes[key] = self._identity_review.canonical(
+                    self._subject_aliases.get(value, value)
+                )
         if isinstance(attributes.get("subject_ids"), (list, tuple)):
             attributes["subject_ids"] = list(
                 dict.fromkeys(
-                    self._subject_aliases.get(value, value)
+                    self._identity_review.canonical(
+                        self._subject_aliases.get(value, value)
+                    )
                     for value in attributes["subject_ids"]
                 )
             )

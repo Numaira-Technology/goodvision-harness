@@ -86,6 +86,7 @@ def _config(tmp_path: Path, **overrides: Any) -> FaceRecognizerConfig:
         "threshold": 0.8,
         "min_face_size": 50,
         "gallery_path": tmp_path / "gallery.json",
+        "inference_instances": 1,
     }
     values.update(overrides)
     return FaceRecognizerConfig(**values)
@@ -742,6 +743,9 @@ def test_explicit_opt_in_allows_face_analysis_to_install_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real_import = importlib.import_module
+    monkeypatch.setattr(
+        face_module, "_configure_face_session_threads", lambda *_args: None,
+    )
     prepared: list[tuple[int, tuple[int, int]]] = []
 
     class FakeFaceAnalysis:
@@ -775,6 +779,9 @@ def test_cuda_face_analysis_preloads_and_verifies_real_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real_import = importlib.import_module
+    monkeypatch.setattr(
+        face_module, "_configure_face_session_threads", lambda *_args: None,
+    )
     preloads: list[str] = []
     prepared: list[tuple[int, tuple[int, int]]] = []
 
@@ -826,6 +833,9 @@ def test_cuda_face_analysis_rejects_silent_cpu_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real_import = importlib.import_module
+    monkeypatch.setattr(
+        face_module, "_configure_face_session_threads", lambda *_args: None,
+    )
 
     class FakeSession:
         def get_providers(self) -> list[str]:
@@ -874,6 +884,9 @@ def test_directml_face_analysis_uses_and_verifies_real_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real_import = importlib.import_module
+    monkeypatch.setattr(
+        face_module, "_configure_face_session_threads", lambda *_args: None,
+    )
     prepared: list[tuple[int, tuple[int, int]]] = []
 
     class FakeSession:
@@ -922,6 +935,9 @@ def test_directml_face_analysis_rejects_silent_cpu_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real_import = importlib.import_module
+    monkeypatch.setattr(
+        face_module, "_configure_face_session_threads", lambda *_args: None,
+    )
 
     class FakeSession:
         def get_providers(self) -> list[str]:
@@ -1149,6 +1165,11 @@ def test_face_runtime_mode_audits_packages_without_starting_models(
         sys.modules,
         "cv2",
         SimpleNamespace(
+            # Runtime audit also renders its smoke overlay. Keep those real
+            # image operations while replacing only the audited codec/version.
+            **{key: value for key, value in vars(cv2).items() if key not in {
+                "__version__", "IMREAD_COLOR", "imencode", "imdecode",
+            }},
             __version__="4.14.0",
             IMREAD_COLOR=1,
             imencode=lambda *_args: (True, b"synthetic-jpeg"),

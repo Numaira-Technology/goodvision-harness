@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -20,6 +22,7 @@ import pytest
 
 from goodvision_harness.config import load_config
 from goodvision_harness.contracts import NormalizedBBox
+from goodvision_harness.face_recognition import FaceRecognitionSession
 from goodvision_harness.face_tracking import FaceIdentityTracker
 from goodvision_harness.grounding import (
     GroundedClassification,
@@ -33,6 +36,87 @@ from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
 from goodvision_harness.privacy import PUBLIC_ANALYSIS_ERROR
 from goodvision_harness.result_bus import ResultBus
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
+
+
+def _completion_timings(caplog):
+    return [
+        json.loads(record.getMessage().split(" ", 1)[1])
+        for record in caplog.records
+        if record.getMessage().startswith("analysis_branch_timing ")
+    ]
+
+
+@pytest.mark.parametrize("branch", ["stranger", "safety"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_branch_completion_timing_counts_requests_not_context_or_events(
+    caplog, branch, fails,
+):
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    with _session() as (session, _pool, safety, face, *_outputs):
+        session.stream_session_id = "rtsp://user:private@camera"
+        frames = (_window(0).newest_frame, _window(1).newest_frame)
+        window = FrameWindow(1, frames)
+        future = Future()
+        if fails:
+            future.set_exception(RuntimeError("PRIVATE exception response"))
+        else:
+            detector = face if branch == "stranger" else safety
+            future.set_result(detector.classify_window(window))
+        session._apply_window_future(future, window, branch=branch)
+        record, = _completion_timings(caplog)
+        assert record["branch"] == (
+            "insightface" if branch == "stranger" else "vlm_frame"
+        )
+        assert record["context_frame_sequences"] == [0, 10]
+        assert record["source_frame_sequence"] == 10
+        assert record["source_timestamp_seconds"] == 0.4
+        assert record["completed_requests"] == 1
+        assert record["completed_observations"] == int(not fails)
+        assert record["success"] is not fails
+        assert record["model_seconds"] == (None if fails else 0.01)
+        assert record["error_type"] == ("RuntimeError" if fails else None)
+        assert record["stream_session_id"] is None
+        assert all(
+            text not in str(record) for text in ("PRIVATE", "private", "Face evidence")
+        )
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_face_only_completion_timing_is_insightface_without_independent_branch(
+    caplog, fails,
+):
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    config = load_config()
+    client = FaceRecognitionSession(SimpleNamespace(settings=config.inference))
+    session = StreamingSession.for_camera(config, client, SessionCallbacks())
+    window, future = _window(0), Future()
+    if fails:
+        future.set_exception(ValueError("PRIVATE face input"))
+    else:
+        future.set_result(Face(config.inference).classify_window(window))
+    session._apply_window_future(future, window)
+    record, = _completion_timings(caplog)
+    assert record["branch"] == "insightface"
+    assert record["success"] is not fails
+    assert record["completed_requests"] == 1
+    assert "PRIVATE" not in str(record)
+
+
+def test_completed_face_response_error_keeps_measured_time_without_message(caplog):
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    with _session() as (session, _pool, _safety, _face, *_outputs):
+        window, future = _window(0), Future()
+        future.set_result(GroundingResponse(
+            window, None, 0.8, error="PRIVATE recognizer diagnostics",
+        ))
+        session._apply_window_future(future, window, branch="stranger")
+        record, = _completion_timings(caplog)
+        assert record["branch"] == "insightface"
+        assert record["success"] is False
+        assert record["model_seconds"] == 0.8
+        assert record["completed_observations"] == 0
+        assert record["error_type"] == "ResponseError"
+        assert "PRIVATE" not in str(record)
 
 
 def _window(index):
@@ -163,6 +247,46 @@ def _session(*, safety_gate=None, face_gate=None, confirm=False):
 
 def _feature(rows, label):
     return [(r, j) for r in rows for j in r.judgments if j.event_label == label]
+
+
+def test_graceful_capture_stop_preserves_inflight_face_result_before_end():
+    config = load_config()
+    config = replace(config, sliding_window=replace(
+        config.sliding_window, size_frames=1, stride_frames=1,
+    ))
+    gate = threading.Event()
+    face = Face(config.inference, gate)
+    client = SelectedFeaturesGroundingClient(
+        Safety(config.inference), face, safety_event_labels=("smoking",),
+    )
+    delivered, ended = [], threading.Event()
+    session = StreamingSession.for_camera(
+        config, client,
+        SessionCallbacks(
+            on_timeline_result=delivered.append,
+            on_end=lambda reason, error: ended.set(),
+        ),
+    )
+    frame = _window(0).newest_frame
+    session.start()
+    try:
+        assert session.push_camera_frame(
+            frame.jpeg_bytes, width=64, height=48, timestamp_seconds=0,
+        )
+        assert face.entered.wait(2)
+        session.stop(drain=True)
+        assert not ended.wait(0.05)
+        assert session.running
+        assert not _feature(delivered, "stranger")
+        gate.set()
+        assert ended.wait(2)
+        session.join(2)
+        assert not session.running
+        assert len(_feature(delivered, "stranger")) == 1
+    finally:
+        gate.set()
+        session.stop(drain=True)
+        session.join(3)
 
 
 def test_face_public_result_does_not_wait_for_remote_safety():

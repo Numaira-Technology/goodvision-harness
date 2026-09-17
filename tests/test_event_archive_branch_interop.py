@@ -128,7 +128,11 @@ def test_other_branch_completion_cannot_finalize_pending_negative_boundary(
         first = _lookup(archive, first_message)
         assert not first["finalized"]
         assert first["end_reason"] == "negative"
-        assert len(archive.list_events()["events"]) == 2
+        assert _lookup(archive, last_message)["event_id"] != first["event_id"]
+        # Stranger evidence exposes one representative per person while both
+        # source episodes remain independently revisable until the bridge lands.
+        expected_rows = 1 if branch == "stranger" else 2
+        assert len(archive.list_events()["events"]) == expected_rows
         bridge_message = _complete(archive, branch, 2)
         merged = _lookup(archive, bridge_message)
         assert merged["event_id"] == first["event_id"]

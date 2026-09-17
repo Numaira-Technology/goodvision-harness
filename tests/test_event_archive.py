@@ -65,7 +65,9 @@ def jpeg() -> bytes:
 @pytest.mark.parametrize("timestamp", [0.0092, 0.0098])
 @pytest.mark.parametrize("explicit_window", [False, True])
 def test_first_result_uses_same_millisecond_timeline_as_window(
-    tmp_path: Path, timestamp: float, explicit_window: bool,
+    tmp_path: Path,
+    timestamp: float,
+    explicit_window: bool,
 ) -> None:
     archive = EventArchive(EventArchiveSettings(directory=tmp_path), clock=lambda: 0.0)
     try:
@@ -75,7 +77,11 @@ def test_first_result_uses_same_millisecond_timeline_as_window(
             window_id="safety:0" if explicit_window else None,
         )
         archive.note_window(
-            "session", "safety:0", timestamp, ("smoking",), "completed",
+            "session",
+            "safety:0",
+            timestamp,
+            ("smoking",),
+            "completed",
         )
         assert archive.flush()
         events = archive.list_events(message_id="first")["events"]
@@ -607,5 +613,205 @@ def test_quota_counts_encoder_temporaries_and_keeps_failed_event_visible(
         assert event["evidence"]["failure_reason"] == "storage_quota_exceeded"
         assert archive.get_event(event["event_id"]) is not None
         assert archive.status()["storage_bytes"] >= 1792 * 1024
+    finally:
+        archive.close()
+
+
+def test_stranger_reappearances_keep_one_clip_without_changing_other_episodes(
+    tmp_path: Path,
+) -> None:
+    encoded = []
+
+    def encode(manifest: Path, destination: Path, **kwargs: Any) -> dict[str, Any]:
+        encoded.append(json.loads(manifest.read_text())["event_id"])
+        return fake_encoder(manifest, destination, **kwargs)
+
+    archive = EventArchive(
+        EventArchiveSettings(directory=tmp_path), encoder=encode, clock=lambda: 0.0
+    )
+    try:
+        for index in range(71):
+            archive.submit_frame(jpeg(), index / 5, index, "session")
+        archive.submit_result(result(1, "stranger-first", label="stranger"))
+        first = wait_ready(archive)
+        archive.submit_result(result(10, "stranger-again", label="stranger"))
+        archive.submit_result(result(1, "smoking-first"))
+        archive.submit_result(result(10, "smoking-again"))
+        archive.end_session("session")
+        assert archive.wait_until_idle(3)
+        events = archive.list_events()["events"]
+        strangers = [event for event in events if event["event_label"] == "stranger"]
+        assert len(strangers) == 1
+        assert strangers[0]["event_id"] == first["event_id"]
+        assert strangers[0]["evidence"]["status"] == "ready"
+        assert (
+            len([event for event in events if event["event_label"] == "smoking"]) == 2
+        )
+        assert len(encoded) == 3
+        # Historical episode/message lookup remains available without a new MP4.
+        repeated = archive.list_events(message_id="stranger-again")["events"][0]
+        assert repeated["evidence"]["status"] == "expired"
+    finally:
+        archive.close()
+
+
+def test_stranger_missing_early_frames_uses_later_playable_episode(
+    tmp_path: Path,
+) -> None:
+    archive = EventArchive(
+        EventArchiveSettings(directory=tmp_path),
+        encoder=fake_encoder,
+        clock=lambda: 0.0,
+    )
+    try:
+        archive.submit_result(result(1, "missing", label="stranger"))
+        for index in range(50, 71):
+            archive.submit_frame(jpeg(), index / 5, index, "session")
+        archive.submit_result(result(11, "playable", label="stranger"))
+        archive.end_session("session")
+        assert archive.wait_until_idle(3)
+        events = archive.list_events(event_label="stranger")["events"]
+        assert len(events) == 1 and events[0]["start_seconds"] == 11
+        assert events[0]["evidence"]["status"] == "ready"
+        assert archive.video_path(events[0]["event_id"]).is_file()
+    finally:
+        archive.close()
+
+
+def test_stranger_earlier_observation_keeps_existing_playable_revision(
+    tmp_path: Path,
+) -> None:
+    archive = EventArchive(
+        EventArchiveSettings(directory=tmp_path),
+        encoder=fake_encoder,
+        clock=lambda: 0.0,
+    )
+    try:
+        for index in range(31):
+            archive.submit_frame(jpeg(), index / 5, index, "session")
+        archive.submit_result(result(3, "first", label="stranger"))
+        first = wait_ready(archive)
+        archive.submit_result(result(2, "earlier", label="stranger"))
+        assert archive.wait_until_idle(3)
+        event = archive.list_events()["events"][0]
+        assert event["start_seconds"] == 2
+        assert event["evidence"] == first["evidence"]
+        assert len(archive._videos) == 1
+    finally:
+        archive.close()
+
+
+def test_reviewed_stranger_merge_updates_finalized_history_and_survives_restart(
+    tmp_path: Path,
+) -> None:
+    clock = [0.0]
+    archive = EventArchive(
+        EventArchiveSettings(directory=tmp_path),
+        encoder=fake_encoder,
+        clock=lambda: clock[0],
+    )
+    try:
+        for index in range(71):
+            archive.submit_frame(jpeg(), index / 5, index, "session")
+        archive.submit_result(result(1, "first", label="stranger"))
+        archive.submit_result(
+            result(11, "second", subject="person-2", label="stranger")
+        )
+        archive.end_session("session")
+        assert archive.wait_until_idle(3)
+        originals = archive.list_events()["events"]
+        assert len(originals) == 2
+        clock[0] = 100
+        archive.flush()
+        assert all(event["finalized"] for event in archive.list_events()["events"])
+        assert archive.reconcile_subjects("session", {"person-2": "person-1"})
+        assert archive.wait_until_idle(3)
+        events = archive.list_events()["events"]
+        assert len(events) == 1 and events[0]["subject_id"] == "person-1"
+        assert events[0]["evidence"]["status"] == "ready"
+        assert archive.list_events(subject_id="person-2")["count"] == 1
+        assert archive.status()["late_results"] == 0
+        # Already published immutable URLs, including a player's active URL,
+        # continue to work after a person review merges the visible rows.
+        for event in originals:
+            assert archive.video_path(event["event_id"], 1).is_file()
+    finally:
+        archive.close()
+    reopened = EventArchive(
+        EventArchiveSettings(directory=tmp_path), encoder=fake_encoder
+    )
+    try:
+        assert reopened.flush()
+        assert reopened.list_events(subject_id="person-2")["count"] == 1
+        assert reopened.list_events()["events"][0]["subject_id"] == "person-1"
+    finally:
+        reopened.close()
+
+
+def test_idle_wait_includes_encoding_and_failed_first_clip_falls_back(
+    tmp_path: Path,
+) -> None:
+    gate, entered = threading.Event(), threading.Event()
+    calls = []
+
+    def encode(manifest: Path, destination: Path, **kwargs: Any) -> dict[str, Any]:
+        calls.append(json.loads(manifest.read_text())["event_id"])
+        if len(calls) == 1:
+            entered.set()
+            assert gate.wait(3)
+            raise RuntimeError("first clip failed")
+        return fake_encoder(manifest, destination, **kwargs)
+
+    archive = EventArchive(
+        EventArchiveSettings(directory=tmp_path), encoder=encode, clock=lambda: 0.0
+    )
+    try:
+        for index in range(71):
+            archive.submit_frame(jpeg(), index / 5, index, "session")
+        archive.submit_result(result(1, "first", label="stranger"))
+        assert entered.wait(3)
+        archive.submit_result(result(11, "second", label="stranger"))
+        archive.end_session("session")
+        assert archive.flush()
+        assert not archive.wait_until_idle(0)
+        assert not archive.wait_until_idle(0.02)
+        assert archive._queue.unfinished_tasks == 0
+        gate.set()
+        assert archive.wait_until_idle(3)
+        events = archive.list_events()["events"]
+        assert len(events) == 1 and events[0]["start_seconds"] == 11
+        assert events[0]["evidence"]["status"] == "ready"
+        assert len(calls) == 2
+        assert archive.status()["pending_evidence"] == 0
+    finally:
+        gate.set()
+        archive.close()
+
+
+def test_person_aliases_expire_with_their_last_retained_session_evidence(
+    tmp_path: Path,
+) -> None:
+    clock = [0.0]
+    archive = EventArchive(
+        EventArchiveSettings(directory=tmp_path, retention_days=1e-7),
+        encoder=fake_encoder,
+        clock=lambda: clock[0],
+    )
+    try:
+        archive.submit_result(result(1, "first", label="stranger"))
+        archive.reconcile_subjects("session", {"old-person": "person-1"})
+        archive.end_session("session")
+        assert archive.wait_until_idle(3)
+        assert archive._subject_aliases
+        time.sleep(0.02)
+        clock[0] = 2
+        assert archive.flush()
+        assert archive.list_events()["events"] == []
+        assert not archive._subject_aliases
+        with sqlite3.connect(tmp_path / "events.sqlite3") as connection:
+            assert (
+                connection.execute("SELECT COUNT(*) FROM subject_aliases").fetchone()[0]
+                == 0
+            )
     finally:
         archive.close()
