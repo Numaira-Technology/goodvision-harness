@@ -75,9 +75,9 @@ has three stages:
    Existing public keys are preserved. This runs before the controller needs
    SSH; the later remote installation script cannot repair a blocked login.
    Try direct SSH first, then the ordinary Vast gateway with the same key.
-3. Upload the worker, install dependencies, download checkpoints, and enable
-   both `sam_live` and `hybrid`. Report ready only after **both** route health
-   responses confirm `enabled`, `ready`, and `gpu_ready`.
+3. Upload the worker, install dependencies, download the SAM checkpoint, and
+   enable `sam_live`. Report ready only after its health response confirms
+   `enabled`, `ready`, and `gpu_ready`.
 
 The cloud startup hook uses Vast's documented
 [SSH onstart mechanism](https://docs.vast.ai/api-reference/creating-instances-with-api).
@@ -89,8 +89,8 @@ with `--resume-instance-id <id>` instead of its default command. This skips offe
 selection and rental. A complete environment with the expected Python, PyTorch,
 runtime dependency versions, SAM commit, and successful imports skips installation.
 An incomplete environment reuses the existing Conda/Python executables while
-installing missing or mismatched dependencies. Cached SAM weights are reused;
-hybrid weights are verified before deciding whether a download is needed.
+installing missing or mismatched dependencies. Cached SAM weights are reused.
+The retired hybrid detector and its weights are no longer uploaded or downloaded.
 Failure and normal shutdown both release the selected instance, preserving the
 normal replacement flow: the next default launch selects and rents a new GPU.
 During creation, an explicit refusal that an offer is missing, already rented,
@@ -486,13 +486,30 @@ throughput improvement. Use a writable
 compiler cache (the container already provides `/tmp`) and allow startup to finish
 before recording steady-state timings. `off` remains the default and comparison.
 
-Native session INFO logs expose only operation names, frame/byte counts and
-timings: `body_read_seconds`, `validation_decode_seconds`, `native_output_seconds`,
-`retention_response_seconds`, and total worker request time. `native_output_seconds`
-includes native inference plus conversion of its masks to the response objects;
-it is not a CUDA-kernel-only measurement. Neither source/session identifiers,
-JPEGs nor model output text are logged. Client round-trip time additionally
-includes network work outside the worker's received-body/response-ready interval.
+Native session logs identify the configured `route` and validated `request_id`,
+with input/output frame counts and source-sequence ranges, accepted/emitted
+watermarks, pending count, EOF/replay flags and outcome/status. Invalid identifiers
+are never logged; rejected requests that have not parsed a valid identifier use
+`request_id=None`. Source/session identifiers, identity/object IDs, JPEGs and model
+output text are not logged. Successful requests use INFO; failures use WARNING.
+
+The append record separates disjoint host wall-clock stages: `validation_seconds`,
+`decode_seconds` (including resize), `native_advance_seconds` (iterator advancement
+and its existing waits), `snapshot_seconds` (mask/contour conversion, including any
+device-to-host wait), `retention_seconds`, `response_build_seconds`,
+`response_serialize_seconds`, and `cleanup_seconds`. No CUDA synchronization is
+added for measurement. These are **not CUDA kernel timings**. The old coarse
+`validation_decode_seconds`, `native_output_seconds`, and
+`retention_response_seconds` names remain as aggregates.
+
+The HTTP record uses the same request ID and adds `body_read_seconds`,
+`worker_dispatch_seconds`, `processing_seconds`, `http_response_encode_seconds`
+and total time through response preparation. `processing_seconds` includes
+dispatch/event-loop waiting; it overlaps the append record, so do not sum both.
+Client round-trip time additionally includes network work outside this interval.
+Replays count zero newly emitted outputs. `output_frames / total_seconds` measures
+worker service speed only; sustained analysis FPS must use distinct source frames
+and elapsed client completion time, including upload and between-request gaps.
 
 There is one shared admission/GPU slot across **both image and video endpoints**.
 Busy requests get 429, oversized requests 413, invalid input 400/415, out-of-order
@@ -713,21 +730,18 @@ python tools/sam31_stream_prune_probe.py --checkpoint /models/sam3.1_multiplex.p
 `--empty-final` 专门对照有帧 final 与无新帧 EOF 的输出。后续验收还需要真实长录像中的
 进入/离开、遮挡、交叉、断网、取消和跨 epoch 恢复，以及人工标注的准确率评估。
 
-## 两种可插拔处理路线
+## SAM 连续分析
 
 `perception_routes.py` 是插件目录；每项仅提供后端工厂和不可变 `SessionProfile`。
 `continuous.py` 统一负责请求限额、JPEG/H264 解码、源帧映射、截止时间、幂等重试、
-取消、会话关闭及状态清理。两种算法不嵌入 HTTP 或部署控制台的条件分支。
+取消、会话关闭及状态清理。生产目录仅挂载 `sam_live`。
 
 | 路线 | 独立实现 | 启用变量 | 输出后端 |
 | --- | --- | --- | --- |
 | `sam_live` | `sam_live.py` | `SAM31_LIVE_ENABLED=true` | `sam3.1_video` |
-| `hybrid` | `hybrid.py`、`hybrid_tracker.py` | `HYBRID_ENABLED=true` | `person_hybrid` |
 
-启用变量默认 `false`。两条路线共享经过严格校验的本地 SAM 权重；hybrid 还须将官方
-`ssdlite320_mobilenet_v3_large_coco-a79551df.pth` 放在 `HYBRID_CHECKPOINT_PATH`
-指定位置，默认 `/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth`。
-后端校验本地文件摘要并严格加载，启动过程不会自动下载模型。
+启用变量默认 `false`。本地 Compose 和远程启动器显式启用 `sam_live`，只需要
+经过校验的本地 SAM 权重。历史 hybrid 实验实现不在生产镜像、上传列表或接口目录中。
 
 接口目录为 `GET /v1/perception/routes`，返回协议版本、路由名称、各自 readiness、
 后端、端点和限额。单条路线接口如下：
@@ -742,7 +756,11 @@ DELETE /v1/perception/{route}/sessions/{video_session_id}
 创建／append／删除请求沿用现有有界会话协议。新路线的 `startup_frames=1`、
 `max_append_frames=4`、`hotstart_delay=1`、`max_pending_frames=0`，其中
 `hotstart_delay` 表示对外交付等待，不能据此认为一个人物已通过内部三次检测确认。
-HTTP 仍按请求返回 JSON；短请求减少批次等待，并未宣称已实现 HTTP 分块输出。
+客户端空闲时可立即发出一帧；已撤回“推理期间只保留最新一个待处理帧”的修改，
+恢复此前四帧待发队列，等待帧随后可合批发送。worker 仍允许最多四帧追加。
+原有队列溢出丢弃策略仍存在，恢复容量不代表零丢帧，也不是最终吞吐方案；
+需要结合队列、源帧覆盖率和分段耗时日志解决过载，不能靠丢关键帧降低延迟。
+HTTP 仍按请求返回完整 JSON，尚未实现逐帧 HTTP 分块输出。
 旧 `/v1/video/sessions` 保留原有 16 帧启动和确认缓冲协议。
 
 新接口额外返回 `route_metadata`，与严格源帧对象协议分开：
@@ -764,18 +782,12 @@ HTTP 仍按请求返回 JSON；短请求减少批次等待，并未宣称已实�
 填入；未到达或过期的绝对源索引读取失败。路线启用后，CUDA warmup 必须实际走完
 首帧、四帧追加、输入环回绕、历史裁剪及空 EOF，才能报告 GPU ready。
 
-`hybrid` 用实时检测观测及自己的有界跟踪器交付当前位置，后台 SAM 持有至多一个
-正在处理和一个最新等待的源图像。校准结果对应历史源时间，不能把旧位置当成当前
-观测。其 `confirmation_policy` 为
-`detector_observations_with_async_sam_calibration`，额外有有界 `diagnostics`。
-关闭会话会取消待处理校准并等待已经运行的 SAM 工作完成，之后才释放路线所有权。
-
-整个进程只允许一个活动会话，覆盖旧路线和两条新路线。切换前须停止并关闭旧会话；
+整个进程只允许一个活动会话，覆盖旧协议和 SAM 连续分析。更换会话前须停止并关闭旧会话；
 新路线得到新的会话 ID 和 predictor epoch，不能延续其他算法的内部编号。活动会话
-期间，独立图片／批量视频入口也被阻止，避免与后台校准并发使用共享 SAM。
+期间，独立图片／批量视频入口也被阻止，避免并发使用共享 SAM。
 新路线 health 的 `active_session` 报告全局占用，包含其他路线仍在关闭的状态；旧
-`/health/video/session` 保持原有语义。即使模型或后台校准已失去 readiness，DELETE
+`/health/video/session` 保持原有语义。即使模型已失去 readiness，DELETE
 仍可在原有 admission、身份及截止时间保护下清理会话，避免失效状态无法释放。
 
-当前两路线的本地协议、状态及隔离测试使用替身；新因果适配和 hybrid 的真实 GPU
-延迟、识别质量、长时运行和交叉遮挡效果尚未实测，不能沿用旧路线的实测数据。
+本地协议、状态及隔离测试使用替身；SAM 连续分析的真实 GPU 延迟、识别质量、
+长时运行和交叉遮挡效果需要独立实测，不能沿用旧协议的实测数据。

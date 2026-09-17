@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "scope": "current customer documents, console assets and delivery config",
+  "mode": "repository",
+  "checked_text_files": 16,
+  "issues": [],
+  "exceptions": [
+    {
+      "code": "required_gpu_driver_selector",
+      "path": "compose.full-gpu.accelerated.yaml",
+      "line": 13
+    },
+    {
+      "code": "required_gpu_driver_selector",
+      "path": "compose.full-gpu.accelerated.yaml",
+      "line": 22
+    }
+  ],
+  "limitations": [
+    "Runtime responses require the privacy and service regression tests.",
+    "Internal source, historical deployment profiles, image layers and third-party runtime/license files are outside this publication scan."
+  ]
+}

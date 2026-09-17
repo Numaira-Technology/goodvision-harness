@@ -1,5 +1,13 @@
 # Goodvision Harness
 
+本地 NVIDIA 部署**默认 1 路，使用 `--streams N` 按实际需要启动正整数路数**，
+12 路是容量参考值，不是软件上限。3、6、12、16 路示例见 [本地 GPU 部署说明](docs/local-gpu.md)。
+同一控制台可以连接、启停和并排显示已部署的 N 路视频。人物追踪在本地即可多路，
+大模型仍可用云端；远程追踪仅支持 1 路。控制台分别选择两者的本地运行位置；单卡共用，双卡将大模型与
+追踪及其他 GPU 工作分开。每路大模型分析目标沿用 1.25 次/秒，N 路共 1.25 × N
+请求/秒，默认追踪共 4 × N 帧/秒；12 路参考目标为 15 请求/秒。
+容量验收需要真实 L40S 上的持续压测，部署成功不代表已达到该吞吐。
+
 An independent demo service that pulls the robot's live WHEP/WebRTC stream and
 detects any selected subset of `fight`, `smoking`, `fall`, `weapon`, and
 `stranger` (all five remain the default). It publishes structured observations
@@ -44,11 +52,36 @@ torch 2.10.0／torchvision 0.25.0 使用 `cu126`；镜像可传入
 解码缓冲限制再解码。该压缩模式需另行验证实际跟踪质量，不改变源时间或事件证据。
 本次 4090 实测、人物合并、源画面对齐和 Demo 采用的 3 FPS 配置见
 [SAM 3.1 优化与验证记录](docs/architecture/sam31-optimization-20260913.md)。
-Deployment console 现可在 `sam_live`（SAM 连续分析）和 `hybrid`（快速跟踪 + SAM 校准）
-之间选择，按“停止 → 保存 → 重新启动”切换；两种方法使用独立模型会话和共用人物／事件接口。
-部署准备、边界和后续 A/B 验证见
-[可切换的人物识别路线](docs/architecture/perception-methods-20260915.md)。
-本轮仅完成本地验证，GPU 保持停止，尚未验证新路线的真实速度与准确率。
+Deployment console 统一使用 `sam_live`（SAM 连续分析），已移除 Hybrid 产品入口。
+这条路线首帧即可启动，先输出当前人物轮廓，再保留原生三次检测确认；
+人物描边不等待事件模型，迟到事件可以更新同一人物的描边颜色与报警提示。
+完整数据流、现有瓶颈与两秒以内的显示目标见
+[SAM 连续分析流程与延迟方案](docs/architecture/sam-live-latency-20260916.md)。
+后续优化按[三层架构与并行优化执行计划v4](docs/architecture/parallel-latency-design-20260916.md)推进：
+显示优先流畅，在线事件识别争取两秒以内，人物与evidence整理可在run结束后后台完成。
+首版已接入SAM三阶段流水、VLM跨批窗口和受控并发、Face独立推理与顺序提交、
+私有源／事实记录及run后人物整理，详见[9月17日实施记录](docs/architecture/parallel-latency-implementation-20260917.md)。
+9月17日联测失败：显示约12.9 FPS且零描边，VLM成功观察约0.64次／秒，并发生吸烟误报。
+本地显示修复版已于9月17日部署并重新启用：修复旧状态响应误停新会话、请求阻塞与SAM采样时钟，采用较新的真实SAM轮廓配合短距离运动跟随；VLM时间窗修正尚未进入此镜像。
+根因、证据范围与下一步见[本次故障诊断](docs/architecture/parallel-failure-diagnosis-20260917.md)。
+原run近景回放已有锚点后15/16次完整描边；真实Chrome合成运动与实测SAM时间轨迹回放约19.98 FPS、回调到画面延迟P95约1.73秒。远景小人物仍有误跟随，真实摄像头并发联测尚待完成。详细证据及边界见
+[轮廓跟随修复记录](docs/architecture/contour-following-repair-20260917.md)；吸烟误报按用户要求暂缓处理。
+新路线尚无真实 GPU 的两秒达标结论；旧连续接口的历史实测不代表 `sam_live` 的速度。
+已复核的[新计时版本实测](docs/architecture/sam-live-instrumented-diagnosis-20260916.md)显示
+SAM 平均 1.70 FPS、人脸 1.30 FPS、VLM 0.33 次／秒；不同源描边画面仅 0.55 FPS。
+当前阶段底线为 SAM、VLM、InsightFace 各自实际分析
+至少 1 FPS，带完整描边的实际显示至少 15 个不同源帧／秒；三个分析分支各 3 FPS 仍是优化方向。
+这些平均值不保证逐秒达标，不能靠丢关键帧或重复显示达标；本次修复也不代表VLM／Face与真实摄像头并发已经达标。
+SAM连续路线现以私有spool保留已接纳样本，准备、顺序append和提交可以重叠；
+“最多四帧”是单批上限，不再表示忙时覆盖／丢弃旧帧的待发队列。
+容量不足明确暂停接纳或报告失败／待恢复，不能靠丢帧维持正常状态。
+默认兼容显示仍受已完成SAM源帧限制；本地摄像头新增独立真实帧FIFO和轮廓运动传播实验，
+该路径通过`LOCAL_CAMERA_DISPLAY_ENABLED=true`开启，通用默认仍关闭，当前本地部署已开启近景修复版；SAM使用已实测的1.1 FPS临时采样档。
+GVC2上传等待匹配源ACK，
+已选分析帧不被新帧覆盖；未确认任务、容量暂停和无轮廓帧分别记录。
+显示层轮廓估计不写回真实分析与事件证据，真实15 FPS与轮廓质量仍待验收。
+停止后先排空SAM、VLM、Face在线任务，再允许下一run；旧run的人物／证据后台整理可继续。
+私有记录提供恢复材料，但完整后台整理在进程重启后自动续跑尚未贯通。
 [持续事件架构与运行指南](docs/architecture/entity-event-engine.md) 包含本地 active 配置、
 容器启动、录制视频验证、请求预算和具体边界。没有权重时可明确使用 `--recorded-tracks`
 验证上层链路，报告会标识这不验证 SAM。
@@ -56,7 +89,9 @@ Deployment console 现可在 `sam_live`（SAM 连续分析）和 `hybrid`（快�
 ## Harness behavior
 
 本节描述 `disabled` 的原有逐帧流程。`active` 停止旧逐帧安全请求，
-使用最多四张、默认 720 最长边的时序输入与单个后台在途请求，默认总超时 15 秒；
+使用最多四张、默认720最长边的时序输入，默认请求超时15秒。
+`sam31_stream`首版按源时间跨批供给窗口，默认目标1.25个不同终点／秒、最多4个独立客户端在途，
+乱序完成后有界顺序提交；其他active后端仍为单请求。重叠上下文不重复投票，保留原双证据确认；
 事件状态由持续引擎驱动。空事件列表、遮挡与模型失败都不会显示全部安全。
 
 The service performs one external model request for whichever visual safety
@@ -237,11 +272,14 @@ docker compose -f compose.yaml -f compose.face-gpu.yaml -f compose.gpu.yaml \
 
 The two containers share the device rather than receiving exclusive GPUs.
 Benchmark face-only and face-plus-rich loads on the customer host before
-acceptance. `FACE_LIVE_SCHEDULER=auto` keeps CPU InsightFace single-flight, but
-uses full sampling for DirectML or CUDA: every admitted mixed-detector request
-runs its own face branch while the remote safety branches retain their
-configured concurrency. Operators can force `full` for an experiment or
-`single_flight` as a bounded-backlog fallback.
+acceptance. The local face path now uses a durable ordered task pool with
+independent model instances (default two, two inference threads each).
+`FACE_INFERENCE_INSTANCES` and `FACE_INFERENCE_THREADS` control this experiment;
+identity updates remain ordered. `FACE_LIVE_SCHEDULER` retains its legacy meaning
+for integrations without the ordered-pool interface: `auto` selects CPU
+single-flight and accelerated full sampling. It does not override the new pool.
+Two instances have not yet demonstrated sufficient capacity for the configured
+2.5 FPS input; see the implementation record before increasing concurrency.
 
 To benchmark the real HTTP worker with a local video, expose a separate test
 instance on loopback in one terminal:
@@ -497,10 +535,11 @@ the player opens the exact 2.5 FPS evidence stream for debugging and audit.
 Leave the network URL blank to use `HARNESS_STREAM_URL`, or enter a different
 RTSP/RTMP/WHEP URL for that run.
 
-Event and stranger analysis run concurrently on the same admitted sample when
-the face worker is available. In CPU single-flight mode, samples arriving while
-face inference is busy still receive event analysis, with no stranger judgment
-for that sample. The live classification cards retain each feature's latest
+Event and stranger analysis run independently when the face worker is available.
+The current local face pool retains admitted tasks and commits identity results
+in source order; capacity failure is explicit. Legacy integrations using CPU
+single-flight may still omit the face branch on a busy sample; this is not the
+new continuous route's scheduling policy. The live classification cards retain each feature's latest
 valid result; the per-frame log marks incomplete coverage as `PARTIAL` and lists
 the features not analyzed. Only complete negative coverage is logged as `CLEAR`.
 
@@ -677,8 +716,8 @@ enabled for that session).
 | `GET /v1/results/events` | Server-Sent Events stream of analysis JSON with bounded in-memory replay. |
 | `GET /v1/results/<feature>/latest` | Independent latest result for one of the five feature names. |
 | `GET /v1/results/<feature>/events` | Independent SSE result stream for one feature. |
-| `GET /v1/video/annotated/latest.jpg` | Latest full-cadence delayed frame with exact, interpolated, or briefly held bbox. |
-| `GET /v1/video/annotated/stream.mjpeg` | Continuous delayed annotated MJPEG, 15 FPS by default. This is the display output. |
+| `GET /v1/video/annotated/latest.jpg` | Latest annotated source frame. Legacy delivery can interpolate or briefly hold bboxes; active SAM delivery uses completed source frames and their matching contours. |
+| `GET /v1/video/annotated/stream.mjpeg` | Annotated MJPEG with a default 15 FPS scheduling ceiling. Distinct-source display FPS depends on available frames; active SAM completion can be much slower. |
 | `GET /v1/video/latest.jpg` | Latest exact analyzed frame with burned-in verdict/bbox. |
 | `GET /v1/video/stream.mjpeg` | Annotated MJPEG at result cadence: one exact analyzed frame per JSON result. |
 | `GET /v1/video/live/latest.jpg` | Latest unannotated source-preview frame. |
@@ -915,9 +954,12 @@ Set a positive side limit (for example, `1280`) to reduce display bandwidth;
 smaller sources are never enlarged. Browser-camera output preserves the uploaded
 frame dimensions, which remain bounded by the browser capture settings.
 Display JPEGs and annotation re-encoding use quality 90. Matching resolution
-does not make JPEG output lossless or match the source frame rate: display
-cadence remains 15 FPS, and higher resolutions cost more bandwidth, encoding
-time, and buffer memory. Event archive clips retain their separate `events`
+does not make JPEG output lossless or match the source frame rate: the default
+display scheduling ceiling is 15 FPS, not a measured distinct-source frame rate.
+The default compatible SAM display is limited by completed source frames;
+the optional local-camera display experiment has its own real-frame clock.
+Higher resolutions
+cost more bandwidth, encoding time, and buffer memory. Event archive clips retain their separate `events`
 resolution limit.
 
 `config.yaml` controls sampling, model selection, the legacy single-event
@@ -950,7 +992,13 @@ stream variable takes precedence over the legacy RTSP variable:
 | `FACE_MODEL_ROOT` | Root containing operator-supplied face-analysis files. |
 | `FACE_GALLERY_PATH` | Persistent known-person gallery JSON path. |
 | `FACE_PROVIDER` | InsightFace ONNX provider: CPU, DirectML, or CUDA. |
-| `FACE_LIVE_SCHEDULER` | `auto` selects CPU single-flight and accelerated full sampling; `full`/`single_flight` override it. |
+| `FACE_LIVE_SCHEDULER` | Legacy scheduler for integrations without the ordered face pool; `auto` selects CPU single-flight and accelerated full sampling. |
+| `FACE_INFERENCE_INSTANCES` | Independent local face models; default 2, allowed 1–4. Benchmark CPU/GPU contention before raising. |
+| `FACE_INFERENCE_THREADS` | Per-instance inference threads; default 2, allowed 1–16. |
+| `SCENE_MAX_IN_FLIGHT` | Continuous temporal VLM client slots; default 4, allowed 1–4. |
+| `SCENE_OBSERVATION_FPS` | Continuous VLM distinct-source endpoint target; default 1.25, maximum 3. Requires sufficient real SAM observations. |
+| `LOCAL_CAMERA_DISPLAY_ENABLED` | Opt-in local-camera FIFO and motion-contour experiment; default false. |
+| `GOODVISION_SAM_SPOOL_DIRECTORY` | Private durable SAM task directory; default `.goodvision/sam-spool`. |
 | `RICH_LABEL_ENABLED` | Enable the optional rich-label worker path. |
 | `RICH_LABEL_ENDPOINT` | Rich-label worker inference URL. |
 
@@ -1083,7 +1131,13 @@ person trajectory through side views and ordinary mismatches; one contradictory
 frame cannot replace it. Source-time motion and one-to-one associations bridge
 brief gaps up to three seconds. Predicted boxes are not new evidence. Ambiguous
 crossings, prolonged absence and sustained identity conflicts require reconfirmation.
-No stranger photos or persistent stranger embeddings are created.
+No stranger gallery entry is created automatically. The private ordered-task
+store retains source images until successful identity commit (failed tasks keep
+them), plus raw embeddings and online observation facts for later review.
+These records live under the gallery directory's `private-face` folder, must
+remain private, and are not included in public results or timing logs. Storage
+quotas and the incomplete process-restart recovery boundary are documented in
+the [implementation record](docs/architecture/parallel-latency-implementation-20260917.md).
 
 In the face-aligned display, known people have green face boxes and strangers
 have red identity boxes. An active behavior changes only its participants' face
