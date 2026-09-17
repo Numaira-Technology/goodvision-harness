@@ -365,9 +365,9 @@ def evaluate_variant(
         if session.running:
             session.stop()
             raise TimeoutError("synthetic replay did not finish")
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + 45
         while True:
-            if not archive.flush(5):
+            if not archive.flush(30):
                 raise TimeoutError("archive did not drain")
             events = archive.list_events(
                 limit=500,

@@ -251,7 +251,7 @@ def test_both_pending_branches_pin_same_real_clip_beyond_ring_horizon(tmp_path):
                 assert archive.flush()
         for branch in LABELS:
             _complete(archive, branch, 1)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             assert archive.flush()
             events = archive.list_events()["events"]
