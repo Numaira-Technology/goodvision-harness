@@ -1256,7 +1256,7 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert "qwen3.5-plus" not in dashboard.text
         assert "Persistent deployment defaults" in dashboard.text
         assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
-        assert "Continuous delayed annotation" in dashboard.text
+        assert "实时画面与 人员追踪模块 描边" in dashboard.text
         assert "Math.max(displayFps,analysisFps)" in dashboard.text
         paths = {route.path for route in app.routes}
         assert "/v1/results/events" in paths
@@ -1479,7 +1479,7 @@ def test_readiness_requires_video_and_successful_analysis() -> None:
     class _RunningSession:
         running = True
 
-        def stop(self) -> None:
+        def stop(self, *, drain: bool = False) -> None:
             self.running = False
 
         def join(self, timeout: float | None = None) -> None:

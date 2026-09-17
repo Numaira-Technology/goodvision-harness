@@ -20,6 +20,7 @@ from goodvision_harness.aiclub import (
     AIClubError,
     AIClubSettings,
 )
+from goodvision_harness.camera_display import CameraDisplayMetadata
 from goodvision_harness.contracts import (
     PUBLIC_MODEL_NAME,
     AnalysisResult,
@@ -30,7 +31,11 @@ from goodvision_harness.contracts import (
 )
 from goodvision_harness.delivery import WebhookDelivery
 from goodvision_harness.privacy import (
+    PUBLIC_ANALYSIS_ERROR,
+    PUBLIC_INSPECTION_ERROR,
+    PUBLIC_TRACKING_ERROR,
     contains_private_implementation_detail,
+    public_error_message,
     public_safe_value,
     redact_public_text,
 )
@@ -57,6 +62,7 @@ PRIVATE_MARKERS = (
     "nvidia",
     "opencv",
     "huggingface",
+    "sam3", "sam_live", "segment anything", "reka", "ultralytics", "vllm",
 )
 PRIVATE_TEXT = (
     "AIClub https://aiclub.zimaocloud.com qwen3.5-plus "
@@ -64,7 +70,20 @@ PRIVATE_TEXT = (
     "InsightFace buffalo_l onnxruntime CPUExecutionProvider DmlExecutionProvider"
     " PaddleX PaddleRuntimeError PP-YOLOE_plus-L PP-LCNet_x1_0_pedestrian_attribute"
     " PicoDet-S NVIDIA OpenCV https://huggingface.co/example/model"
+    " SAM3.1 sam_live Segment Anything 3.1 Reka Ultralytics vLLM"
 )
+
+
+def test_branch_failure_messages_are_fixed_allowlisted_text_not_exception_echoes():
+    for message in (PUBLIC_TRACKING_ERROR, PUBLIC_INSPECTION_ERROR):
+        assert public_error_message(message) == message
+        assert public_safe_value({"last_error": message}) == {"last_error": message}
+    private = "https://private.example/path?token=secret raw RemoteProtocolError"
+    assert public_error_message(RuntimeError(private)) == PUBLIC_ANALYSIS_ERROR
+    assert public_error_message(private) == PUBLIC_ANALYSIS_ERROR
+    assert public_error_message(
+        PUBLIC_TRACKING_ERROR + private,
+    ) == PUBLIC_ANALYSIS_ERROR
 
 
 def _assert_public(value: object) -> None:
@@ -208,6 +227,10 @@ def test_provider_error_body_and_network_exception_are_not_echoed(
     "OpenAI", "Anthropic", "DeepSeek", "HuggingFace", "ModelScope", "ONNXRuntimeError",
     "https://paddle-model-ecology.bj.bcebos.com/model.tar",
     "https://huggingface.co/team/model/file", "飞桨", "通义千问", "英伟达",
+    "SAM", "SAM 3.1", "sam3.1", "sam31_stream", "sam_live", "sam_scene",
+    "SamRuntimeError", "Segment Anything 3.1", "segment_anything",
+    "facebook/sam3.1", "facebookresearch/sam3", "Parasail", "Novita", "Chutes",
+    "https://github.com/facebookresearch/sam3", "Reka", "vLLM", "Ultralytics",
 ])
 def test_all_known_runtime_markers_are_removed(marker: str) -> None:
     assert contains_private_implementation_detail(marker)
@@ -362,6 +385,10 @@ def test_face_gallery_business_identifiers_round_trip_through_http() -> None:
     # construction deliberately avoids model setup, environment, and storage.
     runtime = object.__new__(HarnessRuntime)
     runtime._state_lock = threading.RLock()
+    runtime._identity_control_lock = threading.RLock()
+    runtime._run_postprocess = {}
+    runtime._camera_display_metadata = CameraDisplayMetadata()
+    runtime._scene = None
     runtime._session = None
     runtime._ensure_face_runtime = lambda: face
     app = create_app()
@@ -401,7 +428,7 @@ def test_public_result_bus_keeps_distinct_source_identifiers() -> None:
         _assert_public(record.payload["description"])
 
 
-DOMAIN_NAMES = ("Claude", "Gemini", "Google", "Amazon", "Timm", "Azure")
+DOMAIN_NAMES = ("Claude", "Gemini", "Google", "Amazon", "Timm", "Azure", "Sam")
 
 
 @pytest.fixture(autouse=True)
@@ -549,3 +576,54 @@ def test_explicit_implementation_metadata_is_strict_but_business_values_are_kept
     assert not contains_private_implementation_detail(projected[field])
     assert source[field] == metadata
     assert public_safe_value({field: "Claude"}) == {field: "analysis engine"}
+
+
+@pytest.mark.parametrize("text", [
+    "Samantha", "sample_fps", "same frame", "samples", "Sam carries a bag.",
+])
+def test_tracking_redaction_preserves_unrelated_words(text):
+    assert redact_public_text(text) == text
+
+
+def test_tracking_metadata_has_neutral_aliases_and_keeps_correlation_ids():
+    source = {
+        "processing_method": "sam_live",
+        "backend": "sam3.1_video",
+        "native_sam_video_tracking": True,
+        "model": "SAM 3.1",
+        "person_id": "sam-person-1",
+        "epoch": "sam-run-1",
+        "name": "Sam",
+    }
+    result = public_safe_value(source)
+    assert result == {
+        "processing_method": "person_tracking",
+        "backend": "person_tracking_video",
+        "native_person_tracking": True,
+        "model": "人员追踪模块",
+        "person_id": "sam-person-1",
+        "epoch": "sam-run-1",
+        "name": "Sam",
+    }
+    assert public_safe_value(result) == result
+    assert source["processing_method"] == "sam_live"
+
+
+def test_camera_display_http_and_socket_metadata_are_projected_without_mutation():
+    metadata = CameraDisplayMetadata()
+    metadata.reset("sam-session-1")
+    metadata.generation = 1
+    metadata.identities = [{
+        "person_id": "sam-person-1", "epoch": "sam-epoch-1",
+        "name": PRIVATE_TEXT,
+    }, {"person_id": "sam-person-2", "name": "Sam"}]
+    payloads = (
+        metadata.snapshot(), metadata.delta(None, stream_session_id="sam-session-1"),
+    )
+    for payload in payloads:
+        assert payload["stream_session_id"] == "sam-session-1"
+        assert payload["identities"][0]["person_id"] == "sam-person-1"
+        assert payload["identities"][0]["epoch"] == "sam-epoch-1"
+        _assert_public(payload["identities"][0]["name"])
+        assert payload["identities"][1]["name"] == "Sam"
+    assert metadata.identities[0]["name"] == PRIVATE_TEXT

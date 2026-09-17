@@ -50,6 +50,7 @@ class DisplaySettings:
     max_image_side: int | None = None
     jpeg_quality: int = 90
     delay_seconds: float = 2.5
+    sam_live_delay_seconds: float = 0.0
     bbox_max_gap_seconds: float = 0.8
 
 
@@ -115,6 +116,8 @@ class FaceSettings:
     allow_model_download: bool = False
     provider: str = "CPUExecutionProvider"
     live_scheduler: str = "auto"
+    inference_instances: int = 2
+    inference_threads: int = 2
     det_size: int = 640
     threshold: float = 0.4
     min_face_size: int = 20
@@ -131,7 +134,10 @@ class RuntimeSettings:
     scene_mode: str = "disabled"
     scene_timeout_seconds: float = 15.0
     scene_max_image_side: int = 720
+    scene_jpeg_quality: int = 90
     scene_max_tokens: int = 1600
+    scene_max_in_flight: int = 4
+    scene_observation_fps: float = 1.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +290,13 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         delay_seconds=_non_negative_float(
             display_section.get("delay_seconds", 2.5),
             "display.delay_seconds",
+        ),
+        sam_live_delay_seconds=_bounded_float(
+            display_section.get(
+                "tracking_delay_seconds",
+                display_section.get("sam_live_delay_seconds", 0.0),
+            ),
+            "display.tracking_delay_seconds", minimum=0, maximum=30,
         ),
         bbox_max_gap_seconds=_positive_float(
             display_section.get("bbox_max_gap_seconds", 0.8),
@@ -528,6 +541,16 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         config_directory=config_path.parent,
     )
     face = FaceSettings(
+        inference_instances=_positive_int(
+            int(os.environ.get("FACE_INFERENCE_INSTANCES") or face_section.get(
+                "inference_instances", 2,
+            )), "face.inference_instances",
+        ),
+        inference_threads=_positive_int(
+            int(os.environ.get("FACE_INFERENCE_THREADS") or face_section.get(
+                "inference_threads", 2,
+            )), "face.inference_threads",
+        ),
         model_name=(
             _face_profile_model(face_section["model_profile"])
             if "model_profile" in face_section
@@ -565,7 +588,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "face.enrollment_min_face_size",
         ),
         sample_fps=_positive_float(
-            face_section.get("sample_fps", 2.5), "face.sample_fps"
+            os.environ.get("FACE_SAMPLE_FPS") or face_section.get("sample_fps", 2.5),
+            "face.sample_fps",
         ),
         max_image_side=_positive_int(
             face_section.get("max_image_side", 1280), "face.max_image_side"
@@ -606,6 +630,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "SCENE_ENGINE_ENABLED/runtime.scene_enabled was removed; "
             "use SCENE_ENGINE_MODE=active or runtime.scene_mode: active"
         )
+    if face.inference_instances > 4 or face.inference_threads > 16:
+        raise ValueError("face inference capacity exceeds supported limits")
     scene_timeout = _positive_float(
         os.environ.get("SCENE_TIMEOUT_SECONDS")
         or runtime_section.get("scene_timeout_seconds", 15),
@@ -620,6 +646,16 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         ),
         scene_mode=scene_mode,
         scene_timeout_seconds=scene_timeout,
+        scene_max_in_flight=_positive_int(
+            int(os.environ.get("SCENE_MAX_IN_FLIGHT") or runtime_section.get(
+                "scene_max_in_flight", 4,
+            )), "runtime.scene_max_in_flight",
+        ),
+        scene_observation_fps=_positive_float(
+            os.environ.get("SCENE_OBSERVATION_FPS") or runtime_section.get(
+                "scene_observation_fps", 1.25,
+            ), "runtime.scene_observation_fps",
+        ),
         scene_max_image_side=_positive_int(
             int(os.environ["SCENE_MAX_IMAGE_SIDE"])
             if os.environ.get("SCENE_MAX_IMAGE_SIDE")
@@ -632,9 +668,17 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             else runtime_section.get("scene_max_tokens", 1600),
             "runtime.scene_max_tokens",
         ),
+        scene_jpeg_quality=_bounded_int(
+            int(os.environ["SCENE_JPEG_QUALITY"])
+            if os.environ.get("SCENE_JPEG_QUALITY")
+            else runtime_section.get("scene_jpeg_quality", 90),
+            "runtime.scene_jpeg_quality", minimum=1, maximum=100,
+        ),
     )
     if runtime.scene_max_image_side > 2048 or runtime.scene_max_tokens > 16384:
         raise ValueError("scene image/output budget exceeds supported limits")
+    if runtime.scene_max_in_flight > 4 or runtime.scene_observation_fps > 3:
+        raise ValueError("scene concurrency/cadence exceeds validated tuning range")
     server = ServerSettings(
         host=str(server_section.get("host", "127.0.0.1")),
         port=_positive_int(server_section.get("port", 7900), "server.port"),
