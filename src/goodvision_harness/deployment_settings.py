@@ -17,6 +17,7 @@ _API_KEY_FILENAMES = {
     "aiclub": "model-api-key",
     "openrouter": "model-api-key-2",
     "dashscope": "model-api-key-3",
+    "local": "local-model-api-key",
 }
 
 
@@ -30,13 +31,21 @@ class DeploymentSettings:
     buffer_delay_seconds: float | None = None
     camera_layout: str | None = None
     processing_method: str | None = None
+    local_inference_enabled: bool | None = None
+    local_tracking_enabled: bool | None = None
+
+
+def validate_local_gpu_enabled(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be boolean")
+    return value
 
 
 def validate_processing_method(value: object) -> str:
-    """Use stable perception plugin IDs, independently of model API routes."""
-    if not isinstance(value, str) or value not in {"sam_live", "hybrid"}:
-        raise ValueError("processing_method must be sam_live or hybrid")
-    return value
+    """SAM continuous analysis is the only supported production method."""
+    if not isinstance(value, str) or value not in {"sam_live", "person_tracking"}:
+        raise ValueError("processing_method must be person_tracking")
+    return "sam_live"
 
 
 def validate_camera_layout(value: object) -> str:
@@ -89,20 +98,37 @@ class DeploymentSettingsStore:
             raise TypeError("deployment autostart must be boolean")
         buffer_delay_seconds = (
             validate_buffer_delay_seconds(payload["buffer_delay_seconds"])
-            if "buffer_delay_seconds" in payload else None
+            if "buffer_delay_seconds" in payload
+            else None
         )
         return DeploymentSettings(
             stream_url=stream_url.strip(),
             dry_run=dry_run,
             autostart=autostart,
             buffer_delay_seconds=buffer_delay_seconds,
+            local_inference_enabled=(
+                validate_local_gpu_enabled(
+                    payload["local_inference_enabled"], "local_inference_enabled",
+                ) if "local_inference_enabled" in payload else None
+            ),
+            local_tracking_enabled=(
+                validate_local_gpu_enabled(
+                    payload["local_tracking_enabled"], "local_tracking_enabled",
+                ) if "local_tracking_enabled" in payload else None
+            ),
             camera_layout=(
                 validate_camera_layout(payload["camera_layout"])
-                if "camera_layout" in payload else None
+                if "camera_layout" in payload
+                else None
             ),
             processing_method=(
-                validate_processing_method(payload["processing_method"])
-                if "processing_method" in payload else None
+                # Migrate a previously saved choice without exposing the retired
+                # route to new writes or requiring manual settings repair.
+                "sam_live"
+                if payload.get("processing_method") == "hybrid"
+                else validate_processing_method(payload["processing_method"])
+                if "processing_method" in payload
+                else None
             ),
         )
 
@@ -123,6 +149,10 @@ class DeploymentSettingsStore:
             payload["processing_method"] = validate_processing_method(
                 settings.processing_method
             )
+        for name in ("local_inference_enabled", "local_tracking_enabled"):
+            value = getattr(settings, name)
+            if value is not None:
+                payload[name] = validate_local_gpu_enabled(value, name)
         self._atomic_write(
             self.path,
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -176,9 +206,7 @@ class DeploymentSettingsStore:
     def _atomic_write(self, destination: Path, content: str) -> None:
         with self._lock:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary = destination.with_name(
-                f".{destination.name}.{uuid4().hex}.tmp"
-            )
+            temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
             try:
                 with temporary.open("x", encoding="utf-8", newline="\n") as handle:
                     handle.write(content)

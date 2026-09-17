@@ -1,0 +1,176 @@
+# Use tools/start_local_gpu.py to detect NVIDIA devices and supply these values.
+# Apply only over compose.yaml; do not combine with other GPU/remote overlays.
+services:
+  harness:
+    # Also allows per-camera fleet services to inherit the complete base service.
+    extends:
+      file: compose.yaml
+      service: harness
+    build:
+      context: .
+      dockerfile: Dockerfile.face-gpu
+    image: goodvision-harness:demo-face-gpu-cu128
+    # The base is inherited for standalone fleet extends and merged for camera 1.
+    # Replace these lists so inheriting and merging cannot duplicate them.
+    security_opt: !override ["no-new-privileges:true"]
+    tmpfs: !override ["/tmp:size=256m"]
+    ports: !override ["${HARNESS_BIND_ADDRESS:-127.0.0.1}:${HARNESS_PORT:-8080}:8080"]
+    environment:
+      HARNESS_FLEET_CAPACITY: "${HARNESS_FLEET_CAPACITY:-1}"
+      HARNESS_FLEET_CAMERA_INDEX: "${HARNESS_FLEET_CAMERA_INDEX:-1}"
+      FACE_PROVIDER: CUDAExecutionProvider
+      LOCAL_GPU_AVAILABLE: "true"
+      LOCAL_GPU_COUNT: "${LOCAL_GPU_COUNT:?Run tools/start_local_gpu.py}"
+      LOCAL_INFERENCE_GPU_ID: "${LOCAL_INFERENCE_GPU_ID:?Run tools/start_local_gpu.py}"
+      LOCAL_TRACKING_GPU_ID: "${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"
+      LOCAL_INFERENCE_ENABLED: "${LOCAL_INFERENCE_ENABLED:-true}"
+      LOCAL_TRACKING_ENABLED: "${LOCAL_TRACKING_ENABLED:-true}"
+      LOCAL_TRACKING_FPS: "${LOCAL_TRACKING_FPS:-4}"
+      LOCAL_INFERENCE_ENDPOINT: http://local-inference:8000/v1/chat/completions
+      LOCAL_INFERENCE_MODEL: "${LOCAL_INFERENCE_MODEL:-local-vision}"
+      LOCAL_INFERENCE_MAX_TOKENS: "${LOCAL_INFERENCE_MAX_TOKENS:-1600}"
+      LOCAL_TRACKING_ENDPOINT: http://local-tracking:8092/v1/video/sessions
+      # Preserve remote settings so each console switch can restore its route.
+      RICH_LABEL_BACKEND: "${RICH_LABEL_BACKEND:-}"
+      SCENE_ENGINE_MODE: "${SCENE_ENGINE_MODE:-}"
+      SAM31_CLIENT_TIMEOUT_SECONDS: "${SAM31_CLIENT_TIMEOUT_SECONDS:-75}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"]
+              capabilities: [gpu]
+
+  local-inference:
+    image: "${LOCAL_INFERENCE_IMAGE:-vllm/vllm-openai:v0.17.1}"
+    init: true
+    restart: unless-stopped
+    command:
+      - --model
+      - /models/vision
+      - --served-model-name
+      - "${LOCAL_INFERENCE_MODEL:-local-vision}"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "1"
+      - --max-model-len
+      - "${LOCAL_INFERENCE_MAX_MODEL_LEN:-8192}"
+      - --max-num-seqs
+      - "${LOCAL_INFERENCE_MAX_NUM_SEQS:-8}"
+      - --max-num-batched-tokens
+      - "${LOCAL_INFERENCE_MAX_BATCHED_TOKENS:-4096}"
+      - --enable-chunked-prefill
+      - --gpu-memory-utilization
+      - "${LOCAL_INFERENCE_GPU_MEMORY_UTILIZATION:?Run tools/start_local_gpu.py}"
+      - "${LOCAL_INFERENCE_EXECUTION_MODE:---no-enforce-eager}"
+      # Qwen3-VL Instruct uses its own non-thinking chat template.
+      # Quantization is read from the checkpoint's FP8 configuration.
+      - --limit-mm-per-prompt
+      - '{"image":16,"video":0}'
+      - --mm-processor-kwargs
+      - '{"max_pixels":262144}'
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HOME: /tmp/huggingface
+      VLLM_CACHE_ROOT: /tmp/vllm
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - type: bind
+        source: ${LOCAL_INFERENCE_MODEL_DIRECTORY:?Set a local model directory}
+        target: /models/vision
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${LOCAL_INFERENCE_GPU_ID:?Run tools/start_local_gpu.py}"]
+              capabilities: [gpu]
+    # Worker APIs stay on the Compose network, with no host port publication.
+    shm_size: 4g
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 300s
+      retries: 10
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  local-tracking:
+    build:
+      context: ./workers/sam_scene
+    image: goodvision-sam31:experimental
+    init: true
+    restart: unless-stopped
+    environment:
+      SAM31_ENABLED: "true"
+      SAM_SCENE_IMAGE_ENABLED: "false"
+      SAM31_SESSION_ENABLED: "false"
+      SAM31_LIVE_ENABLED: "true"
+      SAM31_SESSION_H264_ENABLED: "true"
+      SAM31_CHECKPOINT_PATH: /models/sam3.1_multiplex.pt
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - type: bind
+        source: ${SAM31_CHECKPOINT_FILE:-./.models/sam3.1/sam3.1_multiplex.pt}
+        target: /models/sam3.1_multiplex.pt
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"]
+              capabilities: [gpu]
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+    shm_size: 2g
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8092/health/perception/sam_live', timeout=2)); assert r['enabled'] and r['ready'] and r['gpu_ready']"]
+      interval: 15s
+      timeout: 3s
+      start_period: 300s
+      retries: 10
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional existing Paddle worker: --with-paddle, also isolated to GPU 1/0.
+  rich-label-worker:
+    build:
+      context: .
+      dockerfile: workers/paddle_rich_label/Dockerfile.gpu
+    image: goodvision-rich-label-worker:demo-gpu-cu129
+    environment:
+      RICH_DEVICE: gpu:0
+      RICH_DETECTOR_MODEL: "${RICH_GPU_DETECTOR_MODEL:-PP-YOLOE_plus-L}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"]
+              capabilities: [gpu]

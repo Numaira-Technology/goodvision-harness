@@ -1,0 +1,382 @@
+"""Local switches route independently and preserve the original deployment."""
+
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from goodvision_harness.config import load_config
+from goodvision_harness.deployment_settings import DeploymentSettingsStore
+from goodvision_harness.local_gpu import LocalGPUDeployment
+from goodvision_harness.model_api import ModelAPISettings
+from goodvision_harness.service import HarnessRuntime, create_app
+
+
+@pytest.fixture
+def rig(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_: "")
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.setenv("LOCAL_GPU_AVAILABLE", "true")
+    monkeypatch.setenv("LOCAL_GPU_COUNT", "2")
+    for name in (
+        "LOCAL_INFERENCE_ENABLED",
+        "LOCAL_TRACKING_ENABLED",
+        "LOCAL_INFERENCE_GPU_ID",
+        "LOCAL_TRACKING_GPU_ID",
+        "LOCAL_INFERENCE_API_KEY",
+        "HARNESS_INFERENCE_PROFILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("INFERENCE_API_KEY", "cloud-secret")
+    monkeypatch.setattr(
+        "goodvision_harness.service.create_tracking_client",
+        lambda rich: SimpleNamespace(gpu_ready=lambda: False, close=lambda: None),
+    )
+    config = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
+    config = replace(
+        config,
+        aiclub=ModelAPISettings(provider="openrouter"),
+        rich_labeling=replace(
+            config.rich_labeling,
+            enabled=False,
+            tracking_enabled=False,
+            endpoint="http://remote-tracker:8092/v1/video/sessions",
+            backend="sam31_stream",
+            processing_method=None,
+        ),
+        runtime=replace(config.runtime, scene_mode="active"),
+        events=replace(config.events, directory=tmp_path / "events"),
+    )
+    store = DeploymentSettingsStore(tmp_path / "deployment.json")
+    store.save_api_key("saved-cloud-secret", provider="openrouter")
+    runtimes = []
+
+    def make():
+        runtime = HarnessRuntime(config, deployment_store=store)
+        runtimes.append(runtime)
+        return runtime
+
+    yield SimpleNamespace(make=make, config=config, store=store)
+    for runtime in runtimes:
+        runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "inference,tracking", [(False, False), (True, False), (False, True), (True, True)]
+)
+def test_independent_local_choices_and_restart(rig, inference, tracking):
+    runtime = rig.make()
+    payload = {"local_inference_enabled": inference, "local_tracking_enabled": tracking}
+    result = runtime.update_deployment_settings(payload)
+    assert result.items() >= payload.items()
+    assert result["local_gpu"]["inference_device"] == 0
+    assert result["local_gpu"]["tracking_device"] == 1
+    assert (runtime.config.model_api.provider == "local") is inference
+    assert ("127.0.0.1" in runtime.config.rich_labeling.endpoint) is tracking
+    assert runtime._aiclub_api_key == (None if inference else "saved-cloud-secret")
+    if inference:
+        assert not runtime.config.model_api.extra_headers
+        assert "provider" not in runtime.config.inference.request_parameters
+        assert "chat_template_kwargs" not in runtime.config.inference.request_parameters
+    restarted = rig.make()
+    assert restarted.config.model_api == runtime.config.model_api
+    assert restarted.config.rich_labeling == runtime.config.rich_labeling
+    assert restarted.deployment_settings()["local_tracking_enabled"] is tracking
+
+
+def test_remote_routes_and_key_restored_after_local_roundtrip(rig):
+    runtime = rig.make()
+    original = runtime.config
+    runtime.update_deployment_settings(
+        {"local_inference_enabled": True, "local_tracking_enabled": True}
+    )
+    runtime.update_deployment_settings(
+        {"local_inference_enabled": False, "local_tracking_enabled": False}
+    )
+    assert runtime.config == original
+    assert runtime._aiclub_api_key == "saved-cloud-secret"
+
+
+@pytest.mark.parametrize("bad", [None, "true", 1, [], {}])
+def test_invalid_switch_is_atomic(rig, bad):
+    runtime = rig.make()
+    runtime.update_deployment_settings({"dry_run": True})
+    before = rig.store.path.read_bytes()
+    with pytest.raises(ValueError, match="boolean"):
+        runtime.update_deployment_settings(
+            {"local_inference_enabled": bad, "dry_run": False}
+        )
+    assert rig.store.path.read_bytes() == before
+    assert runtime.dry_run
+    assert runtime.config.model_api.provider == "openrouter"
+
+
+def test_unprovisioned_nvidia_fails_without_switching_or_persisting(rig, monkeypatch):
+    monkeypatch.setenv("LOCAL_GPU_AVAILABLE", "false")
+    runtime = rig.make()
+    with TestClient(create_app(lambda: runtime)) as client:
+        reply = client.put(
+            "/v1/deployment/settings", json={"local_tracking_enabled": True}
+        )
+        assert reply.status_code == 400
+        assert "GPU" in reply.json()["detail"]
+    assert not rig.store.path.exists()
+    assert runtime.config == rig.config
+
+
+def test_switch_locked_while_running_or_draining(rig):
+    runtime = rig.make()
+    for state in ("starting", "running", "draining", "stopping"):
+        runtime._state["pipeline_state"] = state
+        with pytest.raises(RuntimeError, match="stop"):
+            runtime.update_deployment_settings({"local_inference_enabled": True})
+    runtime._state["pipeline_state"] = "idle"
+    assert not rig.store.path.exists()
+
+
+def test_local_start_needs_no_cloud_key(rig, monkeypatch):
+    runtime = rig.make()
+    runtime.update_deployment_settings({"local_inference_enabled": True})
+    runtime.config = replace(
+        runtime.config, runtime=replace(runtime.config.runtime, scene_mode="disabled")
+    )
+    runtime._scene_mode = "disabled"
+    runtime._scene_enabled = False
+    monkeypatch.setattr(
+        "goodvision_harness.pipeline.StreamingSession.start", lambda _: None
+    )
+    with TestClient(create_app(lambda: runtime)) as client:
+        reply = client.post(
+            "/v1/sessions/start", json={"features": ["smoking"], "dry_run": False}
+        )
+        assert reply.status_code == 200, reply.text
+        assert client.get("/v1/ui/info").json()["api_key_required"] is False
+
+
+def test_gpu_host_assignment(monkeypatch):
+    monkeypatch.setenv("LOCAL_GPU_AVAILABLE", "true")
+    monkeypatch.setenv("LOCAL_GPU_COUNT", "1")
+    assert LocalGPUDeployment.from_environment().tracking_device == 0
+    monkeypatch.setenv("LOCAL_GPU_COUNT", "2")
+    assert LocalGPUDeployment.from_environment().tracking_device == 1
+    monkeypatch.setenv("LOCAL_TRACKING_GPU_ID", "0")
+    with pytest.raises(ValueError, match="separated"):
+        LocalGPUDeployment.from_environment()
+
+
+def test_full_console_save_does_not_revert_a_saved_remote_method(rig):
+    runtime = rig.make()
+    runtime.update_deployment_settings({"processing_method": "sam_live"})
+    revision = runtime._rich_config_revision
+    runtime.update_deployment_settings(
+        {
+            "local_inference_enabled": False,
+            "local_tracking_enabled": False,
+            "processing_method": "sam_live",
+            "dry_run": True,
+        }
+    )
+    assert runtime.config.rich_labeling.processing_method == "sam_live"
+    assert runtime._remote_config.rich_labeling.processing_method == "sam_live"
+    assert runtime._rich_config_revision == revision
+    runtime.update_deployment_settings({"local_inference_enabled": True})
+    assert runtime.config.rich_labeling.processing_method == "sam_live"
+    assert runtime._remote_config.rich_labeling.processing_method == "sam_live"
+    assert runtime._rich_config_revision == revision
+
+
+def test_full_console_save_detaches_only_once_when_method_changes(rig, monkeypatch):
+    runtime = rig.make()
+    calls = []
+    original = runtime._replace_processing_method
+
+    def detach(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "_replace_processing_method", detach)
+    runtime.update_deployment_settings(
+        {
+            "local_inference_enabled": True,
+            "local_tracking_enabled": False,
+            "processing_method": "sam_live",
+        }
+    )
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("mode", ["stream", "camera"])
+def test_secondary_runtime_requires_local_tracking_for_all_inputs(
+    rig, monkeypatch, mode,
+):
+    monkeypatch.setenv("HARNESS_FLEET_CAMERA_INDEX", "2")
+    runtime = rig.make()
+    with pytest.raises(RuntimeError, match="人员追踪模块"):
+        if mode == "stream":
+            runtime.start_stream("rtsp://camera.example/live")
+        else:
+            runtime.start_camera(owner="test")
+
+
+def test_secondary_never_autostarts_without_primary_admission(rig, monkeypatch):
+    monkeypatch.setenv("HARNESS_FLEET_CAMERA_INDEX", "2")
+    runtime = rig.make()
+    runtime.update_deployment_settings({
+        "autostart": True, "local_tracking_enabled": True,
+    })
+    starts = []
+    monkeypatch.setattr(runtime, "start_stream", lambda url: starts.append(url))
+    monkeypatch.setattr(runtime, "configured_stream_url", lambda: "rtsp://camera/live")
+    runtime.start()
+    assert starts == []
+
+
+@pytest.mark.parametrize("peer_state", ["running", "draining", "stopping", "unknown"])
+def test_fleet_busy_peer_blocks_global_changes_through_original_api(
+    rig, monkeypatch, peer_state,
+):
+    monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "3")
+    runtime = rig.make()
+    runtime.update_deployment_settings({"local_tracking_enabled": True})
+    app = create_app(lambda: runtime)
+    app.state.fleet._peer_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, json={"pipeline_state": peer_state},
+        )),
+    )
+    before = rig.store.path.read_bytes()
+    with TestClient(app) as client:
+        for payload in (
+            {"local_tracking_enabled": False},
+            {"local_inference_enabled": True},
+            {"dry_run": not runtime.dry_run},
+            {"api_key": "replacement-test-key"},
+        ):
+            reply = client.put("/v1/deployment/settings", json=payload)
+            assert reply.status_code == 409, reply.text
+        assert client.post("/v1/deployment/routes/check").status_code == 409
+        assert client.post(
+            "/v1/deployment/routes/select", json={"route_id": "unused"},
+        ).status_code == 409
+        assert rig.store.path.read_bytes() == before
+        # Independent camera address edits do not alter the fleet mode.
+        assert client.put("/v1/deployment/settings", json={
+            "stream_url": "rtsp://camera.example/live",
+            "local_tracking_enabled": True,
+            "local_inference_enabled": False,
+        }).status_code == 200
+
+
+def test_fleet_remote_switch_after_idle_disables_extra_routes(rig, monkeypatch):
+    monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "16")
+    runtime = rig.make()
+    runtime.update_deployment_settings({"local_tracking_enabled": True})
+    app = create_app(lambda: runtime)
+    app.state.fleet._peer_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, json={"pipeline_state": "idle"},
+        )),
+    )
+    with TestClient(app) as client:
+        descriptor = client.get("/v1/fleet").json()
+        script = client.get("/assets/fleet_console.js")
+        assert script.status_code == 200
+        assert "FleetConsole" in script.text
+        assert descriptor["multi_camera_allowed"] is True
+        assert len(descriptor["cameras"]) == 16
+        assert runtime._local_inference_enabled is False
+        assert client.put("/v1/deployment/settings", json={
+            "local_tracking_enabled": False,
+        }).status_code == 200
+        descriptor = client.get("/v1/fleet").json()
+        assert descriptor["multi_camera_allowed"] is False
+        assert sum(camera["enabled"] for camera in descriptor["cameras"]) == 1
+        assert client.post(
+            descriptor["cameras"][1]["start_url"], json={},
+        ).status_code == 409
+        status = client.get(descriptor["cameras"][0]["status_url"])
+        assert isinstance(status.json()["configured_stream"], bool)
+        assert status.json()["camera_layout"] == "mono"
+
+
+@pytest.mark.parametrize("local_inference", [False, True])
+def test_fleet_start_synchronizes_real_peer_runtime_before_start(
+    rig, monkeypatch, local_inference,
+):
+    monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "2")
+    primary = rig.make()
+    primary.update_deployment_settings({
+        "local_tracking_enabled": True,
+        "local_inference_enabled": local_inference,
+    })
+    app = create_app(lambda: primary)
+    monkeypatch.setenv("HARNESS_FLEET_CAMERA_INDEX", "2")
+    peer_store = DeploymentSettingsStore(rig.store.path.with_name("peer.json"))
+    peer = HarnessRuntime(rig.config, deployment_store=peer_store)
+    peer.update_deployment_settings({"stream_url": "rtsp://peer.example/live"})
+    peer_app = create_app(lambda: peer)
+    peer_app.state.runtime = peer
+    starts = []
+
+    def start(stream_url, **kwargs):
+        starts.append((
+            peer._local_tracking_enabled, peer._local_inference_enabled,
+            peer._aiclub_api_key, peer.configured_stream_url(),
+        ))
+        return {"pipeline_state": "starting"}
+
+    monkeypatch.setattr(peer, "start_stream", start)
+    app.state.fleet._peer_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=peer_app),
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.post("/v1/fleet/cameras/camera02/start", json={})
+            assert response.status_code == 200, response.text
+            assert starts == [(
+                True, local_inference,
+                None if local_inference else "saved-cloud-secret",
+                "rtsp://peer.example/live",
+            )]
+            assert "secret" not in response.text
+            assert peer_store.load_api_key(provider="local") is None
+    finally:
+        peer.stop()
+
+
+def test_slow_start_is_visible_cancellable_and_blocks_configuration(rig, monkeypatch):
+    runtime = rig.make()
+    entered, release = Event(), Event()
+
+    def wait_for_readiness():
+        entered.set()
+        assert release.wait(10)
+        return None
+
+    monkeypatch.setattr(runtime, "_require_processing_ready", wait_for_readiness)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(runtime.start_camera, owner="camera-tab")
+        try:
+            assert entered.wait(5)
+            status = runtime.status()
+            assert status["session_start_pending"] is True
+            assert status["pipeline_state"] == "starting"
+            with pytest.raises(RuntimeError, match="active session"):
+                runtime.update_deployment_settings({"local_tracking_enabled": True})
+            with pytest.raises(RuntimeError, match="already starting"):
+                runtime.start_camera(owner="another-tab")
+            assert runtime.stop_session(camera_owner="unrelated-tab") is False
+            assert runtime.stop_session(camera_owner="camera-tab") is True
+            assert runtime.status()["pipeline_state"] == "stopping"
+        finally:
+            release.set()
+        with pytest.raises(RuntimeError, match="cancelled"):
+            future.result(timeout=5)
+    assert runtime.status()["session_start_pending"] is False
+    assert runtime._session is None

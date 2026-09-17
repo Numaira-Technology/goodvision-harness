@@ -1,6 +1,7 @@
 .env
 .venv/
 .venv-directml/
+.venv-local-gpu/
 .worktrees/
 .audit*/
 __pycache__/

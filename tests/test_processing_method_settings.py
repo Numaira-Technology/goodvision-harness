@@ -25,7 +25,7 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PERCEPTION_METHOD", raising=False)
 
 
-@pytest.mark.parametrize("method", ["sam_live", "hybrid"])
+@pytest.mark.parametrize("method", ["sam_live"])
 def test_processing_choice_round_trip_keeps_other_deployment_fields_and_api_route(
     tmp_path: Path,
     method: str,
@@ -47,14 +47,16 @@ def test_processing_choice_round_trip_keeps_other_deployment_fields_and_api_rout
 
 
 @pytest.mark.parametrize(
-    "invalid", [None, "", "SAM_LIVE", "sam", "openrouter", True, 1, []]
+    "invalid", [None, "", "SAM_LIVE", "sam", "hybrid", "openrouter", True, 1, []]
 )
 def test_unknown_processing_choice_is_rejected(invalid: object) -> None:
     with pytest.raises(ValueError, match="processing_method"):
         validate_processing_method(invalid)
 
 
-@pytest.mark.parametrize("invalid", ["sam31_stream", "A", "openrouter", True, 1, []])
+@pytest.mark.parametrize(
+    "invalid", ["hybrid", "sam31_stream", "A", "openrouter", True, 1, []]
+)
 def test_invalid_processing_choice_does_not_replace_saved_settings(
     tmp_path: Path,
     invalid: object,
@@ -93,7 +95,7 @@ def test_missing_processing_choice_preserves_legacy_config() -> None:
     assert config.rich_labeling.processing_method is None
 
 
-@pytest.mark.parametrize("method", ["sam_live", "hybrid"])
+@pytest.mark.parametrize("method", ["sam_live"])
 def test_processing_environment_override_does_not_change_model_route(
     monkeypatch: pytest.MonkeyPatch,
     method: str,
@@ -112,13 +114,70 @@ def test_yaml_processing_choice_and_empty_environment_use_same_persistable_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-    payload.setdefault("rich_labeling", {})["processing_method"] = "hybrid"
+    payload.setdefault("rich_labeling", {})["processing_method"] = "sam_live"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
     monkeypatch.setenv("PERCEPTION_METHOD", " ")
-    assert load_config(config_path).rich_labeling.processing_method == "hybrid"
+    assert load_config(config_path).rich_labeling.processing_method == "sam_live"
     monkeypatch.setenv("PERCEPTION_METHOD", "sam_live")
     assert load_config(config_path).rich_labeling.processing_method == "sam_live"
     monkeypatch.setenv("PERCEPTION_METHOD", "openrouter")
     with pytest.raises(ValueError, match="processing_method"):
         load_config(config_path)
+
+
+def test_retired_persisted_method_migrates_to_sam_without_losing_other_settings(
+    tmp_path,
+):
+    store = DeploymentSettingsStore(tmp_path / "settings.json")
+    store.path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "stream_url": "rtsp://camera.test/live",
+                "dry_run": False,
+                "autostart": True,
+                "buffer_delay_seconds": 0.5,
+                "camera_layout": "stereo",
+                "processing_method": "hybrid",
+            }
+        ),
+        encoding="utf-8",
+    )
+    restored = store.load()
+    assert restored == DeploymentSettings(
+        "rtsp://camera.test/live",
+        False,
+        True,
+        0.5,
+        "stereo",
+        "sam_live",
+    )
+    store.save(restored)
+    assert json.loads(store.path.read_text())["processing_method"] == "sam_live"
+
+
+@pytest.mark.parametrize("origin", ["environment", "yaml"])
+def test_retired_config_method_is_rejected(tmp_path, monkeypatch, origin):
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    if origin == "environment":
+        monkeypatch.setenv("PERCEPTION_METHOD", "hybrid")
+    else:
+        payload.setdefault("rich_labeling", {})["processing_method"] = "hybrid"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="processing_method"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("key", ["tracking_delay_seconds", "sam_live_delay_seconds"])
+def test_public_tracking_delay_setting_keeps_legacy_config_compatible(tmp_path, key):
+    payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+    payload["display"].pop("sam_live_delay_seconds", None)
+    payload["display"][key] = 0.75
+    payload.setdefault("rich_labeling", {})["processing_method"] = "person_tracking"
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    config = load_config(path)
+    assert config.display.sam_live_delay_seconds == 0.75
+    assert config.rich_labeling.processing_method == "sam_live"

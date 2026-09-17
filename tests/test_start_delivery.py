@@ -338,7 +338,7 @@ def test_present_but_broken_cuda_does_not_select_cpu(
         monkeypatch,
         [completed(), completed(), completed(), gpu_response(False, reason)],
     )
-    with pytest.raises(launcher.DeliveryError, match="CUDA is present"):
+    with pytest.raises(launcher.DeliveryError, match="GPU is present"):
         launcher.make_plan(delivery)
 
 

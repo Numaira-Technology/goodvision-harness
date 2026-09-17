@@ -46,12 +46,11 @@ class WorkerBundleTests(unittest.TestCase):
 
 
 class WorkerReadinessTests(unittest.TestCase):
-    def test_waits_for_both_routes_including_hybrid_enablement(self):
+    def test_waits_for_sam_live_enablement_and_gpu_readiness(self):
         opener = Mock()
         opener.open.side_effect = [
-            io.BytesIO(json.dumps({"enabled": True, "ready": True, "gpu_ready": True}).encode()),
             io.BytesIO(json.dumps({"enabled": False, "ready": True, "gpu_ready": True}).encode()),
-            io.BytesIO(json.dumps({"enabled": True, "ready": True, "gpu_ready": True}).encode()),
+            io.BytesIO(json.dumps({"enabled": True, "ready": True, "gpu_ready": False}).encode()),
             io.BytesIO(json.dumps({"enabled": True, "ready": True, "gpu_ready": True}).encode()),
         ]
         process = Mock()
@@ -61,7 +60,7 @@ class WorkerReadinessTests(unittest.TestCase):
         self.assertEqual(
             [call.args[0] for call in opener.open.call_args_list],
             ["http://127.0.0.1:8092/health/perception/" + route
-             for route in ("sam_live", "hybrid", "sam_live", "hybrid")],
+             for route in ("sam_live", "sam_live", "sam_live")],
         )
 
 

@@ -32,17 +32,14 @@ chmod 600 /root/.ssh/authorized_keys
 """
 WORKER_FILES = (
     "app.py", "sam31.py", "continuous.py", "streaming_state.py",
-    "perception_routes.py", "sam_live.py", "hybrid.py", "hybrid_tracker.py",
+    "perception_routes.py", "sam_live.py", "multistream.py",
     "h264_transport.py", "requirements.txt",
 )
-WORKER_ROUTES = ("sam_live", "hybrid")
-HYBRID_CHECKPOINT = f"{REMOTE}/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth"
+WORKER_ROUTES = ("sam_live",)
 WORKER_ENV = {
     "SAM31_ENABLED": "true",
     "SAM31_SESSION_ENABLED": "false",
     "SAM31_LIVE_ENABLED": "true",
-    "HYBRID_ENABLED": "true",
-    "HYBRID_CHECKPOINT_PATH": HYBRID_CHECKPOINT,
     "SAM_SCENE_IMAGE_ENABLED": "false",
     "SAM31_SESSION_H264_ENABLED": "true",
     "SAM31_SESSION_HOTSTART_DELAY": "5",
@@ -70,7 +67,7 @@ for line in Path('requirements.txt').read_text().splitlines():
 source = json.loads(metadata.distribution('sam3').read_text('direct_url.json') or '{{}}')
 assert source.get('vcs_info', {{}}).get('commit_id') == {SAM_COMMIT!r}, 'SAM source mismatch'
 from sam3.model_builder import build_sam3_multiplex_video_predictor
-import app, sam_live, hybrid
+import app, sam_live
 """
 
 # Execute inside the rented container, without nesting another Docker daemon.
@@ -190,11 +187,14 @@ def offer_was_unavailable(payload) -> bool:
     ) is not None
 
 
-def create_from_offers(vast, offers: list[dict], *, disk_gb: int, label: str) -> int:
-    """Try at most three machines, advancing only after a definite refusal."""
-    seen_machines = set()
+def create_from_offers(
+    vast, offers: list[dict], *, disk_gb: int, label: str,
+    attempted_machines: set[str] | None = None,
+) -> int:
+    """Share a three-machine budget across creation and startup failures."""
+    seen_machines = attempted_machines if attempted_machines is not None else set()
     seen_offers = set()
-    attempts = 0
+    attempts = len(seen_machines)
     for offer in sorted(offers, key=lambda item: float(item["dph_total"])):
         offer_id = int(offer["id"])
         # Without a machine identity we cannot prove that another unknown offer
@@ -208,7 +208,8 @@ def create_from_offers(vast, offers: list[dict], *, disk_gb: int, label: str) ->
         seen_machines.add(machine)
         attempts += 1
         print(
-            f"Selected offer: {offer_id}; estimated total hourly price: "
+            f"Selected offer: {offer_id}; location: {offer.get('geolocation') or 'unknown'}; "
+            f"estimated total hourly price: "
             f"${float(offer['dph_total']):.4f}; candidate {attempts}/3", flush=True,
         )
         print(f"Creating instance with label: {label}", flush=True)
@@ -266,7 +267,7 @@ def create_from_offers(vast, offers: list[dict], *, disk_gb: int, label: str) ->
             f"Creation refused for offer {offer_id}; {detail}. No instance created."
         )
     raise CreationRejected(
-        f"No instance created: all {attempts} attempted machines refused their offers "
+        f"No instance created: no untried offers remain after {attempts} machine attempts "
         "(at most 3 machines per launch)."
     )
 
@@ -373,7 +374,60 @@ def wait_for_worker(process: subprocess.Popen, port: int) -> None:
         except (URLError, TimeoutError, OSError):
             pass
         time.sleep(2)
-    raise RuntimeError("SAM live and hybrid analysis did not both become ready within 10 minutes; see logs above.")
+    raise RuntimeError("SAM continuous analysis did not become ready within 10 minutes; see logs above.")
+
+
+def release_instance(vast, instance_id: int) -> None:
+    """Require confirmed cleanup before another paid rental can be created."""
+    print(f"Destroying instance: {instance_id}", flush=True)
+    previous_timeout = vast.client.timeout
+    vast.client.timeout = (5, 20)
+    try:
+        result = vast.destroy_instance(id=instance_id)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise RuntimeError("Vast did not confirm instance destruction.")
+    finally:
+        vast.client.timeout = previous_timeout
+    print(f"Released instance: {instance_id}", flush=True)
+
+
+def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str, sam_port: int):
+    print("Waiting for SSH...", flush=True)
+    host, ssh_port = wait_for_ssh(vast, instance_id, options)
+    ssh = ["ssh", *options, "-p", str(ssh_port), f"root@{host}"]
+    print("Uploading local SAM worker source...", flush=True)
+    run([*ssh, f"mkdir -p {REMOTE}/worker {REMOTE}/models"])
+    run([
+        "scp", *options, "-P", str(ssh_port),
+        *(str(ROOT / "workers" / "sam_scene" / name) for name in WORKER_FILES),
+        f"root@{host}:{REMOTE}/worker/",
+    ])
+    print("Installing the remote Conda environment (logs follow)...", flush=True)
+    run([*ssh, "bash -s"], input=SETUP, timeout=45 * 60)
+    print("Checking cached SAM 3.1 weights; downloading if needed...", flush=True)
+    download = (
+        "import sys; from huggingface_hub import hf_hub_download; "
+        "hf_hub_download(repo_id='facebook/sam3.1', filename='sam3.1_multiplex.pt', "
+        f"local_dir='{REMOTE}/models', token=sys.stdin.read().strip())"
+    )
+    run([
+        *ssh, f"HF_HUB_OFFLINE=0 {REMOTE}/env/bin/python -c {shlex.quote(download)}",
+    ], input=hf_token, timeout=30 * 60)
+    worker_environment = " ".join(
+        f"{name}={shlex.quote(value)}" for name, value in WORKER_ENV.items()
+    )
+    worker_command = (
+        f"cd {REMOTE}/worker && exec env "
+        f"{worker_environment} "
+        f"{REMOTE}/env/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8092 --workers 1"
+    )
+    print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
+    return subprocess.Popen([
+        *ssh[:-1], "-o", "ExitOnForwardFailure=yes",
+        # Compose keeps this port inside its network; it is not published.
+        "-L", f"0.0.0.0:{sam_port}:127.0.0.1:8092",
+        ssh[-1], worker_command,
+    ], stdin=subprocess.DEVNULL, start_new_session=True)
 
 
 def main() -> int:
@@ -392,6 +446,8 @@ def main() -> int:
     instance_id = None
     creation_attempted = False
     worker = None
+    offers = None
+    attempted_machines: set[str] = set()
     ssh_directory = None
     exit_code = 1
     label = f"goodvision-sam-{uuid4().hex[:12]}"
@@ -443,84 +499,65 @@ def main() -> int:
             instance_id = args.resume_instance_id
             print(f"Recovering existing instance: {instance_id}; no new rental.", flush=True)
         else:
-            print(f"Searching for one on-demand {gpu_name} (CUDA >= 12.6)...", flush=True)
+            print(
+                f"Searching for one on-demand {gpu_name} "
+                "(CUDA >= 12.6; mainland China excluded)...", flush=True,
+            )
             offers = vast.search_offers(
                 query=(
                     f"gpu_name={gpu_name} num_gpus=1 rentable=true direct_port_count>=1 "
-                    f"cuda_max_good>=12.6 disk_space>={args.disk_gb}"
+                    f"cuda_max_good>=12.6 disk_space>={args.disk_gb} geolocation!=CN"
                 ),
                 type="on-demand", order="dph_total", storage=float(args.disk_gb), limit=10,
             )
             if not offers:
-                raise RuntimeError(f"No eligible {gpu_name} offer is available. No instance was created.")
-            creation_attempted = True
-            try:
-                instance_id = create_from_offers(
-                    vast, offers, disk_gb=args.disk_gb, label=label,
+                raise RuntimeError(
+                    f"No eligible {gpu_name} offer outside mainland China is available. "
+                    "No instance was created."
                 )
-            except CreationRejected:
-                creation_attempted = False
-                raise
-            print(f"Created instance: {instance_id}", flush=True)
-        print("Waiting for SSH...", flush=True)
         options = [
             "-i", str(ssh_key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10",
             "-o", f"UserKnownHostsFile={Path(ssh_directory.name) / 'known_hosts'}",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
         ]
-        host, ssh_port = wait_for_ssh(vast, instance_id, options)
-        ssh = ["ssh", *options, "-p", str(ssh_port), f"root@{host}"]
-        print("Uploading local SAM worker source...", flush=True)
-        run([*ssh, f"mkdir -p {REMOTE}/worker {REMOTE}/models"])
-        run([
-            "scp", *options, "-P", str(ssh_port),
-            *(str(ROOT / "workers" / "sam_scene" / name) for name in WORKER_FILES),
-            f"root@{host}:{REMOTE}/worker/",
-        ])
-        print("Installing the remote Conda environment (logs follow)...", flush=True)
-        run([*ssh, "bash -s"], input=SETUP, timeout=45 * 60)
-        print("Checking cached SAM 3.1 weights; downloading if needed...", flush=True)
-        download = (
-            "import sys; from huggingface_hub import hf_hub_download; "
-            "hf_hub_download(repo_id='facebook/sam3.1', filename='sam3.1_multiplex.pt', "
-            f"local_dir='{REMOTE}/models', token=sys.stdin.read().strip())"
-        )
-        run([
-            *ssh, f"HF_HUB_OFFLINE=0 {REMOTE}/env/bin/python -c {shlex.quote(download)}",
-        ], input=hf_token, timeout=30 * 60)
-        print("Checking cached hybrid weights; downloading if needed...", flush=True)
-        hybrid_download = (
-            "from urllib.request import urlretrieve\n"
-            "from hybrid import CHECKPOINT_URL, verify_checkpoint\n"
-            f"path={HYBRID_CHECKPOINT!r}\n"
-            "try:\n"
-            "    verify_checkpoint(path)\n"
-            "except (OSError, RuntimeError):\n"
-            "    urlretrieve(CHECKPOINT_URL, path)\n"
-            "    verify_checkpoint(path)\n"
-        )
-        run([
-            *ssh, f"cd {REMOTE}/worker && {REMOTE}/env/bin/python -c {shlex.quote(hybrid_download)}",
-        ], timeout=5 * 60)
-        worker_environment = " ".join(
-            f"{name}={shlex.quote(value)}" for name, value in WORKER_ENV.items()
-        )
-        worker_command = (
-            f"cd {REMOTE}/worker && exec env "
-            f"{worker_environment} "
-            f"{REMOTE}/env/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8092 --workers 1"
-        )
-        print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
-        worker = subprocess.Popen([
-            *ssh[:-1], "-o", "ExitOnForwardFailure=yes",
-            # Compose keeps this port inside its network; it is not published.
-            "-L", f"0.0.0.0:{args.sam_port}:127.0.0.1:8092",
-            ssh[-1], worker_command,
-        ], stdin=subprocess.DEVNULL, start_new_session=True)
-        wait_for_worker(worker, args.sam_port)
+        while True:
+            if instance_id is None:
+                creation_attempted = True
+                try:
+                    instance_id = create_from_offers(
+                        vast, offers, disk_gb=args.disk_gb, label=label,
+                        attempted_machines=attempted_machines,
+                    )
+                except CreationRejected:
+                    creation_attempted = False
+                    raise
+                print(f"Created instance: {instance_id}", flush=True)
+            try:
+                worker = start_worker(
+                    vast, instance_id, options, hf_token=hf_token, sam_port=args.sam_port,
+                )
+                wait_for_worker(worker, args.sam_port)
+            except Exception as error:
+                # Explicit resume never creates a rental; signals also bypass
+                # this handler. Once ready, a live session is not replaced.
+                if offers is None or len(attempted_machines) >= 3:
+                    raise
+                print(
+                    f"Startup failed on instance {instance_id}: "
+                    f"{creation_diagnostic({'message': str(error)})}; "
+                    "releasing it before trying a different machine.", flush=True,
+                )
+                stop_process(worker)
+                worker = None
+                release_instance(vast, instance_id)
+                instance_id = None
+                creation_attempted = False
+                label = f"goodvision-sam-{uuid4().hex[:12]}"
+                continue
+            break
         print(
-            "SAM is ready: both sam_live and hybrid passed their GPU health checks.\n"
+            "SAM is ready: sam_live passed its GPU health check.\n"
             f"Perception routes: http://sam-remote:{args.sam_port}/v1/perception/routes\n"
             "Stop the Compose application to release this GPU. Closing the browser does not release it.",
             flush=True,
@@ -562,12 +599,8 @@ def main() -> int:
                     file=sys.stderr, flush=True,
                 )
         if instance_id is not None:
-            print(f"Destroying instance: {instance_id}", flush=True)
             try:
-                result = vast.destroy_instance(id=instance_id)
-                if not isinstance(result, dict) or result.get("success") is not True:
-                    raise RuntimeError("Vast did not confirm instance destruction.")
-                print(f"Released instance: {instance_id}", flush=True)
+                release_instance(vast, instance_id)
             except Exception as error:
                 exit_code = 1
                 print(

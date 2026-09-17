@@ -139,26 +139,14 @@ def test_setup_reuses_existing_conda_and_environment(tmp_path, complete):
     assert len(marker.read_text().splitlines()) == (2 if complete else 6)
 
 
-@pytest.mark.parametrize("valid", [True, False])
-def test_existing_hybrid_weights_are_verified_before_downloading(
-    recovery, monkeypatch, valid,
-):
-    import urllib.request
+def test_sam_only_startup_does_not_upload_enable_or_download_retired_route(recovery):
     assert launcher.main() == 1
-    command = next(
-        call.args[0][-1] for call in launcher.run.call_args_list
-        if "from hybrid import" in call.args[0][-1]
-    )
-    verification = Mock(side_effect=[None] if valid else [RuntimeError("bad"), None])
-    monkeypatch.setitem(sys.modules, "hybrid", SimpleNamespace(
-        CHECKPOINT_URL="https://example.invalid/test-weights",
-        verify_checkpoint=verification,
-    ))
-    download = Mock()
-    monkeypatch.setattr(urllib.request, "urlretrieve", download)
-    exec(shlex.split(command)[-1], {})
-    assert verification.call_count == (1 if valid else 2)
-    assert download.call_count == (0 if valid else 1)
+    assert launcher.WORKER_ROUTES == ("sam_live",)
+    assert not any("hybrid" in name for name in launcher.WORKER_FILES)
+    assert not any(name.startswith("HYBRID_") for name in launcher.WORKER_ENV)
+    commands = [" ".join(call.args[0]) for call in launcher.run.call_args_list]
+    assert not any("hybrid" in command for command in commands)
+    assert any("sam3.1_multiplex.pt" in command for command in commands)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -221,6 +209,103 @@ def http_failure(status, payload):
     failure = RuntimeError("request URL may contain a secret: do not log this")
     failure.response = Response()
     return failure
+
+
+@pytest.mark.parametrize("stage", ["ssh", "upload", "setup", "weights", "readiness"])
+def test_startup_failure_releases_before_renting_a_different_machine(
+    rental, capsys, stage,
+):
+    rental.create_instance.side_effect = [
+        {"success": True, "new_contract": 42},
+        {"success": True, "new_contract": 43},
+    ]
+    failed = RuntimeError("simulated remote startup failure")
+    if stage == "ssh":
+        launcher.wait_for_ssh.side_effect = [failed, ("host", 22)]
+    elif stage == "readiness":
+        launcher.wait_for_worker.side_effect = [failed, None]
+    else:
+        failed_call = {"upload": 1, "setup": 2, "weights": 3}[stage]
+        launcher.run.side_effect = [None] * failed_call + [failed] + [None] * 4
+    events = Mock()
+    events.attach_mock(rental.create_instance, "create")
+    events.attach_mock(rental.destroy_instance, "destroy")
+    assert launcher.main() == 1  # The replacement becomes ready, then exits.
+    assert [(call[0], call.kwargs["id"]) for call in events.mock_calls] == [
+        ("create", 10), ("destroy", 42), ("create", 20), ("destroy", 43),
+    ]
+    assert len({call.kwargs["label"] for call in rental.create_instance.call_args_list}) == 2
+    assert "geolocation!=CN" in rental.search_offers.call_args.kwargs["query"]
+    assert "SAM is ready" in capsys.readouterr().out
+
+
+def test_startup_failures_stop_after_three_different_machines(rental):
+    rental.create_instance.side_effect = [
+        {"success": True, "new_contract": number} for number in (42, 43, 44)
+    ]
+    launcher.wait_for_ssh.side_effect = RuntimeError("SSH unavailable")
+    assert launcher.main() == 1
+    assert [call.kwargs["id"] for call in rental.create_instance.call_args_list] == [10, 20, 30]
+    assert [call.kwargs["id"] for call in rental.destroy_instance.call_args_list] == [42, 43, 44]
+
+
+def test_refusals_and_startup_failures_share_three_machine_limit(rental):
+    rental.create_instance.side_effect = [
+        {"success": False, "error": "no_such_ask"},
+        {"success": True, "new_contract": 42},
+        {"success": True, "new_contract": 43},
+    ]
+    launcher.wait_for_ssh.side_effect = RuntimeError("SSH unavailable")
+    assert launcher.main() == 1
+    assert [call.kwargs["id"] for call in rental.create_instance.call_args_list] == [10, 20, 30]
+    assert [call.kwargs["id"] for call in rental.destroy_instance.call_args_list] == [42, 43]
+
+
+@pytest.mark.parametrize("result", [{"success": False}, TimeoutError("release timed out")])
+def test_unconfirmed_release_prevents_replacement(rental, result):
+    launcher.wait_for_ssh.side_effect = RuntimeError("SSH unavailable")
+    if isinstance(result, Exception):
+        rental.destroy_instance.side_effect = result
+    else:
+        rental.destroy_instance.return_value = result
+    assert launcher.main() == 1
+    rental.create_instance.assert_called_once()
+    assert rental.destroy_instance.called
+    assert all(call.kwargs["id"] == 42 for call in rental.destroy_instance.call_args_list)
+
+
+def test_uncertain_replacement_creation_reconciles_only_its_new_label(rental):
+    rental.create_instance.side_effect = [
+        {"success": True, "new_contract": 42}, TimeoutError("create response lost"),
+    ]
+    launcher.wait_for_ssh.side_effect = RuntimeError("SSH unavailable")
+    rental.show_instances.side_effect = lambda: [
+        {"id": 42, "label": rental.create_instance.call_args_list[0].kwargs["label"]},
+        {"id": 43, "label": rental.create_instance.call_args.kwargs["label"]},
+    ]
+    assert launcher.main() == 1
+    assert rental.create_instance.call_count == 2
+    assert [call.kwargs["id"] for call in rental.destroy_instance.call_args_list] == [42, 43]
+
+
+@pytest.mark.parametrize("stage", ["ssh", "setup", "readiness"])
+def test_user_stop_during_startup_does_not_rent_a_replacement(rental, stage):
+    target = {
+        "ssh": launcher.wait_for_ssh, "setup": launcher.run,
+        "readiness": launcher.wait_for_worker,
+    }[stage]
+    target.side_effect = KeyboardInterrupt()
+    assert launcher.main() == 130
+    rental.create_instance.assert_called_once()
+    rental.destroy_instance.assert_called_once_with(id=42)
+
+
+def test_failure_after_readiness_does_not_replace_the_active_session(rental):
+    launcher.subprocess.Popen.return_value.returncode = 255
+    assert launcher.main() == 1
+    launcher.wait_for_worker.assert_called_once()
+    rental.create_instance.assert_called_once()
+    rental.destroy_instance.assert_called_once_with(id=42)
 
 
 @pytest.mark.parametrize("refusal", [
