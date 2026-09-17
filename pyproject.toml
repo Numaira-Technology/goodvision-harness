@@ -70,6 +70,11 @@ include = ["goodvision_harness*"]
 goodvision_harness = [
   "config.yaml",
   "dashboard.html",
+  "fleet_console.js",
+  "camera_display.js",
+  "camera_display_dense.js",
+  "assets/*.js",
+  "assets/*.txt",
   "fonts/*.otf",
   "fonts/*.txt",
 ]

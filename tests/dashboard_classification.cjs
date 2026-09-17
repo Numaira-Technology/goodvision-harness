@@ -37,8 +37,8 @@ function dashboard(){
     querySelectorAll:()=>featureInputs,createElement:()=>new Element()
   };
   const context=vm.createContext({document,window:{isSecureContext:true},
-    location:{hostname:"localhost"},setTimeout,clearTimeout,clearInterval,
-    requestAnimationFrame:()=>{},fetch:async()=>({json:async()=>context.statusData})});
+    location:{hostname:"localhost"},setTimeout,clearTimeout,clearInterval,AbortController,
+    requestAnimationFrame:()=>{},fetch:async()=>({ok:true,json:async()=>context.statusData})});
   const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
   const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
   new vm.Script(script); // Parse the complete shipped script, including browser startup.

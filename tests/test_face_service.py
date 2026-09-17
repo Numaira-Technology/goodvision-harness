@@ -35,6 +35,19 @@ from goodvision_harness.visual_memory import VisualMemoryRecord
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _stop_and_wait(runtime):
+    session = runtime._session
+    assert runtime.stop_session()
+    session.join(timeout=5)
+    assert not session.running
+    drain = getattr(runtime, "_end_drain_thread", None)
+    if drain is not None:
+        drain.join(timeout=5)
+        assert not drain.is_alive()
+    assert runtime._session is None
+    assert runtime.status()["pipeline_state"] == "idle"
+
+
 def _jpeg(width: int = 320, height: int = 180) -> bytes:
     image = np.zeros((height, width, 3), dtype=np.uint8)
     ok, encoded = cv2.imencode(".jpg", image)
@@ -259,8 +272,12 @@ def test_live_sessions_isolate_face_history_and_bind_rich_session(
         gallery_path=tmp_path / "gallery.json",
     ))
     monkeypatch.setattr(face_runtime, "warmup", lambda: 0.0)
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config, events=replace(config.events, directory=tmp_path / "events"),
+    )
     runtime = HarnessRuntime(
-        load_config(ROOT / "config.yaml"), face_runtime=face_runtime
+        config, face_runtime=face_runtime
     )
     clients = []
     try:
@@ -278,7 +295,7 @@ def test_live_sessions_isolate_face_history_and_bind_rich_session(
             assert client.runtime is face_runtime
             assert client._session_id == runtime._session.stream_session_id
             clients.append(client)
-            runtime.stop_session()
+            _stop_and_wait(runtime)
         assert clients[0] is not clients[1]
         assert clients[0]._tracker is not clients[1]._tracker
     finally:

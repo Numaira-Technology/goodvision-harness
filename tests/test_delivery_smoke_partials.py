@@ -110,3 +110,18 @@ def test_smoke_global_sse_checks_all_five_positives_and_monotonic_cursors(smoke)
     no_face_positive["objects"] = []
     with pytest.raises(RuntimeError, match="missing synthetic results"):
         asyncio.run(check([(1, safety), (2, no_face_positive)]))
+
+
+@pytest.mark.parametrize("marker", [
+    "SAM", "SAM 3.1", "sam3.1", "sam31_stream", "sam_live",
+    "Segment Anything", "segment_anything", "Reka", "Ultralytics", "vLLM",
+])
+def test_branding_smoke_detects_tracking_and_new_provider_markers(smoke, marker):
+    assert smoke["PRIVATE_MARKERS"].search(marker)
+
+
+@pytest.mark.parametrize("text", [
+    "sample_fps", "same frame", "Samantha", "person_tracking",
+])
+def test_branding_smoke_does_not_confuse_sampling_with_tracking_model(smoke, text):
+    assert not smoke["PRIVATE_MARKERS"].search(text)

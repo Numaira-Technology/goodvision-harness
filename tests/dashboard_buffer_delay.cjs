@@ -92,3 +92,13 @@ test("buffer controls honor unavailable storage and settings operations",()=>{
   view.state.deployment.persistence_available=false;view.controls();
   assert.equal(view.element("buffer-delay-seconds").disabled,true)
 });
+
+test("zero extra buffer is distinct from measured output-frame delay",()=>{
+  const view=dashboard();
+  view.updateAnnotatedOutput({state:"running",buffer_delay_seconds:0,stream_delay_seconds:1.25,
+    output_fps:15,annotation_mode:"scene"});
+  assert.equal(view.element("buffer-delay-seconds").value,"0");
+  assert.match(view.element("stream-meta").textContent,/额外缓存 0.0 秒/);
+  assert.match(view.element("raw-badge-text").textContent,/输出帧延迟 1.3 秒/);
+  assert.doesNotMatch(view.element("raw-badge-text").textContent,/实际延迟|零延迟/)
+});

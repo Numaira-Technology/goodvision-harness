@@ -43,6 +43,18 @@ EXPECTED_IMAGE_TAGS = frozenset(
 )
 MAX_TEXT_BYTES = 4 * 1024 * 1024
 MAX_MANIFEST_BYTES = 1024 * 1024
+REPOSITORY_TEXT_FILES = (
+    "RELEASE.md", "DEPLOY.md", "API_DELIVERY.md", "EVENT_EVIDENCE.md",
+    "compose.full-gpu.delivery.yaml", "compose.full-gpu.accelerated.yaml",
+    ".env.full-gpu.delivery.example", "config.delivery.yaml",
+    "schemas/analysis-result-v1.schema.json",
+    "schemas/analysis-result-v2.schema.json", "schemas/event-v1.schema.json",
+    "src/goodvision_harness/dashboard.html",
+    "src/goodvision_harness/fleet_console.js",
+    "src/goodvision_harness/camera_display.js",
+    "src/goodvision_harness/camera_display_dense.js",
+    "tools/customer_check.py",
+)
 
 
 def _load_shared_privacy_checker() -> Callable[[object], bool]:
@@ -278,16 +290,62 @@ def audit_bundle(
     return report
 
 
+def audit_repository(directory: str | Path) -> dict[str, Any]:
+    """Check current publication sources separately from historical bundles."""
+    root = Path(directory)
+    report: dict[str, Any] = {
+        "ok": False,
+        "scope": "current customer documents, console assets and delivery config",
+        "mode": "repository",
+        "checked_text_files": 0,
+        "issues": [],
+        "exceptions": [],
+        "limitations": [
+            "Runtime responses require the privacy and service regression tests.",
+            "Internal source, historical deployment profiles, image layers and "
+            "third-party runtime/license files are outside this publication scan.",
+        ],
+    }
+    for relative in REPOSITORY_TEXT_FILES:
+        try:
+            content = (root / relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            _issue(report, "text_unreadable", relative)
+            continue
+        report["checked_text_files"] += 1
+        for number, line in enumerate(content.splitlines(), 1):
+            if not _contains_private_detail(line):
+                continue
+            if (relative == "compose.full-gpu.accelerated.yaml"
+                    and line.strip() == "- driver: nvidia"):
+                # This is a required device-driver selector, not a product label.
+                report["exceptions"].append({
+                    "code": "required_gpu_driver_selector",
+                    "path": relative, "line": number,
+                })
+                continue
+            _issue(report, "private_marker_in_text", relative, line=number)
+    report["ok"] = not report["issues"]
+    return report
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path, help="Customer release directory")
     parser.add_argument(
+        "--repository", action="store_true",
+        help="Check current publication source files instead of a release archive",
+    )
+    parser.add_argument(
         "--without-archive",
         action="store_true",
-        help="Require exactly the eleven text files before the image tar is exported",
+        help="Require the allowlisted text files before the image tar is exported",
     )
     args = parser.parse_args(argv)
-    report = audit_bundle(args.directory, without_archive=args.without_archive)
+    report = (
+        audit_repository(args.directory) if args.repository
+        else audit_bundle(args.directory, without_archive=args.without_archive)
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["ok"] else 1
 

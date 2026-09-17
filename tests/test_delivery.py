@@ -462,6 +462,9 @@ def test_neutral_delivery_configuration_preserves_analysis_settings() -> None:
     expected["face"].update(
         model_profile="standard", model_root="/models", accelerator="gpu"
     )
+    expected["display"]["tracking_delay_seconds"] = expected["display"].pop(
+        "sam_live_delay_seconds"
+    )
     assert delivery == expected
 
 
@@ -511,3 +514,24 @@ def test_project_metadata_uses_a_neutral_inline_description() -> None:
         readme["text"],
         re.IGNORECASE,
     ) is None
+
+
+
+def test_repository_publication_audit_passes_with_only_required_driver_exceptions():
+    report = audit.audit_repository(ROOT)
+    assert report["ok"], report["issues"]
+    assert report["checked_text_files"] == len(audit.REPOSITORY_TEXT_FILES)
+    assert len(report["exceptions"]) == 2
+    assert {item["code"] for item in report["exceptions"]} == {
+        "required_gpu_driver_selector",
+    }
+
+
+@pytest.mark.parametrize("marker", [
+    "SAM 3.1", "sam_live", "Segment Anything", "Reka", "Ultralytics",
+])
+def test_release_gate_rejects_new_tracking_implementation_markers(bundle, marker):
+    (bundle / "API_DELIVERY.md").write_text(marker, encoding="utf-8")
+    report = audit.audit_bundle(bundle, without_archive=True)
+    assert not report["ok"]
+    assert "private_marker_in_text" in _codes(report)

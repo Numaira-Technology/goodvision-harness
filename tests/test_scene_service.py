@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import time
 from dataclasses import replace
 from pathlib import Path
-from threading import Event
+from threading import Event, RLock
 from types import SimpleNamespace
 
 import cv2
@@ -22,6 +24,7 @@ from goodvision_harness.contracts import (
     GroundedObject,
     NormalizedBBox,
 )
+from goodvision_harness.privacy import PUBLIC_INSPECTION_ERROR, PUBLIC_TRACKING_ERROR
 from goodvision_harness.rich_labeling import RichLabelObject, RichLabelSnapshot
 from goodvision_harness.service import HarnessRuntime, create_app
 
@@ -42,6 +45,9 @@ def _isolate_environment(monkeypatch):
         "INFERENCE_PROVIDER",
         "INFERENCE_MODEL",
         "INFERENCE_ENDPOINT",
+        "LOCAL_CAMERA_DISPLAY_DELAY_SECONDS",
+        "LOCAL_CAMERA_MOTION_WIDTH",
+        "LOCAL_CAMERA_TARGET_FPS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -86,6 +92,48 @@ def _jpeg():
     ok, encoded = cv2.imencode(".jpg", np.zeros((160, 240, 3), dtype=np.uint8))
     assert ok
     return encoded.tobytes()
+
+
+def test_local_motion_assets_and_timing_config_are_delivered_without_models(
+    runtime_factory,
+):
+    runtime = runtime_factory()
+    with TestClient(create_app(runtime_factory=lambda: runtime)) as client:
+        settings = client.get("/v1/ui/info").json()["local_camera_display"]
+        assert settings["target_fps"] == 20
+        assert settings["motion_backend"] == "dense"
+        assert settings["delay_seconds"] == 6
+        assert settings["motion_width"] == 160
+        assert settings["anchor_policy"] == "nearest_arrived"
+        assert settings["allow_partial_boundaries"] is False
+        assert settings["max_propagation_seconds"] == 1.5
+        assert settings["max_history_seconds"] >= settings["delay_seconds"] + 4
+        adapter = client.get("/assets/camera_display_dense.js")
+        assert adapter.status_code == 200
+        assert "createDenseMotionAdapter" in adapter.text
+        vendor = client.get("/assets/opencv-4.13.0.js")
+        assert vendor.status_code == 200
+        assert hashlib.sha256(vendor.content).hexdigest() == (
+            "63366510248adf3a7eddf3e793dd825404efb7df3749f4d6f8557c7fa4ca8aa0"
+        )
+        assert "immutable" in vendor.headers["cache-control"]
+
+
+def test_display_working_resolution_override_does_not_change_original_output(
+    runtime_factory, monkeypatch,
+):
+    monkeypatch.setenv("LOCAL_CAMERA_MOTION_WIDTH", "240")
+    monkeypatch.setenv("LOCAL_CAMERA_DISPLAY_DELAY_SECONDS", "7")
+    monkeypatch.setenv("LOCAL_CAMERA_TARGET_FPS", "18")
+    runtime = runtime_factory()
+    with TestClient(create_app(runtime_factory=lambda: runtime)) as client:
+        settings = client.get("/v1/ui/info").json()["local_camera_display"]
+        assert settings["motion_width"] == 240
+        assert settings["target_fps"] == 18
+        assert settings["delay_seconds"] == 7
+        assert settings["max_history_seconds"] >= 11
+        assert settings["max_propagation_seconds"] == 1.5
+        assert "max_image_side" not in settings
 
 
 def _start(runtime):
@@ -214,6 +262,13 @@ def test_disabled_scene_preserves_live_output_without_constructing_observer(
     assert runtime.scene_snapshot()["state"] == "disabled"
 
 
+def wait_for_postprocessing(runtime):
+    deadline = time.monotonic() + 5
+    while runtime.status().get("scene_drain", {}).get("state") == "running":
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+
 def test_real_dry_run_camera_feeds_scene_and_releases_evidence_on_stop(
     runtime_factory,
     monkeypatch,
@@ -238,6 +293,7 @@ def test_real_dry_run_camera_feeds_scene_and_releases_evidence_on_stop(
     assert snapshot["mode"] == "active"
     assert snapshot["automatic_temporal_inference"] is False
     assert runtime.stop_session()
+    wait_for_postprocessing(runtime)
     assert scene.evidence.byte_count == 0
     assert len(scene.evidence) == 0
     assert runtime.scene_snapshot()["state"] == "stopped"
@@ -328,7 +384,10 @@ def test_stale_generation_cannot_add_frames_or_people_to_new_scene(runtime_facto
     old_callback = runtime._session.callbacks.on_timeline_result
     old_result = _result(runtime, "old-subject")
     old_scene = runtime._scene
+    session = runtime._session
     assert runtime.stop_session()
+    session.join(3)
+    runtime._end_drain_thread.join(3)
     _start(runtime)
     scene = runtime._scene
     before = runtime.scene_snapshot()
@@ -347,6 +406,7 @@ def test_scene_endpoint_is_read_only_uncached_and_excludes_image_bytes(runtime_f
         _start(runtime)
         runtime._on_display_frame(_jpeg(), 1, 10)
         runtime._on_tracking_snapshot(_tracks(runtime))
+        assert runtime._identity_worker.wait_until_idle(2)
         before = runtime.scene_snapshot()
         response = client.get("/v1/experimental/scene")
         assert response.status_code == 200
@@ -444,8 +504,12 @@ def test_end_callback_releases_evidence_without_claiming_event_clear(runtime_fac
         "smoking", (subject,), timestamp_seconds=1, frame_sequence=10,
         detected=True, evidence_id="temporal-event",
     )
+    old_scene = runtime._scene
     runtime._on_end("disconnected", None)
-    assert runtime._scene.evidence.byte_count == 0
+    runtime._end_drain_thread.join(3)
+    assert not runtime._end_drain_thread.is_alive()
+    wait_for_postprocessing(runtime)
+    assert old_scene.evidence.byte_count == 0
     snapshot = runtime.scene_snapshot()
     assert snapshot["state"] == "stopped"
     assert snapshot["scene"]["events"][0]["phase"] == "suspected"
@@ -466,6 +530,134 @@ def test_gallery_delete_forgets_retained_scene_identity(runtime_factory, monkeyp
         "_ensure_face_runtime",
         lambda: SimpleNamespace(delete_person=lambda _id: True),
     )
+    forgotten = []
+    original_forget = runtime._camera_display_metadata.forget_identity
+
+    def forget(person_id):
+        assert runtime._identity_control_lock._is_owned()
+        assert runtime._scene.snapshot()["scene"]["entities"][0]["identity"] == {}
+        forgotten.append(person_id)
+        original_forget(person_id)
+
+    monkeypatch.setattr(runtime._camera_display_metadata, "forget_identity", forget)
     assert runtime.delete_face("alice")
     entities = runtime.scene_snapshot()["scene"]["entities"]
     assert entities[0]["identity"] == {}
+    assert forgotten == ["alice"]
+
+
+def test_active_tracking_failure_is_visible_before_stop_without_echoing_details(
+    runtime_factory,
+):
+    runtime = runtime_factory()
+    _start(runtime)
+    session = runtime._session
+    previous, active = runtime._rich_labels, runtime._active_rich_session_id
+    private = "https://private.example/?token=secret RemoteProtocolError raw text"
+    stats = {"state": "failed", "last_error": private, "pending_frames": 3,
+             "recovery_required": True}
+    runtime._rich_labels = SimpleNamespace(stats=lambda: stats)
+    runtime._active_rich_session_id = session.stream_session_id
+    try:
+        result = runtime.status()
+        assert result["last_error"] == PUBLIC_TRACKING_ERROR
+        assert result["rich_labeling"]["last_error"] == PUBLIC_TRACKING_ERROR
+        assert result["readiness_reason"] == "person_tracking_failed"
+        assert result["ready"] is False
+        assert result["pipeline_state"] in {"starting", "running"}
+        assert session.running
+        assert result["rich_labeling"]["pending_frames"] == 3
+        assert stats["last_error"] == private
+        assert "secret" not in str(result)
+        runtime._active_rich_session_id = "obsolete-run"
+        assert runtime.status()["last_error"] is None
+    finally:
+        runtime._rich_labels, runtime._active_rich_session_id = previous, active
+
+
+def test_only_terminal_inspection_worker_failure_sets_event_analysis_error(
+    runtime_factory,
+):
+    runtime = runtime_factory()
+    _start(runtime)
+    previous = runtime._scene_worker
+    stats = {"state": "running", "failed_requests": 5}
+    runtime._scene_worker = SimpleNamespace(stats=lambda: stats)
+    try:
+        assert runtime.status()["last_error"] is None
+        stats["state"] = "failed"
+        result = runtime.status()
+        assert result["last_error"] == PUBLIC_INSPECTION_ERROR
+        assert result["readiness_reason"] == "event_analysis_failed"
+        assert result["ready"] is False
+        assert runtime._session.running
+    finally:
+        runtime._scene_worker = previous
+
+
+@pytest.mark.parametrize("stage", ["tracking", "inspection"])
+def test_online_drain_failure_uses_its_stage_not_exception_or_prior_generic_error(
+    runtime_factory, monkeypatch, stage,
+):
+    runtime = runtime_factory()
+    session = SimpleNamespace(stream_session_id="fault-run")
+    control = SimpleNamespace(lock=RLock(), state="running", error=None)
+    finished = []
+    runtime._session = session
+    monkeypatch.setattr(runtime, "_archive_run", lambda _session: control)
+    monkeypatch.setattr(
+        runtime, "_finish_scene_end", lambda reason, error: finished.append(error),
+    )
+
+    def fail():
+        raise RuntimeError("https://private.example/?token=secret raw exception")
+
+    coordinator = SimpleNamespace(
+        stats=lambda: {"state": "failed" if stage == "tracking" else "running"},
+        wait_until_idle=lambda **kwargs: True,
+    )
+    scene = SimpleNamespace(finish_inspection_sources=fail)
+    try:
+        runtime._drain_native_end(
+            runtime._generation, session, scene, coordinator, "stopped",
+            "an unrelated generic request error",
+        )
+        assert finished == [
+            PUBLIC_TRACKING_ERROR if stage == "tracking" else PUBLIC_INSPECTION_ERROR
+        ]
+        assert control.state == "failed"
+        assert runtime._state["scene_drain"] == {"state": "failed"}
+    finally:
+        runtime._session = None
+
+
+def test_successful_enrollment_allows_display_identity_only_after_scene_allow(
+    runtime_factory, monkeypatch,
+):
+    runtime = runtime_factory()
+    calls = []
+
+    def enroll(person_id, name, image):
+        calls.append("enroll")
+        return SimpleNamespace(person_id=person_id, name=name, sample_count=1)
+
+    def allow(person_id):
+        assert runtime._identity_control_lock._is_owned()
+        calls.append(("display", person_id))
+
+    monkeypatch.setattr(runtime, "_ensure_face_runtime", lambda: SimpleNamespace(
+        enroll=enroll, delete_person=lambda _id: False,
+    ))
+    monkeypatch.setattr(
+        runtime, "_observe_scene",
+        lambda action, person_id: calls.append((action, person_id)),
+    )
+    monkeypatch.setattr(runtime._camera_display_metadata, "allow_identity", allow)
+    monkeypatch.setattr(
+        runtime._camera_display_metadata, "forget_identity",
+        lambda _id: pytest.fail("failed deletion must preserve display identity"),
+    )
+    enrolled = runtime.enroll_face("alice", "Alice", b"unused")
+    assert enrolled["person"]["person_id"] == "alice"
+    assert calls == ["enroll", ("allow_identity", "alice"), ("display", "alice")]
+    assert runtime.delete_face("alice") is False

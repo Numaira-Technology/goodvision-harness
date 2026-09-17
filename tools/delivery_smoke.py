@@ -42,7 +42,9 @@ PRIVATE_MARKERS = re.compile(
     r"openrouter|qwen|insightface|paddle|pp[-_]yolo|pp[-_]lcnet|picodet|"
     r"buffalo_l|aiclub|zimaocloud|onnxruntime|opencv|nvidia|cuda|cudnn|"
     r"huggingface|modelscope|fastapi|uvicorn|swagger|redoc|jsdelivr|"
-    r"openai|anthropic|deepseek|ffmpeg",
+    r"openai|anthropic|deepseek|ffmpeg|reka|ultralytics|vllm|"
+    r"(?<![a-z0-9])sam(?:[23][._]?1?)?(?![a-z0-9])|"
+    r"segment[ _-]*anything",
     re.IGNORECASE,
 )
 

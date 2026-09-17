@@ -20,6 +20,19 @@ from goodvision_harness.rich_labeling import (
 )
 
 
+def _stop_and_wait(runtime):
+    session = runtime._session
+    assert runtime.stop_session()
+    session.join(timeout=5)
+    assert not session.running
+    drain = getattr(runtime, "_end_drain_thread", None)
+    if drain is not None:
+        drain.join(timeout=5)
+        assert not drain.is_alive()
+    assert runtime._session is None
+    assert runtime.status()["pipeline_state"] == "idle"
+
+
 @pytest.mark.parametrize("payload,allowed", [
     ({"ready": True, "gpu_ready": True}, True),
     ({"ready": True, "gpu_ready": False}, False),
@@ -247,8 +260,8 @@ def test_warming_gpu_recovers_current_face_session_and_delayed_overlay(monkeypat
             return 0.0
 
     class FaceSession(service.FaceRecognitionSession):
-        def __init__(self, runtime):
-            super().__init__(runtime)
+        def __init__(self, runtime, **kwargs):
+            super().__init__(runtime, **kwargs)
             face_sessions.append(self)
 
     monkeypatch.setattr(service, "RichLabelHTTPClient", Client)
@@ -416,7 +429,7 @@ def test_gpu_warmup_result_attaches_only_to_current_session(monkeypatch):
     try:
         first = runtime.start_camera(dry_run=True)
         assert probing.wait(1.0)
-        assert runtime.stop_session()
+        _stop_and_wait(runtime)
         second = runtime.start_camera(dry_run=True)
         assert first["stream_session_id"] != second["stream_session_id"]
         ready.set()

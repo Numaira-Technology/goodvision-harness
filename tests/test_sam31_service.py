@@ -142,8 +142,14 @@ def test_worker_to_http_parser_to_registry_and_scene(runtime):
 def test_batch_commit_cannot_change_replacement_session(runtime):
     from goodvision_harness.video_tracking import VideoTrackingBatch
 
-    old_session = runtime._session.stream_session_id
-    runtime.stop_session()
+    session = runtime._session
+    old_session = session.stream_session_id
+    assert runtime.stop_session()
+    session.join(timeout=5)
+    assert not session.running
+    runtime._end_drain_thread.join(timeout=5)
+    assert not runtime._end_drain_thread.is_alive()
+    assert runtime.status()["pipeline_state"] == "idle"
     runtime.start_camera(dry_run=True, features=["smoking"])
     before = runtime.scene_snapshot()
     runtime._on_tracking_batch(VideoTrackingBatch(old_session, "late", "old", (), 0, 0))
@@ -254,12 +260,20 @@ def continuous(runtime):
             coordinator.close(timeout_seconds=5)
 
 
+def wait_for_postprocessing(runtime, timeout=5):
+    deadline = time.monotonic() + timeout
+    while runtime.status().get("scene_drain", {}).get("state") == "running":
+        assert time.monotonic() < deadline, "background finalization did not finish"
+        time.sleep(0.005)
+
+
 def end_and_join(runtime, timeout=5):
     # Exercise the real outer generation lock, not just the direct helper.
     runtime._guarded_callback(runtime._generation, runtime._on_end, "eof", None)
     thread = runtime._end_drain_thread
     thread.join(timeout)
     assert not thread.is_alive(), "EOF must not wait while holding the callback lock"
+    wait_for_postprocessing(runtime, timeout)
 
 
 @pytest.mark.parametrize("count", [3, 16, 32])
@@ -284,8 +298,11 @@ def test_natural_eof_flushes_short_sources_and_native_delayed_tail(runtime, coun
         assert snapshot["state"] == "stopped"
         assert runtime.status()["scene_drain"] == {"state": "completed"}
         assert coordinator.stats()["pending_frame_count"] == 0
-        assert len(coordinator.history()) == count
-        assert len(runtime._scene.scene.snapshot()["entities"]) == 1
+        # The live coordinator is released; the retired run retains every source.
+        retired = runtime.scene_snapshot(include_history=True)["scene"]
+        assert len(retired["entities"]) == 1
+        assert len(retired["entities"][0]["history"]) == count
+        assert runtime._session is None
         assert backend.calls[-1] == ((count if count < 16 else 0), True)
 
 
@@ -308,7 +325,7 @@ def test_natural_eof_waits_for_inflight_tracking_without_blocking_callback(runti
         assert coordinator.stats()["failed"] == 0
 
 
-def test_eof_drain_cannot_finish_a_replacement_session(runtime):
+def test_eof_drain_must_finish_before_replacement_and_cannot_change_it(runtime):
     with continuous(runtime) as (_, backend):
         backend.release.clear()
         for sequence in range(16):
@@ -316,34 +333,83 @@ def test_eof_drain_cannot_finish_a_replacement_session(runtime):
         assert backend.entered.wait(3)
         runtime._guarded_callback(runtime._generation, runtime._on_end, "eof", None)
         old_thread = runtime._end_drain_thread
-        runtime.stop_session()
+        old_scene = runtime._scene
+        old_generation = runtime._generation
+        assert runtime.stop_session()
+        assert runtime.status()["pipeline_state"] == "draining"
+        assert runtime._generation == old_generation
+        with pytest.raises(RuntimeError, match="already running"):
+            runtime.start_camera(dry_run=True, features=["smoking"])
+        backend.release.set()
+        old_thread.join(5)
+        assert not old_thread.is_alive()
+        assert old_scene.snapshot()["tracking_completed_frame_sequence"] == 15
+        assert runtime.status()["pipeline_state"] == "idle"
         runtime.start_camera(dry_run=True, features=["smoking"])
         replacement = runtime._scene
-        backend.release.set()
-        old_thread.join(3)
-        assert not old_thread.is_alive()
+        runtime._guarded_callback(old_generation, runtime._on_end, "eof", None)
         assert runtime._scene is replacement
         assert replacement.snapshot()["state"] == "running"
         assert replacement.snapshot()["tracking_completed_frame_sequence"] is None
         assert runtime.status()["pipeline_state"] != "ended"
+        # Finish the replacement while its injected tracker is still open.
+        assert runtime.stop_session()
+        runtime._end_drain_thread.join(5)
+        assert not runtime._end_drain_thread.is_alive()
 
 
-def test_eof_drain_deadline_is_explicit_and_late_native_result_is_retired(
+def test_explicit_stop_preserves_delayed_native_results_until_tracking_completes(
     runtime,
-    monkeypatch,
 ):
-    monkeypatch.setattr(service, "NATIVE_END_DRAIN_TIMEOUT_SECONDS", 0.05)
-    with continuous(runtime) as (coordinator, backend):
+    with continuous(runtime) as (_, backend):
         backend.release.clear()
         for sequence in range(16):
             runtime._on_display_frame(jpeg(), sequence / 4, sequence)
         assert backend.entered.wait(3)
-        end_and_join(runtime, 2)
-        assert runtime.status()["scene_drain"] == {"state": "timed_out"}
-        assert runtime.scene_snapshot()["state"] == "stopped"
+        session = runtime._session
+        assert runtime.stop_session()
+        # Stop returns before the source's asynchronous end callback necessarily
+        # runs. Joining the source publishes the drain thread without waiting
+        # for native tracking, which remains blocked until backend.release.
+        session.join(timeout=3)
+        assert not session.running, "source did not initiate the tracking drain"
+        thread = runtime._end_drain_thread
+        assert thread.is_alive()
+        assert runtime.status()["scene_drain"] == {
+            "state": "running", "stage": "tracking",
+        }
+        assert runtime.scene_snapshot()["state"] == "running"
+        assert not runtime.push_camera_frame(jpeg(), width=80, height=48)
+        with pytest.raises(RuntimeError, match="already running"):
+            runtime.start_camera(dry_run=True, features=["smoking"])
         backend.release.set()
-        assert coordinator.wait_until_idle(5)
-        assert runtime.scene_snapshot()["tracking_completed_frame_sequence"] is None
+        thread.join(5)
+        assert not thread.is_alive()
+        assert runtime.status()["pipeline_state"] == "idle"
+        wait_for_postprocessing(runtime)
+        assert runtime.status()["scene_drain"] == {"state": "completed"}
+        assert runtime.scene_snapshot()["state"] == "stopped"
+        assert runtime.scene_snapshot()["tracking_completed_frame_sequence"] == 15
+        assert backend.calls == [(16, False), (0, True)]
+
+
+def test_closed_tracker_reports_failed_finalization_instead_of_waiting_forever(
+    runtime, monkeypatch,
+):
+    with continuous(runtime) as (coordinator, _):
+        coordinator.close(timeout_seconds=5)
+        # A closed tracker may retain unfinished cleanup bookkeeping; no worker
+        # remains to turn that pending state into a successful idle result.
+        monkeypatch.setattr(coordinator, "wait_until_idle", lambda **kwargs: False)
+        session = runtime._session
+        assert runtime.stop_session()
+        session.join(3)
+        runtime._end_drain_thread.join(3)
+        assert not runtime._end_drain_thread.is_alive()
+        assert runtime.status()["scene_drain"] == {"state": "failed"}
+        assert runtime.status()["pipeline_state"] == "error"
+        assert runtime.status()["last_error"] == service.PUBLIC_TRACKING_ERROR
+        assert runtime._session is None
 
 
 def test_natural_eof_keeps_source_evidence_until_final_temporal_verdicts(runtime):
@@ -372,6 +438,7 @@ def test_natural_eof_keeps_source_evidence_until_final_temporal_verdicts(runtime
             release.set()
             runtime._end_drain_thread.join(5)
             assert not runtime._end_drain_thread.is_alive()
+            wait_for_postprocessing(runtime)
             assert runtime.status()["scene_drain"] == {"state": "completed"}
             assert worker.stats()["succeeded_requests"] == 2
             assert (

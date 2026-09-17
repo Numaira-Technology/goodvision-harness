@@ -6,7 +6,7 @@ import io
 import time
 from dataclasses import replace
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 
 import pytest
 from fastapi.testclient import TestClient
@@ -199,7 +199,13 @@ def test_temporal_evidence_api_returns_exact_source_and_expires_on_reset(factory
         assert history and history[0]["event_label"] == "smoking"
         assert "identity" not in history[0]
         old_url = evidence["frames"][0]["url"]
+        session = runtime._session
         assert runtime.stop_session()
+        session.join(timeout=5)
+        assert not session.running
+        runtime._end_drain_thread.join(timeout=5)
+        assert not runtime._end_drain_thread.is_alive()
+        assert runtime.status()["pipeline_state"] == "idle"
         assert client.get("/v1/scene/evidence").status_code == 404
         assert client.get(old_url).status_code == 404
         runtime.start_camera(dry_run=True, features=["smoking"])
@@ -348,7 +354,7 @@ def test_active_exact_face_frame_keeps_source_bytes_and_rejects_stale_or_foreign
 
 def test_live_active_session_requires_a_tracker_before_start(factory):
     runtime = factory()
-    with pytest.raises(RuntimeError, match=r"SAM|tracker"):
+    with pytest.raises(RuntimeError, match="person tracking module"):
         runtime.start_camera(dry_run=False, features=["smoking"])
     assert runtime._session is None
     assert runtime._scene_worker is None
@@ -405,7 +411,99 @@ def test_actual_worker_confirms_canonical_person_event_and_unknown_does_not_clea
     )
 
 
-def test_restarting_session_cannot_publish_old_model_response(factory):
+def _fake_encoder(_manifest, destination, **_kwargs):
+    destination.write_bytes(b"scene-evidence")
+    return {"duration_seconds": 3.0, "fps": 5.0, "partial": False}
+
+
+def test_temporal_events_keep_separate_videos_for_the_same_person(factory):
+    runtime = factory(tracker=True, inspector=Inspector())
+    archive = runtime.event_archive()
+    archive._encoder = _fake_encoder
+    with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:
+        runtime.start_camera(dry_run=False, features=["smoking", "fall"])
+        _observe(runtime, 0, 0)
+        _observe(runtime, 1, 10)
+        _await(lambda: runtime._scene_worker.stats()["succeeded_requests"] >= 1)
+        _observe(runtime, 4, 40)
+        _await(lambda: runtime._scene_worker.stats()["succeeded_requests"] >= 2)
+        _observe(runtime, 5, 50)
+        _observe(runtime, 7, 70)
+        _await(lambda: len([
+            event for event in runtime.scene_snapshot()["scene"]["events"]
+            if event["phase"] == "confirmed"
+        ]) == 2)
+        canonical = runtime.scene_snapshot()["scene"]["entities"][0]["subject_id"]
+        assert runtime.stop_session()
+        _await(lambda: runtime.status()["pipeline_state"] == "idle")
+        _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+        events = client.get("/v1/events").json()["events"]
+        assert {event["event_label"] for event in events} == {"smoking", "fall"}
+        assert len({event["event_id"] for event in events}) == 2
+        assert all(event["subject_ids"] == [canonical] for event in events)
+        assert all(event["finalized"] for event in events)
+        for event in events:
+            assert event["evidence"]["status"] == "ready"
+            video = client.get(event["evidence"]["available"]["url"])
+            assert video.status_code == 200
+            assert video.content == b"scene-evidence"
+
+
+def test_full_archive_queue_retains_distinct_episodes_until_stop_drain(
+    factory, monkeypatch,
+):
+    runtime = factory()
+    archive = runtime.event_archive()
+    archive._encoder = _fake_encoder
+    runtime.start_camera(dry_run=True, features=["smoking"])
+    session = runtime._session
+    allow, final_attempted = Event(), Event()
+    submit = archive.submit_scene
+
+    def temporarily_full(snapshot, **kwargs):
+        if snapshot["state"] == "stopped":
+            final_attempted.set()
+        return allow.is_set() and submit(snapshot, **kwargs)
+
+    monkeypatch.setattr(archive, "submit_scene", temporarily_full)
+    try:
+        for timestamp in range(1, 15):
+            runtime._last_scene_publish_monotonic = time.monotonic()
+            _observe(runtime, timestamp, timestamp * 10)
+            subject = runtime.scene_snapshot()["scene"]["entities"][0]["subject_id"]
+            assert runtime._scene.scene.observe_event(
+                "smoking", (subject,), timestamp_seconds=timestamp,
+                frame_sequence=timestamp * 10, detected=timestamp in {1, 2, 13, 14},
+                confidence=0.9, evidence_id=f"temporal-{timestamp}",
+            )
+            # Several worker updates can be observed in the next snapshot.
+            # Its terminal transition must finish the older retained episode.
+            if timestamp in {2, 14}:
+                runtime._on_scene_update()
+        assert runtime.stop_session()
+        assert final_attempted.wait(2)
+        assert runtime.status()["pipeline_state"] == "idle"
+        assert runtime.status()["postprocessing_runs"][-1]["state"] == "running"
+        allow.set()
+        _await(lambda: runtime.status()["pipeline_state"] == "idle")
+        _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+        events = archive.list_events(stream_session_id=session.stream_session_id)[
+            "events"
+        ]
+        assert len(events) == 2
+        assert {event["start_seconds"] for event in events} == {1, 13}
+        assert len({event["event_id"] for event in events}) == 2
+        first = next(event for event in events if event["start_seconds"] == 1)
+        assert first["end_reason"] == "negative"
+        assert first["end_seconds"] == 12
+        assert all(event["subject_ids"] == [subject] for event in events)
+        assert all(event["finalized"] for event in events)
+        assert all(event["evidence"]["status"] == "ready" for event in events)
+    finally:
+        allow.set()
+
+
+def test_stop_finishes_accepted_model_response_before_permitting_restart(factory):
     inspector = Inspector(blocked=True)
     runtime = factory(tracker=True, inspector=inspector)
     runtime.start_camera(dry_run=False, features=["smoking"])
@@ -413,16 +511,73 @@ def test_restarting_session_cannot_publish_old_model_response(factory):
     _observe(runtime, 1, 10)
     assert inspector.started.wait(2)
     old_scene = runtime._scene
+    old_generation = runtime._generation
     assert runtime.stop_session()
-    runtime.start_camera(dry_run=True, features=["smoking"])
-    current_scene = runtime._scene
+    assert runtime.status()["pipeline_state"] == "draining"
+    assert runtime._generation == old_generation
+    assert runtime._scene is old_scene
+    assert not runtime.push_camera_frame(_jpeg(), width=240, height=160)
+    with pytest.raises(RuntimeError, match="already running"):
+        runtime.start_camera(dry_run=True, features=["smoking"])
     inspector.release.set()
     assert inspector.closed.wait(2)
+    _await(lambda: runtime.status()["pipeline_state"] == "idle")
+    _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+    assert old_scene.snapshot()["stats"]["completed_inspections"] >= 1
+    assert old_scene.snapshot()["scene"]["events"]
+    runtime.start_camera(dry_run=True, features=["smoking"])
+    current_scene = runtime._scene
     assert current_scene.stream_session_id != old_scene.stream_session_id
     assert current_scene.snapshot()["scene"]["events"] == []
     assert current_scene.snapshot()["stats"]["completed_inspections"] == 0
     assert runtime.scene_results.latest() is None
     assert runtime.annotated_frames.latest() is None
+
+
+def test_stopped_run_evidence_does_not_block_or_mutate_the_next_run(
+    factory, monkeypatch,
+):
+    runtime = factory()
+    runtime.start_camera(dry_run=True, features=["smoking"])
+    session = runtime._session
+    archive = session.archive
+    entered, release = Event(), Event()
+    original_wait = archive.wait_until_idle
+
+    def gated_wait(*args, **kwargs):
+        if kwargs.get("stream_session_id") == session.stream_session_id:
+            entered.set()
+            if not release.wait(kwargs.get("timeout_seconds", 0.1)):
+                return False
+        return original_wait(*args, **kwargs)
+
+    monkeypatch.setattr(archive, "wait_until_idle", gated_wait)
+    try:
+        assert runtime.stop_session()
+        assert entered.wait(2)
+        assert not session.running
+        assert runtime.status()["pipeline_state"] == "idle"
+        assert runtime._session is None
+        assert runtime.status()["postprocessing_runs"][-1]["stage"] == "evidence"
+        runtime.start_camera(dry_run=True, features=["smoking"])
+        new_session, new_scene, generation = (
+            runtime._session, runtime._scene, runtime._generation,
+        )
+        assert new_session.stream_session_id != session.stream_session_id
+        _observe(runtime, 1, 10)
+        before = runtime.scene_snapshot()["scene"]
+        release.set()
+        _await(lambda: runtime._run_postprocess[
+            session.stream_session_id
+        ].state == "finalized")
+        assert runtime._session is new_session
+        assert runtime._scene is new_scene
+        assert runtime._generation == generation
+        assert runtime.status()["pipeline_state"] == "running"
+        assert runtime.status()["scene_drain"] is None
+        assert runtime.scene_snapshot()["scene"] == before
+    finally:
+        release.set()
 
 
 def test_active_configuration_environment_is_effective(monkeypatch):
@@ -452,3 +607,295 @@ def test_invalid_active_configuration_is_rejected(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
     with pytest.raises((ValueError, TypeError)):
         load_config(ROOT / "config.yaml")
+
+
+def test_camera_source_ids_and_metrics_are_isolated_across_runs(factory):
+    runtime = factory()
+    with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:
+        runtime.start_camera(dry_run=True, features=["smoking"])
+        sid = runtime._session.stream_session_id
+        source = {
+            "stream_session_id": sid, "generation": 8, "crop_version": 0,
+            "source_sequence": 42, "media_timestamp": 1.25,
+        }
+        assert runtime.push_camera_frame(_jpeg(), width=240, height=160, **source)
+        frame = runtime.preview_frames.latest()[1]
+        assert (frame.frame_sequence, frame.media_timestamp) == (42, 1.25)
+        # A retransmission after a lost ACK is idempotently accepted.
+        before = runtime.status()["source_frames_received"]
+        assert runtime.push_camera_frame(_jpeg(), width=240, height=160, **source)
+        assert runtime.status()["source_frames_received"] == before
+        metadata = client.get("/v1/video/display/metadata").json()
+        assert metadata["generation"] == 8
+        metrics = {
+            "stream_session_id": sid, "generation": 8, "crop_version": 0,
+            "report_sequence": 1, "captured_frames": 20,
+            "distinct_presented_frames": 15, "window_presented_fps": 15.0,
+            "contour_frame_ratio": 0.5,
+            "complete_contour_frames": 3, "partial_contour_frames": 4,
+            "complete_contour_frame_ratio": 0.2,
+        }
+        assert client.post("/v1/video/display/metrics", json=metrics).json()["accepted"]
+        duplicate = client.post("/v1/video/display/metrics", json=metrics).json()
+        assert not duplicate["accepted"]
+        assert client.post("/v1/video/display/metrics", json={
+            **metrics, "jpeg": "not-allowed",
+        }).status_code == 400
+        assert client.post("/v1/video/display/metrics", json={
+            **metrics, "complete_contour_frame_ratio": 1.1,
+        }).status_code == 400
+        assert runtime.stop_session()
+        _await(lambda: runtime.status()["pipeline_state"] == "idle")
+        runtime.start_camera(dry_run=True, features=["smoking"])
+        assert not runtime.push_camera_frame(
+            _jpeg(), width=240, height=160,
+            **{**source, "source_sequence": 43, "media_timestamp": 1.5},
+        )
+        assert not client.post("/v1/video/display/metrics", json={
+            **metrics, "report_sequence": 2,
+        }).json()["accepted"]
+        assert runtime.status()["local_camera_display"] is None
+        assert client.get("/assets/camera_display.js").status_code == 200
+
+
+def test_camera_websocket_sends_geometry_without_waiting_for_another_upload(
+    factory, monkeypatch, caplog,
+):
+    import asyncio
+    import json
+    import struct
+    from types import SimpleNamespace
+
+    runtime = factory()
+    with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:
+        with client.websocket_connect("/ws") as socket:
+            assert socket.receive_json()["type"] == "hello"
+            socket.send_json({"type": "start", "mode": "camera", "dry_run": True,
+                              "features": ["smoking"]})
+            started = socket.receive_json()
+            sid = started["stream_session_id"]
+            source = {"stream_session_id": sid, "generation": 8, "crop_version": 0,
+                      "source_sequence": 42, "media_timestamp": 1.25,
+                      "width": 240, "height": 160}
+            encoded = json.dumps(source).encode()
+            # A successful upload ACK must not call the full metadata snapshot.
+            original = runtime._camera_display_metadata.snapshot
+            def snapshot_off_loop():
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    return original()
+                raise AssertionError("metadata snapshot blocked the ASGI event loop")
+            monkeypatch.setattr(runtime._camera_display_metadata, "snapshot", snapshot_off_loop)
+            socket.send_bytes(b"GVC2" + struct.pack(">I", len(encoded)) + encoded + _jpeg())
+            while True:
+                message = socket.receive_json()
+                if message["type"] == "camera_frame_ack":
+                    assert message["accepted"] and message["source_sequence"] == 42
+                    break
+            runtime._camera_display_metadata.observe_batch(SimpleNamespace(
+                stream_session_id=sid, predictor_epoch="test-epoch", frames=(
+                    SimpleNamespace(frame_sequence=42, timestamp_seconds=1.25, objects=()),
+                ),
+            ))
+            while True:
+                message = socket.receive_json()
+                if message["type"] == "camera_display_metadata" and message["anchors"]:
+                    break
+            assert message["anchors"][0]["source_sequence"] == 42
+            assert message["anchors"][0]["subjects"] == []
+            assert message["generation"] == 8
+            with caplog.at_level("INFO", logger="uvicorn.error"):
+                socket.send_json({"type": "camera_display_metrics",
+                                  "stream_session_id": sid, "generation": 8,
+                                  "crop_version": 0, "report_sequence": 1,
+                                  "captured_frames": 1})
+                _await(lambda: runtime._state["local_camera_display"] is not None)
+            assert "local_camera_display_timing" in caplog.text
+            socket.send_json({"type": "stop"})
+            while socket.receive_json()["type"] != "ended":
+                pass
+
+
+def test_stop_cannot_join_the_drain_worker_before_its_thread_starts(
+    factory, monkeypatch,
+):
+    runtime = factory()
+    runtime.start_camera(dry_run=True, features=["smoking"])
+    starting, allow_start, stopped = Event(), Event(), Event()
+    errors = []
+
+    class DelayedDrainThread(Thread):
+        def start(self):
+            if self.name == "scene-source-end":
+                starting.set()
+                assert allow_start.wait(3)
+            super().start()
+
+    monkeypatch.setattr(service, "Thread", DelayedDrainThread)
+
+    def stop_capture():
+        try:
+            assert runtime.stop_session()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            stopped.set()
+
+    stopper = Thread(target=stop_capture, daemon=True)
+    try:
+        stopper.start()
+        assert starting.wait(2)
+        # stop_session may time out its short wait, but it must not join the
+        # drain thread while Thread.start() is still publishing OS ownership.
+        assert stopped.wait(1)
+        assert not errors
+    finally:
+        allow_start.set()
+        stopper.join(timeout=3)
+    _await(lambda: getattr(runtime, "_end_drain_thread", None) is not None)
+    runtime._end_drain_thread.join(timeout=3)
+    assert not runtime._end_drain_thread.is_alive()
+    assert runtime.status()["pipeline_state"] == "idle"
+
+
+def test_rejected_camera_sample_does_not_advance_source_receipt(factory, monkeypatch):
+    runtime = factory()
+    runtime.start_camera(dry_run=True, features=["smoking"])
+    session = runtime._session
+    source = {
+        "stream_session_id": session.stream_session_id, "generation": 1,
+        "crop_version": 0, "source_sequence": 50, "media_timestamp": 2.0,
+    }
+    original = session.push_camera_frame
+    monkeypatch.setattr(session, "push_camera_frame", lambda *_a, **_k: False)
+    assert not runtime.push_camera_frame(_jpeg(), width=240, height=160, **source)
+    assert runtime._camera_display_metadata.last_source == (-1, -1.0)
+    assert runtime._camera_next_sample_at == 0
+    monkeypatch.setattr(session, "push_camera_frame", original)
+    assert runtime.push_camera_frame(_jpeg(), width=240, height=160, **source)
+    assert runtime._camera_display_metadata.last_source == (50, 2.0)
+
+
+def test_background_snapshot_refreshes_after_gallery_delete(factory, monkeypatch):
+    from types import SimpleNamespace
+
+    runtime = factory()
+    runtime.start_camera(dry_run=True, features=["smoking"])
+    session, scene = runtime._session, runtime._scene
+    entered, release = Event(), Event()
+    original_wait = session.archive.wait_until_idle
+    original_snapshot = scene.snapshot
+    identity = {"person_id": "deleted-person", "name": "Old name"}
+
+    def snapshot(*args, **kwargs):
+        result = original_snapshot(*args, **kwargs)
+        result["identity_probe"] = dict(identity)
+        return result
+
+    def gated_wait(*args, **kwargs):
+        if kwargs.get("stream_session_id") == session.stream_session_id:
+            entered.set()
+            if not release.wait(kwargs.get("timeout_seconds", 0.1)):
+                return False
+        return original_wait(*args, **kwargs)
+
+    monkeypatch.setattr(scene, "snapshot", snapshot)
+    monkeypatch.setattr(scene, "forget_identity", lambda _person: identity.clear())
+    monkeypatch.setattr(session.archive, "wait_until_idle", gated_wait)
+    monkeypatch.setattr(runtime, "_ensure_face_runtime", lambda: SimpleNamespace(
+        delete_person=lambda _person: True,
+    ))
+    try:
+        assert runtime.stop_session()
+        assert entered.wait(2)
+        assert runtime.delete_face("deleted-person")
+        release.set()
+        _await(lambda: runtime._run_postprocess[session.stream_session_id].state
+               == "finalized")
+        assert runtime.scene_snapshot()["identity_probe"] == {}
+    finally:
+        release.set()
+
+
+def test_scene_archive_failure_cannot_finalize_run(factory, monkeypatch):
+    runtime = factory()
+    runtime.start_camera(dry_run=True, features=["smoking"])
+    sid = runtime._session.stream_session_id
+    monkeypatch.setattr(
+        runtime._scene_archive, "failed_for_run", lambda run: run == sid,
+    )
+    assert runtime.stop_session()
+    _await(lambda: runtime._run_postprocess[sid].state == "failed")
+    assert runtime._run_postprocess[sid].error == "postprocess_failed"
+    assert runtime.status()["scene_drain"] == {"state": "failed"}
+
+
+def test_worker_start_failure_stops_already_started_source(factory, monkeypatch):
+    runtime = factory(tracker=True, inspector=Inspector())
+    started = []
+    original_start = pipeline.StreamingSession.start
+
+    def source_start(session):
+        started.append(session)
+        original_start(session)
+
+    def fail_worker_start(_worker):
+        raise RuntimeError("injected worker startup failure")
+
+    monkeypatch.setattr(pipeline.StreamingSession, "start", source_start)
+    monkeypatch.setattr(service.SceneInspectionWorker, "start", fail_worker_start)
+    with pytest.raises(RuntimeError, match="injected worker"):
+        runtime.start_camera(dry_run=False, features=["smoking"])
+    assert len(started) == 1
+    assert not started[0].running
+    assert runtime._session is None
+    assert runtime.status()["pipeline_state"] == "error"
+    assert runtime._run_postprocess[started[0].stream_session_id].state == "failed"
+
+
+def test_blocked_status_does_not_stall_display_metadata_event_loop():
+    import asyncio
+    from threading import Timer
+    from types import SimpleNamespace
+
+    import httpx
+
+    from goodvision_harness.camera_display import CameraDisplayMetadata
+
+    entered, release = Event(), Event()
+    metadata = CameraDisplayMetadata()
+
+    def slow_status():
+        entered.set()
+        release.wait(2)
+        return {"pipeline_state": "running"}
+
+    app = service.create_app()
+    app.state.runtime = SimpleNamespace(
+        status=slow_status, _camera_display_metadata=metadata,
+    )
+
+    async def check():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            started = time.monotonic()
+            blocked = asyncio.create_task(client.get("/v1/status"))
+            try:
+                assert await asyncio.to_thread(entered.wait, 1)
+                response = await client.get("/v1/video/display/metadata")
+                assert response.status_code == 200
+                assert time.monotonic() - started < 1
+                assert not blocked.done()
+            finally:
+                release.set()
+                await blocked
+
+    watchdog = Timer(1.5, release.set)
+    watchdog.start()
+    try:
+        asyncio.run(check())
+    finally:
+        release.set()
+        watchdog.cancel()

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -37,6 +37,12 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
 .analysis-workspace.fullscreen-active .frame-summary{position:absolute;z-index:7;left:16px;right:360px;bottom:16px;background:rgba(8,15,27,.82);border-color:rgba(255,255,255,.2);border-left-color:#60a5fa;backdrop-filter:blur(14px)}.analysis-workspace.fullscreen-active .frame-summary h3,.analysis-workspace.fullscreen-active .frame-summary-text{color:#f1f5f9}.analysis-workspace.fullscreen-active .frame-summary-meta{color:#cbd5e1}.analysis-workspace.fullscreen-active .frame-summary-text{max-height:18vh}
 @media(max-width:720px){.analysis-workspace.fullscreen-active .frame-summary{left:10px;right:10px;bottom:auto;top:110px;padding:10px 12px}.analysis-workspace.fullscreen-active .frame-summary-text{font-size:12px;max-height:15vh}}
 </style>
+<style>
+.fleet-grid.compact{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}.fleet-grid.compact .fleet-card-fields{display:none}.fleet-grid.compact .fleet-card-head{padding:9px 11px}.fleet-grid.compact .fleet-card-head h3{font-size:12px}.fleet-preview{width:100%}
+</style>
+<style>
+.fleet-panel{margin-bottom:18px}.fleet-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.fleet-heading{display:grid;gap:7px}.fleet-heading h2{font-size:19px;letter-spacing:-.02em}.fleet-actions{display:flex;gap:8px;flex-wrap:wrap}.fleet-mode{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#e8f2ff;color:#1d4ed8;border-radius:999px;font-size:11.5px;font-weight:750}.fleet-count{margin:14px 0 10px;font-size:13px;font-weight:700;color:var(--muted)}.fleet-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:14px}.fleet-card{min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fbfcfe}.fleet-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px}.fleet-card-head h3{font-size:14px}.fleet-camera-state{font-size:11.5px;color:var(--muted);padding:3px 8px;border-radius:999px;background:#edf0f5}.fleet-camera-state.good{color:#166534;background:#dcfce7}.fleet-camera-state.error{color:#991b1b;background:#fee2e2}.fleet-preview{position:relative;aspect-ratio:16/9;background:#111827;display:grid;place-items:center;overflow:hidden}.fleet-preview img{position:absolute;width:100%;height:100%;object-fit:contain}.fleet-preview-note{color:#b5bfd0;padding:20px;text-align:center;font-size:12px;line-height:1.6;z-index:1}.fleet-preview-note.over-image{align-self:end;justify-self:stretch;background:rgba(15,23,42,.8);padding:8px}.fleet-card-fields{padding:12px;display:grid;gap:9px}.fleet-source{font-size:11.5px;color:var(--muted);line-height:1.4}.fleet-card input{min-width:0}.fleet-card .field>span{letter-spacing:0;text-transform:none}.fleet-card select{min-width:0;width:100%}.fleet-card-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.fleet-card-buttons .btn{font-size:12px;padding:7px 10px}.fleet-card-buttons .fleet-remove{margin-left:auto;color:var(--muted)}.fleet-card-detail{font-size:11.5px;min-height:18px;overflow-wrap:anywhere;color:var(--muted)}.fleet-card-detail.error{color:var(--red)}.fleet-summary{margin-top:10px;min-height:19px}.fleet-detail-bar{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}.fleet-detail-bar .note{flex:1}.fleet-detail-label{margin:0 0 14px;color:var(--muted);font-size:13px}.fleet-grid[data-single="true"]{max-width:960px}.fleet-grid[data-single="true"] .fleet-preview{max-height:450px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:minmax(0,2fr) minmax(150px,1fr)}.fleet-grid[data-single="true"] .fleet-card-buttons,.fleet-grid[data-single="true"] .fleet-card-detail,.fleet-grid[data-single="true"] .fleet-source{grid-column:1/-1}@media(min-width:1800px){.fleet-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:600px){.fleet-actions{width:100%}.fleet-actions .btn{flex:1;padding:8px 10px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:1fr}.fleet-panel{padding:12px}}
+</style>
 </head>
 <body>
 <header>
@@ -69,12 +75,20 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     </div>
     <div class="deployment-grid">
       <div class="deployment-fields">
+        <div class="field"><span>本地显卡运行</span></div>
+        <div class="row">
+          <label class="switch"><input id="local-inference-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help"> 大模型使用本地显卡</label>
+          <label class="switch"><input id="local-tracking-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help"> 人物追踪使用本地显卡</label>
+        </div>
+        <div id="local-gpu-status" class="secret-status" role="status" aria-live="polite">正在读取本地显卡状态…</div>
+        <div id="local-gpu-help" class="secret-status">两项可独立选择，保存后对新会话生效。1 张显卡时共用 GPU 0；2 张或以上时，大模型使用 GPU 0，人物追踪和其他本地 GPU 任务使用 GPU 1。关闭的模块继续使用原部署服务。</div>
         <label class="field">
           <span>Default network stream URL</span>
           <input id="default-stream-url" type="password" autocomplete="new-password" spellcheck="false"
                  placeholder="Leave blank to keep the saved/default source">
         </label>
         <div id="default-stream-status" class="secret-status">Checking the saved/default video source...</div>
+        <div id="cloud-model-settings" class="stack">
         <label class="field">
           <span>Model API key</span>
           <input id="default-api-key" type="password" autocomplete="new-password" spellcheck="false"
@@ -85,16 +99,17 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
           <button id="save-api-key-button" class="btn" disabled>保存 API key</button>
           <span class="note">可直接在此配置，无需 .env；保存后重启仍有效。正式检测请取消 Test mode。</span>
         </div>
+        </div>
       </div>
       <div class="deployment-options">
         <span class="metric-label">Defaults for future sessions</span>
         <div id="processing-method-field" hidden>
-          <label class="field"><span>人物处理方式 · A / B 对比</span>
-            <select id="processing-method" aria-describedby="processing-method-note" disabled></select>
-          </label>
+          <div class="field"><span>人物描边</span>
+            <strong id="processing-method" aria-describedby="processing-method-note">人员追踪模块 连续分析</strong>
+          </div>
           <div id="processing-method-selected" class="secret-status" style="margin-top:8px"></div>
           <div id="processing-method-note" class="secret-status" role="status" aria-live="polite"></div>
-          <div class="secret-status" style="margin-top:8px">停止检测 → 选择方式 → 保存默认设置 → 重新开始。每次运行只使用一种方式。</div>
+          <div class="secret-status" style="margin-top:8px">画面与人物描边优先显示；事件报警和描边变色在复核后更新。</div>
         </div>
         <label class="field"><span>默认网络摄像头类型</span>
           <select id="default-camera-layout">
@@ -115,16 +130,16 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     </div>
     <div id="deployment-note" class="status deployment-note" role="status" aria-live="polite">Loading persistent settings...</div>
     <div id="processing-comparison" hidden style="margin-top:14px">
-      <div class="section-title"><h2>两种方式 · 最近运行观测</h2></div>
-      <div class="note">当前页面记录每种方式最近一次运行的数据。人物结果延迟与画面延迟分开显示；比较时请使用相同视频、采样频率和缓存设置。事件判断另需时间。</div>
+      <div class="section-title"><h2>人员追踪模块 连续分析 · 运行观测</h2></div>
+      <div class="note">目标：画面与完整人物描边尽量在 2 秒内显示。下方为服务端实测值，不代表摄像头到屏幕的完整延迟；事件复核独立进行，报警和颜色可能稍后更新。</div>
       <div class="scroll"><table>
-        <thead><tr><th>处理方式</th><th>运行状态</th><th>人物结果延迟</th><th>画面实际延迟</th><th>已处理帧</th><th>丢弃帧</th></tr></thead>
+        <thead><tr><th>人物分析</th><th>运行状态</th><th>人物结果延迟</th><th>输出帧延迟</th><th>已处理帧</th><th>丢弃帧</th></tr></thead>
         <tbody id="processing-comparison-body"></tbody>
       </table></div>
     </div>
   </section>
 
-  <section class="panel control-panel" aria-labelledby="route-title">
+  <section id="cloud-route-panel" class="panel control-panel" aria-labelledby="route-title">
     <div class="deployment-head">
       <div class="deployment-title">
         <div class="section-title"><h2 id="route-title">线路测速</h2><span class="scope persistent">启动前检查</span></div>
@@ -141,6 +156,30 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     </div>
   </section>
 
+  <section id="fleet-panel" class="panel fleet-panel" aria-labelledby="fleet-title">
+    <div class="fleet-toolbar">
+      <div class="fleet-heading">
+        <div class="section-title"><h2 id="fleet-title">视频总览</h2><span id="fleet-mode" class="fleet-mode">正在检查运行模式</span></div>
+        <p id="fleet-capacity" class="note">正在读取可用摄像头通道…</p>
+      </div>
+      <div class="fleet-actions">
+        <button id="fleet-view-toggle" type="button" class="btn" aria-pressed="false" hidden>只看画面</button>
+        <button id="fleet-add" type="button" class="btn" disabled>＋ 添加一路</button>
+        <button id="fleet-start-all" type="button" class="btn primary" disabled>连接全部</button>
+        <button id="fleet-stop-all" type="button" class="btn danger" disabled>停止全部</button>
+      </div>
+    </div>
+    <div id="fleet-count" class="fleet-count">正在加载…</div>
+    <div id="fleet-grid" class="fleet-grid" aria-label="摄像头画面"></div>
+    <div id="fleet-note" class="status fleet-summary" role="status" aria-live="polite"></div>
+    <div class="fleet-detail-bar">
+      <span class="note">每路可独立连接与停止，互不影响。总览画面每秒最多刷新 4 次，不改变每路约 1.25 次/秒的分析频率。本路检测选项、浏览器摄像头和完整结果请进入详细控制。</span>
+      <button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false">展开本路详细控制</button>
+    </div>
+  </section>
+
+  <div id="fleet-detail-console" hidden>
+  <p class="fleet-detail-label">本路详细控制 · 仅管理当前服务的摄像头，其他路请使用对应卡片。</p>
   <section class="panel control-panel">
     <div class="control-grid">
       <div class="control-block">
@@ -201,6 +240,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
             <strong id="connection-state" class="state-name">Checking service</strong>
           </div>
           <div id="connection-detail" class="state-detail">Waiting for the runtime status endpoint.</div>
+          <div id="postprocessing-status" class="state-detail" role="status" hidden></div>
         </div>
         <div class="channel-row">
           <span id="control-channel" class="channel">Control WS · closed</span>
@@ -214,7 +254,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     <section id="annotation-panel" class="panel stack annotation-panel">
       <div class="annotation-main">
         <div class="head annotation-head">
-          <div class="section-title"><span class="step">2</span><h2>Continuous delayed annotation</h2></div>
+          <div class="section-title"><span class="step">2</span><h2>实时画面与 人员追踪模块 描边</h2></div>
           <div class="annotation-actions">
             <span id="stream-meta">buffering</span>
             <button id="fullscreen-button" class="viewport-control" type="button"
@@ -230,6 +270,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
         <div id="live-viewport" class="viewport">
           <div id="raw-placeholder" class="placeholder">Connect a source above to inspect the Docker-delivered output.</div>
           <video id="camera-preview" muted playsinline autoplay></video>
+          <canvas id="camera-display" style="position:absolute;inset:0;display:none;width:100%;height:100%;object-fit:contain;background:#0b0f16;z-index:1" aria-label="连续摄像头画面与人物描边"></canvas>
           <img id="raw-feed" alt="Waiting for the continuous annotated stream">
           <div id="bbox-layer" class="bbox-layer" aria-hidden="true"></div>
           <div id="raw-badge" class="badge"><span class="dot"></span><span id="raw-badge-text">LIVE</span></div>
@@ -287,20 +328,21 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     </div>
     <div class="deployment-actions">
       <label class="field">
-        <span>视频缓存（秒）</span>
+        <span>网络视频缓存（秒）</span>
         <input id="buffer-delay-seconds" type="number" min="0" max="30" step="any" disabled
-               aria-describedby="buffer-delay-note" placeholder="2.5">
+               aria-describedby="buffer-delay-note" placeholder="0">
       </label>
       <button id="save-buffer-delay-button" class="btn primary" disabled>应用并保存缓存时间</button>
       <span id="buffer-delay-current" class="note">正在读取缓存时间…</span>
     </div>
-    <div class="note">可设为 0–30 秒，支持小数。运行中可调整，重启后保留。调大后画面会短暂等待；调小后会追上新延迟。</div>
+    <div id="local-camera-buffer-note" class="note" hidden></div>
+    <div class="note">此设置仅适用于网络视频，额外显示缓存可设为 0–30 秒，运行中可调整，重启后保留。调小后会跳过旧画面、追上最新结果。本机摄像头使用独立的描边缓冲，由部署配置设置。</div>
     <div id="buffer-delay-note" class="status deployment-note" role="status" aria-live="polite"></div>
     <div class="metrics">
       <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
       <div class="metric"><span class="metric-label">Results published</span><strong id="published-result-count" class="metric-value">0</strong><span id="last-result-note" class="metric-note">No result yet</span></div>
       <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Each image identifies its source result</span></div>
-      <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">Waiting for delayed frames</span></div>
+      <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">等待首帧描边结果</span></div>
     </div>
     <div class="endpoint-grid" aria-label="Output and API shortcuts">
       <a class="endpoint" href="/v1/video/annotated/stream.mjpeg" target="_blank" rel="noreferrer">Annotated stream <small>MJPEG</small></a>
@@ -376,8 +418,10 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
       </table>
     </div>
   </section>
+  </div>
 </main>
 
+<script src="/assets/camera_display.js"></script>
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
@@ -385,6 +429,9 @@ const ui={
   deploymentStorage:$("deployment-storage"),defaultStreamUrl:$("default-stream-url"),
   defaultStreamStatus:$("default-stream-status"),defaultApiKey:$("default-api-key"),
   defaultApiKeyStatus:$("default-api-key-status"),defaultDryRun:$("default-dry-run"),
+  localInference:$("local-inference-enabled"),localTracking:$("local-tracking-enabled"),
+  localGpuStatus:$("local-gpu-status"),cloudModelSettings:$("cloud-model-settings"),
+  cloudRoutePanel:$("cloud-route-panel"),
   defaultAutostart:$("default-autostart"),deploymentSourceStatus:$("deployment-source-status"),
   defaultCameraLayout:$("default-camera-layout"),cameraLayout:$("camera-layout"),
   processingField:$("processing-method-field"),processingMethod:$("processing-method"),
@@ -394,6 +441,7 @@ const ui={
   clearApiKey:$("clear-api-key-button"),deploymentNote:$("deployment-note"),
   bufferDelay:$("buffer-delay-seconds"),saveBufferDelay:$("save-buffer-delay-button"),
   bufferDelayCurrent:$("buffer-delay-current"),bufferDelayNote:$("buffer-delay-note"),
+  localCameraBufferNote:$("local-camera-buffer-note"),
   service:$("service-chip"),sourceChip:$("source-chip"),readinessChip:$("readiness-chip"),
   model:$("model-chip"),event:$("event-chip"),sampling:$("sampling-chip"),
   analysisChipLabel:$("analysis-chip-label"),eventControls:$("event-controls"),faceControls:$("face-controls"),
@@ -408,12 +456,13 @@ const ui={
   streamMeta:$("stream-meta"),runtimeError:$("runtime-error"),
   connectionOrb:$("connection-orb"),connectionState:$("connection-state"),
   connectionDetail:$("connection-detail"),controlChannel:$("control-channel"),sseChannel:$("sse-channel"),
+  postprocessingStatus:$("postprocessing-status"),
   outputChannel:$("output-channel"),lastUpdate:$("last-update"),
   sourceFrameCount:$("source-frame-count"),publishedResultCount:$("published-result-count"),
   analysisFrameCount:$("analysis-frame-count"),annotatedState:$("annotated-state"),
   annotatedNote:$("annotated-note"),lastFrameNote:$("last-frame-note"),lastResultNote:$("last-result-note"),
   statusLine:$("status-line"),viewport:$("live-viewport"),cameraPreview:$("camera-preview"),
-  rawFeed:$("raw-feed"),rawPlaceholder:$("raw-placeholder"),
+  rawFeed:$("raw-feed"),localCameraCanvas:$("camera-display"),rawPlaceholder:$("raw-placeholder"),
   rawBadge:$("raw-badge"),rawBadgeText:$("raw-badge-text"),bboxLayer:$("bbox-layer"),
   analysisWorkspace:$("analysis-workspace"),annotationPanel:$("annotation-panel"),
   classificationPanel:$("classification-panel"),fullscreenButton:$("fullscreen-button"),
@@ -440,10 +489,10 @@ const state={
   routes:null,routeLoading:false,routeSubmitting:false,routeRevision:0,
   info:null,mode:"stream",sessionAnalysisMode:null,sessionFeatures:null,
   deployment:null,deploymentLoading:false,deploymentSaving:false,runOverridesDirty:false,
-  processingMethodDirty:false,processingStatus:null,processingRuns:new Map(),
+  processingStatus:null,processingRuns:new Map(),
   bufferDelayDirty:false,
-  gallery:null,galleryLoading:false,running:false,pending:false,sessionId:null,sessionMode:null,
-  ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,count:0,
+  gallery:null,galleryLoading:false,running:false,pending:false,stopping:false,sessionId:null,sessionMode:null,sessionRevision:0,
+  ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,cameraGeneration:0,count:0,
   activeAnnotationId:null,annotationTimer:null,overlayCollapsed:false,overallResult:null,
   classificationJudgments:new Map(),classificationResult:null,classificationHistory:new Map(),
   notifiedResults:new Set(),runtimeErrorMessage:""
@@ -463,10 +512,36 @@ function scenePerson(subject){
   }
   return sceneView.aliases.get(key)
 }
+function sceneDrain(){
+  const runtime=state.processingStatus;
+  if(runtime&&(!runtime.stream_session_id||runtime.stream_session_id===state.sessionId))return runtime.scene_drain||{};
+  return sceneView.snapshot?.scene?.stream_session_id===state.sessionId?sceneView.snapshot.scene_drain||{}:{}
+}
+function sceneDrainMessage(drain=sceneDrain()){
+  return ({detection:"正在完成已接收画面的分析",tracking:"正在完成人物追踪",identity_review:"正在复核人脸并合并人物",
+    inspection:"正在完成事件复核",evidence:"正在整理人物记录和视频证据",postprocessing:"后台整理中，可以开始新的检测"})[drain.stage]||"正在完成人物复核、合并和视频证据整理"
+}
+function backgroundRuns(data=state.processingStatus){
+  return Array.isArray(data?.postprocessing_runs)?data.postprocessing_runs.filter(run=>run&&typeof run==="object"):[]
+}
+function backgroundMessage(data=state.processingStatus){
+  const runs=backgroundRuns(data),queued=runs.filter(run=>run.state==="queued").length,
+    running=runs.filter(run=>run.state==="running").length,failed=runs.filter(run=>run.state==="failed").length,
+    finalized=runs.filter(run=>run.state==="finalized").length;
+  const parts=[];
+  if(queued)parts.push(queued+" 次检测等待后台整理");
+  if(running)parts.push(running+" 次检测正在后台整理");
+  if(failed)parts.push(failed+" 次检测后台整理失败，请查看运行记录");
+  if(!parts.length&&finalized)parts.push(finalized+" 次检测后台整理已完成");
+  if(!parts.length&&data?.scene_drain?.state==="running"&&data.scene_drain.stage==="postprocessing")parts.push("后台整理中");
+  return parts.join("；")
+}
 function sceneCondition(){
   const data=sceneView.snapshot;
+  if(state.stopping||!state.running&&sceneDrain().state==="running")return "finalizing";
   if(!state.running||data&&["stopped","idle","disabled"].includes(data.state))return "stopped";
-  if(sceneView.error)return "unavailable";
+  if(sceneView.error||state.processingStatus?.rich_labeling?.state==="failed"||
+    state.processingStatus?.rich_labeling?.recovery_required===true)return "unavailable";
   if(!data||!data.scene)return "waiting";
   if(sceneView.advancedAt!==null&&Date.now()-sceneView.advancedAt>5000)return "stale";
   if(data.worker&&["failed","stopped","stopping"].includes(data.worker.state))return "unavailable";
@@ -485,15 +560,16 @@ function renderSceneDecision(){
   const live=events.filter(item=>item&&["suspected","confirmed"].includes(item.phase));
   const confirmed=live.filter(item=>item.phase==="confirmed");
   const labels=(Array.isArray(data.event_labels)?data.event_labels:visibleFeatures()).filter(key=>key!=="stranger");
-  const hasAlert=confirmed.length>0&&condition!=="stopped";
+  const historical=["stopped","finalizing"].includes(condition),hasAlert=confirmed.length>0&&!historical;
   ui.analysisChipLabel.textContent="持续事件";ui.event.textContent=labels.length+" 类";
   ui.eyebrow.textContent="连续事件判断";
   ui.decision.className="decision "+(hasAlert?"detected":"warming");
-  ui.verdict.textContent=condition==="stopped"?"已停止":hasAlert?"事件持续中":
+  ui.verdict.textContent=condition==="finalizing"?"后台收尾中":condition==="stopped"?"已停止":hasAlert?"事件持续中":
     condition==="unavailable"?"状态暂不可用":condition==="stale"?"画面未更新":live.length?"正在复核":"等待证据";
   ui.confidence.textContent=hasAlert?confirmed.map(item=>sceneName(item.event_label)).join(" · "):
     "根据连续观察更新事件状态";
-  ui.description.textContent=condition==="stopped"?"视频观察已停止，历史事件不代表当前状态。":
+  ui.description.textContent=condition==="finalizing"?(state.stopping?"正在完成已接收画面的分析并释放检测资源。":"检测已停止，"+sceneDrainMessage()+"。"):
+    condition==="stopped"?"视频观察已停止，历史事件不代表当前状态。":
     condition==="unavailable"?"暂时无法获得新的识别结果，已确认事件仍需后续证据更新。":
     condition==="stale"?"视频画面已一段时间没有推进，保留历史事件并等待新画面。":
     hasAlert&&confirmed.some(item=>item.observation_state==="uncertain")?"事件已确认；相关人物暂不可见或证据不足，持续状态待核实。":
@@ -506,9 +582,9 @@ function renderSceneDecision(){
     const active=group.find(item=>item.phase==="confirmed")||group.find(item=>item.phase==="suspected");
     const ended=group.find(item=>item.phase==="ended"),retracted=group.find(item=>item.phase==="retracted");
     const item=document.createElement("div"),name=document.createElement("span"),status=document.createElement("span");
-    const alert=condition!=="stopped"&&active&&active.phase==="confirmed";
+    const alert=!historical&&active&&active.phase==="confirmed";
     item.dataset.eventLabel=key;item.className="event-state "+(alert?"detected":"pending");name.textContent=sceneName(key);
-    status.textContent=condition==="stopped"?"已停止":active?
+    status.textContent=condition==="finalizing"?"后台复核与整理中":condition==="stopped"?"已停止":active?
       (active.phase==="confirmed"?"持续中":"疑似，复核中")+
       (active.observation_state==="uncertain"||["stale","unavailable"].includes(condition)?" · 待核实":""):
       condition==="unavailable"?"状态暂不可用":condition==="stale"?"等待新画面":ended?"已结束，继续观察":retracted?"判断已修订":"等待证据";
@@ -518,10 +594,26 @@ function renderSceneDecision(){
 function renderScene(){
   sceneUi.panel.hidden=!sceneView.enabled;if(!sceneView.enabled)return;
   const data=sceneView.snapshot||{},scene=data.scene||{},condition=sceneCondition();
-  const entities=(Array.isArray(scene.entities)?scene.entities:[]).filter(Boolean).slice(0,64);
-  const events=(Array.isArray(scene.events)?scene.events:[]).filter(Boolean).slice(-64).reverse();
+  const allEntities=(Array.isArray(scene.entities)?scene.entities:[]).filter(Boolean);
+  const entities=allEntities.slice(0,64),subjectNames=new Map(),nameCounts=new Map();
+  for(const entity of allEntities){
+    const identity=entity.identity,name=identity?.status==="known"&&typeof identity.name==="string"?identity.name.trim():"";
+    if(name)subjectNames.set(String(entity.subject_id),name)
+  }
+  for(const name of subjectNames.values())nameCounts.set(name,(nameCounts.get(name)||0)+1);
+  const eventSubject=subject=>{
+    const name=subjectNames.get(String(subject));
+    return name?(nameCounts.get(name)>1?name+"（"+scenePerson(subject)+"）":name):scenePerson(subject)
+  };
+  const sceneEvents=(Array.isArray(scene.events)?scene.events:[]).filter(Boolean);
+  const events=sceneEvents.slice(-64).reverse();
+  const strangerSubjects=new Set(sceneEvents.filter(event=>canonicalEventLabel(event.event_label)==="stranger"&&
+    ["confirmed","ended"].includes(event.phase)).flatMap(event=>Array.isArray(event.subject_ids)?event.subject_ids:[]));
   sceneUi.mode.textContent=data.tracking_mode==="batch"?(data.memory_scope==="session"?"连续人物追踪（实验）":"视频片段验证"):"持续识别";
-  sceneUi.status.textContent=condition==="stopped"?"观察已停止；以下保留最近一次记录。":
+  sceneUi.status.textContent=condition==="finalizing"?"检测已停止；"+sceneDrainMessage()+"，人物和事件记录会继续更新。":
+    condition==="stopped"?(sceneDrain().state==="failed"?"观察已停止；后台整理失败，请查看运行状态。":
+      backgroundRuns().some(run=>["queued","running","failed"].includes(run.state))?"观察已停止；"+backgroundMessage()+"。":
+      sceneDrain().state==="completed"?"本次观察已停止，人物复核、合并和视频证据整理已完成。":"观察已停止；以下保留最近一次记录。"):
     condition==="unavailable"?"识别结果暂不可用，正在重试。":condition==="stale"?"画面未更新，当前人物与事件状态待核实。":
     condition==="waiting"?"等待当前视频的连续观察证据…":data.automatic_temporal_inference===true?"正在持续观察人物，按变化复核事件。":"正在记录人物状态，自动事件复核尚未就绪。";
   sceneUi.status.className="status"+(condition==="unavailable"?" error":"");
@@ -529,14 +621,16 @@ function renderScene(){
   sceneUi.summary.textContent=entities.length+" 位人物 · "+events.filter(item=>item.phase==="confirmed").length+
     " 项已确认事件 · 最近画面 "+sceneMoment(scene.timestamp_seconds)+
     (Number.isFinite(worker.succeeded_requests)?" · 已完成 "+worker.succeeded_requests+" 次复核":"")+
+    (Number.isFinite(data.stats?.identity_subjects_merged)?" · 已按人脸合并 "+data.stats.identity_subjects_merged+" 次人物记录":"")+
     (data.tracking_mode==="batch"?" · "+(Number.isFinite(data.tracking_lag_seconds)&&data.tracking_lag_seconds>=0?
       "分析落后画面 "+data.tracking_lag_seconds.toFixed(1)+" 秒":"等待首段分析")+
       (data.memory_scope==="session"?" · 当前会话保持人物编号":" · 片段之间人物重新编号"):"");
   sceneUi.entities.replaceChildren();sceneUi.events.replaceChildren();
   for(const entity of entities){
     const identity=entity.identity&&typeof entity.identity==="object"?entity.identity:{};
-    const name=identity.status==="known"&&identity.name?String(identity.name):"身份待确认";
-    const observation=condition==="stopped"?"观察已停止":["stale","unavailable"].includes(condition)?"当前状态待核实":
+    const name=identity.status==="known"?(identity.name?String(identity.name):"已确认身份"):
+      strangerSubjects.has(entity.subject_id)?"已确认陌生人":"身份待确认";
+    const observation=condition==="finalizing"?"观察已停止，后台复核中":condition==="stopped"?"观察已停止":["stale","unavailable"].includes(condition)?"当前状态待核实":
       entity.observation_state==="observed"?"画面中可见":entity.observation_state==="occluded"?"暂时遮挡或离开画面":
       entity.observation_state==="predicted"?"位置待确认":"观察状态待核实";
     sceneItem(sceneUi.entities,scenePerson(entity.subject_id)+" · "+name,
@@ -545,14 +639,16 @@ function renderScene(){
   }
   if(!entities.length)sceneEmpty(sceneUi.entities,"等待建立人物记录；空列表不代表现场安全。");
   for(const event of events){
-    const phase=({suspected:"发现疑似事件，正在复核",confirmed:"已确认，持续中",ended:"已结束",retracted:"判断已修订"})[event.phase]||"等待更多证据";
+    const phase=condition==="stopped"&&event.phase==="suspected"?"证据不足，未确认":
+      ["stopped","finalizing"].includes(condition)&&event.phase==="confirmed"?"已确认":
+      ({suspected:"发现疑似事件，正在复核",confirmed:"已确认，持续中",ended:"已结束",retracted:"判断已修订"})[event.phase]||"等待更多证据";
     const uncertain=event.observation_state==="uncertain"||condition!=="observing";
-    const subjects=Array.isArray(event.subject_ids)?event.subject_ids.map(scenePerson).join("、"):"相关人物待确认";
+    const subjects=Array.isArray(event.subject_ids)?event.subject_ids.map(eventSubject).join("、"):"相关人物待确认";
     sceneItem(sceneUi.events,sceneName(event.event_label)+" · "+subjects,
-      phase+(condition==="stopped"?" · 历史记录":uncertain?" · 当前状态待核实":"")+
+      phase+(condition==="stopped"?" · 历史记录":condition==="finalizing"?" · 后台整理中":uncertain?" · 当前状态待核实":"")+
       " · 首次证据："+sceneMoment(event.first_evidence_timestamp_seconds)+
       " · 最近证据："+sceneMoment(event.last_evidence_timestamp_seconds),
-      event.phase==="confirmed"&&condition!=="stopped"?"alert":uncertain||event.phase==="suspected"?"uncertain":"")
+      event.phase==="confirmed"&&!["stopped","finalizing"].includes(condition)?"alert":uncertain||event.phase==="suspected"?"uncertain":"")
   }
   if(!events.length)sceneEmpty(sceneUi.events,"等待连续观察证据，尚无可展示的事件。");
   renderSceneDecision()
@@ -714,18 +810,23 @@ function reflectSessionSensitivities(values){
   }
 }
 function controls(){
-  const busy=state.running||state.pending||sessionBusyStates.has(state.processingStatus?.pipeline_state)||
+  const busy=state.running||state.pending||state.stopping||sessionBusyStates.has(state.processingStatus?.pipeline_state)||
     state.processingStatus?.processing_cleanup==="closing";
   const routeBusy=state.routeSubmitting||state.routes&&state.routes.state==="running";
   const ready=state.mode==="camera"
     ?cameraAllowed&&cameraConfig()&&!!state.cameraStream
     :!!ui.streamUrl.value.trim()||configured();
-  const processingUnavailable=processingMethods().find(item=>item.id===savedProcessingMethod())?.available===false;
+  const processingUnavailable=savedProcessingMethod()==="person_tracking"&&processingMethods()[0]?.available===false;
   ui.start.disabled=busy||routeBusy||!state.info||!ready||selectedFeatures().length===0||
-    state.processingMethodDirty||state.deploymentSaving||processingUnavailable;ui.stop.disabled=!busy;
-  $("route-check-button").disabled=busy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_probe;
+    state.deploymentSaving||processingUnavailable||trackingConfigurationRequired();ui.stop.disabled=!busy||state.stopping;
+  ui.stop.textContent=state.stopping?"后台收尾中…":"Stop session";
+  const localInference=localInferenceEnabled();
+  const sharedBusy=busy||globalThis.GoodvisionFleet?.extraBusy?.()===true;
+  ui.cloudModelSettings.hidden=localInference;ui.cloudRoutePanel.hidden=localInference;
+  ui.clearApiKey.hidden=localInference;
+  $("route-check-button").disabled=localInference||sharedBusy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_probe;
   for(const button of $("route-results").querySelectorAll("button"))
-    button.disabled=busy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_select||
+    button.disabled=localInference||sharedBusy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_select||
       button.dataset.routeId===state.routes.selected_id;
   for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun,ui.cameraLayout])item.disabled=busy;
   for(const item of featureInputs)item.disabled=busy;
@@ -737,60 +838,64 @@ function controls(){
   for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy;
   const persistenceReady=state.deployment&&state.deployment.persistence_available===true;
   const deploymentBusy=state.deploymentLoading||state.deploymentSaving||routeBusy;
-  ui.processingMethod.disabled=!persistenceReady||deploymentBusy||busy||processingMethods().length===0;
+  for(const item of [ui.localInference,ui.localTracking])
+    item.disabled=!persistenceReady||deploymentBusy||sharedBusy;
   for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart,ui.defaultCameraLayout])
     item.disabled=!persistenceReady||deploymentBusy;
-  ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||busy;
-  saveApiKeyButton.disabled=!persistenceReady||deploymentBusy||busy||!ui.defaultApiKey.value.trim();
+  ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||sharedBusy;
+  saveApiKeyButton.disabled=!persistenceReady||deploymentBusy||sharedBusy||!ui.defaultApiKey.value.trim();
   ui.resetDeployment.disabled=deploymentBusy||!state.deployment;
-  ui.bufferDelay.disabled=!persistenceReady||deploymentBusy||state.pending;
+  const localBuffer=state.mode==="camera"&&state.info?.local_camera_display?.enabled;
+  ui.localCameraBufferNote.hidden=!localBuffer;
+  if(localBuffer)ui.localCameraBufferNote.textContent="本机描边缓冲："+
+    state.info.local_camera_display.delay_seconds+" 秒（由部署配置设置）。网络视频缓存不影响本机摄像头。";
+  ui.bufferDelay.disabled=!persistenceReady||deploymentBusy||state.pending||!!localBuffer;
   ui.saveBufferDelay.disabled=ui.bufferDelay.disabled;
-  ui.clearApiKey.disabled=!persistenceReady||deploymentBusy||busy||
+  ui.clearApiKey.disabled=!persistenceReady||deploymentBusy||sharedBusy||
     state.deployment.api_key_persisted!==true
 }
 function processingMethods(){
   const items=state.deployment?.processing_methods||state.info?.processing_methods;
-  return Array.isArray(items)?items.filter(item=>item&&["sam_live","hybrid"].includes(item.id)):[]
+  return Array.isArray(items)?items.filter(item=>item&&item.id==="person_tracking"):[]
 }
 function savedProcessingMethod(){
-  return state.deployment?.processing_method||state.info?.processing_method||null
+  for(const source of [state.processingStatus,state.deployment,state.info]){
+    if(source&&Object.hasOwn(source,"processing_method"))return source.processing_method??null
+  }
+  return null
+}
+function trackingConfigurationRequired(){
+  const method=savedProcessingMethod();
+  return method!=="person_tracking"&&(processingMethods().some(item=>item.available===true)||method!==null)
 }
 function processingLabel(method){
   return processingMethods().find(item=>item.id===method)?.label||
-    ({sam_live:"SAM 连续分析",hybrid:"快速跟踪 + SAM 校准"})[method]||"未选择"
+    (method==="person_tracking"?"人员追踪模块 连续分析":"尚未启用 人员追踪模块 连续分析")
 }
 function renderProcessingSettings(){
-  const methods=processingMethods(),saved=savedProcessingMethod();
+  const methods=processingMethods();
   ui.processingField.hidden=methods.length===0;ui.processingComparison.hidden=methods.length===0;
   if(!methods.length)return;
-  const selected=state.processingMethodDirty?ui.processingMethod.value:saved;
-  ui.processingMethod.replaceChildren();
-  for(const method of methods){
-    const option=document.createElement("option");option.value=method.id;
-    option.textContent=method.label+(method.available===false?" · 暂不可用":"");
-    option.disabled=method.available===false;ui.processingMethod.appendChild(option)
-  }
-  ui.processingMethod.value=selected||"";
   updateProcessingSelection();renderProcessingComparison()
 }
 function updateProcessingSelection(){
-  const saved=savedProcessingMethod(),selected=ui.processingMethod.value;
-  const method=processingMethods().find(item=>item.id===selected);
+  const method=processingMethods()[0];
+  const needsConfiguration=trackingConfigurationRequired();
+  const enabled=savedProcessingMethod()==="person_tracking";
+  ui.processingMethod.textContent=enabled?"人员追踪模块 连续分析":
+    needsConfiguration?"人员追踪模块 连续分析 · 待启用":"人员追踪模块 连续分析 · 未启用";
   const active=state.processingStatus&&sessionBusyStates.has(state.processingStatus.pipeline_state);
   const closing=state.processingStatus?.processing_cleanup==="closing";
   ui.processingSelected.textContent=(active?(closing?"正在停止：":"当前运行：")+
     processingLabel(state.processingStatus.processing_retiring_method||state.processingStatus.processing?.method||
-      state.processingStatus.processing_method)+"。 ":"")+"已保存："+processingLabel(saved)+"。";
+      state.processingStatus.processing_method)+"。 ":"")+
+    (enabled?"固定使用 人员追踪模块 连续分析。":"尚未启用 人员追踪模块 连续分析。");
   ui.processingNote.textContent=(method?.description||"")+
+    (needsConfiguration?" 请先保存默认设置，以启用 人员追踪模块 连续分析。":"")+
     (method?.available===false?" 暂不可用："+(method.reason||"服务尚未就绪")+"。":"")+
-    (state.processingMethodDirty?" 尚未保存；保存后才能开始新测试。":" 下次新会话使用已保存的方式。")+
-    (state.processingStatus?.processing_cleanup==="closing"?" 旧方式正在收尾，请等待释放后再开始。":
+    (state.processingStatus?.processing_cleanup==="closing"?" 会话正在收尾，请等待释放后再开始。":
       state.processingStatus?.processing_cleanup==="remote_check_pending"?
         " 本地已停止；开始检测时会确认服务器已释放旧会话。":"")
-}
-function processingMethodEdited(){
-  state.processingMethodDirty=ui.processingMethod.value!==savedProcessingMethod();
-  updateProcessingSelection();deploymentEdited()
 }
 function measuredSeconds(value){
   return typeof value==="number"&&Number.isFinite(value)&&value>=0?number(value,2)+" 秒":"—"
@@ -798,7 +903,7 @@ function measuredSeconds(value){
 function updateProcessingDiagnostics(data){
   state.processingStatus=data;
   const method=data.processing?.method||data.processing_method;
-  if(["sam_live","hybrid"].includes(method)&&data.stream_session_id){
+  if(method==="person_tracking"&&data.stream_session_id){
     const previous=state.processingRuns.get(method),sameSession=previous?.session_id===data.stream_session_id;
     const current=data.processing||{},output=data.annotated_output||{};
     state.processingRuns.set(method,{
@@ -844,20 +949,20 @@ function annotatedOutputText(output){
   const value=output&&typeof output==="object"?output:{};
   const fps=Number(value.output_fps),delay=Number(value.buffer_delay_seconds);
   return (Number.isFinite(fps)?"up to "+number(fps,1)+" FPS":"full cadence")+" | "+
-    (Number.isFinite(delay)?number(delay,1)+"s buffer":"delayed")
+    (Number.isFinite(delay)?"额外缓存 "+number(delay,1)+" 秒":"等待画面")
 }
 function updateAnnotatedOutput(output){
   const value=output&&typeof output==="object"?output:{},mode=String(value.annotation_mode||"none");
   const delay=value.buffer_delay_seconds;
   if(typeof delay==="number"&&Number.isFinite(delay)){
-    ui.bufferDelayCurrent.textContent="当前缓存："+delay+" 秒";
+    ui.bufferDelayCurrent.textContent="当前网络视频缓存："+delay+" 秒";
     if(!state.bufferDelayDirty)ui.bufferDelay.value=String(delay)
   }
   const stateLabel=value.state==="running"?mode.toUpperCase():"BUFFERING";
   const actualDelay=Number(value.stream_delay_seconds);
   const actualText=value.stream_delay_seconds!=null&&Number.isFinite(actualDelay)
-    ?" · 实际延迟 "+number(actualDelay,1)+" 秒":"";
-  ui.rawBadgeText.textContent="DELAYED | "+stateLabel+actualText;
+    ?" · 输出帧延迟 "+number(actualDelay,1)+" 秒":"";
+  ui.rawBadgeText.textContent="人员追踪模块 | "+stateLabel+actualText;
   ui.streamMeta.textContent=annotatedOutputText(value);
   ui.annotatedState.textContent=stateLabel;
   ui.annotatedNote.textContent=annotatedOutputText(value)+actualText+(mode!=="none"?" · "+mode:" · no frame yet");
@@ -865,8 +970,10 @@ function updateAnnotatedOutput(output){
 }
 function updateRichAnnotationStatus(rich){
   const disabled=rich&&rich.disabled_reason==="gpu_required";
-  ui.richAnnotationStatus.hidden=!disabled;
-  ui.richAnnotationStatus.textContent=disabled?"Rich annotation disabled: GPU required":""
+  const failed=rich&&(rich.state==="failed"||rich.recovery_required===true);
+  ui.richAnnotationStatus.hidden=!disabled&&!failed;
+  ui.richAnnotationStatus.textContent=failed?"人员追踪模块 分析失败，当前描边可能缺失；请查看运行状态后重新开始检测。":
+    disabled?"Rich annotation disabled: GPU required":""
 }
 function updateAnalysisUi(){
   const settings=cameraSettings()||{};
@@ -882,7 +989,7 @@ function updateAnalysisUi(){
   ui.start.textContent="Start selected detection";
   const output=state.info&&state.info.annotated_output||{};
   if(sceneActive()){
-    ui.annotationNote.textContent="框随人物持续更新；事件根据连续证据开始、持续和结束。暂时遮挡时，保留历史判断并标记待核实。 ";
+    ui.annotationNote.textContent="人员追踪模块 持续更新人物完整描边，画面尽快显示；事件报警和描边变色在复核后更新。暂时遮挡时，保留历史判断并标记待核实。 ";
     const evidence=document.createElement("a");evidence.href="/v1/scene/evidence";
     evidence.target="_blank";evidence.rel="noreferrer";evidence.textContent="查看连续观察证据";
     ui.annotationNote.append(evidence);
@@ -905,19 +1012,23 @@ function updateAnalysisUi(){
   renderScene();controls();if(!state.gallery&&!state.galleryLoading)refreshGallery()
 }
 function sourceMedia(){
+  if(localCameraActive())return ui.localCameraCanvas;
   if(state.running)return ui.rawFeed;
   if(state.cameraStream&&(state.sessionMode==="camera"||(!state.running&&state.mode==="camera")))return ui.cameraPreview;
   return null
 }
 function sourceDimensions(media){
+  if(media===ui.localCameraCanvas)return [media.width,media.height];
   if(media===ui.cameraPreview)return [media.videoWidth,media.videoHeight];
   return media?[media.naturalWidth,media.naturalHeight]:[0,0]
 }
 function surfaces(){
+  const local=localCameraActive();
   const previewCamera=!state.running&&state.mode==="camera"&&!!state.cameraStream;
-  ui.cameraPreview.style.display=previewCamera?"block":"none";
-  ui.cameraPreview.style.visibility="visible";
-  ui.rawFeed.style.display=state.running?"block":"none";
+  ui.cameraPreview.style.display=previewCamera||local?"block":"none";
+  ui.cameraPreview.style.visibility=local?"hidden":"visible";
+  ui.localCameraCanvas.style.display=local?"block":"none";
+  ui.rawFeed.style.display=state.running&&!local?"block":"none";
   ui.rawFeed.style.visibility="visible";
   if(!state.running&&!previewCamera){
     ui.rawPlaceholder.textContent="Connect a source above to inspect the Docker-delivered output.";
@@ -926,8 +1037,39 @@ function surfaces(){
     ui.rawPlaceholder.style.display="none"
   }
   ui.rawBadge.style.display=state.running?"flex":"none";
-  if(!ui.rawBadgeText.textContent)ui.rawBadgeText.textContent="DELAYED | BUFFERING";
+  if(!ui.rawBadgeText.textContent)ui.rawBadgeText.textContent="人员追踪模块 | BUFFERING";
   requestAnimationFrame(alignAnnotationLayer)
+}
+const localCameraDisplay={controller:null,lastStats:null};
+function localCameraActive(){return !!localCameraDisplay.controller&&!localCameraDisplay.controller.closed;}
+function startLocalCameraDisplay(){
+  const config=state.info?.local_camera_display,api=globalThis.GoodvisionCameraDisplay;
+  if(!config?.enabled||config.protocol!==1||!api?.BrowserController||!state.sessionId||
+    state.sessionMode!=="camera"||!api.BrowserController.supported(ui.cameraPreview))return false;
+  localCameraDisplay.controller=new api.BrowserController({video:ui.cameraPreview,canvas:ui.localCameraCanvas,
+    config:{...config,stream_session_id:state.sessionId,generation:state.cameraGeneration,crop_version:0},
+    settings:cameraSettings(),socket:state.ws,onStatus:stats=>{
+      localCameraDisplay.lastStats=stats;
+      const fps=stats.distinct_presented_fps;
+      ui.rawBadgeText.textContent=stats.display_buffer_capacity_failures?"画面缓冲配置不可用":
+        stats.distinct_presented_frames===0?"正在缓冲画面以等待完整轮廓":
+        "连续画面 · "+(fps===null?"首帧已显示":fps.toFixed(1)+" 帧/秒")+
+        (stats.propagated_contour_frames||stats.observed_contour_frames?" · 人物描边":" · 等待描边");
+      ui.localCameraCanvas.dataset.displayStats=JSON.stringify(stats);
+    },onFailure:detail=>{ui.cameraNote.textContent=detail;ui.cameraNote.className="note error";}});
+  ui.rawBadgeText.textContent="正在缓冲画面以等待完整轮廓";
+  stopLatestFeed();resetAnnotations();localCameraDisplay.controller.start();surfaces();
+  ui.annotationNote.textContent="本机描边缓冲 "+localCameraDisplay.controller.frames.delay+
+    " 秒，再按原图分辨率连续播放。人物描边根据真实分析和画面运动更新；新入画、遮挡或运动不可靠时可能暂缺。";
+  return true;
+}
+function stopLocalCameraDisplay(){
+  if(localCameraDisplay.controller){localCameraDisplay.lastStats=localCameraDisplay.controller.snapshot();
+    if(localCameraDisplay.lastStats.analysis_pending){
+      ui.cameraNote.textContent=localCameraDisplay.lastStats.analysis_pending+" 帧尚未收到服务器确认，本次分析的完整性尚未确认。";
+      ui.cameraNote.className="note error";
+    }
+    localCameraDisplay.controller.stop();localCameraDisplay.controller=null;}
 }
 const latestFeed={generation:0,active:false,session:null,timer:null,controller:null,url:null};
 function stopLatestFeed(){
@@ -973,6 +1115,8 @@ async function pullLatestFrame(generation){
   }
 }
 function openFeed(){
+  if(globalThis.GoodvisionFleet?.detailHidden?.()){stopLatestFeed();return;}
+  if(typeof localCameraActive==="function"&&localCameraActive()){surfaces();return;}
   if(state.running&&(!latestFeed.active||latestFeed.session!==state.sessionId)){
     stopLatestFeed();latestFeed.active=true;latestFeed.session=state.sessionId;
     pullLatestFrame(latestFeed.generation)
@@ -986,6 +1130,38 @@ function closeFeed(){
 function settingsSourceLabel(value){
   const source=String(value||"built-in defaults").trim().replaceAll("_"," ");
   return source.charAt(0).toUpperCase()+source.slice(1)
+}
+function localInferenceEnabled(){
+  return (state.deployment?.local_inference_enabled??state.info?.local_inference_enabled??
+    state.info?.deployment?.local_inference_enabled)===true
+}
+function renderLocalGpuSettings(){
+  const data=state.deployment||state.info?.deployment||state.info||{};
+  const gpu=data.local_gpu||state.info?.local_gpu||{};
+  const count=Number(gpu.gpu_count),known=gpu.gpu_count!=null&&Number.isInteger(count)&&count>=0;
+  const localInference=ui.localInference.checked,localTracking=ui.localTracking.checked;
+  const savedInference=localInferenceEnabled(),savedTracking=data.local_tracking_enabled===true;
+  const changed=localInference!==savedInference||localTracking!==savedTracking;
+  const device=(value,fallback)=>{
+    const match=String(value??"").match(/^(?:[a-z]+:)?(\d+)$/);
+    return "GPU "+(match?match[1]:fallback)
+  };
+  const inferenceDevice=device(gpu.inference_device,0),trackingDevice=device(gpu.tracking_device,count>=2?1:0);
+  const allocation=[localInference?"大模型 → "+inferenceDevice:"大模型 → 原部署服务",
+    localTracking?"人物追踪及其他本地 GPU 任务 → "+trackingDevice:"人物追踪 → 原部署服务"].join("；");
+  ui.localGpuStatus.className="secret-status";
+  if(known&&count>0&&gpu.available!==false){
+    ui.localGpuStatus.textContent="检测到 "+count+" 张本地显卡。"+allocation+"。"
+  }else if(gpu.available===false||known&&count===0){
+    ui.localGpuStatus.textContent="本地 GPU 服务尚未就绪，请先运行本地 GPU 启动程序。"+
+      (localInference||localTracking?"本地运行需要先准备显卡驱动和运行环境。":"当前继续使用原部署服务。");
+    if(localInference||localTracking)ui.localGpuStatus.className+=" error"
+  }else{
+    ui.localGpuStatus.textContent="本地显卡状态尚未确认。"+allocation+"。"
+  }
+  if(savedInference)ui.localGpuStatus.textContent+=" 当前已选择大模型本地运行，无需云端 API key。";
+  if(gpu.error){ui.localGpuStatus.textContent+=" "+String(gpu.error);ui.localGpuStatus.className+=" error"}
+  if(changed)ui.localGpuStatus.textContent+=" 此处为待保存选择，请保存默认设置后开始新会话。"
 }
 function updateSourceNote(){
   const deployment=state.deployment;
@@ -1003,6 +1179,9 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   if(clearSecrets){ui.defaultStreamUrl.value="";ui.defaultApiKey.value=""}
   ui.defaultDryRun.checked=data.dry_run===true;
   ui.defaultAutostart.checked=data.autostart===true;
+  ui.localInference.checked=data.local_inference_enabled===true;
+  ui.localTracking.checked=data.local_tracking_enabled===true;
+  renderLocalGpuSettings();
   ui.defaultCameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono";
   renderProcessingSettings();
   if(!state.bufferDelayDirty&&Number.isFinite(data.buffer_delay_seconds))
@@ -1014,7 +1193,7 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   ui.defaultStreamStatus.textContent=data.configured_stream===true
     ?protocol+" source configured · address hidden · entering a value replaces it"
     :"No default source configured · enter a network stream URL to save one";
-  ui.defaultApiKeyStatus.textContent=data.api_key_persisted===true
+  ui.defaultApiKeyStatus.textContent=localInferenceEnabled()?"大模型在本地运行，无需云端 API key。":data.api_key_persisted===true
     ?"Saved API key present · value hidden · blank keeps it"
     :data.api_key_present===true
       ?"API key available from runtime/environment · value hidden"
@@ -1036,7 +1215,7 @@ async function loadDeploymentSettings(discarded=false){
   try{
     const response=await fetch("/v1/deployment/settings",{cache:"no-store"});
     if(!response.ok)throw new Error(await responseError(response));
-    state.deployment=await response.json();state.processingMethodDirty=false;
+    state.deployment=await response.json();
     renderDeploymentSettings(true,!state.runOverridesDirty);
     if(state.deployment.storage_error){
       deploymentSay("Persistent storage error: "+state.deployment.storage_error,true)
@@ -1065,29 +1244,27 @@ async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={
     });
     if(!response.ok)throw new Error(await responseError(response));
     state.deployment=await response.json();
-    if(Object.hasOwn(payload,"processing_method"))state.processingMethodDirty=false;
     renderDeploymentSettings(true,syncRun);
     await info();renderDeploymentSettings(true,syncRun);
     if(Object.hasOwn(payload,"processing_method"))await status();
-    deploymentSay(successMessage);return true
+    deploymentSay(successMessage);globalThis.GoodvisionFleet?.refresh?.();return true
   }catch(error){
     deploymentSay("Could not save persistent settings: "+error.message,true);return false
   }finally{state.deploymentSaving=false;controls()}
 }
 async function saveDeploymentSettings(){
   const payload={dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked,
-    camera_layout:ui.defaultCameraLayout.value};
-  if(processingMethods().length&&ui.processingMethod.value){
-    const method=processingMethods().find(item=>item.id===ui.processingMethod.value);
-    if(!method||method.available===false){deploymentSay("请选择可用的人物处理方式。",true);return}
-    payload.processing_method=method.id
-  }
+    camera_layout:ui.defaultCameraLayout.value,
+    local_inference_enabled:ui.localInference.checked,local_tracking_enabled:ui.localTracking.checked};
+  const trackingChanged=ui.localTracking.checked!==(state.deployment?.local_tracking_enabled===true);
+  if(!trackingChanged&&processingMethods().some(method=>method.available!==false))payload.processing_method="person_tracking";
   const streamUrl=ui.defaultStreamUrl.value.trim(),apiKey=ui.defaultApiKey.value.trim();
   if(streamUrl)payload.stream_url=streamUrl;
-  if(apiKey)payload.api_key=apiKey;
+  if(apiKey&&!payload.local_inference_enabled)payload.api_key=apiKey;
   await updateDeploymentSettings(payload,
     "Deployment defaults saved. They will be used by the next session and container start; no running session was restarted."+
-      (payload.processing_method?" 人物处理方式已保存："+processingLabel(payload.processing_method)+"。重新开始检测后生效。":""),
+      (payload.processing_method?" 新会话使用 人员追踪模块 连续分析。":"")+
+      (apiKey&&payload.local_inference_enabled?" 本地大模型不需要云端 API key；本次输入未保存。":""),
     {syncRun:true})
 }
 async function saveApiKey(){
@@ -1119,7 +1296,7 @@ async function saveBufferDelay(){
       updateAnalysisUi()
     }
     ui.bufferDelay.value=String(saved);
-    ui.bufferDelayCurrent.textContent="当前缓存："+saved+" 秒";
+    ui.bufferDelayCurrent.textContent="当前网络视频缓存："+saved+" 秒";
     ui.bufferDelayNote.textContent="已应用并保存为 "+saved+" 秒，重启后继续使用。";
     await status()
   }catch(error){
@@ -1161,7 +1338,7 @@ async function info(){
     renderSensitivities();
     updateAnnotatedOutput(data.annotated_output);
     if(!state.runOverridesDirty&&!state.deployment){
-      ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present);
+      ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present&&!localInferenceEnabled());
       ui.cameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono"
     }
     updateSourceNote();
@@ -1216,7 +1393,7 @@ function renderRoutes(){
   controls()
 }
 async function loadRoutes(){
-  if(state.routeLoading||state.routeSubmitting)return;
+  if(localInferenceEnabled()||state.routeLoading||state.routeSubmitting)return;
   const revision=state.routeRevision;
   state.routeLoading=true;
   try{
@@ -1228,7 +1405,7 @@ async function loadRoutes(){
   finally{state.routeLoading=false}
 }
 async function checkRoutes(){
-  if(state.running||state.pending||state.routeSubmitting)return;
+  if(localInferenceEnabled()||state.running||state.pending||state.routeSubmitting)return;
   state.routeRevision++;
   state.routeSubmitting=true;controls();
   $("route-note").textContent="正在启动线路测速…";
@@ -1240,7 +1417,7 @@ async function checkRoutes(){
   finally{state.routeSubmitting=false;controls()}
 }
 async function selectRoute(routeId){
-  if(state.running||state.pending||state.routeSubmitting||!state.routes||!state.routes.can_select)return;
+  if(localInferenceEnabled()||state.running||state.pending||state.routeSubmitting||!state.routes||!state.routes.can_select)return;
   state.routeRevision++;
   state.routeSubmitting=true;controls();
   $("route-note").textContent="正在保存线路选择…";
@@ -1328,30 +1505,40 @@ async function camera(){
   if(state.cameraStream){disableCamera();return}
   if(!cameraAllowed){say("Camera access requires HTTPS or localhost.",true);return}
   try{
-    const stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+    const video=state.info?.local_camera_display?.enabled?{frameRate:{min:15,ideal:30}}:true;
+    const stream=await navigator.mediaDevices.getUserMedia({video,audio:false});
     state.cameraStream=stream;ui.cameraPreview.srcObject=stream;await ui.cameraPreview.play();
-    ui.cameraButton.textContent="Disable camera";ui.cameraNote.textContent="camera ready";
-    say("Camera ready. Press "+ui.start.textContent+".")
+    ui.cameraButton.textContent="Disable camera";ui.cameraNote.textContent="camera ready";ui.cameraNote.className="note";
+    say("Camera ready. Press "+ui.start.textContent+".");
+    const display=globalThis.GoodvisionCameraDisplay,config=state.info?.local_camera_display;
+    if(config?.enabled&&config.motion_backend==="dense"&&display?.BrowserController?.supported(ui.cameraPreview))
+      display.BrowserController.warmupMotion({onFailure:detail=>{
+        if(state.cameraStream===stream){ui.cameraNote.textContent=detail;ui.cameraNote.className="note error";}
+      }});
   }catch(error){say("Camera unavailable: "+error.message,true)}
   surfaces();controls()
 }
 function disableCamera(){
   stopSampler();
+  globalThis.GoodvisionCameraDisplay?.BrowserController?.discardWarmup();
   if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
   state.cameraStream=null;ui.cameraPreview.srcObject=null;ui.cameraButton.textContent="Enable camera";
   ui.cameraNote.textContent="camera off";surfaces();controls()
 }
 function startSampler(){
   stopSampler();if(!state.cameraStream||!cameraConfig())return;
+  if(typeof startLocalCameraDisplay==="function"&&startLocalCameraDisplay())return;
   const settings=cameraSettings();
   const output=state.info&&state.info.annotated_output||{};
   const displayFps=Number(output.output_fps)||15;
   const analysisFps=Number(settings.sample_fps)||0;
   const captureFps=Math.max(displayFps,analysisFps);
+  const generation=state.cameraGeneration;
   const canvas=document.createElement("canvas"),context=canvas.getContext("2d");
   state.cameraTimer=setInterval(async()=>{
     const video=ui.cameraPreview,socket=state.ws;
-    if(state.cameraBusy||!socket||socket.readyState!==1||socket.bufferedAmount>1048576||!video.videoWidth)return;
+    // Preserve the existing 1 MiB upload bound; an admitted capture is sent after encoding.
+    if(generation!==state.cameraGeneration||state.cameraBusy||!socket||socket.readyState!==1||socket.bufferedAmount>1024*1024||!video.videoWidth)return;
     state.cameraBusy=true;
     try{
       const scale=Math.min(1,settings.max_image_side/Math.max(video.videoWidth,video.videoHeight));
@@ -1362,13 +1549,16 @@ function startSampler(){
       if(!blob)return;
       const jpeg=new Uint8Array(await blob.arrayBuffer()),packet=new Uint8Array(4+jpeg.length);
       const header=new DataView(packet.buffer);header.setUint16(0,canvas.width);header.setUint16(2,canvas.height);
-      packet.set(jpeg,4);if(socket.readyState===1)socket.send(packet.buffer)
-    }finally{state.cameraBusy=false}
+      packet.set(jpeg,4);
+      if(generation===state.cameraGeneration&&socket===state.ws&&socket.readyState===1)
+        socket.send(packet.buffer)
+    }finally{if(generation===state.cameraGeneration)state.cameraBusy=false}
   },1000/captureFps)
 }
 function stopSampler(){
+  if(typeof stopLocalCameraDisplay==="function")stopLocalCameraDisplay();
   if(state.cameraTimer)clearInterval(state.cameraTimer);
-  state.cameraTimer=null;state.cameraBusy=false
+  state.cameraTimer=null;state.cameraBusy=false;state.cameraGeneration++
 }
 
 function clearAnnotation(){
@@ -1530,9 +1720,14 @@ function connect(){
   })
 }
 function message(data){
-  if(data.type==="session"){
+  if(data.type==="camera_frame_ack"){
+    localCameraDisplay.controller?.acknowledgeUpload(data);
+  }else if(data.type==="camera_display_metadata"){
+    localCameraDisplay.controller?.receiveMetadata(data,{transport:"websocket"});
+  }else if(data.type==="session"){
+    state.sessionRevision=(state.sessionRevision||0)+1;
     resetOverallDescription();
-    state.pending=false;state.running=true;state.sessionMode=data.mode||state.mode;
+    state.pending=false;state.running=true;state.stopping=false;state.sessionMode=data.mode||state.mode;
     state.sessionAnalysisMode=data.analysis_mode||"multi";
     state.sessionFeatures=Array.isArray(data.features)?data.features:detectionEvents;
     reflectSessionSensitivities(data.event_sensitivities);
@@ -1542,34 +1737,40 @@ function message(data){
     if(state.sessionMode==="camera")startSampler();
     say("Live | "+(state.sessionMode==="camera"?"browser camera":"network stream")+
       " | "+(state.sessionAnalysisMode==="face"?"face diagnostics":state.sessionFeatures.join(" + "))+
-      " | continuous delayed annotation"+(state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""));
+      " | 人员追踪模块 连续描边"+(state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""));
     controls()
   }else if(data.type==="error"){
     state.pending=false;const detail=data.message||data.error||"Session error";
     say(detail,true);setConnection("Session error",detail,"bad");controls()
   }else if(data.type==="ended"){
+    state.sessionRevision=(state.sessionRevision||0)+1;
     resetOverallDescription();
-    state.pending=false;state.running=false;state.sessionAnalysisMode=null;state.sessionFeatures=null;stopSampler();closeFeed();
+    state.pending=false;state.running=false;state.stopping=false;state.sessionAnalysisMode=null;state.sessionFeatures=null;stopSampler();closeFeed();
     say("Session ended | "+(data.reason||"unknown")+(data.error?" | "+data.error:""),!!data.error);
     setConnection(data.error?"Session failed":"Session stopped",data.error||data.reason||"No active video source.",data.error?"bad":"");
     updateAnalysisUi()
   }
 }
 async function start(){
-  if(state.running||state.pending||!state.info)return;
-  if(state.processingMethodDirty||state.deploymentSaving){
-    say("请先保存或放弃人物处理方式的修改，再开始检测。",true);return
+  if(state.running||state.pending||state.stopping||!state.info)return;
+  if(state.deploymentSaving){
+    say("正在保存默认设置，请稍后开始检测。",true);return
   }
-  const processing=processingMethods().find(item=>item.id===savedProcessingMethod());
-  if(processing?.available===false){
-    say("所选人物处理方式暂不可用："+(processing.reason||"服务尚未就绪"),true);return
+  if(trackingConfigurationRequired()){
+    const message="请先保存默认设置，以启用 人员追踪模块 连续分析。";
+    say(message,true);deploymentSay(message,true);return
+  }
+  const processing=processingMethods()[0];
+  if(savedProcessingMethod()==="person_tracking"&&processing?.available===false){
+    say("人员追踪模块 连续分析暂不可用："+(processing.reason||"服务尚未就绪"),true);return
   }
   const needsKey=selectedFeatures().some(feature=>feature!=="stranger");
-  if(needsKey&&!ui.dryRun.checked&&!state.info.api_key_present){
+  if(needsKey&&!ui.dryRun.checked&&!localInferenceEnabled()&&!state.info.api_key_present){
     const message="请先在控制台填写并保存 API key，再启动正式检测；无需创建 .env。";
     say(message,true);deploymentSay(message,true);
     ui.defaultApiKey.scrollIntoView({behavior:"smooth",block:"center"});ui.defaultApiKey.focus();return
   }
+  state.sessionRevision=(state.sessionRevision||0)+1;
   state.pending=true;reset();say("Starting session...");
   setConnection("Starting session","Opening the selected video source and waiting for its first frame.","warn");controls();
   try{
@@ -1585,9 +1786,16 @@ async function start(){
   }catch(error){state.pending=false;say("Could not start: "+error.message,true);controls()}
 }
 async function stop(){
+  state.sessionRevision=(state.sessionRevision||0)+1;
   try{
-    const socket=await connect();socket.send(JSON.stringify({type:"stop"}));say("Stopping session...");
-    setConnection("Stopping session","Waiting for the video worker to stop cleanly.","warn")
+    const socket=await connect();
+    if(localCameraActive())await localCameraDisplay.controller.drain();
+    // A status request issued while admitted camera frames drained is also old.
+    state.sessionRevision=(state.sessionRevision||0)+1;
+    socket.send(JSON.stringify({type:"stop"}));state.stopping=true;stopSampler();
+    say("检测正在停止；后台将完成人物复核、合并和视频证据整理。");
+    setConnection("后台收尾中","正在完成已接收画面的分析并释放检测资源；后续记录整理会在后台继续。","warn");
+    controls();renderScene()
   }catch(error){say("Could not stop: "+error.message,true)}
 }
 function reset(){
@@ -1622,6 +1830,8 @@ function runtimeErrorText(data){
 function updateRuntimeSummary(data){
   updateRichAnnotationStatus(data.rich_labeling);
   const pipeline=String(data.pipeline_state||"unknown"),active=activeStates.has(pipeline);
+  const background=backgroundMessage(data);
+  ui.postprocessingStatus.hidden=!background;ui.postprocessingStatus.textContent=background;
   const inputMode=String(data.input_mode||""),stream=data.stream&&typeof data.stream==="object"?data.stream:{};
   const protocol=String(stream.protocol||"").toUpperCase();
   const modeLabel=inputMode==="camera"?"browser camera":inputMode==="stream"?(protocol?protocol+" network stream":"network stream"):"no source";
@@ -1636,23 +1846,38 @@ function updateRuntimeSummary(data){
   ui.runtimeError.hidden=!error;ui.runtimeError.textContent=error?"Runtime error · "+error:"";
   if(error||pipeline==="error"||pipeline==="configuration_error"){
     setConnection("Attention required",error||("Runtime state: "+pipeline),"bad")
+  }else if(["stopping","draining"].includes(pipeline)){
+    setConnection("后台收尾中",sceneDrainMessage(data.scene_drain||{})+"；完成后即可开始下一次检测。","warn")
   }else if(data.ready===true){
     setConnection("Ready and delivering",modeLabel+" · fresh frames and analysis results are available.","good")
   }else if(active){
     const reason=String(data.readiness_reason||"warming").replaceAll("_"," ");
     setConnection(pipeline==="starting"?"Connecting source":"Pipeline warming",modeLabel+" · "+reason+".","warn")
+  }else if(["idle","ended"].includes(pipeline)&&
+    (backgroundRuns(data).some(run=>["queued","running"].includes(run.state))||data.scene_drain?.state==="running")){
+    setConnection("可以开始新的检测","后台整理中，可以开始新的检测。", "good")
   }else{
     setConnection("No active session","Select a source and start detection. Runtime state: "+pipeline+".")
   }
 }
 
 async function status(){
+  if(state.statusLoading)return;
+  state.statusLoading=true;
+  const sessionRevision=state.sessionRevision||0,sessionId=state.sessionId;
+  const current=()=>sessionRevision===(state.sessionRevision||0)&&sessionId===state.sessionId;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
   try{
-    const response=await fetch("/v1/status",{cache:"no-store"}),data=await response.json();
+    const response=await fetch("/v1/status",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    const data=await response.json();
+    // A response from before a session transition cannot stop or revive its successor.
+    if(!current())return;
     const previousError=state.runtimeErrorMessage,error=runtimeErrorText(data);
     state.runtimeErrorMessage=error;
     ui.statusJson.textContent=JSON.stringify(data,null,2);updateAnnotatedOutput(data.annotated_output);updateRuntimeSummary(data);
     updateProcessingDiagnostics(data);
+    state.stopping=["stopping","draining"].includes(data.pipeline_state);
     const active=sessionBusyStates.has(data.pipeline_state);
     if(active){
       const sessionId=data.stream_session_id||state.sessionId,changedSession=sessionId!==state.sessionId;
@@ -1670,8 +1895,9 @@ async function status(){
         if(data.stream&&data.stream.camera_layout)ui.cameraLayout.value=data.stream.camera_layout
       }
       openFeed();
-      say("Server session "+data.pipeline_state+" | "+
-        (data.ready?"ready":data.readiness_reason||"warming")+" | continuous delayed annotation"+
+      if(state.stopping){stopSampler();say("检测已停止；"+sceneDrainMessage(data.scene_drain||{})+"。")}
+      else say("Server session "+data.pipeline_state+" | "+
+        (data.ready?"ready":data.readiness_reason||"warming")+" | 人员追踪模块 连续描边"+
         (state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""))
     }else if(state.running&&!state.pending){
       resetOverallDescription();
@@ -1679,12 +1905,13 @@ async function status(){
     }
     if(error)say(error,true);
     else if(previousError&&!active&&!state.pending)say("No active session. Choose a source to start detection.");
-    controls()
+    controls();renderScene()
   }catch(error){
+    if(!current())return;
     ui.service.textContent="unreachable";ui.sourceChip.textContent="unknown";ui.readinessChip.textContent="unreachable";
     ui.statusJson.textContent=String(error);setConnection("Service unreachable","GET /v1/status failed: "+error.message,"bad");
     setChannel(ui.lastUpdate,"Status · unreachable","warn")
-  }
+  }finally{clearTimeout(timer);state.statusLoading=false;}
 }
 function resetOverallDescription(){
   state.overallResult=null;
@@ -1956,10 +2183,10 @@ function renderArchive(){
     const values=[event.event_label+" · "+(subjects.join(", ")||"人物未关联"),
       number(event.start_seconds??event.started_at_seconds??event.first_positive_at,2)+"s – "+
       number(event.last_detected_seconds??event.last_positive_seconds??event.last_positive_at,2)+"s",
-      (event.status==="ended"?"已结束":"记录中")+(event.finalized?"":" · 可修订")];
+      ({retracted:"已撤回",unconfirmed:"未确认"}[event.end_reason]||(event.status==="ended"?"已结束":"记录中"))+(event.finalized?"":" · 可修订")];
     for(const value of values){const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)}
     const cell=document.createElement("td"),status=document.createElement("span");
-    status.textContent=({pending:"收集画面",collecting:"收集画面",queued:"等待编码",encoding:"生成中",ready:"可播放",failed:"生成失败"})[evidence.status]||evidence.status||"等待证据";
+    status.textContent=({identity_confirmed:"已确认登记身份，误报已撤回",event_retracted:"复核已撤回",event_unconfirmed:"复核未确认"}[evidence.failure_reason]||({pending:"收集画面",collecting:"收集画面",queued:"等待编码",encoding:"生成中",ready:"可播放",failed:"生成失败",expired:"已过期"})[evidence.status])||evidence.status||"等待证据";
     cell.appendChild(status);
     if(available&&typeof available.url==="string"&&available.url.startsWith("/v1/events/")){
       const button=document.createElement("button");button.type="button";button.className="btn";button.style.marginLeft="10px";
@@ -1988,7 +2215,7 @@ async function loadEventArchive(append=false){
     if(!append){archiveView.items.clear();archiveView.aliases.clear()}
     for(const event of page.events||[])archiveView.items.set(event.event_id,event);
     archiveView.next=page.next_cursor||null;renderArchive();
-    $("archive-note").textContent=archiveView.items.size?"后台整理与录像不影响即时识别。":"暂无事件记录。";
+    $("archive-note").textContent=archiveView.items.size?"陌生人按人物保留一段视频证据；其他行为按每次事件分别保留。停止检测后会完成后台复核、合并和证据整理。":"暂无事件记录。";
     if(!append)connectArchiveEvents(page.epoch+":"+page.cursor)
   }catch(_){$("archive-note").textContent="事件记录暂不可用，可稍后刷新。"}
   finally{archiveView.loading=false;if(archiveView.reload){archiveView.reload=false;loadEventArchive()}}
@@ -1999,7 +2226,11 @@ function connectArchiveEvents(cursor){
   stream.addEventListener("event_change",message=>{
     try{
       const change=JSON.parse(message.data);
-      if($("archive-feature").value||$("archive-subject").value.trim()){loadEventArchive();return}
+      // The list endpoint chooses one playable stranger episode per person.
+      // Journal changes can include hidden episodes or replace that choice.
+      if($("archive-feature").value||$("archive-subject").value.trim()||
+        (change.events||[]).some(event=>canonicalEventLabel(event.event_label)==="stranger")||
+        (change.aliases||[]).length){loadEventArchive();return}
       for(const event of change.events||[]){archiveView.aliases.delete(event.event_id);archiveView.items.set(event.event_id,event)}
       for(const alias of change.aliases||[]){archiveView.aliases.set(alias.event_id,alias.canonical_event_id);archiveView.items.delete(alias.event_id)}
       if(archiveView.items.size>500){loadEventArchive();return}
@@ -2022,8 +2253,8 @@ $("archive-more").onclick=()=>loadEventArchive(true);
 $("archive-feature").onchange=()=>loadEventArchive();
 $("archive-subject").onchange=()=>loadEventArchive();
 ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
+ui.localInference.onchange=ui.localTracking.onchange=()=>{renderLocalGpuSettings();deploymentEdited()};
 ui.defaultCameraLayout.onchange=deploymentEdited;
-ui.processingMethod.onchange=processingMethodEdited;
 ui.saveDeployment.onclick=saveDeploymentSettings;
 saveApiKeyButton.onclick=saveApiKey;
 ui.resetDeployment.onclick=()=>loadDeploymentSettings(true);
@@ -2070,6 +2301,7 @@ window.addEventListener("beforeunload",()=>{
   sceneView.closed=true;stopScenePolling();
   if(archiveView.stream)archiveView.stream.close();
   if(events)events.close();stopSampler();resetAnnotations();
+  globalThis.GoodvisionCameraDisplay?.BrowserController?.discardWarmup();
   if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
   if(state.ws)state.ws.close()
 });
@@ -2080,5 +2312,6 @@ mode("stream");info().finally(loadDeploymentSettings);status().finally(connectRe
 loadRoutes();setInterval(loadRoutes,1500);
 loadEventArchive();
 </script>
+<script src="/assets/fleet_console.js"></script>
 </body>
 </html>
