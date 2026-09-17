@@ -210,7 +210,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.sliding_window.stride_frames,
         config.sliding_window.include_partial_final_window,
     ) == (1, 1, False)
-    assert config.runtime.max_concurrent_requests == 6
+    assert config.runtime.max_concurrent_requests == 10
     assert config.model_api.max_retries == 0
     assert config.model_api.api_key_env == "AICLUB_API_KEY"
     assert config.model_api.provider == "aiclub"
@@ -1092,7 +1092,7 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert info["max_image_side"] == 360
     assert info["model_image_size"] == [360, 202]
     assert info["jpeg_quality"] == 75
-    assert info["max_concurrent_requests"] == 6
+    assert info["max_concurrent_requests"] == 10
     assert info["annotated_output"] == {
         "output_fps": 30.0,
         "max_image_side": None,

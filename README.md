@@ -32,7 +32,7 @@ that warmup. The default runtime settings are:
 - display output: up to 30 FPS using original source frames after camera-view selection,
   JPEG quality 90, delayed
   2.5 seconds, with intervening frames inheriting the preceding annotations;
-- one-frame windows with stride 1 and six concurrent model requests;
+- one-frame windows with stride 1 and ten concurrent model requests;
 - `max_tokens=1200`, no API retry, and one explicitly selected model route
   with automatic route fallback disabled;
 - one multi-label safety prompt that independently evaluates `fight`,

@@ -409,6 +409,7 @@ def test_multi_face_live_scheduler_resolves_provider_and_override(
     config = load_config(ROOT / "config.yaml")
     config = replace(
         config,
+        runtime=replace(config.runtime, max_concurrent_requests=6),
         face=replace(
             config.face,
             provider=provider,

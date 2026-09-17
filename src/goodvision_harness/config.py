@@ -121,7 +121,7 @@ class FaceSettings:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
-    max_concurrent_requests: int = 4
+    max_concurrent_requests: int = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,7 +515,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     )
     runtime = RuntimeSettings(
         max_concurrent_requests=_positive_int(
-            runtime_section.get("max_concurrent_requests", 4),
+            runtime_section.get("max_concurrent_requests", 10),
             "runtime.max_concurrent_requests",
         )
     )
