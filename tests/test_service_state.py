@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -112,3 +113,69 @@ def test_session_failure_still_hides_unknown_exception_text(runtime) -> None:
     runtime._on_end("error", "http://private-source/?token=secret")
 
     assert runtime.status()["last_error"] == PUBLIC_ANALYSIS_ERROR
+
+
+class _ZombieSession:
+    def __init__(self) -> None:
+        self.running = True
+
+    def stop(self) -> None:
+        return None
+
+    def join(self, timeout: float | None = None) -> None:
+        return None
+
+
+def test_stop_session_abandons_a_hung_worker_and_stays_startable(
+    runtime: HarnessRuntime,
+) -> None:
+    runtime._session = _ZombieSession()
+    runtime._session_mode = "camera"
+    runtime._update_state(
+        pipeline_state="running",
+        last_error="the previous video session did not stop in time",
+    )
+
+    assert runtime.stop_session() is True
+    status = runtime.status()
+    assert runtime._session is None
+    assert status["pipeline_state"] == "idle"
+    assert status["last_error"] is None
+
+
+def test_stop_session_releases_control_lock_while_joining(
+    runtime: HarnessRuntime,
+) -> None:
+    entered_join = threading.Event()
+    acquired = threading.Event()
+
+    class _JoiningSession:
+        def __init__(self) -> None:
+            self.running = True
+
+        def stop(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            entered_join.set()
+            if acquired.wait(timeout=0.4):
+                self.running = False
+
+    runtime._session = _JoiningSession()
+    runtime._session_mode = "camera"
+
+    def take_control_lock() -> None:
+        if not entered_join.wait(timeout=1.0):
+            return
+        with runtime._control_lock:
+            acquired.set()
+
+    waiter = threading.Thread(target=take_control_lock, name="control-lock-waiter")
+    waiter.start()
+    try:
+        assert runtime.stop_session() is True
+        assert acquired.is_set()
+        assert runtime._session is None
+    finally:
+        acquired.set()
+        waiter.join(timeout=1.0)

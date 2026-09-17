@@ -136,14 +136,14 @@ def test_iou_tracker_recovers_same_id_after_short_missed_detection() -> None:
         frame_sequence=1,
     )
     missed = tracker.update((), frame_sequence=2)
+    assert missed[0].track_id == moving[0].track_id
+    assert missed[0].bbox[0] > moving[0].bbox[0]
     cleared = tracker.update((), frame_sequence=3)
     recovered = tracker.update(
         (Detection("person", 0.92, (48.0, 0.0, 68.0, 40.0)),),
         frame_sequence=4,
     )
 
-    assert missed[0].track_id == moving[0].track_id
-    assert missed[0].bbox[0] > moving[0].bbox[0]
     assert cleared == ()
     assert first[0].track_id == moving[0].track_id == recovered[0].track_id
     assert tracker._next_id == 2

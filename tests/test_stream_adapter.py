@@ -10,6 +10,7 @@ from goodvision_harness.stream_adapter import (
     NetworkStreamAdapter,
     StreamAdapterError,
     parse_stream_source,
+    _END,
 )
 
 ROBOT_WHEP_URL = (
@@ -36,6 +37,15 @@ def test_plain_whep_http_url_requires_explicit_webrtc_prefix() -> None:
             "http://192.168.20.199:1985/rtc/v1/whep/"
             "?app=live&stream=livestream"
         )
+
+
+def test_webrtc_stop_unblocks_a_waiting_frame_consumer() -> None:
+    adapter = NetworkStreamAdapter(ROBOT_WHEP_URL)
+
+    adapter.stop()
+
+    assert adapter.stopped
+    assert adapter._queue.get(timeout=0.2) is _END
 
 
 def test_missing_video_dependency_has_a_safe_actionable_error(monkeypatch) -> None:

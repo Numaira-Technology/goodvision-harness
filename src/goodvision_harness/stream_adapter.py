@@ -160,6 +160,7 @@ class NetworkStreamAdapter:
 
     def stop(self) -> None:
         self._stop.set()
+        self._put_control(_END)
 
     def frames(self) -> Iterator[LiveFrame]:
         if self.protocol in {"rtsp", "rtmp"}:
@@ -391,13 +392,18 @@ class NetworkStreamAdapter:
                 await asyncio.gather(receive_task, return_exceptions=True)
 
     def _put_latest(self, frame: LiveFrame) -> None:
+        if self.stopped:
+            return
         while True:
             try:
                 self._queue.put_nowait(frame)
                 return
             except queue.Full:
                 try:
-                    self._queue.get_nowait()
+                    item = self._queue.get_nowait()
+                    if item is _END or isinstance(item, _ProducerError):
+                        self._put_control(item)
+                        return
                     self.dropped_frames += 1
                 except queue.Empty:
                     continue

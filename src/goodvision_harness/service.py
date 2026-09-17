@@ -1554,15 +1554,14 @@ class HarnessRuntime:
                     }
                 )
 
-            session.stop()
-            session.join(timeout=10.0)
-            if session.running:
-                self._update_state(
-                    pipeline_state="error",
-                    last_error="the previous video session did not stop in time",
-                )
-                return False
+        session.stop()
+        session.join(timeout=10.0)
+        if session.running:
+            LOGGER.warning("abandoning a video session that did not stop in time")
 
+        with self._control_lock:
+            if self._session is not session:
+                return True
             self._delayed_overlay.reset()
             self._overlay_fusion.reset()
             if self._rich_labels is not None:
@@ -1571,20 +1570,24 @@ class HarnessRuntime:
             self.live_overlay_frames.reset()
 
             with self._state_lock:
+                if self._session is not session:
+                    return True
                 self._active_rich_session_id = None
                 self._session = None
                 self._session_mode = None
                 self._camera_owner = None
                 self._session_started_monotonic = None
                 self._camera_max_image_side = self.config.video.max_image_side
-                self._state.update(
-                    {
-                        "pipeline_state": "idle",
-                        "input_mode": None,
-                        "ready": False,
-                        "stream": None,
-                    }
-                )
+                last_error = self._state.get("last_error")
+                idle_state = {
+                    "pipeline_state": "idle",
+                    "input_mode": None,
+                    "ready": False,
+                    "stream": None,
+                }
+                if last_error == "the previous video session did not stop in time":
+                    idle_state["last_error"] = None
+                self._state.update(idle_state)
             return True
 
     def stop_camera_owned_by(self, owner: str) -> None:
@@ -1654,6 +1657,7 @@ class HarnessRuntime:
                 session is None
                 or self._session_mode != CAMERA_MODE
                 or not session.running
+                or self._state.get("pipeline_state") == "stopping"
                 or (self._camera_owner is not None and owner != self._camera_owner)
             ):
                 return False
@@ -1673,14 +1677,14 @@ class HarnessRuntime:
                     source_frame_index=sequence,
                 )
             generation = self._generation
-            self._guarded_callback(
-                generation,
-                self._on_display_frame,
-                display_jpeg,
-                timestamp,
-                sequence,
-            )
-            return True
+        self._guarded_callback(
+            generation,
+            self._on_display_frame,
+            display_jpeg,
+            timestamp,
+            sequence,
+        )
+        return True
 
     def status(self) -> dict[str, Any]:
         with self._state_lock:
@@ -1968,8 +1972,10 @@ class HarnessRuntime:
             observed_at=observed_at,
         )
         self.preview_frames.publish(packet)
-        if getattr(self, "_tracking_requested", False) and hasattr(
-            self, "live_overlay_frames"
+        if (
+            getattr(self, "_tracking_requested", False)
+            and hasattr(self, "live_overlay_frames")
+            and self._state.get("pipeline_state") != "stopping"
         ):
             try:
                 live_jpeg = self._render_fused_label_jpeg(
@@ -1986,13 +1992,15 @@ class HarnessRuntime:
         self._delayed_overlay.submit_frame(packet)
         frame_count = int(self._state["source_frames_received"]) + 1
         self._last_frame_monotonic = time.monotonic()
-        self._update_state(
-            pipeline_state="running",
-            last_frame_at=observed_at,
-            source_frames_received=frame_count,
-            last_media_timestamp=round(float(media_timestamp), 3),
-            last_frame_sequence=int(frame_sequence),
-        )
+        values: dict[str, Any] = {
+            "last_frame_at": observed_at,
+            "source_frames_received": frame_count,
+            "last_media_timestamp": round(float(media_timestamp), 3),
+            "last_frame_sequence": int(frame_sequence),
+        }
+        if self._state.get("pipeline_state") not in {"stopping", "idle", "stopped"}:
+            values["pipeline_state"] = "running"
+        self._update_state(**values)
 
     def _display_person_objects(
         self, media_timestamp: float, frame_sequence: int

@@ -372,6 +372,8 @@ class StreamingSession:
         for frame in self.frame_crop_selector.frames(
             self.video_stream.frames(), stopped=self._stop.is_set,
         ):
+            if self._stop.is_set():
+                return
             # Decide before display, tracking, evidence and inference see any
             # frames, so every consumer uses one stable coordinate system.
             frame_bgr = frame.bgr
