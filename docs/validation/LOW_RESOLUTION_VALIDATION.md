@@ -35,7 +35,7 @@
 [NTU CCTV-Fights](https://rose1.ntu.edu.sg/dataset/cctvFights/)、
 [OpenCV David](https://github.com/opencv/opencv_extra/tree/4.x/testdata/cv/tracking/david/data)。
 媒体不进入版本库，不随交付包分发；来源、文件校验值、采样时间和判定边界见
-[来源清单](docs/validation/low-resolution-sources.json)。
+[来源清单](low-resolution-sources.json)。
 
 事件模型主实验为 **37 个源帧 × 6 档 = 222 次真实请求**；另有 12 次公共图片请求、
 24 次人物辅助输出成本对照、32 次格式诊断/失败样本重测及 4 次前置探测。
@@ -238,7 +238,7 @@ python tools/low_resolution_face_eval.py --input david.webm --enroll-image david
 版本改变应使用新输出路径。已有旧报告缺少新指纹时拒绝混合恢复。
 脸部工具使用临时图库，完整参数和原始输出记录在本机 `tmp/low-resolution-face-eval`。
 
-可提交的[聚合结果](docs/validation/low-resolution-results.json)保存表格数据与原始输出
+可提交的[聚合结果](low-resolution-results.json)保存表格数据与原始输出
 SHA-256，不保存媒体或人脸特征。原始逐帧结果在 `tmp/low-resolution-model`；
 完整录像矩阵在 `tmp/low-resolution-evidence-final-20260910-boundary/report.md`。
 测试中的 CAVIAR 素材及坐标摘录来自 EC Funded CAVIAR project/IST 2001 37540，
