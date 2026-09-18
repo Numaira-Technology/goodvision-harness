@@ -1,0 +1,14 @@
+# This standalone build context only needs the worker's source and dependency
+# list. Keep credentials, model weights, captures, caches, and local state out.
+**
+!*.py
+!requirements.txt
+!Dockerfile
+!Dockerfile.gpu
+!.dockerignore
+
+# Private files never become inputs through a source-file exception.
+**/.env*
+**/.goodvision
+**/.models
+**/memory

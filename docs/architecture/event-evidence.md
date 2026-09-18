@@ -193,5 +193,5 @@ cards. Synthetic dry-run sessions can generate real playable clips of synthetic
 input. Such tests validate delivery and temporal behavior, not real-model accuracy.
 Validate actual identity switches, duplicate events and first-result/P95 latency
 on representative recordings on the target CPU and GPU deployments.
-See the current [release validation](RELEASE.md) for completed publication,
+See the current [release validation](../../RELEASE.md) for completed publication,
 continuity and image-delivery checks, and the remaining real-model limits.

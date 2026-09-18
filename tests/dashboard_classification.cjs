@@ -2,55 +2,24 @@
  * No production logic is copied: assertions inspect the rendered panel and log.
  */
 const assert=require("node:assert/strict");
-const fs=require("node:fs");
-const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
-
-class Element{
-  constructor(){
-    this.textContent="";this.className="";this.children=[];this.dataset={};this.style={};
-    this.value="";this.checked=false;
-    this.classList={
-      add:name=>{if(!this.className.split(" ").includes(name))this.className+=" "+name},
-      remove:name=>{this.className=this.className.split(" ").filter(item=>item!==name).join(" ")},
-      toggle:(name,active)=>active?this.classList.add(name):this.classList.remove(name)
-    }
-  }
-  append(...items){for(const item of items){item.parent=this;this.children.push(item)}}
-  appendChild(item){this.append(item)}
-  prepend(item){item.parent=this;this.children.unshift(item)}
-  replaceChildren(...items){this.children=[];this.append(...items)}
-  remove(){this.parent.children=this.parent.children.filter(item=>item!==this)}
-  get lastChild(){return this.children.at(-1)}
-  querySelectorAll(){return []}
-  getAttribute(name){return this[name]||null}
-  setAttribute(name,value){this[name]=value}
-  removeAttribute(name){delete this[name]}
-}
+const {createDocument, runDashboard} = require("./helpers/dashboard.cjs");
 
 function dashboard(){
-  const elements=new Map(),features=["fight","smoking","fall","weapon","stranger"];
-  const featureInputs=features.map(feature=>Object.assign(new Element(),{checked:true,dataset:{feature}}));
-  const document={
-    getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)},
-    querySelectorAll:()=>featureInputs,createElement:()=>new Element()
-  };
+  const {document, element} = createDocument(["fight", "smoking", "fall", "weapon", "stranger"]);
   const context=vm.createContext({document,window:{isSecureContext:true},
     location:{hostname:"localhost"},setTimeout,clearTimeout,clearInterval,
     requestAnimationFrame:()=>{},fetch:async()=>({json:async()=>context.statusData})});
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
-  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  new vm.Script(script); // Parse the complete shipped script, including browser startup.
-  vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+  runDashboard(context, `
     // These tests exercise classification; video transport has separate coverage.
     openFeed=()=>surfaces();
     state.running=true;state.sessionId="session-1";state.sessionFeatures=detectionEvents;
     state.gallery={ready:true};state.galleryLoading=false;
     globalThis.app={analysis,message,status,reset,renderClassification,state,
       renderSensitivities,selectedSensitivities,sensitivityInputs,controls,start};
-  `,context);
-  return {app:context.app,context,element:id=>document.getElementById(id),
+  `);
+  return {app:context.app,context,element,
     status:event=>document.getElementById("event-statuses").children
       .find(item=>item.dataset.eventLabel===event)?.children[1].textContent};
 }

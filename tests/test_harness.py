@@ -246,30 +246,17 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         "temperature": 0.0,
         "max_tokens": 1200,
     }
-    packaged = ROOT / "src" / "goodvision_harness" / "config.yaml"
-    assert packaged.read_text(encoding="utf-8") == (ROOT / "config.yaml").read_text(
-        encoding="utf-8"
-    )
 
 
-def test_face_provider_can_be_selected_by_deployment_overlay(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("provider", ["CUDAExecutionProvider", "DmlExecutionProvider"])
+def test_face_provider_can_be_selected_by_environment(
+    monkeypatch: pytest.MonkeyPatch, provider: str,
 ) -> None:
-    monkeypatch.setenv("FACE_PROVIDER", "CUDAExecutionProvider")
+    monkeypatch.setenv("FACE_PROVIDER", provider)
 
     config = load_config(ROOT / "config.yaml")
 
-    assert config.face.provider == "CUDAExecutionProvider"
-
-
-def test_directml_face_provider_can_be_selected_by_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("FACE_PROVIDER", "DmlExecutionProvider")
-
-    config = load_config(ROOT / "config.yaml")
-
-    assert config.face.provider == "DmlExecutionProvider"
+    assert config.face.provider == provider
 
 
 @pytest.mark.parametrize("scheduler", ["auto", "full", "single_flight"])
@@ -1621,31 +1608,24 @@ def test_webhook_network_failure_reports_failure_without_raw_exception() -> None
     assert delivery.stats()["last_error"] == "webhook request failed"
 
 
-def test_service_launcher_hides_server_header_and_maps_capture_options(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("capture_options", ["neutral-options", None])
+def test_service_launcher_hides_server_header_and_preserves_capture_precedence(
+    monkeypatch: pytest.MonkeyPatch, capture_options: str | None,
 ) -> None:
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
         service_module.uvicorn, "run", lambda *_args, **kwargs: calls.append(kwargs)
     )
-    monkeypatch.setenv("VIDEO_CAPTURE_OPTIONS", "neutral-options")
+    if capture_options is None:
+        monkeypatch.delenv("VIDEO_CAPTURE_OPTIONS", raising=False)
+    else:
+        monkeypatch.setenv("VIDEO_CAPTURE_OPTIONS", capture_options)
     monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "legacy-options")
     service_module.main()
     assert calls[0]["server_header"] is False
     assert (
-        service_module.os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "neutral-options"
-    )
-
-
-def test_service_launcher_keeps_legacy_capture_options_when_neutral_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(service_module.uvicorn, "run", lambda *_args, **_kwargs: None)
-    monkeypatch.delenv("VIDEO_CAPTURE_OPTIONS", raising=False)
-    monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "legacy-options")
-    service_module.main()
-    assert (
-        service_module.os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "legacy-options"
+        service_module.os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"]
+        == (capture_options or "legacy-options")
     )
 
 

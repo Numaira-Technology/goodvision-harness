@@ -1,8 +1,7 @@
 const assert=require("node:assert/strict");
-const fs=require("node:fs");
-const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
+const {script} = require("./helpers/dashboard.cjs");
 
 function player(){
   let now=0,id=0;
@@ -19,8 +18,7 @@ function player(){
       options.signal.addEventListener("abort",()=>reject(new Error("aborted")))
     })
   });
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
-  vm.runInContext(html.slice(html.indexOf("const latestFeed="),html.indexOf("function settingsSourceLabel"))+`
+  vm.runInContext(script.slice(script.indexOf("const latestFeed="),script.indexOf("function settingsSourceLabel"))+`
     globalThis.player={openFeed,closeFeed};
   `,context);
   return {context,requests,revoked,rawFeed,timers,...context.player,
@@ -86,8 +84,7 @@ function cameraSampler(outputFps){
     setInterval:(callback,delay)=>{tick=callback;period=delay;return 1},clearInterval:()=>{},
     Uint8Array,DataView,
   });
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
-  vm.runInContext(html.slice(html.indexOf("function startSampler()"),html.indexOf("function clearAnnotation()")),context);
+  vm.runInContext(script.slice(script.indexOf("function startSampler()"),script.indexOf("function clearAnnotation()")),context);
   context.startSampler();
   return {context,sent,period,tick,canvas}
 }
