@@ -49,7 +49,7 @@ class ModelAPIError(RuntimeError):
 
     _CODES = frozenset({
         "request_failed", "timeout", "connection", "http_error",
-        "invalid_response", "empty_response",
+        "invalid_response", "empty_response", "cancelled", "overloaded",
     })
 
     def __init__(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import math
 import re
@@ -235,109 +236,212 @@ class TemporalVLMInspector:
             "last_http_status": None,
         }
 
-    def inspect(self, job: TemporalInspection) -> tuple[TemporalVerdict, ...]:
-        with self._call_lock:
-            if self._closed:
-                raise ModelAPIError("temporal inspector is closed")
-            response_format = self._parameters.get("response_format")
-            messages = build_temporal_messages(
-                job,
-                max_image_side=self._max_image_side,
-                jpeg_quality=self._jpeg_quality,
-                verdicts_wrapper=(
-                    isinstance(response_format, Mapping)
-                    and response_format.get("type") == "json_object"
-                ),
+    def _ensure_transport(self) -> None:
+        """Initialize on the owning worker, which also uses and closes the pool."""
+        if self._loop is None:
+            self._loop = asyncio.new_event_loop()
+        if self._http is None:
+            self._http = create_vlm_http_client()
+
+    def warmup(self) -> bool:
+        """Best-effort connection preparation, with no model request or credentials.
+
+        Call from the same owning worker as inspect/close. A response, including
+        401 or 405, only confirms transport reachability, not model readiness.
+        Warmups do not contribute to inference statistics or consume API keys.
+        """
+        started = time.monotonic()
+        outcome = "failed"
+        try:
+            with self._call_lock:
+                if self._closed:
+                    outcome = "closed"
+                    return False
+                deadline = min(2.0, self.settings.timeout_seconds)
+                self._ensure_transport()
+                remaining = deadline - (time.monotonic() - started)
+                if remaining <= 0:
+                    outcome = "timeout"
+                    return False
+                assert self._loop is not None
+                self._loop.run_until_complete(
+                    asyncio.wait_for(self._warmup_request(remaining), remaining)
+                )
+                outcome = "transport_ready"
+                return True
+        except (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException):
+            outcome = "timeout"
+            return False
+        except Exception:
+            # Initialization, TLS, and transport failures are best effort. Never
+            # log exception text (URLs/credentials) or disable later inference.
+            return False
+        finally:
+            log_timing(
+                "vlm_connection_warmup_timing",
+                outcome=outcome,
+                total_seconds=time.monotonic() - started,
             )
-            key = self._api_key() if callable(self._api_key) else self._api_key
-            if self.settings.provider == "local" and not key:
-                key = environment_api_key(self.settings)
-            if not isinstance(key, str) or (
-                not key.strip() and self.settings.provider != "local"
-            ):
-                raise ModelAPIError("temporal model credential is unavailable")
-            payload = {**self._parameters, "model": self.model, "messages": messages}
-            # These data URLs were just built locally from bounded JPEGs. Count
-            # decoded bytes from Base64 length without copying/decoding pixels.
-            encoded_image_bytes = 0
-            for part in messages[1]["content"]:
-                if part["type"] == "image_url":
-                    data = part["image_url"]["url"].split(",", 1)[1]
-                    encoded_image_bytes += len(data) // 4 * 3 - (
-                        len(data) - len(data.rstrip("="))
-                    )
-            http_timing = {
-                "stream_session_id": trace_id(job.stream_session_id),
-                "request_id": trace_id(job.request.request_id),
-                "frame_count": len(job.frames),
-                "encoded_image_bytes": encoded_image_bytes,
-                "max_image_side": self._max_image_side,
-                "jpeg_quality": self._jpeg_quality,
-            }
-            headers = httpx.Headers(model_request_headers(self.settings, key.strip()))
-            started = time.monotonic()
-            response = None
-            validation_stage = validation_reason = None
-            with self._stats_lock:
-                self._stats["requests"] += 1
+
+    async def _warmup_request(self, timeout: float) -> None:
+        assert self._http is not None
+        # Do not copy client headers/cookies/params/auth or endpoint credentials.
+        # HEAD uses the configured route without sending evidence or generating
+        # output; even an unsupported-method response can warm the connection.
+        endpoint = httpx.URL(self.settings.endpoint).copy_with(
+            username="", password="", query=None, fragment=None,
+        )
+        request = httpx.Request(
+            "HEAD", endpoint,
+            extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+        )
+        response = await self._http.send(
+            request, stream=True, auth=None, follow_redirects=False,
+        )
+        try:
+            # Consume the HEAD response to EOF so HTTP/1.1 can return the
+            # connection to the pool. Correct HEAD responses carry no body.
+            if not response.is_stream_consumed:
+                async for _ in response.aiter_raw():
+                    pass
+        finally:
+            await response.aclose()
+
+    def inspect(self, job: TemporalInspection) -> tuple[TemporalVerdict, ...]:
+        started = time.monotonic()
+        timing = {
+            "stream_session_id": trace_id(job.stream_session_id),
+            "request_id": trace_id(job.request.request_id),
+            "outcome": "error",
+        }
+        with self._call_lock:
+            timing["inspector_lock_wait_seconds"] = time.monotonic() - started
             try:
-                if self._loop is None:
-                    self._loop = asyncio.new_event_loop()
-                if self._http is None:
-                    self._http = create_vlm_http_client()
-                response = self._loop.run_until_complete(
-                    asyncio.wait_for(
-                        self._request(payload, headers, timing=http_timing),
-                        timeout=self.settings.timeout_seconds,
-                    )
+                verdicts = self._inspect_locked(job, timing=timing)
+                timing.update(
+                    outcome="completed", verdict_count=len(verdicts),
+                    returned_event_count=len({v.event_label for v in verdicts}),
+                    requested_event_count=len(job.request.event_labels),
+                    empty_verdicts=not verdicts,
                 )
-                self._record_usage(response)
-                verdicts = self._parse(job, response)
-            except (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException):
-                error = ModelAPIError(
-                    "temporal model deadline exceeded", code="timeout"
-                )
-            except httpx.RequestError:
-                error = ModelAPIError(
-                    "temporal model connection failed", code="connection"
-                )
-            except ModelAPIError as failure:
-                error = failure
-                validation_stage = getattr(failure, "validation_stage", None)
-                validation_reason = getattr(failure, "validation_reason", None)
-            except (
-                ValueError,
-                TypeError,
-                KeyError,
-                IndexError,
-                RecursionError,
-            ) as failure:
-                if isinstance(failure, _ResponseValidationError):
-                    validation_stage, validation_reason = failure.stage, failure.reason
-                else:
-                    validation_stage, validation_reason = (
-                        "response",
-                        "unexpected_response_shape",
-                    )
-                error = ModelAPIError(
-                    "temporal model returned an invalid response",
-                    code="invalid_response",
-                )
-            else:
-                self._record_completion(started, verdicts=verdicts)
                 return verdicts
-            self._record_completion(started, error=error)
-            if error.code in {"invalid_response", "empty_response"}:
-                log_timing(
-                    "vlm_response_validation",
-                    stream_session_id=trace_id(job.stream_session_id),
-                    request_id=trace_id(job.request.request_id),
-                    error_code=error.code,
-                    validation_stage=validation_stage or "response",
-                    validation_reason=validation_reason or "invalid_response_shape",
-                    **_response_shape(response),
+            except ModelAPIError as error:
+                timing["error_code"] = error.code
+                raise
+            finally:
+                timing["total_seconds"] = time.monotonic() - started
+                log_timing("vlm_inspection_timing", **timing)
+
+    def _inspect_locked(
+        self, job: TemporalInspection, *, timing: dict
+    ) -> tuple[TemporalVerdict, ...]:
+        # Called with the inspector lock held, including preparation and parsing.
+        if self._closed:
+            raise ModelAPIError("temporal inspector is closed")
+        preparation_started = time.monotonic()
+        response_format = self._parameters.get("response_format")
+        messages = build_temporal_messages(
+            job,
+            max_image_side=self._max_image_side,
+            jpeg_quality=self._jpeg_quality,
+            verdicts_wrapper=(
+                isinstance(response_format, Mapping)
+                and response_format.get("type") == "json_object"
+            ),
+        )
+        key = self._api_key() if callable(self._api_key) else self._api_key
+        if self.settings.provider == "local" and not key:
+            key = environment_api_key(self.settings)
+        if not isinstance(key, str) or (
+            not key.strip() and self.settings.provider != "local"
+        ):
+            raise ModelAPIError("temporal model credential is unavailable")
+        payload = {**self._parameters, "model": self.model, "messages": messages}
+        # These data URLs were just built locally from bounded JPEGs. Count
+        # decoded bytes from Base64 length without copying/decoding pixels.
+        encoded_image_bytes = 0
+        for part in messages[1]["content"]:
+            if part["type"] == "image_url":
+                data = part["image_url"]["url"].split(",", 1)[1]
+                encoded_image_bytes += len(data) // 4 * 3 - (
+                    len(data) - len(data.rstrip("="))
                 )
-            raise error from None
+        http_timing = {
+            "stream_session_id": trace_id(job.stream_session_id),
+            "request_id": trace_id(job.request.request_id),
+            "frame_count": len(job.frames),
+            "encoded_image_bytes": encoded_image_bytes,
+            "max_image_side": self._max_image_side,
+            "jpeg_quality": self._jpeg_quality,
+        }
+        headers = httpx.Headers(model_request_headers(self.settings, key.strip()))
+        timing["request_prepare_seconds"] = time.monotonic() - preparation_started
+        started = time.monotonic()
+        response = None
+        validation_stage = validation_reason = None
+        with self._stats_lock:
+            self._stats["requests"] += 1
+        try:
+            client_started = time.monotonic()
+            self._ensure_transport()
+            timing["client_initialize_seconds"] = time.monotonic() - client_started
+            response = self._loop.run_until_complete(
+                asyncio.wait_for(
+                    self._request(payload, headers, timing=http_timing),
+                    timeout=self.settings.timeout_seconds,
+                )
+            )
+            self._record_usage(response)
+            parse_started = time.monotonic()
+            try:
+                verdicts = self._parse(job, response)
+            finally:
+                timing["verdict_parse_seconds"] = time.monotonic() - parse_started
+        except (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException):
+            error = ModelAPIError(
+                "temporal model deadline exceeded", code="timeout"
+            )
+        except httpx.RequestError:
+            error = ModelAPIError(
+                "temporal model connection failed", code="connection"
+            )
+        except ModelAPIError as failure:
+            error = failure
+            validation_stage = getattr(failure, "validation_stage", None)
+            validation_reason = getattr(failure, "validation_reason", None)
+        except (
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            RecursionError,
+        ) as failure:
+            if isinstance(failure, _ResponseValidationError):
+                validation_stage, validation_reason = failure.stage, failure.reason
+            else:
+                validation_stage, validation_reason = (
+                    "response",
+                    "unexpected_response_shape",
+                )
+            error = ModelAPIError(
+                "temporal model returned an invalid response",
+                code="invalid_response",
+            )
+        else:
+            self._record_completion(started, verdicts=verdicts)
+            return verdicts
+        self._record_completion(started, error=error)
+        if error.code in {"invalid_response", "empty_response"}:
+            log_timing(
+                "vlm_response_validation",
+                stream_session_id=trace_id(job.stream_session_id),
+                request_id=trace_id(job.request.request_id),
+                error_code=error.code,
+                validation_stage=validation_stage or "response",
+                validation_reason=validation_reason or "invalid_response_shape",
+                **_response_shape(response),
+            )
+        raise error from None
 
     async def _request(
         self, payload: Mapping[str, Any], headers: httpx.Headers, *, timing: dict
@@ -345,6 +449,7 @@ class TemporalVLMInspector:
         assert self._http is not None
         started = time.monotonic()
         transport_starts = {}
+        dispatch_started = upload_completed = None
         timing.update(
             outcome="error",
             transport_trace_observed=False,
@@ -353,6 +458,11 @@ class TemporalVLMInspector:
             response_bytes=0,
             response_first_chunk_seconds=None,
             response_last_chunk_seconds=None,
+            response_first_non_whitespace_seconds=None,
+            response_leading_whitespace_bytes=0,
+            response_max_chunk_gap_seconds=0.0,
+            response_chunk_samples=[],
+            response_chunk_samples_dropped=0,
         )
         response = None
         transport_metrics = {
@@ -364,6 +474,7 @@ class TemporalVLMInspector:
         }
 
         async def transport_trace(name, _info):
+            nonlocal upload_completed
             # Trace info can contain credentials, endpoints and body objects.
             # Only fixed event names and monotonic durations are inspected.
             parts = name.split(".")
@@ -384,6 +495,12 @@ class TemporalVLMInspector:
                 return
             timing["transport_trace_observed"] = True
             identity, state, now = ".".join(parts[:2]), parts[2], time.monotonic()
+            if dispatch_started is not None:
+                # This includes pool/scheduling/transport startup; it is not a
+                # direct measurement of connection-pool queueing alone.
+                timing.setdefault(
+                    "dispatch_to_first_transport_event_seconds", now - dispatch_started
+                )
             if state == "started":
                 transport_starts[identity] = (metric, now)
                 if parts[1] == "send_request_body":
@@ -394,6 +511,8 @@ class TemporalVLMInspector:
                     timing[metric] = timing.get(metric, 0.0) + max(0.0, now - phase[1])
                 if parts[1] == "send_request_body" and state == "complete":
                     timing["request_body_completed"] = True
+                    upload_completed = now
+                    timing["request_body_sent_at_seconds"] = now - started
 
         try:
             if self.settings.provider == "local":
@@ -419,6 +538,8 @@ class TemporalVLMInspector:
                 )
             # Use the exact HTTPX serialization sent, including Base64 and JSON.
             timing["request_bytes"] = len(request.content)
+            timing["request_build_seconds"] = time.monotonic() - started
+            dispatch_started = time.monotonic()
             if self.settings.provider == "local":
                 response = await self._http.send(
                     request, stream=True, auth=None, follow_redirects=False,
@@ -435,8 +556,13 @@ class TemporalVLMInspector:
                 )
             body = bytearray()
             read_started = time.monotonic()
+            previous_chunk_seconds = 0.0
             try:
                 async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > _MAX_RESPONSE_BYTES:
+                        raise _ResponseValidationError(
+                            "response_size_limit", "envelope_body"
+                        )
                     if chunk:
                         # Offsets start when body reading starts. A chunk can be
                         # whitespace/keepalive data, not necessarily model output.
@@ -446,10 +572,36 @@ class TemporalVLMInspector:
                         timing["response_last_chunk_seconds"] = elapsed
                         timing["response_chunks"] += 1
                         timing["response_bytes"] += len(chunk)
-                    if len(body) + len(chunk) > _MAX_RESPONSE_BYTES:
-                        raise _ResponseValidationError(
-                            "response_size_limit", "envelope_body"
+                        timing["response_max_chunk_gap_seconds"] = max(
+                            timing["response_max_chunk_gap_seconds"],
+                            elapsed - previous_chunk_seconds,
                         )
+                        previous_chunk_seconds = elapsed
+                        # JSON whitespace is only SP/TAB/CR/LF. Log sizes and
+                        # offsets, never response content, headers or tokens.
+                        remaining = chunk.lstrip(b" \t\r\n")
+                        if timing["response_first_non_whitespace_seconds"] is None:
+                            timing["response_leading_whitespace_bytes"] += (
+                                len(chunk) - len(remaining)
+                            )
+                            if remaining:
+                                timing["response_first_non_whitespace_seconds"] = (
+                                    elapsed
+                                )
+                                timing["http_first_non_whitespace_seconds"] = (
+                                    read_started + elapsed - started
+                                )
+                                if upload_completed is not None:
+                                    timing["upload_to_first_non_whitespace_seconds"] = (
+                                        read_started + elapsed - upload_completed
+                                    )
+                        if len(timing["response_chunk_samples"]) < 8:
+                            timing["response_chunk_samples"].append({
+                                "offset_seconds": elapsed, "bytes": len(chunk),
+                                "whitespace_only": not remaining,
+                            })
+                        else:
+                            timing["response_chunk_samples_dropped"] += 1
                     body.extend(chunk)
             finally:
                 # Preserve partial progress when the total deadline cancels a
@@ -462,9 +614,22 @@ class TemporalVLMInspector:
                 error.validation_stage = "envelope_body"
                 error.validation_reason = "empty_response_body"
                 raise error
-            decoded = _json(bytes(body), stage="envelope_json")
+            decode_started = time.monotonic()
+            try:
+                decoded = _json(bytes(body), stage="envelope_json")
+            finally:
+                timing["response_json_decode_seconds"] = (
+                    time.monotonic() - decode_started
+                )
             if not isinstance(decoded, dict):
                 raise _ResponseValidationError("envelope_not_object", "envelope_schema")
+            generation_id = decoded.get("id")
+            if isinstance(generation_id, str) and re.fullmatch(
+                r"gen-[A-Za-z0-9-]{1,156}", generation_id
+            ):
+                timing["generation_ref"] = hashlib.sha256(
+                    generation_id.encode()
+                ).hexdigest()
             usage = decoded.get("usage")
             if isinstance(usage, Mapping):
                 for field in ("prompt_tokens", "completion_tokens"):
@@ -476,6 +641,11 @@ class TemporalVLMInspector:
                     value = details.get("reasoning_tokens")
                     if type(value) is int and value >= 0:
                         timing["reasoning_tokens"] = value
+                details = usage.get("prompt_tokens_details")
+                if isinstance(details, Mapping):
+                    value = details.get("cached_tokens")
+                    if type(value) is int and value >= 0:
+                        timing["cached_prompt_tokens"] = value
             timing["outcome"] = "completed"
             return decoded
         except asyncio.CancelledError:
@@ -488,9 +658,11 @@ class TemporalVLMInspector:
                     time.monotonic() - phase_started,
                 )
             try:
+                close_started = time.monotonic()
                 if response is not None:
                     await response.aclose()
             finally:
+                timing["response_close_seconds"] = time.monotonic() - close_started
                 timing["total_seconds"] = time.monotonic() - started
                 log_timing("vlm_http_timing", **timing)
 

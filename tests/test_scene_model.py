@@ -69,6 +69,7 @@ def make_inspector(monkeypatch):
     def make(handler=None, **kwargs):
         seen = []
         pools = []
+        client_options = kwargs.pop("client_options", {})
 
         def record(request):
             seen.append(request)
@@ -77,7 +78,9 @@ def make_inspector(monkeypatch):
             return handler(request)
 
         def client():
-            result = httpx.AsyncClient(transport=httpx.MockTransport(record))
+            result = httpx.AsyncClient(
+                transport=httpx.MockTransport(record), **client_options,
+            )
             pools.append(result)
             return result
 
@@ -540,6 +543,12 @@ def test_deadline_covers_slow_response_body_and_pool_remains_usable(
     assert 0.025 <= record["response_read_seconds"] < 1
     assert record["response_chunks"] == len(initial_chunks)
     assert record["response_bytes"] == sum(map(len, initial_chunks))
+    assert record["response_first_non_whitespace_seconds"] is None
+    assert record["response_leading_whitespace_bytes"] == sum(map(len, initial_chunks))
+    assert "http_first_non_whitespace_seconds" not in record
+    (inspection,) = [fields for name, fields in logs if name == "vlm_inspection_timing"]
+    assert inspection["error_code"] == "timeout"
+    assert inspection["outcome"] == "error"
     if initial_chunks:
         assert (
             0 <= record["response_first_chunk_seconds"]
@@ -603,11 +612,60 @@ def test_response_body_timing_records_chunk_offsets_and_known_usage_only(
     assert record["response_read_seconds"] == 2
     assert record["response_first_chunk_seconds"] == 0.25
     assert record["response_last_chunk_seconds"] == 1.75
+    assert record["response_first_non_whitespace_seconds"] == 1.75
+    assert record["response_leading_whitespace_bytes"] == 1
+    assert record["response_max_chunk_gap_seconds"] == 1.5
+    assert record["response_chunk_samples"] == [
+        {"offset_seconds": 0.25, "bytes": 1, "whitespace_only": True},
+        {"offset_seconds": 1.75, "bytes": len(encoded), "whitespace_only": False},
+    ]
+    (inspection,) = [fields for name, fields in logs if name == "vlm_inspection_timing"]
+    assert inspection["total_seconds"] == 2
+    assert inspection["verdict_parse_seconds"] == 0
+    assert inspection["returned_event_count"] == 1
+    assert inspection["requested_event_count"] == 1
+    assert inspection["empty_verdicts"] is False
     assert record["response_chunks"] == 2
     assert record["response_bytes"] == len(encoded) + 1
     assert record["prompt_tokens"] == 50
     assert record["completion_tokens"] == 20
     assert record["reasoning_tokens"] == 7
+    assert "SECRET" not in repr(logs)
+    assert "PRIVATE reasoning" not in repr(logs)
+    assert "arbitrary" not in repr(logs)
+    assert "openrouter.ai" not in repr(logs)
+
+
+def test_detailed_body_trace_is_bounded_and_empty_verdicts_are_explicit(
+    make_inspector, monkeypatch
+):
+    logs = []
+    monkeypatch.setattr(
+        scene_model, "log_timing", lambda name, **fields: logs.append((name, fields))
+    )
+    encoded = json.dumps(_response("[]", id="gen-SECRET", usage={
+        "prompt_tokens_details": {"cached_tokens": 12, "private": "SECRET"},
+    })).encode()
+
+    class ManyChunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(12):
+                yield b" \r\n"
+            yield encoded
+
+    inspector, _, _ = make_inspector(lambda _: httpx.Response(200, stream=ManyChunks()))
+    assert inspector.inspect(_job()) == ()
+    (record,) = [fields for name, fields in logs if name == "vlm_http_timing"]
+    assert len(record["response_chunk_samples"]) == 8
+    assert record["response_chunk_samples_dropped"] == 5
+    assert record["response_leading_whitespace_bytes"] == 36
+    assert record["response_first_non_whitespace_seconds"] is not None
+    assert record["cached_prompt_tokens"] == 12
+    assert len(record["generation_ref"]) == 64
+    (inspection,) = [fields for name, fields in logs if name == "vlm_inspection_timing"]
+    assert inspection["empty_verdicts"] is True
+    assert inspection["verdict_count"] == inspection["returned_event_count"] == 0
+    assert inspection["requested_event_count"] == 1
     assert "SECRET" not in repr(logs)
     assert "PRIVATE reasoning" not in repr(logs)
     assert "arbitrary" not in repr(logs)
@@ -630,6 +688,7 @@ def test_response_usage_diagnostics_ignore_non_token_values(
                     "prompt_tokens": value,
                     "completion_tokens": value,
                     "completion_tokens_details": {"reasoning_tokens": value},
+                    "prompt_tokens_details": {"cached_tokens": value},
                 }
             ),
         )
@@ -637,7 +696,11 @@ def test_response_usage_diagnostics_ignore_non_token_values(
     assert inspector.inspect(_job())[0].detected is True
     (record,) = [fields for name, fields in logs if name == "vlm_http_timing"]
     assert not (
-        {"prompt_tokens", "completion_tokens", "reasoning_tokens"} & record.keys()
+        {
+            "prompt_tokens", "completion_tokens", "reasoning_tokens",
+            "cached_prompt_tokens",
+        }
+        & record.keys()
     )
     assert "SECRET" not in repr(logs)
 
@@ -662,6 +725,184 @@ def test_closed_inspector_cannot_send_requests(make_inspector):
     with pytest.raises(ModelAPIError):
         inspector.inspect(_job())
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize("status", [200, 401, 405, 307])
+def test_warmup_has_no_credentials_body_redirects_or_inference_stats(
+    make_inspector, monkeypatch, status,
+):
+    logs = []
+    monkeypatch.setattr(
+        scene_model, "log_timing", lambda name, **fields: logs.append((name, fields)),
+    )
+
+    def forbidden_key_lookup():
+        pytest.fail("Connection warmup must not retrieve inference credentials")
+
+    inspector, seen, _ = make_inspector(
+        lambda _: httpx.Response(
+            status, headers={"location": "https://redirect-secret.test/"},
+        ),
+        api_key=forbidden_key_lookup,
+        settings=ModelAPISettings(
+            provider="openrouter",
+            endpoint="https://URL_SECRET:SECRET@private.test/v1/chat/completions"
+            "?api_key=QUERY_SECRET#PRIVATE",
+            extra_headers={"x-secret": "SETTINGS_SECRET"},
+        ),
+        client_options={
+            "auth": httpx.BasicAuth("CLIENT_SECRET", "SECRET"),
+            "headers": {"authorization": "Bearer HEADER_SECRET", "x-secret": "SECRET"},
+            "cookies": {"secret": "COOKIE_SECRET"},
+            "params": {"api_key": "PARAM_SECRET"},
+            "follow_redirects": True,
+        },
+    )
+    previous_stats = inspector.stats()
+    assert inspector.warmup() is True
+    assert inspector.stats() == previous_stats
+    (request,) = seen
+    assert request.method == "HEAD"
+    assert str(request.url) == "https://private.test/v1/chat/completions"
+    assert dict(request.headers) == {"host": "private.test"}
+    assert request.content == b""
+    assert all(0 < timeout <= 2 for timeout in request.extensions["timeout"].values())
+    (record,) = [
+        fields for name, fields in logs if name == "vlm_connection_warmup_timing"
+    ]
+    assert record["outcome"] == "transport_ready"
+    assert record["total_seconds"] >= 0
+    assert not any(private in repr(logs) for private in ("SECRET", "private.test"))
+
+
+def test_warmup_consumes_response_and_reuses_pool_until_closed(make_inspector):
+    class EmptyHeadBody(httpx.AsyncByteStream):
+        exhausted = False
+        closed = False
+
+        async def __aiter__(self):
+            self.exhausted = True
+            if False:
+                yield b""
+
+        async def aclose(self):
+            self.closed = True
+
+    body = EmptyHeadBody()
+    inspector, seen, pools = make_inspector(
+        lambda request: (
+            httpx.Response(405, stream=body)
+            if request.method == "HEAD" else httpx.Response(200, json=_response())
+        ),
+    )
+    assert inspector.warmup()
+    assert body.exhausted and body.closed
+    owning_loop = inspector._loop
+    assert inspector.inspect(_job())[0].detected is True
+    assert inspector._loop is owning_loop
+    assert len(pools) == 1
+    assert [request.method for request in seen] == ["HEAD", "POST"]
+    inspector.close()
+    inspector.close()
+    assert pools[0].is_closed
+    assert owning_loop.is_closed()
+    assert inspector.warmup() is False
+    assert len(seen) == 2
+
+
+def test_failed_warmup_keeps_pool_usable_and_failure_logs_private(
+    make_inspector, monkeypatch,
+):
+    logs = []
+    monkeypatch.setattr(
+        scene_model, "log_timing", lambda name, **fields: logs.append((name, fields)),
+    )
+
+    def handler(request):
+        if request.method == "HEAD":
+            raise httpx.ConnectError("https://SECRET.test/ CONNECTION_SECRET")
+        return httpx.Response(200, json=_response())
+
+    inspector, seen, pools = make_inspector(handler)
+    assert inspector.warmup() is False
+    assert inspector.stats()["requests"] == 0
+    assert inspector.inspect(_job())[0].detected is True
+    assert len(pools) == 1
+    assert len(seen) == 2
+    (record,) = [
+        fields for name, fields in logs if name == "vlm_connection_warmup_timing"
+    ]
+    assert record["outcome"] == "failed"
+    assert "SECRET" not in repr(logs)
+
+
+def test_warmup_initialization_failure_does_not_disable_later_inference(
+    make_inspector, monkeypatch,
+):
+    inspector, seen, pools = make_inspector()
+    create_client = scene_model.create_vlm_http_client
+    attempts = 0
+
+    def temporary_failure():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ModelAPIError("TLS initialization failed: SECRET")
+        return create_client()
+
+    monkeypatch.setattr(scene_model, "create_vlm_http_client", temporary_failure)
+    assert inspector.warmup() is False
+    assert not seen
+    assert inspector.stats()["requests"] == 0
+    assert inspector.inspect(_job())[0].detected is True
+    assert len(pools) == 1
+    assert attempts == 2
+
+
+def test_warmup_deadline_includes_body_and_respects_shorter_request_timeout(
+    make_inspector, monkeypatch,
+):
+    logs = []
+    monkeypatch.setattr(
+        scene_model, "log_timing", lambda name, **fields: logs.append((name, fields)),
+    )
+
+    class SlowHeadBody(httpx.AsyncByteStream):
+        cancelled = False
+        closed = False
+
+        async def __aiter__(self):
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            yield b""
+
+        async def aclose(self):
+            self.closed = True
+
+    body = SlowHeadBody()
+    inspector, seen, pools = make_inspector(
+        lambda request: (
+            httpx.Response(200, stream=body)
+            if request.method == "HEAD" else httpx.Response(200, json=_response())
+        ),
+        settings=ModelAPISettings(provider="openrouter", timeout_seconds=0.05),
+    )
+    started = time.monotonic()
+    assert inspector.warmup() is False
+    assert time.monotonic() - started < 1
+    assert body.cancelled and body.closed
+    assert all(
+        0 < timeout <= 0.05 for timeout in seen[0].extensions["timeout"].values()
+    )
+    (record,) = [
+        fields for name, fields in logs if name == "vlm_connection_warmup_timing"
+    ]
+    assert record["outcome"] == "timeout"
+    assert inspector.inspect(_job())[0].detected is True
+    assert len(pools) == 1
 
 
 @pytest.mark.parametrize(

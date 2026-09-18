@@ -14,7 +14,7 @@ import unicodedata
 from collections.abc import AsyncIterator, Callable, Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import timezone
 from html import escape
 from pathlib import Path
@@ -149,6 +149,7 @@ from .scene_model import TemporalVLMInspector
 from .scene_runtime import SceneRuntime
 from .scene_worker import SceneInspectionWorker
 from .stream_adapter import parse_stream_source
+from .temporal_client_pool import TemporalClientPool
 from .video_to_stream import encode_jpeg
 from .video_tracking import (
     BACKEND as NATIVE_VIDEO_BACKEND,
@@ -321,6 +322,7 @@ class HarnessRuntime:
         self._scene_enabled = self._scene_mode == "active"
         self._scene: SceneRuntime | None = None
         self._scene_worker: SceneInspectionWorker | None = None
+        self._temporal_clients = TemporalClientPool()
         self._identity_worker: IdentityReviewWorker | None = None
         self._pending_archive_subject_merges: dict[str, str] = {}
         self._pending_archive_scene: dict[str, Any] | None = None
@@ -647,7 +649,10 @@ class HarnessRuntime:
         inference = ROUTES_BY_ID[route_id].inference(self.config.inference)
         if self._deployment_store is not None:
             self._deployment_store.save_model_route(route_id)
+        route_changed = self.config.inference != inference
         self.config = replace(self.config, inference=inference)
+        if route_changed:
+            self._temporal_clients.invalidate()
         if self._remote_config is not None:
             self._remote_config = replace(self._remote_config, inference=inference)
         self._selected_route_id = route_id
@@ -916,6 +921,7 @@ class HarnessRuntime:
     ) -> None:
         """Activate validated routes only after persistence succeeds, while idle."""
         previous = self.config
+        self._temporal_clients.invalidate()
         if self._route_transport is not None:
             self._route_transport.close()
             self._route_transport = None
@@ -1147,6 +1153,7 @@ class HarnessRuntime:
                     self._display_settings = replace(
                         self._display_settings, delay_seconds=buffer_delay_seconds,
                     )
+            previous_api_key = self._aiclub_api_key
             if rendered_key is not None:
                 self._deployment_store.save_api_key(
                     rendered_key, provider=self._inference_provider,
@@ -1160,6 +1167,8 @@ class HarnessRuntime:
             self._aiclub_api_key = (
                 self._persisted_api_key or self._environment_api_key
             )
+            if self._aiclub_api_key != previous_api_key:
+                self._temporal_clients.invalidate()
             if (rendered_key is not None or clear_api_key) and self._route_transport:
                 self._route_transport.close()
                 self._route_transport = None
@@ -2171,28 +2180,56 @@ class HarnessRuntime:
             )
             next_worker = None
             if scene_active and not use_dry_run and scene_labels:
+                model_settings = replace(
+                    session_config.model_api,
+                    timeout_seconds=self.config.runtime.scene_timeout_seconds,
+                    max_retries=0,
+                    extra_headers=copy.deepcopy(dict(
+                        session_config.model_api.extra_headers
+                    )),
+                )
+                parameters = copy.deepcopy(session_config.inference.request_parameters)
+                # Freeze credentials and routing for this generation. Retired
+                # requests must never pick up a later run's replacement key.
+                api_key = self._aiclub_api_key or (
+                    environment_api_key(model_settings)
+                    if model_settings.provider == "local" else ""
+                )
+                model = session_config.inference.model
+                options = {
+                    "max_tokens": self.config.runtime.scene_max_tokens,
+                    "max_image_side": self.config.runtime.scene_max_image_side,
+                    "jpeg_quality": self.config.runtime.scene_jpeg_quality,
+                }
+
                 def build_inspector():
                     return TemporalVLMInspector(
-                        replace(
-                            session_config.model_api,
-                            timeout_seconds=self.config.runtime.scene_timeout_seconds,
-                            max_retries=0,
-                        ),
-                        model=session_config.inference.model,
-                        api_key=lambda: self._aiclub_api_key or "",
-                        request_parameters=session_config.inference.request_parameters,
-                        max_tokens=self.config.runtime.scene_max_tokens,
-                        max_image_side=self.config.runtime.scene_max_image_side,
-                        jpeg_quality=self.config.runtime.scene_jpeg_quality,
+                        model_settings, model=model, api_key=api_key,
+                        request_parameters=parameters, **options,
                     )
 
                 parallel = self.config.rich_labeling.backend == "sam31_stream"
-                next_worker = SceneInspectionWorker(
-                    next_scene, build_inspector(),
-                    max_in_flight=(
-                        self.config.runtime.scene_max_in_flight if parallel else 1
+                size = self.config.runtime.scene_max_in_flight if parallel else 1
+                fingerprint = hashlib.sha256(json.dumps({
+                    "settings": asdict(model_settings), "model": model,
+                    "parameters": parameters, "api_key": api_key, **options,
+                    "transport_environment": {
+                        name: os.environ.get(name) for name in (
+                            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+                            "SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE",
+                        )
+                    },
+                }, sort_keys=True, allow_nan=False).encode()).hexdigest()
+                leases = iter(self._temporal_clients.prepare(
+                    fingerprint, build_inspector, size,
+                    accept=lambda job, scene=next_scene: scene.inspection_active(
+                        job.request.request_id
                     ),
-                    inspector_factory=build_inspector if parallel else None,
+                ))
+                next_worker = SceneInspectionWorker(
+                    next_scene, next(leases), max_in_flight=size,
+                    inspector_factory=(lambda: next(leases)) if parallel else None,
                     on_update=lambda: self._guarded_callback(
                         generation, self._on_scene_update
                     ),
@@ -2506,6 +2543,7 @@ class HarnessRuntime:
         if drain_thread is not None:
             drain_thread.join()
         self._postprocess_pool.shutdown(wait=True)
+        self._temporal_clients.close(timeout_seconds=3.0)
         if self._rich_probe_thread is not None:
             self._rich_probe_thread.join(timeout=3.0)
         if self._rich_retirement_thread is not None:

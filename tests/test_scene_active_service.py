@@ -6,7 +6,7 @@ import io
 import time
 from dataclasses import replace
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Thread, get_ident
 
 import pytest
 from fastapi.testclient import TestClient
@@ -520,9 +520,9 @@ def test_stop_finishes_accepted_model_response_before_permitting_restart(factory
     with pytest.raises(RuntimeError, match="already running"):
         runtime.start_camera(dry_run=True, features=["smoking"])
     inspector.release.set()
-    assert inspector.closed.wait(2)
     _await(lambda: runtime.status()["pipeline_state"] == "idle")
     _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+    assert not inspector.closed.is_set()  # Keep transport for the next run.
     assert old_scene.snapshot()["stats"]["completed_inspections"] >= 1
     assert old_scene.snapshot()["scene"]["events"]
     runtime.start_camera(dry_run=True, features=["smoking"])
@@ -532,6 +532,65 @@ def test_stop_finishes_accepted_model_response_before_permitting_restart(factory
     assert current_scene.snapshot()["stats"]["completed_inspections"] == 0
     assert runtime.scene_results.latest() is None
     assert runtime.annotated_frames.latest() is None
+    runtime.stop()
+    assert inspector.closed.wait(2)
+
+
+def test_temporal_transport_survives_runs_and_retires_on_credential_change(
+    factory, monkeypatch
+):
+    runtime = factory(tracker=True)
+    clients, arguments, calls = [], [], []
+
+    class Transport(Inspector):
+        def warmup(self):
+            calls.append((self, "warmup", get_ident()))
+            return True
+
+        def inspect(self, job):
+            calls.append((self, "inspect", get_ident()))
+            return super().inspect(job)
+
+        def close(self):
+            calls.append((self, "close", get_ident()))
+            super().close()
+
+    def create(*args, **kwargs):
+        client = Transport()
+        clients.append(client)
+        arguments.append(kwargs)
+        calls.append((client, "create", get_ident()))
+        return client
+
+    monkeypatch.setattr(service, "TemporalVLMInspector", create)
+
+    def run_once():
+        runtime.start_camera(dry_run=False, features=["smoking"])
+        _observe(runtime, 0, 0)
+        _observe(runtime, 1, 10)
+        _await(lambda: runtime._scene.snapshot()["stats"]["completed_inspections"] >= 1)
+        assert runtime.stop_session()
+        _await(lambda: runtime.status()["pipeline_state"] == "idle")
+        _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+
+    run_once()
+    run_once()
+    assert len(clients) == 1
+    assert len(clients[0].jobs) >= 2
+    assert not clients[0].closed.is_set()
+    assert sum(kind == "warmup" for _, kind, _ in calls) == 1
+    assert len({thread for _, _, thread in calls}) == 1
+
+    runtime._aiclub_api_key = "REPLACEMENT_TEST_KEY"
+    run_once()
+    assert len(clients) == 2
+    assert clients[0].closed.is_set()
+    assert arguments[0]["api_key"] == "TEST_KEY"
+    assert arguments[1]["api_key"] == "REPLACEMENT_TEST_KEY"
+    assert not clients[1].closed.is_set()
+    runtime.stop()
+    assert clients[1].closed.wait(2)
+    assert len({thread for _, _, thread in calls}) == 1
 
 
 def test_stopped_run_evidence_does_not_block_or_mutate_the_next_run(
