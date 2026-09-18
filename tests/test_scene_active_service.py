@@ -244,7 +244,7 @@ def test_safety_only_capture_avoids_legacy_build_and_classification_with_video(
     assert runtime.scene_results.latest() is not None
 
 
-def test_mixed_active_session_builds_only_legacy_stranger_and_publishes_no_safety(
+def test_mixed_active_session_keeps_raw_face_frames_without_ungated_results(
     factory, monkeypatch
 ):
     original = service.build_selected_features_grounding_client
@@ -260,14 +260,76 @@ def test_mixed_active_session_builds_only_legacy_stranger_and_publishes_no_safet
     assert selected == [("stranger",)]
     assert runtime._session.client._safety_client is None
     assert runtime.push_camera_frame(_jpeg(), width=240, height=160)
-    _await(lambda: runtime.results.latest() is not None)
-    judgments = runtime.results.latest().payload["judgments"]
-    assert {item["event_label"] for item in judgments} == {"stranger"}
     assert runtime._scene.event_labels == ("smoking",)
     _await(lambda: runtime.frames.latest() is not None)
     exact = runtime.frames.latest()[1]
-    assert exact.analysis_message_id == runtime.results.latest().payload["message_id"]
+    assert exact.analysis_message_id
     assert exact.annotation_mode == "none"
+    assert runtime.results.latest() is None
+
+
+def test_scene_confirmation_reaches_legacy_json_sse_and_webhook(factory, monkeypatch):
+    from types import SimpleNamespace
+
+    from test_branch_result_delivery import sse_records
+
+    runtime = factory()
+    delivered = []
+    monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "2")
+    monkeypatch.setenv("HARNESS_FLEET_CAMERA_INDEX", "1")
+    with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:
+        runtime.start_camera(dry_run=True, features=["smoking", "fight"])
+        runtime._delivery = SimpleNamespace(
+            submit=delivered.append, close=lambda **_kwargs: None,
+        )
+        for seq, detected in ((1, True), (2, True), (3, False), (4, False)):
+            runtime._on_display_frame(_jpeg(), float(seq), seq)
+            state = runtime._scene.scene
+            state.observe_person(
+                "person-a", timestamp_seconds=float(seq), frame_sequence=seq, bbox=BOX,
+            )
+            state.observe_event(
+                "smoking", ("person-a",), timestamp_seconds=float(seq),
+                frame_sequence=seq, detected=detected, evidence_id=f"e-{seq}",
+                confidence=0.9,
+            )
+            runtime._on_scene_update()
+            payload = client.get("/v1/results/smoking/latest").json()
+            assert payload["judgments"][0]["detected"] is (seq in (2, 3))
+            assert payload["analysis_kind"] == "scene_state"
+            assert payload["missing_event_labels"] == ["fight"]
+            assert payload["frame"]["source_frame_index"] == seq
+            assert payload["frame"]["width"] == 240
+            scoped = client.get(
+                "/v1/fleet/cameras/camera01/results/smoking/latest"
+            ).json()
+            assert scoped == dict(payload, camera_id="camera01")
+        streamed = sse_records(runtime, feature="smoking")
+        assert [row[1]["judgments"][0]["detected"] for row in streamed] == [
+            False, True, True, False,
+        ]
+        assert [service._feature_result_payload(row, "smoking") for row in delivered] == [
+            row[1] for row in streamed
+        ]
+        assert client.get("/v1/results/fight/latest").status_code == 404
+        before = runtime.results.latest().cursor
+        runtime._on_scene_update()
+        assert runtime.results.latest().cursor == before
+        # A raw face/classifier callback cannot replace confirmed-state results.
+        raw = AnalysisResult(
+            "raw", runtime.source_id, runtime._session.stream_session_id, 99,
+            "2026-09-19T01:00:00Z", FrameReference(
+                4, 4, "2026-09-19T01:00:00Z", 240, 160,
+            ), (EventJudgment("stranger", False, 0.9, "Raw observation."),),
+            (), "standard", 0.01,
+        )
+        runtime._on_analysis_result(raw)
+        assert runtime.results.latest().cursor == before
+        assert client.get("/v1/results/stranger/latest").status_code == 404
+        runtime.stop_session()
+        runtime.start_camera(dry_run=True, features=["smoking"])
+        assert client.get("/v1/results/smoking/latest").status_code == 404
+        runtime._delivery = None
 
 
 @pytest.mark.parametrize(
@@ -409,6 +471,10 @@ def test_actual_worker_confirms_canonical_person_event_and_unknown_does_not_clea
         runtime.scene_results.latest().payload["scene"]["events"][0]["phase"]
         == "confirmed"
     )
+    _await(lambda: runtime.results.latest(feature="smoking") is not None)
+    assert runtime.results.latest(feature="smoking").payload["judgments"][0][
+        "detected"
+    ] is True
 
 
 def _fake_encoder(_manifest, destination, **_kwargs):

@@ -146,6 +146,7 @@ from .scene_archive import SceneArchive
 from .scene_capture import SceneCaptureClient
 from .scene_delivery import SceneDisplayWorker, TrackedSceneDisplayWorker
 from .scene_model import TemporalVLMInspector
+from .scene_results import SceneResultPublisher
 from .scene_runtime import SceneRuntime
 from .scene_worker import SceneInspectionWorker
 from .stream_adapter import parse_stream_source
@@ -455,6 +456,7 @@ class HarnessRuntime:
             ),
         )
         self._state_lock = RLock()
+        self._scene_result_publisher = SceneResultPublisher()
         self._camera_display_metadata = CameraDisplayMetadata()
         self._run_postprocess: dict[str, RunPostprocess] = {}
         self._identity_control_lock = RLock()
@@ -2280,6 +2282,7 @@ class HarnessRuntime:
                 self._delayed_overlay.reset()
                 self.annotated_frames.reset()
                 self.results.reset()
+                self._scene_result_publisher.reset(session.stream_session_id)
                 self.scene_results.reset()
                 self.frames.reset()
                 self.preview_frames.reset()
@@ -3064,6 +3067,7 @@ class HarnessRuntime:
             },
         }
         self.scene_results.publish({"type": "scene", **payload})
+        self._publish_scene_result(payload)
         self._camera_display_metadata.observe_scene(payload)
         if isinstance(self._scene_display, TrackedSceneDisplayWorker):
             self._scene_display.notify_events(
@@ -3086,6 +3090,25 @@ class HarnessRuntime:
     def _scene_is_active(self) -> bool:
         scene = getattr(self, "_scene", None)
         return scene is not None and scene.mode == "active"
+
+    def _publish_scene_result(self, snapshot: Mapping[str, Any]) -> None:
+        """Publish confirmed scene state through JSON/SSE/webhook, without feedback."""
+        with self._state_lock:
+            result = self._scene_result_publisher.project(
+                snapshot,
+                labels=tuple(self._state.get("event_labels", ())),
+                emitted_at=_utc_now(),
+            )
+            if result is not None:
+                self._publish_analysis_result(result)
+                log_timing(
+                    "scene_result_published",
+                    stream_session_id=trace_id(result.stream_session_id),
+                    message_id=trace_id(result.message_id),
+                    frame_sequence=result.frame.source_frame_index,
+                    timestamp_seconds=result.frame.timestamp_seconds,
+                    judgments={j.event_label: j.detected for j in result.judgments},
+                )
 
     def _observe_scene(self, method: str, *args: Any, **kwargs: Any) -> None:
         scene = getattr(self, "_scene", None)
@@ -3276,6 +3299,17 @@ class HarnessRuntime:
         )
 
     def _on_analysis_result(self, result: AnalysisResult) -> None:
+        if self._scene_is_active():
+            # Raw face observations remain inputs to identity/scene and the fast
+            # face endpoint. Do not let a candidate overwrite a gated verdict.
+            self._scene_result_publisher.observe_reference(
+                result.stream_session_id, result.frame,
+            )
+            self._on_scene_update()
+            return
+        self._publish_analysis_result(result)
+
+    def _publish_analysis_result(self, result: AnalysisResult) -> None:
         payload = result.as_dict()
         self.results.publish(payload)
         result_count = int(self._state["results_published"]) + 1
@@ -3355,6 +3389,11 @@ class HarnessRuntime:
         # The callback takes this same lock, so it cannot precede source retention.
         continuous_queued = False
         with self._state_lock:
+            if self._scene_is_active() and session is not None:
+                self._scene_result_publisher.observe_frame(
+                    session.stream_session_id, source_jpeg, media_timestamp,
+                    frame_sequence, observed_at,
+                )
             coordinator = self._rich_labels
             if isinstance(coordinator, VideoSessionTrackingCoordinator):
                 continuous_queued = True
@@ -3746,6 +3785,7 @@ class HarnessRuntime:
                         == session.stream_session_id
                     ):
                         self._last_scene_snapshot = final_snapshot
+                        self._publish_scene_result(final_snapshot)
                         self._last_identity_review = registry.identity_review_stats()
                         self._update_state(scene_drain={"state": "completed"})
         except Exception:
