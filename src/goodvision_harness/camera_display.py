@@ -159,6 +159,8 @@ def _confirmed_since(event: dict, scene: dict, previous: dict | None) -> float |
     value = event.get("confirmed_since_timestamp_seconds")
     if _source_time(value):
         return float(value)
+    if "confirmed_since_timestamp_seconds" in event:
+        return None
     candidates = [
         item.get("timestamp_seconds")
         for item in event.get("history", ())
@@ -169,7 +171,7 @@ def _confirmed_since(event: dict, scene: dict, previous: dict | None) -> float |
         if item.get("event_id") == event.get("event_id")
         and item.get("phase") == "confirmed"
     ]
-    if previous is not None:
+    if previous is not None and previous.get("phase") == "confirmed":
         candidates.append(previous["valid_from_timestamp"])
     usable = [value for value in candidates if _source_time(value)]
     return float(min(usable)) if usable else None
@@ -364,7 +366,19 @@ class CameraDisplayMetadata:
                 for entity in scene.get("entities", ())
             }
             present = set()
-            for event in scene.get("events", ()):
+            events = list(scene.get("events", ()))
+            events.extend(
+                {
+                    "event_id": "identity:" + entity["subject_id"],
+                    "event_label": "identity_pending",
+                    "subject_ids": [entity["subject_id"]],
+                    "phase": "suspected",
+                    "first_evidence_timestamp_seconds": now,
+                }
+                for entity in scene.get("entities", ())
+                if entity.get("identity_pending")
+            )
+            for event in events:
                 for subject_id in event.get("subject_ids", ()):
                     native = identities.get(subject_id, {})
                     if not native.get("object_id") or not native.get("epoch"):
@@ -380,9 +394,17 @@ class CameraDisplayMetadata:
                     phase = event.get("phase")
                     previous = self._event_records.get(key)
                     since = _confirmed_since(event, scene, previous)
-                    if phase not in {"confirmed", "ended"} or since is None:
-                        # Suspected/retracted observations cannot open a red interval.
-                        # Previously confirmed state is closed by the tombstone below.
+                    display_phase = "confirmed"
+                    if phase == "suspected" or (phase == "ended" and since is None):
+                        display_phase = "suspected"
+                        since = event.get("first_evidence_timestamp_seconds", now)
+                        if (previous is not None and previous["phase"] == "suspected"
+                                and previous["valid_until_timestamp"] is None):
+                            since = previous["valid_from_timestamp"]
+                        elif previous is not None:
+                            since = now
+                    if (phase not in {"suspected", "confirmed", "ended"}
+                            or not _source_time(since)):
                         continue
                     until = None
                     if phase == "ended":
@@ -416,7 +438,7 @@ class CameraDisplayMetadata:
                         "epoch": native["epoch"],
                         "track_id": native["object_id"],
                         "event_label": event["event_label"],
-                        "phase": "confirmed",
+                        "phase": display_phase,
                         "event_state": phase,
                         "valid_from_timestamp": since,
                         "valid_until_timestamp": until,

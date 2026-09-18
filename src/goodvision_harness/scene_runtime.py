@@ -21,6 +21,7 @@ from uuid import uuid4
 from .contracts import AnalysisResult, NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities
 from .rich_labeling import RichLabelSnapshot
+from .scene_alerts import apply_alert_policy
 from .scene_evidence import (
     EvidenceFrame,
     InspectionPlanner,
@@ -142,6 +143,7 @@ class SceneRuntime:
         temporal_observation_fps: float | None = None,
         max_pending_inspections: int = 4,
         inspection_image_budget_bytes: int = 16 * 1024 * 1024,
+        stranger_enabled: bool = False,
     ) -> None:
         if mode != "active":
             raise ValueError("scene mode must be active")
@@ -189,6 +191,8 @@ class SceneRuntime:
         self.max_pending_inspections = max_pending_inspections
         self.inspection_image_budget_bytes = inspection_image_budget_bytes
         self.event_labels = tuple(dict.fromkeys(event_labels))
+        self.stranger_enabled = stranger_enabled
+        self._identity_reviews: dict[str, tuple[str, float]] = {}
         self.event_sensitivities = tuple(
             normalize_event_sensitivities(event_sensitivities, event_labels).items()
         )
@@ -1248,6 +1252,8 @@ class SceneRuntime:
             ):
                 return
             result = self._canonical_result(result)
+            if any(item.event_label == "stranger" for item in result.judgments):
+                self.stranger_enabled = True
             at, sequence = (
                 result.frame.timestamp_seconds,
                 result.frame.source_frame_index,
@@ -1267,6 +1273,11 @@ class SceneRuntime:
                     ):
                         state = "predicted"
                 identity = item.attributes.get("subject_identity", item.attributes)
+                review = self._identity_reviews.get(ids[0])
+                if (item.attributes.get("face_observation_state") == "observed"
+                        and (review is None or at > review[1]
+                             or item.attributes.get("status") == "unusable")):
+                    self._identity_reviews.pop(ids[0], None)
                 if not isinstance(identity, Mapping):
                     identity = {}
                 if self._identities_disabled or any(
@@ -1308,6 +1319,10 @@ class SceneRuntime:
             accepted_slots.setdefault((message_id, label), set()).add(slot)
             accepted_sources[message_id] = (accepted.timestamp, accepted.sequence)
         snapshot = self.scene.snapshot(include_history=False)
+        known_subjects = {
+            item["subject_id"] for item in snapshot["entities"]
+            if item.get("identity", {}).get("status") == "known"
+        }
         event_groups = {
             label: {
                 tuple(event["subject_ids"])
@@ -1351,9 +1366,19 @@ class SceneRuntime:
                         for object_id in judgment.object_ids:
                             item = objects.get(object_id)
                             ids = _subjects(item.attributes) if item is not None else ()
+                            detected = judgment.detected if ids else None
+                            if detected is True and (
+                                item.attributes.get("face_observation_state")
+                                != "observed"
+                                or item.attributes.get("identity_source")
+                                != "face_match"
+                                or item.attributes.get("status") != "unknown"
+                                or set(ids) & known_subjects
+                            ):
+                                detected = None
                             desired[f"object:{object_id}"] = (
                                 ids,
-                                judgment.detected if ids else None,
+                                detected,
                                 judgment.confidence if ids else None,
                             )
                     elif not judgment.detected:
@@ -1877,7 +1902,7 @@ class SceneRuntime:
         """
         with self._lock:
             view = self.scene.snapshot_at(timestamp_seconds)
-            current = self.scene.snapshot(include_history=False)
+            current = self._alert_snapshot(include_history=False)
             if source_entities is not None:
                 # A displayed source can outlive geometry history. Keep its
                 # positions, but follow registry-proven identity associations.
@@ -1897,6 +1922,11 @@ class SceneRuntime:
                     }
                 view["entities"] = list(retained.values())
             view["events"] = current["events"]
+            identity_states = {item["subject_id"]: item for item in current["entities"]}
+            for entity in view["entities"]:
+                state = identity_states.get(entity["subject_id"], {})
+                for key in ("identity_pending", "identity_review_state"):
+                    entity[key] = state.get(key)
             view["event_state_timestamp_seconds"] = current["timestamp_seconds"]
             if frame_sequence is not None:
                 exact_people = set()
@@ -1939,6 +1969,7 @@ class SceneRuntime:
     def forget_identity(self, person_id: str) -> None:
         with self._lock:
             self.scene.forget_identity(person_id)
+            self._identity_reviews.clear()
             if len(self._forgotten_identities) >= 1024:
                 self._identities_disabled = True
             else:
@@ -1953,6 +1984,21 @@ class SceneRuntime:
         """Read pending work without copying retained source trajectories."""
         with self._lock:
             return bool(self._jobs or self._tracking_intervals)
+
+    def apply_identity_review(self, states: Mapping[str, str]) -> None:
+        with self._lock:
+            self._identity_reviews = {
+                self._canonical_subject(sid): (state, self._now)
+                for sid, state in states.items()
+                if state in {"known", "unknown", "pending", "unresolved"}
+            }
+
+    def _alert_snapshot(self, *, include_history: bool) -> dict:
+        return apply_alert_policy(
+            self.scene.snapshot(include_history=include_history),
+            stranger_enabled=self.stranger_enabled,
+            identity_reviews=self._identity_reviews,
+        )
 
     def snapshot(self, *, include_history: bool = True) -> dict[str, Any]:
         with self._lock:
@@ -2007,7 +2053,7 @@ class SceneRuntime:
                     "inspection_capacity", "inspection_pin_capacity",
                 },
                 "event_labels": list(self.event_labels),
-                "scene": self.scene.snapshot(include_history=include_history),
+                "scene": self._alert_snapshot(include_history=include_history),
                 "inspections": [
                     job.as_dict()
                     | {

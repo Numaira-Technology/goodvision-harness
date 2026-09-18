@@ -86,8 +86,9 @@ def test_tenth_successful_absent_source_ends_each_safety_label_without_vlm_clear
     assert ends[0]["frame_sequence"] == 12
 
 
-def test_absence_threshold_reuses_configured_clear_observations():
-    scene = SceneState("run", "camera", clear_observations=3)
+def test_absence_threshold_is_independent_of_clear_observations():
+    scene = SceneState("run", "camera", absence_observations=3)
+    assert scene.clear_observations == 2
     confirm(scene)
     source(scene, 3)
     source(scene, 4)
@@ -191,16 +192,15 @@ def test_absence_neither_creates_events_nor_changes_stranger_lifecycle():
 def test_clear_and_absence_are_independent_or_conditions_not_added_together():
     scene = SceneState("run", "camera")
     confirm(scene)
-    for sequence in range(3, 12):
-        source(scene, sequence, ("a",))
-        assert verdict(scene, sequence, detected=False)
-    for sequence in range(12, 21):
+    source(scene, 3, ("a",))
+    assert verdict(scene, 3, detected=False)
+    for sequence in range(4, 13):
         source(scene, sequence)
     assert event(scene)["phase"] == "confirmed"
-    assert event(scene)["negative_observations"] == 9
-    source(scene, 21)
+    assert event(scene)["negative_observations"] == 1
+    source(scene, 13)
     assert event(scene)["phase"] == "ended"
-    assert event(scene)["negative_observations"] == 9
+    assert event(scene)["negative_observations"] == 1
 
 
 def test_late_first_positive_replays_already_completed_absence_before_publishing():

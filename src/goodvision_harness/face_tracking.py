@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from .contracts import NormalizedBBox
 from .grounding import ModelObject
+from .person_identity import PersonIdentity
 from .rich_labeling import RichLabelSnapshot
 
 _MAX_FACE_GAP = 3.0
@@ -19,8 +20,7 @@ _STRANGER_HOLD_SECONDS = 3.0
 class _Track:
     bbox: NormalizedBBox
     seen_at: float
-    person_id: str | None = None
-    known_at: float = 0.0
+    identity: PersonIdentity = field(default_factory=PersonIdentity)
     unknown_count: int = 0
     body_id: str | None = None
     body_bbox: NormalizedBBox | None = None
@@ -28,10 +28,36 @@ class _Track:
     unknown_at: float | None = None
     unknown_attributes: dict[str, object] | None = None
     unknown_confidence: float | None = None
-    known_embeddings: tuple[tuple[float, ...], ...] = ()
     conflict_person_id: str | None = None
     conflict_count: int = 0
     conflict_at: float = 0.0
+
+    @property
+    def person_id(self):
+        return self.identity.person_id
+
+    @person_id.setter
+    def person_id(self, value):
+        if value is None:
+            self.identity.clear()
+        else:
+            self.identity.attributes.update(status="known", person_id=value)
+
+    @property
+    def known_at(self):
+        return self.identity.confirmed_at
+
+    @known_at.setter
+    def known_at(self, value):
+        self.identity.confirmed_at = value
+
+    @property
+    def known_embeddings(self):
+        return self.identity.embeddings
+
+    @known_embeddings.setter
+    def known_embeddings(self, value):
+        self.identity.embeddings = value
 
 
 class FaceIdentityTracker:
@@ -54,9 +80,23 @@ class FaceIdentityTracker:
             if track.body_id == previous_id:
                 track.body_id = current_id
 
-    def forget_bodies(self, subject_ids: set[str]) -> None:
+    def bind_identity(self, face_ids: set[str], identity: PersonIdentity) -> None:
+        """Bind even face-only tracks when exact-source association arrives late."""
+        for track in self._tracks:
+            if track.track_id in face_ids:
+                track.identity = identity
+
+    def identity_for(self, face_id: str) -> PersonIdentity | None:
+        return next((t.identity for t in self._tracks if t.track_id == face_id), None)
+
+    def forget_bodies(
+        self, subject_ids: set[str], *, face_ids: set[str] | None = None
+    ) -> None:
         self._tracks = [
-            track for track in self._tracks if track.body_id not in subject_ids
+            track
+            for track in self._tracks
+            if track.body_id not in subject_ids
+            and track.track_id not in (face_ids or ())
         ]
 
     def forget_person(self, person_id: str) -> None:
@@ -79,7 +119,8 @@ class FaceIdentityTracker:
         frame_sequence: int,
         people: Mapping[str, str],
         snapshot: RichLabelSnapshot | None = None,
-        known_bodies: Mapping[str, Mapping[str, object]] | None = None,
+        identities: Mapping[str, PersonIdentity] | None = None,
+        face_subjects: Mapping[str, str] | None = None,
     ) -> tuple[ModelObject, ...]:
         objects = tuple(
             _removed_identity(item)
@@ -181,13 +222,12 @@ class FaceIdentityTracker:
                 )
                 self._next_track_id += 1
                 self._tracks.append(track)
-                trusted = (known_bodies or {}).get(body_id or "")
-                if trusted is not None and trusted.get("person_id") in people:
-                    track.person_id = str(trusted["person_id"])
-                    track.known_at = float(trusted.get("known_at", timestamp))
-                    track.known_embeddings = tuple(trusted.get("embeddings", ()))
             else:
                 track = retained[proposal]
+            owner = body_id or (face_subjects or {}).get(track.track_id)
+            identity = (identities or {}).get(owner or "")
+            if identity is not None and identity.confirmed_at <= timestamp:
+                track.identity = identity
             observed.add(id(track))
             track.bbox = item.bbox
             track.seen_at = timestamp
@@ -229,8 +269,11 @@ class FaceIdentityTracker:
                     track.track_id = f"face-{self._next_track_id}"
                     self._next_track_id += 1
                     attributes.update(face_track_id=track.track_id, identity_reset=True)
-                    track.known_embeddings = ()
+                    track.identity = PersonIdentity()
                 track.person_id = str(attributes["person_id"])
+                track.identity.attributes.update(
+                    name=people[track.person_id], identity_source="face_match"
+                )
                 track.known_at = timestamp
                 track.unknown_count = 0
                 track.unknown_at = None
@@ -276,8 +319,7 @@ class FaceIdentityTracker:
                             replace(item, label="known_person", attributes=attributes)
                         )
                         continue
-                    track.person_id = None
-                    track.known_embeddings = ()
+                    track.identity = PersonIdentity()
                     track.track_id = f"face-{self._next_track_id}"
                     self._next_track_id += 1
                     track.unknown_count = 0
@@ -367,7 +409,8 @@ def _strong_mismatch(track: _Track, item: ModelObject) -> bool:
 
 def _confirmed_stranger(track: _Track, timestamp: float) -> bool:
     return (
-        track.unknown_at is not None
+        track.person_id is None
+        and track.unknown_at is not None
         and timestamp - track.unknown_at <= _STRANGER_HOLD_SECONDS
         and track.unknown_attributes is not None
     )

@@ -43,6 +43,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
 <style>
 .fleet-panel{margin-bottom:18px}.fleet-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.fleet-heading{display:grid;gap:7px}.fleet-heading h2{font-size:19px;letter-spacing:-.02em}.fleet-actions{display:flex;gap:8px;flex-wrap:wrap}.fleet-mode{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#e8f2ff;color:#1d4ed8;border-radius:999px;font-size:11.5px;font-weight:750}.fleet-count{margin:14px 0 10px;font-size:13px;font-weight:700;color:var(--muted)}.fleet-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:14px}.fleet-card{min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fbfcfe}.fleet-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px}.fleet-card-head h3{font-size:14px}.fleet-camera-state{font-size:11.5px;color:var(--muted);padding:3px 8px;border-radius:999px;background:#edf0f5}.fleet-camera-state.good{color:#166534;background:#dcfce7}.fleet-camera-state.error{color:#991b1b;background:#fee2e2}.fleet-preview{position:relative;aspect-ratio:16/9;background:#111827;display:grid;place-items:center;overflow:hidden}.fleet-preview img{position:absolute;width:100%;height:100%;object-fit:contain}.fleet-preview-note{color:#b5bfd0;padding:20px;text-align:center;font-size:12px;line-height:1.6;z-index:1}.fleet-preview-note.over-image{align-self:end;justify-self:stretch;background:rgba(15,23,42,.8);padding:8px}.fleet-card-fields{padding:12px;display:grid;gap:9px}.fleet-source{font-size:11.5px;color:var(--muted);line-height:1.4}.fleet-card input{min-width:0}.fleet-card .field>span{letter-spacing:0;text-transform:none}.fleet-card select{min-width:0;width:100%}.fleet-card-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.fleet-card-buttons .btn{font-size:12px;padding:7px 10px}.fleet-card-buttons .fleet-remove{margin-left:auto;color:var(--muted)}.fleet-card-detail{font-size:11.5px;min-height:18px;overflow-wrap:anywhere;color:var(--muted)}.fleet-card-detail.error{color:var(--red)}.fleet-summary{margin-top:10px;min-height:19px}.fleet-detail-bar{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}.fleet-detail-bar .note{flex:1}.fleet-detail-label{margin:0 0 14px;color:var(--muted);font-size:13px}.fleet-grid[data-single="true"]{max-width:960px}.fleet-grid[data-single="true"] .fleet-preview{max-height:450px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:minmax(0,2fr) minmax(150px,1fr)}.fleet-grid[data-single="true"] .fleet-card-buttons,.fleet-grid[data-single="true"] .fleet-card-detail,.fleet-grid[data-single="true"] .fleet-source{grid-column:1/-1}@media(min-width:1800px){.fleet-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:600px){.fleet-actions{width:100%}.fleet-actions .btn{flex:1;padding:8px 10px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:1fr}.fleet-panel{padding:12px}}
 </style>
+<style>.face-diagnostic.warning{color:#92400e;background:#fffbeb;border-left-color:var(--amber)}</style>
 </head>
 <body>
 <header>
@@ -223,7 +224,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
         <div class="field" id="event-sensitivity-controls">
           <span>事件敏感度 · 启动前调整</span>
           <div id="event-sensitivity-fields" class="row"></div>
-          <span id="event-sensitivity-note" class="note">高敏感度更容易触发警报，也可能增加误报。行为警报需连续 10 次有效阴性才解除；人脸识别使用独立设置。</span>
+          <span id="event-sensitivity-note" class="note">高敏感度更容易触发警报，也可能增加误报。行为警报需连续 2 次有效阴性才解除；人脸识别使用独立设置。</span>
         </div>
         <div class="session-actions">
           <button id="start-button" class="btn primary" disabled>Start selected detection</button>
@@ -481,7 +482,7 @@ const localHosts=new Set(["localhost","127.0.0.1","::1","[::1]"]);
 const detectionEvents=["fight","smoking","fall","weapon","stranger"];
 const safetyEvents=detectionEvents.filter(key=>key!=="stranger");
 const sensitivityInputs=new Map();
-const clearAfterNegatives=10;
+const clearAfterNegatives=2;
 const cameraAllowed=window.isSecureContext||localHosts.has(location.hostname);
 const activeStates=new Set(["starting","running"]);
 const sessionBusyStates=new Set([...activeStates,"stopping","draining"]);
@@ -608,6 +609,7 @@ function renderScene(){
   const sceneEvents=(Array.isArray(scene.events)?scene.events:[]).filter(Boolean);
   const events=sceneEvents.slice(-64).reverse();
   const strangerSubjects=new Set(sceneEvents.filter(event=>canonicalEventLabel(event.event_label)==="stranger"&&
+    event.alert_reason!=="identity_pending"&&event.confirmed_since_timestamp_seconds!==null&&
     ["confirmed","ended"].includes(event.phase)).flatMap(event=>Array.isArray(event.subject_ids)?event.subject_ids:[]));
   sceneUi.mode.textContent=data.tracking_mode==="batch"?(data.memory_scope==="session"?"连续人物追踪（实验）":"视频片段验证"):"持续识别";
   sceneUi.status.textContent=condition==="finalizing"?"检测已停止；"+sceneDrainMessage()+"，人物和事件记录会继续更新。":
@@ -635,7 +637,7 @@ function renderScene(){
       entity.observation_state==="predicted"?"位置待确认":"观察状态待核实";
     sceneItem(sceneUi.entities,scenePerson(entity.subject_id)+" · "+name,
       observation+" · 最近看见："+sceneMoment(entity.last_observed_timestamp_seconds),
-      entity.observation_state!=="observed"||condition!=="observing"?"uncertain":"")
+      entity.identity_pending||entity.observation_state!=="observed"||condition!=="observing"?"uncertain":"")
   }
   if(!entities.length)sceneEmpty(sceneUi.entities,"等待建立人物记录；空列表不代表现场安全。");
   for(const event of events){
@@ -998,7 +1000,7 @@ function updateAnalysisUi(){
     ui.annotationNote.innerHTML="The server delivers "+
       annotatedOutputText(output)+". With face detection, events follow the same person's latest face frame until that person's event clears. Other face boxes stay visible. "+
       '<a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.';
-    $("event-sensitivity-note").textContent="高敏感度更容易触发警报，也可能增加误报。行为警报需连续 10 次有效阴性才解除；人脸识别使用独立设置。"
+    $("event-sensitivity-note").textContent="高敏感度更容易触发警报，也可能增加误报。行为警报需连续 2 次有效阴性才解除；人脸识别使用独立设置。"
   }
   if(!state.running&&!state.pending){
     resetClassification();
@@ -2061,7 +2063,7 @@ function analysisFace(result){
   const summary=summarizeFaces(result),frame=result.frame||{},model=result.model||{};
   if(sceneActive()){
     ui.faceDiagnosticSummary.textContent="人脸识别 · "+summary.description;
-    ui.faceDiagnosticSummary.className="face-diagnostic"+(summary.decisionClass==="detected"?" error":"");
+    ui.faceDiagnosticSummary.className="face-diagnostic"+(summary.unknown.length||summary.unusable.length?" warning":"");
     clearAnnotation();logFace(result,summary);renderSceneDecision();return
   }
   ui.decision.className="decision "+summary.decisionClass;ui.verdict.textContent=summary.verdict;
@@ -2098,7 +2100,7 @@ function renderEventStatuses(judgments){
       ?"Face diagnostics | "+(state.classificationJudgments.has("stranger")
         ?"waiting for a fresh face observation.":"waiting for the first analyzed frame.")
       :"Face diagnostics | stranger detection is not enabled.";
-  ui.faceDiagnosticSummary.className="face-diagnostic"+(stranger&&stranger.detected===true?" error":"");
+  ui.faceDiagnosticSummary.className="face-diagnostic"+(stranger&&stranger.detected===true?(sceneActive()?" warning":" error"):"");
   if(sceneActive()){renderSceneDecision();return}
   const existing=new Map([...ui.eventStatuses.children].map(item=>[item.dataset.eventLabel,item]));
   const items=[];

@@ -473,8 +473,8 @@ def test_session_keeps_stranger_annotation_through_poor_and_missing_faces(
     face_track_id = confirmed.objects[0].attributes["face_track_id"]
     for index in (3, 4):
         result = results[index]
-        assert result is not None and result.detected
-        assert result.event_object_indexes == (0,)
+        assert result is not None and not result.detected
+        assert result.event_object_indexes == ()
         assert len(result.objects) == 1
         assert result.objects[0].label == "unknown_person"
         attributes = result.objects[0].attributes
@@ -506,7 +506,7 @@ def test_session_retained_stranger_keeps_its_track_when_another_face_arrives(
 
     assert result is not None and result.detected
     assert len(result.objects) == 2
-    assert result.event_object_indexes == (0, 1)
+    assert result.event_object_indexes == (0,)
     newcomer, retained = result.objects
     assert newcomer.attributes["status"] == "unknown"
     assert newcomer.attributes["unknown_confirmations"] == 1
@@ -543,7 +543,7 @@ def test_session_stranger_annotation_with_body_expires_after_three_seconds(
         snapshots.append(RichLabelSnapshot("session", index * 10, index * 0.4, (body,)))
         result = session.classify_window(_timed_window(index)).classification
         assert result is not None
-        assert result.detected is (index <= 9)
+        assert result.detected is (index <= 2)
         if 3 <= index <= 9:
             assert result.objects[0].attributes["identity_source"] == "track_history"
             assert result.objects[0].attributes["person_track_id"] == "P0001"

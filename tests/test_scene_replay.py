@@ -31,9 +31,12 @@ def test_smoking_replay_tracks_one_episode_through_occlusion_and_clear():
     assert rows[8]["accepted"] is False  # A predicted box is no observation.
     assert rows[9]["accepted"] is False  # An unseen negative cannot clear Alice.
     assert _event(rows[9])["phase"] == "confirmed"
-    assert all(_event(row)["phase"] == "confirmed" for row in rows[11:29])
-    assert _event(rows[27])["negative_observations"] == 9
-    assert _event(rows[29])["phase"] == "ended"
+    assert all(_event(row)["phase"] == "confirmed" for row in rows[11:13])
+    assert _event(rows[11])["negative_observations"] == 1
+    assert _event(rows[13])["phase"] == "ended"
+    assert _event(rows[13])["negative_observations"] == 2
+    assert _event(rows[13])["ended_since_timestamp_seconds"] == 7
+    assert all(_event(row)["phase"] == "ended" for row in rows[13:])
     assert _event(rows[29])["negative_observations"] == 10
     assert rows[30]["accepted"] is False  # Delayed positive cannot resurrect it.
     assert rows[31]["accepted"] is False  # Duplicate evidence cannot confirm it.

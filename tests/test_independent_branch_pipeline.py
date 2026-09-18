@@ -374,6 +374,10 @@ def _partial_future(index, label, positive):
             ModelObject(
                 "unknown_person" if label == "stranger" else "cigarette",
                 NormalizedBBox(0.2, 0.2, 0.4, 0.4),
+                attributes={
+                    "status": "unknown", "identity_source": "face_match",
+                    "face_observation_state": "observed",
+                } if label == "stranger" else {},
             ),
         )
         if positive
@@ -515,34 +519,34 @@ def test_old_positive_notifies_without_replacing_newer_negative_in_same_branch(
 @pytest.mark.parametrize(
     "label,branch", [("smoking", "safety"), ("stranger", "stranger")]
 )
-def test_source_history_keeps_late_negatives_for_ten_frame_clear_confirmation(
+def test_source_history_keeps_late_negatives_for_two_frame_clear_confirmation(
     label, branch,
 ):
     with _session() as (session, _, _, _, live, exact, timeline, _states):
-        # Frame 10 finishes first. Frames 1 through 9 must still reach consumers
-        # so their ten-negative confirmation has exactly the private evidence.
-        for index in (0, 10, *range(1, 9)):
+        # Frame 2 finishes first. Frame 1 must still reach consumers
+        # so their two-negative confirmation has exactly the private evidence.
+        for index in (0, 2):
             future, window = _partial_future(index, label, index == 0)
             session._apply_window_future(future, window, branch=branch)
-        assert sum(not result.judgments[0].detected for result in live) == 9
-        future, window = _partial_future(9, label, False)
+        assert sum(not result.judgments[0].detected for result in live) == 1
+        future, window = _partial_future(1, label, False)
         session._apply_window_future(future, window, branch=branch)
-        assert sum(not result.judgments[0].detected for result in live) == 10
+        assert sum(not result.judgments[0].detected for result in live) == 2
         assert live == timeline
-        assert [result.sequence for result in live] == list(range(1, 12))
-        assert [result.frame.source_frame_index for result, _ in exact] == [0, 100]
+        assert [result.sequence for result in live] == list(range(1, 4))
+        assert [result.frame.source_frame_index for result, _ in exact] == [0, 20]
         bus = ResultBus()
         for result in live:
             bus.publish(result.as_dict())
         latest = bus.latest(feature=label).payload
-        assert latest["frame"]["source_frame_index"] == 100
+        assert latest["frame"]["source_frame_index"] == 20
         assert latest["judgments"][0]["detected"] is False
         source_order = sorted(
             bus.records_after(0),
             key=lambda record: record.payload["frame"]["source_frame_index"],
         )
         assert [row.payload["judgments"][0]["detected"] for row in source_order] == [
-            True, *([False] * 10),
+            True, False, False,
         ]
 
 

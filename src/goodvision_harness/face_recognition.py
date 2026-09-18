@@ -36,6 +36,7 @@ from .grounding import (
     ModelObject,
     build_face_diagnostics,
 )
+from .person_identity import stranger_evidence
 from .privacy import LocalFaceUnavailableError
 from .reference_memory import UNKNOWN_FACE_EVENT_LABEL
 from .rich_labeling import RichLabelCoordinator, RichLabelSnapshot
@@ -694,7 +695,7 @@ class FaceRecognitionRuntime:
         for object_index, item in enumerate(objects):
             status = str(item.attributes["status"])
             counts[status] += 1
-            if status == "unknown":
+            if stranger_evidence(item.attributes) is True:
                 event_indexes.append(object_index)
 
         event_confidences = [
@@ -829,6 +830,7 @@ class FaceRecognitionSession:
         self._worker = None
         self._worker_lock = threading.Lock()
         self._observation_store_path = observation_store_path
+        self.fast_results = None
 
     def bind_person_registry(self, registry: PersonRegistry) -> None:
         with self._lock:

@@ -18,6 +18,10 @@ class _Profile:
     person_id: str | None = None
     conflicting_identity: bool = False
     gallery_confirmed: bool = False
+    reviewed: bool = False
+    ambiguous: bool = False
+    usable: bool = False
+    latest_source: tuple[float, int] = (-1.0, -1)
 
 
 class _FaceScoreBlock:
@@ -216,6 +220,12 @@ class IdentityReview:
             and identity_source in {"face_match", "track_history"}
         )
         subject = self.canonical(subject)
+        profile = self.profiles.get(subject)
+        source = (timestamp, sequence)
+        if observed and profile is not None and source > profile.latest_source:
+            profile.latest_source = source
+            # Only a validated sample below can make this new face usable.
+            profile.usable = False
         if known and identity_source == "track_history":
             self._remember_known(subject, person_id)
         if (
@@ -246,6 +256,9 @@ class IdentityReview:
         if source in profile.samples:
             return
         profile.samples[source] = sample / norm
+        profile.reviewed = False
+        if source >= profile.latest_source:
+            profile.latest_source, profile.usable = source, True
         while len(profile.samples) > 4:
             profile.samples.popitem(last=False)
         self.profiles.move_to_end(subject)
@@ -260,6 +273,7 @@ class IdentityReview:
             profile.conflicting_identity = True
         profile.person_id = person_id
         profile.gallery_confirmed |= confirmed
+        profile.reviewed = False
         self.profiles.move_to_end(subject)
         self.pending.add(subject)
         self._trim_profiles()
@@ -287,6 +301,12 @@ class IdentityReview:
             )
             current.person_id = current.person_id or profile.person_id
             current.gallery_confirmed |= profile.gallery_confirmed
+            current.reviewed = False
+            current.ambiguous |= profile.ambiguous
+            if profile.latest_source > current.latest_source:
+                current.latest_source, current.usable = (
+                    profile.latest_source, profile.usable,
+                )
             current.samples = OrderedDict(sorted({
                 **profile.samples, **current.samples,
             }.items())[-4:])
@@ -354,6 +374,10 @@ class IdentityReview:
         if not dirty:
             return 0
         merged = self._review_known(dirty, accept_merge)
+        for subject in dirty:
+            profile = self.profiles.get(self.canonical(subject))
+            if profile is not None:
+                profile.ambiguous = False
         scores = _ReviewScores(self.profiles, set(map(self.canonical, dirty)))
         for subject in dirty:
             subject = self.canonical(subject)
@@ -393,12 +417,16 @@ class IdentityReview:
                     ambiguous = True
                     break
             if ambiguous:
+                self.profiles[subject].ambiguous = True
+                self.profiles[other].ambiguous = True
                 self.counters["ambiguous_matches"] += 1
                 continue
             new, old = sorted(
                 (subject, other), key=lambda sid: (self.intervals[sid][0], sid)
             )
             if accept_merge is not None and not accept_merge(old, new):
+                self.profiles[subject].ambiguous = True
+                self.profiles[other].ambiguous = True
                 self.counters["rejected_merges"] += 1
                 continue
             self.rebind(old, new)
@@ -409,7 +437,25 @@ class IdentityReview:
         # Rebinding may mark a profile dirty; this pass already evaluated all
         # source samples. A subsequent real observation will schedule it again.
         self.pending.clear()
+        for subject in dirty:
+            profile = self.profiles.get(self.canonical(subject))
+            if profile is not None:
+                profile.reviewed = True
         return merged
+
+    def states(self) -> dict[str, str]:
+        """Public review outcomes, without exposing face samples or scores."""
+        return {
+            subject: (
+                "pending" if not profile.reviewed else
+                "unresolved" if profile.conflicting_identity or profile.ambiguous else
+                "known" if profile.person_id and profile.gallery_confirmed else
+                "unresolved" if not profile.usable else
+                "unknown" if not profile.person_id and len(profile.samples) >= 2 else
+                "unresolved"
+            )
+            for subject, profile in self.profiles.items()
+        }
 
     def _review_known(self, dirty, accept_merge) -> int:
         """Consolidate confirmed enrollment IDs without requiring two new photos."""

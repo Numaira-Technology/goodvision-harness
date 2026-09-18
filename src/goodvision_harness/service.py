@@ -69,6 +69,7 @@ from .event_sensitivity import (
     normalize_event_sensitivities,
     sensitivity_ui_info,
 )
+from .face_fast import FaceFastResults
 from .face_recognition import (
     FaceRecognitionRuntime,
     FaceRecognitionSession,
@@ -478,6 +479,7 @@ class HarnessRuntime:
         self._delivery_initialized = False
         self._memory_sink = memory_sink
         self._face_runtime = face_runtime
+        self.face_fast_results = FaceFastResults()
         self._last_frame_monotonic: float | None = None
         self._last_result_monotonic: float | None = None
         self._closed = False
@@ -851,6 +853,8 @@ class HarnessRuntime:
             previous_method = self._processing_method()
             self._rich_config_revision += 1
             self._generation += 1
+            self.face_fast_results.stop()
+            self.face_fast_results = FaceFastResults(generation=self._generation)
             previous = self._rich_labels
             self._rich_labels = None
             self._retiring_rich_labels = previous
@@ -1484,6 +1488,7 @@ class HarnessRuntime:
     ) -> dict[str, Any]:
         with self._identity_control_lock:
             person = self._ensure_face_runtime().enroll(person_id, name, image_bytes)
+            self._invalidate_fast_face_gallery()
             with self._state_lock:
                 session = self._session
             registry = getattr(session, "person_registry", None)
@@ -1509,6 +1514,7 @@ class HarnessRuntime:
         with self._identity_control_lock:
             deleted = self._ensure_face_runtime().delete_person(person_id)
             if deleted:
+                self._invalidate_fast_face_gallery()
                 with self._state_lock:
                     targets = [(self._session, self._scene)]
                     targets.extend(
@@ -1528,6 +1534,12 @@ class HarnessRuntime:
                         scene.forget_identity(person_id)
                 self._camera_display_metadata.forget_identity(person_id)
             return deleted
+
+    def _invalidate_fast_face_gallery(self) -> None:
+        if isinstance(self._face_runtime, FaceRecognitionRuntime):
+            self.face_fast_results.require_gallery(
+                self._face_runtime.gallery.private_snapshot().version,
+            )
 
     def _ensure_face_runtime(self) -> FaceRecognitionRuntime:
         if self.config is None:
@@ -2124,6 +2136,10 @@ class HarnessRuntime:
                     self.source_id,
                     mode=self._scene_mode,
                     event_labels=scene_labels,
+                    stranger_enabled=(
+                        selected_analysis == FACE_ANALYSIS_MODE
+                        or "stranger" in (selected_features or ())
+                    ),
                     event_sensitivities=selected_sensitivities,
                     temporal_observation_fps=(
                         self.config.runtime.scene_observation_fps
@@ -2207,6 +2223,14 @@ class HarnessRuntime:
 
             with self._state_lock:
                 self._generation = generation
+                self.face_fast_results.stop()
+                self.face_fast_results = FaceFastResults(
+                    stream_session_id=(session.stream_session_id
+                                       if face_session is not None else None),
+                    source_id=self.source_id, generation=generation,
+                )
+                if face_session is not None:
+                    face_session.fast_results = self.face_fast_results
                 # Reset the compositor before its public bus. A frame already
                 # being published finishes first, then the bus reset clears it;
                 # the new generation cannot leak an old session frame.
@@ -2315,6 +2339,7 @@ class HarnessRuntime:
             except Exception:
                 with self._state_lock:
                     self._generation += 1
+                    self.face_fast_results.stop()
                     if self._rich_labels is not None:
                         self._rich_labels.reset(None)
                     self._active_rich_session_id = None
@@ -2444,6 +2469,7 @@ class HarnessRuntime:
                 )
             self._generation += 1
             self._delayed_overlay.reset()
+            self.face_fast_results.stop()
             self._overlay_fusion.reset()
             if self._rich_labels is not None:
                 self._rich_labels.reset(None)
@@ -2898,8 +2924,10 @@ class HarnessRuntime:
                 if scene is not None else None
             ))
             merges = registry.drain_identity_merges()
+            if scene is not None:
+                scene.apply_identity_review(registry.identity_review_states())
             admitted = self._queue_archive_subject_merges(session, merges)
-            if merges and scene is not None:
+            if scene is not None:
                 self._on_scene_update()
         while not admitted:
             archive = session.archive
@@ -3619,6 +3647,8 @@ class HarnessRuntime:
                     if scene is not None else None
                 ))
                 merges = registry.drain_identity_merges()
+                if scene is not None:
+                    scene.apply_identity_review(registry.identity_review_states())
                 admitted = self._queue_archive_subject_merges(session, merges)
                 while not admitted:
                     if session.archive.status()["state"] in {"error", "stopped"}:
@@ -4313,6 +4343,14 @@ def create_app(
     @application.get("/v1/status")
     def status(request: Request) -> dict[str, Any]:
         return _runtime(request).status()
+
+    @application.get("/v1/faces/fast")
+    async def fast_faces(request: Request) -> JSONResponse:
+        # No service status/state lock or shared synchronous endpoint pool.
+        return JSONResponse(
+            _runtime(request).face_fast_results.snapshot(),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @application.post("/v1/sessions/start")
     async def start_session(

@@ -251,7 +251,8 @@ def test_phase_aligned_camera_samples_survive_timestamp_jitter_and_busy_http(tmp
 
 
 @pytest.mark.parametrize(
-    "rate,expected", [(3, [0, 5, 10, 15, 20, 25, 30]), (1.1, [0, 14, 28])],
+    "rate,expected", [(3, [0, 5, 10, 15, 20, 25, 30]),
+                      (2, [0, 8, 15, 23, 30]), (1.1, [0, 14, 28])],
 )
 def test_phase_sampling_keeps_configured_rate_and_resets_its_clock(
     tmp_path, rate, expected,

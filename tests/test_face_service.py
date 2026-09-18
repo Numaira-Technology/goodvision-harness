@@ -294,9 +294,15 @@ def test_live_sessions_isolate_face_history_and_bind_rich_session(
             assert isinstance(client, FaceRecognitionSession)
             assert client.runtime is face_runtime
             assert client._session_id == runtime._session.stream_session_id
+            assert client.fast_results is runtime.face_fast_results
+            fast = runtime.face_fast_results.snapshot()
+            assert fast["stream_session_id"] == client._session_id
+            assert fast["active"] and not fast["available"]
             clients.append(client)
             _stop_and_wait(runtime)
+            assert not client.fast_results.snapshot()["active"]
         assert clients[0] is not clients[1]
+        assert clients[0].fast_results is not clients[1].fast_results
         assert clients[0]._tracker is not clients[1]._tracker
     finally:
         runtime.stop()

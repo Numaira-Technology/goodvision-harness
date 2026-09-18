@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -72,15 +73,20 @@ class FaceObservationWorker:
 
     def _infer(self, ticket):
         error = None
+        observation = window = gallery_snapshot = None
         started = time.monotonic()
         with self._condition:
             self._active += 1
         try:
             window, gallery, _ = self.store.load(ticket)
+            gallery_snapshot = FaceGallerySnapshot.from_private_dict(gallery)
             observation = self.owner.runtime.observe_window(
                 window,
-                gallery=FaceGallerySnapshot.from_private_dict(gallery),
+                gallery=gallery_snapshot,
             )
+            # Publish before raw-result disk writes, ordered identity commits,
+            # and every downstream service/scene callback.
+            self._publish_fast(observation)
             self.store.record_raw(
                 ticket,
                 {
@@ -100,6 +106,11 @@ class FaceObservationWorker:
             )
         except Exception as exc:
             error = type(exc).__name__
+            if (observation is None and window is not None
+                    and gallery_snapshot is not None):
+                self._publish_fast(FaceObservation(
+                    window, (), gallery_snapshot, started, 0, 0, PUBLIC_FACE_ERROR,
+                ))
             try:
                 self.store.fail(ticket, error)
             except Exception:
@@ -109,6 +120,14 @@ class FaceObservationWorker:
                 self._active -= 1
                 self._ready[ticket] = (error, time.monotonic(), started)
                 self._condition.notify_all()
+
+    def _publish_fast(self, observation):
+        fast = getattr(self.owner, "fast_results", None)
+        if fast is not None:
+            try:
+                fast.publish(observation)
+            except Exception:
+                logging.getLogger(__name__).warning("fast face publication failed")
 
     def _commit_loop(self):
         try:

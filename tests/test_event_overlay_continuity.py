@@ -249,49 +249,49 @@ def test_video_stays_red_on_face_updates_and_returns_green_on_clear(tmp_path, fu
         runtime.stop()
 
 
-def test_negative_frames_hold_status_for_ten_observations_without_old_boxes():
+def test_negative_frames_hold_status_for_two_observations_without_old_boxes():
     positive = _result(0, smoking=True, face=False)
     records = [positive]
-    for at in range(1, 11):
+    for at in range(1, 3):
         negative = _result(at, smoking=False, face=False)
         original = negative.as_dict()
         records.append(negative)
         analysis = select_overlay(records, at, max_gap_seconds=0.8).analysis
         arguments = _analysis_overlay_arguments(analysis)
-        assert arguments["detected"] is (at < 10)
+        assert arguments["detected"] is (at < 2)
         assert arguments["objects"] == ()
         assert not _active(analysis)  # per-frame verdict remains negative
         assert analysis.as_dict() == original
-        if at < 10:
-            assert f"{at}/10" in arguments["description"]
+        if at < 2:
+            assert f"{at}/2" in arguments["description"]
 
 
 def test_no_face_positive_resets_streak_and_other_missing_events_do_not_count():
     records = [_result(0, smoking=True, fall=True, face=False)]
-    for at in range(1, 10):
+    for at in range(1, 2):
         records.append(_result(at, smoking=False, face=False))
     records.extend((
         _result(10, fall=False, face=False),
         _result(11, smoking=True, face=False),
     ))
-    for at in range(12, 22):
+    for at in range(12, 14):
         records.append(_result(at, smoking=False, face=False))
         analysis = select_overlay(records, at, max_gap_seconds=0.8).analysis
         arguments = _analysis_overlay_arguments(analysis)
-        assert ("smoking" in arguments["event_label"]) is (at < 21)
+        assert ("smoking" in arguments["event_label"]) is (at < 13)
         assert "fall" in arguments["event_label"]
 
 
-def test_no_face_replays_count_once_and_ten_newer_negatives_beat_late_positive():
+def test_no_face_replays_count_once_and_two_newer_negatives_beat_late_positive():
     records = []
-    for at in range(1, 11):
+    for at in range(1, 3):
         negative = _result(at, smoking=False, face=False)
         records.extend((negative, replace(negative, message_id=f"replay-{at}")))
     records.insert(0, _result(0, smoking=True, face=False, message="late-positive"))
-    at_nine = select_overlay(records, 9, max_gap_seconds=0.8).analysis
-    assert _analysis_overlay_arguments(at_nine)["detected"]
-    at_ten = select_overlay(records, 10, max_gap_seconds=0.8).analysis
-    assert not _analysis_overlay_arguments(at_ten)["detected"]
+    at_one = select_overlay(records, 1, max_gap_seconds=0.8).analysis
+    assert _analysis_overlay_arguments(at_one)["detected"]
+    at_two = select_overlay(records, 2, max_gap_seconds=0.8).analysis
+    assert not _analysis_overlay_arguments(at_two)["detected"]
 
 
 def test_compositor_pruning_retains_full_negative_streak_and_blocks_late_positive():
@@ -307,7 +307,7 @@ def test_compositor_pruning_retains_full_negative_streak_and_blocks_late_positiv
             analysis = select_overlay(
                 composer._results, at, max_gap_seconds=0.8,
             ).analysis
-            assert _analysis_overlay_arguments(analysis)["detected"] is (at < 10)
+            assert _analysis_overlay_arguments(analysis)["detected"] is (at < 2)
         assert len(composer._results) <= 15
         composer.submit_result(_result(20, smoking=True, face=False, message="late"))
         analysis = select_overlay(composer._results, 40, max_gap_seconds=0.8).analysis

@@ -242,6 +242,26 @@ test("unconfirmed face status does not label a person as a confirmed stranger", 
   assert.doesNotMatch(text(view.element("scene-entities")), /已确认陌生人/);
 });
 
+test("unresolved identity and pending events stay yellow without an alarm", () => {
+  const view = dashboard();
+  view.app.acceptSceneSnapshot(snapshot({entities: [person({identity_pending:true})],
+    events: [event("suspected", {event_label:"stranger",alert:false})]}));
+  assert.match(view.element("scene-entities").children[0].className,/uncertain/);
+  assert.match(view.element("scene-events").children[0].className,/uncertain/);
+  assert.doesNotMatch(view.element("scene-events").children[0].className,/alert/);
+  assert.doesNotMatch(view.element("decision").className,/detected/);
+});
+
+test("an ended but unconfirmed stranger episode does not confirm the person's identity",()=>{
+  const view=dashboard();
+  view.app.acceptSceneSnapshot(snapshot({entities:[person({identity_pending:true})],
+    events:[event("ended",{event_label:"stranger",alert:false,alert_reason:"identity_pending",
+      confirmed_since_timestamp_seconds:null})]}));
+  assert.match(text(view.element("scene-entities")),/身份待确认/);
+  assert.doesNotMatch(text(view.element("scene-entities")),/已确认陌生人/);
+  assert.match(view.element("scene-entities").children[0].className,/uncertain/);
+});
+
 test("events use confirmed database names and retain aliases for unconfirmed identities", () => {
   const view = dashboard();
   view.app.acceptSceneSnapshot(snapshot({entities: [

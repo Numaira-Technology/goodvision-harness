@@ -862,7 +862,7 @@
         for(const [key,versions] of this.events){
           if(presentEvents.has(key))continue;
           const prior=versions[versions.length-1];
-          if(prior.revision>=data.event_snapshot_revision||prior.phase!=="confirmed"||
+          if(prior.revision>=data.event_snapshot_revision||!["suspected","confirmed"].includes(prior.phase)||
             prior.valid_until_timestamp!==null)continue;
           versions.push({...prior,phase:"ended",revision:data.event_snapshot_revision,
             valid_from_timestamp:Math.max(data.event_snapshot_timestamp,prior.valid_from_timestamp)});
@@ -881,9 +881,11 @@
         event.valid_from_timestamp<=timestamp).at(-1)).filter(Boolean);
       return {...result,geometry_cache_hit:cacheHit,subjects:result.subjects.map(subject=>{
         const active=subject.tracking_confirmation==="confirmed"?currentEvents.filter(event=>
-          event.epoch===subject.epoch&&event.track_id===subject.track_id&&event.phase==="confirmed"&&
+          event.epoch===subject.epoch&&event.track_id===subject.track_id&&["suspected","confirmed"].includes(event.phase)&&
           (event.valid_until_timestamp===null||timestamp<event.valid_until_timestamp)):[];
-        return {...subject,alert:active.length>0,event_labels:[...new Set(active.map(event=>event.event_label))]};
+        return {...subject,alert:active.some(event=>event.phase==="confirmed"),
+          warning:active.some(event=>event.phase==="suspected"),
+          event_labels:[...new Set(active.map(event=>event.event_label))]};
       })};
     }
     select(targetSequence,timestamp){
@@ -1079,7 +1081,7 @@
   }
 
   let warmMotionWorker=null;
-  const eventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人"};
+  const eventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人",identity_pending:"身份待确认"};
   function drawSubjectLabel(context,subject,width,height,displayWidth=width){
     if(subject.track_id===undefined||subject.track_id===null)return;
     const points=[...(subject.polygons||[]),...(subject.open_segments||[])].flat()
@@ -1091,7 +1093,7 @@
     if(available<=0)return;
     context.save();context.font=`600 ${fontSize}px sans-serif`;context.textBaseline="top";
     const lines=[displayName(subject.display_name)||`ID ${subject.track_id}`];
-    if(subject.tracking_confirmation==="confirmed"&&subject.alert&&subject.event_labels?.length)
+    if(subject.tracking_confirmation==="confirmed"&&(subject.alert||subject.warning)&&subject.event_labels?.length)
       lines.push([...new Set(subject.event_labels.map(label=>eventNames[label]||label))].join(" · "));
     const fitted=lines.map(line=>{
       if(context.measureText(line).width<=available)return line;
@@ -1104,7 +1106,7 @@
       x=Math.max(margin,Math.min(width-margin-boxWidth,Math.min(...points.map(point=>point[0]))*width)),
       y=Math.max(margin,Math.min(height-margin-boxHeight,Math.min(...points.map(point=>point[1]))*height-boxHeight-margin));
     context.fillStyle="rgba(10, 15, 22, .82)";context.fillRect(x,y,boxWidth,boxHeight);
-    context.fillStyle=subject.tracking_confirmation==="provisional"?"#9ca3af":subject.alert?"#ef4444":"#22c55e";
+    context.fillStyle=subject.tracking_confirmation==="provisional"?"#9ca3af":subject.alert?"#ef4444":subject.warning?"#facc15":"#22c55e";
     context.fillRect(x,y,Math.max(2,Math.round(fontSize/7)),boxHeight);
     fitted.forEach((line,index)=>{context.fillStyle=index?"#fca5a5":"#ffffff";
       context.fillText(line,x+padding,y+padding+index*lineHeight,available);});
@@ -1544,7 +1546,7 @@
           }
           for(const subject of subjects){
             if(subject.target_sequence!==frame.sequence)continue;
-            this.context.strokeStyle=subject.tracking_confirmation==="provisional"?"#9ca3af":subject.alert?"#ef4444":"#22c55e";
+            this.context.strokeStyle=subject.tracking_confirmation==="provisional"?"#9ca3af":subject.alert?"#ef4444":subject.warning?"#facc15":"#22c55e";
             this.context.lineWidth=2.5;
             for(const polygon of subject.polygons||[]){this.context.beginPath();
               polygon.forEach((point,index)=>{const x=point[0]*this.canvas.width,y=point[1]*this.canvas.height;

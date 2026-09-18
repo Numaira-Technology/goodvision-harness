@@ -87,6 +87,33 @@ def _phases(scene):
     }
 
 
+def test_visible_person_without_face_stays_yellow_without_creating_an_event():
+    scene = SceneRuntime("session", "camera", stranger_enabled=True)
+    try:
+        source = _observe(scene, 1)
+        assert scene.snapshot()["scene"]["events"] == []
+        assert _outline_color(_render(scene, source)) == "yellow"
+    finally:
+        scene.close()
+
+
+def test_confirmed_safety_event_stays_red_while_stranger_identity_is_pending():
+    scene = SceneRuntime("session", "camera", stranger_enabled=True)
+    try:
+        for sequence in (1, 2):
+            source = _observe(scene, sequence)
+            _event(scene, "stranger", sequence)
+            _event(scene, "smoking", sequence)
+        events = {
+            event["event_label"]: event for event in scene.snapshot()["scene"]["events"]
+        }
+        assert events["stranger"]["phase"] == "suspected"
+        assert events["smoking"]["phase"] == "confirmed"
+        assert _outline_color(_render(scene, source)) == "red"
+    finally:
+        scene.close()
+
+
 def _render(scene, packet):
     return render_scene_jpeg(
         packet.jpeg,
@@ -167,6 +194,8 @@ def test_actual_mask_replaces_box_and_only_event_subject_uses_phase_color(
         if confirmed:
             source = _observe(scene, 2, second=True)
             _event(scene, event_label, 2)
+        if event_label == "stranger":
+            scene.apply_identity_review({"person-a": "unknown"})
         result = _render(scene, source)
         assert _outline_color(result) == ("red" if confirmed else "yellow")
         assert _outline_color(result, offset=0.5) == "green"
@@ -222,12 +251,14 @@ def test_confirmed_event_wins_then_clearing_restores_suspected_color(reverse):
         _event(scene, "stranger", 1)
         source = _observe(scene, 2)
         _event(scene, "stranger", 2)
+        scene.apply_identity_review({"person-a": "unknown"})
         _event(scene, "smoking", 2)
         assert _phases(scene) == {"stranger": "confirmed", "smoking": "suspected"}
         view = scene.display_snapshot(2, frame_sequence=2)
         if reverse:
             view["events"].reverse()
-        assert _outline_color(render_scene_jpeg(source.jpeg, view, 2, quality=95)) == "red"
+        rendered = render_scene_jpeg(source.jpeg, view, 2, quality=95)
+        assert _outline_color(rendered) == "red"
 
         count = scene.scene.clear_observations
         for sequence in range(3, 3 + count):
@@ -306,6 +337,7 @@ def test_late_event_refreshes_displayed_source_without_new_tracking_or_capture()
         await_frames(2)
         assert _outline_color(published[1].jpeg) == "yellow"
         _event(scene, "stranger", 1)
+        scene.apply_identity_review({"person-a": "unknown"})
         worker.notify_events()
         await_frames(3)
         assert _outline_color(published[2].jpeg) == "red"

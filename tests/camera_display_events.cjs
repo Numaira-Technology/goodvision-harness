@@ -34,6 +34,34 @@ function personAt(subjectHistory,sequence,timestamp){
   return selected.subjects[0];
 }
 
+test("pending evidence is yellow, confirmation is red, and effective source times are preserved",()=>{
+  const subjectHistory=history();
+  subjectHistory.acceptMetadata(metadata([],[confirmed(1,0,null,{phase:"suspected"})]));
+  assert.equal(personAt(subjectHistory,1,.15).alert,false);
+  assert.equal(personAt(subjectHistory,1,.15).warning,true);
+  assert.deepEqual(personAt(subjectHistory,1,.15).event_labels,["smoking"]);
+  subjectHistory.acceptMetadata(metadata([],[confirmed(2,.2)]));
+  assert.equal(personAt(subjectHistory,1,.15).warning,true);
+  assert.equal(personAt(subjectHistory,1,.15).alert,false);
+  assert.equal(personAt(subjectHistory,2,.2).alert,true);
+  subjectHistory.acceptMetadata(metadata([],[confirmed(3,.2,.3,{event_state:"ended"})]));
+  assert.equal(personAt(subjectHistory,3,.3).alert,false);
+  assert.equal(personAt(subjectHistory,3,.3).warning,false);
+});
+
+test("identity warnings do not alarm or override a confirmed safety event",()=>{
+  const subjectHistory=history();
+  const warning=confirmed(1,0,null,{event_id:"identity:person",event_label:"identity_pending",phase:"suspected"});
+  subjectHistory.acceptMetadata(metadata([],[warning]));
+  assert.equal(personAt(subjectHistory,1,.15).warning,true);
+  assert.equal(personAt(subjectHistory,1,.15).alert,false);
+  subjectHistory.acceptMetadata(metadata([],[warning,confirmed(2,.2)]));
+  assert.equal(personAt(subjectHistory,2,.2).alert,true);
+  subjectHistory.acceptMetadata(metadata([],[],{event_snapshot_revision:3,event_snapshot_timestamp:.3}));
+  assert.equal(personAt(subjectHistory,3,.3).warning,false);
+  assert.equal(personAt(subjectHistory,3,.3).alert,false);
+});
+
 test("an older full event snapshot cannot resurrect an unknown event but its valid 人员追踪模块 anchor is accepted",()=>{
   const subjectHistory=history({future:false});
   subjectHistory.acceptMetadata(metadata([],[],{event_snapshot_revision:10,event_snapshot_timestamp:.2}));

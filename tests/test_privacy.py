@@ -391,6 +391,7 @@ def test_face_gallery_business_identifiers_round_trip_through_http() -> None:
     runtime._scene = None
     runtime._session = None
     runtime._ensure_face_runtime = lambda: face
+    runtime._face_runtime = face
     app = create_app()
     app.state.runtime = runtime
     client = TestClient(app)

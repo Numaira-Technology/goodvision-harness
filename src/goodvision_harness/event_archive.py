@@ -24,6 +24,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .archive_ingress import ArchiveIngress
+from .person_identity import stranger_evidence
 from .video_evidence import (
     EvidenceFrame,
     FrameRing,
@@ -619,10 +620,15 @@ class EventArchive:
                     stream_session_id is None or key[0] in event_ids
                     for key in self._jobs
                 )
-                if not pending and (
-                    self._queue.unfinished_tasks if stream_session_id is None
-                    else self._queue.pending_for(stream_session_id)
-                ) == 0:
+                if (
+                    not pending
+                    and (
+                        self._queue.unfinished_tasks
+                        if stream_session_id is None
+                        else self._queue.pending_for(stream_session_id)
+                    )
+                    == 0
+                ):
                     return True
             if time.monotonic() >= deadline:
                 return False
@@ -1319,6 +1325,17 @@ class EventArchive:
         session.latest = max(session.latest, timestamp)
         objects = {item["object_id"]: item for item in result.get("objects", [])}
         message_id = result["message_id"]
+        # A revision replaces this source observation, including positives
+        # withdrawn after identity resolution.
+        for point in previous_points:
+            self._observations.pop(point["key"], None)
+            self._persisted_observations.pop(point["key"], None)
+        if previous_points and self._db is not None:
+            with self._db:
+                self._db.executemany(
+                    "DELETE FROM observations WHERE observation_key=?",
+                    ((point["key"],) for point in previous_points),
+                )
         for judgment in result.get("judgments", []):
             label = _label(judgment["event_label"])
             if judgment["detected"]:
@@ -1342,6 +1359,15 @@ class EventArchive:
                         **item.get("attributes", {}),
                         **actors.get(object_id, {}),
                     }
+                    if (
+                        label == "stranger"
+                        and (
+                            "status" in attributes
+                            or "face_observation_state" in attributes
+                        )
+                        and stranger_evidence(attributes) is not True
+                    ):
+                        continue
                     subject_type = attributes.get("subject_type", "person")
                     subject_id = attributes.get("subject_id")
                     subject_ids = sorted(
@@ -1440,7 +1466,16 @@ class EventArchive:
                 subject
                 and attributes.get("status") == "known"
                 and attributes.get("person_id")
-                and attributes.get("identity_source") == "face_match"
+                and (
+                    attributes.get("identity_source") == "face_match"
+                    or (
+                        attributes.get("identity_source") == "track_history"
+                        and isinstance(
+                            attributes.get("identity_confirmed_at"), (int, float)
+                        )
+                        and 0 <= attributes["identity_confirmed_at"] <= timestamp
+                    )
+                )
                 and attributes.get("face_observation_state") == "observed"
             ):
                 identities[subject] = {
@@ -1448,6 +1483,8 @@ class EventArchive:
                     for key in ("status", "person_id", "name", "identity_source")
                     if key in attributes
                 }
+                # Resolution through this source time, including continuity
+                # proven by the registry, not necessarily a new gallery match.
                 identities[subject]["confirmed_at"] = timestamp
         if identities:
             self._reconcile_subjects(session_id, {}, identities)
@@ -1748,6 +1785,12 @@ class EventArchive:
             for p in self._observations.values()
             if session_id is None or p["session_id"] == session_id
         }
+        previous_event_ids = {
+            event_id
+            for message_id in affected_messages
+            for event_id in self._links.get(message_id, ())
+        }
+        rebuilt_event_ids = set()
         for message_id in affected_messages:
             self._links.pop(message_id, None)
         for (sid, subject, label), positives in groups.items():
@@ -1945,6 +1988,35 @@ class EventArchive:
                         changed.append(event)
                 for point in members:
                     self._links[point["message_id"]].add(event_id)
+                rebuilt_event_ids.add(event_id)
+        # Identity/association revisions may remove an episode's last positive.
+        # Retaining only the old materialized event would resurrect that evidence
+        # even though its source observations were correctly replaced.
+        for event_id in previous_event_ids - rebuilt_event_ids - self._aliases.keys():
+            event = self._events.get(event_id)
+            if (
+                event is None
+                or event["finalized"]
+                or event["event_label"] != "stranger"
+            ):
+                continue
+            event.update(
+                state="ended",
+                status="ended",
+                finalized=True,
+                end_reason="retracted",
+                end_seconds=event["last_detected_seconds"],
+            )
+            evidence = event["evidence"]
+            evidence.update(
+                revision=evidence["revision"] + 1,
+                status="expired",
+                available=None,
+                failure_reason="event_retracted",
+            )
+            self._touch(event)
+            dirty = True
+            changed.append(event)
         aliases_changed = self._aliases != aliases_before
         if dirty or aliases_changed:
             self._persist()
@@ -2105,7 +2177,10 @@ class EventArchive:
             identity = self._subject_identities.get((session_id, subject))
             if "attributes" in record:
                 record["attributes"].update(subject_id=subject, subject_ids=subjects)
-                if identity:
+                if identity and (
+                    record.get("label") != "stranger"
+                    or record["timestamp"] <= identity["confirmed_at"]
+                ):
                     record["attributes"]["subject_identity"] = {
                         key: value for key, value in identity.items()
                         if key != "confirmed_at"
@@ -2152,8 +2227,10 @@ class EventArchive:
             state="ended", status="ended", finalized=True, end_reason="retracted",
             end_seconds=max(
                 event["last_detected_seconds"],
-                min(event.get("end_seconds") or identity["confirmed_at"],
-                    identity["confirmed_at"]),
+                min(
+                    event.get("end_seconds") or identity["confirmed_at"],
+                    identity["confirmed_at"],
+                ),
             ),
         )
         evidence = event["evidence"]
@@ -2184,8 +2261,11 @@ class EventArchive:
             if event["event_label"] != "stranger":
                 result.append(event)
                 continue
-            key = (event["stream_session_id"], event["subject_id"],
-                   event["end_reason"] == "retracted")
+            key = (
+                event["stream_session_id"],
+                event["subject_id"],
+                event["end_reason"] == "retracted",
+            )
             previous = strangers.get(key)
             if previous is None or self._evidence_rank(event) < self._evidence_rank(
                 previous
@@ -2454,17 +2534,21 @@ class EventArchive:
         limit = max(0, self.settings.max_storage_bytes - required_bytes)
         self._storage_bytes = total
         cutoff = time.time() - self.settings.retention_days * 86400
-        protected_runs = {
-            run for run, session in self._sessions.items() if not session.ended
-        } | {
-            event["stream_session_id"] for event in self._events.values()
-            if not event.get("finalized") or event["evidence"].get("status")
-            in {"collecting", "queued", "encoding"}
-        } | {
-            self._events[event_id]["stream_session_id"]
-            for event_id, _revision in (*self._jobs, *self._leases)
-            if event_id in self._events
-        }
+        protected_runs = (
+            {run for run, session in self._sessions.items() if not session.ended}
+            | {
+                event["stream_session_id"]
+                for event in self._events.values()
+                if not event.get("finalized")
+                or event["evidence"].get("status")
+                in {"collecting", "queued", "encoding"}
+            }
+            | {
+                self._events[event_id]["stream_session_id"]
+                for event_id, _revision in (*self._jobs, *self._leases)
+                if event_id in self._events
+            }
+        )
         self._queue.prune_completed_runs(before=cutoff, protected=protected_runs)
         # Retain one coherent history: age/quota evicts an ended event together
         # with every immutable video revision, aliases and observation links.

@@ -66,6 +66,29 @@ def test_repeated_unknown_faces_merge_across_expired_live_tracks():
     assert registry.identity_review_stats()["pending_subjects"] == 0
 
 
+def test_review_outcome_requires_repeated_usable_faces_and_finished_review():
+    review = IdentityReview()
+    review.observe_face(face(), 1, 10)
+    assert review.states()["a"] == "pending"
+    review.review()
+    assert review.states()["a"] == "unresolved"
+    review.observe_face(face(), 2, 20)
+    assert review.states()["a"] == "pending"
+    review.review()
+    assert review.states()["a"] == "unknown"
+    review.observe_face(replace(face(status="unusable"), identity_quality=False), 3, 30)
+    review.review()
+    assert review.states()["a"] == "unresolved"
+
+
+def test_review_rejected_merge_remains_unresolved():
+    review = IdentityReview()
+    samples(review, "a", 0)
+    samples(review, "b", 10)
+    review.review(accept_merge=lambda old, new: False)
+    assert review.states() == {"a": "unresolved", "b": "unresolved"}
+
+
 @pytest.mark.parametrize("overrides", [
     {"identity_quality": False},
     {"identity_embedding": ()},
@@ -374,6 +397,7 @@ def test_native_review_consolidates_events_and_continues_with_immutable_track_id
     ) == 1
     assert registry.drain_identity_merges() == ((ids[2], ids[0]),)
     assert runtime.snapshot()["stats"]["identity_subjects_merged"] == 1
+    runtime.apply_identity_review(registry.identity_review_states())
     assert commit(6, "2") == ids[2]  # Native registry ID remains immutable.
     view = runtime.snapshot()["scene"]
     assert len(view["entities"]) == len(view["events"]) == 1

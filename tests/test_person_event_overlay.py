@@ -436,22 +436,22 @@ def test_invalid_history_configuration_is_rejected(kwargs):
         PersonEventOverlay(**kwargs)
 
 
-def test_default_clear_requires_ten_visible_negatives_per_person_and_event():
+def test_default_clear_requires_two_visible_negatives_per_person_and_event():
     overlay = PersonEventOverlay()
     overlay.submit_result(_result(
         0, faces=(_face("alice"), _face("bob", x=0.6)),
         events={"smoking": (("alice",), ("bob",)), "weapon": (("alice",),)},
     ))
-    for at in range(1, 10):
+    for at in range(1, 2):
         overlay.submit_result(_result(
             at, faces=(_face("alice"),), events={"smoking": None},
         ))
         assert _events(overlay.select(at)) == {"alice": ("smoking", "weapon")}
     overlay.submit_result(_result(
-        10, faces=(_face("alice"),), events={"smoking": None},
+        2, faces=(_face("alice"),), events={"smoking": None},
     ))
-    overlay.submit_result(_result(11, faces=(_face("alice"), _face("bob", x=0.6))))
-    assert _events(overlay.select(11)) == {
+    overlay.submit_result(_result(3, faces=(_face("alice"), _face("bob", x=0.6))))
+    assert _events(overlay.select(3)) == {
         "alice": ("weapon",), "bob": ("smoking",),
     }
 
@@ -459,14 +459,14 @@ def test_default_clear_requires_ten_visible_negatives_per_person_and_event():
 @pytest.mark.parametrize("pruned", [False, True])
 def test_positive_resets_streak_and_pruning_preserves_partial_confirmation(pruned):
     overlay = PersonEventOverlay(max_history=3 if pruned else 1024)
-    for at in range(20):
-        positive = at in (0, 9)
+    for at in range(6):
+        positive = at in (0, 2)
         overlay.submit_result(_result(
             at, faces=(_face("alice"),),
             events={"smoking": (("alice",),) if positive else None},
         ))
         assert _events(overlay.select(at)) == {
-            "alice": ("smoking",) if at < 19 else (),
+            "alice": ("smoking",) if at < 4 else (),
         }
 
 
@@ -475,7 +475,7 @@ def test_duplicates_missing_capabilities_and_unobserved_faces_do_not_count_clear
     overlay.submit_result(_result(
         0, faces=(_face("alice"),), events={"smoking": (("alice",),)},
     ))
-    for at in range(1, 10):
+    for at in range(1, 2):
         negative = _result(at, faces=(_face("alice"),), events={"smoking": None})
         overlay.submit_result(negative)
         overlay.submit_result(negative)
@@ -492,18 +492,18 @@ def test_duplicates_missing_capabilities_and_unobserved_faces_do_not_count_clear
     assert _events(overlay.select(12)) == {"alice": ()}
 
 
-def test_late_positive_with_ten_newer_source_negatives_never_revives_live_face():
+def test_late_positive_with_two_newer_source_negatives_never_revives_live_face():
     overlay = PersonEventOverlay()
     overlay.submit_result(_result(0, faces=(_face("alice"),)))
-    for at in reversed(range(1, 11)):
+    for at in reversed(range(1, 3)):
         overlay.submit_result(_result(
             at, faces=(_face("alice"),), events={"smoking": None},
         ))
     overlay.submit_result(_result(
         0, events={"smoking": (("alice",),)}, message="late-positive",
     ))
-    assert _events(overlay.select(9)) == {"alice": ("smoking",)}
-    assert _events(overlay.select(10)) == {"alice": ()}
+    assert _events(overlay.select(1)) == {"alice": ("smoking",)}
+    assert _events(overlay.select(2)) == {"alice": ()}
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 2.5])

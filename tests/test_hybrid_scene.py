@@ -51,7 +51,7 @@ def face(registry, sequence):
     )[0].attributes["subject_id"]
 
 
-@pytest.mark.parametrize("backend", ["person_hybrid", "sam3.1_video"])
+@pytest.mark.parametrize("backend", ["person_hybrid", "sam3.1_video", "goodvision_contour"])
 @pytest.mark.parametrize("face_first", [True, False])
 def test_provisional_person_cannot_merge_with_face_then_confirmed_same_id_can(
     backend, face_first

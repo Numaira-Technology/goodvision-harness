@@ -53,7 +53,11 @@ def result(
             f"event-{index}",
             "cigarette",
             BOX,
-            attributes={"subject_ids": group},
+            attributes={
+                "subject_ids": group,
+                **({"status": "unknown", "face_observation_state": "observed",
+                    "identity_source": "face_match"} if label == "stranger" else {}),
+            },
         )
         for index, group in enumerate(groups)
     )
@@ -120,7 +124,7 @@ def prepare_batch(runtime, start, subjects=("a",)):
     return jobs[0]
 
 
-def test_temporal_clear_requires_ten_distinct_endpoints_for_same_entity():
+def test_temporal_clear_requires_two_distinct_endpoints_for_same_entity():
     runtime = SceneRuntime("s", "camera", tracking_mode="batch")
     job = prepare_batch(runtime, 0, ("a", "b"))
     assert runtime.complete_inspection(job.request.request_id, [
@@ -128,7 +132,7 @@ def test_temporal_clear_requires_ten_distinct_endpoints_for_same_entity():
         TemporalVerdict("weapon", ("a",), True),
         TemporalVerdict("smoking", ("b",), True),
     ])
-    for index in range(1, 11):
+    for index in range(1, 3):
         job = prepare_batch(runtime, index * 2, ("a", "b"))
         assert len(job.frames) == 2
         verdicts = [TemporalVerdict("smoking", ("a",), False)]
@@ -140,7 +144,7 @@ def test_temporal_clear_requires_ten_distinct_endpoints_for_same_entity():
         }
         smoking = events[("smoking", ("a",))]
         assert smoking["negative_observations"] == index
-        assert smoking["phase"] == ("ended" if index == 10 else "suspected")
+        assert smoking["phase"] == ("ended" if index == 2 else "suspected")
         assert events[("smoking", ("b",))]["phase"] == "suspected"
         assert events[("weapon", ("a",))]["phase"] == "suspected"
 
@@ -254,6 +258,91 @@ def test_unusable_face_is_not_stranger_clear():
             )
         )
     assert runtime.scene.snapshot()["events"][0]["phase"] == "confirmed"
+    assert runtime.snapshot()["scene"]["events"][0]["phase"] == "suspected"
+
+
+def test_stranger_needs_both_source_confirmations_and_identity_review():
+    runtime = SceneRuntime("s", "camera")
+    for at in (1, 2):
+        tracks(runtime, at)
+        runtime.observe_result(result(at, (("a",),), label="stranger"))
+        view = runtime.snapshot()["scene"]
+        assert view["events"][0]["phase"] == "suspected"
+        assert view["events"][0]["alert"] is False
+        assert view["entities"][0]["identity_pending"]
+    runtime.apply_identity_review({"a": "unresolved"})
+    assert runtime.snapshot()["scene"]["events"][0]["phase"] == "suspected"
+    runtime.apply_identity_review({"a": "unknown"})
+    view = runtime.snapshot()["scene"]
+    assert view["events"][0]["phase"] == "confirmed"
+    assert view["events"][0]["positive_observations"] == 2
+    assert view["events"][0]["confirmed_since_timestamp_seconds"] == 2
+    runtime.observe_result(result(2, (("a",),), label="stranger"))
+    assert runtime.snapshot()["scene"]["events"][0]["alert"] is True
+
+
+def test_identity_review_cannot_replace_n_distinct_source_observations():
+    runtime = SceneRuntime("s", "camera")
+    tracks(runtime, 1)
+    runtime.observe_result(result(1, (("a",),), label="stranger"))
+    runtime.observe_result(result(1, (("a",),), label="stranger", message="duplicate"))
+    runtime.apply_identity_review({"a": "unknown"})
+    event = runtime.snapshot()["scene"]["events"][0]
+    assert event["positive_observations"] == 1
+    assert event["phase"] == "suspected"
+
+
+@pytest.mark.parametrize("attributes", [
+    {"face_observation_state": "held", "identity_source": "track_history"},
+    {"face_observation_state": "observed", "identity_source": "track_history"},
+    {"status": "unusable"},
+])
+def test_held_and_unusable_strangers_never_add_confirmation_votes(attributes):
+    runtime = SceneRuntime("s", "camera")
+    tracks(runtime, 1)
+    runtime.observe_result(result(1, (("a",),), label="stranger"))
+    for at in (2, 3, 4):
+        tracks(runtime, at)
+        observation = result(at, (("a",),), label="stranger")
+        item = observation.objects[0]
+        runtime.observe_result(replace(observation, objects=(replace(
+            item, attributes={**item.attributes, **attributes},
+        ),)))
+    runtime.apply_identity_review({"a": "unknown"})
+    event = runtime.snapshot()["scene"]["events"][0]
+    assert event["positive_observations"] == 1
+    assert event["negative_observations"] == 0
+    assert event["phase"] == "suspected"
+
+
+def test_known_merged_identity_suppresses_stranger_but_preserves_safety_alert():
+    runtime = SceneRuntime("s", "camera", stranger_enabled=True)
+    for at in (1, 2):
+        tracks(runtime, at)
+        runtime.observe_result(result(at, (("a",),), label="stranger"))
+        runtime.scene.observe_event(
+            "smoking", ("a",), timestamp_seconds=at, frame_sequence=int(at * 10),
+            detected=True, evidence_id=f"smoking-{at}",
+        )
+    runtime.apply_identity_review({"a": "known"})
+    events = {
+        item["event_label"]: item for item in runtime.snapshot()["scene"]["events"]
+    }
+    assert events["stranger"]["phase"] == "retracted"
+    assert events["stranger"]["alert"] is False
+    assert events["smoking"]["phase"] == "confirmed"
+    assert events["smoking"]["alert"] is True
+
+
+def test_no_face_is_a_yellow_identity_warning_only_when_stranger_is_enabled():
+    runtime = SceneRuntime("s", "camera", stranger_enabled=True)
+    tracks(runtime, 1)
+    view = runtime.snapshot()["scene"]
+    assert view["entities"][0]["identity_pending"]
+    assert view["events"] == []
+    assert runtime.display_snapshot(1)["entities"][0]["identity_pending"]
+    runtime.stranger_enabled = False
+    assert not runtime.snapshot()["scene"]["entities"][0]["identity_pending"]
 
 
 def prepared():

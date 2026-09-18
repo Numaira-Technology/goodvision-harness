@@ -263,7 +263,9 @@ def render_scene_jpeg(
                 # label cannot make held geometry look like a current observation.
                 label = f"hold {age:.1f}s | {label}"
             color = _PHASE_COLORS.get(
-                subject_phases.get(raw_subject), _GRAY if held else _GREEN
+                subject_phases.get(raw_subject),
+                _YELLOW if entity.get("identity_pending")
+                else _GRAY if held else _GREEN,
             )
             bounds = (
                 round(box[0] * (width - 1)),

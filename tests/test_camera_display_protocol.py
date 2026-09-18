@@ -342,7 +342,37 @@ def test_ended_interval_preserves_confirmation_until_the_real_clear_source():
     assert interval["event_state"] == "ended"
 
 
-@pytest.mark.parametrize("phase", ["retracted", "suspected", None])
+def test_suspected_event_and_missing_identity_publish_yellow_intervals():
+    display = bus()
+    pending = scene(1, event("suspected", history=[]))
+    pending["scene"]["entities"][0]["identity_pending"] = True
+    display.observe_scene(pending)
+    records = display.snapshot()["events"]
+    assert len(records) == 2
+    assert {item["phase"] for item in records} == {"suspected"}
+    assert {item["event_label"] for item in records} == {"smoking", "identity_pending"}
+    display.observe_scene(scene(2, event(confirmed_since_timestamp_seconds=2)))
+    records = display.snapshot()["events"]
+    confirmed = next(item for item in records if item["event_label"] == "smoking")
+    assert confirmed["phase"] == "confirmed"
+    assert confirmed["valid_from_timestamp"] == 2
+    warning = next(
+        item for item in records if item["event_label"] == "identity_pending"
+    )
+    assert warning["valid_until_timestamp"] == 2
+
+
+def test_revised_confirmed_event_becomes_yellow_at_revision_time():
+    display = bus()
+    display.observe_scene(scene(2, event()))
+    display.observe_scene(scene(4, event("suspected", history=[])))
+    interval = display.snapshot()["events"][0]
+    assert interval["phase"] == "suspected"
+    assert interval["valid_from_timestamp"] == 4
+    assert interval["valid_until_timestamp"] is None
+
+
+@pytest.mark.parametrize("phase", ["retracted", None])
 def test_retraction_or_full_snapshot_omission_closes_at_scene_source_time(phase):
     display = bus()
     display.observe_scene(scene(2, event()))

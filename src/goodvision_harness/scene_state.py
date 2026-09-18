@@ -122,7 +122,8 @@ class SceneState:
         occlusion_seconds: float = 3.0,
         retention_seconds: float = 90.0,
         confirm_observations: int = 2,
-        clear_observations: int = 10,
+        clear_observations: int = 2,
+        absence_observations: int = 10,
         person_history_size: int | None = None,
         person_history_seconds: float | None = None,
         max_contour_history_points: int = _MAX_CONTOUR_HISTORY_POINTS,
@@ -167,6 +168,9 @@ class SceneState:
             confirm_observations, "confirm_observations", 1
         )
         self.clear_observations = _integer(clear_observations, "clear_observations", 1)
+        self.absence_observations = _integer(
+            absence_observations, "absence_observations", 1,
+        )
         self.max_events = min(self.max_entities * len(_EVENT_LABELS), 2048)
         self._people: dict[str, _Person] = {}
         # Masks are presentation-only: keep at most 128 maximum-size outlines,
@@ -544,7 +548,7 @@ class SceneState:
             event.missing_observations = 0
         else:
             event.missing_observations += 1
-            if event.missing_observations >= self.clear_observations:
+            if event.missing_observations >= self.absence_observations:
                 event.phase = "ended"
                 event.ended_reason = "all_subjects_absent"
                 event.ended_since_timestamp = at
@@ -736,6 +740,8 @@ class SceneState:
             for key in _IDENTITY_KEYS
             if identity is not None and key in identity and identity[key] is not None
         }
+        if identity is not None and identity.get("identity_reset") is True:
+            safe_identity["identity_reset"] = True
         with self._lock:
             self.advance(timestamp)
             if observation_state != "observed":
@@ -1004,6 +1010,11 @@ class SceneState:
             or sequence < person.identity_source[1]
         ):
             return False
+        if identity.get("identity_reset"):
+            person.identity.clear()
+            identity = {
+                key: value for key, value in identity.items() if key != "identity_reset"
+            }
         if (
             identity.get("status") != "known"
             and person.identity.get("status") == "known"

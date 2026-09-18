@@ -59,8 +59,12 @@ def runtime_factory(tmp_path, monkeypatch):
     def forbidden(*_args, **_kwargs):
         raise AssertionError("scene tests must not initialize a remote or face model")
 
+    class ForbiddenFaceRuntime:
+        def __init__(self, *_args, **_kwargs):
+            forbidden()
+
     monkeypatch.setattr(service, "RichLabelHTTPClient", forbidden)
-    monkeypatch.setattr(service, "FaceRecognitionRuntime", forbidden)
+    monkeypatch.setattr(service, "FaceRecognitionRuntime", ForbiddenFaceRuntime)
 
     def make(*, enabled=True):
         config = load_config(ROOT / "config.yaml")

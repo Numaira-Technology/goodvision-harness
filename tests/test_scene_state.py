@@ -321,6 +321,8 @@ def test_concurrent_duplicate_replies_count_once():
         {"occlusion_seconds": 0},
         {"retention_seconds": 2},
         {"clear_observations": True},
+        {"absence_observations": True},
+        {"absence_observations": 0},
         {"confirm_observations": 0},
     ],
 )
@@ -624,24 +626,24 @@ def test_pins_are_bounded_immutable_and_cannot_invent_source_observations():
     assert not scene.snapshot()["entities"]
 
 
-def test_default_ten_clear_frames_apply_only_to_the_same_subject_and_event():
+def test_default_two_clear_frames_apply_only_to_the_same_subject_and_event():
     scene = SceneState("session", "camera")
-    assert scene.clear_observations == 10
+    assert scene.clear_observations == 2
     for subject in ("a", "b"):
         person(scene, 1, 1, subject)
         evidence(scene, 1, 1, subjects=(subject,), evidence_id=f"{subject}-smoking")
     evidence(scene, 1, 1, label="weapon", evidence_id="a-weapon")
-    for sequence in range(2, 11):
+    for sequence in range(2, 3):
         person(scene, sequence, sequence)
         evidence(scene, sequence, sequence, detected=False)
     current = {
         (event["event_label"], tuple(event["subject_ids"])): event
         for event in scene.snapshot()["events"]
     }
-    assert current[("smoking", ("a",))]["negative_observations"] == 9
+    assert current[("smoking", ("a",))]["negative_observations"] == 1
     assert all(event["phase"] == "suspected" for event in current.values())
-    person(scene, 11, 11)
-    evidence(scene, 11, 11, detected=False)
+    person(scene, 3, 3)
+    evidence(scene, 3, 3, detected=False)
     current = {
         (event["event_label"], tuple(event["subject_ids"])): event
         for event in scene.snapshot()["events"]
@@ -651,41 +653,41 @@ def test_default_ten_clear_frames_apply_only_to_the_same_subject_and_event():
     assert current[("weapon", ("a",))]["phase"] == "suspected"
 
 
-def test_late_positive_replays_before_nine_clears_and_tenth_clear_ends_episode():
+def test_late_positive_replays_before_first_clear_and_second_clear_ends_episode():
     scene = SceneState("session", "camera")
-    for sequence in range(1, 12):
+    for sequence in range(1, 4):
         person(scene, sequence, sequence)
-    for sequence in range(2, 11):
+    for sequence in range(2, 3):
         assert evidence(scene, sequence, sequence, detected=False)
     assert not scene.snapshot()["events"]
     assert evidence(scene, 1, 1, allow_historical=True)
     active = scene.snapshot()["events"][0]
     assert active["phase"] == "suspected"
     assert active["first_evidence_timestamp_seconds"] == 1
-    assert active["last_evidence_timestamp_seconds"] == 10
-    assert active["negative_observations"] == 9
-    assert evidence(scene, 11, 11, detected=False, allow_historical=True)
+    assert active["last_evidence_timestamp_seconds"] == 2
+    assert active["negative_observations"] == 1
+    assert evidence(scene, 3, 3, detected=False, allow_historical=True)
     ended = scene.snapshot()["events"][0]
     assert ended["phase"] == "ended"
     assert ended["event_id"] == active["event_id"]
 
 
-def test_late_positive_never_revives_episode_already_followed_by_ten_clears():
+def test_late_positive_never_revives_episode_already_followed_by_two_clears():
     scene = SceneState("session", "camera")
-    for sequence in range(1, 12):
+    for sequence in range(1, 4):
         person(scene, sequence, sequence)
-    for sequence in range(2, 12):
+    for sequence in range(2, 4):
         assert evidence(scene, sequence, sequence, detected=False)
     assert evidence(scene, 1, 1, allow_historical=True)
     ended = scene.snapshot()["events"][0]
     assert ended["phase"] == "ended"
-    assert ended["negative_observations"] == 10
+    assert ended["negative_observations"] == 2
     assert not evidence(scene, 1, 1, allow_historical=True)
     assert evidence(scene, 1, 1, evidence_id="late-second-model", allow_historical=True)
     current = scene.snapshot()["events"][0]
     assert current["event_id"] == ended["event_id"]
     assert current["phase"] == "ended"
-    assert current["negative_observations"] == 10
+    assert current["negative_observations"] == 2
 
 
 def test_duplicate_temporal_endpoints_unknown_and_unseen_frames_are_not_extra_clears():

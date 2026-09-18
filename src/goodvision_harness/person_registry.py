@@ -18,6 +18,7 @@ from .contracts import AnalysisResult, NormalizedBBox
 from .face_tracking import FaceIdentityTracker
 from .grounding import ModelActor, ModelObject, ObservationBundle
 from .identity_review import IdentityReview
+from .person_identity import PersonIdentity, stranger_evidence
 from .rich_labeling import RichLabelObject, RichLabelSnapshot
 
 _PERSON_LABELS = frozenset(
@@ -84,14 +85,36 @@ class _Subject:
     kind: str = "body"
     vx: float = 0.0
     vy: float = 0.0
-    identity: dict[str, object] = field(default_factory=dict)
-    identity_at: float = -1.0
-    identity_embeddings: tuple[tuple[float, ...], ...] = ()
+    identity_state: PersonIdentity = field(default_factory=PersonIdentity)
     memory_candidate: str | None = None
     memory_confirmations: int = 0
     memory_frame: tuple[float, int] = (-1.0, -1)
     association_uncertain: bool = False
     native_track: tuple[str, str, str] | None = None
+
+    @property
+    def identity(self):
+        return self.identity_state.attributes
+
+    @identity.setter
+    def identity(self, value):
+        self.identity_state.attributes = value
+
+    @property
+    def identity_at(self):
+        return self.identity_state.confirmed_at
+
+    @identity_at.setter
+    def identity_at(self, value):
+        self.identity_state.confirmed_at = value
+
+    @property
+    def identity_embeddings(self):
+        return self.identity_state.embeddings
+
+    @identity_embeddings.setter
+    def identity_embeddings(self, value):
+        self.identity_state.embeddings = value
 
 
 class PersonRegistry:
@@ -146,11 +169,34 @@ class PersonRegistry:
 
     def drain_identity_merges(self) -> tuple[tuple[str, str], ...]:
         with self._lock:
-            return self._identity_review.drain()
+            merges = self._identity_review.drain()
+            for old_id, new_id in merges:
+                # Reviewed association has the same identity ownership contract
+                # as exact-source association. Geometry keeps its own lifetime.
+                members = [
+                    subject
+                    for sid, subject in self._subjects.items()
+                    if sid in {old_id, new_id}
+                    or self.canonical_subject_id(sid)
+                    == self.canonical_subject_id(new_id)
+                ]
+                if not members:
+                    continue
+                state = max(
+                    members, key=lambda subject: subject.identity_at
+                ).identity_state
+                for subject in members:
+                    subject.identity_state = state
+                    self._bind_subject_identity(subject)
+            return merges
 
     def identity_review_stats(self) -> dict:
         with self._lock:
             return self._identity_review.stats()
+
+    def identity_review_states(self) -> dict[str, str]:
+        with self._lock:
+            return self._identity_review.states()
 
     def drain_subject_merges(self) -> tuple[tuple[str, str], ...]:
         """Consume trusted same-source face-to-native associations for scene state."""
@@ -254,9 +300,7 @@ class PersonRegistry:
             self._native_rejections["face_identity_conflict"] += 1
             return
         if old.identity and old.identity_at >= current.identity_at:
-            current.identity = dict(old.identity)
-            current.identity_at = old.identity_at
-            current.identity_embeddings = old.identity_embeddings
+            current.identity_state = old.identity_state
         self._subjects.pop(old_id)
         self._face_aliases = {
             key: native_id if value == old_id else value
@@ -267,6 +311,7 @@ class PersonRegistry:
             for key, value in self._body_aliases.items()
         }
         self._face_tracker.rebind_body(old_id, native_id)
+        self._bind_subject_identity(current)
         self._face_history = deque(
             (
                 replace(
@@ -311,7 +356,12 @@ class PersonRegistry:
             if self._native_epoch == (backend, epoch):
                 return True
             retired = set(self._native_tracks.values())
-            self._face_tracker.forget_bodies(retired)
+            self._face_tracker.forget_bodies(
+                retired,
+                face_ids={
+                    key for key, value in self._face_aliases.items() if value in retired
+                },
+            )
             for subject_id in retired:
                 self._subjects.pop(subject_id, None)
             self._body_aliases = {
@@ -880,7 +930,14 @@ class PersonRegistry:
                 if canonical is not None
                 else set()
             )
-            self._face_tracker.forget_bodies(provisional_ids)
+            self._face_tracker.forget_bodies(
+                provisional_ids,
+                face_ids={
+                    key
+                    for key, value in self._face_aliases.items()
+                    if value in provisional_ids
+                },
+            )
             face_snapshot = (
                 replace(
                     canonical,
@@ -899,17 +956,12 @@ class PersonRegistry:
                 frame_sequence=frame_sequence,
                 people=people,
                 snapshot=face_snapshot,
-                known_bodies={
-                    key: {
-                        "person_id": subject.identity["person_id"],
-                        "known_at": subject.identity_at,
-                        "embeddings": subject.identity_embeddings,
-                    }
+                identities={
+                    key: subject.identity_state
                     for key, subject in self._subjects.items()
-                    if subject.identity.get("person_id") in people
-                    and subject.identity_at <= timestamp
-                    and key not in provisional_ids
+                    if subject.identity_at <= timestamp and key not in provisional_ids
                 },
+                face_subjects=self._face_aliases,
             )
             if canonical is not None and (
                 canonical.timestamp_seconds,
@@ -952,13 +1004,16 @@ class PersonRegistry:
                 )
                 if subject is None:
                     subject = self._new_subject(item.bbox, timestamp, "face")
-                if attributes.pop("identity_reset", False):
+                    state = self._face_tracker.identity_for(face_id)
+                    if state is not None:
+                        subject.identity_state = state
+                if attributes.get("identity_reset", False):
                     if subject.native_track is not None:
                         # A face correction changes identity evidence, not the
                         # authoritative video object's public subject identifier.
-                        subject.identity = {}
-                        subject.identity_at = -1.0
-                        subject.identity_embeddings = ()
+                        subject.identity_state = (
+                            self._face_tracker.identity_for(face_id) or PersonIdentity()
+                        )
                     else:
                         old_id = subject.subject_id
                         subject = self._new_subject(
@@ -967,6 +1022,9 @@ class PersonRegistry:
                         self._subjects.pop(old_id, None)
                         self._replace_subject_aliases(
                             old_id, subject.subject_id, timestamp
+                        )
+                        subject.identity_state = (
+                            self._face_tracker.identity_for(face_id) or PersonIdentity()
                         )
                 self._face_aliases[face_id] = subject.subject_id
                 if (
@@ -990,17 +1048,9 @@ class PersonRegistry:
                     }
                     if attributes.get("identity_source") != "track_history":
                         subject.identity_at = timestamp
-                    if (
-                        item.identity_quality
-                        and item.identity_embedding
-                        and attributes.get("identity_source") == "face_match"
-                    ):
-                        subject.identity_embeddings = (
-                            *subject.identity_embeddings[-4:],
-                            item.identity_embedding,
-                        )
                 elif subject.identity.get("person_id") not in people:
                     subject.identity = {}
+                self._bind_subject_identity(subject)
                 attributes.update(
                     subject_id=subject.subject_id,
                     subject_ids=[subject.subject_id],
@@ -1025,10 +1075,38 @@ class PersonRegistry:
             ) == (timestamp, frame_sequence):
                 self._associate_source_faces(source_body)
                 result = [self._canonical_face(item) for item in result]
+            # Resolve once more after all same-frame faces and late source
+            # associations have updated the person. Object order cannot change
+            # whether this person's held face is labelled a stranger.
+            result = [self._project_face_identity(item, timestamp) for item in result]
             for item in result:
                 if item.attributes.get("face_observation_state") == "observed":
                     self._identity_review.observe_face(item, timestamp, frame_sequence)
-            return tuple(self._canonical_face(item) for item in result)
+            return tuple(result)
+
+    def _bind_subject_identity(self, subject: _Subject) -> None:
+        self._face_tracker.bind_identity(
+            {
+                key
+                for key, value in self._face_aliases.items()
+                if value == subject.subject_id
+            },
+            subject.identity_state,
+        )
+
+    def _project_face_identity(
+        self, item: ModelObject, timestamp: float
+    ) -> ModelObject:
+        item = self._canonical_face(item)
+        subject = self._subjects.get(item.attributes.get("subject_id"))
+        if subject is None:
+            return item
+        attributes = subject.identity_state.project(item.attributes, timestamp)
+        return replace(
+            item,
+            attributes=attributes,
+            label="known_person" if attributes.get("status") == "known" else item.label,
+        )
 
     def _canonical_face(self, item: ModelObject) -> ModelObject:
         attributes = dict(item.attributes)
@@ -1266,9 +1344,14 @@ class PersonRegistry:
                         if (
                             subject is not None
                             and subject.seen_at <= timestamp
+                            and subject.identity_at <= timestamp
                             and subject.identity
                         ):
                             attributes["subject_identity"] = dict(subject.identity)
+                            if "face_observation_state" in attributes:
+                                attributes = subject.identity_state.project(
+                                    attributes, timestamp
+                                )
                 records.append(replace(item, attributes=attributes))
             for judgment in result.judgments:
                 if judgment.event_label != "fight" or not judgment.detected:
@@ -1310,7 +1393,19 @@ class PersonRegistry:
                             records[index] = replace(
                                 records[index], attributes=attributes
                             )
-            prepared = replace(result, objects=tuple(records))
+            judgments = []
+            for judgment in result.judgments:
+                if judgment.event_label == "stranger":
+                    ids = tuple(
+                        item.object_id
+                        for item in records
+                        if stranger_evidence(item.attributes) is True
+                    )
+                    judgment = replace(judgment, detected=bool(ids), object_ids=ids)
+                judgments.append(judgment)
+            prepared = replace(
+                result, objects=tuple(records), judgments=tuple(judgments)
+            )
             if not self._reassociating:
                 if _has_unassociated_positive(prepared) or _needs_face_association(
                     prepared, bundle, face_actor_map
@@ -1334,12 +1429,9 @@ class PersonRegistry:
                         self._pending.pop(message_id, None)
                         continue
                     current = self.prepare_analysis(previous, bundle)
-                    if any(
-                        left.attributes.get("subject_ids")
-                        != right.attributes.get("subject_ids")
-                        for left, right in zip(
-                            previous.objects, current.objects, strict=True
-                        )
+                    if (
+                        current.objects != previous.objects
+                        or current.judgments != previous.judgments
                     ):
                         updates.append(current)
                     face_actor_map = self._source_face_actors(
