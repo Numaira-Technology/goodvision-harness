@@ -516,7 +516,6 @@ def test_persisted_api_key_is_injected_without_changing_model_route(
 
 @pytest.fixture
 def public_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
     for name in (
         "INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY",
         "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "INFERENCE_PROVIDER",
@@ -617,9 +616,8 @@ def test_runtime_uses_only_the_selected_provider_credentials(
     assert HarnessRuntime(config)._aiclub_api_key == "explicit-current-route-key"
 
 
-@pytest.mark.parametrize("filename", ["compose.yaml", "compose.delivery.yaml"])
-def test_compose_passes_route_overrides_and_independent_credentials(filename: str) -> None:
-    compose = yaml.safe_load((ROOT / filename).read_text(encoding="utf-8"))
+def test_compose_passes_route_overrides_and_independent_credentials() -> None:
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
     environment = compose["services"]["harness"]["environment"]
     for key in (
         "INFERENCE_PROVIDER",

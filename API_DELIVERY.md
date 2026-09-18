@@ -15,7 +15,7 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 ## 通用 JSON 与五能力独立 JSON
 
 当前分析消息使用 `schema_version: "2"`，契约文件为
-`schemas/analysis-result-v2.schema.json`。新增的描述及完成状态属于 v2；
+[`schemas/analysis-result-v2.schema.json`](schemas/analysis-result-v2.schema.json)。新增的描述及完成状态属于 v2；
 原 `schemas/analysis-result-v1.schema.json` 保持不变，供历史 v1 结果校验。
 下述 HTTP 路径保持 `/v1/...`，路径版本不等于返回 JSON 的 schema 版本。
 使用严格 v1 校验器的接入方需先支持 v2，再升级程序。
@@ -95,6 +95,19 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 内存历史，不能作为永久归档接口。`latest` 响应头提供 `X-Result-Cursor` 和
 `X-Result-Stream`。游标按发布顺序单调增加，并非源帧时间；各能力的游标允许跳号。
 全局 `latest` 的游标也可能小于另一能力 `latest` 的游标，因为两者按源帧时间选取。
+
+## 结果字段与帧关联
+
+`observation_id` 是 `message_id` 的稳定别名；`analysis_kind` 区分事件与人脸
+观测，`objects[].attributes` 保存对应元数据。判断按 `fight`、`smoking`、`fall`、
+`weapon`、`stranger` 的顺序输出，每条消息只包含已完成分支中的已选能力。
+阴性判断的 `object_ids` 为空；阳性判断引用支持该事件的可见区域框。
+陌生人阳性表示与录入身份不匹配，不是仅检测到人物。
+
+`bbox` 使用左上角原点的 `source_normalized_xyxy`，转换为像素时分别乘以
+`frame.width` 和 `frame.height`。`frame.timestamp_seconds` 表示会话内源帧时间；
+分支独立完成，结果可能交错到达，不能据此丢弃尚未收到的另一分支消息。
+`frame.observed_at` 是接收时间估计，不保证等于摄像头的绝对拍摄时间。
 
 ## 视频状态显示
 
@@ -330,7 +343,7 @@ SSE 保留通用结果流的游标和续传规则：支持 `?after=<非负整数
 202，生成失败且无可用版本返回 503。
 
 默认保留 7 天且总量上限 10 GiB；清理范围包含事件、视频与关联索引。
-完整字段、时间规则、修订机制、配置和迁移说明见 [事件证据说明](EVENT_EVIDENCE.md)。
+完整字段、时间规则、修订机制、配置和迁移说明见 [事件证据说明](docs/architecture/event-evidence.md)。
 
 旧 `/v1/faces/strangers` 和 `/v1/faces/strangers/{stranger_id}/photo`
 统一返回 **410 Gone**，包含 `stranger_photos_removed` 与 `/v1/events` 迁移提示。
@@ -359,6 +372,26 @@ LLM 和本地人脸识别的采样频率不变，不等待下一次推理来补�
 `X-Frame-Sequence`、`X-Media-Timestamp`、`X-Observed-At` 辅助定位。独立 JSON
 与通用 JSON 共享该关联标识。最新截图只代表读取时的最新帧，不是按
 `message_id` 查询历史图片的接口；需要归档时由客户端同步接收并保存。
+
+展示流分段还提供 `X-Annotation-Mode`（`exact`、`held` 或 `none`）、
+当前标注对应的分析消息 ID、原始展示帧的序号和时间戳，以及 `X-Stream-Delay`。
+人物关联和告警保持规则见
+[连续事件与证据](docs/architecture/event-evidence.md#people-and-continuity)。
+
+## 可选 Webhook
+
+在环境中设置接收地址和可选签名密钥：
+
+```dotenv
+RESULT_WEBHOOK_URL=http://host.docker.internal:9000/events
+HARNESS_WEBHOOK_SECRET=replace-with-a-shared-secret
+```
+
+示例地址用于容器访问同宿主机接收器，其他部署应替换为实际可达地址。
+每次 POST 使用 `message_id` 作为 `Idempotency-Key`。设置密钥时，
+`X-Harness-Signature-256` 为对原始请求体计算的 HMAC-SHA256 签名。
+队列位于内存且容量有限，失败重试次数也有限；容器重启后不保留待发队列。
+需要持久记录时由接收方保存结果；SSE 续传同样只覆盖服务仍保留的内存历史。
 
 ## 启动、停止与能力选择
 

@@ -8,7 +8,7 @@
 没有更改线上配置、采样频率、并发、最新结果优先规则或当前阴性的即时输出语义。
 
 后续对 8081 的陌生人/吸烟配合问题另做了诊断与修复，见
-[联合验证记录](STRANGER_LLM_INTEROP_VALIDATION.md)。后续版本将本地人脸与远程事件
+[联合验证记录](stranger-llm-interop-20260910.md)。后续版本将本地人脸与远程事件
 独立调度、独立发布，保持各分支最新结果优先；下文原始模型数据不因该修复而重写。
 
 ## 素材与测试口径
@@ -35,7 +35,7 @@
 [NTU CCTV-Fights](https://rose1.ntu.edu.sg/dataset/cctvFights/)、
 [OpenCV David](https://github.com/opencv/opencv_extra/tree/4.x/testdata/cv/tracking/david/data)。
 媒体不进入版本库，不随交付包分发；来源、文件校验值、采样时间和判定边界见
-[来源清单](docs/validation/low-resolution-sources.json)。
+[来源清单](low-resolution-sources.json)。
 
 事件模型主实验为 **37 个源帧 × 6 档 = 222 次真实请求**；另有 12 次公共图片请求、
 24 次人物辅助输出成本对照、32 次格式诊断/失败样本重测及 4 次前置探测。
@@ -174,7 +174,7 @@ David 独立录入照的脸约 68×98 px，不满足生产 80 px 的录入下限
 请求耗时包含模型和网络，不含完整直播采样/排队；主表 P50/P95 也包含失败请求。
 工具中的 first_completed_latency_seconds 是最早完成记录的单请求耗时，不是完整
 `StreamingSession` 首结果时延。前次本地回调隔离测量见
-[首次验收记录](VALIDATION_EVENT_EVIDENCE.md)，不能用亚毫秒本地耗时替代真实模型时延。
+[首次验收记录](event-validation.md#event-evidence)，不能用亚毫秒本地耗时替代真实模型时延。
 
 ## 证据视频、故障与修复
 
@@ -226,7 +226,7 @@ python tools/low_resolution_model_eval.py --manifest samples.json --output tmp/m
 # 6 张图 × 两次重复 × 两种 actors 模式，单独测请求成本。
 python tools/low_resolution_model_eval.py --manifest cost-samples.json --output tmp/cost.json --sizes 320 --actor-mode both --workers 6 --max-requests 24 --timeout 40
 # 使用保存的真实模型结果；不会再调用模型。
-python tools/low_resolution_tracking_eval.py --journal tmp/model.jsonl --caviar-xml feecp2gt.xml --gt-control --output tmp/tracking.json
+python tools/low_resolution_tracking_eval.py --journal tmp/model.jsonl --expected-records 222 --caviar-xml feecp2gt.xml --gt-control --output tmp/tracking.json
 python tools/low_resolution_evidence_eval.py --output tmp/evidence-replay
 # 人脸工具需要另有 InsightFace + ONNX Runtime 的环境，全部在本地运行。
 python tools/low_resolution_face_eval.py --input david.webm --enroll-image david2.jpg --control-input control.jpg --model-root MODEL_ROOT --output tmp/face.json --start-seconds 5 --max-frames 13 --sample-fps 2.5 --enrollment-min-face-size 60
@@ -238,7 +238,7 @@ python tools/low_resolution_face_eval.py --input david.webm --enroll-image david
 版本改变应使用新输出路径。已有旧报告缺少新指纹时拒绝混合恢复。
 脸部工具使用临时图库，完整参数和原始输出记录在本机 `tmp/low-resolution-face-eval`。
 
-可提交的[聚合结果](docs/validation/low-resolution-results.json)保存表格数据与原始输出
+可提交的[聚合结果](low-resolution-results.json)保存表格数据与原始输出
 SHA-256，不保存媒体或人脸特征。原始逐帧结果在 `tmp/low-resolution-model`；
 完整录像矩阵在 `tmp/low-resolution-evidence-final-20260910-boundary/report.md`。
 测试中的 CAVIAR 素材及坐标摘录来自 EC Funded CAVIAR project/IST 2001 37540，
