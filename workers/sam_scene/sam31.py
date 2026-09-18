@@ -36,6 +36,8 @@ class VideoSettings:
     enabled: bool = False
     checkpoint_path: str = "/models/sam3.1_multiplex.pt"
     compile_mode: str = "off"
+    fixed_person_text: bool = False
+    gpu_diagnostics: bool = False
     max_frames: int = 16
     max_request_bytes: int = 32 * 1024 * 1024
     max_jpeg_bytes: int = 8 * 1024 * 1024
@@ -49,6 +51,9 @@ class VideoSettings:
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool or not self.checkpoint_path.strip():
             raise ValueError("invalid video backend configuration")
+        for name in ("fixed_person_text", "gpu_diagnostics"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be boolean")
         if type(self.compile_mode) is not str or self.compile_mode not in {
             "off", "encoder"
         }:
@@ -85,7 +90,7 @@ class VideoSettings:
             default = getattr(defaults, name)
             if type(default) is bool:
                 if value.lower() not in {"true", "false"}:
-                    raise ValueError("SAM31_ENABLED must be true or false")
+                    raise ValueError(f"SAM31_{name.upper()} must be true or false")
                 values[name] = value.lower() == "true"
             elif type(default) is int:
                 values[name] = int(value)
@@ -99,7 +104,10 @@ class VideoSettings:
         return {
             name: getattr(self, name)
             for name in self.__dataclass_fields__
-            if name not in {"enabled", "checkpoint_path", "compile_mode"}
+            if name not in {
+                "enabled", "checkpoint_path", "compile_mode",
+                "fixed_person_text", "gpu_diagnostics",
+            }
         } | {"max_inflight_requests": 1}
 
 
@@ -434,6 +442,44 @@ def compile_vision_encoder(torch, model):
     encoder._goodvision_compiled_forward = True
 
 
+def cache_person_text(backbone, torch):
+    """Reuse exact fixed-prompt features and release the unused text weights.
+
+    Install only after strict checkpoint validation. This worker's public video
+    contract uses person exclusively; reject any future incompatible caller.
+    CUDA warmup materializes the cache before any request is served.
+    """
+    if getattr(backbone, "_goodvision_person_text", False):
+        return
+    original = backbone.forward_text
+    cached = None
+
+    def forward(captions, input_boxes=None, additional_text=None, device="cuda"):
+        nonlocal cached
+        if (
+            tuple(captions) != ("person", "visual", "geometric")
+            or input_boxes is not None
+            or additional_text is not None
+            or str(device) not in {"cuda", "cuda:0"}
+        ):
+            raise RuntimeError("Contour supports the fixed person prompt only")
+        if cached is None:
+            result = original(captions, device=device)
+            if set(result) != {"language_features", "language_mask", "language_embeds"}:
+                raise RuntimeError("Unexpected text encoder output")
+            cached = {key: value.detach().clone() for key, value in result.items()}
+            encoder = backbone.language_backbone
+            released = sum(p.numel() * p.element_size() for p in encoder.parameters())
+            encoder.to(device="meta")
+            # Once during warmup, never in the per-frame inference loop.
+            torch.cuda.empty_cache()
+            LOGGER.info("Fixed person text cached released_weight_bytes=%d", released)
+        return {key: value.clone() for key, value in cached.items()}
+
+    backbone.forward_text = forward
+    backbone._goodvision_person_text = True
+
+
 class NativeSam31:
     def __init__(self, settings: VideoSettings):
         self.settings = settings
@@ -481,6 +527,8 @@ class NativeSam31:
                 raise RuntimeError("SAM3.1 checkpoint contains nonfinite weights")
         model.load_state_dict(verified, strict=True)
         del verified, state, raw
+        if self.settings.fixed_person_text:
+            cache_person_text(model.detector.backbone, torch)
         # Bound masks/grounding buffers instead of precomputing 16 frames at once.
         model.postprocess_batch_size = 1
         model.use_batched_grounding = False
@@ -523,6 +571,21 @@ class NativeSam31:
         finally:
             for image in blanks:
                 image.close()
+
+    def memory_stats(self):
+        """No device synchronization; peak counters are since the last reset."""
+        if not self.settings.gpu_diagnostics or self._torch is None:
+            return {}
+        cuda = self._torch.cuda
+        free, total = cuda.mem_get_info()
+        return {
+            "cuda_allocated_bytes": cuda.memory_allocated(),
+            "cuda_reserved_bytes": cuda.memory_reserved(),
+            "cuda_peak_allocated_bytes": cuda.max_memory_allocated(),
+            "cuda_peak_reserved_bytes": cuda.max_memory_reserved(),
+            "cuda_device_free_bytes": free,
+            "cuda_device_total_bytes": total,
+        }
 
     def infer(self, images: Sequence[Any]) -> Iterator[tuple[int, Mapping]]:
         if self.predictor is None:

@@ -140,6 +140,11 @@ python example_client.py --url http://GPU_SERVER_PRIVATE_IP:8093 --key-file /pri
 Windows 新部署可使用 `deploy_contour.ps1 -Capacity 2`，Linux 可使用 `--capacity 2`。
 扩容前停止全部分析；启动会验证两路状态隔离，实际吞吐仍需按显存和视频采样频率测试。
 
+多路显存与延迟排查、固定提示词缓存开关，以及 1/2/6 路真实 GPU 对照命令见
+[性能排查与压测](PERFORMANCE.md)。`CONTOUR_CAPACITY` 只控制可用通道数，不保证实时吞吐。
+普通 GPU 部署默认启用固定 `person` 特征缓存以释放文本编码器显存；
+设置 `CONTOUR_FIXED_PERSON_TEXT=false` 可作回退和 A/B 对照。需要重建运行容器才会生效。
+
 ## 配置
 
 | 配置 | 用途 |

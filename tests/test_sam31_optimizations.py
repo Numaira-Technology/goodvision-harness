@@ -15,8 +15,81 @@ from workers.sam_scene.continuous import (
     SessionSettings,
     register_session_routes,
 )
-from workers.sam_scene.sam31 import VideoSettings, compile_vision_encoder
+from workers.sam_scene.sam31 import NativeSam31, VideoSettings, compile_vision_encoder
 from workers.sam_scene.streaming_state import hotstart_parameters
+
+
+def test_memory_options_are_opt_in_and_not_public_protocol_limits(monkeypatch):
+    baseline = VideoSettings()
+    assert not baseline.fixed_person_text and not baseline.gpu_diagnostics
+    monkeypatch.setenv("SAM31_FIXED_PERSON_TEXT", "true")
+    monkeypatch.setenv("SAM31_GPU_DIAGNOSTICS", "true")
+    selected = VideoSettings.from_env()
+    assert selected.fixed_person_text and selected.gpu_diagnostics
+    assert selected.limits() == baseline.limits()
+    monkeypatch.setenv("SAM31_FIXED_PERSON_TEXT", "yes")
+    with pytest.raises(ValueError, match="SAM31_FIXED_PERSON_TEXT"):
+        VideoSettings.from_env()
+
+
+def test_gpu_memory_diagnostics_distinguish_reserved_from_allocated_without_sync():
+    native = NativeSam31(VideoSettings(gpu_diagnostics=True))
+    native._torch = SimpleNamespace(cuda=SimpleNamespace(
+        memory_allocated=lambda: 10, memory_reserved=lambda: 30,
+        max_memory_allocated=lambda: 20, max_memory_reserved=lambda: 40,
+        mem_get_info=lambda: (60, 100),
+    ))
+    assert native.memory_stats() == {
+        "cuda_allocated_bytes": 10, "cuda_reserved_bytes": 30,
+        "cuda_peak_allocated_bytes": 20,
+        "cuda_peak_reserved_bytes": 40,
+        "cuda_device_free_bytes": 60, "cuda_device_total_bytes": 100,
+    }
+    assert NativeSam31(VideoSettings()).memory_stats() == {}
+
+
+def test_memory_optimization_preserves_existing_live_detection_mode():
+    from workers.sam_scene.sam_live import SamLiveContinuation
+
+    seen = []
+
+    class Model:
+        def init_state(self, **kwargs):
+            return {"is_image_only": True, "tracker_metadata": {"max_obj_id": 0}}
+
+        def initialize_causal_prompt(self, state):
+            assert state["is_image_only"] is True
+
+        def propagate_in_video(self, **kwargs):
+            seen.append(kwargs["inference_state"]["is_image_only"])
+            yield kwargs["start_frame_idx"], {}
+
+    runtime = SimpleNamespace(
+        inference_mode=nullcontext, autocast=lambda **kwargs: nullcontext(),
+        bfloat16="bf16", cuda=SimpleNamespace(synchronize=lambda: None),
+    )
+    backend = SamLiveContinuation(
+        SimpleNamespace(backend=SimpleNamespace(_torch=runtime)), SessionSettings()
+    )
+    backend.model = Model()
+    backend.retention = SimpleNamespace(
+        install=lambda *args, **kwargs: None, append=lambda *args, **kwargs: None
+    )
+    session = Session("token", "source", "epoch", 0)
+    assert list(backend.run(session, [object()], final=False)) == [(0, {})]
+    session.total_frames = 1
+    assert list(backend.run(session, [object()], final=False)) == [(1, {})]
+    assert seen == [True, True]
+
+
+def test_jetson_build_patches_still_apply_to_updated_worker_sources():
+    from pathlib import Path
+
+    from workers.contour.prepare_jetson import patch_live, patch_worker
+
+    root = Path(__file__).resolve().parents[1] / "workers/sam_scene"
+    compile(patch_worker((root / "sam31.py").read_text()), "sam31.py", "exec")
+    compile(patch_live((root / "sam_live.py").read_text()), "sam_live.py", "exec")
 
 
 @pytest.mark.parametrize("delay", [3, 5, 15])

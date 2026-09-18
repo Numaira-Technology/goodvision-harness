@@ -505,6 +505,9 @@ class NativeContinuation:
                 session.native_state, emitted_through=session.emitted_index
             )
 
+    def memory_stats(self):
+        return self.video.backend.memory_stats()
+
     def discard(self, session):
         if session.native_state is not None:
             # Upstream reset loops over expired input frame indices; releasing this
@@ -701,6 +704,13 @@ class SessionEngine:
             )
             raise
         finally:
+            # Observability must not change request success or cleanup behavior.
+            try:
+                stats = getattr(self.backend, "memory_stats", None)
+                if callable(stats):
+                    timing.fields.update(stats())
+            except Exception:
+                pass
             timing.finish(outcome, status_code)
 
     def _append(self, token, payload, *, deadline, decode_jpeg, timing):
@@ -988,6 +998,9 @@ def register_session_routes(
 ):
     if legacy:
         app.state.session_engine = engine
+    # One bounded upload per camera. A slow uploader must not hold the shared
+    # GPU slot, and concurrent requests on the same lane must not reorder it.
+    upload_admission = threading.Lock() if queued_admission else None
 
     @app.get(health_path)
     async def health():
@@ -1016,10 +1029,13 @@ def register_session_routes(
     async def handle(request, operation, token=None):
         started = time.perf_counter()
         received_bytes = 0
-        admission_finished = body_finished = worker_started = processing_finished = None
+        admission_started = admission_finished = None
+        body_started = body_finished = dispatch_started = None
+        worker_started = processing_finished = None
         response_encode_seconds = 0.0
         diagnostics = {
             "route": engine.profile.route if engine.profile else "sam31_session",
+            "api_prefix": api_prefix,
             "request_id": None,
         }
         phase = "admission"
@@ -1034,19 +1050,22 @@ def register_session_routes(
                     "status_code": status_code,
                     "phase": phase,
                     "received_bytes": received_bytes,
-                    "queue_wait_seconds": (admission_finished or finished) - started,
+                    "queue_wait_seconds": (
+                        (admission_finished or finished) - admission_started
+                        if admission_started is not None else 0.0
+                    ),
                     "body_read_seconds": (
-                        (body_finished or finished) - admission_finished
-                        if admission_finished is not None else 0.0
+                        (body_finished or finished) - body_started
+                        if body_started is not None else 0.0
                     ),
                     "worker_dispatch_seconds": (
-                        worker_started - body_finished
-                        if worker_started is not None and body_finished is not None
+                        worker_started - dispatch_started
+                        if worker_started is not None and dispatch_started is not None
                         else None
                     ),
                     "processing_seconds": (
-                        (processing_finished or finished) - body_finished
-                        if body_finished is not None else 0.0
+                        (processing_finished or finished) - dispatch_started
+                        if dispatch_started is not None else 0.0
                     ),
                     "http_response_encode_seconds": response_encode_seconds,
                     "total_seconds": finished - started,
@@ -1066,24 +1085,27 @@ def register_session_routes(
             log_request("Native session request rejected", "rejected", 503)
             raise HTTPException(503, "native video sessions unavailable")
         deadline = time.monotonic() + engine.video.settings.request_timeout_seconds
-        if queued_admission:
-            try:
-                acquired = await admission.acquire_async(deadline)
-            except TimeoutError:
-                log_request("Native session queue deadline exceeded", "timeout", 504)
-                raise HTTPException(
-                    504, "native session queue deadline exceeded"
-                ) from None
-        else:
-            acquired = admission.acquire(blocking=False)
-        if not acquired:
+        if upload_admission is not None and not upload_admission.acquire(False):
             log_request("Native session request rejected", "rejected", 429)
-            raise HTTPException(429, "inference busy", headers={"Retry-After": "1"})
-        admission_finished = time.perf_counter()
+            raise HTTPException(429, "camera busy", headers={"Retry-After": "1"})
+        acquired = False
         transferred = False
         abandoned = threading.Event()
         task = None
-        phase = "upload"
+
+        async def acquire_gpu():
+            nonlocal acquired, admission_started, admission_finished, phase
+            phase = "admission"
+            admission_started = time.perf_counter()
+            if queued_admission:
+                acquired = await admission.acquire_async(deadline)
+            else:
+                acquired = admission.acquire(blocking=False)
+            admission_finished = time.perf_counter()
+            if not acquired:
+                raise HTTPException(
+                    429, "inference busy", headers={"Retry-After": "1"}
+                )
 
         def retire_abandoned_create(done):
             if (
@@ -1105,6 +1127,10 @@ def register_session_routes(
                     admission.release()
 
         try:
+            if not queued_admission:
+                await acquire_gpu()
+            phase = "upload"
+            body_started = time.perf_counter()
 
             async def receive():
                 nonlocal received_bytes
@@ -1127,7 +1153,10 @@ def register_session_routes(
             body_finished = time.perf_counter()
             if operation == "delete" and payload:
                 raise HTTPException(400, "session delete body must be empty")
+            if queued_admission:
+                await acquire_gpu()
             phase = "processing"
+            dispatch_started = time.perf_counter()
 
             def invoke():
                 nonlocal worker_started
@@ -1168,7 +1197,7 @@ def register_session_routes(
             abandoned.set()
             if task is not None:
                 retire_abandoned_create(task)
-            if token is not None:
+            if token is not None and (task is not None or not queued_admission):
                 engine.invalidate(token)
             log_request("native session deadline exceeded", "timeout", 504)
             raise HTTPException(504, "native session deadline exceeded") from None
@@ -1176,7 +1205,7 @@ def register_session_routes(
             abandoned.set()
             if task is not None:
                 retire_abandoned_create(task)
-            if token is not None:
+            if token is not None and (task is not None or not queued_admission):
                 engine.invalidate(token)
             log_request("Native session request cancelled", "cancelled", 499)
             raise
@@ -1184,16 +1213,20 @@ def register_session_routes(
             log_request("Native session request failed", "failed", exc.status_code)
             raise
         except Exception:
-            if token is not None:
+            if token is not None and (task is not None or not queued_admission):
                 engine.invalidate(token)
             log_request("native session operation failed", "failed", 503)
             raise HTTPException(503, "native session unavailable") from None
         finally:
-            if not transferred:
-                try:
-                    engine.expire()
-                finally:
-                    admission.release()
+            try:
+                if acquired and not transferred:
+                    try:
+                        engine.expire()
+                    finally:
+                        admission.release()
+            finally:
+                if upload_admission is not None:
+                    upload_admission.release()
 
     @app.post(api_prefix + "/sessions")
     async def create(request: Request):
