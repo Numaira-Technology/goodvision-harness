@@ -2,10 +2,16 @@
 
 本地 NVIDIA 部署**默认 1 路，使用 `--streams N` 按实际需要启动正整数路数**，
 12 路是容量参考值，不是软件上限。3、6、12、16 路示例见 [本地 GPU 部署说明](docs/local-gpu.md)。
-同一控制台可以连接、启停和并排显示已部署的 N 路视频。人物追踪在本地即可多路，
-大模型仍可用云端；远程追踪仅支持 1 路。控制台分别选择两者的本地运行位置；单卡共用，双卡将大模型与
-追踪及其他 GPU 工作分开。每路大模型分析目标沿用 1.25 次/秒，N 路共 1.25 × N
-请求/秒，默认追踪共 4 × N 帧/秒；12 路参考目标为 15 请求/秒。
+同一控制台可以分别连接和并排显示已部署的 N 路视频；连接只预览，分析通过“开始全部分析”
+和“停止全部分析”统一控制所有已连接的视频。停止分析后预览继续，各路都可展开详细控制，
+独立保存检测项目、敏感度并查看结果。分析运行和收尾期间锁定视频连接、各路设置与共享模型配置。
+人物追踪使用本机 GPU 或
+自备 GPU 服务器均可多路，大模型仍可用云端；原部署追踪模式保留单路限制。
+主程序、人物追踪、大模型可以分别部署在不同机器，主程序无需显卡；控制台分别设置运行位置、
+服务器地址和追踪容量，见 [模块化部署说明](docs/modular-services.md)。
+同机部署仍支持单卡共用、双卡将大模型与追踪及其他 GPU 工作分开。
+每路大模型分析目标沿用 1.25 次/秒，N 路共 1.25 × N
+请求/秒，默认追踪共 2 × N 帧/秒；12 路参考目标为 15 请求/秒。
 容量验收需要真实 L40S 上的持续压测，部署成功不代表已达到该吞吐。
 
 An independent demo service that pulls the robot's live WHEP/WebRTC stream and
@@ -563,7 +569,9 @@ The image default is
 `webrtc+http://192.168.20.199:1985/rtc/v1/whep/?app=live&stream=livestream`.
 The **Persistent deployment defaults** panel can override that value and save
 the formal/dry-run mode,
-autostart choice, and a write-only API key in the persistent `/data` volume.
+automatic video connection choice, and a write-only API key in the persistent
+`/data` volume. Automatic connection never starts analysis; use the global
+analysis control after the selected video connections are ready.
 Stop the active session before saving. Saved values become effective for the
 next session and remain authoritative after container replacement or restart;
 the API key and complete stream URL are never returned by the settings API.
@@ -659,7 +667,7 @@ endpoint per combination. The allowed values are `fight`, `smoking`, `fall`,
 values are rejected. Results contain only enabled judgments, always in the
 canonical order above. Omit `features` to retain the original all-five behavior.
 
-For a configured network stream:
+For a configured network stream in a single-camera compatibility deployment:
 
 ```bash
 # Stranger + smoking
@@ -669,6 +677,15 @@ curl --fail-with-body -X POST http://127.0.0.1:8080/v1/sessions/start \
 
 curl --fail-with-body -X POST http://127.0.0.1:8080/v1/sessions/stop
 ```
+
+For a fleet deployment, connect each source through
+`POST /v1/fleet/cameras/cameraNN/connect` and save its `features` and
+`event_sensitivities` through `PUT /v1/fleet/cameras/cameraNN/details`.
+Then send `{}` to `POST /v1/fleet/analysis/start` to analyze all connected
+cameras together. `POST /v1/fleet/analysis/stop` stops analysis while previews
+remain connected. Camera-level `/start` and `/stop` return 409; deployments
+with capacity greater than one also reject the legacy session/WebSocket
+start and stop commands. See [the API guide](API_DELIVERY.md) for the full flow.
 
 Another valid request is
 `{"mode":"stream","features":["fight","fall","smoking"]}`. Browser-camera
@@ -708,8 +725,11 @@ enabled for that session).
 | `GET /health/live` | HTTP-process liveness. |
 | `GET /health/ready` | Ready only with fresh source video and a fresh successful analysis. Used by the Docker healthcheck. |
 | `GET /v1/status` | Sanitized source, pipeline, counters, and delivery state. |
-| `POST /v1/sessions/start` | Start one network-stream session; JSON accepts the optional `features` array. Browser cameras start over `/ws`. |
-| `POST /v1/sessions/stop` | Stop the active session. |
+| `POST /v1/fleet/cameras/{camera_id}/connect` / `/disconnect` | Connect or disconnect one preview source while all analysis is stopped. |
+| `GET` / `PUT /v1/fleet/cameras/{camera_id}/details` | Read or persist this camera's features and sensitivities. |
+| `POST /v1/fleet/analysis/start` / `/stop` | Start all connected cameras' analysis together, or stop all analysis while keeping previews. |
+| `POST /v1/sessions/start` | Single-camera compatibility endpoint; unavailable in a multi-camera deployment. |
+| `POST /v1/sessions/stop` | Single-camera compatibility endpoint; fleet deployments use the global analysis control. |
 | `GET /v1/events` | List persistent continuous events and available video evidence. |
 | `GET /v1/events/{event_id}/video` | Play available MP4 evidence with HTTP Range support. |
 | `GET /v1/results/latest` | Latest customer-facing analysis JSON. Returns 404 before the first result. |

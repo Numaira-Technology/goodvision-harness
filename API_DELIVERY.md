@@ -5,31 +5,106 @@
 已有部署设置会自动兼容。交付配置通过 `display.tracking_delay_seconds`
 设置该模块的默认画面延迟，控制台保存的延迟设置优先。
 
-## 本地 GPU 运行位置
+## 模型服务运行位置
 
-`GET /v1/deployment/settings` 和 `PUT /v1/deployment/settings` 新增两个独立的
-布尔字段：`local_inference_enabled`（大模型）、`local_tracking_enabled`（人物追踪）。
-例如 `{"local_inference_enabled":true,"local_tracking_enabled":false}` 使用本地大模型
-和已有远程追踪配置。开关保存后立即改变后续会话的路由，重启后保持；运行或清理中
-修改返回 409，未配置本地 GPU 服务时启用返回 400，不会自动降级或回退到云端。
+`GET /v1/deployment/settings` 和 `PUT /v1/deployment/settings` 分别配置两类服务：
+
+| 字段 | 值和含义 |
+| --- | --- |
+| `inference_mode` | `cloud` 云端、`local` 本机 GPU、`server` 独立模型服务器 |
+| `tracking_mode` | `legacy` 原部署服务（单路）、`local` 本机 GPU、`server` 自备追踪服务器 |
+| `inference_server_url` | 独立模型服务器的 HTTP(S) 主机地址，例如 `http://192.168.1.60:8000` |
+| `inference_server_model` | 独立服务器对外提供的模型名称，默认 `local-vision` |
+| `tracking_server_url` | 追踪服务器的 HTTP(S) 主机地址，例如 `http://192.168.1.61:8092` |
+| `tracking_server_capacity` | 追踪服务器实际配置的正整数路数，默认 1 |
+| `tracking_sample_fps` | 每路送入人物追踪的采样帧率，有限数值 `0.5–30`，默认 `2`；不改变显示、人脸采样或轮廓补帧频率 |
+
+控制台“采样帧率（FPS）”对应 `tracking_sample_fps`。停止全部分析后保存，对下一次分析生效；
+保存值优先于 `LOCAL_TRACKING_FPS`，并随部署设置持久保留。各视频通道在统一开始分析时同步主控制台的采样率。
+
+两种 `server` 模式均不要求主程序机器有显卡。地址只接受主机和端口，可带末尾 `/`；
+不接受接口路径、查询参数或嵌入的账号密码。模型服务器须兼容聊天补全接口；追踪服务器
+须使用本项目的独立追踪服务。配置容量不会自动扩容另一台机器，须与该服务启动路数一致。
+例如云端大模型加独立 16 路追踪：
+
+```json
+{"inference_mode":"cloud","tracking_mode":"server","tracking_server_url":"http://192.168.1.61:8092","tracking_server_capacity":16}
+```
+
+原布尔字段 `local_inference_enabled` / `local_tracking_enabled` 继续兼容，只有 `local`
+模式返回 `true`；只提交旧字段时，`false` 分别恢复 `cloud` / `legacy`。
+同时提交新旧字段必须一致。保存后改变后续会话路由并在重启后保持；运行或清理中修改
+返回 409，未配置本机 GPU 服务时选择 `local` 返回 400，不会自动回退到其他服务。
 
 响应的 `local_gpu` 提供主机显卡数量、两类工作的显卡编号和分配方式；它表示部署
-能力，模型实际就绪仍由各服务健康检查判断。`api_key_required=false` 表示当前本地
-推理无需云端密钥。切换保留各线路原有密钥，不把云端密钥发送给本地服务。
+能力，模型实际就绪仍由各服务健康检查判断。`api_key_required=false` 表示当前自备
+推理服务无需云端密钥。切换保留各线路原有密钥，不把云端密钥发送给自备服务；
+自备服务可使用独立的 `LOCAL_INFERENCE_API_KEY` 或该线路保存的密钥。
 
 默认启动 1 路；`--streams N` 接受正整数，按实际需求部署 N 路，12 路不是软件上限。
-多路在同一控制台连接、启停和并排显示，使用独立持久数据卷，共享大模型与人员追踪模块权重。
+多路在同一控制台分别连接和并排显示，统一开始或停止所有已连接视频的分析；
+各路使用独立持久数据卷，共享大模型与人员追踪模块权重。
 仅主控制台对外开放端口（默认 8080），其他通道通过内部网络访问。
-人物追踪在本地且 GPU 服务已部署时允许多路，大模型可以使用云端；否则仅允许第 1 路。
-`GET /v1/fleet` 返回可用模式、已部署容量和每路状态、启停、设置及画面地址。
+人物追踪选择本机 GPU 或自备服务器时允许多路，大模型可以使用云端；原部署模式仅允许第 1 路。
+`GET /v1/fleet` 返回已部署容量 `capacity`、当前可用容量 `usable_capacity`、追踪位置
+`tracking_mode`、全局 `analysis` 状态，以及每路连接、详细设置、结果和画面地址。自备追踪模式可用容量取主程序
+已部署路数与 `tracking_server_capacity` 中的较小值，超出容量的通道不能启动。
 各通道地址为 `/v1/fleet/cameras/camera01/...`、`camera02/...`，编号可超过 12；
-使用返回的 `status_url`、`start_url`、`stop_url`、`settings_url`、`preview_url`。
-启停和设置请求复用单路接口的 JSON 格式，已保存的视频地址不回显。
-关闭本地追踪或改变全局推理设置前，必须停止其他通道并完成清理；状态未知时返回 409。
+使用返回的 `status_url`、`connect_url`、`disconnect_url`、`detail_url`、
+`results_url`、`scene_url`、`settings_url`、`preview_url`；全局启停使用
+`analysis_start_url` 和 `analysis_stop_url`。已保存的视频地址不回显。
+改变运行位置、服务地址、模型名称、容量或其他全局推理设置前，必须停止全部分析并完成清理；状态未知时返回 409。
 单路沿用原 `face-data` 卷，多路按 N 创建独立摄像头数据卷。
-每路大模型分析目标为 1.25 次/秒，N 路共 1.25 × N 请求/秒；默认追踪为每路 4 帧/秒。
+每路大模型分析目标为 1.25 次/秒，N 路共 1.25 × N 请求/秒；默认追踪为每路 2 帧/秒。
 12 路仅是容量参考值，各部署规模的实际吞吐仍需实机验证。启动、参数与容量验证见
-[本地 GPU 部署说明](docs/local-gpu.md)。
+[本地 GPU 部署说明](docs/local-gpu.md) 和 [模块化部署说明](docs/modular-services.md)。
+
+## 多路视频连接与统一分析
+
+连接视频只拉流、解码和预览，不调用人员追踪、大模型或人脸分析，也不要求分析密钥已配置。
+每路可以分别连接、断开；确认画面和各路详细设置后，只通过全局按钮开始所有已连接视频的分析。
+尚未连接的预留通道不参与本次分析，不必接满部署容量。分析启动前统一同步服务配置并检查各路；
+任一路准备失败不会开始其他路，启动阶段失败会尝试停止本批已启动的分析并返回错误。
+停止全部分析保留视频连接与实时预览，待分析收尾完成后可修改设置或重新开始。
+`autostart=true` 现在只在主入口启动时连接其已保存视频，不自动开始分析；单路部署也遵循此规则。
+有通道仍在连接或断开时，须等待完成后再统一开始，避免遗漏尚未就绪的视频。
+
+| 接口 | 用途与请求 |
+| --- | --- |
+| `POST /v1/fleet/cameras/{camera_id}/connect` | 单路连接预览；接受可选 `stream_url`、`camera_layout`，省略时使用已保存值 |
+| `POST /v1/fleet/cameras/{camera_id}/disconnect` | 单路断开视频；提交 `{}`，须先停止全部分析 |
+| `GET /v1/fleet/cameras/{camera_id}/details` | 读取该路检测项目、敏感度及可选值 |
+| `PUT /v1/fleet/cameras/{camera_id}/details` | 保存该路 `features` 与 `event_sensitivities`，重启后保留 |
+| `GET /v1/fleet/cameras/{camera_id}/results/latest` | 查看该路最新分析 JSON；尚无结果时返回 404 |
+| `GET /v1/fleet/cameras/{camera_id}/scene` | 查看该路人物与事件状态 |
+| `POST /v1/fleet/analysis/start` | 提交 `{}`，开始所有已连接视频的分析；不接受单路选择或临时检测设置 |
+| `POST /v1/fleet/analysis/stop` | 提交 `{}`，停止全部分析并保留视频预览 |
+
+例如给第二路保存 `{"features":["smoking","stranger"],"event_sensitivities":{"smoking":"high"}}`
+到 `/v1/fleet/cameras/camera02/details`，只改变第二路的检测选择。所有路均提供相同的详细控制，
+其中模型运行位置、服务地址和密钥仍由主控制台统一管理。
+
+状态接口分别报告 `connection_state` / `connected` 和 `analysis_state`；连接画面就绪不代表
+已开始分析。全局 `analysis` 包含 `state`、本次 `camera_ids` 与各路 `errors`。
+分析启动、运行或收尾期间，连接/断开视频、修改视频地址、每路分析设置和共享模型配置返回 409；
+查看画面、详情和结果不受影响。仅调整显示缓存秒数仍保留现有的运行中修改能力。
+
+旧的 `/v1/fleet/cameras/{camera_id}/start`、`/stop` 已停用并返回 409；
+描述中的 `start_url` / `stop_url` 仅保留兼容字段，不可再调用。
+部署容量大于 1 时，旧 `/v1/sessions/start`、`/stop` 和 WebSocket 单路启停同样禁止绕过统一控制。
+下文保留的这些旧接口示例仅适用于单路兼容接入；多路接入应使用本节流程。
+
+## N 路完整输出接口
+
+所有读取输出均可使用 `/v1/fleet/cameras/{camera_id}` 替换原路径中的 `/v1`。
+覆盖三种视频/JPEG、通用及五能力结果与 SSE、整体描述、追踪标签、人脸结果、
+场景与历史、证据图片、事件列表/详情/实时通知/MP4，以及显示元数据与帧数据包。
+`GET /v1/fleet` 的每路 `outputs` 提供完整地址和模板，`mjpeg_url` 为标注视频流地址。
+
+JSON/SSE 增加 `camera_id`，二进制响应带 `X-Camera-Id`，GVD1 数据包头也带 `camera_id`。
+证据和录像链接指向所属通道，游标按通道及接口独立保存；原标识与旧单路接口保持兼容。
+完整路径表、参数、断线续传、录像 Range 和接入示例见
+[N 路视频输出接口](docs/multi-camera-api.md)。
 
 ## 访问地址与交付范围
 
@@ -44,6 +119,40 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 识别需配置视频源、相应模型及推理服务凭据，并切换为 `dry_run=false`。
 
 ## 通用 JSON 与五能力独立 JSON
+
+### 持续事件模式的兼容输出（2026-09-19）
+
+`SCENE_ENGINE_MODE=active` 时，`/v1/results/latest`、五能力独立 `latest`、
+对应 `events` SSE、整体描述和已配置的 Webhook 现在接收持续事件状态的
+AnalysisResult v2 投影，`analysis_kind="scene_state"`。HTTP 路径、消息名、
+字段结构和 `schema_version="2"` 保持不变；它不是恢复严格 v1 schema。
+
+每类事件的 `judgments[].detected` 在该类至少有一个公开 `phase="confirmed"`
+事件时为 `true`；仅有 `suspected`、`ended` 或 `retracted` 时为 `false`。
+不同人物分别维护状态，一个人物结束不会清除其他人物仍确认的同类事件。
+陌生人同样使用身份复核后的公开 phase；原始人脸候选不再直接向旧结果通道
+发布阳性。需要即时人脸检测、身份及原始框时使用 `/v1/faces/fast`。
+
+尚无事件记录的能力不伪造阴性，列入 `missing_event_labels`；全部无记录时
+尚无分析结果。首次疑似、确认、证据更新、结束和撤回触发兼容消息，重复的
+scene 心跳不重复发布。没有新消息时 `latest` 保留最近结果，不代表新一帧判断。
+仅有未确认/结束/撤回的事件时顶层描述为“暂无已确认的事件 / No confirmed events”；
+有缺失类别时仍按 v2 标记分析未完成。
+
+兼容消息是当前场景状态，`frame` 来自当前会话最后收到的真实源帧，
+`model.latency_seconds=0` 表示转换本身没有新推理。`objects` 是事件关联人物；
+`attributes.subject_id`、`event_ids`、`scene_events` 保留人物、事件、phase 和证据时间。
+框可能是人物最后一次可见位置，必须结合 `attributes.observation_state`、
+`last_observed_timestamp_seconds` 和 `last_observed_frame_sequence` 使用，不能当成
+每条消息均有同帧检测框。`attributes.scene_state` 区分 running/stopped 等运行状态；
+停止检测不自动改写已经确认的历史事件。停机后身份复核的最终状态仅在未开始新会话时
+更新旧结果缓存，旧会话不会覆盖新会话。
+
+日志 `scene_result_published` 记录会话、消息、源帧和各类 detected；它证明服务端
+发布到结果通道，不代表外部接收端已收到。多摄像头接口沿用相同转换。
+
+**下面关于逐帧原始消息、分支独立发布及源帧严格对应的说明适用于 disabled 模式；
+active 模式以本节的持续事件状态语义为准。**
 
 当前分析消息使用 `schema_version: "2"`，契约文件为
 `schemas/analysis-result-v2.schema.json`。新增的描述及完成状态属于 v2；
@@ -82,11 +191,40 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 全局 `latest` 仍只选源帧最新的一条消息，不是各能力的汇总；同源帧后到的消息可更新它。
 会话切换会清空全局和各能力最新记录。
 
+### 人脸快速结果（未融合）
+
+`GET /v1/faces/fast` 返回最新源帧的人脸库匹配结果。本地人脸推理完成后即
+更新独立内存缓存，早于原始结果落盘、有序身份提交、场景融合和原有结果回调。
+读取接口不获取服务状态锁，不启动新推理；原有结果接口保持不变。
+
+响应始终为 `200`，并带 `Cache-Control: no-store`。外层字段：
+
+- `stream_session_id`、`source_id`、`generation`：对齐当前分析会话。
+- `analysis_kind: "face_raw"`：仅当帧检测和人脸库匹配，不是最终事件判断。
+- `active`：本会话人脸快速通道是否仍接收结果；停止后为 `false`。
+- `available`、`result`：尚无结果时为 `false`、`null`；人脸库变更也会清空旧结果。
+- `revision`：当前缓存版本；用 `(stream_session_id, generation, revision)` 去重。
+- `age_seconds`：缓存发布距今秒数，不是视频源到结果的端到端延迟。
+
+`result` 包含 `frame`（`source_frame_index`、`timestamp_seconds`、原始
+`width`/`height`）、`emitted_at`、`gallery_version`、`error` 和 `faces`。
+每个人脸包含归一化 `bbox: {x1,y1,x2,y2}`、`status`、检测分数，以及适用时的
+`person_id`、`name`、`similarity`、`threshold`、`match_margin`、`reason`。
+状态为 `known`、`unknown` 或 `unusable`。`unknown` 只是该帧未匹配人脸库，
+不能直接当作融合后的陌生人告警。成功但无人脸时 `faces: []`、`error: null`；
+推理/解码失败时 `faces: []`、`error` 为公开错误，不会伪装为无人脸。
+
+缓存只保留一条源帧最新的结果：慢的旧帧不能覆盖新帧，轮询可能跳过中间帧；
+完整有序结果仍从原接口取得。停止后保留最后结果并标记 `active: false`，新会话
+建立新缓存，旧会话的迟到结果不会串入新会话。纯事件会话的快速通道不激活。
+此接口不返回图片、特征向量、人物追踪 ID 或跨帧身份修正，也不绕过原有采样、
+任务入队落盘和输入侧等待。多路部署应请求对应摄像头实例的接口。
+
 `2026.09.10-full.4` 会发布所有有效的迟到观察，包括阳性和阴性。迟到阳性用于事件
 通知，迟到阴性供消费者重建连续阴性计数；它们不会回退对应能力的 `latest` 或当前
-精确画面。控制台按源帧顺序累计 10 次有效阴性才解除行为告警，阳性重置计数，重复
+精确画面。控制台按源帧顺序连续累计 2 次有效阴性才解除行为告警，阳性重置计数，重复
 源帧仅计一次，失败/缺失不计阴性。`judgments[].detected` 始终表示原始单帧判断，
-不是十帧保持后的告警状态；接入方需要相同保持行为时应自行按能力/人物重建状态。
+不是两帧确认解除后的告警状态；接入方需要相同保持行为时应自行按能力/人物重建状态。
 
 每条分析结果新增顶层 `description`，与 `frame`、`judgments` 同级，描述
 `frame` 对应画面在本次分析中检出的事件。存在 `detected=true` 的判断时，按
@@ -165,7 +303,7 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 密钥立即对下一次检测生效，并保存到现有部署数据卷，容器重建后仍有效。
 设置接口仅返回 `api_key_present` / `api_key_persisted`，不回显密钥。
 正式事件检测缺少密钥时，HTTP 启动接口返回 `400`，WebSocket 返回 `type=error`，
-文案明确提示在控制台保存 API key，无需创建 `.env`；不会启动视频或预热人脸模型。
+文案明确提示在控制台保存 API key，无需创建 `.env`；不会启动分析或预热人脸模型，已连接预览保持可用。
 测试模式和仅本地人脸检测不要求此密钥。运行中的检测需停止后再保存密钥。
 
 缓存时间通过同一 PUT 接口提交 `{"buffer_delay_seconds":3.5}`，接受 0–30 的有限数字，
@@ -191,11 +329,12 @@ HTTP 启动示例：
 }
 ```
 
-提交到 `POST /v1/sessions/start`。WebSocket `/ws` 的 `type=start` 消息接受相同
+单路兼容接入提交到 `POST /v1/sessions/start`。WebSocket `/ws` 的 `type=start` 消息接受相同
 `event_sensitivities` 字段，浏览器摄像头使用 `mode=camera, analysis_mode=multi`。
 省略的事件使用默认值；不在所选能力中的合法配置不生效。未知事件、未知档位、
 非对象配置会被拒绝。设置仅在启动前解析，运行中不能通过重新启动请求更改；
 启动响应和 `/v1/status` 的 `event_sensitivities` 返回本次实际配置。
+多路控制台将 `features` 和 `event_sensitivities` 保存到各路 `/details`，再调用全局分析启动接口。
 
 标准吸烟要求能辨认烟具。高敏感度可依据可见动作和上下文输出疑似吸烟；烟具不可辨认时，
 正例的 `objects` 可以是 `smoking_action` 动作区域或 `person`，不能假设所有吸烟框
