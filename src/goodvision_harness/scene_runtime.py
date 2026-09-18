@@ -830,7 +830,7 @@ class SceneRuntime:
                         or not isinstance(native, Mapping)
                         or set(native) != {"backend", "epoch", "object_id"}
                         or native.get("backend")
-                        not in {_NATIVE_VIDEO_BACKEND, "person_hybrid"}
+                        not in {_NATIVE_VIDEO_BACKEND, "person_hybrid", "goodvision_contour"}
                         or item.attributes.get("tracking_confirmation", "confirmed")
                         not in ("confirmed", "provisional")
                         or any(

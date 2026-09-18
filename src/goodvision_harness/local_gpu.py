@@ -83,6 +83,7 @@ class LocalGPUDeployment:
         *,
         inference: bool,
         tracking: bool,
+        tracking_fps: float | None = None,
     ) -> HarnessConfig:
         self.validate_choices(inference, tracking)
         config = base
@@ -128,7 +129,8 @@ class LocalGPUDeployment:
                     ),
                 )
         if tracking:
-            fps = float(os.environ.get("LOCAL_TRACKING_FPS", "4"))
+            fps = (tracking_fps if tracking_fps is not None
+                   else float(os.environ.get("LOCAL_TRACKING_FPS", "2")))
             if not math.isfinite(fps) or not 0.5 <= fps <= 30:
                 raise ValueError("LOCAL_TRACKING_FPS must be within 0.5..30")
             config = replace(

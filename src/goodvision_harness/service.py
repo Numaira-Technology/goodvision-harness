@@ -58,7 +58,6 @@ from .deployment_settings import (
     DeploymentSettingsStore,
     validate_buffer_delay_seconds,
     validate_camera_layout,
-    validate_local_gpu_enabled,
     validate_processing_method,
 )
 from .display_telemetry import validate_display_metrics
@@ -104,6 +103,7 @@ from .overlay_fusion import OverlayFusionMatcher
 from .perception import (
     create_tracking_client,
     create_tracking_coordinator,
+    is_contour_endpoint,
     processing_methods,
     processing_status,
 )
@@ -149,6 +149,7 @@ from .scene_model import TemporalVLMInspector
 from .scene_results import SceneResultPublisher
 from .scene_runtime import SceneRuntime
 from .scene_worker import SceneInspectionWorker
+from .service_locations import SERVICE_LOCATION_FIELDS, ServiceLocations
 from .stream_adapter import parse_stream_source
 from .temporal_client_pool import TemporalClientPool
 from .video_to_stream import encode_jpeg
@@ -238,9 +239,11 @@ class HarnessRuntime:
         self._deployment_settings: DeploymentSettings | None = None
         self._deployment_error: str | None = None
         self._persisted_api_key: str | None = None
+        self._tracking_api_key: str | None = None
         if deployment_store is not None:
             try:
                 self._deployment_settings = deployment_store.load()
+                self._tracking_api_key = deployment_store.load_api_key(provider="tracking")
                 self._persisted_api_key = deployment_store.load_api_key(
                     provider=self._inference_provider,
                 )
@@ -250,13 +253,25 @@ class HarnessRuntime:
         self._local_gpu = LocalGPUDeployment()
         self._local_inference_enabled = False
         self._local_tracking_enabled = False
+        self._service_locations = ServiceLocations()
         self._local_configuration_error: str | None = None
         try:
             self._local_gpu = LocalGPUDeployment.from_environment()
             (self._local_inference_enabled,
              self._local_tracking_enabled) = local_choices(self._deployment_settings)
+            self._service_locations = ServiceLocations.resolve(
+                self._deployment_settings,
+                local_inference=self._local_inference_enabled,
+                local_tracking=self._local_tracking_enabled,
+            )
+            self._local_inference_enabled = (
+                self._service_locations.inference_mode == "local"
+            )
+            self._local_tracking_enabled = (
+                self._service_locations.tracking_mode == "local"
+            )
             if (config is not None and self._deployment_settings is not None
-                    and self._deployment_settings.local_tracking_enabled is not True
+                    and self._service_locations.tracking_mode == "legacy"
                     and self._deployment_settings.processing_method is not None):
                 config = replace(config, rich_labeling=replace(
                     config.rich_labeling,
@@ -264,9 +279,8 @@ class HarnessRuntime:
                 ))
                 self._remote_config = config
             if config is not None:
-                config = self._local_gpu.configure(
-                    config, inference=self._local_inference_enabled,
-                    tracking=self._local_tracking_enabled,
+                config = self._service_locations.configure(
+                    config, self._local_gpu, self._fleet_camera_index,
                 )
                 model_api = config.model_api
                 self._inference_provider = model_api.provider
@@ -276,7 +290,7 @@ class HarnessRuntime:
                 )
         except (ValueError, TypeError):
             self._local_configuration_error = (
-                "本地 GPU 配置不可用。请检查部署或关闭本地运行。"
+                "模型服务配置不可用。请检查运行位置、服务地址和 GPU 部署。"
             )
             config_error = config_error or self._local_configuration_error
         try:
@@ -411,7 +425,7 @@ class HarnessRuntime:
                     dry_run=self._rich_annotation_dry_run,
                 )
             elif rich.backend in {"sam31", "sam31_stream"}:
-                rich_client = create_tracking_client(rich)
+                rich_client = self._create_tracking_client(rich)
             else:
                 rich_client = RichLabelHTTPClient(
                     rich.endpoint,
@@ -766,6 +780,17 @@ class HarnessRuntime:
                         self._route_transport.close()
                         self._route_transport = None
 
+    def service_execution_settings(self) -> dict[str, Any]:
+        """Return the shared service topology, excluding credentials."""
+        return self._service_locations.public_status()
+
+    def tracking_camera_capacity(self) -> int:
+        """Bound tracking lanes by both the service and provisioned main workers."""
+        provisioned = max(1, int(os.environ.get("HARNESS_FLEET_CAPACITY", "1")))
+        return min(provisioned, self._service_locations.tracking_capacity(
+            provisioned, self._local_gpu,
+        ))
+
     def deployment_settings(self) -> dict[str, Any]:
         """Return persistent deployment metadata without returning any secret."""
 
@@ -800,8 +825,10 @@ class HarnessRuntime:
             "buffer_delay_seconds": self._display_settings.delay_seconds,
             "api_key_present": bool(self._aiclub_api_key),
             "api_key_persisted": bool(self._persisted_api_key),
+            "tracking_key_present": bool(self._tracking_api_key),
             "local_inference_enabled": self._local_inference_enabled,
             "local_tracking_enabled": self._local_tracking_enabled,
+            **self.service_execution_settings(),
             "api_key_required": (
                 self.config is None or self.config.model_api.provider != "local"
             ),
@@ -811,6 +838,11 @@ class HarnessRuntime:
             },
             "storage_error": self._deployment_error,
         })
+
+    def _create_tracking_client(self, rich):
+        if is_contour_endpoint(rich.endpoint):
+            return create_tracking_client(rich, api_key=self._tracking_api_key)
+        return create_tracking_client(rich)
 
     def _processing_method(self) -> str | None:
         return (
@@ -873,7 +905,8 @@ class HarnessRuntime:
             self.config = config or replace(self.config, rich_labeling=replace(
                 self.config.rich_labeling, processing_method=method,
             ))
-            if not self._local_tracking_enabled and self._remote_config is not None:
+            if (getattr(self, "_service_locations", ServiceLocations()).tracking_mode
+                    == "legacy" and self._remote_config is not None):
                 self._remote_config = replace(
                     self._remote_config, rich_labeling=replace(
                         self._remote_config.rich_labeling, processing_method=method,
@@ -919,7 +952,7 @@ class HarnessRuntime:
                 self._rich_retirement_thread.start()
 
     def _apply_local_execution(
-        self, configuration: HarnessConfig, *, inference: bool, tracking: bool,
+        self, configuration: HarnessConfig, *, locations: ServiceLocations,
     ) -> None:
         """Activate validated routes only after persistence succeeds, while idle."""
         previous = self.config
@@ -927,8 +960,9 @@ class HarnessRuntime:
         if self._route_transport is not None:
             self._route_transport.close()
             self._route_transport = None
-        self._local_inference_enabled = inference
-        self._local_tracking_enabled = tracking
+        self._service_locations = locations
+        self._local_inference_enabled = locations.inference_mode == "local"
+        self._local_tracking_enabled = locations.tracking_mode == "local"
         self._local_configuration_error = None
         self.config_error = self._base_config_error
         self._inference_provider = configuration.model_api.provider
@@ -937,8 +971,8 @@ class HarnessRuntime:
         )
         self._environment_api_key = environment_api_key(configuration.model_api) or None
         self._aiclub_api_key = self._persisted_api_key or self._environment_api_key
-        self._route_pool_enabled = not inference and self._route_persisted
-        if not inference:
+        self._route_pool_enabled = False
+        if configuration.model_api.provider != "local":
             self._selected_route_id = next((
                 route.id for route in ROUTES_BY_ID.values()
                 if configuration.inference.model == route.request_model
@@ -984,12 +1018,14 @@ class HarnessRuntime:
 
         if self._deployment_store is None:
             raise RuntimeError("persistent deployment storage is not configured")
-        allowed = {
+        allowed = SERVICE_LOCATION_FIELDS | {
             "stream_url",
             "dry_run",
             "autostart",
             "api_key",
             "clear_api_key",
+            "tracking_api_key",
+            "clear_tracking_api_key",
             "buffer_delay_seconds",
             "camera_layout",
             "processing_method",
@@ -1006,7 +1042,7 @@ class HarnessRuntime:
             if self._route_probe["state"] == "running":
                 raise RuntimeError("wait for the route check before saving settings")
 
-            setting_fields = {
+            setting_fields = SERVICE_LOCATION_FIELDS | {
                 "stream_url", "dry_run", "autostart", "buffer_delay_seconds",
                 "camera_layout",
                 "processing_method",
@@ -1014,28 +1050,19 @@ class HarnessRuntime:
             }
             settings: DeploymentSettings | None = None
             local_configuration = None
-            local_inference = self._local_inference_enabled
-            local_tracking = self._local_tracking_enabled
-            if {"local_inference_enabled", "local_tracking_enabled"}.intersection(
-                payload
-            ):
-                local_inference = validate_local_gpu_enabled(
-                    payload.get("local_inference_enabled", local_inference),
-                    "local_inference_enabled",
-                )
-                local_tracking = validate_local_gpu_enabled(
-                    payload.get("local_tracking_enabled", local_tracking),
-                    "local_tracking_enabled",
-                )
+            locations = self._service_locations
+            if (SERVICE_LOCATION_FIELDS | {
+                "local_inference_enabled", "local_tracking_enabled",
+            }).intersection(payload):
+                locations = locations.updated(payload)
                 if self._remote_config is None:
                     raise ValueError("configuration unavailable")
-                local_configuration = self._local_gpu.configure(
-                    self._remote_config,
-                    inference=local_inference, tracking=local_tracking,
+                local_configuration = locations.configure(
+                    self._remote_config, self._local_gpu, self._fleet_camera_index,
                 )
                 # Preserve any explicitly saved cloud route across a restart
                 # that initially selected local inference.
-                if (not local_inference
+                if (locations.inference_mode == "cloud"
                         and local_configuration.model_api.provider == "openrouter"):
                     route = self._deployment_store.load_model_route()
                     if route is not None:
@@ -1099,8 +1126,9 @@ class HarnessRuntime:
                     autostart=autostart,
                     buffer_delay_seconds=buffer_delay_seconds,
                     processing_method=processing_method,
-                    local_inference_enabled=local_inference,
-                    local_tracking_enabled=local_tracking,
+                    local_inference_enabled=locations.inference_mode == "local",
+                    local_tracking_enabled=locations.tracking_mode == "local",
+                    **locations.public_status(),
                     camera_layout=(
                         validate_camera_layout(payload["camera_layout"])
                         if "camera_layout" in payload else (
@@ -1131,9 +1159,30 @@ class HarnessRuntime:
                 if len(rendered_key) > DEPLOYMENT_VALUE_MAX_CHARS:
                     raise ValueError("api_key is too long")
 
+            tracking_key = payload.get("tracking_api_key")
+            clear_tracking_key = payload.get("clear_tracking_api_key", False)
+            if not isinstance(clear_tracking_key, bool):
+                raise ValueError("clear_tracking_api_key must be boolean")
+            if tracking_key is not None:
+                if (clear_tracking_key or not isinstance(tracking_key, str)
+                        or not 1 <= len(tracking_key.strip()) <= 4096
+                        or any(not 33 <= ord(char) <= 126 for char in tracking_key.strip())):
+                    raise ValueError("invalid tracking node key")
+                tracking_key = tracking_key.strip()
+
             # Do not mutate disk or runtime state until every supplied field has
             # passed validation. A mixed request must fail as one unit when, for
             # example, its stream settings are valid but its API key is not.
+            tracking_revision = self._rich_config_revision
+            tracking_key_changed = False
+            if tracking_key is not None or clear_tracking_key:
+                new_tracking_key = None if clear_tracking_key else tracking_key
+                tracking_key_changed = new_tracking_key != self._tracking_api_key
+                if new_tracking_key is None:
+                    self._deployment_store.delete_api_key(provider="tracking")
+                else:
+                    self._deployment_store.save_api_key(new_tracking_key, provider="tracking")
+                self._tracking_api_key = new_tracking_key
             if settings is not None:
                 self._deployment_store.save(settings)
                 self._deployment_settings = settings
@@ -1141,8 +1190,7 @@ class HarnessRuntime:
                 self.autostart = settings.autostart
                 if local_configuration is not None:
                     self._apply_local_execution(
-                        local_configuration, inference=local_inference,
-                        tracking=local_tracking,
+                        local_configuration, locations=locations,
                     )
                 if (settings.processing_method is not None
                         and settings.processing_method != self._processing_method()):
@@ -1175,6 +1223,10 @@ class HarnessRuntime:
                 self._route_transport.close()
                 self._route_transport = None
             self._deployment_error = None
+            if (tracking_key_changed and self.config is not None
+                    and self._rich_config_revision == tracking_revision
+                    and is_contour_endpoint(self.config.rich_labeling.endpoint)):
+                self._replace_processing_method(self._processing_method())
             if not buffer_only:
                 self._update_state(dry_run=self.dry_run)
         return self.deployment_settings()
@@ -1262,6 +1314,7 @@ class HarnessRuntime:
             "api_key_present": bool(self._aiclub_api_key),
             "local_inference_enabled": self._local_inference_enabled,
             "local_tracking_enabled": self._local_tracking_enabled,
+            **self.service_execution_settings(),
             "api_key_required": self.config.model_api.provider != "local",
             "dry_run": self.dry_run,
             "configured_stream": bool(stream_url),
@@ -1652,7 +1705,7 @@ class HarnessRuntime:
         client = None
         try:
             if rich.backend in {"sam31", "sam31_stream"}:
-                client = create_tracking_client(rich)
+                client = self._create_tracking_client(rich)
             else:
                 client = RichLabelHTTPClient(
                     rich.endpoint, timeout_seconds=rich.timeout_seconds,
@@ -1709,7 +1762,7 @@ class HarnessRuntime:
             self._try_enable_rich_labels()
         # A new health-only client avoids competing with native cleanup or
         # mutating an existing client's session state during a start check.
-        probe = create_tracking_client(rich)
+        probe = self._create_tracking_client(rich)
         try:
             if not probe.ready_for_new_session():
                 raise ProcessingMethodUnavailableError()
@@ -1807,10 +1860,8 @@ class HarnessRuntime:
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
-        if self._fleet_camera_index > 1 and not (
-            self._local_tracking_enabled and self._local_gpu.available
-        ):
-            raise RuntimeError("多路视频需要启用本地 GPU 人员追踪模块。")
+        if self._fleet_camera_index > self.tracking_camera_capacity():
+            raise RuntimeError("该视频通道超出人员追踪模块的配置容量。")
         self._ensure_rich_readiness_probe()
         if mode not in {CAMERA_MODE, STREAM_MODE}:
             raise ValueError("unsupported input mode")
@@ -4194,15 +4245,19 @@ def create_app(
         try:
             async with application.state.fleet.control_lock:
                 runtime = _runtime(request)
-                mode_changed = any(
-                    field in payload and payload[field] != getattr(runtime, "_" + field)
-                    for field in ("local_inference_enabled", "local_tracking_enabled")
+                current_locations = runtime.service_execution_settings()
+                # Legacy false also changes server mode back to cloud/legacy.
+                # Compare the resolved topology, not just the boolean metadata.
+                mode_changed = (
+                    ServiceLocations(**current_locations).updated(payload).public_status()
+                    != current_locations
                 )
                 dry_run_changed = (
                     "dry_run" in payload and payload["dry_run"] != runtime.dry_run
                 )
                 if (mode_changed or dry_run_changed
-                        or {"api_key", "clear_api_key"}.intersection(payload)):
+                        or {"api_key", "clear_api_key", "tracking_api_key",
+                            "clear_tracking_api_key"}.intersection(payload)):
                     await application.state.fleet.assert_can_disable_multicamera()
                 return await asyncio.to_thread(
                     runtime.update_deployment_settings, payload,

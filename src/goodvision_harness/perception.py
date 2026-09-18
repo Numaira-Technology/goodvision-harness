@@ -10,10 +10,14 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
+
+from .rich_labeling import RichLabelProtocolError
 from .sam_tracking_pipeline import PipelinedVideoSessionTrackingCoordinator
 from .video_tracking import VideoTrackingCoordinator, VideoTrackingHTTPClient
 from .video_tracking_session import (
@@ -173,7 +177,75 @@ class PerceptionSessionHTTPClient(VideoSessionTrackingHTTPClient):
         return tuple(result)
 
 
-def create_tracking_client(rich):
+def is_contour_endpoint(endpoint):
+    return re.fullmatch(
+        r"/v1/(?:cameras/camera-(?:0[1-9]|[1-9][0-9]+)/)?contour/sessions/?",
+        urlparse(endpoint).path,
+    ) is not None
+
+
+class ContourSessionHTTPClient(PerceptionSessionHTTPClient):
+    """Authenticated public node contract, retaining native source validation."""
+
+    def __init__(self, endpoint, *, api_key=None, **kwargs):
+        base = httpx.URL(endpoint)
+        super().__init__(str(base.copy_with(path="/")), method="sam_live", **kwargs)
+        self.method = replace(self.method, id="contour", backend="goodvision_contour")
+        self.backend = self.method.backend
+        self.session_path = "/v1/contour/sessions"
+        self.health_path = "/api/status"
+        if is_contour_endpoint(endpoint):
+            self.session_path = base.path.rstrip("/")
+            if self.session_path.startswith("/v1/cameras/"):
+                camera = self.session_path.split("/")[3]
+                self.health_path = f"/api/cameras/{camera}/status"
+        self.endpoint = str(base.copy_with(path=self.session_path))
+        self._health = str(base.copy_with(path=self.health_path))
+        self._trust_env = False
+        if api_key:
+            if (not isinstance(api_key, str) or len(api_key) > 4096
+                    or any(not 33 <= ord(char) <= 126 for char in api_key)):
+                raise ValueError("invalid tracking node key")
+            self._request_headers = {"Authorization": "Bearer " + api_key}
+
+    @staticmethod
+    def validate_limits(value):
+        result = _limits(value, causal=True)
+        _require(
+            result.get("hotstart_delay") == 1
+            and result.get("max_pending_frames") == 0
+            and result["startup_frames"] == 1
+            and result["max_append_frames"] in (1, 4),
+            "unsupported Contour node limits",
+        )
+        return result
+
+    def gpu_ready(self):
+        if not self._request_headers:
+            return False
+        try:
+            value = self._request(
+                "GET", self._health,
+                deadline=time.monotonic() + min(self._timeout_seconds, 5),
+            )
+            _require(value.get("model_id") == "goodvision-contour-1",
+                     "unexpected tracking node")
+            if not (value.get("ready") is True and value.get("gpu_ready") is True
+                    and value.get("accepting_sessions") is True
+                    and type(value.get("active_session")) is bool):
+                return False
+            limits = self.validate_limits(value["limits"])
+            if self._transport_codec == "h264" and limits.get("h264_transport") != 1:
+                return False
+            with self._session_state:
+                self._capabilities = limits
+                self._health_active_session = value["active_session"]
+            return True
+        except (httpx.HTTPError, ValueError, KeyError, RichLabelProtocolError):
+            return False
+
+
+def create_tracking_client(rich, *, api_key=None):
     options: dict[str, Any] = {
         "timeout_seconds": rich.video_timeout_seconds,
         "transport_max_side": rich.video_transport_max_side,
@@ -187,6 +259,8 @@ def create_tracking_client(rich):
             transport_codec=rich.video_transport_codec,
             transport_crf=rich.video_transport_crf,
         )
+        if is_contour_endpoint(rich.endpoint):
+            return ContourSessionHTTPClient(rich.endpoint, api_key=api_key, **options)
         if method is not None:
             return PerceptionSessionHTTPClient(rich.endpoint, method=method, **options)
         return VideoSessionTrackingHTTPClient(rich.endpoint, **options)

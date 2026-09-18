@@ -1,0 +1,43 @@
+# CPU application host. SAM and VLM addresses are independent of this machine.
+# Start with tools/start_modular.py main; no NVIDIA runtime is required here.
+name: goodvision-main
+
+services:
+  harness:
+    extends:
+      file: compose.yaml
+      service: harness
+    environment:
+      FACE_PROVIDER: CPUExecutionProvider
+      FACE_INFERENCE_INSTANCES: "${FACE_INFERENCE_INSTANCES:-1}"
+      HARNESS_AUTOSTART: "${HARNESS_AUTOSTART:-false}"
+      HARNESS_FLEET_CAPACITY: "${HARNESS_FLEET_CAPACITY:-1}"
+      HARNESS_FLEET_CAMERA_INDEX: "1"
+      HARNESS_FLEET_PRIMARY_URL: http://harness:8080
+      LOCAL_GPU_AVAILABLE: "false"
+      LOCAL_GPU_COUNT: "0"
+      LOCAL_INFERENCE_ENABLED: "false"
+      LOCAL_TRACKING_ENABLED: "false"
+      INFERENCE_EXECUTION_MODE: "${INFERENCE_EXECUTION_MODE:-cloud}"
+      TRACKING_EXECUTION_MODE: "${TRACKING_EXECUTION_MODE:-legacy}"
+      INFERENCE_SERVER_URL: "${INFERENCE_SERVER_URL:-}"
+      INFERENCE_SERVER_MODEL: "${INFERENCE_SERVER_MODEL:-local-vision}"
+      TRACKING_SERVER_URL: "${TRACKING_SERVER_URL:-}"
+      TRACKING_SERVER_CAPACITY: "${TRACKING_SERVER_CAPACITY:-1}"
+      TRACKING_SERVER_PROTOCOL: "${TRACKING_SERVER_PROTOCOL:-legacy}"
+      LOCAL_INFERENCE_API_KEY: "${LOCAL_INFERENCE_API_KEY:-}"
+      LOCAL_INFERENCE_MAX_TOKENS: "${LOCAL_INFERENCE_MAX_TOKENS:-1600}"
+      LOCAL_TRACKING_FPS: "${LOCAL_TRACKING_FPS:-2}"
+      RICH_LABEL_BACKEND: "${RICH_LABEL_BACKEND:-}"
+      SCENE_ENGINE_MODE: "${SCENE_ENGINE_MODE:-}"
+      SAM31_CLIENT_TIMEOUT_SECONDS: "${SAM31_CLIENT_TIMEOUT_SECONDS:-75}"
+    networks: !override
+      default:
+        aliases: [harness]
+
+networks:
+  default: {}
+
+volumes:
+  face-models: {}
+  face-data: {}

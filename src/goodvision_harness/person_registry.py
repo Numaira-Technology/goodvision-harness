@@ -38,7 +38,7 @@ _PERSON_LABELS = frozenset(
     }
 )
 _SOURCE_FACE_MAX_GAP_SECONDS = 0.6
-_NATIVE_BACKENDS = frozenset({"sam3.1_video", "person_hybrid"})
+_NATIVE_BACKENDS = frozenset({"sam3.1_video", "person_hybrid", "goodvision_contour"})
 
 
 def _native_metadata(value: object) -> tuple[str, str, str] | None:

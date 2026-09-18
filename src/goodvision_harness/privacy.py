@@ -45,6 +45,8 @@ _IDENTIFIER_FIELDS = frozenset({
     "analysis_message_id", "next_analysis_message_id", "association_message_id",
     "subject_id", "event_id", "canonical_event_id", "requested_event_id",
     "person_track_id", "face_track_id", "actor_id", "epoch", "predictor_epoch",
+    # Operator-editable service identifiers must survive console read/save cycles.
+    "inference_server_url", "tracking_server_url", "inference_server_model",
 })
 _IDENTIFIER_LIST_FIELDS = frozenset({
     "object_ids", "memory_ids", "matched_memory_ids",

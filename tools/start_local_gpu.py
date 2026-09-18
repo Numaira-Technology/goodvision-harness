@@ -91,7 +91,9 @@ def detect_nvidia_devices() -> list[dict]:
     return parse_nvidia_devices(result.stdout)
 
 
-def read_local_settings(path: Path) -> dict[str, str]:
+def read_local_settings(
+    path: Path, *, keys: set[str] | None = None,
+) -> dict[str, str]:
     """Read the small launcher subset; let Compose handle all cloud credentials.
 
     Literal unquoted/single/double-quoted values are supported. Refuse .env
@@ -106,7 +108,7 @@ def read_local_settings(path: Path) -> dict[str, str]:
             line = line[7:].lstrip()
         key, separator, value = line.partition("=")
         key = key.strip()
-        if not separator or key not in SETTINGS:
+        if not separator or key not in (SETTINGS if keys is None else keys):
             continue
         value = value.strip()
         if value.startswith(("'", '"')):
@@ -148,7 +150,7 @@ def plan_environment(
     defaults = {
         "LOCAL_INFERENCE_ENABLED": "true",
         "LOCAL_TRACKING_ENABLED": "true",
-        "LOCAL_TRACKING_FPS": "4",
+        "LOCAL_TRACKING_FPS": "2",
         "LOCAL_INFERENCE_MODEL": "local-vision",
         "LOCAL_INFERENCE_IMAGE": "vllm/vllm-openai:v0.17.1",
         "LOCAL_INFERENCE_MAX_MODEL_LEN": "8192",
@@ -217,9 +219,9 @@ def _model_json(directory: Path, name: str) -> dict:
 
 def validate_weights(
     environment: Mapping[str, str], devices: Sequence[Mapping] | None = None,
+    *, require_tracking: bool = True,
 ) -> None:
     directory = Path(environment["LOCAL_INFERENCE_MODEL_DIRECTORY"])
-    checkpoint = Path(environment["SAM31_CHECKPOINT_FILE"])
     if not directory.is_dir() or not (directory / "config.json").is_file():
         raise LaunchError(
             f"Missing complete local vision model at {directory}. "
@@ -308,8 +310,10 @@ def validate_weights(
                     "Use more VRAM or revise LOCAL_INFERENCE_GPU_MEMORY_UTILIZATION "
                     "while reserving space for tracking; GPU assignment is unchanged."
                 )
-    if not checkpoint.is_file() or checkpoint.stat().st_size == 0:
-        raise LaunchError(f"Missing SAM3.1 checkpoint: {checkpoint}")
+    if require_tracking:
+        checkpoint = Path(environment["SAM31_CHECKPOINT_FILE"])
+        if not checkpoint.is_file() or checkpoint.stat().st_size == 0:
+            raise LaunchError(f"Missing SAM3.1 checkpoint: {checkpoint}")
 
 
 def compose_command(

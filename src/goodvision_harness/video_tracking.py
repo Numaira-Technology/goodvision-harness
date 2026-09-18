@@ -242,6 +242,8 @@ class VideoTrackingHTTPClient:
             raise ValueError("video transport must support asynchronous I/O")
         self._timeout_seconds = float(timeout_seconds)
         self._transport = transport
+        self._request_headers: dict[str, str] = {}
+        self._trust_env = True
         self._transport_max_side = transport_max_side
         self._transport_jpeg_quality = transport_jpeg_quality
         self._transport_codec = "jpeg"
@@ -407,9 +409,7 @@ class VideoTrackingHTTPClient:
         started = time.monotonic()
         timing: dict[str, Any] = {
             "phase": "client_setup", "outcome": "error",
-            "route": "sam_live"
-            if getattr(getattr(self, "method", None), "id", None) == "sam_live"
-            else "legacy",
+            "route": getattr(getattr(self, "method", None), "id", "legacy"),
         }
         try:
             result = await self._exchange_timed(
@@ -480,7 +480,8 @@ class VideoTrackingHTTPClient:
                 ),
                 transport=self._transport,
                 follow_redirects=False,
-                headers={"Accept-Encoding": "identity"},
+                trust_env=self._trust_env,
+                headers={"Accept-Encoding": "identity", **self._request_headers},
                 limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
             )
         timing["phase"] = "payload_prepare"

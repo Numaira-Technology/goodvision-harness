@@ -10,6 +10,8 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
+from .service_locations import SERVICE_LOCATION_FIELDS, validate_service_location
+
 SETTINGS_SCHEMA_VERSION = 1
 # Stable, neutral names keep each route's credentials independent. The original
 # record belongs to the default route so existing deployments remain usable.
@@ -18,6 +20,7 @@ _API_KEY_FILENAMES = {
     "openrouter": "model-api-key-2",
     "dashscope": "model-api-key-3",
     "local": "local-model-api-key",
+    "tracking": "tracking-node-key",
 }
 
 
@@ -33,6 +36,14 @@ class DeploymentSettings:
     processing_method: str | None = None
     local_inference_enabled: bool | None = None
     local_tracking_enabled: bool | None = None
+    inference_mode: str | None = None
+    tracking_mode: str | None = None
+    inference_server_url: str | None = None
+    inference_server_model: str | None = None
+    tracking_server_url: str | None = None
+    tracking_server_capacity: int | None = None
+    tracking_server_protocol: str | None = None
+    tracking_sample_fps: float | None = None
 
 
 def validate_local_gpu_enabled(value: object, name: str) -> bool:
@@ -102,6 +113,10 @@ class DeploymentSettingsStore:
             else None
         )
         return DeploymentSettings(
+            **{
+                name: validate_service_location(name, payload[name])
+                for name in SERVICE_LOCATION_FIELDS if name in payload
+            },
             stream_url=stream_url.strip(),
             dry_run=dry_run,
             autostart=autostart,
@@ -153,6 +168,10 @@ class DeploymentSettingsStore:
             value = getattr(settings, name)
             if value is not None:
                 payload[name] = validate_local_gpu_enabled(value, name)
+        for name in SERVICE_LOCATION_FIELDS:
+            value = getattr(settings, name)
+            if value is not None:
+                payload[name] = validate_service_location(name, value)
         self._atomic_write(
             self.path,
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
