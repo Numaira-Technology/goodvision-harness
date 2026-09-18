@@ -316,12 +316,15 @@ def test_persistent_settings_override_bootstrap_environment_and_autostart(
     started: list[str] = []
     runtime.start_stream = lambda url: started.append(url) or {}  # type: ignore[method-assign]
 
-    runtime.start()
+    try:
+        runtime.start()
 
-    assert runtime.configured_stream_url() == saved_url
-    assert runtime.dry_run is True
-    assert runtime.autostart is True
-    assert started == [saved_url]
+        assert runtime.configured_stream_url() == saved_url
+        assert runtime.dry_run is True
+        assert runtime.autostart is True
+        assert started == [saved_url]
+    finally:
+        runtime.stop()
 
 
 def test_generic_stream_environment_overrides_legacy_rtsp_environment(
