@@ -32,6 +32,11 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: pyproject.toml
+      - name: Check repository hygiene
+        run: python tools/check_repo_hygiene.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install test dependencies
         run: python -m pip install ".[dev,webrtc,vlm]"
       - name: Install video encoder (Linux)

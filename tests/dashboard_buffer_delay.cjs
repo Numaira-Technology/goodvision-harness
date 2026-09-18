@@ -1,20 +1,13 @@
 const assert=require("node:assert/strict");
-const fs=require("node:fs");
-const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
+const {createDocument, runDashboard} = require("./helpers/dashboard.cjs");
 
 function dashboard(){
-  const elements=new Map(),requests=[];
-  function element(id){
-    if(!elements.has(id))elements.set(id,{
-      value:"",textContent:"",className:"",style:{},checked:false,
-      querySelectorAll:()=>[],classList:{toggle(){}},replaceChildren(){},
-    });
-    return elements.get(id)
-  }
+  const {document, element} = createDocument();
+  const requests=[];
   const context=vm.createContext({
-    document:{getElementById:element,querySelectorAll:()=>[]},
+    document,
     window:{isSecureContext:true},location:{hostname:"localhost"},
     fetch:async(url,options)=>{
       requests.push({url,options});
@@ -23,16 +16,14 @@ function dashboard(){
       return {ok:true,json:async()=>({persistence_available:true,buffer_delay_seconds:saved})}
     },
   });
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
-  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+  runDashboard(context, `
     state.running=true;state.gallery={ready:true};
     state.info={annotated_output:{output_fps:15,buffer_delay_seconds:2.5}};
     state.deployment={persistence_available:true,buffer_delay_seconds:2.5};
     status=async()=>updateAnnotatedOutput({...state.info.annotated_output,state:"running"});
     controls();updateAnnotatedOutput(state.info.annotated_output);
     globalThis.app={state,saveBufferDelay,controls,updateAnnotatedOutput};
-  `,context);
+  `);
   return {context,requests,element,...context.app}
 }
 

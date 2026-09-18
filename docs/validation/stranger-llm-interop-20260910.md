@@ -193,6 +193,6 @@ python tools/delivery_smoke.py --isolated --audit-branding --base-url http://127
 
 没有可恢复的该次摄像头原帧序列和被丢弃的人脸响应，不能证明旧会话每一次缺失都由
 同一原因引起，也没有宣称在那段录像上实测消除了全部漏报。低清画面仍可能没有可靠
-人脸或烟具证据，真实模型限制见 [极低分辨率报告](LOW_RESOLUTION_VALIDATION.md)。
+人脸或烟具证据，真实模型限制见 [极低分辨率报告](low-resolution-20260910.md)。
 本机没有可用 GPU，也未运行 Linux 容器；目标 GPU/容器的真实模型验收仍需在对应环境
 执行。受控阻塞测试验证即时性与调度隔离，其等待上限不是生产推理延迟承诺。

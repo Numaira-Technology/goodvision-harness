@@ -109,7 +109,7 @@ def draw_overlay(
     stale: bool = False,
     analysis_kind: str = "event",
     incomplete: bool = False,
-    known_faces: Sequence[Any] = (),
+    face_objects: Sequence[Any] = (),
 ) -> Any:
     """Return a copy of ``bgr`` with a compact verdict and normalized boxes."""
 
@@ -131,24 +131,8 @@ def draw_overlay(
     if stale or (incomplete and not positive):
         color = (90, 150, 220)
 
-    for item in known_faces if not stale else ():
-        attributes = getattr(item, "attributes", {})
-        person_id = str(attributes.get("person_id", "")).strip()
-        if not person_id:
-            continue
-        try:
-            x1, y1, x2, y2 = item.bbox.to_pixels(width, height)
-        except (AttributeError, TypeError, ValueError):
-            continue
-        identity_color = (55, 180, 70)
-        cv2.rectangle(
-            rendered, (x1, y1), (max(x1, x2 - 1), max(y1, y2 - 1)),
-            identity_color, 2,
-        )
-        _text_with_background(
-            rendered, person_id[:120],
-            (x1, max(18, y1)), identity_color,
-        )
+    if not stale:
+        _draw_face_boxes(rendered, face_objects)
 
     for item in objects if positive else ():
         bbox = getattr(item, "bbox", None)
@@ -895,7 +879,11 @@ def _draw_face_boxes(rendered: Any, objects: Sequence[Any]) -> list[str]:
         attributes = getattr(item, "attributes", {})
         if not isinstance(attributes, Mapping):
             attributes = {}
-        status = str(attributes.get("status", "unusable"))
+        label = str(getattr(item, "label", "")).casefold().replace("_", " ")
+        default_status = {
+            "known person": "known", "unknown person": "unknown",
+        }.get(label, "unusable")
+        status = str(attributes.get("status", default_status))
         if status not in _FACE_COLORS:
             status = "unusable"
         statuses.append(status)

@@ -316,12 +316,6 @@ def test_single_event_late_positive_reaches_sse_and_webhook_without_frame_rewind
 
 def test_exact_frame_callback_keeps_memory_but_does_not_rewind_preview(monkeypatch):
     runtime, _ = runtime_without_workers()
-    display_frames = []
-    runtime._delayed_overlay = SimpleNamespace(
-        submit_analysis_frame=lambda result, jpeg: display_frames.append(
-            (result, jpeg)
-        ),
-    )
     runtime.frames = FrameBus()
     runtime._rich_labels = None
     runtime.settings = SimpleNamespace(overlay_jpeg_quality=85)
@@ -351,7 +345,6 @@ def test_exact_frame_callback_keeps_memory_but_does_not_rewind_preview(monkeypat
     assert first_packet.analysis_message_id == safety.message_id
     assert [r.observation for r in memory] == [safety.as_dict(), face.as_dict()]
     assert [r.evidence_jpeg for r in memory] == [b"safety-frame", b"face-frame"]
-    assert display_frames[-1] == (face, b"face-frame")
 
     same_frame = observation("stranger", 2.0)
     runtime._guarded_callback(

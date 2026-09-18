@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import timezone
+from functools import partial
 from html import escape
 from pathlib import Path
 from threading import Event, RLock, Thread
@@ -39,7 +40,12 @@ from .config import (
     load_config,
 )
 from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
-from .delayed_overlay import DelayedOverlayComposer, DisplayAnalysis, OverlaySelection
+from .delayed_overlay import (
+    DelayedOverlayComposer,
+    DisplayAnalysis,
+    OverlaySelection,
+    is_face_object,
+)
 from .delivery import WebhookDelivery
 from .deployment_settings import (
     DeploymentSettings,
@@ -61,7 +67,6 @@ from .face_recognition import (
 )
 from .grounding import (
     DETECTION_EVENT_LABELS,
-    FIXED_FIVE_ANALYSIS_KIND,
     SAFETY_EVENT_LABELS,
     SELECTED_FEATURES_ANALYSIS_KIND,
     build_grounding_client,
@@ -76,12 +81,10 @@ from .model_api import (
 )
 from .overlay import (
     draw_event_rich_overlay,
-    draw_face_boxes,
     draw_overlay,
     draw_rich_overlay,
 )
 from .overlay_fusion import OverlayFusionMatcher
-from .person_event_overlay import PersonOverlayAnalysis
 from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
@@ -311,7 +314,7 @@ class HarnessRuntime:
                 else None
             ),
             compose=(
-                self._render_fused_label_jpeg
+                partial(self._render_fused_label_jpeg, interpolate=False)
                 if self._rich_requested
                 else None
             ),
@@ -1785,7 +1788,6 @@ class HarnessRuntime:
 
     def _on_analysis_frame(self, result: AnalysisResult, jpeg: bytes) -> None:
         source_jpeg = bytes(jpeg)
-        self._delayed_overlay.submit_analysis_frame(result, source_jpeg)
         if self._memory_sink is not None:
             try:
                 accepted = self._memory_sink.submit(
@@ -1952,6 +1954,7 @@ class HarnessRuntime:
             session_id,
             float(media_timestamp),
             frame_sequence=int(frame_sequence),
+            interpolate=False,
         )
         if not selection.objects:
             return jpeg
@@ -1975,6 +1978,8 @@ class HarnessRuntime:
         overlay_selection: OverlaySelection,
         media_timestamp: float,
         frame_sequence: int,
+        *,
+        interpolate: bool = True,
     ) -> bytes:
         """Render Rich and Event annotations together with one JPEG codec pass."""
 
@@ -1991,6 +1996,7 @@ class HarnessRuntime:
                     session_id,
                     float(media_timestamp),
                     frame_sequence=int(frame_sequence),
+                    interpolate=interpolate,
                 )
                 rich_objects = rich_selection.objects
 
@@ -2005,8 +2011,8 @@ class HarnessRuntime:
         if analysis is None:
             rendered = draw_rich_overlay(image, rich_objects)
         elif (
-            isinstance(analysis, PersonOverlayAnalysis)
-            or analysis.analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS
+            analysis.analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS
+            and not _has_safety_annotations(analysis)
         ):
             rendered = (
                 draw_rich_overlay(image, rich_objects) if rich_objects else image
@@ -2106,14 +2112,27 @@ def _render_analysis_jpeg(
 
 
 def _draw_analysis_overlay(image: Any, analysis: DisplayAnalysis) -> Any:
-    if isinstance(analysis, PersonOverlayAnalysis):
-        return draw_face_boxes(image, analysis.objects)
     return draw_overlay(image, **_analysis_overlay_arguments(analysis))
 
 
+def _has_safety_annotations(analysis: DisplayAnalysis) -> bool:
+    return any(
+        judgment.event_label in SAFETY_EVENT_LABELS
+        for judgment in (
+            *analysis.judgments, *getattr(analysis, "pending_clear_judgments", ()),
+        )
+    )
+
+
 def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
-    known_faces = ()
-    if analysis.analysis_kind == "face_recognition":
+    face_objects = ()
+    analysis_kind = analysis.analysis_kind
+    if (
+        analysis_kind in INDEPENDENT_FACE_ANALYSIS_KINDS
+        and _has_safety_annotations(analysis)
+    ):
+        analysis_kind = SELECTED_FEATURES_ANALYSIS_KIND
+    if analysis_kind == "face_recognition":
         detected_judgments = tuple(
             judgment for judgment in analysis.judgments if judgment.detected
         )
@@ -2140,9 +2159,8 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
             if judgment.event_label not in observed_labels
         ))
         labels_by_object: dict[str, list[str]] = {}
-        # Pending clears affect the event title only. Their historical object
-        # IDs and coordinates cannot be attached to the current negative frame.
-        for judgment in observed_positives:
+        # A held event keeps its last positive box until clear confirmation.
+        for judgment in detected_judgments:
             for object_id in judgment.object_ids:
                 labels = labels_by_object.setdefault(object_id, [])
                 if judgment.event_label not in labels:
@@ -2155,26 +2173,9 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
                 ),
             )
             for item in analysis.objects
-            if item.object_id in labels_by_object
+            if item.object_id in labels_by_object and not is_face_object(item)
         )
-        # Hide identity boxes during a positive safety event, but do not hide
-        # observed known people just because the safety branch is still pending.
-        if (
-            analysis.analysis_kind in (
-                FIXED_FIVE_ANALYSIS_KIND, SELECTED_FEATURES_ANALYSIS_KIND,
-            )
-            and not any(
-                judgment.event_label in SAFETY_EVENT_LABELS
-                for judgment in detected_judgments
-            )
-        ):
-            known_faces = tuple(
-                item for item in analysis.objects
-                if item.object_id not in labels_by_object
-                and item.label == "known_person"
-                and item.attributes.get("status") == "known"
-                and item.attributes.get("person_id")
-            )
+        face_objects = tuple(item for item in analysis.objects if is_face_object(item))
         detected = bool(detected_judgments)
         if detected_judgments:
             event_label = " | ".join(
@@ -2202,9 +2203,12 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
         "confidence": confidence,
         "description": description,
         "objects": objects,
-        "known_faces": known_faces,
-        "analysis_kind": analysis.analysis_kind,
-        "incomplete": bool(analysis.missing_event_labels),
+        "face_objects": face_objects,
+        "analysis_kind": analysis_kind,
+        "incomplete": bool(
+            analysis.missing_event_labels
+            or getattr(analysis, "expired_event_labels", ())
+        ),
     }
 
 

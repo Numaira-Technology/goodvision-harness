@@ -1,11 +1,10 @@
 """Compose a smooth delayed video stream from sparse grounded results.
 
-The source video keeps its display cadence.  Analysis results are keyframes on
-that same media timeline; boxes between two keyframes are linearly interpolated
-after compatible objects have been associated.  The compositor deliberately
-delays video output so it can use both bounding-box endpoints.  When a new
-endpoint is unavailable, the last analyzed state is latched onto every display
-frame until a later keyframe explicitly updates or clears it.
+The source video keeps its display cadence. Analysis results are sparse
+keyframes on that same media timeline; every intervening original frame inherits
+the preceding annotations. The configured delay gives results time to arrive,
+but the compositor never waits for the next result or replaces new source pixels
+with an inference frame. Overdue display frames are skipped under render load.
 """
 
 from __future__ import annotations
@@ -15,19 +14,14 @@ import math
 import threading
 import time
 from bisect import bisect_right
-from collections import OrderedDict, deque
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
 from .contracts import AnalysisResult, EventJudgment, GroundedObject, NormalizedBBox
 from .grounding import SAFETY_EVENT_LABELS
-from .person_event_overlay import (
-    CLEAR_AFTER_NEGATIVES,
-    PersonEventOverlay,
-    PersonOverlayAnalysis,
-    is_face_result,
-)
+from .person_event_overlay import CLEAR_AFTER_NEGATIVES
 from .result_bus import FramePacket
 
 LOGGER = logging.getLogger(__name__)
@@ -46,15 +40,15 @@ class CarriedOverlayAnalysis:
     source: AnalysisResult
     judgments: tuple[EventJudgment, ...]
     objects: tuple[GroundedObject, ...]
-    # Display status only: references belong to the historical positive and
-    # must never supply coordinates for the currently displayed negative frame.
+    # Display-only held positives, including their last grounded coordinates.
     pending_clear_judgments: tuple[EventJudgment, ...] = ()
+    expired_event_labels: tuple[str, ...] = ()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.source, name)
 
 
-DisplayAnalysis = AnalysisResult | CarriedOverlayAnalysis | PersonOverlayAnalysis
+DisplayAnalysis = AnalysisResult | CarriedOverlayAnalysis
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +66,7 @@ class _BufferedFrame:
     packet: FramePacket
     ready_at: float
     generation: int
+    is_redraw: bool = False
 
 
 def select_overlay(
@@ -81,6 +76,7 @@ def select_overlay(
     max_gap_seconds: float,
     frame_sequence: int | None = None,
     clear_after_negatives: int = CLEAR_AFTER_NEGATIVES,
+    interpolate: bool = True,
 ) -> OverlaySelection:
     """Select or interpolate analysis state for one media timestamp.
 
@@ -90,6 +86,8 @@ def select_overlay(
     keyframes and never invents an object before its first detection.  Once a
     state exists it remains authoritative until the next keyframe, so inference
     jitter cannot turn intermediate display frames into unannotated flashes.
+    The live compositor sets ``interpolate=False`` to inherit the preceding
+    annotations unchanged, even when the next keyframe has already arrived.
     """
 
     if not results:
@@ -114,6 +112,9 @@ def select_overlay(
     )
     if abs(float(media_timestamp) - left_timestamp) <= 1e-6 and exact_sequence:
         return OverlaySelection(left, "exact", left.message_id)
+
+    if not interpolate:
+        return OverlaySelection(left, "held", left.message_id)
 
     right = (
         _carry_annotations(
@@ -187,10 +188,36 @@ def _carry_annotations(
             replace(item, object_ids=tuple(carried_ids[key] for key in item.object_ids))
             for item in positives
         )
-    pending = _pending_clear_judgments(results[:position + 1], clear_after_negatives)
+    pending = []
+    for previous, judgment in _pending_clear_observations(
+        results[:position + 1], clear_after_negatives,
+    ):
+        carried_ids = {
+            object_id: (
+                f"held-pending-{judgment.event_label}-{previous.message_id}-{object_id}"
+            )
+            for object_id in judgment.object_ids
+        }
+        objects.extend(
+            replace(
+                item,
+                object_id=carried_ids[item.object_id],
+                attributes={
+                    **item.attributes,
+                    "annotation_source_message_id": previous.message_id,
+                },
+            )
+            for item in previous.objects if item.object_id in carried_ids
+        )
+        pending.append(replace(
+            judgment, object_ids=tuple(carried_ids[key] for key in judgment.object_ids),
+        ))
     if len(judgments) == len(analysis.judgments) and not pending:
         return analysis
-    return CarriedOverlayAnalysis(current, tuple(judgments), tuple(objects), pending)
+    return CarriedOverlayAnalysis(
+        current, tuple(judgments), tuple(objects), tuple(pending),
+        expired_event_labels=getattr(analysis, "expired_event_labels", ()),
+    )
 
 
 def _safety_observations(
@@ -217,29 +244,29 @@ def _safety_observations(
     return list(observations.values())
 
 
-def _pending_clear_judgments(
+def _pending_clear_observations(
     results: Sequence[AnalysisResult], clear_after_negatives: int,
-) -> tuple[EventJudgment, ...]:
-    active: dict[str, EventJudgment] = {}
+) -> tuple[tuple[AnalysisResult, EventJudgment], ...]:
+    active: dict[str, tuple[AnalysisResult, EventJudgment]] = {}
     streaks: dict[str, int] = {}
-    for _result, judgment in _safety_observations(results):
+    for result, judgment in _safety_observations(results):
         label = judgment.event_label
         if judgment.detected:
-            active[label] = judgment
+            active[label] = (result, judgment)
             streaks[label] = 0
         else:
             streaks[label] = min(clear_after_negatives, streaks.get(label, 0) + 1)
             if streaks[label] >= clear_after_negatives:
                 active.pop(label, None)
     return tuple(
-        replace(
+        (result, replace(
             judgment,
             description=(
                 f"Awaiting clear confirmation: {streaks[label]}/"
                 f"{clear_after_negatives} negative observations."
             ),
-        )
-        for label, judgment in active.items() if streaks[label]
+        ))
+        for label, (result, judgment) in active.items() if streaks[label]
     )
 
 
@@ -254,6 +281,18 @@ def _carry_stranger_annotation(
 
     current = results[position]
     if any(item.event_label == "stranger" for item in current.judgments):
+        if (
+            timestamp - current.frame.timestamp_seconds
+            > _STRANGER_ANNOTATION_HOLD_SECONDS
+        ):
+            return CarriedOverlayAnalysis(
+                current,
+                tuple(
+                    item for item in current.judgments if item.event_label != "stranger"
+                ),
+                tuple(item for item in current.objects if not is_face_object(item)),
+                expired_event_labels=("stranger",),
+            )
         return current
     for previous in reversed(results[:position]):
         if previous.stream_session_id != current.stream_session_id:
@@ -272,7 +311,7 @@ def _carry_stranger_annotation(
         referenced = set(judgment.object_ids) if judgment.detected else set()
         face_objects = tuple(
             item for item in previous.objects
-            if item.object_id in referenced or _known_face(item)
+            if item.object_id in referenced or is_face_object(item)
         )
         objects = tuple(
             replace(
@@ -303,6 +342,15 @@ def _known_face(item: GroundedObject) -> bool:
     return (
         item.attributes.get("status") == "known"
         or _normalized_label(item.label) == "known person"
+    )
+
+
+def is_face_object(item: GroundedObject) -> bool:
+    return (
+        item.attributes.get("status") in {"known", "unknown", "unusable"}
+        or _normalized_label(item.label) in {
+            "known person", "unknown person", "unusable face",
+        }
     )
 
 
@@ -338,13 +386,13 @@ class DelayedOverlayComposer:
         self._condition = threading.Condition()
         self._frames: deque[_BufferedFrame] = deque()
         self._results: list[AnalysisResult] = []
-        self._person_events = PersonEventOverlay(
-            clear_after_negatives=clear_after_negatives,
-        )
         self.clear_after_negatives = clear_after_negatives
-        self._face_alignment_expected = False
-        self._face_frames: OrderedDict[str, FramePacket] = OrderedDict()
         self._last_display_packet: FramePacket | None = None
+        self._last_source_frame_at: float | None = None
+        self._source_frame_intervals: deque[float] = deque(maxlen=8)
+        self._last_publish_at: float | None = None
+        self._last_publish_was_redraw = False
+        self._redraw_requested = False
         self._generation = 0
         self._closed = False
         self._thread: threading.Thread | None = None
@@ -366,6 +414,7 @@ class DelayedOverlayComposer:
             "publish_errors": 0,
             "enrichment_render_errors": 0,
             "composition_render_errors": 0,
+            "publish_lag_seconds": 0.0,
             "annotation_mode": "none",
             "frame_sequence": None,
             "media_timestamp": None,
@@ -414,10 +463,12 @@ class DelayedOverlayComposer:
             self._generation += 1
             self._frames.clear()
             self._results.clear()
-            self._person_events.reset()
-            self._face_alignment_expected = False
-            self._face_frames.clear()
             self._last_display_packet = None
+            self._last_source_frame_at = None
+            self._source_frame_intervals.clear()
+            self._last_publish_at = None
+            self._last_publish_was_redraw = False
+            self._redraw_requested = False
             self._stream_session_id = None
             self._last_output_timestamp = None
             self._stats.update(
@@ -430,6 +481,7 @@ class DelayedOverlayComposer:
                     "publish_errors": 0,
                     "enrichment_render_errors": 0,
                     "composition_render_errors": 0,
+                    "publish_lag_seconds": 0.0,
                     "annotation_mode": "none",
                     "frame_sequence": None,
                     "media_timestamp": None,
@@ -451,10 +503,17 @@ class DelayedOverlayComposer:
         self.start()
         with self._condition:
             generation = self._generation
+            now = time.monotonic()
+            if self._last_source_frame_at is not None:
+                interval = now - self._last_source_frame_at
+                if interval > 0:
+                    self._source_frame_intervals.append(interval)
+            self._last_source_frame_at = now
+            self._redraw_requested = False
             self._frames.append(
                 _BufferedFrame(
                     packet=packet,
-                    ready_at=time.monotonic() + self.delay_seconds,
+                    ready_at=self._last_source_frame_at + self.delay_seconds,
                     generation=generation,
                 )
             )
@@ -491,72 +550,44 @@ class DelayedOverlayComposer:
                 [_analysis_key(item) for item in self._results], _analysis_key(result),
             )
             self._results.insert(index, result)
-            self._person_events.submit_result(result)
-            self._face_alignment_expected |= (
-                "stranger" in result.missing_event_labels or is_face_result(result)
-            )
-            self._enqueue_person_redraw_locked()
+            self._enqueue_redraw_locked()
             self._condition.notify_all()
             return True
 
-    def _enqueue_person_redraw_locked(self) -> None:
+    def _enqueue_redraw_locked(self) -> None:
         # A late verdict also updates the final/paused source frame. Coalesce
         # repeated results into one repaint; normal queued frames already do it.
         if (
-            self._person_events.has_face_results
-            and not self._frames
+            not self._frames
             and self._last_display_packet is not None
         ):
-            self._frames.append(_BufferedFrame(
-                self._last_display_packet, time.monotonic(), self._generation,
-            ))
-            self._stats["frames_buffered"] = len(self._frames)
+            self._redraw_requested = True
 
-    def submit_analysis_frame(self, result: AnalysisResult, jpeg: bytes) -> None:
-        """Retain the exact face source image for the display-only composite."""
+    def _schedule_redraw_locked(self, now: float) -> float | None:
+        """Wait for a source pause and pace/coalesce result-triggered repaints."""
 
-        if not is_face_result(result):
-            return
-        with self._condition:
-            if result.stream_session_id != self._stream_session_id:
-                return
-            self._face_frames[result.message_id] = FramePacket(
-                jpeg=bytes(jpeg),
-                media_timestamp=result.frame.timestamp_seconds,
-                frame_sequence=result.frame.source_frame_index,
-                observed_at=result.frame.observed_at,
-                analysis_message_id=result.message_id,
-            )
-            newest = max(item.media_timestamp for item in self._face_frames.values())
-            cutoff = newest - max(5.0, self.delay_seconds + 3.0)
-            self._face_frames = OrderedDict(
-                (key, packet) for key, packet in self._face_frames.items()
-                if packet.media_timestamp >= cutoff
-            )
-            while len(self._face_frames) > 1024:
-                self._face_frames.popitem(last=False)
-            self._enqueue_person_redraw_locked()
-            self._condition.notify_all()
-
-    def _select_person_frame_locked(
-        self, buffered: _BufferedFrame,
-    ) -> tuple[_BufferedFrame, OverlaySelection] | None:
-        if not self._face_alignment_expected:
+        if (
+            not self._redraw_requested
+            or self._last_display_packet is None
+            or self._last_source_frame_at is None
+        ):
             return None
-        packet = buffered.packet
-        analysis = self._person_events.select(
-            packet.media_timestamp, frame_sequence=packet.frame_sequence,
+        period = 1.0 / self.output_fps
+        # Observe input cadence independently of the configured output limit.
+        # Until a second source frame arrives, use a conservative startup grace.
+        source_period = max(self._source_frame_intervals, default=0.5)
+        ready_at = max(
+            self._last_source_frame_at + 2 * max(period, source_period),
+            (self._last_publish_at or self._last_source_frame_at) + period,
         )
-        source = (
-            self._face_frames.get(analysis.source.message_id)
-            if analysis is not None else None
-        )
-        if source is None:
-            # Missing/expired faces never fall back to stale safety coordinates.
-            return buffered, OverlaySelection(None, "none")
-        return replace(buffered, packet=source), OverlaySelection(
-            analysis, "face_aligned", analysis.source.message_id,
-        )
+        if now < ready_at:
+            return ready_at - now
+        self._redraw_requested = False
+        self._frames.append(_BufferedFrame(
+            self._last_display_packet, now, self._generation, is_redraw=True,
+        ))
+        self._stats["frames_buffered"] = len(self._frames)
+        return 0.0
 
     def stats(self) -> dict[str, Any]:
         with self._condition:
@@ -568,32 +599,39 @@ class DelayedOverlayComposer:
         while True:
             with self._condition:
                 while not self._closed and not self._frames:
-                    self._condition.wait()
+                    redraw_wait = self._schedule_redraw_locked(time.monotonic())
+                    if not self._frames:
+                        self._condition.wait(redraw_wait)
                 if self._closed:
                     return
                 buffered = self._frames[0]
-                remaining = buffered.ready_at - time.monotonic()
+                now = time.monotonic()
+                remaining = buffered.ready_at - now
                 if remaining > 0:
                     self._condition.wait(remaining)
                     continue
+                # Do not turn a missed render budget into a growing video
+                # delay. Catch up to the newest due original frame; future
+                # frames retain their configured presentation deadlines.
+                if now - buffered.ready_at > 1.0 / self.output_fps:
+                    while len(self._frames) > 1 and self._frames[1].ready_at <= now:
+                        self._frames.popleft()
+                        self._stats["frames_dropped"] += 1
                 buffered = self._frames.popleft()
                 self._last_display_packet = buffered.packet
                 delay_seconds = self.delay_seconds
                 results = tuple(self._results)
-                person_selection = self._select_person_frame_locked(buffered)
                 self._stats["frames_buffered"] = len(self._frames)
 
             display_timestamp = buffered.packet.media_timestamp
-            if person_selection is not None:
-                buffered, selection = person_selection
-            else:
-                selection = select_overlay(
-                    results,
-                    buffered.packet.media_timestamp,
-                    max_gap_seconds=self.max_gap_seconds,
-                    frame_sequence=buffered.packet.frame_sequence,
-                    clear_after_negatives=self.clear_after_negatives,
-                )
+            selection = select_overlay(
+                results,
+                buffered.packet.media_timestamp,
+                max_gap_seconds=self.max_gap_seconds,
+                frame_sequence=buffered.packet.frame_sequence,
+                clear_after_negatives=self.clear_after_negatives,
+                interpolate=False,
+            )
             mode = selection.mode
             if self._compose is not None:
                 try:
@@ -628,6 +666,20 @@ class DelayedOverlayComposer:
                 stream_delay_seconds=delay_seconds,
             )
             with self._condition:
+                # A resumed source frame can follow a repaint at any time.
+                # Pace publication itself so that transition cannot burst.
+                while (
+                    (buffered.is_redraw or self._last_publish_was_redraw)
+                    and buffered.generation == self._generation
+                    and not self._closed
+                    and self._last_publish_at is not None
+                ):
+                    remaining = (
+                        self._last_publish_at + 1.0 / self.output_fps - time.monotonic()
+                    )
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(remaining)
                 if buffered.generation != self._generation or self._closed:
                     continue
                 try:
@@ -640,10 +692,15 @@ class DelayedOverlayComposer:
                     self._stats["frames_dropped"] += 1
                     continue
                 self._last_output_timestamp = output.media_timestamp
+                self._last_publish_at = time.monotonic()
+                self._last_publish_was_redraw = buffered.is_redraw
                 self._stats.update(
                     {
                         "state": "running",
                         "frames_published": self._stats["frames_published"] + 1,
+                        "publish_lag_seconds": max(
+                            0.0, time.monotonic() - buffered.ready_at,
+                        ),
                         "annotation_mode": mode,
                         "frame_sequence": output.frame_sequence,
                         "media_timestamp": round(output.media_timestamp, 3),

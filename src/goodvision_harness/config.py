@@ -45,7 +45,7 @@ class VideoSettings:
 class DisplaySettings:
     """Live display settings; no side limit preserves the selected source view."""
 
-    fps: float = 15.0
+    fps: float = 30.0
     max_image_side: int | None = None
     jpeg_quality: int = 90
     delay_seconds: float = 2.5
@@ -258,7 +258,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         ),
     )
     display = DisplaySettings(
-        fps=_positive_float(display_section.get("fps", 15.0), "display.fps"),
+        fps=_positive_float(display_section.get("fps", 30.0), "display.fps"),
         max_image_side=_optional_positive_int(
             display_section.get("max_image_side"), "display.max_image_side"
         ),
@@ -313,9 +313,13 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         "rich_labeling.vlm_parallel_strategy",
     ).lower()
     if rich_parallel_strategy not in {"crops", "full_frame"}:
-        raise ValueError("rich_labeling.vlm_parallel_strategy must be crops or full_frame")
+        raise ValueError(
+            "rich_labeling.vlm_parallel_strategy must be crops or full_frame"
+        )
     if rich_parallel_strategy == "full_frame" and rich_execution_mode != "parallel":
-        raise ValueError("full_frame rich labeling requires vlm_execution_mode: parallel")
+        raise ValueError(
+            "full_frame rich labeling requires vlm_execution_mode: parallel"
+        )
     rich_structured_output = _bool(
         rich_label_section.get("vlm_structured_output", False),
         "rich_labeling.vlm_structured_output",

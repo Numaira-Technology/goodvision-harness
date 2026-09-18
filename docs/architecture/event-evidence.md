@@ -12,32 +12,31 @@ safety and faces, and capability latest endpoints retain each capability's newes
 source observation. Every valid result, including late negatives, is published
 so consumers can reconstruct source-ordered state. Late positives also produce
 a console event notice without replacing a newer video frame. Each message keeps its original frame and identity
-time basis; older face boxes are never pasted onto a newer safety frame.
+time basis. The delayed display carries annotations independently on original
+source frames; exact evidence keeps the analyzed frame's original verdict.
 
 ## People and continuity
 
 New strangers are reported on the first usable unmatched face observation; no
 consecutive-frame confirmation is required. Known and unknown faces use the same
 `face.min_face_size` floor (20 pixels by default), with no extra stranger size gate.
-For annotated video with local faces, behavior state is maintained per
-`(stream_session_id, subject_id, event_label)`. Source-time actors are matched to
-the original frame's observed faces; a delayed result then colors those same
-people's latest face boxes red. Other known people stay green. A person's box
-returns to its normal identity color only after all their behaviors clear.
-Display alerts clear after ten consecutive valid negative source frames for that
-event; a positive resets the count. Replayed or revised observations of the same
-frame count once. Explicit negatives affect only people actually observed near that source frame.
-Lost people, skipped/failed branches and another person's clear cannot end their
-event. Older positives cannot revive a newer confirmed clear. Ambiguous ownership remains
-unbound. Source face history retains up to 90 seconds / 1024 records; associations
-use exact or preceding face observations within 0.6 seconds.
+Annotated video draws face and safety-event boxes independently. Known faces stay
+green and strangers stay red; a safety event draws its own target boxes without
+requiring a face observation, actor match or `subject_id`. Face objects are not
+merged into rich body tracks. Event-to-rich-object tracking remains available.
 
-The display reuses the latest completed face result's exact source JPEG, repeating
-it between face completions, with `X-Annotation-Mode: face_aligned`. After three
-seconds without a fresh face result it shows raw frames without stale boxes.
-Session reset clears annotations. This display state never modifies per-frame
-JSON or exact evidence. A later association correction updates the private
-display timeline and archive without republishing a model verdict.
+Each safety event keeps its latest positive boxes and alert until ten consecutive
+valid negative source frames clear both together. A positive updates the boxes
+and resets the count. Replayed or revised observations of the same frame count
+once; skipped/failed branches and other event types do not advance the counter.
+Older positives cannot revive a newer confirmed clear.
+
+The display preserves original video frames between inference results. Empty or
+expired face observations remove face boxes independently of safety-event boxes;
+face annotations expire after three seconds without a fresh face result. Session
+reset clears all display state. Held boxes are display annotations, not new
+observations: per-frame JSON, exact evidence and archive identity associations
+retain their existing semantics.
 
 `subject_id` identifies a person track within one source/session. `person_id` is
 the independently enrolled identity. Frame-local `object_id` and model-local
@@ -63,8 +62,8 @@ reported in its response/status. Smoking defaults to high; other safety events
 default to standard. Standard smoking requires an identifiable smoking item;
 high smoking accepts plausible actions and context without that requirement.
 Neither mode changes the full-scene 320 px input or local face resolution.
-For display without face tracking, a pending clear retains the event title but
-does not paste historical object boxes onto a negative frame. Exact evidence and
+For display with or without face tracking, a pending clear retains both the event
+title and its latest positive boxes until the tenth valid clear. Exact evidence and
 per-frame JSON remain the original model observations.
 
 With a ready GPU detector, the shared `/v1/tracks` worker path runs independently
@@ -194,5 +193,5 @@ cards. Synthetic dry-run sessions can generate real playable clips of synthetic
 input. Such tests validate delivery and temporal behavior, not real-model accuracy.
 Validate actual identity switches, duplicate events and first-result/P95 latency
 on representative recordings on the target CPU and GPU deployments.
-See the current [release validation](RELEASE.md) for completed publication,
+See the current [release validation](../../RELEASE.md) for completed publication,
 continuity and image-delivery checks, and the remaining real-model limits.
