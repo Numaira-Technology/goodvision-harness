@@ -1478,6 +1478,8 @@ def test_readiness_requires_video_and_successful_analysis() -> None:
 
     class _RunningSession:
         running = True
+        mode = "stream"
+        stream_session_id = "readiness-test"
 
         def stop(self, *, drain: bool = False) -> None:
             self.running = False

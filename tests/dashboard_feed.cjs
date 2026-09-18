@@ -10,6 +10,7 @@ function player(){
   const context=vm.createContext({
     state:{running:true,sessionId:"one",info:{annotated_output:{output_fps:15}}},
     ui:{rawFeed},document:{hidden:false},performance:{now:()=>now},AbortController,
+    networkVideoDisplay:null,
     Image:class{async decode(){}},
     URL:{createObjectURL:blob=>"blob:"+blob.sequence,revokeObjectURL:url=>revoked.push(url)},
     setTimeout:(callback,delay)=>{timers.set(++id,{callback,at:now+delay});return id},

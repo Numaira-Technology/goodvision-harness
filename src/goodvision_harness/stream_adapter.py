@@ -12,6 +12,7 @@ import asyncio
 import queue
 import threading
 import time
+import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -20,6 +21,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import cv2
 
 from .privacy import PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR
+from .stream_diagnostics import StreamDiagnostics
 from .video_to_stream import LiveFrame
 
 StreamProtocol = Literal["rtsp", "rtmp", "webrtc"]
@@ -105,6 +107,7 @@ class NetworkStreamAdapter:
         reconnect_attempts: int = 3,
         reconnect_delay_seconds: float = 1.0,
         whep_headers: Mapping[str, str] | None = None,
+        connection_id: str | None = None,
     ) -> None:
         if output_fps <= 0:
             raise ValueError("output_fps must be positive")
@@ -118,6 +121,8 @@ class NetworkStreamAdapter:
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self.whep_headers = dict(whep_headers or {})
         self.dropped_frames = 0
+        self._diagnostics = StreamDiagnostics(connection_id or uuid.uuid4().hex,
+                                              self.source.protocol, self.output_fps)
         self._stop = threading.Event()
         self._capture_lock = threading.Lock()
         self._capture: Any | None = None
@@ -138,10 +143,13 @@ class NetworkStreamAdapter:
         self._stop.set()
 
     def frames(self) -> Iterator[LiveFrame]:
-        if self.protocol in {"rtsp", "rtmp"}:
-            yield from self._opencv_frames()
-        else:
-            yield from self._whep_frames()
+        try:
+            if self.protocol in {"rtsp", "rtmp"}:
+                yield from self._opencv_frames()
+            else:
+                yield from self._whep_frames()
+        finally:
+            self._diagnostics.emit(final=True)
 
     def _opencv_frames(self) -> Iterator[LiveFrame]:
         failures = 0
@@ -162,21 +170,30 @@ class NetworkStreamAdapter:
                     if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
                         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     while not self.stopped:
+                        read_started = time.monotonic()
                         read_ok, image = capture.read()
                         if self.stopped:
                             break
                         if not read_ok or image is None:
+                            self._diagnostics.count('read_failures')
                             break
                         failures = 0
                         now = time.monotonic()
+                        self._diagnostics.received(image, now, now-read_started,
+                                                   emitted if now+1e-9 >= next_emit else None)
                         if now + 1e-9 < next_emit:
                             self.dropped_frames += 1
+                            self._diagnostics.count('rate_limit_skipped_frames')
+                            self._diagnostics.emit()
                             continue
                         next_emit = now + period
                         if origin is None:
                             origin = now
                         timestamp = max(last_timestamp, now - origin)
                         last_timestamp = timestamp
+                        self._diagnostics.enqueued(emitted)
+                        self._diagnostics.dequeued(emitted)
+                        self._diagnostics.emit()
                         yield LiveFrame(
                             index=emitted,
                             timestamp_seconds=timestamp,
@@ -227,6 +244,7 @@ class NetworkStreamAdapter:
                         f"WebRTC stream from host {self.source.host} failed"
                     ) from error
                 assert isinstance(item, LiveFrame)
+                self._diagnostics.dequeued(item.index)
                 yield item
         finally:
             self.stop()
@@ -254,6 +272,7 @@ class NetworkStreamAdapter:
         pc = RTCPeerConnection()
         track_ready: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         session_url: str | None = None
+        stats_task: asyncio.Task | None = None
 
         @pc.on("track")
         def on_track(track: Any) -> None:
@@ -309,6 +328,8 @@ class NetworkStreamAdapter:
                     await pc.setRemoteDescription(
                         RTCSessionDescription(sdp=answer_sdp, type="answer")
                     )
+                    self._diagnostics.configure_sdp(answer_sdp)
+                    stats_task = asyncio.create_task(self._poll_receive_diagnostics(pc))
                     try:
                         track = await asyncio.wait_for(track_ready, timeout=15.0)
                     except asyncio.TimeoutError as exc:
@@ -325,7 +346,26 @@ class NetworkStreamAdapter:
                         except aiohttp.ClientError:
                             pass
         finally:
+            if stats_task is not None:
+                stats_task.cancel()
+                await asyncio.gather(stats_task, return_exceptions=True)
+                await self._sample_receive_diagnostics(pc, 0.0)
             await pc.close()
+
+    async def _sample_receive_diagnostics(self, pc: Any, loop_lag: float) -> None:
+        try:
+            report = await asyncio.wait_for(pc.getStats(), timeout=1.0)
+            self._diagnostics.webrtc_stats(report, pc, loop_lag)
+        except Exception:
+            # Missing statistics cannot interrupt receiving video.
+            self._diagnostics.count('stats_errors')
+        self._diagnostics.emit()
+
+    async def _poll_receive_diagnostics(self, pc: Any) -> None:
+        while not self.stopped:
+            deadline = time.monotonic() + 5.0
+            await asyncio.sleep(5.0)
+            await self._sample_receive_diagnostics(pc, time.monotonic()-deadline)
 
     async def _pump_track(
         self, track: Any, pc: Any, media_stream_error: type[BaseException]
@@ -335,33 +375,47 @@ class NetworkStreamAdapter:
         last_timestamp = 0.0
         period = 1.0 / self.output_fps
         next_emit = 0.0
+        receive_started = time.monotonic()
         receive_task: asyncio.Task[Any] | None = asyncio.create_task(track.recv())
         try:
             while not self.stopped:
                 done, _ = await asyncio.wait({receive_task}, timeout=0.5)
                 if not done:
+                    self._diagnostics.count('receive_wait_over_500ms')
                     if pc.connectionState in {"closed", "failed"}:
                         raise StreamAdapterError("WebRTC connection closed")
                     continue
                 try:
                     frame = receive_task.result()
                 except media_stream_error:
+                    self._diagnostics.count('track_ended')
                     return
-                receive_task = asyncio.create_task(track.recv())
                 now = time.monotonic()
+                self._diagnostics.received(frame, now, now-receive_started,
+                                           emitted if now+1e-9 >= next_emit else None)
+                receive_started = now
+                receive_task = asyncio.create_task(track.recv())
                 if now + 1e-9 < next_emit:
                     self.dropped_frames += 1
+                    self._diagnostics.count('rate_limit_skipped_frames')
                     continue
                 next_emit = now + period
                 if origin is None:
                     origin = now
                 timestamp = max(last_timestamp, now - origin)
                 last_timestamp = timestamp
+                conversion_started = time.monotonic()
+                try:
+                    bgr = frame.to_ndarray(format="bgr24")
+                except Exception:
+                    self._diagnostics.count('color_conversion_errors')
+                    raise
+                self._diagnostics.timing('color_conversion', time.monotonic()-conversion_started)
                 self._put_latest(
                     LiveFrame(
                         index=emitted,
                         timestamp_seconds=timestamp,
-                        bgr=frame.to_ndarray(format="bgr24"),
+                        bgr=bgr,
                     )
                 )
                 emitted += 1
@@ -371,14 +425,17 @@ class NetworkStreamAdapter:
                 await asyncio.gather(receive_task, return_exceptions=True)
 
     def _put_latest(self, frame: LiveFrame) -> None:
+        self._diagnostics.enqueued(frame.index)
         while True:
             try:
                 self._queue.put_nowait(frame)
                 return
             except queue.Full:
                 try:
-                    self._queue.get_nowait()
+                    dropped = self._queue.get_nowait()
                     self.dropped_frames += 1
+                    if isinstance(dropped, LiveFrame):
+                        self._diagnostics.dequeued(dropped.index, dropped=True)
                 except queue.Empty:
                     continue
 
@@ -389,6 +446,8 @@ class NetworkStreamAdapter:
                 return
             except queue.Full:
                 try:
-                    self._queue.get_nowait()
+                    dropped = self._queue.get_nowait()
+                    if isinstance(dropped, LiveFrame):
+                        self._diagnostics.dequeued(dropped.index, dropped=True)
                 except queue.Empty:
                     continue

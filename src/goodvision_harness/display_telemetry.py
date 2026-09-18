@@ -3,6 +3,8 @@
 import math
 
 COUNTERS = frozenset({
+    "network_requests", "network_failures", "network_bytes_received",
+    "network_frames_received", "network_source_gap_frames",
     "captured_frames", "distinct_presented_frames", "display_buffer_expired",
     "video_callback_frames", "video_callback_gap_frames",
     "rejected_source_frames", "buffered_frames", "analysis_admitted", "analysis_sent",
@@ -55,6 +57,7 @@ MEASUREMENTS = frozenset({
 })
 # Bounded per-window aggregate timings only; never browser URLs, pixels or labels.
 TIMING_STAGES = (
+    "network_download", "network_decode",
     "callback_gap", "callback_lateness", "source_freeze", "display_capture",
     "motion_capture", "motion_preprocess", "analysis_capture", "capture_total", "analysis_encode",
     "motion_preprocess_queue", "motion_compute", "motion_frame_queue",

@@ -152,6 +152,7 @@ from .scene_worker import SceneInspectionWorker
 from .service_locations import SERVICE_LOCATION_FIELDS, ServiceLocations
 from .stream_adapter import parse_stream_source
 from .temporal_client_pool import TemporalClientPool
+from .video_connection import VideoConnection
 from .video_to_stream import encode_jpeg
 from .video_tracking import (
     BACKEND as NATIVE_VIDEO_BACKEND,
@@ -479,6 +480,25 @@ class HarnessRuntime:
             max_workers=1, thread_name_prefix="run-postprocess",
         )
         self._control_lock = RLock()
+        self._video_connection: VideoConnection | None = None
+        self._connection_camera_layout: str | None = None
+        self._analysis_settings = {
+            "features": list(DETECTION_EVENT_LABELS),
+            "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
+        }
+        if deployment_store is not None:
+            try:
+                saved_analysis = deployment_store.load_analysis_settings()
+                if saved_analysis is not None:
+                    features = _normalize_features(saved_analysis.get("features"))
+                    self._analysis_settings = {
+                        "features": list(features),
+                        "event_sensitivities": normalize_event_sensitivities(
+                            saved_analysis.get("event_sensitivities"), features,
+                        ),
+                    }
+            except (ValueError, TypeError, OSError):
+                self._deployment_error = "analysis settings could not be loaded"
         self._session_start_pending = False
         self._session_start_cancel = Event()
         self._pending_start_owner: str | None = None
@@ -1231,6 +1251,25 @@ class HarnessRuntime:
                 self._update_state(dry_run=self.dry_run)
         return self.deployment_settings()
 
+    def video_display_config(self) -> dict[str, Any]:
+        """Shared presentation policy for browser capture and network sources."""
+        delay = _env_bounded_float("LOCAL_CAMERA_DISPLAY_DELAY_SECONDS", 6.0, 0.0, 8.0)
+        return {
+            "protocol": 1, "transport": "websocket",
+            "enabled": (self._scene_mode == "active" and self.config.rich_labeling.backend == "sam31_stream"
+                        and os.environ.get("LOCAL_CAMERA_DISPLAY_ENABLED", "false").lower() in {"1", "true", "yes"}),
+            "metadata_url": "/v1/video/display/metadata", "metrics_url": "/v1/video/display/metrics",
+            "target_fps": _env_bounded_int("LOCAL_CAMERA_TARGET_FPS", 20, 15, 30),
+            "delay_seconds": delay,
+            "motion_width": _env_bounded_int("LOCAL_CAMERA_MOTION_WIDTH", 160, 160, 320),
+            "motion_backend": "dense", "anchor_policy": "nearest_arrived",
+            "allow_partial_boundaries": False,
+            "max_history_seconds": max(8.0, delay + 4.0), "max_propagation_seconds": 1.5,
+            "analysis_max_image_side": _env_bounded_int("LOCAL_CAMERA_ANALYSIS_MAX_SIDE", 720, 160, 1280),
+            "analysis_jpeg_quality": _env_bounded_int("LOCAL_CAMERA_ANALYSIS_JPEG_QUALITY", 80, 30, 95),
+            "analysis_sample_fps": max(self.config.rich_labeling.max_fps, self.config.face.sample_fps),
+        }
+
     def ui_info(self) -> dict[str, Any]:
         if self.config is None:
             result = {
@@ -1241,9 +1280,6 @@ class HarnessRuntime:
             assert isinstance(safe, dict)
             return safe
         scene_active = self._scene_mode == "active"
-        local_display_delay = _env_bounded_float(
-            "LOCAL_CAMERA_DISPLAY_DELAY_SECONDS", 6.0, 0.0, 8.0,
-        )
         scene_source_side = self.config.runtime.scene_max_image_side
         camera_side = max(
             self.config.video.max_image_side,
@@ -1274,35 +1310,7 @@ class HarnessRuntime:
             "features": list(DETECTION_EVENT_LABELS),
             "supported_features": list(DETECTION_EVENT_LABELS),
             **sensitivity_ui_info(),
-            "local_camera_display": {
-                "protocol": 1,
-                "transport": "websocket",
-                "enabled": (
-                    scene_active and self.config.rich_labeling.backend == "sam31_stream"
-                    and os.environ.get("LOCAL_CAMERA_DISPLAY_ENABLED", "false").lower()
-                    in {"1", "true", "yes"}
-                ),
-                "metadata_url": "/v1/video/display/metadata",
-                "metrics_url": "/v1/video/display/metrics",
-                "target_fps": _env_bounded_int("LOCAL_CAMERA_TARGET_FPS", 20, 15, 30),
-                "delay_seconds": local_display_delay,
-                "motion_width": _env_bounded_int(
-                    "LOCAL_CAMERA_MOTION_WIDTH", 160, 160, 320,
-                ),
-                "motion_backend": "dense", "anchor_policy": "nearest_arrived",
-                "allow_partial_boundaries": False,
-                "max_history_seconds": max(8.0, local_display_delay + 4.0),
-                "max_propagation_seconds": 1.5,
-                "analysis_max_image_side": _env_bounded_int(
-                    "LOCAL_CAMERA_ANALYSIS_MAX_SIDE", 720, 160, 1280,
-                ),
-                "analysis_jpeg_quality": _env_bounded_int(
-                    "LOCAL_CAMERA_ANALYSIS_JPEG_QUALITY", 80, 30, 95,
-                ),
-                "analysis_sample_fps": max(
-                    self.config.rich_labeling.max_fps, self.config.face.sample_fps,
-                ),
-            },
+            "local_camera_display": self.video_display_config(),
             "sample_fps": self.config.video.fps,
             "max_image_side": camera_side,
             "jpeg_quality": self.config.video.jpeg_quality,
@@ -1629,7 +1637,7 @@ class HarnessRuntime:
             return self._face_runtime
 
     def start(self) -> None:
-        """Initialize delivery and optionally start the configured network stream."""
+        """Initialize delivery and optionally connect the configured preview."""
 
         if self.config is None or self.config_error is not None:
             return
@@ -1638,10 +1646,11 @@ class HarnessRuntime:
             with self._control_lock:
                 self._ensure_delivery()
             stream_url = self.configured_stream_url()
-            # Extra cameras start through the primary fleet controller, which
-            # checks the current shared mode before admitting another stream.
+            # Auto-connect only provides a preview. Analysis always starts with
+            # the explicit global control, including single-camera deployments.
+            # Additional cameras connect through the primary fleet controller.
             if self.autostart and stream_url and self._fleet_camera_index == 1:
-                self.start_stream(stream_url)
+                self.connect_stream(stream_url)
                 return
             self._update_state(
                 pipeline_state="idle",
@@ -1775,6 +1784,110 @@ class HarnessRuntime:
                 raise ProcessingMethodUnavailableError()
             return revision, self._rich_labels
 
+    def analysis_settings(self) -> dict[str, Any]:
+        return {**copy.deepcopy(self._analysis_settings), **sensitivity_ui_info()}
+
+    def update_analysis_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if set(payload) - {"features", "event_sensitivities"}:
+            raise ValueError("unknown camera analysis setting")
+        with self._control_lock:
+            if self._processing_lifecycle_busy():
+                raise RuntimeError("stop the active session before saving settings")
+            if self._deployment_store is None:
+                raise RuntimeError("persistent deployment storage is not configured")
+            features = _normalize_features(payload.get(
+                "features", self._analysis_settings["features"],
+            ))
+            settings = {
+                "features": list(features),
+                "event_sensitivities": normalize_event_sensitivities(payload.get(
+                    "event_sensitivities",
+                    self._analysis_settings["event_sensitivities"],
+                ), features),
+            }
+            self._deployment_store.save_analysis_settings(settings)
+            self._analysis_settings = settings
+        return self.analysis_settings()
+
+    def connect_stream(
+        self, stream_url: str | None = None, *, camera_layout: str | None = None,
+    ) -> dict[str, Any]:
+        """Decode for preview; no analysis session or model client is created."""
+        with self._control_lock:
+            if self.config is None or self._closed:
+                raise RuntimeError("configuration unavailable")
+            if self._processing_lifecycle_busy():
+                raise RuntimeError("stop the active session before connecting video")
+            connection = self._video_connection
+            if connection is not None and connection.running:
+                raise RuntimeError("video is already connected or disconnecting")
+            url = (stream_url or "").strip() or self.configured_stream_url()
+            parse_stream_source(url)
+            layout = validate_camera_layout(
+                camera_layout or self.configured_camera_layout(),
+            )
+            connection = VideoConnection(
+                url, output_fps=max(
+                    self.config.display.fps, self.config.video.fps,
+                    self.config.face.sample_fps, self.config.events.fps,
+                ),
+                whep_headers=self.config.stream.whep_headers,
+                frame_crop="left_half" if layout == "stereo" else "none",
+            )
+            self._video_connection = connection
+            self._connection_camera_layout = layout
+            connection.start()
+        return self.status()
+
+    def disconnect_stream(self) -> dict[str, Any]:
+        with self._control_lock:
+            if self._processing_lifecycle_busy():
+                raise RuntimeError("stop the active session before disconnecting video")
+            if self._video_connection is not None:
+                self._video_connection.stop()
+        return self.status()
+
+    def prepare_analysis(self) -> dict[str, Any]:
+        with self._control_lock:
+            if self.config is None or self.config_error is not None or self._closed:
+                raise RuntimeError(self.config_error or "configuration unavailable")
+            connection = self._video_connection
+            if connection is None or not connection.status()["connected"]:
+                raise RuntimeError("请先连接视频并等待画面就绪。")
+            if self._processing_lifecycle_busy():
+                raise RuntimeError("stop the active session before starting analysis")
+            if self._route_probe["state"] == "running":
+                raise RuntimeError("wait for the route check before starting analysis")
+            features = self._analysis_settings["features"]
+            if (not self.dry_run
+                    and any(item in SAFETY_EVENT_LABELS for item in features)
+                    and not self._aiclub_api_key
+                    and self.config.model_api.provider != "local"):
+                raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
+        self._require_processing_ready()
+        if not self.dry_run and "stranger" in features:
+            self._ensure_face_runtime().warmup()
+        with self._control_lock:
+            if (
+                self._video_connection is not connection
+                or not connection.status()["connected"]
+            ):
+                raise RuntimeError("视频连接已中断。请重新连接。")
+        return {"prepared": True, "connection_id": connection.status()["connection_id"]}
+
+    def start_connected_analysis(self) -> dict[str, Any]:
+        self.prepare_analysis()
+        with self._control_lock:
+            connection = self._video_connection
+            if connection is None or not connection.status()["connected"]:
+                raise RuntimeError("视频连接已中断。请重新连接。")
+            choices = copy.deepcopy(self._analysis_settings)
+            layout = self._connection_camera_layout
+        return self.start_stream(
+            connection.stream_url, camera_layout=layout,
+            _connection_id=connection.connection_id, **choices,
+        )
+
     def start_stream(
         self,
         stream_url: str | None = None,
@@ -1785,6 +1898,7 @@ class HarnessRuntime:
         features: Collection[str] | None = None,
         event_sensitivities: Mapping[str, str] | None = None,
         camera_layout: str | None = None,
+        _connection_id: str | None = None,
     ) -> dict[str, Any]:
         if camera_layout is not None:
             validate_camera_layout(camera_layout)
@@ -1803,6 +1917,7 @@ class HarnessRuntime:
             features=features,
             event_sensitivities=event_sensitivities,
             camera_layout=camera_layout,
+            video_connection_id=_connection_id,
         )
 
     def start_camera(
@@ -1857,6 +1972,7 @@ class HarnessRuntime:
         event_sensitivities: Mapping[str, str] | None = None,
         camera_owner: str | None = None,
         camera_layout: str | None = None,
+        video_connection_id: str | None = None,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
@@ -1907,6 +2023,12 @@ class HarnessRuntime:
         with self._control_lock:
             if self._closed:
                 raise RuntimeError("harness service is stopping")
+            if video_connection_id is not None and (
+                self._video_connection is None
+                or self._video_connection.connection_id != video_connection_id
+                or not self._video_connection.status()["connected"]
+            ):
+                raise RuntimeError("视频连接已变化。请重新连接后统一开始分析。")
             if self._session_start_cancel.is_set():
                 raise RuntimeError("session start cancelled")
             if self._route_probe["state"] == "running":
@@ -2156,6 +2278,22 @@ class HarnessRuntime:
             )
             if mode == STREAM_MODE:
                 assert stream_url is not None
+                connection = self._video_connection
+                stream_options = {}
+                if video_connection_id is not None and (
+                    connection is None
+                    or connection.connection_id != video_connection_id
+                    or not connection.status()["connected"]
+                ):
+                    raise RuntimeError("视频连接已变化。请重新连接后统一开始分析。")
+                if connection is not None and connection.running:
+                    if stream_url != connection.stream_url:
+                        raise RuntimeError(
+                            "disconnect the current video before changing source",
+                        )
+                    if not connection.status()["connected"]:
+                        raise RuntimeError("video connection is not ready")
+                    stream_options["video_stream"] = connection.subscribe()
                 session = StreamingSession.for_stream(
                     session_config,
                     client,
@@ -2164,6 +2302,7 @@ class HarnessRuntime:
                     whep_headers=session_config.stream.whep_headers,
                     source_id=self.source_id,
                     archive=self.event_archive(),
+                    **stream_options,
                 )
             else:
                 session = StreamingSession.for_camera(
@@ -2590,6 +2729,9 @@ class HarnessRuntime:
             self._route_probe_stop.set()
             self._rich_probe_stop.set()
         self.stop_session()
+        connection = getattr(self, "_video_connection", None)
+        if connection is not None:
+            connection.stop(timeout=1.0)
         session = self._session
         if session is not None:
             session.join()
@@ -2807,7 +2949,8 @@ class HarnessRuntime:
             if report.get("report_sequence", -1) <= previous.get("report_sequence", -1):
                 return {"accepted": False, "reason": "obsolete_report"}
             self._state["local_camera_display"] = report
-        log_timing("local_camera_display_timing", **report)
+        network = getattr(self._session, "mode", None) != CAMERA_MODE
+        log_timing("network_video_display_timing" if network else "local_camera_display_timing", **report)
         return {"accepted": True}
 
     def status(self) -> dict[str, Any]:
@@ -2905,6 +3048,19 @@ class HarnessRuntime:
         if live_failure is not None:
             payload["last_error"], payload["readiness_reason"] = live_failure
             payload["ready"] = False
+        connection = getattr(self, "_video_connection", None)
+        payload.update(connection.status() if connection is not None else {
+            "connection_state": "disconnected", "connected": False,
+            "connection_id": None,
+        })
+        if connection is not None and connection.running:
+            payload["camera_layout"] = self._connection_camera_layout
+        pipeline_state = payload.get("pipeline_state")
+        payload["analysis_state"] = (
+            "stopping" if pipeline_state in {"stopping", "draining"}
+            else pipeline_state if pipeline_state in {"starting", "running", "error"}
+            else "idle"
+        )
         if self._delivery is not None:
             payload["webhook"] = self._delivery.stats()
         safe = public_safe_value(payload)
@@ -3435,6 +3591,15 @@ class HarnessRuntime:
         # Browser frames bypass StreamingSession's source decoder. Preserve all
         # presentation frames for evidence, not only the model samples.
         session = self._session
+        if session is not None and getattr(session, "mode", None) != CAMERA_MODE:
+            # Network capture owns the same source identity as its raw display
+            # stream. Do not renumber frames or wait for SAM to bind metadata.
+            self._camera_display_metadata.accept_source({
+                "stream_session_id": session.stream_session_id,
+                "generation": self._generation, "crop_version": 0,
+                "source_sequence": int(frame_sequence),
+                "media_timestamp": float(media_timestamp),
+            })
         # Retain the exact samples admitted to a continuous model session. A
         # high-rate preview must not evict its slower, still-pending source JPEGs.
         # The callback takes this same lock, so it cannot precede source retention.
@@ -4306,6 +4471,13 @@ def create_app(
                         )
                         continue
                     command = payload.get("type")
+                    if (command in {"start", "stop"}
+                            and application.state.fleet.capacity > 1):
+                        await channel.send({
+                            "type": "error",
+                            "message": "请使用控制台统一开始或停止所有视频的分析。",
+                        })
+                        continue
                     if command == "camera_display_metrics":
                         try:
                             report = validate_display_metrics({
@@ -4485,13 +4657,103 @@ def create_app(
             headers={"Cache-Control": "no-store"},
         )
 
+    def require_coordinator(request: Request) -> None:
+        # Worker ports are private. The primary forwards coordinated commands
+        # with this marker; it is routing metadata, not an authentication token.
+        if (application.state.fleet.capacity > 1
+                and request.headers.get("X-Fleet-Coordinator") != "1"):
+            raise HTTPException(
+                409, "请使用主控制台统一管理所有视频的分析。",
+            )
+
+    async def camera_payload(request: Request) -> dict[str, Any]:
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 64 * 1024:
+                raise HTTPException(413, "camera control body exceeds 64 KiB")
+        try:
+            value = json.loads(body or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "camera control body must be JSON") from None
+        if not isinstance(value, dict):
+            raise HTTPException(400, "camera control body must be an object")
+        return value
+
+    async def camera_action(action: Callable, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return await asyncio.to_thread(action, *args, **kwargs)
+        except MissingAPIKeyError:
+            raise HTTPException(400, PUBLIC_MISSING_API_KEY_ERROR) from None
+        except ProcessingMethodUnavailableError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, redact_public_text(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, redact_public_text(exc)) from exc
+
+    @application.post("/v1/video/connect")
+    async def connect_video(request: Request) -> dict[str, Any]:
+        require_coordinator(request)
+        payload = await camera_payload(request)
+        if set(payload) - {"stream_url", "camera_layout"}:
+            raise HTTPException(400, "unknown video connection setting")
+        if "stream_url" in payload and not isinstance(payload["stream_url"], str):
+            raise HTTPException(400, "stream_url must be a string")
+        return await camera_action(
+            _runtime(request).connect_stream,
+            payload.get("stream_url"), camera_layout=payload.get("camera_layout"),
+        )
+
+    @application.post("/v1/video/disconnect")
+    async def disconnect_video(request: Request) -> dict[str, Any]:
+        require_coordinator(request)
+        if await camera_payload(request):
+            raise HTTPException(400, "disconnect does not accept settings")
+        return await camera_action(_runtime(request).disconnect_stream)
+
+    @application.get("/v1/analysis/settings")
+    def analysis_settings(request: Request) -> dict[str, Any]:
+        return _runtime(request).analysis_settings()
+
+    @application.put("/v1/analysis/settings")
+    async def update_analysis_settings(request: Request) -> dict[str, Any]:
+        require_coordinator(request)
+        payload = await camera_payload(request)
+        return await camera_action(_runtime(request).update_analysis_settings, payload)
+
+    @application.post("/v1/analysis/prepare")
+    async def prepare_analysis(request: Request) -> dict[str, Any]:
+        require_coordinator(request)
+        if await camera_payload(request):
+            raise HTTPException(400, "prepare uses saved camera settings")
+        return await camera_action(_runtime(request).prepare_analysis)
+
+    @application.post("/v1/analysis/start")
+    async def start_analysis(request: Request) -> dict[str, Any]:
+        require_coordinator(request)
+        if await camera_payload(request):
+            raise HTTPException(400, "analysis uses saved camera settings")
+        runtime = _runtime(request)
+        await camera_action(runtime.start_connected_analysis)
+        return runtime.status()
+
+    @application.post("/v1/analysis/stop")
+    async def stop_analysis(request: Request) -> dict[str, Any]:
+        require_coordinator(request)
+        if await camera_payload(request):
+            raise HTTPException(400, "stop does not accept settings")
+        runtime = _runtime(request)
+        await camera_action(runtime.stop_session)
+        return runtime.status()
+
     @application.post("/v1/sessions/start")
     async def start_session(
         request: Request,
         payload: Annotated[dict[str, Any] | None, Body()] = None,
     ) -> dict[str, Any]:
         """Start one network-stream session with any selected feature subset."""
-
+        require_coordinator(request)
         payload = payload or {}
         mode = payload.get("mode", STREAM_MODE)
         if not isinstance(mode, str) or mode not in {CAMERA_MODE, STREAM_MODE}:
@@ -4548,6 +4810,7 @@ def create_app(
 
     @application.post("/v1/sessions/stop")
     async def stop_session(request: Request) -> dict[str, bool]:
+        require_coordinator(request)
         return {
             "stopped": await asyncio.to_thread(_runtime(request).stop_session)
         }
@@ -4856,6 +5119,15 @@ def create_app(
             headers={"Cache-Control": "no-store"},
         )
 
+    @application.get("/v1/video/display/frames")
+    def network_display_frames(request: Request, after: int = -1,
+                               connection_id: str = "", revision: int = -1,
+                               stream_session_id: str = "") -> Response:
+        from .network_display import display_response
+        return display_response(_runtime(request), after=after,
+                                connection_id=connection_id, revision=revision,
+                                stream_session_id=stream_session_id)
+
     @application.post("/v1/video/display/metrics")
     async def camera_display_metrics(request: Request) -> dict:
         body = await request.body()
@@ -4893,8 +5165,20 @@ def create_app(
 
     @application.get("/v1/video/annotated/latest.jpg")
     async def latest_annotated_frame(request: Request) -> Response:
+        runtime = _runtime(request)
+        connection = getattr(runtime, "_video_connection", None)
+        if connection is not None:
+            analyzing = runtime._state.get("pipeline_state") in {"starting", "running"}
+            if not analyzing or runtime.annotated_frames.latest() is None:
+                jpeg = connection.latest_jpeg()
+                if jpeg is None:
+                    raise HTTPException(404, "video connection has no preview yet")
+                return Response(
+                    jpeg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"},
+                )
         return _snapshot_response(
-            _runtime(request).annotated_frames,
+            runtime.annotated_frames,
             missing_detail="no delayed annotated frame yet",
         )
 

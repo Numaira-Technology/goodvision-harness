@@ -5,6 +5,11 @@
   "type": "object",
   "required": ["type", "schema_version", "event_id", "revision", "stream_session_id", "source_id", "subject_id", "subject_ids", "subject_type", "event_label", "state", "status", "finalized", "start_seconds", "last_detected_seconds", "end_seconds", "end_reason", "started_at", "created_at", "updated_at", "observation_count", "confidence", "description", "identity_state", "person_id", "person_name", "evidence"],
   "properties": {
+    "camera_id": {
+      "type": "string",
+      "pattern": "^camera(?:0[1-9]|[1-9][0-9]+)$",
+      "description": "Present on camera-scoped event detail outputs."
+    },
     "type": {"const": "event"},
     "schema_version": {"const": "1"},
     "event_id": {"type": "string", "pattern": "^event-[0-9a-f]{32}$"},

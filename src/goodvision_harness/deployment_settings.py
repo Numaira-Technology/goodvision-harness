@@ -252,6 +252,24 @@ class DeploymentSettingsStore:
             raise ValueError("invalid saved route")
         return route_id
 
+    def load_analysis_settings(self) -> dict | None:
+        """Camera-local analysis choices are independent of shared deployment routes."""
+        with self._lock:
+            path = self.path.with_name("analysis-settings.json")
+            if not path.exists():
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ValueError("invalid analysis settings")
+        return {name: payload[name] for name in ("features", "event_sensitivities")
+                if name in payload}
+
+    def save_analysis_settings(self, settings: dict) -> None:
+        self._atomic_write(
+            self.path.with_name("analysis-settings.json"),
+            json.dumps({"schema_version": 1, **settings}, sort_keys=True) + "\n",
+        )
+
     def save_model_route(self, route_id: str) -> None:
         from .route_probe import ROUTES_BY_ID
 

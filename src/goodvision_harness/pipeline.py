@@ -228,8 +228,9 @@ class StreamingSession:
         whep_headers: Mapping[str, str] | None = None,
         source_id: str = "camera",
         archive: EventArchive | None = None,
+        video_stream: Any | None = None,
     ) -> StreamingSession:
-        stream = NetworkStreamAdapter(
+        stream = video_stream if video_stream is not None else NetworkStreamAdapter(
             stream_url,
             output_fps=max(
                 config.display.fps, config.video.fps,

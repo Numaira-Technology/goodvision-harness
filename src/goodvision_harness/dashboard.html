@@ -21,7 +21,7 @@ button,input{font:inherit}.btn{padding:8px 16px;color:var(--text);background:#ff
 a{color:#c2410c;text-decoration:none;font-weight:700}a:hover{text-decoration:underline}
 .field select{min-height:38px;padding:8px 12px;font:inherit;font-size:13px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px}
 .field{display:flex;flex-direction:column;gap:5px;min-width:0}.field.grow{flex:1 1 360px}.field>span{color:var(--muted);font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
-input[type=text],input[type=password],input[type=file],input[type=number]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=password]:focus,input[type=file]:focus,input[type=number]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
+input[type=text],input[type=url],input[type=password],input[type=file],input[type=number]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=url]:focus,input[type=password]:focus,input[type=file]:focus,input[type=number]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
 .inline{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13.5px}.note,.status{color:var(--muted);font-size:12.5px;line-height:1.5}.status.error,.note.error{color:var(--red)}.notice{margin-bottom:18px;padding:10px 12px;color:#9a3412;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;font-size:12.5px;line-height:1.5}
 .decision{flex:1;min-height:390px;display:flex;flex-direction:column;justify-content:center;gap:14px;padding:clamp(22px,3vw,40px);background:linear-gradient(#fbfcfe,#f4f6fa);border:2px solid #d8dee9;border-radius:14px}.decision .eyebrow{color:var(--muted);font-size:12.5px;font-weight:750;letter-spacing:.18em;text-transform:uppercase}.verdict{font-size:clamp(40px,5.2vw,76px);font-weight:850;line-height:.95;letter-spacing:-.04em;overflow-wrap:anywhere}.confidence{color:var(--muted);font-size:20px;font-weight:650}.event-statuses{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.event-state{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;color:#15803d;background:rgba(22,163,74,.09);border-radius:9px;font-size:12px;font-weight:750;text-transform:uppercase}.event-state.detected{color:var(--red);background:rgba(220,38,38,.1)}.event-state.pending{color:var(--gray);background:#e2e8f0}.description{color:#3f4a5c;font-size:15.5px;line-height:1.55}.meta{color:var(--muted);font-size:13px;line-height:1.5}.detected{border-color:var(--red);background:linear-gradient(#fef2f2,#fde8e8)}.detected .verdict{color:var(--red)}.clear{border-color:var(--green);background:linear-gradient(#f0fdf4,#e6f9ec)}.clear .verdict{color:#15803d}.warming{border-color:#e0c391}.warming .verdict{color:#8a94a6}
 .data{grid-template-columns:minmax(280px,2fr) minmax(340px,3fr);gap:18px;margin-top:18px}.data .panel{display:flex;flex-direction:column;gap:10px}pre{min-height:210px;max-height:420px;overflow:auto;padding:12px;color:#334155;background:#f8fafc;border:1px solid var(--line);border-radius:12px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -36,9 +36,13 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
 .scene-panel{margin-top:18px}.scene-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:16px;margin-top:14px}.scene-grid h3{font-size:13px;margin-bottom:8px}.scene-list{display:grid;gap:8px;max-height:330px;overflow:auto}.scene-item{padding:10px 12px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}.scene-item.alert{border-left:3px solid var(--red);background:#fff5f5}.scene-item.uncertain{border-left:3px solid var(--amber)}.scene-item strong{display:block;font-size:13px;margin-bottom:4px}.scene-empty{padding:12px;color:var(--muted);font-size:13px;background:#f8fafc;border-radius:10px}.scene-panel .head h2{text-transform:none;letter-spacing:0;font-size:15px;color:var(--text)}@media(max-width:720px){.scene-grid{grid-template-columns:1fr}}
 .analysis-workspace.fullscreen-active .frame-summary{position:absolute;z-index:7;left:16px;right:360px;bottom:16px;background:rgba(8,15,27,.82);border-color:rgba(255,255,255,.2);border-left-color:#60a5fa;backdrop-filter:blur(14px)}.analysis-workspace.fullscreen-active .frame-summary h3,.analysis-workspace.fullscreen-active .frame-summary-text{color:#f1f5f9}.analysis-workspace.fullscreen-active .frame-summary-meta{color:#cbd5e1}.analysis-workspace.fullscreen-active .frame-summary-text{max-height:18vh}
 @media(max-width:720px){.analysis-workspace.fullscreen-active .frame-summary{left:10px;right:10px;bottom:auto;top:110px;padding:10px 12px}.analysis-workspace.fullscreen-active .frame-summary-text{font-size:12px;max-height:15vh}}
+
+.fleet-grid{align-items:start}.fleet-camera-details{padding:14px;border-top:1px solid var(--line);display:grid;gap:12px;background:#fff}.fleet-camera-details[hidden]{display:none}.fleet-camera-details h4{margin:0;font-size:13px}.fleet-sensitivities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.fleet-sensitivities .note{line-height:1.5;font-size:11px}.fleet-detail-summary{font-size:12px;line-height:1.6;color:var(--muted)}.fleet-result-details summary{cursor:pointer;font-size:12px;font-weight:650}.fleet-detail-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;font-size:11px;margin:8px 0 0;padding:10px;background:#f3f5f9;border-radius:8px}.fleet-grid.compact .fleet-card-fields{display:grid}.fleet-grid.compact .fleet-card-fields>.field,.fleet-grid.compact .fleet-source{display:none}.fleet-grid.compact .fleet-card-buttons .btn:not([aria-controls]){display:none}.fleet-grid.compact .fleet-card-detail{display:none}.fleet-grid.compact .fleet-camera-details .fleet-card-detail{display:block}.fleet-grid.compact .fleet-camera-details .fleet-card-buttons .btn{display:inline-flex}#fleet-analysis-state{margin-bottom:12px;line-height:1.7}@media(max-width:420px){.fleet-sensitivities{grid-template-columns:1fr}}
+.fleet-preview canvas{position:absolute;width:100%;height:100%;object-fit:contain}
+.fleet-preview canvas[hidden]{display:none}
 </style>
 <style>
-.fleet-grid.compact{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}.fleet-grid.compact .fleet-card-fields{display:none}.fleet-grid.compact .fleet-card-head{padding:9px 11px}.fleet-grid.compact .fleet-card-head h3{font-size:12px}.fleet-preview{width:100%}
+.fleet-grid.compact{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}.fleet-grid.compact .fleet-card-head{padding:9px 11px}.fleet-grid.compact .fleet-card-head h3{font-size:12px}.fleet-preview{width:100%}
 </style>
 <style>
 .fleet-panel{margin-bottom:18px}.fleet-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.fleet-heading{display:grid;gap:7px}.fleet-heading h2{font-size:19px;letter-spacing:-.02em}.fleet-actions{display:flex;gap:8px;flex-wrap:wrap}.fleet-mode{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#e8f2ff;color:#1d4ed8;border-radius:999px;font-size:11.5px;font-weight:750}.fleet-count{margin:14px 0 10px;font-size:13px;font-weight:700;color:var(--muted)}.fleet-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:14px}.fleet-card{min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fbfcfe}.fleet-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px}.fleet-card-head h3{font-size:14px}.fleet-camera-state{font-size:11.5px;color:var(--muted);padding:3px 8px;border-radius:999px;background:#edf0f5}.fleet-camera-state.good{color:#166534;background:#dcfce7}.fleet-camera-state.error{color:#991b1b;background:#fee2e2}.fleet-preview{position:relative;aspect-ratio:16/9;background:#111827;display:grid;place-items:center;overflow:hidden}.fleet-preview img{position:absolute;width:100%;height:100%;object-fit:contain}.fleet-preview-note{color:#b5bfd0;padding:20px;text-align:center;font-size:12px;line-height:1.6;z-index:1}.fleet-preview-note.over-image{align-self:end;justify-self:stretch;background:rgba(15,23,42,.8);padding:8px}.fleet-card-fields{padding:12px;display:grid;gap:9px}.fleet-source{font-size:11.5px;color:var(--muted);line-height:1.4}.fleet-card input{min-width:0}.fleet-card .field>span{letter-spacing:0;text-transform:none}.fleet-card select{min-width:0;width:100%}.fleet-card-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.fleet-card-buttons .btn{font-size:12px;padding:7px 10px}.fleet-card-buttons .fleet-remove{margin-left:auto;color:var(--muted)}.fleet-card-detail{font-size:11.5px;min-height:18px;overflow-wrap:anywhere;color:var(--muted)}.fleet-card-detail.error{color:var(--red)}.fleet-summary{margin-top:10px;min-height:19px}.fleet-detail-bar{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}.fleet-detail-bar .note{flex:1}.fleet-detail-label{margin:0 0 14px;color:var(--muted);font-size:13px}.fleet-grid[data-single="true"]{max-width:960px}.fleet-grid[data-single="true"] .fleet-preview{max-height:450px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:minmax(0,2fr) minmax(150px,1fr)}.fleet-grid[data-single="true"] .fleet-card-buttons,.fleet-grid[data-single="true"] .fleet-card-detail,.fleet-grid[data-single="true"] .fleet-source{grid-column:1/-1}@media(min-width:1800px){.fleet-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:600px){.fleet-actions{width:100%}.fleet-actions .btn{flex:1;padding:8px 10px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:1fr}.fleet-panel{padding:12px}}
@@ -70,19 +74,69 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
           <h2>Persistent deployment defaults</h2>
           <span class="scope persistent">survives restart</span>
         </div>
-        <div class="note">Saved outside the image in Docker data. Stop the current session before saving. Secret values are never shown again.</div>
+        <div class="note">设置保存在 Docker 数据卷中。停止全部分析后保存，对下次统一分析生效；已连接的视频可继续预览。密钥不会回显。</div>
       </div>
       <span id="deployment-storage" class="channel">Persistence · loading</span>
     </div>
     <div class="deployment-grid">
       <div class="deployment-fields">
-        <div class="field"><span>本地显卡运行</span></div>
-        <div class="row">
-          <label class="switch"><input id="local-inference-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help"> 大模型使用本地显卡</label>
-          <label class="switch"><input id="local-tracking-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help"> 人物追踪使用本地显卡</label>
+        <label class="field">
+          <span>大模型运行位置</span>
+          <select id="inference-mode" aria-describedby="local-gpu-status local-gpu-help">
+            <option value="cloud">云端 API</option>
+            <option id="inference-mode-local" value="local">本机显卡</option>
+            <option value="server">独立模型服务器</option>
+          </select>
+        </label>
+        <div id="inference-server-fields" class="stack" hidden>
+          <label class="field"><span>模型服务器地址</span>
+            <input id="inference-server-url" type="url" autocomplete="off" spellcheck="false" placeholder="http://server:8000">
+          </label>
+          <label class="field"><span>服务器提供的模型名称</span>
+            <input id="inference-server-model" type="text" maxlength="512" autocomplete="off" spellcheck="false" placeholder="local-vision">
+          </label>
+          <div class="secret-status">填写服务器地址和端口，无需填写接口路径。大模型服务可独立部署，控制台无需本机显卡。</div>
+        </div>
+        <label class="field">
+          <span>人物追踪运行位置</span>
+          <select id="tracking-mode" aria-describedby="local-gpu-status local-gpu-help">
+            <option value="legacy">原部署服务（单路）</option>
+            <option id="tracking-mode-local" value="local">本机显卡</option>
+            <option value="server">独立 GPU 服务器</option>
+          </select>
+        </label>
+        <div id="tracking-server-fields" class="stack" hidden>
+          <label class="field"><span>追踪节点类型</span>
+            <select id="tracking-server-protocol">
+              <option value="contour">GoodVision Contour</option>
+              <option value="legacy">原版追踪服务</option>
+            </select>
+          </label>
+          <label class="field"><span>人物追踪服务器地址</span>
+            <input id="tracking-server-url" type="url" autocomplete="off" spellcheck="false" placeholder="http://server:8092">
+          </label>
+          <label class="field"><span>追踪服务器已部署容量（路）</span>
+            <input id="tracking-server-capacity" type="number" min="1" step="1" inputmode="numeric" value="1">
+          </label>
+          <div id="tracking-node-key-fields" class="stack" hidden>
+            <label class="field"><span>追踪节点密钥</span>
+              <input id="tracking-node-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入 GPU 节点的 node-key；留空保留已保存值">
+            </label>
+            <div id="tracking-node-key-status" class="secret-status"></div>
+            <label><input id="clear-tracking-node-key" type="checkbox"> 清除已保存的追踪节点密钥</label>
+          </div>
+          <div class="secret-status">容量须与独立 GPU 服务器已部署的通道数一致；页面不会创建服务器或扩容通道。大模型可同时使用云端 API。</div>
+        </div>
+        <label class="field"><span>采样帧率（FPS）</span>
+          <input id="tracking-sample-fps" type="number" min="0.5" max="30" step="any" inputmode="decimal" value="2" aria-describedby="tracking-sample-fps-help">
+        </label>
+        <div id="tracking-sample-fps-help" class="secret-status">每秒送入人物追踪模型的帧数，默认 2。中间画面通过运动补帧衔接描边。停止分析后保存，重启后保留。</div>
+        <div hidden aria-hidden="true">
+          <input id="local-inference-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help" tabindex="-1">
+          <input id="local-tracking-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help" tabindex="-1">
         </div>
         <div id="local-gpu-status" class="secret-status" role="status" aria-live="polite">正在读取本地显卡状态…</div>
-        <div id="local-gpu-help" class="secret-status">两项可独立选择，保存后对新会话生效。1 张显卡时共用 GPU 0；2 张或以上时，大模型使用 GPU 0，人物追踪和其他本地 GPU 任务使用 GPU 1。关闭的模块继续使用原部署服务。</div>
+        <div id="local-gpu-help" class="secret-status">两项独立选择，停止全部分析后保存，对下次统一分析生效。本机 1 张显卡时共用 GPU 0；2 张或以上时，大模型使用 GPU 0，人物追踪和其他本机 GPU 任务使用 GPU 1。选择独立服务器时不要求控制台有显卡。</div>
         <label class="field">
           <span>Default network stream URL</span>
           <input id="default-stream-url" type="password" autocomplete="new-password" spellcheck="false"
@@ -120,7 +174,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
         </label>
         <label class="switch"><input id="default-dry-run" type="checkbox"> Test mode · no model calls</label>
         <div class="secret-status">Unchecked means formal mode with model calls enabled.</div>
-        <label class="switch"><input id="default-autostart" type="checkbox"> Start automatically with the container</label>
+        <label class="switch"><input id="default-autostart" type="checkbox"> 启动时自动连接视频（分析需手动统一开始）</label>
         <div id="deployment-source-status" class="secret-status">Loading effective settings source...</div>
       </div>
     </div>
@@ -144,7 +198,7 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
     <div class="deployment-head">
       <div class="deployment-title">
         <div class="section-title"><h2 id="route-title">线路测速</h2><span class="scope persistent">启动前检查</span></div>
-        <p class="note">线路分批检查，每条预热后测 3 次完整响应。自动选择全部成功且中位耗时最短的线路，也可在表格中手动选择并保存。切换线路前请先停止检测。</p>
+        <p class="note">线路分批检查，每条预热后测 3 次完整响应。自动选择全部成功且中位耗时最短的线路，也可在表格中手动选择并保存。切换线路前请先停止全部分析。</p>
         <p class="note">使用固定测试图发起真实请求，会产生少量 API 费用。结果用于选路，实际视频延迟还包含本地处理。</p>
       </div>
       <button id="route-check-button" class="btn primary" disabled>检查最快线路</button>
@@ -166,25 +220,50 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
       <div class="fleet-actions">
         <button id="fleet-view-toggle" type="button" class="btn" aria-pressed="false" hidden>只看画面</button>
         <button id="fleet-add" type="button" class="btn" disabled>＋ 添加一路</button>
-        <button id="fleet-start-all" type="button" class="btn primary" disabled>连接全部</button>
-        <button id="fleet-stop-all" type="button" class="btn danger" disabled>停止全部</button>
+        <button id="fleet-start-all" type="button" class="btn" disabled>连接全部视频</button>
+        <button id="fleet-stop-all" type="button" class="btn" disabled>断开全部视频</button>
+        <button id="fleet-analysis-start" type="button" class="btn primary" disabled>开始全部分析</button>
+        <button id="fleet-analysis-stop" type="button" class="btn danger" disabled>停止全部分析</button>
       </div>
     </div>
     <div id="fleet-count" class="fleet-count">正在加载…</div>
+    <div id="fleet-analysis-state" class="note" role="status">连接视频后，统一开始所有已连接视频的分析。</div>
     <div id="fleet-grid" class="fleet-grid" aria-label="摄像头画面"></div>
     <div id="fleet-note" class="status fleet-summary" role="status" aria-live="polite"></div>
     <div class="fleet-detail-bar">
-      <span class="note">每路可独立连接与停止，互不影响。总览画面每秒最多刷新 4 次，不改变每路约 1.25 次/秒的分析频率。本路检测选项、浏览器摄像头和完整结果请进入详细控制。</span>
-      <button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false">展开本路详细控制</button>
+      <span class="note">每路独立连接、断开视频，在各自“详细控制”中设置检测项目与敏感度。全部已连接视频统一开始、停止分析；分析期间先停止全部分析，再增减视频。总览画面每秒最多刷新 4 次。</span>
+      <button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false">本机摄像头 / 诊断</button>
+    </div>
+  </section>
+
+  <section id="face-controls" class="panel face-panel" aria-labelledby="gallery-title">
+    <div class="head">
+      <div class="section-title"><h2 id="gallery-title">Known people gallery</h2><span class="scope persistent">所有摄像头共用</span></div>
+      <div class="gallery-head-actions"><span id="gallery-summary">Loading...</span><button id="refresh-gallery-button" class="btn">Refresh</button></div>
+    </div>
+    <div class="note">全局人脸库，供所有摄像头的陌生人识别共用。在此录入或删除人员将应用于所有摄像头，无需逐路设置。</div>
+    <div class="note">Upload one clear face image. Clear unmatched faces require repeated confirmation; distant or unclear faces may remain unconfirmed.</div>
+    <div class="face-fields">
+      <label class="field"><span>Person ID</span><input id="person-id" type="text" spellcheck="false" placeholder="alice"></label>
+      <label class="field"><span>Display name</span><input id="person-name" type="text" spellcheck="false" placeholder="Alice"></label>
+      <label class="field"><span>Face image</span><input id="person-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
+      <button id="enroll-button" class="btn">Enroll face</button>
+    </div>
+    <div id="gallery-note" class="note">Loading gallery...</div>
+    <div class="scroll face-list">
+      <table>
+        <thead><tr><th>Person ID</th><th>Name</th><th>Samples</th><th>Action</th></tr></thead>
+        <tbody id="gallery-body"></tbody>
+      </table>
     </div>
   </section>
 
   <div id="fleet-detail-console" hidden>
-  <p class="fleet-detail-label">本路详细控制 · 仅管理当前服务的摄像头，其他路请使用对应卡片。</p>
+  <p class="fleet-detail-label">本机摄像头 / 诊断 · 网络视频请使用上方各路卡片设置，并通过顶部统一开始、停止分析。此处保留浏览器摄像头和服务诊断。</p>
   <section class="panel control-panel">
     <div class="control-grid">
       <div class="control-block">
-        <div class="section-title"><span class="step">1</span><h2>Run now</h2><span class="scope temporary">temporary override</span></div>
+        <div class="section-title"><span class="step">1</span><h2>本机摄像头与服务诊断</h2></div>
         <div class="control-source-row">
           <div class="seg" aria-label="Video source type">
             <button id="camera-mode">Browser camera</button>
@@ -372,26 +451,6 @@ input[type=text],input[type=password],input[type=file],input[type=number]{width:
   <section class="panel face-panel">
     <div class="section-title"><span class="step">4</span><h2>Face data debug</h2></div>
     <div id="face-diagnostic-summary" class="face-diagnostic">Face diagnostics | waiting for the first analyzed frame.</div>
-    <div id="face-controls" class="face-gallery">
-      <div class="head">
-        <h2>Known people gallery</h2>
-        <div class="gallery-head-actions"><span id="gallery-summary">Loading...</span><button id="refresh-gallery-button" class="btn">Refresh</button></div>
-      </div>
-      <div class="note">Used by the stranger detector. Upload one clear face image. Clear unmatched faces require repeated confirmation; distant or unclear faces may remain unconfirmed.</div>
-      <div class="face-fields">
-        <label class="field"><span>Person ID</span><input id="person-id" type="text" spellcheck="false" placeholder="alice"></label>
-        <label class="field"><span>Display name</span><input id="person-name" type="text" spellcheck="false" placeholder="Alice"></label>
-        <label class="field"><span>Face image</span><input id="person-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
-        <button id="enroll-button" class="btn">Enroll face</button>
-      </div>
-      <div id="gallery-note" class="note">Loading gallery...</div>
-      <div class="scroll face-list">
-        <table>
-          <thead><tr><th>Person ID</th><th>Name</th><th>Samples</th><th>Action</th></tr></thead>
-          <tbody id="gallery-body"></tbody>
-        </table>
-      </div>
-    </div>
   </section>
 
   <section class="panel log" aria-labelledby="event-history-title">
@@ -431,6 +490,15 @@ const ui={
   defaultStreamStatus:$("default-stream-status"),defaultApiKey:$("default-api-key"),
   defaultApiKeyStatus:$("default-api-key-status"),defaultDryRun:$("default-dry-run"),
   localInference:$("local-inference-enabled"),localTracking:$("local-tracking-enabled"),
+  inferenceMode:$("inference-mode"),trackingMode:$("tracking-mode"),
+  inferenceLocalOption:$("inference-mode-local"),trackingLocalOption:$("tracking-mode-local"),
+  inferenceServerFields:$("inference-server-fields"),trackingServerFields:$("tracking-server-fields"),
+  inferenceServerUrl:$("inference-server-url"),inferenceServerModel:$("inference-server-model"),
+  trackingServerUrl:$("tracking-server-url"),trackingServerCapacity:$("tracking-server-capacity"),
+  trackingSampleFps:$("tracking-sample-fps"),
+  trackingServerProtocol:$("tracking-server-protocol"),trackingNodeKey:$("tracking-node-key"),
+  trackingNodeKeyFields:$("tracking-node-key-fields"),trackingNodeKeyStatus:$("tracking-node-key-status"),
+  clearTrackingNodeKey:$("clear-tracking-node-key"),
   localGpuStatus:$("local-gpu-status"),cloudModelSettings:$("cloud-model-settings"),
   cloudRoutePanel:$("cloud-route-panel"),
   defaultAutostart:$("default-autostart"),deploymentSourceStatus:$("deployment-source-status"),
@@ -812,6 +880,11 @@ function reflectSessionSensitivities(values){
   }
 }
 function controls(){
+  const fleetManaged=Boolean(globalThis.GoodvisionFleet);
+  ui.start.hidden=fleetManaged;ui.stop.hidden=fleetManaged;
+  if(fleetManaged){
+    ui.eventControls.hidden=true;$("event-sensitivity-controls").hidden=true;ui.streamControls.hidden=true;
+  }
   const busy=state.running||state.pending||state.stopping||sessionBusyStates.has(state.processingStatus?.pipeline_state)||
     state.processingStatus?.processing_cleanup==="closing";
   const routeBusy=state.routeSubmitting||state.routes&&state.routes.state==="running";
@@ -840,12 +913,15 @@ function controls(){
   for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy;
   const persistenceReady=state.deployment&&state.deployment.persistence_available===true;
   const deploymentBusy=state.deploymentLoading||state.deploymentSaving||routeBusy;
-  for(const item of [ui.localInference,ui.localTracking])
+  for(const item of [ui.localInference,ui.localTracking,ui.inferenceMode,ui.trackingMode,
+    ui.inferenceServerUrl,ui.inferenceServerModel,ui.trackingServerUrl,ui.trackingServerCapacity,
+    ui.trackingServerProtocol,ui.trackingNodeKey,ui.clearTrackingNodeKey,ui.trackingSampleFps])
     item.disabled=!persistenceReady||deploymentBusy||sharedBusy;
+  ui.inferenceLocalOption.disabled=ui.trackingLocalOption.disabled=localGpuUnavailable();
   for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart,ui.defaultCameraLayout])
     item.disabled=!persistenceReady||deploymentBusy;
   ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||sharedBusy;
-  saveApiKeyButton.disabled=!persistenceReady||deploymentBusy||sharedBusy||!ui.defaultApiKey.value.trim();
+  saveApiKeyButton.disabled=localInference||!persistenceReady||deploymentBusy||sharedBusy||!ui.defaultApiKey.value.trim();
   ui.resetDeployment.disabled=deploymentBusy||!state.deployment;
   const localBuffer=state.mode==="camera"&&state.info?.local_camera_display?.enabled;
   ui.localCameraBufferNote.hidden=!localBuffer;
@@ -1014,7 +1090,7 @@ function updateAnalysisUi(){
   renderScene();controls();if(!state.gallery&&!state.galleryLoading)refreshGallery()
 }
 function sourceMedia(){
-  if(localCameraActive())return ui.localCameraCanvas;
+  if(localCameraActive()||networkVideoDisplay)return ui.localCameraCanvas;
   if(state.running)return ui.rawFeed;
   if(state.cameraStream&&(state.sessionMode==="camera"||(!state.running&&state.mode==="camera")))return ui.cameraPreview;
   return null
@@ -1025,12 +1101,12 @@ function sourceDimensions(media){
   return media?[media.naturalWidth,media.naturalHeight]:[0,0]
 }
 function surfaces(){
-  const local=localCameraActive();
+  const local=localCameraActive(),network=!!networkVideoDisplay;
   const previewCamera=!state.running&&state.mode==="camera"&&!!state.cameraStream;
   ui.cameraPreview.style.display=previewCamera||local?"block":"none";
   ui.cameraPreview.style.visibility=local?"hidden":"visible";
-  ui.localCameraCanvas.style.display=local?"block":"none";
-  ui.rawFeed.style.display=state.running&&!local?"block":"none";
+  ui.localCameraCanvas.style.display=local||network?"block":"none";
+  ui.rawFeed.style.display=state.running&&!local&&!network?"block":"none";
   ui.rawFeed.style.visibility="visible";
   if(!state.running&&!previewCamera){
     ui.rawPlaceholder.textContent="Connect a source above to inspect the Docker-delivered output.";
@@ -1043,6 +1119,7 @@ function surfaces(){
   requestAnimationFrame(alignAnnotationLayer)
 }
 const localCameraDisplay={controller:null,lastStats:null};
+let networkVideoDisplay=null;
 function localCameraActive(){return !!localCameraDisplay.controller&&!localCameraDisplay.controller.closed;}
 function startLocalCameraDisplay(){
   const config=state.info?.local_camera_display,api=globalThis.GoodvisionCameraDisplay;
@@ -1119,6 +1196,18 @@ async function pullLatestFrame(generation){
 function openFeed(){
   if(globalThis.GoodvisionFleet?.detailHidden?.()){stopLatestFeed();return;}
   if(typeof localCameraActive==="function"&&localCameraActive()){surfaces();return;}
+  const Network=globalThis.GoodvisionCameraDisplay?.NetworkController;
+  if(state.running&&state.sessionMode!=="camera"&&Network?.supported()){
+    if(!networkVideoDisplay){
+      stopLatestFeed();networkVideoDisplay=new Network({canvas:ui.localCameraCanvas,
+        url:"/v1/video/display/frames",metricsUrl:"/v1/video/display/metrics",
+        onStatus:stats=>{ui.rawBadgeText.textContent="连续画面 · "+(stats.distinct_presented_fps??0).toFixed(1)+
+          " 帧/秒 · 缓冲 "+stats.configured_display_delay_seconds+" 秒";},
+        onFailure:message=>{ui.rawBadgeText.textContent=message;}});
+      networkVideoDisplay.start();
+    }
+    surfaces();return;
+  }
   if(state.running&&(!latestFeed.active||latestFeed.session!==state.sessionId)){
     stopLatestFeed();latestFeed.active=true;latestFeed.session=state.sessionId;
     pullLatestFrame(latestFeed.generation)
@@ -1126,6 +1215,7 @@ function openFeed(){
   surfaces()
 }
 function closeFeed(){
+  networkVideoDisplay?.stop();networkVideoDisplay=null;
   stopLatestFeed();resetAnnotations();surfaces()
 }
 
@@ -1133,36 +1223,65 @@ function settingsSourceLabel(value){
   const source=String(value||"built-in defaults").trim().replaceAll("_"," ");
   return source.charAt(0).toUpperCase()+source.slice(1)
 }
+function savedExecutionMode(kind){
+  const modes=kind==="inference"?["cloud","local","server"]:["legacy","local","server"];
+  const candidates=state.deployment?[state.deployment]:[state.info,state.info?.deployment];
+  for(const data of candidates){
+    if(modes.includes(data?.[kind+"_mode"]))return data[kind+"_mode"];
+    if(typeof data?.["local_"+kind+"_enabled"]==="boolean")
+      return data["local_"+kind+"_enabled"]?"local":modes[0]
+  }
+  return modes[0]
+}
+function draftExecutionMode(kind){
+  const value=(kind==="inference"?ui.inferenceMode:ui.trackingMode).value;
+  return (kind==="inference"?["cloud","local","server"]:["legacy","local","server"]).includes(value)
+    ?value:savedExecutionMode(kind)
+}
 function localInferenceEnabled(){
-  return (state.deployment?.local_inference_enabled??state.info?.local_inference_enabled??
-    state.info?.deployment?.local_inference_enabled)===true
+  return savedExecutionMode("inference")!=="cloud"
+}
+function localGpuUnavailable(){
+  const gpu=state.deployment?.local_gpu||state.info?.local_gpu||state.info?.deployment?.local_gpu||{};
+  return gpu.available===false||gpu.gpu_count!=null&&Number(gpu.gpu_count)===0
 }
 function renderLocalGpuSettings(){
   const data=state.deployment||state.info?.deployment||state.info||{};
   const gpu=data.local_gpu||state.info?.local_gpu||{};
   const count=Number(gpu.gpu_count),known=gpu.gpu_count!=null&&Number.isInteger(count)&&count>=0;
-  const localInference=ui.localInference.checked,localTracking=ui.localTracking.checked;
-  const savedInference=localInferenceEnabled(),savedTracking=data.local_tracking_enabled===true;
-  const changed=localInference!==savedInference||localTracking!==savedTracking;
+  const inference=draftExecutionMode("inference"),tracking=draftExecutionMode("tracking");
+  const localInference=inference==="local",localTracking=tracking==="local";
+  ui.localInference.checked=localInference;ui.localTracking.checked=localTracking;
+  ui.inferenceServerFields.hidden=inference!=="server";ui.trackingServerFields.hidden=tracking!=="server";
+  ui.trackingNodeKeyFields.hidden=tracking!=="server"||ui.trackingServerProtocol.value!=="contour";
+  const changed=inference!==savedExecutionMode("inference")||tracking!==savedExecutionMode("tracking")||
+    inference==="server"&&(ui.inferenceServerUrl.value.trim()!==(data.inference_server_url||"")||
+      ui.inferenceServerModel.value.trim()!==(data.inference_server_model||"local-vision"))||
+    tracking==="server"&&(ui.trackingServerUrl.value.trim()!==(data.tracking_server_url||"")||
+      Number(ui.trackingServerCapacity.value)!==Number(data.tracking_server_capacity||1)||
+      ui.trackingServerProtocol.value!==(data.tracking_server_protocol||"legacy"))||
+    Number(ui.trackingSampleFps.value)!==Number(data.tracking_sample_fps??2);
   const device=(value,fallback)=>{
     const match=String(value??"").match(/^(?:[a-z]+:)?(\d+)$/);
     return "GPU "+(match?match[1]:fallback)
   };
   const inferenceDevice=device(gpu.inference_device,0),trackingDevice=device(gpu.tracking_device,count>=2?1:0);
-  const allocation=[localInference?"大模型 → "+inferenceDevice:"大模型 → 原部署服务",
-    localTracking?"人物追踪及其他本地 GPU 任务 → "+trackingDevice:"人物追踪 → 原部署服务"].join("；");
+  const allocation=[localInference?"大模型 → "+inferenceDevice:
+    inference==="server"?"大模型 → 独立模型服务器":"大模型 → 云端 API",
+    localTracking?"人物追踪及其他本地 GPU 任务 → "+trackingDevice:
+    tracking==="server"?"人物追踪 → 独立 GPU 服务器":"人物追踪 → 原部署服务（单路）"].join("；");
   ui.localGpuStatus.className="secret-status";
   if(known&&count>0&&gpu.available!==false){
     ui.localGpuStatus.textContent="检测到 "+count+" 张本地显卡。"+allocation+"。"
   }else if(gpu.available===false||known&&count===0){
-    ui.localGpuStatus.textContent="本地 GPU 服务尚未就绪，请先运行本地 GPU 启动程序。"+
-      (localInference||localTracking?"本地运行需要先准备显卡驱动和运行环境。":"当前继续使用原部署服务。");
+    ui.localGpuStatus.textContent="本机未检测到可用 GPU，云端 API 和独立服务器仍可使用。"+allocation+"。"+
+      (localInference||localTracking?"本机显卡运行需要先准备驱动和运行环境。":"");
     if(localInference||localTracking)ui.localGpuStatus.className+=" error"
   }else{
     ui.localGpuStatus.textContent="本地显卡状态尚未确认。"+allocation+"。"
   }
-  if(savedInference)ui.localGpuStatus.textContent+=" 当前已选择大模型本地运行，无需云端 API key。";
-  if(gpu.error){ui.localGpuStatus.textContent+=" "+String(gpu.error);ui.localGpuStatus.className+=" error"}
+  if(localInferenceEnabled())ui.localGpuStatus.textContent+=" 已保存的大模型服务无需云端 API key。";
+  if(gpu.error&&(localInference||localTracking)){ui.localGpuStatus.textContent+=" "+String(gpu.error);ui.localGpuStatus.className+=" error"}
   if(changed)ui.localGpuStatus.textContent+=" 此处为待保存选择，请保存默认设置后开始新会话。"
 }
 function updateSourceNote(){
@@ -1178,11 +1297,20 @@ function updateSourceNote(){
 }
 function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   const data=state.deployment;if(!data)return;
-  if(clearSecrets){ui.defaultStreamUrl.value="";ui.defaultApiKey.value=""}
+  if(clearSecrets){ui.defaultStreamUrl.value="";ui.defaultApiKey.value="";
+    ui.trackingNodeKey.value="";ui.clearTrackingNodeKey.checked=false}
   ui.defaultDryRun.checked=data.dry_run===true;
   ui.defaultAutostart.checked=data.autostart===true;
-  ui.localInference.checked=data.local_inference_enabled===true;
-  ui.localTracking.checked=data.local_tracking_enabled===true;
+  ui.inferenceMode.value=savedExecutionMode("inference");ui.trackingMode.value=savedExecutionMode("tracking");
+  ui.inferenceServerUrl.value=data.inference_server_url||"";
+  ui.inferenceServerModel.value=data.inference_server_model||"local-vision";
+  ui.trackingServerUrl.value=data.tracking_server_url||"";
+  ui.trackingServerCapacity.value=String(data.tracking_server_capacity||1);
+  ui.trackingServerProtocol.value=data.tracking_server_protocol||"legacy";
+  ui.trackingSampleFps.value=String(data.tracking_sample_fps??2);
+  ui.trackingNodeKeyStatus.textContent=data.tracking_key_present===true
+    ?"已保存追踪节点密钥；不会回显，留空保留。"
+    :"尚未保存追踪节点密钥。请从 GPU 机器的 secrets/node-key 文件复制。";
   renderLocalGpuSettings();
   ui.defaultCameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono";
   renderProcessingSettings();
@@ -1195,7 +1323,7 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   ui.defaultStreamStatus.textContent=data.configured_stream===true
     ?protocol+" source configured · address hidden · entering a value replaces it"
     :"No default source configured · enter a network stream URL to save one";
-  ui.defaultApiKeyStatus.textContent=localInferenceEnabled()?"大模型在本地运行，无需云端 API key。":data.api_key_persisted===true
+  ui.defaultApiKeyStatus.textContent=localInferenceEnabled()?"当前大模型服务无需云端 API key。":data.api_key_persisted===true
     ?"Saved API key present · value hidden · blank keeps it"
     :data.api_key_present===true
       ?"API key available from runtime/environment · value hidden"
@@ -1226,7 +1354,7 @@ async function loadDeploymentSettings(discarded=false){
     }else{
       deploymentSay(discarded
         ?"Unsaved deployment edits discarded. Saved/default values reloaded; secret fields remain hidden."
-        :"Persistent defaults loaded. Stop the current session before saving changes.")
+        :"已载入保存的默认设置。停止全部分析后保存修改，对下次统一分析生效。")
     }
   }catch(error){
     state.deployment=null;ui.deploymentStorage.textContent="Persistence · unreachable";
@@ -1235,9 +1363,11 @@ async function loadDeploymentSettings(discarded=false){
   }finally{state.deploymentLoading=false;controls()}
 }
 async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={}){
-  if(state.running||state.pending){
-    deploymentSay("Stop the current session before saving persistent settings.",true);return false
+  if(state.running||state.pending||state.stopping||sessionBusyStates.has(state.processingStatus?.pipeline_state)||
+    state.processingStatus?.processing_cleanup==="closing"||globalThis.GoodvisionFleet?.extraBusy?.()===true){
+    deploymentSay("请先停止全部分析并等待收尾完成，再保存运行设置。",true);return false
   }
+  if(state.deploymentLoading||state.deploymentSaving||state.routeSubmitting||state.routes?.state==="running")return false;
   if(!state.deployment||state.deployment.persistence_available!==true)return false;
   state.deploymentSaving=true;deploymentSay("Saving persistent settings...");controls();
   try{
@@ -1255,21 +1385,65 @@ async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={
   }finally{state.deploymentSaving=false;controls()}
 }
 async function saveDeploymentSettings(){
+  const inference=draftExecutionMode("inference"),tracking=draftExecutionMode("tracking");
   const payload={dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked,
     camera_layout:ui.defaultCameraLayout.value,
-    local_inference_enabled:ui.localInference.checked,local_tracking_enabled:ui.localTracking.checked};
-  const trackingChanged=ui.localTracking.checked!==(state.deployment?.local_tracking_enabled===true);
+    inference_mode:inference,tracking_mode:tracking,
+    local_inference_enabled:inference==="local",local_tracking_enabled:tracking==="local"};
+  if(localGpuUnavailable()&&(inference==="local"||tracking==="local")){
+    deploymentSay("本机显卡不可用。请准备本机运行环境，或选择云端 / 独立服务器。",true);return
+  }
+  const serverOrigin=(field,label)=>{
+    const raw=field.value.trim();let url;
+    try{url=new URL(raw)}catch(_){throw {field,message:label+"需填写完整的 http:// 或 https:// 地址和端口。"}}
+    if(raw.length>2048||!/^https?:\/\/[^/]+\/?$/i.test(raw)||/[\\\s%?#]/.test(raw)||/:\/?$/.test(raw)||
+      !["http:","https:"].includes(url.protocol)||!url.hostname||url.username||url.password||
+      url.pathname!=="/"||url.search||url.hash||url.port&&Number(url.port)<1)
+      throw {field,message:label+"仅填写服务器地址和端口，不含接口路径、账号、查询参数或片段。"};
+    return url.origin
+  };
+  try{
+    const fpsText=ui.trackingSampleFps.value.trim(),fps=Number(fpsText);
+    if(!fpsText||!Number.isFinite(fps)||fps<.5||fps>30)
+      throw {field:ui.trackingSampleFps,message:"采样帧率请输入 0.5–30 之间的数值，建议从 2 FPS 开始。"};
+    payload.tracking_sample_fps=fps;
+    if(inference==="server"){
+      payload.inference_server_url=serverOrigin(ui.inferenceServerUrl,"模型服务器地址");
+      payload.inference_server_model=ui.inferenceServerModel.value.trim();
+      if(!payload.inference_server_model||payload.inference_server_model.length>512||/[\u0000-\u001f\u007f]/.test(payload.inference_server_model))
+        throw {field:ui.inferenceServerModel,message:"请填写服务器提供的模型名称，如 local-vision。"}
+    }
+    if(tracking==="server"){
+      payload.tracking_server_protocol=ui.trackingServerProtocol.value;
+      payload.tracking_server_url=serverOrigin(ui.trackingServerUrl,"人物追踪服务器地址");
+      const raw=ui.trackingServerCapacity.value.trim(),capacity=Number(raw);
+      if(!/^[1-9]\d*$/.test(raw)||!Number.isSafeInteger(capacity))
+        throw {field:ui.trackingServerCapacity,message:"追踪服务器容量须为正整数，与已部署通道数一致。"};
+      payload.tracking_server_capacity=capacity
+      if(payload.tracking_server_protocol==="contour"){
+        if(ui.trackingNodeKey.value.trim())payload.tracking_api_key=ui.trackingNodeKey.value.trim();
+        if(ui.clearTrackingNodeKey.checked)payload.clear_tracking_api_key=true;
+        if(payload.tracking_api_key&&payload.clear_tracking_api_key)
+          throw {field:ui.trackingNodeKey,message:"不能同时输入和清除节点密钥。"}
+      }
+    }
+  }catch(error){deploymentSay(error.message,true);error.field?.focus();return}
+  const trackingChanged=tracking!==savedExecutionMode("tracking")||tracking==="server"&&
+    (payload.tracking_server_url!==(state.deployment?.tracking_server_url||"")||
+      payload.tracking_server_capacity!==Number(state.deployment?.tracking_server_capacity||1)||
+      payload.tracking_server_protocol!==(state.deployment?.tracking_server_protocol||"legacy"));
   if(!trackingChanged&&processingMethods().some(method=>method.available!==false))payload.processing_method="person_tracking";
   const streamUrl=ui.defaultStreamUrl.value.trim(),apiKey=ui.defaultApiKey.value.trim();
   if(streamUrl)payload.stream_url=streamUrl;
-  if(apiKey&&!payload.local_inference_enabled)payload.api_key=apiKey;
+  if(apiKey&&inference==="cloud")payload.api_key=apiKey;
   await updateDeploymentSettings(payload,
-    "Deployment defaults saved. They will be used by the next session and container start; no running session was restarted."+
+    "默认设置已保存，对下次统一分析生效，重启后继续保留。"+
       (payload.processing_method?" 新会话使用 人员追踪模块 连续分析。":"")+
-      (apiKey&&payload.local_inference_enabled?" 本地大模型不需要云端 API key；本次输入未保存。":""),
+      (apiKey&&inference!=="cloud"?" 自部署大模型不使用云端 API key；本次输入未保存。":""),
     {syncRun:true})
 }
 async function saveApiKey(){
+  if(localInferenceEnabled())return;
   const key=ui.defaultApiKey.value.trim();
   if(!key){deploymentSay("请输入 API key 后保存。",true);return}
   await updateDeploymentSettings({api_key:key},
@@ -1415,7 +1589,7 @@ async function checkRoutes(){
     const response=await fetch("/v1/deployment/routes/check",{method:"POST"});
     if(!response.ok)throw new Error(await responseError(response));
     state.routes=await response.json();renderRoutes()
-  }catch(_){$("route-note").textContent="无法开始测速。请确认检测已停止且 API key 已保存。"}
+  }catch(_){$("route-note").textContent="无法开始测速。请确认全部分析已停止且 API key 已保存。"}
   finally{state.routeSubmitting=false;controls()}
 }
 async function selectRoute(routeId){
@@ -1431,7 +1605,7 @@ async function selectRoute(routeId){
     state.routes=await response.json();renderRoutes()
   }catch(_){
     $("route-note").className="status deployment-note error";
-    $("route-note").textContent="线路选择未保存，保留原选择。请确认检测和测速已停止后重试。"
+    $("route-note").textContent="线路选择未保存，保留原选择。请确认全部分析和测速已停止后重试。"
   }finally{state.routeSubmitting=false;controls()}
 }
 function sampleCount(person){
@@ -1754,6 +1928,7 @@ function message(data){
   }
 }
 async function start(){
+  if(globalThis.GoodvisionFleet)return globalThis.GoodvisionFleet.startAnalysis();
   if(state.running||state.pending||state.stopping||!state.info)return;
   if(state.deploymentSaving){
     say("正在保存默认设置，请稍后开始检测。",true);return
@@ -1788,6 +1963,7 @@ async function start(){
   }catch(error){state.pending=false;say("Could not start: "+error.message,true);controls()}
 }
 async function stop(){
+  if(globalThis.GoodvisionFleet)return globalThis.GoodvisionFleet.stopAnalysis();
   state.sessionRevision=(state.sessionRevision||0)+1;
   try{
     const socket=await connect();
@@ -2244,10 +2420,11 @@ function connectArchiveEvents(cursor){
 
 function deploymentEdited(){
   deploymentSay(state.running||state.pending
-    ?"Deployment edits are staged. Stop the current session before saving."
+    ?"运行设置尚未保存。请先停止全部分析，再保存修改。"
     :"Unsaved deployment edits. Save defaults or discard edits.");controls()
 }
 ui.defaultStreamUrl.oninput=deploymentEdited;ui.defaultApiKey.oninput=deploymentEdited;
+ui.trackingNodeKey.oninput=deploymentEdited;ui.clearTrackingNodeKey.onchange=deploymentEdited;
 ui.bufferDelay.oninput=()=>{state.bufferDelayDirty=true};
 ui.saveBufferDelay.onclick=saveBufferDelay;
 $("refresh-events").onclick=()=>loadEventArchive();
@@ -2255,7 +2432,12 @@ $("archive-more").onclick=()=>loadEventArchive(true);
 $("archive-feature").onchange=()=>loadEventArchive();
 $("archive-subject").onchange=()=>loadEventArchive();
 ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
-ui.localInference.onchange=ui.localTracking.onchange=()=>{renderLocalGpuSettings();deploymentEdited()};
+ui.inferenceMode.onchange=ui.trackingMode.onchange=()=>{renderLocalGpuSettings();deploymentEdited()};
+for(const field of [ui.inferenceServerUrl,ui.inferenceServerModel,ui.trackingServerUrl,ui.trackingServerCapacity,
+  ui.trackingServerProtocol,ui.trackingSampleFps])
+  field.oninput=()=>{renderLocalGpuSettings();deploymentEdited()};
+ui.localInference.onchange=()=>{ui.inferenceMode.value=ui.localInference.checked?"local":"cloud";renderLocalGpuSettings();deploymentEdited()};
+ui.localTracking.onchange=()=>{ui.trackingMode.value=ui.localTracking.checked?"local":"legacy";renderLocalGpuSettings();deploymentEdited()};
 ui.defaultCameraLayout.onchange=deploymentEdited;
 ui.saveDeployment.onclick=saveDeploymentSettings;
 saveApiKeyButton.onclick=saveApiKey;

@@ -2,6 +2,52 @@ const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("nod
 const {test}=require("node:test");
 const code=fs.readFileSync(require.resolve("../src/goodvision_harness/camera_display.js"),"utf8");
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
+
+test("network source preserves server frame IDs, native pixels and playback cadence without uploading analysis",()=>{
+  const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:.5}});
+  for(let i=0;i<15;i++){
+    view.setClock(i/15);
+    view.controller.capture(i/15*1000,{mediaTime:50+i/15,presentedFrames:100+i},
+      {width:1920,height:1080,origin:i});
+    view.render(i/15+.5);
+  }
+  assert.equal(view.controller.snapshot().distinct_presented_frames,15);
+  assert.equal(view.canvas.dataset.frameSequence,"114");
+  assert.equal(view.canvas.width,1920);assert.equal(view.canvas.height,1080);
+  assert.equal(view.controller.snapshot().analysis_admitted,0);
+  assert.equal(view.packets.length,0);
+  assert.equal(view.workerMessages.filter(x=>x.type==="frame_bitmap").length,15);
+  assert.ok(Math.abs(view.controller.snapshot().last_source_to_present_seconds-.5)<1e-6);
+  view.controller.stop();
+});
+
+test("network batch framing rejects truncated or ambiguous source identities",()=>{
+  const view=browser();
+  const header={protocol:1,connection_id:"connection",config:{stream_session_id:"run",generation:2,crop_version:0},
+    frames:[{source_sequence:33,media_timestamp:12.4,width:640,height:480,bytes:4}]};
+  const json=new TextEncoder().encode(JSON.stringify(header)),bytes=new Uint8Array(8+json.length+4);
+  bytes.set(new TextEncoder().encode("GVD1"));new DataView(bytes.buffer).setUint32(4,json.length);bytes.set(json,8);
+  const decoded=view.api.decodeDisplayBatch(bytes.buffer);
+  assert.equal(decoded.frames[0].source_sequence,33);assert.equal(decoded.frames[0].jpeg.length,4);
+  assert.throws(()=>view.api.decodeDisplayBatch(bytes.buffer.slice(0,-1)),/invalid display frame/);
+  bytes[0]=0;assert.throws(()=>view.api.decodeDisplayBatch(bytes.buffer),/invalid display header/);
+  view.controller.stop();
+});
+
+test("network run and crop changes dispose prior overlays and metadata cannot cross runs",async()=>{
+  const view=browser({globals:{createImageBitmap:async()=>({width:640,height:480,close(){}})}});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",metricsUrl:"/metrics"});
+  const packet=(run,seq,crop=0)=>({connection_id:"connection",config:{stream_session_id:run,generation:2,crop_version:crop,
+    enabled:true,delay_seconds:.5,target_fps:15},frames:[{source_sequence:seq,media_timestamp:seq/15,
+      width:640,height:480,jpeg:new Uint8Array([1])}]});
+  await feed.accept(packet("run-one",1));const first=feed.controller;
+  first.overlays.set(1,{subjects:[{track_id:"old"}]});
+  await feed.accept(packet("run-two",2));
+  assert.equal(first.closed,true);assert.equal(first.overlays.size,0);
+  assert.equal(feed.controller.receiveMetadata({stream_session_id:"run-one",generation:2,crop_version:0,anchors:[]}),false);
+  const second=feed.controller;await feed.accept(packet("run-two",3,1));assert.equal(second.closed,true);
+  feed.stop();view.controller.stop();
+});
 function browser({autoAck=true,metadataResponse,config={},globals={},settings:providedSettings,onMotionTrace=null,motionTraceOptions={}}={}){
   let clock=0,next=0;const encodings=[],packets=[],draws=[],labels=[],labelBoxes=[],workerMessages=[],workers=[],raf=new Map(),errors=[],reports=[];
   class Canvas{
@@ -18,7 +64,7 @@ function browser({autoAck=true,metadataResponse,config={},globals={},settings:pr
   const video={videoWidth:640,videoHeight:480,reads:0,requestVideoFrameCallback:()=>1,cancelVideoFrameCallback(){}};
   const socket={readyState:1,bufferedAmount:0,send:packet=>{packets.push(packet);
     if(autoAck&&typeof packet!=="string")queueMicrotask(()=>controller.acknowledgeUpload({...unpack(packet),type:"camera_frame_ack",accepted:true}));}};
-  const context=vm.createContext({module:{exports:{}},OffscreenCanvas:Canvas,TextEncoder,Uint8Array,DataView,
+  const context=vm.createContext({module:{exports:{}},OffscreenCanvas:Canvas,TextEncoder,TextDecoder,ArrayBuffer,Blob,URLSearchParams,Uint8Array,DataView,
     MessageChannel:class{constructor(){this.port1={};this.port2={};}},
     Worker:class{constructor(){workers.push(this);this.messages=[];}
       postMessage(message){workerMessages.push(message);this.messages.push(message);
@@ -401,6 +447,18 @@ test("event-only metadata preserves queued prefetch while later frames naturally
   view.render(.5);view.render(.61);
   assert.deepEqual(colors,["#22c55e","#ef4444"]);view.controller.stop();
 });
+test("pending identity draws yellow and a confirmed event takes red priority",()=>{
+  const view=browser(),worker=view.controller.worker,colors=[],polygon=[[[.1,.1],[.2,.1],[.2,.2]]];
+  view.capture(0);view.capture(.1);view.render(.2);
+  const present=(sequence,alert)=>worker.onmessage({data:{type:"present",sequence,result:{subjects:[{
+    target_sequence:sequence,tracking_confirmation:"confirmed",polygons:polygon,complete:true,alert,warning:true,
+  }],coverage:"anchored",exact:true}}});
+  present(0,false);view.render(.3);present(1,true);
+  view.controller.context.stroke=()=>colors.push(view.controller.context.strokeStyle);
+  view.render(.5);view.render(.61);
+  assert.deepEqual(colors,["#facc15","#ef4444"]);view.controller.stop();
+});
+
 test("capacity exhaustion is visible and never replaces an admitted analysis sample",()=>{
   const view=browser();
   for(let i=0;i<13;i++)view.capture(i*.34);
@@ -774,10 +832,76 @@ test("display delay preserves previous defaults and caps longer requests at eigh
   const fallback=browser({config:{delay_seconds:undefined}});
   assert.equal(fallback.controller.frames.delay,1);fallback.controller.stop();
   const immediate=browser({config:{delay_seconds:0}});immediate.capture(0);immediate.render(0);
-  assert.equal(immediate.controller.frames.delay,0);assert.equal(immediate.controller.snapshot().distinct_presented_frames,1);
+  assert.equal(immediate.controller.frames.delay,0);assert.equal(immediate.controller.snapshot().distinct_presented_frames,0);
+  immediate.render(.15);assert.equal(immediate.controller.snapshot().distinct_presented_frames,1);
   immediate.controller.stop();
   const capped=browser({config:{delay_seconds:60,target_fps:20}});
   assert.equal(capped.controller.frames.delay,8);assert.equal(capped.controller.frames.maxFrames,172);capped.controller.stop();
+});
+
+test("zero-buffer video waits for asynchronous per-frame contours, with a bounded worker-failure fallback",t=>{
+  const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:0}});
+  t.after(()=>view.controller.stop());
+  view.controller.capture(0,{mediaTime:50,presentedFrames:100},{width:640,height:480});
+  view.render(0);assert.equal(view.controller.snapshot().distinct_presented_frames,0);
+  const query=view.workerMessages.find(message=>message.type==="present");
+  assert.equal(query.sequence,100);
+  view.setClock(.02);
+  view.controller.worker.onmessage({data:{type:"present",sequence:100,result:{coverage:"anchored",subjects:[{
+    target_sequence:100,track_id:"person",polygons:[[[.2,.2],[.5,.2],[.5,.5]]],complete:true,
+  }]}}});
+  view.render(.02);
+  assert.equal(view.controller.snapshot().propagated_contour_frames,1);
+  assert.equal(view.controller.snapshot().worker_results_late,0);
+  view.setClock(.1);
+  view.controller.capture(100,{mediaTime:50.1,presentedFrames:101},{width:640,height:480});
+  view.render(.1);view.render(.249);
+  assert.equal(view.canvas.dataset.frameSequence,"100");
+  view.render(.251);
+  assert.equal(view.canvas.dataset.frameSequence,"101");
+  assert.equal(view.controller.snapshot().frames_without_contours,1);
+});
+
+test("two SAM anchors per second supply moving contours on every 15 FPS display frame",t=>{
+  const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:2,anchor_policy:"nearest_arrived"}});
+  t.after(()=>view.controller.stop());
+  const adapter={estimateMotion:(a,b)=>({step:b[0]-a[0]}),
+    reverseMotion:motion=>({step:-motion.step}),
+    warpPolygons:(polygons,motion)=>polygons.map(p=>p.map(([x,y])=>[x+motion.step/1000,y]))};
+  const history=new view.api.ContourHistory(view.controller.config,adapter),pendingAnchors=[],pendingReplies=[];
+  let nextSample=0,queryIndex=0,anchors=0;
+  for(let tick=0;tick<375;tick++){
+    const now=tick/60;view.setClock(now);
+    if(tick%4===0&&tick<240){
+      const sequence=tick/4;
+      history.appendFrame({sequence,timestamp:now,width:16,height:16,pixels:new Uint8Array(256).fill(sequence)});
+      view.controller.capture(now*1000,{mediaTime:now,presentedFrames:sequence},{width:640,height:480});
+      if(now+1e-6>=nextSample){
+        pendingAnchors.push({at:now+.8,anchor:{source_sequence:sequence,media_timestamp:now,epoch:"epoch",
+          subjects:[{track_id:"person",tracking_confirmation:"confirmed",
+            polygons:[[[.2+sequence/1000,.2],[.5+sequence/1000,.2],[.5+sequence/1000,.5]]]}]}});
+        nextSample+=.5;anchors++;
+      }
+    }
+    while(pendingAnchors[0]?.at<=now){
+      history.acceptMetadata({...view.controller.config,anchors:[pendingAnchors.shift().anchor],events:[]});
+      view.controller.worker.onmessage({data:{type:"metadata_processed",accepted:true,geometry_changed:true}});
+    }
+    while(pendingReplies[0]?.at<=now){
+      const {query}=pendingReplies.shift(),result=history.select(query.sequence,query.timestamp);
+      if(result.subjects.length)assert.ok(Math.abs(result.subjects[0].polygons[0][0][0]-(.2+query.sequence/1000))<1e-6);
+      view.controller.worker.onmessage({data:{type:"present",sequence:query.sequence,result}});
+    }
+    view.render(now);
+    for(;queryIndex<view.workerMessages.length;queryIndex++){
+      const query=view.workerMessages[queryIndex];
+      if(query.type==="present")pendingReplies.push({at:now+.02,query});
+    }
+  }
+  const stats=view.controller.snapshot();
+  assert.equal(anchors,8);assert.equal(stats.distinct_presented_frames,60);
+  assert.equal(stats.frames_without_contours,0);assert.equal(stats.observed_contour_frames,8);
+  assert.equal(stats.propagated_contour_frames,52);assert.equal(stats.display_buffer_expired,0);
 });
 
 test("a slow camera cannot inflate its distinct FPS behind a longer presentation buffer",()=>{

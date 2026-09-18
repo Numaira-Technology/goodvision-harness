@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -146,8 +147,9 @@ def test_face_gallery_http_surface_and_ui_info(
 
         dashboard = client.get("/")
         assert dashboard.status_code == 200
-        assert 'id="face-controls" class="face-gallery"' in dashboard.text
-        assert 'id="face-controls" class="face-gallery" hidden' not in dashboard.text
+        face_controls = re.search(r'<section\b[^>]*\bid="face-controls"[^>]*>', dashboard.text)
+        assert face_controls is not None
+        assert not re.search(r'\bhidden(?:\s|=|>)', face_controls.group())
         assert 'id="face-analysis-mode"' not in dashboard.text
         assert 'id="event-analysis-mode"' not in dashboard.text
         assert 'id="face-diagnostic-summary"' in dashboard.text

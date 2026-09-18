@@ -21,6 +21,11 @@
     "missing_event_labels"
   ],
   "properties": {
+    "camera_id": {
+      "type": "string",
+      "pattern": "^camera(?:0[1-9]|[1-9][0-9]+)$",
+      "description": "Present on camera-scoped fleet outputs; legacy outputs are unchanged."
+    },
     "type": {
       "const": "analysis_result"
     },
