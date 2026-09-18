@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>GoodVision Contour · 部署控制台</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/console.css">
+  <script src="/console.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <a class="brand" href="/" aria-label="GoodVision Contour 首页"><img src="/favicon.svg" alt="" width="40" height="40"><span>GoodVision <b>Contour</b></span></a>
+      <span class="console-label">模型部署控制台 <span class="version">v0.1</span></span>
+    </header>
+    <main>
+      <section class="intro">
+        <div><p class="eyebrow">GOODVISION / VISION INFRASTRUCTURE</p><h1>每一道轮廓，<br>都在掌控之中。</h1><p class="muted">独立部署的视觉引擎。连接主程序，持续跟踪视频中的人物与轮廓。</p></div>
+        <div class="contour-art" aria-hidden="true"><i></i><i></i><i></i><i></i><span>CONTOUR<br><small>ENGINE / 01</small></span></div>
+      </section>
+      <section class="connection panel" aria-labelledby="connection-title">
+        <div><h2 id="connection-title">登录节点控制台</h2><p class="muted" id="connection-hint">输入节点密钥，查看和管理 GPU 服务。主程序需要另行配置节点地址和密钥。密钥仅保留在当前页面内存中。</p></div>
+        <form id="connect-form"><label class="sr-only" for="access-key">访问密钥</label><input id="access-key" type="password" placeholder="输入访问密钥" autocomplete="off" required minlength="32" maxlength="256"><button id="connect-button" type="submit">登录控制台 <span aria-hidden="true">↗</span></button></form>
+        <button id="disconnect-button" class="secondary" hidden>退出登录</button>
+      </section>
+      <p id="notice" class="notice" role="status" aria-live="polite">尚未登录。验证密钥后显示节点状态。</p>
+      <section class="metrics" aria-label="节点状态">
+        <article class="panel"><p class="metric-label"><span class="dot" id="service-dot"></span> 服务状态</p><h2 id="service-state">等待连接</h2><p id="service-note" class="muted">尚未读取运行状态</p></article>
+        <article class="panel"><p class="metric-label">推理设备</p><h2 id="gpu-state">—</h2><p id="gpu-note" class="muted">连接后检查推理就绪状态</p></article>
+        <article class="panel"><p class="metric-label">模型文件</p><h2 id="model-state">—</h2><p id="model-note" class="muted">本地挂载 · 按需接入</p></article>
+      </section>
+      <div class="details">
+        <section class="panel deployment" aria-labelledby="deploy-title">
+          <div class="section-heading"><h2 id="deploy-title">部署进度</h2><span class="tag" id="mode-label">节点未连接</span></div>
+          <ol class="steps">
+            <li id="step-framework"><span class="step-number">01</span><div><h3>服务框架</h3><p>控制台、访问认证与远程调用接口</p></div><span class="step-status">待检查</span></li>
+            <li id="step-model"><span class="step-number">02</span><div><h3>接入模型</h3><p>将已下载的权重挂载到此节点</p></div><span class="step-status">待检查</span></li>
+            <li id="step-ready"><span class="step-number">03</span><div><h3>开始推理</h3><p>设备初始化完成后，由主程序发起会话</p></div><span class="step-status">待检查</span></li>
+          </ol>
+          <div class="action-row"><button id="refresh-button" class="secondary" disabled>刷新状态</button><button id="admission-button" class="secondary" disabled>暂停新会话</button></div>
+          <p class="fine" id="admission-note">暂停新会话不打断已有会话；节点重启后恢复接收。</p>
+        </section>
+        <section class="panel integration" aria-labelledby="integration-title">
+          <div class="section-heading"><h2 id="integration-title">主程序接入</h2><span class="tag">HTTP API</span></div>
+          <p class="muted">主程序与视觉引擎可以部署在不同服务器。</p>
+          <label class="field-label" for="endpoint">当前访问地址</label>
+          <div class="endpoint-row"><input id="endpoint" readonly aria-label="当前节点接口地址"><button class="secondary" id="copy-button" title="复制接口地址">复制</button></div>
+          <p class="fine">在主程序中使用它可访问的服务器地址，并配置相同的访问密钥。</p>
+          <dl class="contract"><div><dt>创建会话</dt><dd>POST /v1/contour/sessions</dd></div><div><dt>访问方式</dt><dd>Authorization: Bearer &lt;密钥&gt;</dd></div><div><dt>运行时间</dt><dd id="uptime">—</dd></div><div><dt>完成 / 失败</dt><dd id="request-count">—</dd></div><div><dt>当前会话</dt><dd id="active-session">—</dd></div></dl>
+        </section>
+      </div>
+      <section class="panel activity" aria-labelledby="activity-title"><div class="section-heading"><h2 id="activity-title">最近活动</h2><span class="muted fine">仅记录服务事件</span></div><ul id="events"><li class="muted">连接后显示节点活动</li></ul></section>
+    </main>
+    <footer><span>GoodVision Contour</span><span>Independent vision. Connected intelligence.</span></footer>
+  </div>
+</body>
+</html>

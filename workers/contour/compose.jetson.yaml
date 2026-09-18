@@ -1,0 +1,60 @@
+# Combine with compose.yaml only; this replaces the x86 GPU overlay.
+services:
+  contour:
+    image: goodvision-contour:0.1.0-jetson
+    environment:
+      CONTOUR_ENGINE_URL: http://engine:8092
+    depends_on:
+      engine:
+        condition: service_started
+  engine:
+    build:
+      context: ..
+      dockerfile: contour/Dockerfile.jetson
+    image: goodvision-contour-runtime:0.1.0-jetson
+    runtime: nvidia
+    init: true
+    # Keep failed fit tests from repeatedly exhausting this small shared-memory device.
+    restart: "no"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      SAM_SCENE_IMAGE_ENABLED: "false"
+      SAM31_ENABLED: "true"
+      SAM31_SESSION_ENABLED: "false"
+      SAM31_LIVE_ENABLED: "true"
+      SAM31_LIVE_CAMERAS: "1"
+      SAM31_SESSION_H264_ENABLED: "true"
+      SAM31_MAX_OBJECTS: "1"
+      SAM31_CHECKPOINT_PATH: /models/contour.pt
+      HF_HUB_OFFLINE: "1"
+    group_add:
+      - "${CONTOUR_VIDEO_GID:-44}"
+      - "${CONTOUR_RENDER_GID:-104}"
+    volumes:
+      - type: bind
+        source: ${CONTOUR_MODELS_DIR:-./models}
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+    # CUDA has a separate 55% allocation budget in the Jetson worker patch.
+    # Do not spill model allocations into this device's RAM-backed zram swap.
+    mem_limit: 4500m
+    memswap_limit: 4500m
+    cpus: 4
+    pids_limit: 512
+    read_only: true
+    tmpfs: ["/tmp:size=512m"]
+    shm_size: 256m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 90s
+    healthcheck:
+      test: [CMD, python3, -c, "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8092/health/perception/sam_live',timeout=2)); assert r['enabled'] and r['ready'] and r['gpu_ready']"]
+      interval: 30s
+      timeout: 3s
+      start_period: 900s
+      retries: 5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
