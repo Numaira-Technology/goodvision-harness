@@ -709,8 +709,9 @@ def test_wrong_source_installation_rejected(monkeypatch):
 
 
 @pytest.mark.parametrize("compile_mode", ["off", "encoder"])
+@pytest.mark.parametrize("fixed_person_text", [False, True])
 def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
-    monkeypatch, tmp_path, compile_mode
+    monkeypatch, tmp_path, compile_mode, fixed_person_text
 ):
     """Runs only Python API doubles, never imports real torch/SAM or uses CUDA."""
     import workers.sam_scene.sam31 as module
@@ -826,10 +827,17 @@ def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
     monkeypatch.setitem(sys.modules, "sam3", sam)
     monkeypatch.setitem(sys.modules, "sam3.model_builder", builder)
     monkeypatch.setattr(module, "verify_installed_source", lambda: None)
+
+    def install_text_cache(backbone, runtime):
+        assert calls["strict"] is True
+        assert runtime is torch
+        calls["text_cache_backbone"] = backbone
+
+    monkeypatch.setattr(module, "cache_person_text", install_text_cache)
     backend = NativeSam31(
         replace(
             VideoSettings(), enabled=True, checkpoint_path=str(checkpoint),
-            compile_mode=compile_mode,
+            compile_mode=compile_mode, fixed_person_text=fixed_person_text,
         )
     )
     backend.warmup()
@@ -838,6 +846,9 @@ def test_native_adapter_uses_official_finite_video_api_and_strict_weights(
     assert backend.predictor.bf16_context is None
     assert backend.predictor.model.tracker.bf16_context is None
     assert calls["strict"] is True
+    assert ("text_cache_backbone" in calls) is fixed_person_text
+    if fixed_person_text:
+        assert calls["text_cache_backbone"] is backend.predictor.model.detector.backbone
     assert calls["load"] == (str(checkpoint), "cpu", True)
     assert calls["build"] == {
         "checkpoint_path": str(checkpoint),

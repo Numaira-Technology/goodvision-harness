@@ -51,6 +51,7 @@ def test_jetson_fixed_prompt_cache_isolated_and_rejects_other_prompts():
     backbone = SimpleNamespace(forward_text=original, language_backbone=encoder)
     runtime = SimpleNamespace(cuda=SimpleNamespace(empty_cache=lambda: None))
     cache_person_text(backbone, runtime)
+    cache_person_text(backbone, runtime)  # Jetson + opt-in must not wrap twice.
     with pytest.raises(RuntimeError, match="fixed person"):
         backbone.forward_text(["car", "visual", "geometric"])
     assert not calls

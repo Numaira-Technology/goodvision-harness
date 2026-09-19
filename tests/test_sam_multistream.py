@@ -267,6 +267,94 @@ def test_queue_deadline_does_not_release_active_native_operation():
     asyncio.run(run())
 
 
+def test_slow_camera_upload_does_not_block_other_camera_or_allow_lane_overtaking():
+    app, _fleet, gate, registry = _setup(2)
+
+    async def run():
+        uploading, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_body():
+            yield b'{"stream_session_id":'
+            uploading.set()
+            await release.wait()
+            yield b'"source-1"}'
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://worker"
+        ) as client:
+            slow = asyncio.create_task(client.post(_path(1), content=slow_body()))
+            try:
+                await asyncio.wait_for(uploading.wait(), 2)
+                assert not gate.locked()
+                busy = await client.post(_path(1), json={"stream_session_id": "new"})
+                assert busy.status_code == 429
+                other = await asyncio.wait_for(
+                    client.post(_path(2), json={"stream_session_id": "source-2"}), 2
+                )
+                assert other.status_code == 200
+                assert not slow.done()
+            finally:
+                release.set()
+                response = await slow
+            assert response.status_code == 200
+            assert not gate.locked() and gate.waiting == 0
+
+    try:
+        asyncio.run(run())
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize("failure", ["cancel", "timeout", "oversize"])
+def test_upload_failure_preserves_session_and_never_releases_another_gpu_owner(failure):
+    app, fleet, gate, registry = _setup(2)
+    lane = fleet.engines["camera-01"]
+
+    async def run():
+        uploading = asyncio.Event()
+
+        async def body():
+            yield b"x" * (129 if failure == "oversize" else 1)
+            uploading.set()
+            await asyncio.Event().wait()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://worker"
+        ) as client:
+            created = await client.post(
+                _path(1), json={"stream_session_id": "source-1"}
+            )
+            token = created.json()["video_session_id"]
+            lane.video.settings = replace(
+                lane.video.settings, request_timeout_seconds=0.1,
+                max_request_bytes=128,
+            )
+            assert gate.acquire()
+            try:
+                request = asyncio.create_task(
+                    client.post(f"{_path(1)}/{token}/append", content=body())
+                )
+                if failure == "cancel":
+                    await asyncio.wait_for(uploading.wait(), 2)
+                    request.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await request
+                else:
+                    response = await request
+                    expected = 413 if failure == "oversize" else 504
+                    assert response.status_code == expected
+                assert gate.locked() and gate.waiting == 0
+                assert lane.session.status == "active"
+            finally:
+                gate.release()
+            assert (await client.delete(f"{_path(1)}/{token}")).status_code == 200
+
+    try:
+        asyncio.run(run())
+    finally:
+        registry.close()
+
+
 def test_queued_http_timeout_preserves_the_existing_session():
     app, fleet, gate, registry = _setup(2)
     lane = fleet.engines["camera-01"]
