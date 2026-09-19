@@ -372,7 +372,9 @@ class LocalGpuLauncherTests(unittest.TestCase):
                     env=environment,
                     text=True,
                     capture_output=True,
-                    timeout=30,
+                    # Windows CI can spend over 30 seconds running Compose.
+                    # This checks rendered configuration, not CLI latency.
+                    timeout=60,
                     check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
