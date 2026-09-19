@@ -339,6 +339,56 @@ def test_selection_handles_exact_held_long_gap_and_pre_detection() -> None:
     assert after.mode == "none" and after.objects == ()
 
 
+def test_display_selection_holds_snapshot_until_next_keyframe() -> None:
+    left = _snapshot(0, 0.0, _object(bbox=(0.1, 0.1, 0.3, 0.5)))
+    right = _snapshot(12, 0.4, _object(bbox=(0.3, 0.2, 0.5, 0.6)))
+    cleared = _snapshot(24, 0.8)
+    history = (cleared, right, left)
+
+    for sequence in range(30):
+        selection = select_rich_labels(
+            history, sequence / 30, max_gap_seconds=1.0,
+            frame_sequence=sequence, interpolate=False,
+        )
+        expected = left if sequence < 12 else right if sequence < 24 else cleared
+        assert selection.snapshot is expected
+        assert selection.objects == expected.objects
+        assert selection.right_frame_sequence is None
+        assert selection.mode == ("exact" if sequence % 12 == 0 else "held")
+
+    expired = select_rich_labels(
+        (left,), 1.001, max_gap_seconds=1.0, interpolate=False,
+    )
+    assert expired.mode == "none"
+
+
+def test_coordinator_display_hold_keeps_analysis_interpolation() -> None:
+    left = _snapshot(0, 0.0, _object(bbox=(0.1, 0.1, 0.3, 0.5)))
+    right = _snapshot(12, 0.4, _object(bbox=(0.3, 0.2, 0.5, 0.6)))
+    snapshots = {0: left, 12: right}
+
+    class Client:
+        def infer(self, _jpeg, *, frame_sequence, **_metadata):
+            return snapshots[frame_sequence]
+
+    coordinator = RichLabelCoordinator(Client(), max_fps=10_000)
+    try:
+        for snapshot in (left, right):
+            _complete_rich_sample(
+                coordinator, sequence=snapshot.frame_sequence,
+                timestamp=snapshot.timestamp_seconds,
+            )
+        display = coordinator.select("session-1", 0.2, interpolate=False)
+        analysis = coordinator.select("session-1", 0.2)
+        updated = coordinator.select("session-1", 0.4, interpolate=False)
+        assert display.mode == "held" and display.snapshot is left
+        assert analysis.mode == "interpolated"
+        assert analysis.objects[0].bbox.x1 == pytest.approx(0.2)
+        assert updated.mode == "exact" and updated.snapshot is right
+    finally:
+        coordinator.close()
+
+
 def test_selection_expires_frozen_boxes_after_worker_outage() -> None:
     latest = _snapshot(20, 10.0, _object())
 

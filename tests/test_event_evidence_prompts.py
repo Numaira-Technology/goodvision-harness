@@ -25,8 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.parametrize(
     "config_path", [
+        # Package/default byte equality is checked in test_deployment_settings.py.
         ROOT / "config.yaml",
-        ROOT / "src/goodvision_harness/config.yaml",
         ROOT / "config.delivery.yaml",
     ]
 )

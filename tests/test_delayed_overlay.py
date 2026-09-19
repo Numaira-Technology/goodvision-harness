@@ -81,6 +81,104 @@ def _packet(sequence: int, timestamp: float) -> FramePacket:
     )
 
 
+def _clocked_redraw_composer(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(
+        overlay_module, "time", SimpleNamespace(monotonic=lambda: clock[0]),
+    )
+    composer = DelayedOverlayComposer(
+        delay_seconds=0, max_gap_seconds=0.8, output_fps=30,
+        render=lambda jpeg, analysis: jpeg, publish=lambda packet: None,
+    )
+    monkeypatch.setattr(composer, "start", lambda: None)
+    return clock, composer
+
+
+@pytest.mark.parametrize("source_fps", [10, 15, 30, 60])
+def test_live_zero_delay_results_do_not_enqueue_duplicate_source_frames(
+    monkeypatch, source_fps,
+):
+    clock, composer = _clocked_redraw_composer(monkeypatch)
+    for index in range(90):
+        started = 100 + index / source_fps
+        clock[0] = started
+        composer.submit_frame(_packet(index, index / 30))
+        assert len(composer._frames) == 1
+        composer._last_display_packet = composer._frames.popleft().packet
+        composer._last_publish_at = started
+        for offset in (0.03 / source_fps, 0.7 / source_fps, 0.99 / source_fps):
+            clock[0] = started + offset
+            composer.submit_result(_result(
+                timestamp=index / 30, frame_index=index,
+                message_id=f"result-{index}-{offset}", bbox=(0.1, 0.1, 0.4, 0.6),
+            ))
+            assert composer._schedule_redraw_locked(clock[0]) > 0
+            assert not composer._frames
+    composer.reset()
+    assert composer._schedule_redraw_locked(clock[0] + 1) is None
+
+
+def test_paused_redraws_are_coalesced_paced_and_cancelled_when_source_resumes(
+    monkeypatch,
+):
+    clock, composer = _clocked_redraw_composer(monkeypatch)
+    composer.submit_frame(_packet(0, 0))
+    composer._last_display_packet = composer._frames.popleft().packet
+    composer._last_publish_at = clock[0]
+    event = _result(
+        timestamp=0, frame_index=0, message_id="event", bbox=(0.1, 0.1, 0.4, 0.6),
+    )
+    clock[0] = 101.2  # The initial source grace period has elapsed.
+    composer.submit_result(event)
+    assert composer._schedule_redraw_locked(clock[0]) == 0
+    assert composer._frames.popleft().packet.frame_sequence == 0
+    composer._last_publish_at = clock[0]
+    for index in range(1, 10):
+        clock[0] = 101.2 + index / 1000
+        composer.submit_result(replace(event, message_id=f"late-{index}"))
+        assert composer._schedule_redraw_locked(clock[0]) > 0
+        assert not composer._frames
+    clock[0] = 101.2 + 1 / 30 + 1e-6
+    assert composer._schedule_redraw_locked(clock[0]) == 0
+    assert len(composer._frames) == 1  # Nine results yield one paced repaint.
+    composer._frames.popleft()
+    composer._last_publish_at = clock[0]
+    composer.submit_result(replace(event, message_id="last-late"))
+    composer.submit_frame(_packet(1, 1 / 30))
+    assert len(composer._frames) == 1
+    assert composer._frames.popleft().packet.frame_sequence == 1
+    assert composer._schedule_redraw_locked(clock[0] + 1) is None
+
+
+def test_source_resume_after_repaint_respects_publication_rate():
+    published = []
+    ready = threading.Event()
+
+    def publish(packet):
+        published.append((packet.frame_sequence, time.monotonic()))
+        ready.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0, max_gap_seconds=0.8, output_fps=30,
+        render=lambda jpeg, analysis: jpeg, publish=publish,
+    )
+    try:
+        composer.submit_frame(_packet(0, 0))
+        assert ready.wait(3)
+        ready.clear()
+        composer.submit_result(_result(
+            timestamp=0, frame_index=0, message_id="late", bbox=(0.1, 0.1, 0.4, 0.6),
+        ))
+        assert ready.wait(3)
+        ready.clear()
+        composer.submit_frame(_packet(1, 1 / 30))
+        assert ready.wait(3)
+        assert [item[0] for item in published] == [0, 0, 1]
+        assert published[-1][1] - published[-2][1] >= 1 / 30 - 1e-6
+    finally:
+        composer.close()
+
+
 def _selected_features_result(
     *,
     timestamp: float,
@@ -164,7 +262,8 @@ def test_carried_overlay_preserves_v2_incompleteness_and_original_evidence(
     assert "Analysis incomplete" not in arguments["description"]
     assert "Analysis incomplete" in selection.analysis.as_dict()["description"]
     assert arguments["detected"] is (stranger and timestamp <= 13.0)
-    assert bool(arguments["objects"]) is (stranger and timestamp <= 13.0)
+    assert not arguments["objects"]
+    assert bool(arguments["face_objects"]) is (stranger and timestamp <= 13.0)
     assert selection.analysis.as_dict() == (
         original if timestamp < 10.8 else later.as_dict()
     )
@@ -631,10 +730,10 @@ def test_delayed_composer_preserves_frame_order_and_reorders_results() -> None:
         assert [item.frame_sequence for item in published] == [0, 1, 2]
         assert [item.annotation_mode for item in published] == [
             "exact",
-            "interpolated",
+            "held",
             "exact",
         ]
-        assert rendered_boxes[1] == pytest.approx((0.2, 0.1, 0.4, 0.3))
+        assert rendered_boxes[1] == pytest.approx((0.1, 0.1, 0.3, 0.3))
         assert all(
             item.stream_delay_seconds == pytest.approx(0.04)
             for item in published
@@ -693,6 +792,65 @@ def test_longer_delay_retimes_existing_frames(monkeypatch: pytest.MonkeyPatch) -
             composer._condition.notify_all()
         assert done.wait(1)
     finally:
+        composer.close()
+
+
+def test_slow_render_skips_overdue_frames_without_changing_future_deadlines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 100.0
+    monkeypatch.setattr(overlay_module, "time", SimpleNamespace(monotonic=lambda: now))
+    entered, release, caught_up, finished = (threading.Event() for _ in range(4))
+    published = []
+
+    def render(jpeg, analysis):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(3)
+        return jpeg
+
+    def publish(packet):
+        published.append(packet)
+        if packet.frame_sequence == 2:
+            caught_up.set()
+        if packet.frame_sequence == 3:
+            finished.set()
+
+    composer = DelayedOverlayComposer(
+        delay_seconds=0.2, max_gap_seconds=0.8, output_fps=30,
+        render=render, publish=publish,
+    )
+    try:
+        composer.submit_result(_result(
+            timestamp=0, frame_index=0, message_id="anchor",
+            bbox=(0.1, 0.1, 0.3, 0.3),
+        ))
+        composer.submit_frame(_packet(0, 0))
+        with composer._condition:
+            now = 100.21
+            composer._condition.notify_all()
+        assert entered.wait(3)
+        composer.submit_frame(_packet(1, 0.21))  # ready at 100.41
+        now = 100.4
+        composer.submit_frame(_packet(2, 0.4))  # ready at 100.6
+        now = 100.65
+        composer.submit_frame(_packet(3, 0.65))  # ready at 100.85
+        now = 100.7
+        release.set()
+        assert caught_up.wait(3)
+        assert [packet.frame_sequence for packet in published] == [0, 2]
+        assert composer.stats()["frames_dropped"] == 1
+        assert composer.stats()["publish_lag_seconds"] == pytest.approx(0.1)
+        with composer._condition:
+            assert composer._frames[0].ready_at == pytest.approx(100.85)
+            now = 100.86
+            composer._condition.notify_all()
+        assert finished.wait(3)
+        assert [packet.frame_sequence for packet in published] == [0, 2, 3]
+        assert all(packet.stream_delay_seconds == 0.2 for packet in published)
+        assert all(packet.analysis_message_id == "anchor" for packet in published)
+    finally:
+        release.set()
         composer.close()
 
 
@@ -965,9 +1123,9 @@ def test_delayed_composer_uses_unified_compose_with_display_time() -> None:
         composer.submit_frame(_packet(1, 0.05))
 
         assert published_event.wait(1.0)
-        assert calls == [(b"jpeg", "interpolated", 0.05, 1, "left", "right")]
+        assert calls == [(b"jpeg", "held", 0.05, 1, "left", None)]
         assert published[0].jpeg == b"jpeg-composed"
-        assert published[0].annotation_mode == "interpolated"
+        assert published[0].annotation_mode == "held"
     finally:
         composer.close()
 

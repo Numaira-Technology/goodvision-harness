@@ -63,7 +63,7 @@ AnalysisResult v2 Schema 不变。正常混合会话分别发布分支消息，�
 缺失；它不是分支失败。全局最新接口返回源时间最新的一条原始消息，各能力最新接口
 分别保留自己的最新观测。SSE 游标按发布顺序递增，跨分支源时间可以交错。
 控制台按能力处理时间先后，吸烟当前阴性立即清除吸烟阳性，陌生人结果另行更新。
-对接方式与精确图像关联限制见 [接口说明](API_DELIVERY.md)。
+对接方式与精确图像关联限制见 [接口说明](../../API_DELIVERY.md)。
 
 ### 身份确认间隔与日志不足
 
@@ -141,7 +141,7 @@ P95 使用线性插值；样本很小，只描述本次受控运行。实际模�
 不计入稳态表。测试后两个会话均关闭，临时空图库未产生文件或照片，模型文件大小与
 修改时间未变。逐帧记录与统计保存在 `tmp/stranger-interop-20260910/real-face/`。
 
-公开输入的来源和授权边界沿用 [低清素材清单](docs/validation/low-resolution-sources.json)，
+公开输入的来源和授权边界沿用 [低清素材清单](low-resolution-sources.json)，
 输入 SHA-256 为 `bfe7d1d9bef715bca3d99b43733fc4c3812f4c43b71b8de4157482590e274037`。
 
 整理为可复用工具后，又使用新输出目录完整复跑通过：首个陌生阳性早于 LLM 解除
@@ -156,7 +156,7 @@ P95 使用线性插值；样本很小，只描述本次受控运行。实际模�
 python -m pytest -o addopts='' -q tests/test_independent_feature_client.py tests/test_independent_branch_pipeline.py tests/test_branch_result_delivery.py tests/test_event_archive_branch_interop.py tests/test_delivery_smoke_partials.py
 ```
 
-已安装本地 CPU 人脸依赖的 Python 环境可运行 [联合验证工具](tools/face_llm_interop_eval.py)：
+已安装本地 CPU 人脸依赖的 Python 环境可运行 [联合验证工具](../../tools/face_llm_interop_eval.py)：
 
 ```text
 python tools/face_llm_interop_eval.py --image <本地清晰人像> --model-root <已缓存模型根目录> --output-directory <新输出目录>
@@ -193,6 +193,6 @@ python tools/delivery_smoke.py --isolated --audit-branding --base-url http://127
 
 没有可恢复的该次摄像头原帧序列和被丢弃的人脸响应，不能证明旧会话每一次缺失都由
 同一原因引起，也没有宣称在那段录像上实测消除了全部漏报。低清画面仍可能没有可靠
-人脸或烟具证据，真实模型限制见 [极低分辨率报告](LOW_RESOLUTION_VALIDATION.md)。
+人脸或烟具证据，真实模型限制见 [极低分辨率报告](low-resolution-20260910.md)。
 本机没有可用 GPU，也未运行 Linux 容器；目标 GPU/容器的真实模型验收仍需在对应环境
 执行。受控阻塞测试验证即时性与调度隔离，其等待上限不是生产推理延迟承诺。

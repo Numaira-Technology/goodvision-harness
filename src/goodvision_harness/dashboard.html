@@ -364,7 +364,7 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
         <p id="overall-description" class="frame-summary-text">等待当前帧分析… / Waiting for frame analysis…</p>
       </section>
       <div id="annotation-note" class="note annotation-note">
-        Events follow the same person's latest face frame. Each person's event clears independently.
+        Original video frames inherit the preceding annotation between analysis updates.
         <a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.
       </div>
       <div id="rich-annotation-status" class="note annotation-note" aria-live="polite" hidden></div>
@@ -1074,7 +1074,7 @@ function updateAnalysisUi(){
     $("event-sensitivity-note").textContent="事件按连续观察证据确认和结束；人物暂时不可见时继续等待复核。人脸识别使用独立设置。"
   }else{
     ui.annotationNote.innerHTML="The server delivers "+
-      annotatedOutputText(output)+". With face detection, events follow the same person's latest face frame until that person's event clears. Other face boxes stay visible. "+
+      annotatedOutputText(output)+". Original video frames inherit the preceding annotation between analysis updates. "+
       '<a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.';
     $("event-sensitivity-note").textContent="高敏感度更容易触发警报，也可能增加误报。行为警报需连续 2 次有效阴性才解除；人脸识别使用独立设置。"
   }
@@ -1188,7 +1188,7 @@ async function pullLatestFrame(generation){
     clearTimeout(timeout);if(nextUrl)URL.revokeObjectURL(nextUrl);
     if(generation===latestFeed.generation&&latestFeed.active&&state.running){
       latestFeed.controller=null;
-      const fps=Math.min(30,Math.max(1,Number(state.info?.annotated_output?.output_fps)||15));
+      const fps=Math.min(30,Math.max(1,Number(state.info?.annotated_output?.output_fps)||30));
       latestFeed.timer=setTimeout(()=>pullLatestFrame(generation),Math.max(retry,1000/fps-(performance.now()-started)))
     }
   }
@@ -1706,7 +1706,7 @@ function startSampler(){
   if(typeof startLocalCameraDisplay==="function"&&startLocalCameraDisplay())return;
   const settings=cameraSettings();
   const output=state.info&&state.info.annotated_output||{};
-  const displayFps=Number(output.output_fps)||15;
+  const displayFps=Math.min(30,Number(output.output_fps)||30);
   const analysisFps=Number(settings.sample_fps)||0;
   const captureFps=Math.max(displayFps,analysisFps);
   const generation=state.cameraGeneration;

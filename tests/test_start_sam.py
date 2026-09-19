@@ -94,7 +94,7 @@ class SSHKeyTests(unittest.TestCase):
                 launcher.prepare_ssh_key(source, root)
 
     def test_invalid_key_stops_before_any_vast_request(self):
-        import vastai
+        vastai = Mock()
 
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "invalid"
@@ -102,6 +102,7 @@ class SSHKeyTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"VAST_API_KEY": "unused", "HF_TOKEN": "unused", "SAM_SSH_KEY": str(source)}),
                 patch("sys.argv", ["start_sam.py"]),
+                patch.dict("sys.modules", {"vastai": vastai}),
                 patch.object(vastai, "VastAI") as client,
                 redirect_stdout(io.StringIO()),
                 redirect_stderr(io.StringIO()),

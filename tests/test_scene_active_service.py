@@ -376,7 +376,7 @@ def test_active_exact_face_frame_keeps_source_bytes_and_rejects_stale_or_foreign
             "current scene overlays must not alter historical evidence"
         )
 
-    monkeypatch.setattr(runtime._delayed_overlay, "submit_analysis_frame", forbidden)
+    monkeypatch.setattr(runtime._delayed_overlay, "submit_frame", forbidden)
     monkeypatch.setattr(service, "_render_analysis_jpeg", forbidden)
     jpeg = _jpeg()
     result = AnalysisResult(

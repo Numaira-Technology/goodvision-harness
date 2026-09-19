@@ -44,7 +44,8 @@ EXPECTED_IMAGE_TAGS = frozenset(
 MAX_TEXT_BYTES = 4 * 1024 * 1024
 MAX_MANIFEST_BYTES = 1024 * 1024
 REPOSITORY_TEXT_FILES = (
-    "RELEASE.md", "DEPLOY.md", "API_DELIVERY.md", "EVENT_EVIDENCE.md",
+    "RELEASE.md", "DEPLOY.md", "API_DELIVERY.md",
+    "docs/architecture/event-evidence.md",
     "compose.full-gpu.delivery.yaml", "compose.full-gpu.accelerated.yaml",
     ".env.full-gpu.delivery.example", "config.delivery.yaml",
     "schemas/analysis-result-v1.schema.json",

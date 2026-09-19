@@ -102,8 +102,9 @@ def test_face_updates_keep_event_red_until_its_explicit_clear(timestamp, strange
     assert selection.analysis is not None
     arguments = _analysis_overlay_arguments(selection.analysis)
     assert "smoking" in _active(selection.analysis)
-    assert not arguments["known_faces"]
-    assert len(arguments["objects"]) == 1 + int(stranger)
+    expected_faces = (1 + int(stranger)) if timestamp < 30 else 0
+    assert len(arguments["face_objects"]) == expected_faces
+    assert len(arguments["objects"]) == 1
     event = next(item for item in arguments["objects"] if "smoking" in item.label)
     assert event.bbox == positive.objects[0].bbox
     assert event.attributes["annotation_source_message_id"] == positive.message_id
@@ -120,7 +121,8 @@ def test_face_updates_keep_event_red_until_its_explicit_clear(timestamp, strange
             records, at, max_gap_seconds=0.8, clear_after_negatives=1,
         ).analysis
         assert "smoking" not in _active(after)
-        assert len(_analysis_overlay_arguments(after)["known_faces"]) == 1
+        faces = _analysis_overlay_arguments(after)["face_objects"]
+        assert len(faces) == 1 + int(stranger)
 
 
 def test_each_event_clears_independently_without_reviving_older_positives():
@@ -139,7 +141,7 @@ def test_each_event_clears_independently_without_reviving_older_positives():
         records, 14, max_gap_seconds=0.8, clear_after_negatives=1,
     ).analysis
     assert _active(clear) == set()
-    assert _analysis_overlay_arguments(clear)["known_faces"]
+    assert _analysis_overlay_arguments(clear)["face_objects"]
 
 
 @pytest.mark.parametrize("barrier", ["future", "session"])
@@ -174,14 +176,14 @@ def test_same_frame_independent_branches_preserve_event_in_either_arrival_order(
             composer._results, 10, max_gap_seconds=0.8, clear_after_negatives=1,
         )
         assert _active(selection.analysis) == {"smoking"}
-        assert not _analysis_overlay_arguments(selection.analysis)["known_faces"]
+        assert _analysis_overlay_arguments(selection.analysis)["face_objects"]
         # A correction of this exact observation replaces its prior verdict.
         composer.submit_result(_result(10, smoking=False, face=False, message="safety"))
         selection = select_overlay(
             composer._results, 10, max_gap_seconds=0.8, clear_after_negatives=1,
         )
         assert _active(selection.analysis) == set()
-        assert _analysis_overlay_arguments(selection.analysis)["known_faces"]
+        assert _analysis_overlay_arguments(selection.analysis)["face_objects"]
         assert len(composer._results) == 2
     finally:
         composer.close()
@@ -244,12 +246,12 @@ def test_video_stays_red_on_face_updates_and_returns_green_on_clear(tmp_path, fu
             blue, green, red = map(int, pixels[189, 192])
             assert (red > 150 and green < 110 and blue < 110) is (timestamp < 16)
             blue, green, red = map(int, pixels[150, 32])
-            assert (green > 130 and red < 110 and blue < 110) is (timestamp == 16)
+            assert green > 130 and red < 110 and blue < 110
     finally:
         runtime.stop()
 
 
-def test_negative_frames_hold_status_for_two_observations_without_old_boxes():
+def test_negative_frames_hold_status_and_boxes_until_two_observations():
     positive = _result(0, smoking=True, face=False)
     records = [positive]
     for at in range(1, 3):
@@ -259,7 +261,13 @@ def test_negative_frames_hold_status_for_two_observations_without_old_boxes():
         analysis = select_overlay(records, at, max_gap_seconds=0.8).analysis
         arguments = _analysis_overlay_arguments(analysis)
         assert arguments["detected"] is (at < 2)
-        assert arguments["objects"] == ()
+        assert len(arguments["objects"]) == int(at < 2)
+        if at < 2:
+            held = arguments["objects"][0]
+            assert held.bbox == positive.objects[0].bbox
+            assert (
+                held.attributes["annotation_source_message_id"] == positive.message_id
+            )
         assert not _active(analysis)  # per-frame verdict remains negative
         assert analysis.as_dict() == original
         if at < 2:

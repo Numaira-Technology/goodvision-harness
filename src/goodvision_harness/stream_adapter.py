@@ -9,6 +9,7 @@ of the sampling, windowing, inference, and display pipeline unchanged.
 from __future__ import annotations
 
 import asyncio
+import math
 import queue
 import threading
 import time
@@ -94,6 +95,29 @@ class _ProducerError:
     error: BaseException
 
 
+class _FrameCadence:
+    """Sample arrival time into fixed slots without waiting or accumulating lag.
+
+    Slots allow a quarter-period of early arrival so normal network jitter
+    does not turn a 30 FPS source into a 15 FPS output. Skipped slots are
+    discarded; they never trigger catch-up work or a growing frame queue.
+    """
+
+    def __init__(self, fps: float) -> None:
+        self._period = 1.0 / fps
+        self._next_emit: float | None = None
+
+    def accepts(self, now: float) -> bool:
+        if self._next_emit is None:
+            self._next_emit = now + self._period * 0.75
+            return True
+        if now + 1e-9 < self._next_emit:
+            return False
+        elapsed_slots = math.floor((now + 1e-9 - self._next_emit) / self._period)
+        self._next_emit += (elapsed_slots + 1) * self._period
+        return True
+
+
 class NetworkStreamAdapter:
     """Adapt a supported network stream to the VideoFileStream interface."""
 
@@ -103,7 +127,7 @@ class NetworkStreamAdapter:
         self,
         source_url: str,
         *,
-        output_fps: float = 15.0,
+        output_fps: float = 30.0,
         reconnect_attempts: int = 3,
         reconnect_delay_seconds: float = 1.0,
         whep_headers: Mapping[str, str] | None = None,
@@ -156,8 +180,7 @@ class NetworkStreamAdapter:
         emitted = 0
         origin: float | None = None
         last_timestamp = 0.0
-        period = 1.0 / self.output_fps
-        next_emit = 0.0
+        cadence = _FrameCadence(self.output_fps)
 
         while not self.stopped:
             capture = cv2.VideoCapture(self.source.transport_url)
@@ -179,14 +202,15 @@ class NetworkStreamAdapter:
                             break
                         failures = 0
                         now = time.monotonic()
-                        self._diagnostics.received(image, now, now-read_started,
-                                                   emitted if now+1e-9 >= next_emit else None)
-                        if now + 1e-9 < next_emit:
+                        accepted = cadence.accepts(now)
+                        self._diagnostics.received(
+                            image, now, now-read_started, emitted if accepted else None,
+                        )
+                        if not accepted:
                             self.dropped_frames += 1
                             self._diagnostics.count('rate_limit_skipped_frames')
                             self._diagnostics.emit()
                             continue
-                        next_emit = now + period
                         if origin is None:
                             origin = now
                         timestamp = max(last_timestamp, now - origin)
@@ -373,8 +397,7 @@ class NetworkStreamAdapter:
         emitted = 0
         origin: float | None = None
         last_timestamp = 0.0
-        period = 1.0 / self.output_fps
-        next_emit = 0.0
+        cadence = _FrameCadence(self.output_fps)
         receive_started = time.monotonic()
         receive_task: asyncio.Task[Any] | None = asyncio.create_task(track.recv())
         try:
@@ -391,15 +414,16 @@ class NetworkStreamAdapter:
                     self._diagnostics.count('track_ended')
                     return
                 now = time.monotonic()
-                self._diagnostics.received(frame, now, now-receive_started,
-                                           emitted if now+1e-9 >= next_emit else None)
+                accepted = cadence.accepts(now)
+                self._diagnostics.received(
+                    frame, now, now-receive_started, emitted if accepted else None,
+                )
                 receive_started = now
                 receive_task = asyncio.create_task(track.recv())
-                if now + 1e-9 < next_emit:
+                if not accepted:
                     self.dropped_frames += 1
                     self._diagnostics.count('rate_limit_skipped_frames')
                     continue
-                next_emit = now + period
                 if origin is None:
                     origin = now
                 timestamp = max(last_timestamp, now - origin)

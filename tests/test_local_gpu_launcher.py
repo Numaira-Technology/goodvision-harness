@@ -15,6 +15,8 @@ from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
+from compose_support import isolated_docker_config
+
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "local_gpu_launcher", ROOT / "tools" / "start_local_gpu.py"
@@ -347,7 +349,7 @@ class LocalGpuLauncherTests(unittest.TestCase):
                 fleet_file.write_text(launcher.fleet_overlay(streams), encoding="utf-8")
                 environment = dict(os.environ)
                 environment.update(launcher.plan_environment(devices(count), {}))
-                environment["DOCKER_CONFIG"] = str(directory)
+                environment["DOCKER_CONFIG"] = isolated_docker_config(directory)
                 command = [
                     "docker",
                     "compose",

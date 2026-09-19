@@ -16,6 +16,7 @@ Runtime components retain their original license and attribution files.
 """ }
 requires-python = ">=3.10"
 dependencies = [
+  "anyio>=4,<5",
   "certifi>=2024.2.2",
   "fastapi>=0.115,<1",
   "starlette>=1.5.1,<2",

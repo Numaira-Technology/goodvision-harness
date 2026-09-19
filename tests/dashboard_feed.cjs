@@ -1,8 +1,7 @@
 const assert=require("node:assert/strict");
-const fs=require("node:fs");
-const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
+const {html, script} = require("./helpers/dashboard.cjs");
 
 function player(){
   let now=0,id=0;
@@ -20,8 +19,7 @@ function player(){
       options.signal.addEventListener("abort",()=>reject(new Error("aborted")))
     })
   });
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
-  vm.runInContext(html.slice(html.indexOf("const latestFeed="),html.indexOf("function settingsSourceLabel"))+`
+  vm.runInContext(script.slice(script.indexOf("const latestFeed="),script.indexOf("function settingsSourceLabel"))+`
     globalThis.player={openFeed,closeFeed};
   `,context);
   return {context,requests,revoked,rawFeed,timers,...context.player,
@@ -86,7 +84,6 @@ function cameraSender(){
     setInterval:(callback,delay)=>{const id=++intervalId;intervals.set(id,{callback,delay});return id},
     clearInterval:id=>intervals.delete(id),
   });
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
   vm.runInContext(html.slice(html.indexOf("function startSampler()"),html.indexOf("function clearAnnotation()"))+`
     globalThis.sampler={startSampler,stopSampler};
   `,context);
@@ -147,7 +144,6 @@ function sessionStatus(){
     selectedFeatures:()=>[],selectedSensitivities:()=>({}),connect:async()=>socket,
     localCameraActive:()=>false,localCameraDisplay:{controller:null},
   });
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
   vm.runInContext(html.slice(html.indexOf("function message(data)"),html.indexOf("function reset(){"))+
     html.slice(html.indexOf("async function status(){"),html.indexOf("function resetOverallDescription(){"))+
     "globalThis.handlers={message,start,stop,status};",context);
@@ -215,4 +211,53 @@ test("current status still recovers an existing session and stops it on genuine 
   const idle=view.status();view.respond(view.requests[1],{pipeline_state:"idle"});await idle;
   assert.equal(view.state.running,false);assert.equal(view.effects.stops,1);
   assert.equal(view.effects.summaries,2);assert.equal(view.state.statusLoading,false);
+});
+
+function cameraSampler(outputFps){
+  let tick,period;
+  const sent=[],canvas={getContext:()=>({drawImage(){}}),
+    toBlob:callback=>callback({arrayBuffer:async()=>new ArrayBuffer(8)})};
+  const context=vm.createContext({
+    state:{cameraStream:{},cameraGeneration:0,info:{annotated_output:{output_fps:outputFps}},
+      ws:{readyState:1,bufferedAmount:0,send:packet=>sent.push(packet)}},
+    ui:{cameraPreview:{videoWidth:640,videoHeight:480}},
+    cameraConfig:()=>true,cameraSettings:()=>({sample_fps:2.5,max_image_side:320,jpeg_quality:75}),
+    document:{createElement:()=>canvas},
+    setInterval:(callback,delay)=>{tick=callback;period=delay;return 1},clearInterval:()=>{},
+    Uint8Array,DataView,
+  });
+  vm.runInContext(script.slice(script.indexOf("function startSampler()"),script.indexOf("function clearAnnotation()")),context);
+  context.startSampler();
+  return {context,sent,period,tick,canvas}
+}
+
+test("camera capture schedules 30 FPS independently of 2.5 FPS analysis settings",async()=>{
+  for(const outputFps of [undefined,30,60]){
+    const sampler=cameraSampler(outputFps);
+    assert.equal(sampler.period,1000/30);
+    for(let index=0;index<30;index++)await sampler.tick();
+    assert.equal(sampler.sent.length,30);
+    assert.equal(sampler.context.cameraSettings().sample_fps,2.5)
+  }
+});
+
+test("30 FPS camera capture pauses while encoding or above the upload bound",async()=>{
+  const sampler=cameraSampler(30);
+  sampler.context.state.cameraBusy=true;await sampler.tick();
+  sampler.context.state.cameraBusy=false;
+  sampler.context.state.ws.bufferedAmount=1024*1024+1;await sampler.tick();
+  assert.equal(sampler.sent.length,0);
+  sampler.context.state.ws.bufferedAmount=0;await sampler.tick();
+  assert.equal(sampler.sent.length,1)
+});
+
+test("camera delivers an admitted frame if socket delivery stalls during encoding",async()=>{
+  const sampler=cameraSampler(30);
+  sampler.canvas.toBlob=callback=>{
+    sampler.context.state.ws.bufferedAmount=1024*1024+1;
+    callback({arrayBuffer:async()=>new ArrayBuffer(8)})
+  };
+  await sampler.tick();
+  assert.equal(sampler.sent.length,1);
+  assert.equal(sampler.context.state.cameraBusy,false)
 });
