@@ -2512,6 +2512,46 @@ class EventArchive:
         self._storage_bytes = total
         return total
 
+    def _prune_ingress(self) -> None:
+        """Keep revision/clip inputs while reclaiming acknowledged source history."""
+        self._persist()
+        now = self._clock()
+        for run, session in self._sessions.items():
+            windows = {
+                key: value for key, value in session.windows.items()
+                if now - value["admitted"] <= self.settings.revision_seconds
+            }
+            events = [
+                event for event in self._events.values()
+                if event["stream_session_id"] == run
+                and (not event.get("finalized") or event["evidence"].get("status")
+                     in {"collecting", "queued", "encoding"})
+            ]
+            ranges = {
+                (event["evidence"]["requested_window"]["start_seconds"],
+                 event["evidence"]["requested_window"]["end_seconds"])
+                for event in events
+            }
+            times = [window["timestamp"] for window in windows.values()]
+            times.extend(
+                point["timestamp"] for point in self._observations.values()
+                if point["session_id"] == run
+                and now - point["admitted"] <= self.settings.revision_seconds
+            )
+            for timestamp in times:
+                start = timestamp - self.settings.pre_roll_seconds
+                ranges.add((start, start + self.settings.clip_seconds))
+            # Recently ended runs need not occupy the raw-source allowance for
+            # seven days. Their public metadata/videos have separate retention.
+            before = (
+                float("inf") if session.ended and not windows and not events
+                else session.latest - self.settings.buffer_seconds
+            )
+            self._queue.prune_processed(
+                run, before=before, protected_ranges=sorted(ranges),
+                protected_windows=set(windows),
+            )
+
     def _retention(
         self, required_bytes: int = 0, protected_event_id: str | None = None
     ) -> None:
@@ -2550,6 +2590,15 @@ class EventArchive:
             }
         )
         self._queue.prune_completed_runs(before=cutoff, protected=protected_runs)
+        if self._queue.storage_pressure:
+            # Prior-process runs have no in-memory session and may have no end
+            # fact. Reclaim their acknowledged data, respecting replay/jobs/leases.
+            self._queue.prune_completed_runs(
+                before=float("inf"),
+                protected=protected_runs | set(self._sessions),
+                include_interrupted=True,
+            )
+            self._prune_ingress()
         # Retain one coherent history: age/quota evicts an ended event together
         # with every immutable video revision, aliases and observation links.
         removed = False

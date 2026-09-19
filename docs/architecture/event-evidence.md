@@ -217,6 +217,16 @@ missing source frames is reported as failed. Age or space limits retire old ende
 event resources, including their videos and associations. Queue/storage/encoder
 failures remain visible in `/v1/status` and event detail while recognition continues.
 
+Durable ingress (source JPEGs and processing facts) has half of
+`max_storage_bytes` as its allowance. At 75% usage, maintenance reclaims processed
+history in bounded batches, including during an active session. It keeps the
+latest `buffer_seconds` of source time, inputs for open revision windows and
+unfinished event clips (including the frame at the clip end), and a processed
+source-time checkpoint for replay. Pending or failed facts remain recoverable.
+Fully processed sessions from before a restart can also release their raw sources
+under pressure, including interrupted sessions without an end record. This raw
+source cleanup does not shorten the normal retention of published event videos.
+
 ## Migration and validation
 
 Stranger crop capture and the persistent stranger embedding gallery have been
