@@ -85,3 +85,18 @@ test("the dedicated key button saves only the credential and clears the secret i
   assert.equal(view.element("default-api-key").value,"");
   assert.match(view.element("deployment-note").textContent,/无需 .env/)
 });
+
+test("local camera shows its deployment buffer and disables the unrelated network-video setting",()=>{
+  const view=dashboard();view.state.info.local_camera_display={enabled:true,delay_seconds:6};
+  view.state.mode="camera";view.element("buffer-delay-seconds").value="0";view.controls();
+  assert.equal(view.element("buffer-delay-seconds").disabled,true);
+  assert.equal(view.element("save-buffer-delay-button").disabled,true);
+  assert.equal(view.element("local-camera-buffer-note").hidden,false);
+  assert.match(view.element("local-camera-buffer-note").textContent,/本机描边缓冲：6 秒/);
+  assert.match(view.element("local-camera-buffer-note").textContent,/部署配置/);
+  assert.equal(view.element("buffer-delay-seconds").value,"0");
+  view.state.mode="stream";view.controls();
+  assert.equal(view.element("buffer-delay-seconds").disabled,false);
+  assert.equal(view.element("save-buffer-delay-button").disabled,false);
+  assert.equal(view.element("local-camera-buffer-note").hidden,true);
+});

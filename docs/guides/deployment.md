@@ -119,10 +119,11 @@ the player opens the exact 2.5 FPS evidence stream for debugging and audit.
 Leave the network URL blank to use `HARNESS_STREAM_URL`, or enter a different
 RTSP/RTMP/WHEP URL for that run.
 
-Event and stranger analysis run concurrently on the same admitted sample when
-the face worker is available. In CPU single-flight mode, samples arriving while
-face inference is busy still receive event analysis, with no stranger judgment
-for that sample. The live classification cards retain each feature's latest
+Event and stranger analysis run independently when the face worker is available.
+The current local face pool retains admitted tasks and commits identity results
+in source order; capacity failure is explicit. Legacy integrations using CPU
+single-flight may still omit the face branch on a busy sample; this is not the
+new continuous route's scheduling policy. The live classification cards retain each feature's latest
 valid result; the per-frame log marks incomplete coverage as `PARTIAL` and lists
 the features not analyzed. Only complete negative coverage is logged as `CLEAR`.
 
@@ -146,7 +147,9 @@ The image default is
 `webrtc+http://192.168.20.199:1985/rtc/v1/whep/?app=live&stream=livestream`.
 The **Persistent deployment defaults** panel can override that value and save
 the formal/dry-run mode,
-autostart choice, and a write-only API key in the persistent `/data` volume.
+automatic video connection choice, and a write-only API key in the persistent
+`/data` volume. Automatic connection never starts analysis; use the global
+analysis control after the selected video connections are ready.
 Stop the active session before saving. Saved values become effective for the
 next session and remain authoritative after container replacement or restart;
 the API key and complete stream URL are never returned by the settings API.
@@ -214,8 +217,11 @@ In Compose, authorized face weights belong under
 `/models/models/<configured-profile>/` in the persistent `face-models`
 volume, while the gallery is `/data/face-gallery.json` in the persistent
 `face-data` volume. Continuous event metadata and short MP4 evidence live in
-`/data/event-evidence/`, with 7-day/10-GiB retention. Stranger crop and persistent
-stranger-embedding capture have been removed. See [event evidence](../architecture/event-evidence.md)
+`/data/event-evidence/`, with 7-day/10-GiB retention. The removed public stranger
+gallery is separate from the current private ordered face store: source images,
+raw embeddings and observation facts are retained under the gallery directory's
+`private-face` folder for identity commit and review. These records stay private;
+see [event evidence](../architecture/event-evidence.md)
 for APIs, identity continuity, revisions and legacy-file cleanup. `docker compose down` preserves both volumes;
 `docker compose down -v` deletes them. Back up the gallery volume before
 destructive maintenance. Optional local-file initialization is for the declared

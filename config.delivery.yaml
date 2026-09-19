@@ -31,6 +31,9 @@ display:
   # End-to-end completion can exceed raw model latency while concurrent
   # results are applied. Leave enough headroom before publishing each frame.
   delay_seconds: 2.5
+  # Continuous source-aligned contours are published without an extra buffer.
+  # A console-saved buffer delay overrides this route-specific default.
+  tracking_delay_seconds: 0.0
   # Legacy interpolation limit; output now holds the preceding annotation
   # until a new keyframe explicitly updates or clears the state.
   bbox_max_gap_seconds: 0.8

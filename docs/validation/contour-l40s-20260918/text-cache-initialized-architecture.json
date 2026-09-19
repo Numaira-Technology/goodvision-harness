@@ -1,0 +1,48 @@
+{
+  "scope": "untrained_text_encoder_cuda_cache_mechanics",
+  "checkpoint_loaded": false,
+  "torch": "2.10.0+cu128",
+  "gpu": "NVIDIA L40S",
+  "encoder_parameter_bytes": 1414898688,
+  "cuda_allocated_before": 1426405376,
+  "cuda_allocated_after": 11782656,
+  "results": {
+    "language_features": {
+      "shape": [
+        32,
+        3,
+        256
+      ],
+      "dtype": "torch.bfloat16",
+      "finite": true,
+      "uncached_repeat_equal": true,
+      "equal": true,
+      "independent_storage": true
+    },
+    "language_mask": {
+      "shape": [
+        3,
+        32
+      ],
+      "dtype": "torch.bool",
+      "finite": true,
+      "uncached_repeat_equal": true,
+      "equal": true,
+      "independent_storage": true
+    },
+    "language_embeds": {
+      "shape": [
+        32,
+        3,
+        1024
+      ],
+      "dtype": "torch.float32",
+      "finite": true,
+      "uncached_repeat_equal": true,
+      "equal": true,
+      "independent_storage": true
+    }
+  },
+  "all_text_parameters_meta": true,
+  "ok": true
+}

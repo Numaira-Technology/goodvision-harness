@@ -216,7 +216,7 @@ def test_pending_clear_keeps_latest_positive_box_in_fused_output(rich_visible):
     records = [first, latest]
     rich = (_rich("P0001", (0.6, 0.1, 0.9, 0.8)),) if rich_visible else ()
     matcher = OverlayFusionMatcher()
-    for count in range(1, 11):
+    for count in range(1, 3):
         negative = replace(
             latest, message_id=f"negative-{count}", objects=(),
             frame=replace(
@@ -229,8 +229,8 @@ def test_pending_clear_keeps_latest_positive_box_in_fused_output(rich_visible):
         selected = select_overlay(records, 2 + count, max_gap_seconds=0.8)
         plan = matcher.plan(selected.analysis, rich)
         boxes = (*plan.matched_event_object_ids, *plan.unmatched_event_object_ids)
-        assert len(boxes) == int(count < 10)
-        if count < 10:
+        assert len(boxes) == int(count < 2)
+        if count < 2:
             held = next(
                 item for item in selected.analysis.objects if item.object_id in boxes
             )
@@ -272,7 +272,7 @@ def test_pending_clear_follows_cached_track_after_it_leaves_original_box(
     first_plan = matcher.plan(positive, (original,))
     assert tuple(first_plan.alerts_by_track_id()) == ("tracked",)
     records = [positive]
-    for count in range(1, 11):
+    for count in range(1, 3):
         negative = replace(
             positive, message_id=f"negative-{count}", objects=(),
             frame=replace(
@@ -284,7 +284,7 @@ def test_pending_clear_follows_cached_track_after_it_leaves_original_box(
         records.append(negative)
         selected = select_overlay(records, 1 + count, max_gap_seconds=0.8)
         plan = matcher.plan(selected.analysis, (moved, distractor))
-        assert tuple(plan.alerts_by_track_id()) == (("tracked",) if count < 10 else ())
+        assert tuple(plan.alerts_by_track_id()) == (("tracked",) if count < 2 else ())
         assert plan.unmatched_event_object_ids == ()
         assert selected.analysis.as_dict() == negative.as_dict()
 

@@ -408,12 +408,11 @@ def evaluate_variant(
             ),
             "seekable": all(c["seek_last_frame_ok"] for c in clips),
             "cache_within_limit": all(
-                sample.get("buffer_bytes", 0) + sample.get("ingress_bytes", 0)
-                <= variant.buffer_max_bytes
+                sample.get("buffer_bytes", 0) <= variant.buffer_max_bytes
                 for sample in memory_samples
             ),
         }
-        if variant.scenario in {"bridge", "split"}:
+        if variant.scenario in {"bridge", "split", "cache_pressure"}:
             checks["full_three_second_evidence"] = all(
                 not clip["partial"] and abs(clip["duration_seconds"] - 3) <= 0.201
                 for clip in clips
@@ -424,9 +423,16 @@ def evaluate_variant(
                 clip["duration_seconds"] < 3 for clip in clips
             )
         if variant.scenario == "cache_pressure":
-            checks.pop("every_event_has_video")
-            checks["bounded_failure_is_explicit"] = all(
-                event["evidence"]["status"] in {"ready", "failed"} for event in events
+            # Only the hot source ring is under this tiny RAM-cache budget.
+            # Ingress now owns its queued JPEGs in SQLite, not an in-memory FIFO;
+            # a short cache must not make a durably admitted clip disappear.
+            checks["no_source_admission_loss"] = all(
+                sample.get("dropped", 0) == 0
+                and sample.get("storage_failures", 0) == 0
+                for sample in memory_samples
+            )
+            checks["every_evidence_ready"] = all(
+                event["evidence"]["status"] == "ready" for event in events
             )
         return {
             "variant": variant.name,
@@ -453,11 +459,19 @@ def evaluate_variant(
                 for event in events
             ],
             "buffer_max_bytes": variant.buffer_max_bytes,
+            "cache_measurement_scope": "in_memory_source_ring_only",
             "max_observed_cache_bytes": max(
-                (
-                    s.get("buffer_bytes", 0) + s.get("ingress_bytes", 0)
-                    for s in memory_samples
-                ),
+                (s.get("buffer_bytes", 0) for s in memory_samples),
+                default=0,
+            ),
+            # This is queued source payload size, not SQLite physical usage or
+            # process RSS. Disk and encoding allocations have separate budgets.
+            "max_observed_durable_ingress_payload_bytes": max(
+                (s.get("ingress_bytes", 0) for s in memory_samples),
+                default=0,
+            ),
+            "max_observed_storage_bytes": max(
+                (s.get("storage_bytes", 0) for s in memory_samples),
                 default=0,
             ),
             "archive_status": archive.status(),

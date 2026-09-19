@@ -34,6 +34,7 @@ from .contracts import (
     GroundedObject,
 )
 from .event_archive import EventArchive
+from .face_recognition import FaceRecognitionRuntime, FaceRecognitionSession
 from .frame_crop import FrameCropSelector
 from .grounding import (
     GroundingClient,
@@ -42,6 +43,7 @@ from .grounding import (
     observation_bundle,
 )
 from .inference import WindowClient, WindowResponse
+from .latency_trace import log_timing, trace_id
 from .organizer import ResultOrganizer
 from .person_registry import PersonRegistry
 from .privacy import (
@@ -130,10 +132,15 @@ class StreamingSession:
         self.source_id = source_id.strip()
         self.stream_session_id = stream_session_id or str(uuid4())
         self.archive = archive
+        # Service-owned runs finish the archive after tracking and identity review.
+        self.defer_archive_end = False
         self.person_registry = PersonRegistry(
             stream_session_id=self.stream_session_id, source_id=self.source_id,
         )
         face_client = getattr(client, "_stranger_client", client)
+        self._ordered_face_client = (
+            face_client if isinstance(face_client, FaceRecognitionSession) else None
+        )
         bind_registry = getattr(face_client, "bind_person_registry", None)
         if bind_registry is not None:
             bind_registry(self.person_registry)
@@ -166,6 +173,7 @@ class StreamingSession:
             video_stream.realtime if video_stream is not None else True
         )
         self._stop = threading.Event()
+        self._drain_on_stop = False
         self._emit_open = True
         self._pending: set[Future[Any]] = set()
         self._pending_lock = threading.Lock()
@@ -220,8 +228,9 @@ class StreamingSession:
         whep_headers: Mapping[str, str] | None = None,
         source_id: str = "camera",
         archive: EventArchive | None = None,
+        video_stream: Any | None = None,
     ) -> StreamingSession:
-        stream = NetworkStreamAdapter(
+        stream = video_stream if video_stream is not None else NetworkStreamAdapter(
             stream_url,
             output_fps=max(
                 config.display.fps, config.video.fps,
@@ -271,8 +280,10 @@ class StreamingSession:
         )
         self._thread.start()
 
-    def stop(self) -> None:
-        self._emit_open = False
+    def stop(self, *, drain: bool = False) -> None:
+        self._drain_on_stop = drain
+        if not drain:
+            self._emit_open = False
         self._stop.set()
         if self.video_stream is not None:
             self.video_stream.stop()
@@ -331,28 +342,34 @@ class StreamingSession:
                 ),
             )
             for window in windows:
-                if self._stop.is_set():
+                if self._stop.is_set() and not self._drain_on_stop:
                     break
-                self._schedule_window(window, executor)
+                if not getattr(self.client, "scene_source_only", False):
+                    self._schedule_window(window, executor)
             if self._stop.is_set():
                 reason = "stopped"
-            else:
-                # Let in-flight windows land so the final verdict is complete.
-                while self._has_pending() and not self._stop.wait(0.05):
-                    pass
-                if self._stop.is_set():
-                    reason = "stopped"
         except StreamAdapterError as exc:
             LOGGER.warning("stream_failure code=%s", exc.code)
             reason, error = "error", exc.public_message
         except Exception:
             reason, error = "error", PUBLIC_ANALYSIS_ERROR
         finally:
+            # Stopping capture must not discard accepted face/model requests.
+            while self._has_pending() and (
+                not self._stop.is_set() or self._drain_on_stop
+            ):
+                time.sleep(0.02)
+            if self._stop.is_set() and error is None:
+                reason = "stopped"
             self._emit_open = False
             executor.shutdown(wait=False, cancel_futures=True)
             if self._face_executor is not None:
                 self._face_executor.shutdown(wait=False, cancel_futures=True)
-            if self.archive is not None:
+            if self._ordered_face_client is not None:
+                self._ordered_face_client.close(
+                    wait=not self._stop.is_set() or self._drain_on_stop,
+                )
+            if self.archive is not None and not self.defer_archive_end:
                 self.archive.end_session(self.stream_session_id, reason)
             if self.callbacks.on_end is not None:
                 self.callbacks.on_end(reason, error)
@@ -428,9 +445,8 @@ class StreamingSession:
         self, window: FrameWindow, executor: ThreadPoolExecutor
     ) -> None:
         if self._independent_branches:
-            # Local faces must be offered the same source samples even while
-            # every remote request slot is occupied. Neither pool queues stale
-            # live work; the CPU face branch retains its single-flight limit.
+            # Face uses its durable ordered pool when supported. Legacy custom
+            # branch clients retain the generic scheduler contract.
             assert self._face_executor is not None
             self._schedule_branch(window, self._face_executor, "stranger")
             self._schedule_branch(window, executor, "safety")
@@ -451,7 +467,10 @@ class StreamingSession:
         executor: ThreadPoolExecutor,
         branch: str | None,
     ) -> None:
-        if self._stop.is_set():
+        if self._stop.is_set() and not self._drain_on_stop:
+            return
+        if self._ordered_face_client is not None and branch != "safety":
+            self._schedule_ordered_face(window, branch=branch)
             return
         pending = self._face_pending if branch == "stranger" else self._pending
         organizer = self._face_organizer if branch == "stranger" else self.organizer
@@ -473,10 +492,11 @@ class StreamingSession:
                 self._emit_branch_state(record, snapshot, branch)
                 self._archive_window(window, "dropped", branch=branch)
                 return
-            if self._stop.wait(0.02):
+            if self._stop.is_set() and not self._drain_on_stop:
                 return
+            time.sleep(0.02)
 
-        if self._stop.is_set():
+        if self._stop.is_set() and not self._drain_on_stop:
             return
 
         record, snapshot = organizer.note_submitted(
@@ -498,6 +518,65 @@ class StreamingSession:
             )
         )
 
+    def _schedule_ordered_face(self, window, *, branch):
+        face = self._ordered_face_client
+        organizer = self._face_organizer if branch == "stranger" else self.organizer
+        pending = self._face_pending if branch == "stranger" else self._pending
+
+        def admitted(future):
+            record, snapshot = organizer.note_submitted(
+                window, elapsed_seconds=self._elapsed(),
+            )
+            self._emit_branch_state(record, snapshot, branch)
+            self._archive_window(window, "admitted", branch=branch)
+            with self._pending_lock:
+                pending.add(future)
+            # This closure retains no JPEG/window. The durable source is used
+            # for an error; a successful response carries its exact source.
+            future.add_done_callback(
+                lambda done: self._on_ordered_face_done(done, branch=branch)
+            )
+
+        try:
+            face.submit_window(window, on_admitted=admitted)
+        except Exception as exc:
+            self._archive_window(window, "capacity_fault", branch=branch)
+            log_timing(
+                "face_pipeline_admission_failure",
+                stream_session_id=trace_id(self.stream_session_id),
+                source_frame_sequence=window.newest_frame.source_frame_index,
+                error_type=type(exc).__name__, outcome="capacity_fault",
+            )
+            # Halt ingress explicitly. Previously admitted work still drains.
+            if self.camera_source is not None:
+                self.camera_source.close()
+            raise
+
+    def _on_ordered_face_done(self, future, *, branch):
+        mapped = Future()
+        window = None
+        try:
+            try:
+                response = future.result()
+                window = response.window
+                merge = getattr(self.client, "_merge_responses", None)
+                if merge is not None:
+                    response = merge(
+                        window, started=time.monotonic() - response.latency_seconds,
+                        include_safety=False, include_stranger=True,
+                        stranger_response=response,
+                    )
+                mapped.set_result(response)
+            except Exception as exc:
+                if window is None:
+                    window = self._ordered_face_client.window_for(future)
+                mapped.set_exception(exc)
+            self._apply_window_future(mapped, window, branch=branch)
+        finally:
+            with self._pending_lock:
+                pending = self._face_pending if branch == "stranger" else self._pending
+                pending.discard(future)
+
     def _on_window_done(
         self, future: Future[Any], window: FrameWindow, *, branch: str | None = None,
     ) -> None:
@@ -509,6 +588,48 @@ class StreamingSession:
             with self._pending_lock:
                 pending = self._face_pending if branch == "stranger" else self._pending
                 pending.discard(future)
+
+    def _log_window_completion(
+        self, window: FrameWindow, response: Any, *,
+        branch: str | None, exception: BaseException | None,
+    ) -> None:
+        """One real completed request, independent of object/event multiplicity."""
+        try:
+            face_only = branch is None and (
+                isinstance(
+                    self.client, (FaceRecognitionRuntime, FaceRecognitionSession)
+                )
+                or tuple(getattr(self.client, "event_labels", ())) == ("stranger",)
+                or getattr(response.classification, "analysis_kind", None)
+                == "face_recognition"
+            )
+            success = (
+                exception is None and response.classification is not None
+                and response.error is None
+            )
+            log_timing(
+                "analysis_branch_timing",
+                branch="insightface" if branch == "stranger" or face_only
+                else "vlm_frame",
+                stream_session_id=trace_id(self.stream_session_id),
+                window_index=window.index,
+                source_frame_sequence=window.newest_frame.source_frame_index,
+                source_timestamp_seconds=window.newest_frame.timestamp_seconds,
+                context_frame_sequences=[
+                    frame.source_frame_index for frame in window.frames
+                ],
+                context_frames=len(window.frames),
+                completed_requests=1,
+                completed_observations=int(success),
+                success=success,
+                # An escaped exception has no measured response duration; zero
+                # is the public fallback, not an actual instantaneous inference.
+                model_seconds=response.latency_seconds if exception is None else None,
+                error_type=type(exception).__name__ if exception is not None
+                else "ResponseError" if not success else None,
+            )
+        except Exception:
+            pass
 
     def _apply_window_future(
         self, future: Future[Any], window: FrameWindow, *, branch: str | None = None,
@@ -527,6 +648,7 @@ class StreamingSession:
             )
         else:
             response = future.result()
+        self._log_window_completion(window, response, branch=branch, exception=exc)
         with self._apply_lock:
             organizer = self._face_organizer if branch == "stranger" else self.organizer
             record, snapshot = organizer.apply(

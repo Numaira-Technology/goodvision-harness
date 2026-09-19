@@ -112,12 +112,20 @@ def test_high_resolution_then_tiny_odd_source_share_archive_without_cross_sessio
 
 @pytest.mark.skipif(not HAS_ENCODER, reason="real local video encoder required")
 @pytest.mark.parametrize("fps", (1, 5))
-def test_low_resolution_cache_pressure_reports_bounded_outcome(
+def test_low_resolution_cache_pressure_preserves_durable_source_and_full_clip(
     tmp_path: Path, fps: int
 ) -> None:
     record = evaluate_variant(
         tmp_path / "replay", Variant(96, 54, fps, "cache_pressure", 8 * 1024)
     )
     assert record["passed"], record
+    assert record["cache_measurement_scope"] == "in_memory_source_ring_only"
     assert record["max_observed_cache_bytes"] <= 8 * 1024
-    assert record["archive_status"]["dropped"] > 0
+    assert record["archive_status"]["dropped"] == 0
+    assert record["archive_status"]["storage_failures"] == 0
+    assert record["event_count"] == record["video_count"] == 1
+    clip = record["clips"][0]
+    assert not clip["partial"]
+    assert clip["decoded_frames"] == 15
+    assert clip["duration_seconds"] == 3.0
+    assert record["checks"]["content_matches_source"]

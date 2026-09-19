@@ -1,0 +1,32 @@
+name: goodvision-contour
+services:
+  contour:
+    build: .
+    image: goodvision-contour:0.1.0
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${CONTOUR_BIND_ADDRESS:-127.0.0.1}:${CONTOUR_PORT:-8093}:8093"
+    environment:
+      CONTOUR_API_KEY_FILE: /run/secrets/node_key
+      CONTOUR_CHECKPOINT_PATH: /models/contour.pt
+      CONTOUR_CAPACITY: "${CONTOUR_CAPACITY:-1}"
+    secrets: [node_key]
+    volumes:
+      - type: bind
+        source: ${CONTOUR_MODELS_DIR:-./models}
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+secrets:
+  node_key:
+    file: ./secrets/node-key

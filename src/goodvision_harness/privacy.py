@@ -13,13 +13,28 @@ from collections.abc import Mapping
 from typing import Any
 
 PUBLIC_ANALYSIS_ERROR = "analysis request failed"
+PUBLIC_TRACKING_NAME = "人员追踪模块"
+PUBLIC_TRACKING_METHOD = "person_tracking"
+PUBLIC_TRACKING_ERROR = "人物跟踪服务连接或处理失败。请重新开始检测。"
+PUBLIC_INSPECTION_ERROR = "事件分析服务连接或处理失败。请重新开始检测。"
 PUBLIC_FACE_ERROR = "local face analysis failed"
+PUBLIC_FACE_UNAVAILABLE_ERROR = (
+    "本地人脸识别组件不可用。请安装或修复服务端人脸组件后重试。 / "
+    "Local face recognition is unavailable; install or repair the server's "
+    "face components, then retry."
+)
 PUBLIC_STREAM_ERROR = "video input failed; check the video source and retry"
 PUBLIC_STREAM_SUPPORT_ERROR = "video input support is missing on this server"
 PUBLIC_MISSING_API_KEY_ERROR = (
-    "请先在控制台保存 API key，再启动正式检测；无需创建 .env。 / "
-    "Save an API key in the console before starting live detection; no .env file is required."
+    "请先在控制台保存 API key，再启动正式检测；无需创建 .env。 / "  # noqa: RUF001
+    "Save an API key in the console before starting live detection; "
+    "no .env file is required."
 )
+
+
+class LocalFaceUnavailableError(RuntimeError):
+    """Known missing local components, safe to map to an actionable public error."""
+
 
 # These values belong to the application's correlation/CRUD contract, not to
 # its implementation metadata. Customer-supplied identifiers can legitimately
@@ -29,7 +44,9 @@ _IDENTIFIER_FIELDS = frozenset({
     "object_id", "track_id", "person_id", "stranger_id", "memory_id",
     "analysis_message_id", "next_analysis_message_id", "association_message_id",
     "subject_id", "event_id", "canonical_event_id", "requested_event_id",
-    "person_track_id", "face_track_id", "actor_id",
+    "person_track_id", "face_track_id", "actor_id", "epoch", "predictor_epoch",
+    # Operator-editable service identifiers must survive console read/save cycles.
+    "inference_server_url", "tracking_server_url", "inference_server_model",
 })
 _IDENTIFIER_LIST_FIELDS = frozenset({
     "object_ids", "memory_ids", "matched_memory_ids",
@@ -40,9 +57,27 @@ _IMPLEMENTATION_FIELDS = frozenset({
     "execution_provider", "execution_providers",
 })
 
+_TRACKING_PATTERN = re.compile(
+    r"https?://[^\s\"'<>]*(?:segment-anything|facebookresearch/sam|"
+    r"facebook/sam)[^\s\"'<>]*|"
+    r"(?<![a-z0-9])(?:(?:facebook(?:research)?/)?sam(?:[\s_-]*v?[23](?:[._]?1)?)?"
+    r"(?:[_./:+-][a-z0-9_.:/+-]+|(?:Runtime)?Error)?|"
+    r"segment[\s_-]*anything(?:[\s_-]*[23](?:\.1)?)?)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_TRACKING_ALIASES = {
+    "sam_live": PUBLIC_TRACKING_METHOD,
+    "sam31": "person_tracking_video",
+    "sam31_stream": "person_tracking_stream",
+    "sam3.1_video": "person_tracking_video",
+    "native_sam_video_tracking": "native_person_tracking",
+}
+
 _PRIVATE_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
+    _TRACKING_PATTERN if pattern == _TRACKING_PATTERN.pattern
+    else re.compile(pattern, re.IGNORECASE)
     for pattern in (
+        _TRACKING_PATTERN.pattern,
         # Remove the whole vendor URL, not just its recognizable substring.
         r"https?://[^\s\"'<>]*(?:paddle|bcebos|huggingface|hf\.co|modelscope|"
         r"nvidia|openai|anthropic|deepseek|qwen|aliyun|dashscope|jsdelivr|"
@@ -52,7 +87,8 @@ _PRIVATE_PATTERNS = tuple(
         r"https?://(?:www\.)?openrouter\.ai(?:/[^\s\"']*)?",
         r"(?<![a-z0-9])open[\s_-]*router[\w.+:/-]*",
         r"(?<![a-z0-9])qwen[\w./:+-]*",
-        r"(?<![a-z0-9])(?:coreweave|deepinfra)[\w.+:/-]*",
+        r"(?<![a-z0-9])(?:coreweave|deepinfra|reka|parasail|novita|chutes|ultralytics|"
+        r"bytetrack|botsort|xformers|vllm)[\w.+:/-]*",
         r"(?<![a-z0-9])insight[\s_-]*face[\w.+:/-]*",
         r"\bbuffalo(?:[_-][\w.-]+)?\b",
         r"\bantelope(?:v\d+)?\b",
@@ -109,6 +145,11 @@ _IMPLEMENTATION_CONTEXT = re.compile(
 
 def _redact_data_match(match: re.Match[str], fallback: str) -> str:
     token = match.group()
+    if _TRACKING_PATTERN.fullmatch(token):
+        # Sam may be an enrolled person's name; uppercase/model forms are metadata.
+        if token.lower() == "sam" and token != "SAM":
+            return token
+        return _TRACKING_ALIASES.get(token.lower(), PUBLIC_TRACKING_NAME)
     if _DOMAIN_TERM.fullmatch(token) and not _IMPLEMENTATION_FORM.search(token):
         return token
     return fallback
@@ -124,7 +165,14 @@ def contains_private_implementation_detail(value: object) -> bool:
 def redact_public_text(value: object, *, fallback: str = "analysis engine") -> str:
     """Redact implementation details while preserving ordinary domain values."""
 
-    rendered = _IMPLEMENTATION_CONTEXT.sub(lambda _: fallback, str(value))
+    rendered = str(value)
+    if rendered in _TRACKING_ALIASES:
+        return _TRACKING_ALIASES[rendered]
+    rendered = re.sub(
+        r"(?i)(?<![a-z0-9])sam\s+(?:model|backend|tracker|module|模型|追踪)",
+        lambda _: PUBLIC_TRACKING_NAME, rendered,
+    )
+    rendered = _IMPLEMENTATION_CONTEXT.sub(lambda _: fallback, rendered)
     for pattern in _PRIVATE_PATTERNS:
         rendered = pattern.sub(
             lambda match: _redact_data_match(match, fallback), rendered,
@@ -139,8 +187,11 @@ def public_error_message(
 ) -> str:
     """Preserve known public failures without echoing an underlying exception."""
 
+    if isinstance(_error, LocalFaceUnavailableError):
+        return PUBLIC_FACE_UNAVAILABLE_ERROR
     if isinstance(_error, str) and _error in {
         PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR,
+        PUBLIC_TRACKING_ERROR, PUBLIC_INSPECTION_ERROR,
     }:
         return _error
     return fallback
@@ -150,8 +201,13 @@ def _public_implementation_value(value: Any) -> Any:
     """Strictly project explicit engine metadata, not ordinary result data."""
 
     if isinstance(value, str):
+        if value in _TRACKING_ALIASES:
+            return _TRACKING_ALIASES[value]
         for pattern in _PRIVATE_PATTERNS:
-            value = pattern.sub("analysis engine", value)
+            value = pattern.sub(
+                PUBLIC_TRACKING_NAME if pattern is _TRACKING_PATTERN
+                else "analysis engine", value,
+            )
         return value
     if isinstance(value, Mapping):
         return {

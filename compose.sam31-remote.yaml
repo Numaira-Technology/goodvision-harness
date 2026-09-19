@@ -1,0 +1,69 @@
+# Use with compose.yaml, instead of the local SAM overlays.
+# docker compose -f compose.yaml -f compose.sam31-remote.yaml up --build
+services:
+  harness:
+    image: goodvision-harness:sam-remote
+    platform: linux/amd64
+    depends_on:
+      sam-remote:
+        condition: service_started
+    environment:
+      SCENE_ENGINE_MODE: active
+      PERSON_TRACKING_ENABLED: "true"
+      RICH_LABEL_ENABLED: "true"
+      RICH_LABEL_BACKEND: sam31_stream
+      PERCEPTION_METHOD: sam_live
+      # Sustainable admission target for the temporary >=1 successful fps goal.
+      # Every admitted Face observation remains in the ordered durable queue.
+      FACE_SAMPLE_FPS: "${FACE_SAMPLE_FPS:-1.25}"
+      RICH_LABEL_ENDPOINT: http://sam-remote:8092/v1/video/sessions
+      # Sampling target; real completion rate and source age require live checks.
+      RICH_LABEL_MAX_FPS: "${RICH_LABEL_MAX_FPS:-1.1}"
+      SAM31_BATCH_FRAMES: "4"
+      SAM31_BATCH_SECONDS: "0.5"
+      SAM31_CLIENT_TIMEOUT_SECONDS: "75"
+      SAM31_TRANSPORT_CODEC: h264
+      SAM31_TRANSPORT_MAX_SIDE: "${SAM31_TRANSPORT_MAX_SIDE:-512}"
+      SAM31_TRANSPORT_CRF: "${SAM31_TRANSPORT_CRF:-23}"
+      # Use the source deployment's selected event-model provider.
+      HARNESS_INFERENCE_PROFILE: ""
+
+  sam-remote:
+    build:
+      context: .
+      target: sam-remote
+    image: goodvision-sam-remote:controller
+    init: true
+    # Restarting this service creates a new paid instance.
+    restart: "no"
+    environment:
+      VAST_API_KEY: "${VAST_API_KEY:?Set your Vast team API key in .env}"
+      HF_TOKEN: "${HF_TOKEN:?Set your approved SAM Hugging Face token in .env}"
+      SAM_SSH_KEY: /run/secrets/sam_ssh_key
+      SAM_GPU_NAME: "${SAM_GPU_NAME:-RTX_4090}"
+      SAM_DISK_GB: "${SAM_DISK_GB:-50}"
+    volumes:
+      - type: bind
+        source: "${SAM_SSH_KEY:?Set the absolute SSH private-key path in .env}"
+        target: /run/secrets/sam_ssh_key
+        read_only: true
+        bind:
+          create_host_path: false
+    # The tunnel listens on 8092 inside this network, with no published port.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    stop_grace_period: 90s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  face-data:
+    name: "${HARNESS_DATA_VOLUME:-${COMPOSE_PROJECT_NAME:-goodvision-harness}_face-data}"
+  face-models:
+    name: "${HARNESS_MODELS_VOLUME:-${COMPOSE_PROJECT_NAME:-goodvision-harness}_face-models}"

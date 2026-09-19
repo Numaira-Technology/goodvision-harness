@@ -41,12 +41,24 @@ independently; intervening frames hold the preceding annotations. See the
 [runtime guide](docs/guides/runtime.md#display-and-evidence) for display, clearing
 and exact-evidence behavior.
 
+## Continuous scene analysis and multi-camera deployment
+
+`SCENE_ENGINE_MODE=active` enables persistent people, source-aligned SAM contours,
+temporal event evidence and ordered face identity updates. The default `disabled`
+mode keeps the existing per-frame workflow. In fleet deployments, connect each
+preview independently, then start or stop analysis for all connected cameras.
+
+- [Continuous scene operation and validation limits](docs/guides/continuous-scene.md)
+- [Local NVIDIA GPU deployment](docs/local-gpu.md)
+- [Separate application, tracking and model services](docs/modular-services.md)
+- [Multi-camera API](docs/multi-camera-api.md)
+
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | `src/goodvision_harness/` | Application, API, video pipeline, event archive, and console |
-| `workers/` | Paddle rich-label worker |
+| `workers/` | SAM scene, standalone Contour and Paddle rich-label workers |
 | `tests/` | Offline unit and integration checks |
 | `schemas/` | Versioned analysis and event contracts |
 | `tools/` | Deployment, diagnostics, benchmarking, and evaluation entrypoints |

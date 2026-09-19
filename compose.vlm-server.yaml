@@ -1,0 +1,70 @@
+# Standalone vLLM server. The mounted directory contains the offline Qwen weights.
+name: goodvision-vlm
+
+services:
+  vlm-server:
+    image: "${LOCAL_INFERENCE_IMAGE:-vllm/vllm-openai:v0.17.1}"
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${VLM_SERVER_BIND_ADDRESS:-0.0.0.0}:${VLM_SERVER_PORT:-8000}:8000"
+    command:
+      - --model
+      - /models/vision
+      - --served-model-name
+      - "${LOCAL_INFERENCE_MODEL:-local-vision}"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "1"
+      - --max-model-len
+      - "${LOCAL_INFERENCE_MAX_MODEL_LEN:-8192}"
+      - --max-num-seqs
+      - "${LOCAL_INFERENCE_MAX_NUM_SEQS:-8}"
+      - --max-num-batched-tokens
+      - "${LOCAL_INFERENCE_MAX_BATCHED_TOKENS:-4096}"
+      - --enable-chunked-prefill
+      - --gpu-memory-utilization
+      - "${LOCAL_INFERENCE_GPU_MEMORY_UTILIZATION:-0.90}"
+      - "${LOCAL_INFERENCE_EXECUTION_MODE:---no-enforce-eager}"
+      - --limit-mm-per-prompt
+      - '{"image":16,"video":0}'
+      - --mm-processor-kwargs
+      - '{"max_pixels":262144}'
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HOME: /tmp/huggingface
+      VLLM_CACHE_ROOT: /tmp/vllm
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      # vLLM reads this optional key; the main host uses LOCAL_INFERENCE_API_KEY.
+      VLLM_API_KEY: "${LOCAL_INFERENCE_API_KEY:-}"
+    volumes:
+      - type: bind
+        source: ${LOCAL_INFERENCE_MODEL_DIRECTORY:?Set a local model directory}
+        target: /models/vision
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${LOCAL_INFERENCE_GPU_ID:-0}"]
+              capabilities: [gpu]
+    shm_size: 4g
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 300s
+      retries: 10
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

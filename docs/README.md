@@ -58,3 +58,11 @@ and benchmark outputs remain in ignored local directories.
 
 [Route catalog](internal/route-catalog.md) contains internal route mappings and
 historical provider comparisons; it is separate from customer documentation.
+
+## Continuous scenes and multi-camera services
+
+- [Continuous scene guide](guides/continuous-scene.md) — modes, evidence, runtime limits and verification records.
+- [Entity/event engine](architecture/entity-event-engine.md) — state model and active operation.
+- [Local GPU deployment](local-gpu.md) and [modular services](modular-services.md).
+- [Multi-camera API](multi-camera-api.md).
+- [SAM scene worker](../workers/sam_scene/README.md) and [standalone Contour node](../workers/contour/README.md).

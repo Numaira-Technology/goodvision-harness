@@ -139,6 +139,9 @@ def test_neutral_delivery_configuration_preserves_analysis_settings() -> None:
     expected["face"].update(
         model_profile="standard", model_root="/models", accelerator="gpu"
     )
+    expected["display"]["tracking_delay_seconds"] = expected["display"].pop(
+        "sam_live_delay_seconds"
+    )
     assert delivery == expected
 
 

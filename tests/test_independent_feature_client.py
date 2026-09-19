@@ -379,7 +379,7 @@ def test_runtime_diagnostics_distinguish_single_frame_and_held_stranger(
     assert responses[2].classification.detected
     assert responses[2].face_diagnostics["stable_status_counts"]["unknown"] == 1
     held = responses[3]
-    assert held.classification.detected
+    assert not held.classification.detected  # Display history is not new evidence.
     assert held.face_diagnostics["state"] == "no_faces"
     assert held.face_diagnostics["detected_face_count"] == 0
     assert held.face_diagnostics["face_count"] == 1

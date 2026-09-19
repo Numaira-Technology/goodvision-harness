@@ -617,6 +617,37 @@ def test_coordinator_holds_slow_detector_tail_without_changing_evidence() -> Non
         coordinator.close()
 
 
+@pytest.mark.parametrize("callback_fails", [False, True])
+def test_idle_wait_includes_final_tracking_callback(callback_fails: bool) -> None:
+    client = _BlockingClient()
+    client.release_first.set()
+    entered, release = threading.Event(), threading.Event()
+
+    def on_snapshot(_snapshot: RichLabelSnapshot) -> None:
+        entered.set()
+        assert release.wait(3)
+        if callback_fails:
+            raise RuntimeError("callback failed")
+
+    coordinator = RichLabelCoordinator(
+        client, max_fps=10_000, on_snapshot=on_snapshot,
+    )
+    try:
+        assert coordinator.submit(
+            b"fixture", stream_session_id="session-1",
+            frame_sequence=1, timestamp_seconds=0,
+        )
+        assert entered.wait(3)
+        assert not coordinator.wait_until_idle(timeout_seconds=0.01)
+        assert coordinator.stats()["in_flight"]
+        release.set()
+        assert coordinator.wait_until_idle()
+        assert not coordinator.stats()["in_flight"]
+    finally:
+        release.set()
+        coordinator.close()
+
+
 def test_coordinator_uses_successful_completion_gaps_for_display_continuity() -> None:
     clock = _ControlledClock()
     client = _CadenceClient(clock, duration=0.25)

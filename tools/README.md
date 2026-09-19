@@ -52,3 +52,6 @@ probes/fixed comparison cases have been deleted. Their source is available in th
 pre-cleanup main revision `a7e5ec8`; there is no second archive
 copy to maintain in the working tree. Dated measurement reports remain in
 `docs/validation/`.
+
+`audit_customer_bundle.py` checks customer bundles or the repository (`--repository`)
+for the anonymization patterns recorded in [the validation report](../docs/validation/anonymization-audit-20260918.md).

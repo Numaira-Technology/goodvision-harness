@@ -22,6 +22,8 @@ DEFAULT_OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_DASHSCOPE_ENDPOINT = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 )
+DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8000/v1/chat/completions"
+DEFAULT_LOCAL_API_KEY_ENV = "LOCAL_INFERENCE_API_KEY"
 OPENROUTER_EXCLUDED_PROVIDERS = frozenset({"novita", "coreweave"})
 PROVIDER_DEFAULTS = {
     "aiclub": (DEFAULT_AICLUB_ENDPOINT, DEFAULT_AICLUB_API_KEY_ENV, "qwen3.5-plus"),
@@ -29,6 +31,7 @@ PROVIDER_DEFAULTS = {
         DEFAULT_OPENROUTER_ENDPOINT, "OPENROUTER_API_KEY", "qwen/qwen3.5-35b-a3b:nitro"
     ),
     "dashscope": (DEFAULT_DASHSCOPE_ENDPOINT, "DASHSCOPE_API_KEY", "qwen3.5-plus"),
+    "local": (DEFAULT_LOCAL_ENDPOINT, DEFAULT_LOCAL_API_KEY_ENV, "local-vision"),
 }
 
 
@@ -46,7 +49,7 @@ class ModelAPIError(RuntimeError):
 
     _CODES = frozenset({
         "request_failed", "timeout", "connection", "http_error",
-        "invalid_response", "empty_response",
+        "invalid_response", "empty_response", "cancelled", "overloaded",
     })
 
     def __init__(
@@ -82,12 +85,15 @@ class ModelAPISettings:
     def __post_init__(self) -> None:
         if self.provider not in PROVIDER_DEFAULTS:
             raise ValueError(
-                "inference_service.provider must be aiclub, openrouter, or dashscope"
+                "inference_service.provider must be aiclub, openrouter, "
+                "dashscope, or local"
             )
         endpoint, api_key_env, _model = PROVIDER_DEFAULTS[self.provider]
         if not self.endpoint:
             object.__setattr__(self, "endpoint", endpoint)
-        if not self.api_key_env:
+        if not self.api_key_env or self.provider == "local":
+            # A copied cloud configuration must never send its credentials to
+            # the local server. Local authentication has a dedicated variable.
             object.__setattr__(self, "api_key_env", api_key_env)
         parsed = urlparse(self.endpoint)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -128,6 +134,8 @@ def api_key_present(settings: ModelAPISettings) -> bool:
 
 
 def environment_api_key(settings: ModelAPISettings) -> str:
+    if settings.provider == "local":
+        return os.environ.get(DEFAULT_LOCAL_API_KEY_ENV, "").strip()
     # Generic overrides are explicit; never guess using another route's key.
     names = ["INFERENCE_API_KEY", settings.api_key_env]
     if settings.api_key_env in {"INFERENCE_API_KEY", "MODEL_API_KEY"}:
@@ -138,6 +146,25 @@ def environment_api_key(settings: ModelAPISettings) -> str:
         if value:
             return value
     return ""
+
+
+def model_request_headers(
+    settings: ModelAPISettings, api_key: str, *, accept: str = "application/json",
+) -> dict[str, str]:
+    """Build headers with authentication coming only from the selected key."""
+
+    headers = {
+        str(key): str(value) for key, value in settings.extra_headers.items()
+        if str(key).lower() != "authorization"
+    }
+    headers.update({
+        "Content-Type": "application/json",
+        "Accept": accept,
+        "User-Agent": "goodvision-harness/1",
+    })
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 class MissingAPIKeyError(ModelAPIError):
@@ -166,8 +193,10 @@ class ModelAPIClient:
     ) -> None:
         self.settings = settings
         self._api_key = (api_key or environment_api_key(settings)).strip()
-        if not self._api_key:
-            raise MissingAPIKeyError(f"missing model API key; set {settings.api_key_env}")
+        if not self._api_key and settings.provider != "local":
+            raise MissingAPIKeyError(
+                f"missing model API key; set {settings.api_key_env}"
+            )
 
     def chat_completion(
         self,
@@ -231,18 +260,7 @@ class ModelAPIClient:
         )
 
     def _headers(self) -> dict[str, str]:
-        headers = {
-            str(key): str(value) for key, value in self.settings.extra_headers.items()
-        }
-        headers.update(
-            {
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "goodvision-harness/1",
-            }
-        )
-        return headers
+        return model_request_headers(self.settings, self._api_key)
 
     def _post_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")

@@ -75,6 +75,46 @@ analysis. Turning rich labels off still permits tracking.
 
 ## Event resources
 
+Background identity review compares retained, private face embeddings across
+separate tracks within a session. Stranger merges require at least two clear observations
+per track, a strong unambiguous match, no overlapping observed trajectories, and
+no conflicting enrolled identity. Native detector track IDs remain unchanged;
+reviewed aliases consolidate the scene people, event participants and archive.
+Insufficient face evidence remains unresolved rather than forcing a match.
+
+Confirmed gallery identities use the enrolled `person_id`, never the display
+name, to consolidate fragmented observations. A valid direct gallery match can
+support its inherited face observations without requiring two new clear photos
+of every fragment. Overlapping face/body time ranges are allowed; simultaneous
+distinct faces, separate native bodies, or a face outside the body veto a merge.
+The native body's geometry and source time remain authoritative. Known people
+are named consistently in event cards, including identity updates after capture
+has stopped.
+
+The event list exposes one representative stranger evidence row per reviewed
+person and session, preferring playable evidence. Repeated stranger episodes do
+not schedule additional clips when a representative is available. Other event
+types retain their episode history; existing published video revision URLs remain
+valid until normal retention removes them.
+
+In active scene mode, accepted temporal safety episodes also enter `/v1/events`
+and the video evidence list. Each source episode has a stable archive ID:
+different labels and separate occurrences remain independent even when their
+participants are the same or are subsequently merged by identity review. Scene
+episodes retain the scene engine's boundaries, rather than being re-segmented by
+the legacy detector's timeout. Their clips use the original positive source time.
+Accepted delayed inspections bypass the legacy result watermark; video creation
+still depends on source frames retained within the configured buffer limits.
+Retractions and completed-but-unconfirmed reviews remove the current playable
+evidence and show the corresponding review outcome. Existing immutable revision
+URLs retain the normal retention policy.
+
+Stopping capture or reaching the source end drains accepted detection, tracking,
+identity review, temporal inspections and video encoding before finalizing the
+run. `/v1/status` reports `pipeline_state=draining` and `scene_drain.stage` while
+this work continues, and prevents replacement by another run. A successful stop
+request is not itself evidence that archival work has finished.
+
 | GET endpoint | Purpose |
 | --- | --- |
 | `/v1/events` | Canonical event list with cursor pagination |
@@ -103,7 +143,8 @@ For `subject_type: target` or `scene`, the subject key denotes a fallback target
 or scene track; it does not identify a person. `group` carries all associated
 participants in `subject_ids`.
 
-The first positive immediately enters the background event queue. Two seconds
+For legacy per-frame detection, the first positive immediately enters the
+background event queue. Two seconds
 of consecutive explicit negative judgments close an archive episode. A one-second
 pause followed by another positive stays in that episode. Missing/failed/skipped
 analysis is unknown, not negative; five seconds without positive support closes
@@ -175,6 +216,16 @@ together. Staged complete work can resume after restart; interrupted work with
 missing source frames is reported as failed. Age or space limits retire old ended
 event resources, including their videos and associations. Queue/storage/encoder
 failures remain visible in `/v1/status` and event detail while recognition continues.
+
+Durable ingress (source JPEGs and processing facts) has half of
+`max_storage_bytes` as its allowance. At 75% usage, maintenance reclaims processed
+history in bounded batches, including during an active session. It keeps the
+latest `buffer_seconds` of source time, inputs for open revision windows and
+unfinished event clips (including the frame at the clip end), and a processed
+source-time checkpoint for replay. Pending or failed facts remain recoverable.
+Fully processed sessions from before a restart can also release their raw sources
+under pressure, including interrupted sessions without an end record. This raw
+source cleanup does not shorten the normal retention of published event videos.
 
 ## Migration and validation
 

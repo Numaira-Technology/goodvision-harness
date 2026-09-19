@@ -79,14 +79,6 @@ def resolve_model_route(
     profile = inference.get("profile")
     if profile is not None and str(profile).strip().lower() != "standard":
         raise ValueError("inference.profile must be standard")
-    deployment_profile = os.environ.get("HARNESS_INFERENCE_PROFILE", "").strip().lower()
-    if deployment_profile:
-        if deployment_profile != CUSTOMER_INFERENCE_PROFILE:
-            raise ValueError(
-                "HARNESS_INFERENCE_PROFILE must be customer-standard or unset"
-            )
-        return _resolve_customer_route(raw, inference)
-
     service = _section(raw, "inference_service")
     legacy_provider = (
         "openrouter" if "openrouter" in raw and "aiclub" not in raw else "aiclub"
@@ -97,9 +89,17 @@ def resolve_model_route(
     provider = (
         os.environ.get("INFERENCE_PROVIDER", "").strip().lower() or configured_provider
     )
+    deployment_profile = os.environ.get("HARNESS_INFERENCE_PROFILE", "").strip().lower()
+    if deployment_profile:
+        if deployment_profile != CUSTOMER_INFERENCE_PROFILE:
+            raise ValueError(
+                "HARNESS_INFERENCE_PROFILE must be customer-standard or unset"
+            )
+        if provider != "local":
+            return _resolve_customer_route(raw, inference)
     if provider not in PROVIDER_DEFAULTS:
         raise ValueError(
-            "inference_service.provider must be aiclub, openrouter, or dashscope"
+            "inference_service.provider must be aiclub, openrouter, dashscope, or local"
         )
     profiles = _section(service, "providers")
     legacy_route = _section(raw, provider)
@@ -119,7 +119,7 @@ def resolve_model_route(
         # or credential name, when the environment selects a different channel.
         shared_connection.pop("endpoint", None)
         shared_connection.pop("api_key_env", None)
-        if "providers" not in service:
+        if "providers" not in service or provider == "local":
             shared_connection.pop("extra_headers", None)
     connection = {
         **legacy_route,
@@ -152,9 +152,12 @@ def resolve_model_route(
         or PROVIDER_DEFAULTS[provider][2]
     )
     parameters = _section(inference, "request_parameters")
-    if provider != configured_provider:
+    if provider != configured_provider or provider == "local":
         # Legacy files kept channel-specific options in the global block.
         for key in ("provider", "reasoning", "enable_thinking"):
+            parameters.pop(key, None)
+    if provider == "local":
+        for key in ("models", "route", "endpoint", "api_key_env"):
             parameters.pop(key, None)
     # These defaults keep the shipped vision routes in non-thinking mode.
     # Custom model IDs need their own documented per-route options.

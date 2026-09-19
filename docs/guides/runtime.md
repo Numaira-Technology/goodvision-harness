@@ -9,6 +9,9 @@ video. This guide covers runtime behavior and optional recognition backends.
 
 ## Harness behavior
 
+This section describes `SCENE_ENGINE_MODE=disabled`. For active tracking and
+temporal events, see [continuous scene operation](continuous-scene.md).
+
 The service performs one external model request for whichever visual safety
 events are selected, while the local known-person matcher checks the same frame
 only when `stranger` is selected. In mixed streaming sessions, safety and local
@@ -66,13 +69,18 @@ Running another automatic check replaces the saved selection with its winner.
 
 ## Display and evidence
 
+Active SAM delivery uses completed source frames with matching contours and
+ten distinct valid clear observations per entity/event. Its display throughput
+depends on SAM completion. The opt-in local-camera display has its own frame
+clock and motion propagation; see [continuous scene operation](continuous-scene.md).
+
 For every successful JSON result, the harness still annotates the exact newest
 frame that the result references. `GET /v1/video/latest.jpg` and every
 multipart JPEG in `GET /v1/video/stream.mjpeg` carry
 `X-Analysis-Message-Id`; its value is the same as the JSON `message_id`. This
 exact evidence feed remains at model-result cadence.
 
-For the display path, the container buffers source frames for the delay selected
+For the legacy display path, the container buffers source frames for the delay selected
 in the console. The annotated output uses each original source frame at up to
 30 FPS, holding the preceding annotations until a newer result updates them.
 Display FPS is independent of LLM and InsightFace sampling. Face and safety-event
@@ -83,7 +91,7 @@ update the final paused frame. Result-triggered repaints are coalesced and paced
 at the display rate after source frames pause; resumed source frames cancel a
 pending repaint. Exact analysis JPEGs remain on the evidence feed.
 
-Display event state is keyed by session and event type. Ten consecutive valid
+Display event state is keyed by session and event type. Two consecutive valid
 negative source frames clear both the behavior alert and its retained boxes;
 each positive updates the boxes and resets the count. Duplicate frame observations
 count once. Missing or failed branches and other event types do not advance the
@@ -107,6 +115,9 @@ for measured cadence and regression coverage, and the
 [API contract](../../API_DELIVERY.md#视频与精确证据帧) for receiver integration.
 
 ## Optional rich video labels
+
+These Paddle labels belong to the legacy workflow. Active scene analysis requires
+tracking readiness; see the [SAM worker guide](../../workers/sam_scene/README.md).
 
 Rich person/object labels require a usable GPU on their worker. Without one,
 rich annotation is disabled; event analysis and face recognition continue.
@@ -228,11 +239,14 @@ docker compose -f compose.yaml -f compose.face-gpu.yaml -f compose.gpu.yaml \
 
 The two containers share the device rather than receiving exclusive GPUs.
 Benchmark face-only and face-plus-rich loads on the customer host before
-acceptance. `FACE_LIVE_SCHEDULER=auto` keeps CPU InsightFace single-flight, but
-uses full sampling for DirectML or CUDA: every admitted mixed-detector request
-runs its own face branch while the remote safety branches retain their
-configured concurrency. Operators can force `full` for an experiment or
-`single_flight` as a bounded-backlog fallback.
+acceptance. The local face path now uses a durable ordered task pool with
+independent model instances (default two, two inference threads each).
+`FACE_INFERENCE_INSTANCES` and `FACE_INFERENCE_THREADS` control this experiment;
+identity updates remain ordered. `FACE_LIVE_SCHEDULER` retains its legacy meaning
+for integrations without the ordered-pool interface: `auto` selects CPU
+single-flight and accelerated full sampling. It does not override the new pool.
+Two instances have not yet demonstrated sufficient capacity for the configured
+2.5 FPS input; see the implementation record before increasing concurrency.
 
 To benchmark the real HTTP worker with a local video, expose a separate test
 instance on loopback in one terminal:

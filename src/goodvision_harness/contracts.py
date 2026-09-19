@@ -284,6 +284,8 @@ class AnalysisResult:
                 "Analysis incomplete; some capabilities have no result."
             )
             return f"{summary}; {incomplete}" if summary else incomplete
+        if not summary and self.analysis_kind == "scene_state":
+            return "暂无已确认的事件。 / No confirmed events."
         return summary or "无异常 / No anomalies detected"
 
     def as_dict(self) -> dict[str, Any]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,19 @@ from goodvision_harness.service import (
 from goodvision_harness.visual_memory import VisualMemoryRecord
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _stop_and_wait(runtime):
+    session = runtime._session
+    assert runtime.stop_session()
+    session.join(timeout=5)
+    assert not session.running
+    drain = getattr(runtime, "_end_drain_thread", None)
+    if drain is not None:
+        drain.join(timeout=5)
+        assert not drain.is_alive()
+    assert runtime._session is None
+    assert runtime.status()["pipeline_state"] == "idle"
 
 
 def _jpeg(width: int = 320, height: int = 180) -> bytes:
@@ -133,8 +147,9 @@ def test_face_gallery_http_surface_and_ui_info(
 
         dashboard = client.get("/")
         assert dashboard.status_code == 200
-        assert 'id="face-controls" class="face-gallery"' in dashboard.text
-        assert 'id="face-controls" class="face-gallery" hidden' not in dashboard.text
+        face_controls = re.search(r'<section\b[^>]*\bid="face-controls"[^>]*>', dashboard.text)
+        assert face_controls is not None
+        assert not re.search(r'\bhidden(?:\s|=|>)', face_controls.group())
         assert 'id="face-analysis-mode"' not in dashboard.text
         assert 'id="event-analysis-mode"' not in dashboard.text
         assert 'id="face-diagnostic-summary"' in dashboard.text
@@ -259,8 +274,12 @@ def test_live_sessions_isolate_face_history_and_bind_rich_session(
         gallery_path=tmp_path / "gallery.json",
     ))
     monkeypatch.setattr(face_runtime, "warmup", lambda: 0.0)
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config, events=replace(config.events, directory=tmp_path / "events"),
+    )
     runtime = HarnessRuntime(
-        load_config(ROOT / "config.yaml"), face_runtime=face_runtime
+        config, face_runtime=face_runtime
     )
     clients = []
     try:
@@ -277,9 +296,15 @@ def test_live_sessions_isolate_face_history_and_bind_rich_session(
             assert isinstance(client, FaceRecognitionSession)
             assert client.runtime is face_runtime
             assert client._session_id == runtime._session.stream_session_id
+            assert client.fast_results is runtime.face_fast_results
+            fast = runtime.face_fast_results.snapshot()
+            assert fast["stream_session_id"] == client._session_id
+            assert fast["active"] and not fast["available"]
             clients.append(client)
-            runtime.stop_session()
+            _stop_and_wait(runtime)
+            assert not client.fast_results.snapshot()["active"]
         assert clients[0] is not clients[1]
+        assert clients[0].fast_results is not clients[1].fast_results
         assert clients[0]._tracker is not clients[1]._tracker
     finally:
         runtime.stop()

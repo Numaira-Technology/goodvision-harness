@@ -49,7 +49,13 @@ stream variable takes precedence over the legacy RTSP variable:
 | `FACE_MODEL_ROOT` | Root containing operator-supplied face-analysis files. |
 | `FACE_GALLERY_PATH` | Persistent known-person gallery JSON path. |
 | `FACE_PROVIDER` | InsightFace ONNX provider: CPU, DirectML, or CUDA. |
-| `FACE_LIVE_SCHEDULER` | `auto` selects CPU single-flight and accelerated full sampling; `full`/`single_flight` override it. |
+| `FACE_LIVE_SCHEDULER` | Legacy scheduler for integrations without the ordered face pool; `auto` selects CPU single-flight and accelerated full sampling. |
+| `FACE_INFERENCE_INSTANCES` | Independent local face models; default 2, allowed 1–4. Benchmark CPU/GPU contention before raising. |
+| `FACE_INFERENCE_THREADS` | Per-instance inference threads; default 2, allowed 1–16. |
+| `SCENE_MAX_IN_FLIGHT` | Continuous temporal VLM client slots; default 4, allowed 1–4. |
+| `SCENE_OBSERVATION_FPS` | Continuous VLM distinct-source endpoint target; default 1.25, maximum 3. Requires sufficient real SAM observations. |
+| `LOCAL_CAMERA_DISPLAY_ENABLED` | Opt-in local-camera FIFO and motion-contour experiment; default false. |
+| `GOODVISION_SAM_SPOOL_DIRECTORY` | Private durable SAM task directory; default `.goodvision/sam-spool`. |
 | `RICH_LABEL_ENABLED` | Enable the optional rich-label worker path. |
 | `RICH_LABEL_ENDPOINT` | Rich-label worker inference URL. |
 
@@ -127,6 +133,12 @@ inference_service:
 选中渠道的 `request_parameters` 覆盖同名通用参数，其余渠道的专用参数不会发送。
 
 ## Face and reference memory
+
+The ordered local face pool stores source images until successful identity commit
+(failed tasks retain them), plus embeddings and observation facts for later review.
+These files live under the gallery directory's private `private-face` folder and
+are excluded from public results. Storage limits and process-restart recovery
+boundaries are described in the [implementation record](../architecture/parallel-latency-implementation-20260917.md).
 
 The three memory components have separate roles:
 

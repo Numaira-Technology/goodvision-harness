@@ -1,0 +1,51 @@
+# Native SAM 3.1 video validation. Each bounded batch has its own model memory.
+# docker compose -f compose.yaml -f compose.sam31.yaml up --build -d
+services:
+  harness:
+    depends_on:
+      sam31-worker:
+        condition: service_healthy
+    environment:
+      SCENE_ENGINE_MODE: active
+      RICH_LABEL_ENABLED: "true"
+      RICH_LABEL_BACKEND: sam31
+      RICH_LABEL_ENDPOINT: http://sam31-worker:8092/v1/video/batches
+      RICH_LABEL_MAX_FPS: "4"
+      PERSON_TRACKING_ENABLED: "true"
+      SAM31_BATCH_FRAMES: "${SAM31_BATCH_FRAMES:-16}"
+      SAM31_BATCH_SECONDS: "${SAM31_BATCH_SECONDS:-4}"
+      SAM31_CLIENT_TIMEOUT_SECONDS: "${SAM31_CLIENT_TIMEOUT_SECONDS:-75}"
+
+  sam31-worker:
+    build:
+      context: ./workers/sam_scene
+    image: goodvision-sam31:experimental
+    init: true
+    restart: unless-stopped
+    gpus: all
+    environment:
+      SAM31_ENABLED: "true"
+      SAM_SCENE_IMAGE_ENABLED: "false"
+      SAM31_CHECKPOINT_PATH: /models/sam3.1_multiplex.pt
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - type: bind
+        source: ${SAM31_CHECKPOINT_FILE:-./.models/sam3.1/sam3.1_multiplex.pt}
+        target: /models/sam3.1_multiplex.pt
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:8092:8092"
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+    shm_size: 2g
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

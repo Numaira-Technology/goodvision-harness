@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start the complete GoodVision delivery with verified CUDA or CPU execution.
+"""Start the complete GoodVision delivery with verified GPU or CPU execution.
 
 The same latest main image is used in both modes. CPU mode stops the optional
 rich worker while preserving its data. No image is pulled or replaced by an
@@ -215,7 +215,7 @@ def probe_cuda(directory: Path) -> bool:
             CUDA_PROBE,
         ],
         directory,
-        "CUDA availability probe",
+        "GPU availability probe",
     )
     for line in result.stdout.splitlines():
         if not line.startswith(PROBE_MARKER):
@@ -223,19 +223,19 @@ def probe_cuda(directory: Path) -> bool:
         try:
             payload = json.loads(line[len(PROBE_MARKER) :])
         except (ValueError, TypeError) as exc:
-            raise DeliveryError("CUDA probe returned an invalid response.") from exc
+            raise DeliveryError("GPU probe returned an invalid response.") from exc
         if not isinstance(payload, dict):
-            raise DeliveryError("CUDA probe returned an invalid response.")
+            raise DeliveryError("GPU probe returned an invalid response.")
         if result.returncode == 0 and payload.get("available") is True:
             return True
         if result.returncode == 3 and payload.get("available") is False:
             if payload.get("reason") in {"no_cuda_driver", "no_cuda_device"}:
                 return False
             raise DeliveryError(
-                "CUDA is present but initialization failed. "
+                "GPU is present but initialization failed. "
                 "Repair the GPU runtime; CPU mode was not selected."
             )
-        raise DeliveryError("CUDA probe returned an inconsistent response.")
+        raise DeliveryError("GPU probe returned an inconsistent response.")
 
     # Docker itself may report that no GPU devices are present.
     # Recheck the daemon first so connection failures cannot become CPU starts.
@@ -255,7 +255,7 @@ def probe_cuda(directory: Path) -> bool:
     ):
         return False
     raise DeliveryError(
-        "Docker could not verify CUDA availability. Check the GPU container runtime; "
+        "Docker could not verify GPU availability. Check the GPU container runtime; "
         "CPU mode was not selected."
     )
 
@@ -284,16 +284,16 @@ def make_plan(
             available = probe_cuda(directory)
             if mode == "gpu" and not available:
                 raise DeliveryError(
-                    "GPU mode was requested but no CUDA GPU is available to Docker."
+                    "GPU mode was requested but no GPU is available to Docker."
                 )
             selected = "gpu" if available else "cpu"
             reason = (
-                "CUDA GPU verified."
+                "GPU verified."
                 if available
-                else "No CUDA GPU is available; rich annotation is disabled."
+                else "No GPU is available; rich annotation is disabled."
             )
     elif mode == "gpu":
-        reason = "Explicit GPU dry run; CUDA will be verified on startup."
+        reason = "Explicit GPU dry run; the device will be verified on startup."
 
     common = (
         "docker",

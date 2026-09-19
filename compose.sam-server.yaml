@@ -1,0 +1,53 @@
+# Standalone SAM server. Weights belong to this GPU host, not the application host.
+name: goodvision-sam
+
+services:
+  sam-server:
+    build:
+      context: ./workers/sam_scene
+    image: goodvision-sam31:experimental
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${SAM_SERVER_BIND_ADDRESS:-0.0.0.0}:${SAM_SERVER_PORT:-8092}:8092"
+    environment:
+      SAM31_ENABLED: "true"
+      SAM_SCENE_IMAGE_ENABLED: "false"
+      SAM31_SESSION_ENABLED: "false"
+      SAM31_LIVE_ENABLED: "true"
+      SAM31_LIVE_CAMERAS: "${SAM31_LIVE_CAMERAS:-1}"
+      SAM31_SESSION_H264_ENABLED: "true"
+      SAM31_CHECKPOINT_PATH: /models/sam3.1_multiplex.pt
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - type: bind
+        source: ${SAM31_CHECKPOINT_FILE:-./.models/sam3.1/sam3.1_multiplex.pt}
+        target: /models/sam3.1_multiplex.pt
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${SAM_SERVER_GPU_ID:-0}"]
+              capabilities: [gpu]
+    read_only: true
+    tmpfs: ["/tmp:size=2g"]
+    shm_size: 2g
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,os,urllib.request; lane='/cameras/camera-01' if int(os.getenv('SAM31_LIVE_CAMERAS','1'))>1 else ''; r=json.load(urllib.request.urlopen('http://127.0.0.1:8092/health'+lane+'/perception/sam_live',timeout=2)); assert r['enabled'] and r['ready'] and r['gpu_ready']"
+      interval: 15s
+      timeout: 3s
+      start_period: 300s
+      retries: 10
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
