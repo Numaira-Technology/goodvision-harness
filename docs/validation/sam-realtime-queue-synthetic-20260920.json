@@ -1,0 +1,186 @@
+{
+  "kind": "synthetic_protocol_experiment_not_gpu_benchmark",
+  "playback_buffer_unchanged_seconds": 4,
+  "source_fps_per_camera": 4,
+  "capture_seconds": 7,
+  "simulated_native_seconds_per_frame": {
+    "normal": 0.03,
+    "overload": 0.6
+  },
+  "overload_window_seconds": [
+    1,
+    5
+  ],
+  "realtime_pending_frames": 4,
+  "note": "Real coordinator/HTTP/FIFO gate; fake image and model output. No accuracy or actual rendered-contour coverage is measured.",
+  "cases": [
+    {
+      "policy": "durable_ordered",
+      "batch_limit": 4,
+      "lanes": [
+        {
+          "source_frames": 28,
+          "processed_during_capture": 15,
+          "processed_total": 28,
+          "skipped": {
+            "superseded": 0,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 16,
+          "result_seconds_p50": 2.4690000000009604,
+          "result_seconds_p95": 4.625,
+          "result_seconds_max": 4.89100000000326,
+          "results_within_4_seconds": 23,
+          "admitted_deadline_coverage": 0.8214285714285714,
+          "gpu_gate_wait_max": 2.4059999999990396,
+          "request_hold_max": 0.625,
+          "longest_completion_gap": 2.547000000002299
+        },
+        {
+          "source_frames": 28,
+          "processed_during_capture": 14,
+          "processed_total": 28,
+          "skipped": {
+            "superseded": 0,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 16,
+          "result_seconds_p50": 2.3440000000009604,
+          "result_seconds_p95": 4.75,
+          "result_seconds_max": 4.98399999999674,
+          "results_within_4_seconds": 22,
+          "admitted_deadline_coverage": 0.7857142857142857,
+          "gpu_gate_wait_max": 0.625,
+          "request_hold_max": 2.4059999999990396,
+          "longest_completion_gap": 3.014999999999418
+        }
+      ]
+    },
+    {
+      "policy": "realtime_latest",
+      "batch_limit": 1,
+      "lanes": [
+        {
+          "source_frames": 28,
+          "processed_during_capture": 18,
+          "processed_total": 18,
+          "skipped": {
+            "superseded": 10,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 4,
+          "result_seconds_p50": 0.14099999999962165,
+          "result_seconds_p95": 2.125,
+          "result_seconds_max": 2.125,
+          "results_within_4_seconds": 18,
+          "admitted_deadline_coverage": 0.6428571428571429,
+          "gpu_gate_wait_max": 0.6100000000005821,
+          "request_hold_max": 0.625,
+          "longest_completion_gap": 1.25
+        },
+        {
+          "source_frames": 28,
+          "processed_during_capture": 18,
+          "processed_total": 18,
+          "skipped": {
+            "superseded": 10,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 4,
+          "result_seconds_p50": 0.17199999999866122,
+          "result_seconds_p95": 2.235000000000582,
+          "result_seconds_max": 2.235000000000582,
+          "results_within_4_seconds": 18,
+          "admitted_deadline_coverage": 0.6428571428571429,
+          "gpu_gate_wait_max": 0.6090000000003783,
+          "request_hold_max": 0.6100000000005821,
+          "longest_completion_gap": 1.4059999999990396
+        }
+      ]
+    },
+    {
+      "policy": "realtime_latest",
+      "batch_limit": 2,
+      "lanes": [
+        {
+          "source_frames": 28,
+          "processed_during_capture": 17,
+          "processed_total": 17,
+          "skipped": {
+            "superseded": 11,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 4,
+          "result_seconds_p50": 0.43800000000192085,
+          "result_seconds_p95": 3.375,
+          "result_seconds_max": 3.375,
+          "results_within_4_seconds": 17,
+          "admitted_deadline_coverage": 0.6071428571428571,
+          "gpu_gate_wait_max": 1.2190000000009604,
+          "request_hold_max": 1.2030000000013388,
+          "longest_completion_gap": 2.436999999998079
+        },
+        {
+          "source_frames": 28,
+          "processed_during_capture": 17,
+          "processed_total": 17,
+          "skipped": {
+            "superseded": 11,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 4,
+          "result_seconds_p50": 0.5,
+          "result_seconds_p95": 3.422000000002299,
+          "result_seconds_max": 3.422000000002299,
+          "results_within_4_seconds": 17,
+          "admitted_deadline_coverage": 0.6071428571428571,
+          "gpu_gate_wait_max": 1.2029999999977008,
+          "request_hold_max": 1.2190000000009604,
+          "longest_completion_gap": 2.437000000001717
+        }
+      ]
+    },
+    {
+      "policy": "realtime_latest",
+      "batch_limit": 4,
+      "lanes": [
+        {
+          "source_frames": 28,
+          "processed_during_capture": 18,
+          "processed_total": 18,
+          "skipped": {
+            "superseded": 10,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 4,
+          "result_seconds_p50": 0.5470000000022992,
+          "result_seconds_p95": 3.5309999999990396,
+          "result_seconds_max": 3.5309999999990396,
+          "results_within_4_seconds": 18,
+          "admitted_deadline_coverage": 0.6428571428571429,
+          "gpu_gate_wait_max": 2.389999999999418,
+          "request_hold_max": 1.2190000000009604,
+          "longest_completion_gap": 2.561999999998079
+        },
+        {
+          "source_frames": 28,
+          "processed_during_capture": 17,
+          "processed_total": 17,
+          "skipped": {
+            "superseded": 11,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 4,
+          "result_seconds_p50": 0.4059999999990396,
+          "result_seconds_p95": 4.375,
+          "result_seconds_max": 4.375,
+          "results_within_4_seconds": 15,
+          "admitted_deadline_coverage": 0.5357142857142857,
+          "gpu_gate_wait_max": 1.1880000000019209,
+          "request_hold_max": 2.4059999999990396,
+          "longest_completion_gap": 3.6090000000003783
+        }
+      ]
+    }
+  ]
+}

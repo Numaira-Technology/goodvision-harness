@@ -87,6 +87,11 @@ class RichLabelSettings:
     video_transport_jpeg_quality: int | None = None
     video_transport_codec: str = "jpeg"
     video_transport_crf: int = 23
+    video_queue_policy: str = "durable_ordered"
+    video_realtime_append_frames: int = 1
+    video_realtime_pending_frames: int = 2
+    video_realtime_max_age_seconds: float = 2.0
+    video_result_deadline_seconds: float = 4.0
     processing_method: str | None = None
 
 
@@ -383,7 +388,42 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     )
     if processing_method is not None:
         processing_method = validate_processing_method(processing_method)
+    video_queue_policy = _required_string(
+        os.environ.get("SAM31_QUEUE_POLICY")
+        or rich_label_section.get("video_queue_policy", "durable_ordered"),
+        "rich_labeling.video_queue_policy",
+    )
+    if video_queue_policy not in {"durable_ordered", "realtime_latest"}:
+        raise ValueError("unsupported rich_labeling.video_queue_policy")
+    if video_queue_policy == "realtime_latest" and processing_method != "sam_live":
+        raise ValueError("realtime_latest requires sam_live")
+    realtime_append_frames = _bounded_int(
+        int(os.environ["SAM31_REALTIME_APPEND_FRAMES"])
+        if os.environ.get("SAM31_REALTIME_APPEND_FRAMES") else
+        rich_label_section.get("video_realtime_append_frames", 1),
+        "rich_labeling.video_realtime_append_frames", minimum=1, maximum=4,
+    )
+    if realtime_append_frames not in {1, 2, 4}:
+        raise ValueError("video_realtime_append_frames must be 1, 2, or 4")
     rich_labeling = RichLabelSettings(
+        video_queue_policy=video_queue_policy,
+        video_realtime_append_frames=realtime_append_frames,
+        video_realtime_pending_frames=_bounded_int(
+            int(os.environ["SAM31_REALTIME_PENDING_FRAMES"])
+            if os.environ.get("SAM31_REALTIME_PENDING_FRAMES") else
+            rich_label_section.get("video_realtime_pending_frames", 2),
+            "rich_labeling.video_realtime_pending_frames", minimum=1, maximum=8,
+        ),
+        video_realtime_max_age_seconds=_bounded_float(
+            os.environ.get("SAM31_REALTIME_MAX_AGE_SECONDS") or
+            rich_label_section.get("video_realtime_max_age_seconds", 2.0),
+            "rich_labeling.video_realtime_max_age_seconds", minimum=0.01, maximum=30,
+        ),
+        video_result_deadline_seconds=_bounded_float(
+            os.environ.get("SAM31_RESULT_DEADLINE_SECONDS") or
+            rich_label_section.get("video_result_deadline_seconds", 4.0),
+            "rich_labeling.video_result_deadline_seconds", minimum=0.01, maximum=30,
+        ),
         enabled=rich_label_enabled,
         processing_method=processing_method,
         tracking_enabled=_environment_bool(
