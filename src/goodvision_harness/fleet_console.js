@@ -481,6 +481,7 @@
             onFrame:({buffering})=>{row.networkHasFrame=true;row.networkBuffering=buffering;row.previewError=false;
               row.placeholder.hidden=!buffering;},
             onStatus:stats=>{row.networkBuffering=stats.distinct_presented_frames===0;
+              row.latestDisplayStats=stats;
               row.placeholder.hidden=!row.networkBuffering&&!row.previewError;
               const now=this.clock(),previous=row.displaySample;
               const same=previous&&previous.id===stats.display_instance_id&&stats.distinct_presented_frames>=previous.frames;

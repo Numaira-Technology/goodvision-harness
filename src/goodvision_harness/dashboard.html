@@ -1235,7 +1235,7 @@ function openFeed(){
         stopLatestFeed();networkVideoDisplay=new globalThis.GoodvisionCameraDisplay.SharedController({canvas:ui.localCameraCanvas,
           source:()=>{const row=rows.get(globalThis.GoodvisionDiagnosticCameraId);return {
             media:row?.canvas&&!row.canvas.hidden?row.canvas:row?.image,
-            stats:row?.networkDisplay?.controller?.snapshot?.()};},
+            stats:row?.latestDisplayStats};},
           onStatus:stats=>{ui.rawBadgeText.textContent="连续画面 · "+(stats.distinct_presented_fps??0).toFixed(1)+
             " 帧/秒 · 缓冲 "+stats.configured_display_delay_seconds+" 秒";}});
         networkVideoDisplay.start();
