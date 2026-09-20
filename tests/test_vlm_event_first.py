@@ -194,6 +194,47 @@ def test_recorded_reply_keeps_all_four_decisions_without_guessing_undeclared_uni
     assert result["objects"] == []
 
 
+@pytest.mark.parametrize(
+    "endpoint,positive_labels,unlocalized_labels",
+    [
+        (1.6, {"smoking"}, set()),
+        (9.6, {"fight"}, set()),
+        (13.6, {"fall"}, set()),
+        (24.0, set(), set()),
+        (42.4, set(), set()),
+        (51.2, set(), {"smoking", "fall", "weapon"}),
+    ],
+)
+def test_recorded_30b_replies_preserve_decisions_and_localization_status(
+    endpoint, positive_labels, unlocalized_labels
+):
+    path = Path(__file__).parent / "fixtures/vlm/qwen3vl_30b_openrouter_20260921.json"
+    recorded = json.loads(path.read_text(encoding="utf-8"))
+    window = next(w for w in recorded["windows"] if w["endpoint"] == endpoint)
+    cfg = replace(config(), labels=("fight", "smoking", "fall", "weapon"))
+    sequence = round(endpoint * 15)
+    verdicts = IndependentVLMInspector._parse(job(cfg, endpoint, sequence), window)
+    result = report(IndependentEventState(cfg), endpoint, sequence, verdicts)
+    assert result["state"] == "completed" and result["analysis_complete"]
+    assert len(result["judgments"]) == 4
+    # These expectations preserve recorded replies, not claims of visual accuracy.
+    assert {v.event_label for v in verdicts if v.detected} == positive_labels
+    assert {
+        v.event_label for v in verdicts if not v.subject_boxes
+    } == unlocalized_labels
+    assert result["localization_complete"] is (not unlocalized_labels)
+    assert all("invalid_subject_bbox" not in v.grounding_issues for v in verdicts)
+    if endpoint == 1.6:
+        # Real wire values [483,0,659,662] must use the declared 1000 scale.
+        box = verdicts[0].subject_boxes[0][1]
+        assert (box.x1, box.y1, box.x2, box.y2) == (0.483, 0.0, 0.659, 0.662)
+    for observation in result["observations"]:
+        if observation["event_label"] in unlocalized_labels:
+            assert observation["detected"] is False
+            assert not observation["accepted"]
+            assert "unlocalized_event" in observation["grounding_issues"]
+
+
 def test_public_route_c_reaches_independent_process_as_qwen30b(rig, monkeypatch):
     from test_vlm_independent_service import LocalBranch
 

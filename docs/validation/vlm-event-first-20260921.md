@@ -19,9 +19,10 @@ as a regression fixture with explicit provenance; it is not represented as a new
 30B test. The [Qwen3-VL technical report, section 3.2.4](https://arxiv.org/html/2511.21631v1)
 specifies normalized coordinates in the 0..1000 range.
 
-The attempted six-window real 30B reproduction was rejected by automatic approval
-review pending explicit authorization of the video transfer to OpenRouter. No
-new real-model accuracy or localization result is claimed by this change.
+The initial six-window reproduction was blocked pending destination-specific
+authorization. On 2026-09-21 the user explicitly authorized OpenRouter in this
+task. The six requests then completed using the current main-worktree code;
+results and limits are recorded below.
 
 ## Protocol and behavior
 
@@ -61,7 +62,7 @@ maps to persisted route AA and `qwen/qwen3-vl-30b-a3b-instruct:nitro`; the servi
 passes that model into the independent process and inspector. Public `route_id`
 is now frozen per run and included in report model metadata and branch health.
 
-## Verification and next step
+## Verification
 
 148 local regression tests passed, followed by 38 focused route/process tests.
 They cover bad/missing/duplicate boxes, explicit coordinate conversion, missing
@@ -69,7 +70,66 @@ participants, preserved positive/negative observations, no fabricated confirmati
 legacy episode semantics, the recorded reply and public-route model propagation.
 Tests use local fixtures/stub transports, not new API calls.
 
-The testing task owns the compatible UI presentation and recording environment.
-Once the outstanding concrete transfer authorization is resolved, validate the
-new wire format on real 30B replies and inspect actual box alignment as well as
-event coverage. A parser passing a reply is not a claim of model accuracy.
+### Authorized real 30B replay
+
+Code: `71f18c9` (event-first implementation `c9e75c3`). Destination:
+`https://openrouter.ai/api/v1/chat/completions`. Requested model:
+`qwen/qwen3-vl-30b-a3b-instruct:nitro`. All six replies reported
+`qwen/qwen3-vl-30b-a3b-instruct`, provider `Alibaba`. This establishes the actual
+request/response model metadata separately from the public display alias.
+
+The same SDR recording was used:
+SHA-256 `dc68d2e2d3d9935f0a028799ba3220037a9c9b998a54503cb61b93353b8598fc`.
+Each request contained four frames, 0.4 seconds apart, ending at the timestamp
+below. All four event sensitivities were STANDARD. Settings matched the saved
+test configuration: maximum image side 720, JPEG quality 90; source extraction
+first encoded JPEG at quality 80. Requests were sequential with no retries.
+
+| Window end | Positive model decisions | Event judgments | Grounded judgments | Request seconds |
+| --- | --- | --- | --- | --- |
+| 1.6 s | smoking | 4/4 | 4/4 | 2.750 |
+| 9.6 s | fight | 4/4 | 4/4 | 2.422 |
+| 13.6 s | fall | 4/4 | 4/4 | 2.844 |
+| 24.0 s | none | 4/4 | 4/4 | 2.609 |
+| 42.4 s | none | 4/4 | 4/4 | 2.703 |
+| 51.2 s | none | 4/4 | 1/4 | 2.454 |
+
+All six replies explicitly declared `normalized_1000`. All completed, with
+24/24 event judgments retained and zero `invalid_subject_bbox` failures.
+At 51.2 seconds the model returned empty participant lists for smoking, fall and
+weapon. All three negative decisions survived with `unlocalized_event`, without
+invented participant associations. Event completeness and localization
+completeness therefore remain distinct in a real reply, not only in unit tests.
+Median request duration was 2.656 seconds (range 2.422–2.844). The API reported a
+total cost of USD 0.00213499. These are individual request durations, not display
+latency, sustained throughput, or end-to-end confirmed-event latency.
+
+Offline visual review overlaid the declared boxes on the last source frame and
+reviewed all four frames in each positive window. The coordinate conversion aligns
+the foreground participant at 1.6, 9.6, 13.6 and 51.2 seconds. The 24-second box
+misses the participant's head/upper body, so valid geometry does not establish
+accurate full-person localization. Small background boxes also need evaluation
+under the real association workload. No geometric correction was guessed.
+
+The visible striking gesture and descent to the floor are consistent with the
+fight/fall decisions under the configured policy. At 1.6 seconds the visible
+mouth-level object/action remains ambiguous: a smoking-positive response is not
+proof of tobacco use or correct STANDARD-policy object identification. The three
+negative windows provide useful fall false-positive spot checks. These six chosen
+windows are not a general accuracy/recall benchmark, and do not test temporal
+confirmation or the dual-camera playback target.
+
+Original response choices, including returned Markdown fences and empty
+participant references, are checked in at
+`tests/fixtures/vlm/qwen3vl_30b_openrouter_20260921.json`; no images or credentials
+are included. Six recorded-response regressions were added; all 30 tests in
+`tests/test_vlm_event_first.py` passed. These regressions preserve protocol
+behavior and model decisions; they do not assert that model decisions are truth.
+Local raw replies, extracted frames, box overlays and statistics are retained in
+`.goodvision/diagnostics/vlm-independent-20260921/coordinate-after/`.
+
+The testing task owns the compatible UI and full dual-camera recording. Its
+separate automatic approval review still requires a direct confirmation there;
+this task did not run that blocked workload. No new production-code change was
+needed for the six-window verification. Full playback and long-run acceptance
+remain with the testing task.
