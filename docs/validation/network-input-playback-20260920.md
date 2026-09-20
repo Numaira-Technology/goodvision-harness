@@ -103,10 +103,19 @@ The peer task's second H100 reached readiness, but its optional CPU monitoring
 launcher attempted `docker cp` into a read-only container and failed before the
 five-minute analysis began. Cleanup released that instance. No new five-minute
 result exists, and the failed startup is not counted as a performance test.
-No third instance was created: no budget-compatible Taiwan H100 was available,
-so paid recovery was stopped. Original containers/settings are being restored by
-the peer task. Keep the successful input checks and first H100 baseline separate
-from this failed attempt; no result-path speedup has been measured or claimed.
+No third instance had been created when that recovery attempt stopped: no
+budget-compatible Taiwan H100 was available. The peer task subsequently verified
+that both rented instances were released and both original services had their
+settings restored and saved sources reconnected.
+
+The user then explicitly authorized further necessary tests at a rental rate
+strictly below USD 8 per hour. That authorization was forwarded to the peer task:
+expand eligible locations/GPU options, preflight the corrected launcher before
+renting, reuse dependency caches where available, and complete the proper-SDR
+full-pipeline comparison with four-second playback buffering. The earlier recovery
+budget/deadline is not a reason to stop this newly authorized work. Keep the
+successful input checks and first H100 baseline separate from the failed startup;
+no result-path speedup has yet been measured or claimed.
 
 The display catch-up counter is included in the server's strict numeric telemetry
 schema, so reporting remains valid after deploying the browser change. Eight
