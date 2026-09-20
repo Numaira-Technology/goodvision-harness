@@ -555,6 +555,16 @@ class StreamingSession:
         face = self._ordered_face_client
         organizer = self._face_organizer if branch == "stranger" else self.organizer
         pending = self._face_pending if branch == "stranger" else self._pending
+        delivered = Future()
+
+        def completed(future):
+            try:
+                self._on_ordered_face_done(future, branch=branch)
+            except Exception as exc:
+                delivered.set_exception(exc)
+                raise
+            else:
+                delivered.set_result(None)
 
         def admitted(future):
             record, snapshot = organizer.note_submitted(
@@ -566,12 +576,11 @@ class StreamingSession:
                 pending.add(future)
             # This closure retains no JPEG/window. The durable source is used
             # for an error; a successful response carries its exact source.
-            future.add_done_callback(
-                lambda done: self._on_ordered_face_done(done, branch=branch)
-            )
+            future.add_done_callback(completed)
 
         try:
             face.submit_window(window, on_admitted=admitted)
+            return delivered
         except Exception as exc:
             self._archive_window(window, "capacity_fault", branch=branch)
             log_timing(

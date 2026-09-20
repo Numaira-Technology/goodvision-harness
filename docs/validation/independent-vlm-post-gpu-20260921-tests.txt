@@ -1,0 +1,8 @@
+102 targeted regression tests: passed in 33.48s (pytest-vlm-final-09).
+14 independent process/service tests after readiness changes: passed in 22.28s (pytest-vlm-readiness-10).
+3 service tests after optional face warmup change: passed in 10.83s (pytest-vlm-start-11).
+New independent tests explicitly enable scene_independent_vlm; legacy coverage uses SCENE_INDEPENDENT_VLM=false.
+Ruff checks for all new modules/tests and FaceAdmissionQueue: passed.
+git diff --check: passed.
+Real API runs: 3 x 55.8s (69 requests each) plus 12 bounded prompt comparisons; no extra GPU rental.
+Full dual-GPU acceptance of this new code: not run.

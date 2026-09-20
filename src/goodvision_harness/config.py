@@ -143,6 +143,7 @@ class RuntimeSettings:
     scene_max_tokens: int = 1600
     scene_max_in_flight: int = 4
     scene_observation_fps: float = 1.25
+    scene_independent_vlm: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,6 +686,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "runtime.max_concurrent_requests",
         ),
         scene_mode=scene_mode,
+        scene_independent_vlm=_environment_bool(
+            "SCENE_INDEPENDENT_VLM", _bool(runtime_section.get("scene_independent_vlm", True),
+                                          "runtime.scene_independent_vlm"),
+        ),
         scene_timeout_seconds=scene_timeout,
         scene_max_in_flight=_positive_int(
             int(os.environ.get("SCENE_MAX_IN_FLIGHT") or runtime_section.get(
