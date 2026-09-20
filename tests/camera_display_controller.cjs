@@ -16,7 +16,8 @@ test("network source preserves server frame IDs, native pixels and playback cade
   assert.equal(view.canvas.width,1920);assert.equal(view.canvas.height,1080);
   assert.equal(view.controller.snapshot().analysis_admitted,0);
   assert.equal(view.packets.length,0);
-  assert.equal(view.workerMessages.filter(x=>x.type==="frame_bitmap").length,15);
+  assert.equal(view.workerMessages.filter(x=>x.type==="frame_bitmap").length,2);
+  assert.equal(view.controller.snapshot().motion_frames_skipped,13);
   assert.ok(Math.abs(view.controller.snapshot().last_source_to_present_seconds-.5)<1e-6);
   view.controller.stop();
 });
@@ -599,6 +600,9 @@ test("WebSocket metadata bypasses HTTP, preserves run barriers and rejects repla
   assert.equal(controller.receiveMetadata({...data,metadata_revision:10,crop_version:1},{transport:"websocket"}),false);
   assert.equal(controller.receiveMetadata({...data,metadata_revision:undefined},{transport:"websocket"}),false);
   assert.equal(controller.receiveMetadata({...data,metadata_revision:10},{transport:"websocket"}),true);
+  assert.equal(view.workerMessages.filter(message=>message.type==="metadata").length,1);
+  assert.equal(controller.snapshot().worker_pending_metadata,2);
+  controller.worker.onmessage({data:{type:"metadata_processed",accepted:true}});
   const messages=view.workerMessages.filter(message=>message.type==="metadata");
   assert.equal(messages.length,2);assert.equal(messages[1].data.event_snapshot_revision,4);
   assert.equal(controller.snapshot().metadata_duplicate_revisions,2);
@@ -659,7 +663,10 @@ test("bounded numeric telemetry records foreground changes and long tasks and re
 
 test("motion capture sends a separate small bitmap in source order without any main-thread pixel readback",()=>{
   const view=browser();view.controller.grayContext.getImageData=()=>{throw new Error("main-thread readback forbidden");};
-  for(let i=0;i<3;i++)view.capture(i/15);
+  for(let i=0;i<3;i++){
+    view.capture(i/15);
+    view.controller.worker.onmessage({data:{type:"frame_processed",sequence:i,accepted:true}});
+  }
   const frames=view.workerMessages.filter(message=>message.type==="frame_bitmap");
   assert.deepEqual(frames.map(message=>message.frame.sequence),[0,1,2]);
   assert.deepEqual(frames.map(message=>message.frame.timestamp),[0,1/15,2/15]);
@@ -681,7 +688,9 @@ test("motion area stays bounded across camera aspect ratios without resizing dis
   ]){
     const view=browser({config:{motion_width:motionWidth}});t.after(()=>view.controller.stop());
     view.video.videoWidth=width;view.video.videoHeight=height;view.controller.settings.max_image_side=320;
-    view.capture(0);view.capture(.34);view.capture(.68);
+    for(const [sequence,time] of [0,.34,.68].entries()){
+      view.capture(time);view.controller.worker.onmessage({data:{type:"frame_processed",sequence,accepted:true}});
+    }
     const motions=view.workerMessages.filter(message=>message.type==="frame_bitmap");
     assert.deepEqual(motions.map(message=>message.frame.sequence),[0,1,2]);
     assert.deepEqual(motions.map(message=>message.frame.timestamp),[0,.34,.68]);
@@ -876,6 +885,7 @@ test("two SAM anchors per second supply moving contours on every 15 FPS display 
       const sequence=tick/4;
       history.appendFrame({sequence,timestamp:now,width:16,height:16,pixels:new Uint8Array(256).fill(sequence)});
       view.controller.capture(now*1000,{mediaTime:now,presentedFrames:sequence},{width:640,height:480});
+      view.controller.worker.onmessage({data:{type:"frame_processed",sequence,accepted:true}});
       if(now+1e-6>=nextSample){
         pendingAnchors.push({at:now+.8,anchor:{source_sequence:sequence,media_timestamp:now,epoch:"epoch",
           subjects:[{track_id:"person",tracking_confirmation:"confirmed",
@@ -1140,4 +1150,114 @@ test("continuous fetch parses split chunks without waiting for metadata and canc
   assert.equal(requests,1);assert.equal(feed.controller.stats.network_requests,1);
   assert.equal(feed.controller.stats.network_frames_received,2);
   feed.stop();await running;assert.equal(cancelled,true);view.controller.stop();
+});
+
+
+test("three minutes of stalled motion retain 15 FPS native video and a four-second playback buffer",t=>{
+  const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:4}});
+  t.after(()=>view.controller.stop());let grayDraws=0;
+  const draw=view.controller.grayContext.drawImage;
+  view.controller.grayContext.drawImage=(...args)=>{grayDraws++;draw(...args);};
+  for(let tick=0;tick<184*60;tick++){
+    const now=tick/60;view.setClock(now);
+    if(tick%4===0&&tick<180*60)view.controller.capture(now*1000,
+      {mediaTime:now,presentedFrames:tick/4},{width:1920,height:1080});
+    view.render(now);
+    assert.ok(view.controller.snapshot().worker_pending_frames<=2);
+    assert.ok(view.controller.snapshot().worker_pending_present_queries<=2);
+    if(now<4)assert.equal(view.controller.snapshot().distinct_presented_frames,0);
+  }
+  const stats=view.controller.snapshot();
+  assert.equal(stats.captured_frames,2700);assert.equal(stats.distinct_presented_frames,2700);
+  assert.equal(view.canvas.dataset.frameSequence,"2699");
+  assert.equal(stats.configured_display_delay_seconds,4);
+  assert.ok(Math.abs(stats.last_source_to_present_seconds-4)<1e-6);
+  assert.equal(stats.display_buffer_expired,0);assert.equal(stats.display_catchup_expired,0);
+  assert.equal(stats.analysis_admitted,0);assert.equal(stats.motion_failures,0);
+  assert.equal(stats.motion_frames_admitted,2);assert.equal(stats.motion_frames_skipped,2698);
+  assert.equal(grayDraws,2,"skip before graphics readback or bitmap allocation");
+  assert.equal(view.workerMessages.filter(message=>message.type==="present").length,2,
+    "retiring the displayed frame cannot pretend its worker query has completed");
+  assert.deepEqual([view.canvas.width,view.canvas.height],[1920,1080]);
+});
+
+test("frame admission waits for motion completion and resumes with current source pixels",t=>{
+  const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:4}});
+  t.after(()=>view.controller.stop());
+  const capture=seq=>{view.setClock(seq/15);view.controller.capture(seq/15*1000,
+    {mediaTime:seq/15,presentedFrames:seq},{width:640,height:480,origin:seq});};
+  capture(0);capture(1);
+  view.controller.preprocessWorker.onmessage({data:{type:"frame_preprocessed",sequence:0}});
+  capture(2);
+  assert.equal(view.controller.snapshot().worker_pending_frames,2);
+  assert.equal(view.controller.snapshot().preprocess_pending_frames,1);
+  assert.equal(view.controller.snapshot().motion_pending_frames,1);
+  view.controller.worker.onmessage({data:{type:"frame_processed",sequence:0,accepted:true}});
+  capture(3);
+  assert.deepEqual(view.workerMessages.filter(m=>m.type==="frame_bitmap").map(m=>m.frame.sequence),[0,1,3]);
+  view.controller.worker.onmessage({data:{type:"frame_processed",sequence:1,accepted:false,expired:true}});
+  // A preprocessor ACK from another worker can arrive after the terminal ACK.
+  view.controller.preprocessWorker.onmessage({data:{type:"frame_preprocessed",sequence:1}});
+  assert.equal(view.controller.snapshot().worker_pending_frames,1);
+  assert.equal(view.controller.snapshot().motion_pending_frames,0);
+  assert.equal(view.controller.snapshot().motion_frames_expired,1);
+  assert.equal(view.controller.snapshot().motion_failures,0);
+  view.controller.worker.onmessage({data:{type:"failure",request_type:"frame",sequence:3}});
+  capture(20);
+  assert.equal(view.workerMessages.filter(m=>m.type==="frame_bitmap").at(-1).frame.bitmap.origin,20);
+  assert.equal(view.controller.snapshot().worker_pending_frames,1);
+});
+
+test("metadata bursts preserve bounded delta anchors and the latest authoritative event snapshot",t=>{
+  const view=browser({config:{transport:"websocket"}});t.after(()=>view.controller.stop());
+  for(let revision=0;revision<1000;revision++){
+    view.setClock(revision/1000);
+    assert.equal(view.controller.receiveMetadata({stream_session_id:"run",generation:2,crop_version:0,
+      metadata_revision:revision,event_snapshot_revision:revision,event_snapshot_timestamp:revision/1000,
+      events:[],anchors:[{source_sequence:revision,media_timestamp:revision/15,epoch:"epoch",subjects:[]}]},
+      {transport:"websocket"}),true);
+  }
+  assert.equal(view.workerMessages.filter(m=>m.type==="metadata").length,1);
+  assert.equal(view.controller.snapshot().worker_pending_metadata,2);
+  assert.equal(view.controller.snapshot().motion_metadata_coalesced,998);
+  view.controller.worker.onmessage({data:{type:"metadata_processed",accepted:true}});
+  const sent=view.workerMessages.filter(m=>m.type==="metadata");
+  assert.equal(sent.length,2);assert.equal(sent[1].data.event_snapshot_revision,999);
+  assert.equal(sent[1].data.anchors.length,256);
+  assert.equal(sent[1].data.anchors[0].source_sequence,744);
+  assert.equal(sent[1].data.anchors.at(-1).source_sequence,999);
+  assert.equal(sent[1].queued_at,1,"coalescing retains the oldest queued receipt time for honest latency");
+  view.controller.worker.onmessage({data:{type:"metadata_processed",accepted:true}});
+  assert.equal(view.controller.snapshot().worker_pending_metadata,0);
+});
+
+
+test("terminal worker failure retires pending work while buffered originals continue",t=>{
+  const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:4}});
+  t.after(()=>view.controller.stop());
+  view.setClock(0);view.controller.capture(0,{mediaTime:0,presentedFrames:0},{width:640,height:480});
+  assert.equal(view.controller.snapshot().worker_pending_frames,1);
+  view.controller.preprocessWorker.onerror();
+  assert.equal(view.controller.snapshot().worker_pending_frames,0);
+  assert.equal(view.controller.snapshot().worker_pending_present_queries,0);
+  assert.equal(view.controller.worker.terminated,true);assert.equal(view.controller.preprocessWorker.terminated,true);
+  view.setClock(1);view.controller.capture(1000,{mediaTime:1,presentedFrames:15},{width:640,height:480});
+  view.render(4);assert.equal(view.canvas.dataset.frameSequence,"0");
+  view.render(5);assert.equal(view.canvas.dataset.frameSequence,"15");
+  assert.equal(view.workerMessages.filter(m=>m.type==="frame_bitmap").length,1);
+  assert.equal(view.controller.snapshot().worker_pending_frames,0);
+});
+
+
+test("coalescing a delayed HTTP response cannot resurrect an older event snapshot",t=>{
+  const view=browser();t.after(()=>view.controller.stop());
+  const data=revision=>({stream_session_id:"run",generation:2,crop_version:0,anchors:[],
+    event_snapshot_revision:revision,event_snapshot_timestamp:revision,events:[]});
+  view.controller.receiveMetadata(data(1));
+  view.controller.receiveMetadata(data(3));
+  view.controller.receiveMetadata({...data(2),events:[{event_label:"stale"}]});
+  view.controller.worker.onmessage({data:{type:"metadata_processed",accepted:true}});
+  const latest=view.workerMessages.filter(m=>m.type==="metadata").at(-1).data;
+  assert.equal(latest.event_snapshot_revision,3);assert.equal(latest.event_snapshot_timestamp,3);
+  assert.equal(latest.events.length,0);
 });

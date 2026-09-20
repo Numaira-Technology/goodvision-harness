@@ -26,6 +26,13 @@
       root.postMessage(message);
     }
     function release(message){message.frame?.bitmap?.close();}
+    function expireFrame(message){
+      if(!["frame","frame_bitmap"].includes(message.type)||
+        !Number.isFinite(message.motion_deadline_epoch_ms)||Date.now()<=message.motion_deadline_epoch_ms)return false;
+      release(message);
+      reply(message,{type:"frame_processed",sequence:message.frame.sequence,
+        queued_at:message.queued_at,accepted:false,expired:true,compute_ms:0});return true;
+    }
     function releasePending(){for(const message of pending)release(message);pending=[];}
     function prepareBitmap(message){
       const frame=message.frame,started=performance.now(),bitmap=frame.bitmap;
@@ -55,6 +62,7 @@
       finally{bitmap.close();}
     }
     function process(message){
+      if(expireFrame(message))return;
       try{
         const started=performance.now();
         if(history&&message.type==="frame"){
@@ -88,7 +96,7 @@
             queued_at:message.queued_at,result,geometry_cache_hit:result.geometry_cache_hit,
             compute_ms:performance.now()-started,motion_queue_ms:queueMs});
         }
-      }catch(error){reply(message,{type:"failure",request_type:message.type,id:message.id,sequence:message.sequence});}
+      }catch(error){reply(message,{type:"failure",request_type:message.type,id:message.id,sequence:message.frame?.sequence??message.sequence});}
     }
     function loadDenseRuntime(){
       if(runtimePromise)return runtimePromise;
@@ -134,6 +142,7 @@
       }
       if(message.type==="stop_motion_trace"){stopTrace(message.reason||"requested");return;}
       if(forward){
+        if(expireFrame(message))return;
         const started=performance.now(),queueMs=Number.isFinite(message.queued_epoch_ms)?
           Math.max(0,Date.now()-message.queued_epoch_ms):undefined;
         try{
@@ -148,15 +157,18 @@
             sequence:message.frame.sequence,compute_ms:performance.now()-started,queue_ms:queueMs});
           if(traced)try{root.postMessage({type:"motion_trace_input",message:traced},
             traced.type==="frame"?[traced.frame.pixels.buffer]:[]);}catch(_){stopTrace("delivery_failure");}
-        }catch(error){root.postMessage({type:"failure",stage:"motion_preprocess",sequence:message.frame?.sequence});}
+        }catch(error){reply(message,{type:"failure",stage:"motion_preprocess",request_type:message.type,
+          id:message.id,sequence:message.frame?.sequence??message.sequence});}
         return;
       }
       // Encoding has its own Worker and cannot occupy the motion history queue.
       if(message.type==="encode_jpeg"){encode(message);return;}
       if(message.type==="frame_bitmap"){
+        if(expireFrame(message))return;
         if(!loading&&!history){release(message);return;}
         try{message=prepareBitmap(message);}
-        catch(error){root.postMessage({type:"failure",stage:"motion_preprocess",sequence:message.frame?.sequence});return;}
+        catch(error){reply(message,{type:"failure",stage:"motion_preprocess",request_type:message.type,
+          sequence:message.frame?.sequence});return;}
       }
       if(message.type==="reset"){
         const current=++revision;history=null;releasePending();
@@ -1179,6 +1191,7 @@
       this.worker.onmessage=event=>{
         const message=event.data;
         if(this.closed)return;
+        this.retireMotionWork(message);
         if(message.type==="motion_trace_input"||message.type==="motion_trace_stopped"){
           this.recordMotionTrace(message);return;
         }
@@ -1205,10 +1218,11 @@
             if(this.overlays.size>120)this.overlays.delete(this.overlays.keys().next().value);
           }else this.stats.worker_results_late++;
         }else if(message.type==="frame_processed"){
-          this.stats.worker_frames_completed++;
-          if(finite(message.compute_ms))this.noteTiming("motion_compute",message.compute_ms);
+          if(message.expired)this.stats.motion_frames_expired++;
+          else this.stats.worker_frames_completed++;
+          if(!message.expired&&finite(message.compute_ms))this.noteTiming("motion_compute",message.compute_ms);
           if(finite(message.motion_queue_ms))this.noteTiming("motion_frame_queue",message.motion_queue_ms);
-          if(!message.accepted)this.stats.motion_failures++;
+          if(!message.accepted&&!message.expired)this.stats.motion_failures++;
           if(finite(message.queued_at))this.stats.worker_frame_latency_max_seconds=Math.max(
             this.stats.worker_frame_latency_max_seconds,(performance.now()-message.queued_at)/1000);
         }else if(message.type==="frame_preprocessed"){
@@ -1243,6 +1257,7 @@
           }
           this.stats.motion_failures++;
           if(message.stage==="motion_initialization"){
+            this.disableMotionWork();
             this.stats.motion_initialization_failures++;
             this.onFailure("轮廓跟随组件加载失败，视频继续播放；请重新开始检测。");
           }else if(message.stage==="motion_preprocess"){
@@ -1251,11 +1266,12 @@
           }
         }
       };
-      this.worker.onerror=()=>{this.claimedWarmup?.resolve(false);
+      this.worker.onerror=()=>{this.claimedWarmup?.resolve(false);this.disableMotionWork();
         this.stats.motion_failures++;this.onFailure("轮廓补帧暂不可用，视频继续播放。");};
       this.worker.onmessageerror=this.worker.onerror;
       this.preprocessWorker.onmessage=this.worker.onmessage;
       this.preprocessWorker.onerror=()=>{
+        this.disableMotionWork();
         this.stats.preprocess_failures++;this.stats.motion_failures++;
         this.onFailure("轮廓画面预处理组件失败，视频继续播放；请重新开始检测。");
       };
@@ -1274,6 +1290,10 @@
           this.pendingEncode.reject(new Error("analysis encoding worker failed"));this.pendingEncode=null;}
       };
       this.encodeWorker.onmessageerror=this.encodeWorker.onerror;
+      // Admission spans both workers: releasing a frame after grayscale alone
+      // would merely move an unbounded backlog into the motion worker's port.
+      this.motionFrames=new Map();this.motionPresents=new Set();this.motionFailed=false;
+      this.motionMetadataInFlight=false;this.pendingMotionMetadata=null;
       this.overlays=new Map();this.requested=new Set();this.pendingPresent=new Set();this.requestedRevision=new Map();
       this.identities=new DisplayIdentities(this.config);
       this.geometryRevision=0;
@@ -1301,6 +1321,8 @@
         metadata_ws_received:0,metadata_duplicate_revisions:0,metadata_invalid_revisions:0,
         metadata_latency_max_seconds:0,worker_frames_completed:0,worker_metadata_accepted:0,
         preprocess_frames_completed:0,preprocess_failures:0,
+        motion_frames_admitted:0,motion_frames_skipped:0,motion_frames_expired:0,
+        motion_metadata_coalesced:0,
         worker_anchor_rejections:0,worker_results_received:0,worker_results_late:0,
         worker_present_expired:0,
         geometry_cache_hits:0,geometry_cache_misses:0,
@@ -1350,8 +1372,63 @@
       // Fixed-size sample rings bound telemetry memory even if reporting is delayed.
       window.samples[(window.count-1)%256]=milliseconds;
     }
+    disableMotionWork(){
+      // A terminal worker failure has no future ACKs. Retire actual ownership
+      // and stop optional admissions while the original video keeps playing.
+      this.motionFailed=true;this.motionFrames.clear();this.motionPresents.clear();
+      this.pendingMotionMetadata=null;this.motionMetadataInFlight=false;
+      this.pendingPresent.clear();this.requestedRevision.clear();
+      this.worker.terminate();this.preprocessWorker.terminate();
+    }
+    retireMotionWork(message){
+      if(message.type==="frame_preprocessed"&&this.motionFrames.has(message.sequence))
+        this.motionFrames.set(message.sequence,true);
+      if(message.type==="frame_processed"||message.type==="failure"&&
+        ["frame","frame_bitmap"].includes(message.request_type))this.motionFrames.delete(message.sequence);
+      if(message.type==="present"||message.type==="failure"&&message.request_type==="present")
+        this.motionPresents.delete(message.sequence);
+      if(message.type==="metadata_processed"||message.type==="failure"&&message.request_type==="metadata"){
+        this.motionMetadataInFlight=false;
+        const pending=this.pendingMotionMetadata;this.pendingMotionMetadata=null;
+        if(pending)try{this.postMotion(pending);}
+        catch(error){this.stats.metadata_failures++;}
+      }
+    }
     postMotion(message,transfers=[]){
-      this.preprocessWorker.postMessage({...message,queued_epoch_ms:Date.now()},transfers);
+      if(this.motionFailed)return false;
+      const frame=message.type==="frame_bitmap",present=message.type==="present",metadata=message.type==="metadata";
+      if(frame&&this.motionFrames.size>=2||present&&this.motionPresents.size>=2)return false;
+      if(metadata&&this.motionMetadataInFlight){
+        if(this.pendingMotionMetadata){
+          // Delta transports can carry different real anchors. Keep a bounded
+          // union, with the newest snapshot authoritative for events/identities.
+          const previous=this.pendingMotionMetadata,anchors=new Map();
+          for(const anchor of [...previous.data.anchors,...message.data.anchors])
+            anchors.set(anchor?.source_sequence,anchor);
+          const preserveEvents=sequence(previous.data.event_snapshot_revision)&&
+            (!sequence(message.data.event_snapshot_revision)||
+              previous.data.event_snapshot_revision>message.data.event_snapshot_revision);
+          message={...message,queued_at:previous.queued_at,data:{...message.data,
+            ...(preserveEvents?{events:previous.data.events,event_snapshot_revision:previous.data.event_snapshot_revision,
+              event_snapshot_timestamp:previous.data.event_snapshot_timestamp}:{}),
+            anchors:[...anchors.values()].sort((a,b)=>(a?.source_sequence??-1)-(b?.source_sequence??-1)).slice(-256)}};
+          this.stats.motion_metadata_coalesced++;
+        }
+        this.pendingMotionMetadata=message;return true;
+      }
+      if(frame){this.motionFrames.set(message.frame.sequence,false);
+        message={...message,motion_deadline_epoch_ms:Date.now()+1000};}
+      if(present)this.motionPresents.add(message.sequence);
+      if(metadata)this.motionMetadataInFlight=true;
+      try{this.preprocessWorker.postMessage({...message,queued_epoch_ms:Date.now()},transfers);}
+      catch(error){
+        if(frame)this.motionFrames.delete(message.frame.sequence);
+        if(present)this.motionPresents.delete(message.sequence);
+        if(metadata)this.motionMetadataInFlight=false;
+        throw error;
+      }
+      if(frame)this.stats.motion_frames_admitted++;
+      return true;
     }
     start(){if(this.config.source_mode!=="network")this.scheduleCapture();this.animate();
       if(!["websocket","frames"].includes(this.config.transport))this.pollMetadata();}
@@ -1419,18 +1496,21 @@
       this.noteTiming("display_capture",performance.now()-stageStarted);stageStarted=performance.now();
       // Bound motion work by area, not only width: a 4:3 camera otherwise
       // costs a third more pixels than the wide-video acceptance sample.
-      // Keep one fixed scale for the run and retain every captured motion frame.
+      // Keep one fixed scale for the run. Optional motion work has a bounded
+      // admission window; original playback and model uploads keep their clocks.
       const requestedWidth=clamp(Number(this.config.motion_width)||160,160,320),
         motionScale=Math.min(requestedWidth/width,240/height,Math.sqrt(requestedWidth**2*9/16/(width*height))),
         grayWidth=Math.max(16,Math.floor(width*motionScale)),grayHeight=Math.max(16,Math.floor(height*motionScale));
       if(this.grayCanvas.width!==grayWidth)this.grayCanvas.width=grayWidth;
       if(this.grayCanvas.height!==Math.min(240,grayHeight))this.grayCanvas.height=Math.min(240,grayHeight);
-      this.grayContext.drawImage(bitmap,0,0,this.grayCanvas.width,this.grayCanvas.height);
-      const motionBitmap=this.grayCanvas.transferToImageBitmap();
-      try{this.postMotion({type:"frame_bitmap",queued_at:performance.now(),frame:{sequence:seq,timestamp,
-        width:this.grayCanvas.width,height:this.grayCanvas.height,bitmap:motionBitmap}},[motionBitmap]);}
-      catch(error){motionBitmap.close();this.stats.motion_failures++;
-        this.onFailure("轮廓画面传送失败，视频继续播放；请重新开始检测。");}
+      if(!this.motionFailed&&this.motionFrames.size<2){
+        this.grayContext.drawImage(bitmap,0,0,this.grayCanvas.width,this.grayCanvas.height);
+        const motionBitmap=this.grayCanvas.transferToImageBitmap();
+        try{this.postMotion({type:"frame_bitmap",queued_at:performance.now(),frame:{sequence:seq,timestamp,
+          width:this.grayCanvas.width,height:this.grayCanvas.height,bitmap:motionBitmap}},[motionBitmap]);}
+        catch(error){motionBitmap.close();this.stats.motion_failures++;
+          this.onFailure("轮廓画面传送失败，视频继续播放；请重新开始检测。");}
+      }else this.stats.motion_frames_skipped++;
       this.noteTiming("motion_capture",performance.now()-stageStarted);stageStarted=performance.now();
       if(sample){
         const analysisPeriod=1/Math.max(Number(this.config.analysis_sample_fps)||3,Number(this.settings.sample_fps)||0);
@@ -1538,6 +1618,9 @@
         for(const frame of this.frames.frames){
           if(frame.timestamp>mediaNow-this.frames.delay+this.presentPrefetchSeconds)break;
           if(!this.requested.has(frame.sequence)&&!this.pendingPresent.has(frame.sequence)){
+            // Display retirement does not cancel a message already in a worker
+            // port. Bound actual outstanding queries, independently of overlays.
+            if(this.motionFailed||this.motionPresents.size>=2)break;
             this.requested.add(frame.sequence);this.pendingPresent.add(frame.sequence);
             this.requestedRevision.set(frame.sequence,this.geometryRevision);
             this.postMotion({type:"present",id:frame.sequence,queued_at:now,
@@ -1651,7 +1734,7 @@
       if(!data||!sameRun(data,this.config)){
         this.stats.metadata_failures++;this.stats.metadata_run_mismatches++;return false;
       }
-      if(!Array.isArray(data.anchors)){
+      if(!Array.isArray(data.anchors)||data.anchors.length>256){
         this.stats.metadata_failures++;this.stats.metadata_decode_errors++;return false;
       }
       if(["websocket","http_delta"].includes(transport)){
@@ -1684,9 +1767,11 @@
       analysis_prepared_pending:this.uploads.slice(1).filter(task=>!!task.packet).length,
       source_callback_fps:this.latestClock?.timestamp>0?
         (this.stats.video_callback_frames-1)/(this.latestClock.timestamp-(this.config.source_mode==="network"?this.firstMediaTime:0)||1):null,
-      worker_pending_frames:Math.max(0,this.stats.captured_frames-this.stats.worker_frames_completed),
-      preprocess_pending_frames:Math.max(0,this.stats.captured_frames-this.stats.preprocess_frames_completed),
-      motion_pending_frames:Math.max(0,this.stats.preprocess_frames_completed-this.stats.worker_frames_completed),
+      worker_pending_frames:this.motionFrames.size,
+      preprocess_pending_frames:[...this.motionFrames.values()].filter(prepared=>!prepared).length,
+      motion_pending_frames:[...this.motionFrames.values()].filter(Boolean).length,
+      worker_pending_present_queries:this.motionPresents.size,
+      worker_pending_metadata:Number(this.motionMetadataInFlight)+Number(!!this.pendingMotionMetadata),
       last_metadata_received_age_seconds:this.lastMetadataReceivedAt===undefined?null:
         Math.max(0,(performance.now()-this.lastMetadataReceivedAt)/1000),
       last_metadata_applied_age_seconds:this.lastMetadataAppliedAt===undefined?null:
@@ -1766,6 +1851,7 @@
       if(typeof document!=="undefined")document.removeEventListener?.("visibilitychange",this.onVisibilityChange);
       this.worker.terminate();this.preprocessWorker.terminate();this.encodeWorker.terminate();this.frames.reset();this.overlays.clear();
       this.requested.clear();this.pendingPresent.clear();this.requestedRevision.clear();
+      this.motionFrames.clear();this.motionPresents.clear();this.pendingMotionMetadata=null;this.motionMetadataInFlight=false;
       this.identities.records=[];
       for(const task of this.uploads)task.image?.close();
     }
