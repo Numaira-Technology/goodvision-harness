@@ -9,7 +9,39 @@ import pytest
 from test_sam_tracking_pipeline import output_sequences, setup_pipeline
 from test_video_tracking_session import frames, submit, wait_for
 
+from goodvision_harness import sam_tracking_pipeline
 from goodvision_harness.sam_tracking_spool import TrackingSpool
+
+
+@pytest.fixture(params=[0.0, 0.25], ids=["normal-spool", "slow-spool"])
+def advance_age(monkeypatch, request):
+    """Advance source age without racing CI disk I/O against a 100ms TTL.
+
+    Only this module's clock is offset; Event waits and HTTP timeouts remain
+    real, and the clock keeps ticking so idle/close timeouts stay bounded.
+    """
+    offset = 0.0
+    monkeypatch.setattr(
+        sam_tracking_pipeline, "time",
+        SimpleNamespace(monotonic=lambda: time.monotonic() + offset),
+    )
+    admit = TrackingSpool.admit
+
+    def delayed_admit(*args, **kwargs):
+        # Exceed the old 100-150ms TTL before the first worker can even start.
+        if request.param:
+            time.sleep(request.param)
+        return admit(*args, **kwargs)
+
+    monkeypatch.setattr(TrackingSpool, "admit", delayed_admit)
+
+    def advance(coordinator):
+        nonlocal offset
+        with coordinator._condition:
+            offset += 31.0
+            coordinator._condition.notify_all()
+
+    return advance
 
 
 def test_overload_replaces_only_unsent_frames_and_preserves_one_epoch(tmp_path):
@@ -48,19 +80,34 @@ def test_overload_replaces_only_unsent_frames_and_preserves_one_epoch(tmp_path):
         coordinator.close()
 
 
-def test_pending_expires_without_another_arrival_while_request_stays_owned(tmp_path):
+def test_pending_expires_without_another_arrival_while_request_stays_owned(
+    tmp_path, monkeypatch, advance_age
+):
     received = []
     server, _, coordinator = setup_pipeline(
         tmp_path,
         received.append,
         queue_policy="realtime_latest",
-        realtime_max_age_seconds=0.15,
+        realtime_max_age_seconds=30,
     )
     server.release.clear()
     try:
         submit(coordinator, frames(1, 1))
         assert server.entered.wait(2)
+        expiry_waiting = threading.Event()
+        condition_wait = coordinator._condition.wait
+
+        def observed_wait(timeout=None):
+            if timeout is not None and 0 < timeout <= 30:
+                expiry_waiting.set()
+            return condition_wait(timeout)
+
+        monkeypatch.setattr(coordinator._condition, "wait", observed_wait)
         submit(coordinator, frames(2, 1))
+        # Verify a real expiry timer was armed before simulating its wakeup;
+        # an implementation that waits only for new arrivals must still fail.
+        assert expiry_waiting.wait(2)
+        advance_age(coordinator)
         wait_for(lambda: coordinator.stats()["skipped_by_reason"]["expired"] == 1)
         assert coordinator.stats()["pending_frames"] == 0
         assert len(server.requests) == 1
@@ -77,14 +124,14 @@ def test_pending_expires_without_another_arrival_while_request_stays_owned(tmp_p
 
 
 def test_slow_preparation_is_retired_before_send_and_empty_session_can_finish(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, advance_age
 ):
     received = []
     server, client, coordinator = setup_pipeline(
         tmp_path,
         received.append,
         queue_policy="realtime_latest",
-        realtime_max_age_seconds=0.1,
+        realtime_max_age_seconds=30,
     )
     entered, release = threading.Event(), threading.Event()
     prepare = client.prepare_append
@@ -99,7 +146,7 @@ def test_slow_preparation_is_retired_before_send_and_empty_session_can_finish(
     try:
         submit(coordinator, frames(1, 1))
         assert entered.wait(2)
-        time.sleep(0.15)
+        advance_age(coordinator)
         coordinator.flush()
         release.set()
         assert coordinator.wait_until_idle(3)
@@ -325,7 +372,9 @@ def test_production_continuation_keeps_temporal_state_across_append_sizes(chunks
     assert list(backend.run(session, [], final=True)) == []
 
 
-def test_expiry_during_commit_backpressure_keeps_real_results_and_evidence(tmp_path):
+def test_expiry_during_commit_backpressure_keeps_real_results_and_evidence(
+    tmp_path, advance_age
+):
     from goodvision_harness.video_tracking import TrackingCommitBackpressure
 
     received = []
@@ -341,7 +390,7 @@ def test_expiry_during_commit_backpressure_keeps_real_results_and_evidence(tmp_p
         tmp_path,
         commit,
         queue_policy="realtime_latest",
-        realtime_max_age_seconds=0.2,
+        realtime_max_age_seconds=30,
     )
     try:
         submit(coordinator, frames(1, 1))
@@ -349,6 +398,7 @@ def test_expiry_during_commit_backpressure_keeps_real_results_and_evidence(tmp_p
         submit(coordinator, frames(2, 1))
         wait_for(lambda: coordinator.stats()["received_batches"] == 2)
         submit(coordinator, frames(3, 2))
+        advance_age(coordinator)
         wait_for(lambda: coordinator.stats()["skipped_by_reason"]["expired"] == 2)
         assert coordinator._spool.stats()["recoverable_results"] == 2
         assert coordinator._spool.load(0, [3, 6]) == frames(1, 2)
@@ -368,7 +418,7 @@ def test_expiry_during_commit_backpressure_keeps_real_results_and_evidence(tmp_p
 
 
 def test_retiring_empty_session_cannot_finish_replacement_generation(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, advance_age
 ):
     prepared, release_prepare = threading.Event(), threading.Event()
     deleting, release_delete = threading.Event(), threading.Event()
@@ -377,7 +427,7 @@ def test_retiring_empty_session_cannot_finish_replacement_generation(
         tmp_path,
         received.append,
         queue_policy="realtime_latest",
-        realtime_max_age_seconds=0.1,
+        realtime_max_age_seconds=30,
     )
     original_prepare, discard = client.prepare_append, client.discard_session
 
@@ -399,7 +449,7 @@ def test_retiring_empty_session_cannot_finish_replacement_generation(
     try:
         submit(coordinator, frames(1, 1))
         assert prepared.wait(2)
-        time.sleep(0.15)
+        advance_age(coordinator)
         coordinator.flush()
         release_prepare.set()
         assert deleting.wait(2)

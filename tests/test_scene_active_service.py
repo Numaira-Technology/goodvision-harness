@@ -143,7 +143,12 @@ def factory(tmp_path, monkeypatch):
         config = replace(
             config,
             runtime=replace(
-                config.runtime, scene_mode="active", scene_max_image_side=scene_side
+                config.runtime,
+                scene_mode="active",
+                scene_max_image_side=scene_side,
+                # This suite exercises tracker-gated temporal scene inspection.
+                # Independent VLM admission has its own service regression suite.
+                scene_independent_vlm=False,
             ),
             rich_labeling=replace(
                 config.rich_labeling,
