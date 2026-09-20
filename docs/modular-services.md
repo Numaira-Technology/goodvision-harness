@@ -126,6 +126,11 @@ SAM 与大模型两种选择互相独立；SAM 使用独立服务器、VLM 使�
 
 ## 检查计划与日志
 
+对现有 Contour 链路做实时队列 A/B 时，参见
+[配置与现场验收](guides/contour-realtime-validation.md)。主程序支持
+`--sam-queue-policy durable_ordered|realtime_latest` 和独立的 `--tracking-fps`；
+不指定时不改变原队列和采样默认值。实时策略是实验开关，不保证十二路容量。
+
 任意入口加 `--dry-run` 可以查看不含密钥的计划；模拟显卡仅允许用于 worker 的 dry-run：
 
 ```sh

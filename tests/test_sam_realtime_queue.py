@@ -455,6 +455,9 @@ def test_public_factory_wires_opt_in_policy_and_reports_it(tmp_path):
         assert status["queue_policy"] == "realtime_latest"
         assert status["effective_max_append_frames"] == 2
         assert status["result_deadline_seconds"] == 4
+        assert status["pending_capacity"] == 4
+        assert status["realtime_max_age_seconds"] == 3
+        assert status["session_admitted_frames"] == 0
         assert coordinator.stats()["pending_capacity"] == 4
         assert coordinator.stats()["realtime_max_age_seconds"] == 3
     finally:

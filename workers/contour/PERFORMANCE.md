@@ -1,5 +1,11 @@
 # Contour 多路视频显存与延迟排查
 
+> 2026-09-20 后续调整：多路 worker 已增加有界 CPU 预解码，不再让解码占用共享
+> GPU 槽。每个模型进程最多持有两个准备/处理中的请求；GPU 推理仍串行。
+> 新日志口径、部署和回退方法见
+> [实时链路验收指南](../../docs/guides/contour-realtime-validation.md)。
+> **下文的 L40S 实测均为此前版本，不包含此次预解码改动的性能收益。**
+
 2026-09-18。审查基线：`codex/entity-event-engine` 的
 `bf614ae14720923bcec68db4354a6d2398d33633`；修复分支：
 `codex/contour-gpu-efficiency`。上游 SAM 固定版本仍为
