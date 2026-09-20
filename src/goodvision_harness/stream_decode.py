@@ -50,6 +50,8 @@ class FFmpegReceiver:
         self.url, self.protocol, self.fps = url, protocol, fps
         self.metadata: dict[str, Any] = {}
         self.decode_errors = 0
+        self.error_reason = "unknown"
+        self._error_tail = b""
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._process: subprocess.Popen | None = None
@@ -92,10 +94,11 @@ class FFmpegReceiver:
             self._terminate(process)
 
     def _input_options(self) -> list[str]:
-        options = ["-rw_timeout", "5000000"]
         if self.protocol in {"rtsp", "rtsps"}:
-            options.extend(["-rtsp_transport", "tcp"])
-        return options
+            # RTSP demuxers expose `timeout`; `rw_timeout` is a protocol option
+            # accepted for files/RTMP but rejected by the deployed RTSP build.
+            return ["-rtsp_transport", "tcp", "-timeout", "5000000"]
+        return ["-rw_timeout", "5000000"]
 
     def _probe(self) -> None:
         process = self._start(
@@ -132,8 +135,18 @@ class FFmpegReceiver:
     def _drain_errors(self, process: subprocess.Popen) -> None:
         # Do not retain stderr: source URLs can contain camera credentials.
         # read(size) also bounds memory for malformed streams without newlines.
-        while process.stderr.read(4096):
+        while chunk := process.stderr.read(4096):
             self.decode_errors += 1
+            data = self._error_tail + chunk.lower()
+            if b"option" in data and b"not found" in data:
+                self.error_reason = "unsupported_option"
+            elif b"no such filter" in data:
+                self.error_reason = "missing_filter"
+            elif b"no path between colorspaces" in data:
+                self.error_reason = "unsupported_color_metadata"
+            elif b"error while decoding" in data:
+                self.error_reason = "decode_error"
+            self._error_tail = data[-128:]
 
     def frames(self) -> Iterator[Any]:
         if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
@@ -210,10 +223,19 @@ class FFmpegReceiver:
                     yield frame
             if not self._stop.is_set() and process.wait(timeout=2):
                 raise RuntimeError("video receiver exited unsuccessfully")
+        except Exception:
+            self._terminate(process)
+            self._stderr_thread.join(timeout=1)
+            if self.error_reason == "missing_filter":
+                raise DecodeSupportError(
+                    "required video color filter unavailable"
+                ) from None
+            raise RuntimeError(f"video receiver failed: {self.error_reason}") from None
         finally:
             self._terminate(process)
             self._stderr_thread.join(timeout=1)
             process.stdout.close()
             process.stderr.close()
+            self._error_tail = b""
             with self._lock:
                 self._process = None

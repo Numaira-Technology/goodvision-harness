@@ -49,6 +49,36 @@ resolution reduction is introduced.
   4-second buffering, 2 FPS SAM, face and VLM. No fresh GPU is required for
   receive-only checks. Record exact deployed commits and settings.
 
+## Live receive verification
+
+The first RTSP check exposed an actual compatibility problem: this deployed
+FFmpeg RTSP demuxer rejects `-rw_timeout`. RTSP now uses `-timeout 5000000`, while
+other protocols retain `-rw_timeout`. Safe stderr categories distinguish missing
+options/filters from a downstream NUT pipe error without logging camera URLs.
+
+After that correction, a single ten-second live HDR dual-stream check completed:
+
+| Metric | Lane 1 | Lane 2 |
+|---|---:|---:|
+| Delivered frames in measured window | 151 | 155 |
+| Arrival FPS | 14.99 | 15.39 |
+| PTS-derived FPS | 15.00 | 15.00 |
+| Maximum arrival gap | 0.187 s | 0.160 s |
+| Gaps over 200 ms | 0 | 0 |
+| Adapter sampling drops | 0 | 0 |
+| Decoder error chunks | 0 | 0 |
+| Initial probe/connection to first frame | 6.64 s | 6.64 s |
+
+The 15.39 arrival FPS includes slight initial catch-up, not a source-rate increase.
+Both sources were BT.2020/PQ H.264 1280×730 and logged `normalized_to_sdr=true`.
+This receiver check uses no model/GPU and does not establish end-to-end contour
+quality or long-run stability. Initial connection/probing latency is a remaining
+tradeoff. Raw summary: `network-input-live-hdr-20260920.json`.
+
+Separately, the peer task verified commit `0748e76` in its actual main program:
+proper-SDR input now has decoded FPS equal to emitted FPS at approximately 15,
+with no active rate-limit drops (previously approximately 9.6 emitted FPS).
+
 ## Limits and next decision
 
 The new FFmpeg receiver initially applies to RTSP/RTMP; WebRTC keeps its existing
