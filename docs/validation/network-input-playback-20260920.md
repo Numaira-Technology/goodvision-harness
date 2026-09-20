@@ -95,3 +95,20 @@ Do not remove synchronous journal guarantees based only on CPU-starved timings.
 
 References: [FFmpeg tone mapping](https://ffmpeg.org/ffmpeg-filters.html#tonemap-1),
 [PyAV containers](https://pyav.basswood.io/docs/stable/api/container.html).
+
+
+## Full-pipeline follow-up outcome
+
+The peer task's second H100 reached readiness, but its optional CPU monitoring
+launcher attempted `docker cp` into a read-only container and failed before the
+five-minute analysis began. Cleanup released that instance. No new five-minute
+result exists, and the failed startup is not counted as a performance test.
+No third instance was created: no budget-compatible Taiwan H100 was available,
+so paid recovery was stopped. Original containers/settings are being restored by
+the peer task. Keep the successful input checks and first H100 baseline separate
+from this failed attempt; no result-path speedup has been measured or claimed.
+
+The display catch-up counter is included in the server's strict numeric telemetry
+schema, so reporting remains valid after deploying the browser change. Eight
+telemetry validation checks cover accepted counters and invalid values. Deploy
+`display_telemetry.py` together with `camera_display.js`.

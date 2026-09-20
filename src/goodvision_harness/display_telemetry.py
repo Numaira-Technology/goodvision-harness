@@ -6,7 +6,7 @@ COUNTERS = frozenset({
     "network_requests", "network_failures", "network_bytes_received",
     "network_frames_received", "network_source_gap_frames",
     "captured_frames", "distinct_presented_frames", "display_buffer_expired",
-    "video_callback_frames", "video_callback_gap_frames",
+    "display_catchup_expired", "video_callback_frames", "video_callback_gap_frames",
     "rejected_source_frames", "buffered_frames", "analysis_admitted", "analysis_sent",
     "analysis_pending", "analysis_upload_failures", "analysis_capture_pauses",
     "analysis_prepared", "analysis_prepared_pending",
