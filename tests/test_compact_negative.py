@@ -25,7 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
     ("smoking",), ("fight", "fall"), SAFETY_EVENT_LABELS,
 ])
 @pytest.mark.parametrize("config_path", [
-    "config.yaml", "config.delivery.yaml", "src/goodvision_harness/config.yaml",
+    # Package/default byte equality is checked in test_deployment_settings.py.
+    "config.yaml", "config.delivery.yaml",
 ])
 def test_compact_negative_expands_without_another_model_call(labels, config_path):
     settings = load_config(ROOT / config_path).inference

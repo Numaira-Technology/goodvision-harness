@@ -1,21 +1,13 @@
 const assert=require("node:assert/strict");
-const fs=require("node:fs");
-const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
+const {createDocument, runDashboard} = require("./helpers/dashboard.cjs");
 
 function dashboard(){
-  const elements=new Map(),requests=[],messages=[];
-  function element(id){
-    if(!elements.has(id))elements.set(id,{
-      value:"",textContent:"",className:"",style:{},checked:false,
-      querySelectorAll:()=>[],classList:{toggle(){}},replaceChildren(){},
-      scrollIntoView(){},focus(){this.focused=true},
-    });
-    return elements.get(id)
-  }
+  const {document, element} = createDocument(["smoking"]);
+  const requests=[],messages=[];
   const context=vm.createContext({
-    document:{getElementById:element,querySelectorAll:()=>[{checked:true,dataset:{feature:"smoking"}}]},
+    document,
     window:{isSecureContext:true},location:{hostname:"localhost"},
     capture:raw=>messages.push(JSON.parse(raw)),
     fetch:async(url,options)=>{
@@ -23,15 +15,13 @@ function dashboard(){
       return {ok:true,json:async()=>({persistence_available:true,...payload})}
     },
   });
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
-  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+  runDashboard(context, `
     state.info={api_key_present:true};state.gallery={ready:true};
     state.deployment={persistence_available:true,camera_layout:"mono"};
     reset=()=>{};connect=async()=>({send:capture});info=async()=>{};
     renderDeploymentSettings(true,true);
     globalThis.app={state,start,controls,renderDeploymentSettings,saveDeploymentSettings,saveApiKey};
-  `,context);
+  `);
   return {element,requests,messages,...context.app}
 }
 
@@ -94,4 +84,19 @@ test("the dedicated key button saves only the credential and clears the secret i
   assert.deepEqual(view.requests[0].payload,{api_key:"test-only-key"});
   assert.equal(view.element("default-api-key").value,"");
   assert.match(view.element("deployment-note").textContent,/无需 .env/)
+});
+
+test("local camera shows its deployment buffer and disables the unrelated network-video setting",()=>{
+  const view=dashboard();view.state.info.local_camera_display={enabled:true,delay_seconds:6};
+  view.state.mode="camera";view.element("buffer-delay-seconds").value="0";view.controls();
+  assert.equal(view.element("buffer-delay-seconds").disabled,true);
+  assert.equal(view.element("save-buffer-delay-button").disabled,true);
+  assert.equal(view.element("local-camera-buffer-note").hidden,false);
+  assert.match(view.element("local-camera-buffer-note").textContent,/本机描边缓冲：6 秒/);
+  assert.match(view.element("local-camera-buffer-note").textContent,/部署配置/);
+  assert.equal(view.element("buffer-delay-seconds").value,"0");
+  view.state.mode="stream";view.controls();
+  assert.equal(view.element("buffer-delay-seconds").disabled,false);
+  assert.equal(view.element("save-buffer-delay-button").disabled,false);
+  assert.equal(view.element("local-camera-buffer-note").hidden,true);
 });

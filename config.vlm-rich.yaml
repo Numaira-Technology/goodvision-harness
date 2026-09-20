@@ -260,8 +260,8 @@ face:
 runtime:
   # Independent windows are sent concurrently, up to this limit. Windows that
   # would exceed it are dropped (a live feed never queues up the past).
-  # Ten slots provide headroom for slow responses at 2.5 requests/second.
-  max_concurrent_requests: 10
+  # Six slots provide headroom for 2.5 requests/second.
+  max_concurrent_requests: 6
 
 server:
   host: 127.0.0.1

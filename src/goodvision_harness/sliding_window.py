@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,8 +21,6 @@ class SampledFrame:
     source_height: int | None = None
     observed_at: str | None = None
     presentation_jpeg_bytes: bytes | None = None
-    # Local monotonic time the pipeline received this sample; diagnostics only.
-    captured_monotonic: float | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if self.sample_index < 0 or self.source_frame_index < 0:
@@ -164,122 +162,3 @@ def iter_sliding_windows(
             frames=partial_frames,
             is_partial=True,
         )
-
-
-@dataclass(frozen=True, slots=True)
-class BranchCadence:
-    """Sampling rate and window shape for one independently scheduled branch."""
-
-    fps: float
-    size_frames: int = 1
-    stride_frames: int = 1
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.fps, (int, float)) or isinstance(self.fps, bool):
-            raise TypeError("branch fps must be numeric")
-        if not self.fps > 0:
-            raise ValueError("branch fps must be positive")
-        if self.size_frames < 1:
-            raise ValueError("branch size_frames must be at least 1")
-        if self.stride_frames < 1:
-            raise ValueError("branch stride_frames must be at least 1")
-
-
-@dataclass(frozen=True, slots=True)
-class BranchSampling:
-    """Per-branch cadences for a mixed safety + local-face session.
-
-    The session samples the source once at ``base_fps`` (the faster branch) and
-    each branch selects its own frames and builds its own windows, so selecting
-    ``stranger`` no longer replaces the safety sampling rate or window size.
-    """
-
-    base_fps: float
-    safety: BranchCadence
-    stranger: BranchCadence
-
-    def __post_init__(self) -> None:
-        if not self.base_fps > 0:
-            raise ValueError("base_fps must be positive")
-        slowest_needed = max(self.safety.fps, self.stranger.fps)
-        if self.base_fps + 1e-9 < slowest_needed:
-            raise ValueError("base_fps must cover the fastest branch")
-
-    def cadence(self, branch: str) -> BranchCadence:
-        if branch == "safety":
-            return self.safety
-        if branch == "stranger":
-            return self.stranger
-        raise ValueError(f"unknown branch: {branch}")
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "base_fps": self.base_fps,
-            "safety": {
-                "fps": self.safety.fps,
-                "size_frames": self.safety.size_frames,
-                "stride_frames": self.safety.stride_frames,
-            },
-            "stranger": {
-                "fps": self.stranger.fps,
-                "size_frames": self.stranger.size_frames,
-                "stride_frames": self.stranger.stride_frames,
-            },
-        }
-
-
-class BranchWindowBuilder:
-    """Select one branch's frames from a shared sample stream and window them.
-
-    Frames are re-indexed per branch so every emitted window keeps contiguous
-    sample indexes. A branch whose rate matches the shared stream keeps every
-    frame, so its indexes equal the shared sample indexes.
-    """
-
-    def __init__(self, cadence: BranchCadence, *, base_fps: float) -> None:
-        if not base_fps > 0:
-            raise ValueError("base_fps must be positive")
-        self.cadence = cadence
-        self._select_all = cadence.fps + 1e-9 >= base_fps
-        self._period = 1.0 / cadence.fps
-        # Arrival jitter must not push a due frame into the next slot and halve
-        # the branch rate; half a shared-sample period is the tolerance.
-        self._tolerance = 0.5 / base_fps
-        self._next_due: float | None = None
-        self._buffer: deque[SampledFrame] = deque(maxlen=cadence.size_frames)
-        self._local_index = 0
-        self._window_index = 0
-        self._frames_until_window = cadence.size_frames
-        self.selected_frames = 0
-        self.skipped_frames = 0
-
-    def _due(self, timestamp: float) -> bool:
-        if self._select_all:
-            return True
-        if self._next_due is None:
-            self._next_due = timestamp
-        if timestamp + self._tolerance < self._next_due:
-            return False
-        while self._next_due <= timestamp + self._tolerance:
-            self._next_due += self._period
-        return True
-
-    def push(self, frame: SampledFrame) -> FrameWindow | None:
-        if not self._due(frame.timestamp_seconds):
-            self.skipped_frames += 1
-            return None
-        self.selected_frames += 1
-        local = (
-            frame
-            if frame.sample_index == self._local_index
-            else replace(frame, sample_index=self._local_index)
-        )
-        self._local_index += 1
-        self._buffer.append(local)
-        self._frames_until_window -= 1
-        if self._frames_until_window > 0:
-            return None
-        self._frames_until_window = self.cadence.stride_frames
-        window = FrameWindow(index=self._window_index, frames=tuple(self._buffer))
-        self._window_index += 1
-        return window

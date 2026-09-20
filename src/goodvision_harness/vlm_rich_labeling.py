@@ -707,7 +707,7 @@ class VLMRichLabelClient:
             raise ValueError("rich annotation requires a decodable image")
         key = self._api_key() if callable(self._api_key) else self._api_key
         key = (key or environment_api_key(self.settings)).strip()
-        if not key:
+        if not key and self.settings.provider != "local":
             raise ModelAPIError("rich annotation API key is missing")
         objects, response = self._infer_frame(image, key, started)
         with self._state_lock:

@@ -1,0 +1,22 @@
+# Python 3.12. Dockerfile installs torch 2.10.0 / torchvision 0.25.0 from
+# TORCH_CUDA=cu128 (default) or the explicit cu126 build override.
+# Direct runtime dependencies pinned; SAM's upstream package dependencies remain
+# resolved by pip. This is not a complete transitive/hash lock.
+# SAM3.1 uses use_fa3=False and compile=False; no FlashAttention 3 package needed.
+fastapi==0.115.12
+uvicorn==0.34.2
+Pillow==11.2.1
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+# Optional session H264 transport uses bounded independent CPU-decoded batches.
+av==17.1.0
+einops==0.8.1
+scipy==1.15.3
+psutil==7.0.0
+pycocotools==2.0.8
+decord==0.6.0
+timm==1.0.17
+huggingface-hub==0.32.4
+iopath==0.1.10
+ftfy==6.1.1
+setuptools==80.9.0

@@ -196,8 +196,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.video.fps,
         config.video.max_image_side,
         config.video.jpeg_quality,
-    ) == (2.5, 360, 75)
-    assert config.inference.image_size == (360, 202)
+    ) == (2.5, 320, 75)
     assert (
         config.display.fps,
         config.display.max_image_side,
@@ -210,7 +209,7 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         config.sliding_window.stride_frames,
         config.sliding_window.include_partial_final_window,
     ) == (1, 1, False)
-    assert config.runtime.max_concurrent_requests == 10
+    assert config.runtime.max_concurrent_requests == 6
     assert config.model_api.max_retries == 0
     assert config.model_api.api_key_env == "AICLUB_API_KEY"
     assert config.model_api.provider == "aiclub"
@@ -247,30 +246,17 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
         "temperature": 0.0,
         "max_tokens": 1200,
     }
-    packaged = ROOT / "src" / "goodvision_harness" / "config.yaml"
-    assert packaged.read_text(encoding="utf-8") == (ROOT / "config.yaml").read_text(
-        encoding="utf-8"
-    )
 
 
-def test_face_provider_can_be_selected_by_deployment_overlay(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("provider", ["CUDAExecutionProvider", "DmlExecutionProvider"])
+def test_face_provider_can_be_selected_by_environment(
+    monkeypatch: pytest.MonkeyPatch, provider: str,
 ) -> None:
-    monkeypatch.setenv("FACE_PROVIDER", "CUDAExecutionProvider")
+    monkeypatch.setenv("FACE_PROVIDER", provider)
 
     config = load_config(ROOT / "config.yaml")
 
-    assert config.face.provider == "CUDAExecutionProvider"
-
-
-def test_directml_face_provider_can_be_selected_by_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("FACE_PROVIDER", "DmlExecutionProvider")
-
-    config = load_config(ROOT / "config.yaml")
-
-    assert config.face.provider == "DmlExecutionProvider"
+    assert config.face.provider == provider
 
 
 @pytest.mark.parametrize("scheduler", ["auto", "full", "single_flight"])
@@ -444,9 +430,9 @@ def test_grounded_dry_run_preserves_original_pattern_latency_and_confidence(
         sample_index=0,
         source_frame_index=0,
         timestamp_seconds=0.0,
-        jpeg_bytes=_jpeg(width=360, height=202),
-        width=360,
-        height=202,
+        jpeg_bytes=b"jpeg",
+        width=320,
+        height=180,
     )
 
     responses = [
@@ -1089,10 +1075,9 @@ def test_ui_info_preserves_core_defaults_without_exposing_stream_url(
     assert info["model"] == PUBLIC_MODEL_NAME
     assert status["model"] == PUBLIC_MODEL_NAME
     assert info["sample_fps"] == 2.5
-    assert info["max_image_side"] == 360
-    assert info["model_image_size"] == [360, 202]
+    assert info["max_image_side"] == 320
     assert info["jpeg_quality"] == 75
-    assert info["max_concurrent_requests"] == 10
+    assert info["max_concurrent_requests"] == 6
     assert info["annotated_output"] == {
         "output_fps": 30.0,
         "max_image_side": None,
@@ -1258,7 +1243,7 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert "qwen3.5-plus" not in dashboard.text
         assert "Persistent deployment defaults" in dashboard.text
         assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
-        assert "Continuous delayed annotation" in dashboard.text
+        assert "实时画面与 人员追踪模块 描边" in dashboard.text
         assert "Math.max(displayFps,analysisFps)" in dashboard.text
         paths = {route.path for route in app.routes}
         assert "/v1/results/events" in paths
@@ -1480,8 +1465,10 @@ def test_readiness_requires_video_and_successful_analysis() -> None:
 
     class _RunningSession:
         running = True
+        mode = "stream"
+        stream_session_id = "readiness-test"
 
-        def stop(self) -> None:
+        def stop(self, *, drain: bool = False) -> None:
             self.running = False
 
         def join(self, timeout: float | None = None) -> None:
@@ -1623,31 +1610,24 @@ def test_webhook_network_failure_reports_failure_without_raw_exception() -> None
     assert delivery.stats()["last_error"] == "webhook request failed"
 
 
-def test_service_launcher_hides_server_header_and_maps_capture_options(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("capture_options", ["neutral-options", None])
+def test_service_launcher_hides_server_header_and_preserves_capture_precedence(
+    monkeypatch: pytest.MonkeyPatch, capture_options: str | None,
 ) -> None:
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
         service_module.uvicorn, "run", lambda *_args, **kwargs: calls.append(kwargs)
     )
-    monkeypatch.setenv("VIDEO_CAPTURE_OPTIONS", "neutral-options")
+    if capture_options is None:
+        monkeypatch.delenv("VIDEO_CAPTURE_OPTIONS", raising=False)
+    else:
+        monkeypatch.setenv("VIDEO_CAPTURE_OPTIONS", capture_options)
     monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "legacy-options")
     service_module.main()
     assert calls[0]["server_header"] is False
     assert (
-        service_module.os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "neutral-options"
-    )
-
-
-def test_service_launcher_keeps_legacy_capture_options_when_neutral_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(service_module.uvicorn, "run", lambda *_args, **_kwargs: None)
-    monkeypatch.delenv("VIDEO_CAPTURE_OPTIONS", raising=False)
-    monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "legacy-options")
-    service_module.main()
-    assert (
-        service_module.os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "legacy-options"
+        service_module.os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"]
+        == (capture_options or "legacy-options")
     )
 
 

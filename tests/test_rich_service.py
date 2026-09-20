@@ -32,6 +32,19 @@ from goodvision_harness.service import HarnessRuntime, create_app
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _stop_and_wait(runtime):
+    session = runtime._session
+    assert runtime.stop_session()
+    session.join(timeout=5)
+    assert not session.running
+    drain = getattr(runtime, "_end_drain_thread", None)
+    if drain is not None:
+        drain.join(timeout=5)
+        assert not drain.is_alive()
+    assert runtime._session is None
+    assert runtime.status()["pipeline_state"] == "idle"
+
+
 def _jpeg() -> bytes:
     image = np.zeros((160, 240, 3), dtype=np.uint8)
     ok, encoded = cv2.imencode(".jpg", image)
@@ -699,7 +712,7 @@ def test_vlm_callbacks_follow_deployment_changes_and_session_override(
         )
         assert captured["dry_run"]() is session_dry_run
 
-        runtime.stop_session()
+        _stop_and_wait(runtime)
         assert captured["dry_run"]() is not session_dry_run
     finally:
         runtime.stop()

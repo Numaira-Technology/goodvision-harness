@@ -5,8 +5,6 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request
 
-import cv2
-import numpy as np
 import pytest
 import yaml
 
@@ -25,14 +23,6 @@ from goodvision_harness.model_api import ModelAPIClient, ModelAPIError
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def _model_jpeg(shade: int = 0) -> bytes:
-    """A decodable frame already at the configured 360x202 model canvas."""
-
-    ok, encoded = cv2.imencode(".jpg", np.full((202, 360, 3), shade, np.uint8))
-    assert ok
-    return encoded.tobytes()
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +132,7 @@ def test_customer_requests_keep_the_delivery_route_despite_overrides(
         client = composite._safety_client
     window = FrameWindow(index=0, frames=(SampledFrame(
         sample_index=0, source_frame_index=0, timestamp_seconds=0.0,
-        jpeg_bytes=_model_jpeg(), width=360, height=202,
+        jpeg_bytes=b"synthetic-jpeg", width=10, height=10,
     ),))
     assert client is not None
     assert client.classify_window(window).ok
@@ -228,6 +218,8 @@ def test_development_routes_remain_selectable_without_customer_profile(
 def test_customer_console_credential_survives_restart_without_reusing_old_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import cv2
+    import numpy as np
     from fastapi.testclient import TestClient
 
     from goodvision_harness.privacy import contains_private_implementation_detail

@@ -20,6 +20,19 @@ from goodvision_harness.rich_labeling import (
 )
 
 
+def _stop_and_wait(runtime):
+    session = runtime._session
+    assert runtime.stop_session()
+    session.join(timeout=5)
+    assert not session.running
+    drain = getattr(runtime, "_end_drain_thread", None)
+    if drain is not None:
+        drain.join(timeout=5)
+        assert not drain.is_alive()
+    assert runtime._session is None
+    assert runtime.status()["pipeline_state"] == "idle"
+
+
 @pytest.mark.parametrize("payload,allowed", [
     ({"ready": True, "gpu_ready": True}, True),
     ({"ready": True, "gpu_ready": False}, False),
@@ -87,17 +100,25 @@ def test_cpu_gate_never_constructs_coordinator_or_submits_frames(monkeypatch):
 
     monkeypatch.setattr(service, "RichLabelHTTPClient", Client)
     monkeypatch.setattr(service, "RichLabelCoordinator", forbidden)
+    # This test covers the synchronous startup gate. Separate tests below cover
+    # readiness retries, which status/session helpers may start in the background.
+    monkeypatch.setattr(
+        service.HarnessRuntime, "_ensure_rich_readiness_probe", lambda self: None,
+    )
     runtime = service.HarnessRuntime(config)
-    assert runtime._rich_labels is None
-    assert runtime.ui_info()["rich_labeling"]["enabled"] is False
-    assert runtime.status()["rich_labeling_enabled"] is False
-    assert runtime.status()["rich_labeling"] == {
-        "state": "disabled", "disabled_reason": "gpu_required",
-    }
-    runtime._active_rich_session_id = "sample-session"
-    runtime._on_display_frame(b"frame-not-submitted-to-rich", 1.0, 1)
-    assert calls == ["client", "probe", "close"]
-    assert runtime.preview_frames.latest() is not None
+    try:
+        assert runtime._rich_labels is None
+        assert runtime.ui_info()["rich_labeling"]["enabled"] is False
+        assert runtime.status()["rich_labeling_enabled"] is False
+        assert runtime.status()["rich_labeling"] == {
+            "state": "disabled", "disabled_reason": "gpu_required",
+        }
+        runtime._active_rich_session_id = "sample-session"
+        runtime._on_display_frame(b"frame-not-submitted-to-rich", 1.0, 1)
+        assert calls == ["client", "probe", "close"]
+        assert runtime.preview_frames.latest() is not None
+    finally:
+        runtime.stop()
 
 
 def test_explicit_disabled_setting_does_not_even_probe_worker(monkeypatch):
@@ -239,8 +260,8 @@ def test_warming_gpu_recovers_current_face_session_and_delayed_overlay(monkeypat
             return 0.0
 
     class FaceSession(service.FaceRecognitionSession):
-        def __init__(self, runtime):
-            super().__init__(runtime)
+        def __init__(self, runtime, **kwargs):
+            super().__init__(runtime, **kwargs)
             face_sessions.append(self)
 
     monkeypatch.setattr(service, "RichLabelHTTPClient", Client)
@@ -408,7 +429,7 @@ def test_gpu_warmup_result_attaches_only_to_current_session(monkeypatch):
     try:
         first = runtime.start_camera(dry_run=True)
         assert probing.wait(1.0)
-        assert runtime.stop_session()
+        _stop_and_wait(runtime)
         second = runtime.start_camera(dry_run=True)
         assert first["stream_session_id"] != second["stream_session_id"]
         ready.set()

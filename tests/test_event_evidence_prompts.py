@@ -7,8 +7,6 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
-import cv2
-import numpy as np
 import pytest
 
 from goodvision_harness.config import load_config
@@ -25,18 +23,10 @@ from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _model_jpeg(shade: int = 0) -> bytes:
-    """A decodable frame already at the configured 360x202 model canvas."""
-
-    ok, encoded = cv2.imencode(".jpg", np.full((202, 360, 3), shade, np.uint8))
-    assert ok
-    return encoded.tobytes()
-
-
 @pytest.mark.parametrize(
     "config_path", [
+        # Package/default byte equality is checked in test_deployment_settings.py.
         ROOT / "config.yaml",
-        ROOT / "src/goodvision_harness/config.yaml",
         ROOT / "config.delivery.yaml",
     ]
 )
@@ -59,8 +49,7 @@ def test_evidence_rules_reach_model_in_each_detection_path(
     assert config.sliding_window.size_frames == 1
     assert config.sliding_window.stride_frames == 1
     assert config.video.fps == 2.5
-    assert config.video.max_image_side == 360
-    assert settings.image_size == (360, 202)
+    assert config.video.max_image_side == 320
     assert config.video.jpeg_quality == 75
     negative = {
         "detected": False,
@@ -85,9 +74,9 @@ def test_evidence_rules_reach_model_in_each_detection_path(
             sample_index=0,
             source_frame_index=0,
             timestamp_seconds=0.0,
-            jpeg_bytes=_model_jpeg(),
-            width=360,
-            height=202,
+            jpeg_bytes=b"test-frame",
+            width=320,
+            height=180,
         ),),
     )
 
@@ -195,7 +184,7 @@ def test_bare_finger_evidence_rule_overrides_stale_permissive_prompts(
     )
     window = FrameWindow(index=0, frames=(SampledFrame(
         sample_index=0, source_frame_index=0, timestamp_seconds=0.0,
-        jpeg_bytes=_model_jpeg(), width=360, height=202,
+        jpeg_bytes=b"test-frame", width=320, height=180,
     ),))
 
     response = client.classify_window(window)

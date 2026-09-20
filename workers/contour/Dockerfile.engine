@@ -1,0 +1,43 @@
+FROM python:3.12-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HUB_OFFLINE=1 HF_HOME=/tmp/huggingface TORCH_HOME=/tmp/torch
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y git build-essential libgomp1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /engine
+COPY sam_scene/requirements.txt ./requirements.txt
+ARG TORCH_CUDA=cu128
+ENV PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10 PIP_RESUME_RETRIES=10
+# Cache completed wheels outside image layers and resume interrupted large wheels.
+RUN python -m pip install --no-cache-dir pip==25.2
+RUN --mount=type=cache,target=/root/.cache/pip \
+    case "${TORCH_CUDA}" in cu126|cu128) ;; *) exit 1 ;; esac \
+    && python -m pip install torch==2.10.0 torchvision==0.25.0 \
+        --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install -r requirements.txt
+COPY contour/repair_decord_metadata.py /opt/build/repair_decord_metadata.py
+RUN python /opt/build/repair_decord_metadata.py
+RUN git clone https://github.com/facebookresearch/sam3.git /opt/upstream \
+    && git -C /opt/upstream checkout 660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7 \
+    && mkdir -p /opt/notices/model \
+    && cp /opt/upstream/LICENSE /opt/notices/model/LICENSE \
+    && python -m pip install --no-cache-dir \
+        git+file:///opt/upstream@660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7 \
+    && rm -rf /opt/upstream \
+    && python -m pip check
+COPY sam_scene/app.py sam_scene/sam31.py sam_scene/continuous.py ./
+COPY sam_scene/streaming_state.py sam_scene/h264_transport.py ./
+COPY sam_scene/perception_routes.py sam_scene/sam_live.py sam_scene/multistream.py ./
+COPY contour/benchmark_gpu.py ./
+COPY contour/THIRD_PARTY_NOTICES.md /opt/notices/THIRD_PARTY_NOTICES.md
+RUN python -c "from sam3.model_builder import build_sam3_multiplex_video_predictor; from sam31 import verify_installed_source; verify_installed_source()" \
+    && groupadd --system --gid 10004 contour \
+    && useradd --system --uid 10004 --gid contour --home-dir /nonexistent contour
+# GPU kernels still need writable caches with compilation mode disabled.
+# Keep all runtime writes in the tmpfs, never in the read-only image or home.
+ENV XDG_CACHE_HOME=/tmp/cache MPLCONFIGDIR=/tmp/matplotlib \
+    TRITON_CACHE_DIR=/tmp/triton TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor \
+    TORCH_EXTENSIONS_DIR=/tmp/torch_extensions CUDA_CACHE_PATH=/tmp/cuda
+USER 10004:10004
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8092", "--workers", "1", "--no-server-header", "--no-access-log", "--timeout-graceful-shutdown", "60"]

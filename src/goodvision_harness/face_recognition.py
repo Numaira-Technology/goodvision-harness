@@ -14,11 +14,12 @@ import json
 import logging
 import math
 import os
+import queue
 import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -35,6 +36,8 @@ from .grounding import (
     ModelObject,
     build_face_diagnostics,
 )
+from .person_identity import stranger_evidence
+from .privacy import LocalFaceUnavailableError
 from .reference_memory import UNKNOWN_FACE_EVENT_LABEL
 from .rich_labeling import RichLabelCoordinator, RichLabelSnapshot
 from .sliding_window import FrameWindow
@@ -76,8 +79,14 @@ class FaceRecognizerConfig:
     min_face_size: int = 20
     enrollment_min_face_size: int = 80
     gallery_path: Path = Path(".goodvision/face-gallery.json")
+    inference_instances: int = 2
+    inference_threads: int = 2
 
     def __post_init__(self) -> None:
+        for name, upper in (("inference_instances", 4), ("inference_threads", 16)):
+            value = getattr(self, name)
+            if type(value) is not int or not 1 <= value <= upper:
+                raise ValueError(f"{name} must be an integer between 1 and {upper}")
         model_name = str(self.model_name).strip()
         if not model_name:
             raise ValueError("model_name must not be empty")
@@ -136,6 +145,48 @@ class FaceMatch:
     similarity: float
 
 
+@dataclass(frozen=True, slots=True)
+class FaceGallerySnapshot:
+    version: str
+    entries: tuple[tuple[str, str, tuple[tuple[float, ...], ...]], ...]
+
+    @property
+    def people(self):
+        return {person_id: name for person_id, name, _ in self.entries}
+
+    def matches(self, embedding):
+        vector = _normalized_embedding(embedding)
+        result = []
+        for person_id, name, samples in self.entries:
+            if any(len(sample) != vector.size for sample in samples):
+                raise RuntimeError("query embedding dimension differs from gallery")
+            similarity = max(float(np.dot(vector, sample)) for sample in samples)
+            result.append(FaceMatch(person_id, name, max(-1.0, min(1.0, similarity))))
+        return tuple(sorted(result, key=lambda value: value.similarity, reverse=True))
+
+    def as_private_dict(self):
+        return {"version": self.version, "entries": self.entries}
+
+    @classmethod
+    def from_private_dict(cls, payload):
+        return cls(payload["version"], tuple(
+            (person_id, name, tuple(tuple(sample) for sample in samples))
+            for person_id, name, samples in payload["entries"]
+        ))
+
+
+@dataclass(frozen=True, slots=True)
+class FaceObservation:
+    window: FrameWindow
+    objects: tuple[ModelObject, ...]
+    gallery: FaceGallerySnapshot
+    started: float
+    decode_seconds: float
+    inference_seconds: float
+    error: str | None = None
+    pool_wait_seconds: float = 0.0
+
+
 @dataclass(slots=True)
 class _GalleryEntry:
     name: str
@@ -159,7 +210,19 @@ class FaceGallery:
         self._lock = threading.RLock()
         self._people: dict[str, _GalleryEntry] = {}
         self._embedding_dimension: int | None = None
+        self._revision = uuid4().hex
+        self._snapshot_cache = None
         self._load()
+
+    def private_snapshot(self) -> FaceGallerySnapshot:
+        with self._lock:
+            if self._snapshot_cache is None:
+                self._snapshot_cache = FaceGallerySnapshot(self._revision, tuple(
+                    (person_id, entry.name, tuple(tuple(float(v) for v in sample)
+                                                 for sample in entry.embeddings))
+                    for person_id, entry in sorted(self._people.items())
+                ))
+            return self._snapshot_cache
 
     @property
     def embedding_dimension(self) -> int | None:
@@ -205,6 +268,7 @@ class FaceGallery:
                 self._people = previous_people
                 self._embedding_dimension = previous_dimension
                 raise RuntimeError("could not persist face gallery") from exc
+            self._revision, self._snapshot_cache = uuid4().hex, None
             return GalleryPerson(rendered_id, entry.name, len(entry.embeddings))
 
     def list_people(self) -> tuple[GalleryPerson, ...]:
@@ -231,6 +295,7 @@ class FaceGallery:
                 self._people = previous_people
                 self._embedding_dimension = previous_dimension
                 raise RuntimeError("could not persist face gallery") from exc
+            self._revision, self._snapshot_cache = uuid4().hex, None
             return True
 
     def match(self, embedding: Any) -> FaceMatch | None:
@@ -388,8 +453,15 @@ class FaceRecognitionRuntime:
             model_name=config.model_name,
         )
         self._model: Any | None = None
+        self._additional_models = {}
         self._model_lock = threading.Lock()
         self._inference_lock = threading.Lock()
+        self._instance_locks = [self._inference_lock] + [
+            threading.Lock() for _ in range(config.inference_instances - 1)
+        ]
+        self._available_models = queue.LifoQueue()
+        for slot in reversed(range(config.inference_instances)):
+            self._available_models.put_nowait(slot)
         self._warmup_lock = threading.Lock()
         self._warmed = False
 
@@ -420,7 +492,8 @@ class FaceRecognitionRuntime:
                 return 0.0
             width, height = _detector_size(self.config.det_size)
             image = np.zeros((height, width, 3), dtype=np.uint8)
-            self._infer(image, operation="warmup")
+            for slot in range(self.config.inference_instances):
+                self._infer_slot(slot, image)
             self._warmed = True
         return time.monotonic() - started
 
@@ -476,22 +549,27 @@ class FaceRecognitionRuntime:
         tracker: FaceIdentityTracker | PersonRegistry | None = None,
         snapshot: RichLabelSnapshot | None = None,
     ) -> GroundingResponse:
+        return self.complete_observation(
+            self.observe_window(window), tracker=tracker, snapshot=snapshot,
+        )
+
+    def observe_window(
+        self, window: FrameWindow, *, gallery: FaceGallerySnapshot | None = None,
+    ) -> FaceObservation:
+        """Decode/detect/recognize without mutating any run identity history."""
         started = time.monotonic()
+        gallery = gallery or self.gallery.private_snapshot()
         try:
             image = _decode_image(window.newest_frame.jpeg_bytes)
         except ValueError as exc:
-            return GroundingResponse(
-                window=window,
-                classification=None,
-                latency_seconds=time.monotonic() - started,
-                error=str(exc),
+            return FaceObservation(
+                window, (), gallery, started, time.monotonic() - started, 0, str(exc),
             )
 
-        faces = self._infer(image, operation="classification")
+        decoded = time.monotonic()
+        faces, pool_wait, inference_seconds = self._infer_timed(image)
         height, width = image.shape[:2]
         objects: list[ModelObject] = []
-        event_indexes: list[int] = []
-        counts = {"known": 0, "unknown": 0, "unusable": 0}
 
         for face in faces:
             pixel_bbox = _face_bbox(face, width=width, height=height)
@@ -525,7 +603,7 @@ class FaceRecognitionRuntime:
                     label = "unusable_face"
                     attributes["reason"] = "embedding_unavailable"
                 else:
-                    matches = self.gallery.matches(embedding)
+                    matches = gallery.matches(embedding)
                     match = matches[0] if matches else None
                     if match is not None:
                         attributes["similarity"] = match.similarity
@@ -578,6 +656,28 @@ class FaceRecognitionRuntime:
                     ),
                 )
             )
+        return FaceObservation(
+            window, tuple(objects), gallery, started, decoded - started,
+            inference_seconds, pool_wait_seconds=pool_wait,
+        )
+
+    def complete_observation(
+        self, observation: FaceObservation, *,
+        tracker=None, snapshot=None, gallery=None,
+    ) -> GroundingResponse:
+        """Ordered, small identity update after a read-only inference completes."""
+        window, started = observation.window, observation.started
+        if observation.error is not None:
+            return GroundingResponse(window, None, time.monotonic() - started,
+                                     error=observation.error)
+        objects = list(observation.objects)
+        gallery = gallery or self.gallery.private_snapshot()
+        if gallery.version != observation.gallery.version:
+            # Re-evaluate only the inexpensive gallery lookup if enrollment was
+            # edited in flight. Never resurrect a deleted gallery identity.
+            objects = [self._rematch_face(item, gallery) for item in objects]
+        event_indexes = []
+        counts = {"known": 0, "unknown": 0, "unusable": 0}
         # Capture actual observations before identity confirmation/holding can
         # change their status or append a face from recent track history.
         raw_objects = tuple(objects)
@@ -588,16 +688,14 @@ class FaceRecognitionRuntime:
                     objects,
                     timestamp=window.end_timestamp,
                     frame_sequence=window.newest_frame.source_frame_index,
-                    people={
-                        person.person_id: person.name for person in self.list_people()
-                    },
+                    people=gallery.people,
                     snapshot=snapshot,
                 )
             )
         for object_index, item in enumerate(objects):
             status = str(item.attributes["status"])
             counts[status] += 1
-            if status == "unknown":
+            if stranger_evidence(item.attributes) is True:
                 event_indexes.append(object_index)
 
         event_confidences = [
@@ -632,13 +730,53 @@ class FaceRecognitionRuntime:
             face_diagnostics=build_face_diagnostics(raw_objects, tuple(objects)),
         )
 
-    def _ensure_model(self) -> Any:
-        if self._model is not None:
+    def _rematch_face(self, item, gallery):
+        if (not item.identity_embedding or (
+            item.attributes.get("status") == "unusable"
+            and item.attributes.get("reason") != "ambiguous_gallery_match"
+        )):
+            return item
+        attributes = {key: value for key, value in item.attributes.items()
+                      if key not in {"person_id", "name", "reason", "similarity",
+                                     "match_margin", "status"}}
+        matches = gallery.matches(item.identity_embedding)
+        best = matches[0] if matches else None
+        margin = best.similarity - matches[1].similarity if len(matches) > 1 else 2.0
+        if best is not None:
+            attributes.update(similarity=best.similarity, match_margin=margin)
+        if best is not None and best.similarity >= self.config.threshold:
+            if margin >= 0.08:
+                label = "known_person"
+                attributes.update(
+                    status="known", person_id=best.person_id, name=best.name,
+                )
+            else:
+                label = "unusable_face"
+                attributes.update(status="unusable", reason="ambiguous_gallery_match")
+        else:
+            label = UNKNOWN_FACE_EVENT_LABEL
+            attributes["status"] = "unknown"
+        return replace(item, label=label, attributes=attributes)
+
+    def _ensure_model(self, slot=0) -> Any:
+        if slot == 0 and self._model is not None:
             return self._model
         with self._model_lock:
-            if self._model is None:
-                self._model = _load_face_analysis(self.config)
-            return self._model
+            if slot == 0:
+                if self._model is None:
+                    self._model = _load_face_analysis(self.config)
+                return self._model
+            if slot not in self._additional_models:
+                self._additional_models[slot] = _load_face_analysis(self.config)
+            return self._additional_models[slot]
+
+    def _infer_slot(self, slot, image):
+        model = self._ensure_model(slot)
+        try:
+            with self._instance_locks[slot]:
+                return tuple(model.get(image))
+        except Exception as exc:
+            raise RuntimeError("local face analysis failed") from exc
 
     def _infer(
         self,
@@ -646,12 +784,17 @@ class FaceRecognitionRuntime:
         *,
         operation: str,
     ) -> tuple[Any, ...]:
-        model = self._ensure_model()
+        return self._infer_timed(image)[0]
+
+    def _infer_timed(self, image):
+        started = time.monotonic()
+        slot = self._available_models.get()
         try:
-            with self._inference_lock:
-                return tuple(model.get(image))
-        except Exception as exc:
-            raise RuntimeError("local face analysis failed") from exc
+            ready = time.monotonic()
+            result = self._infer_slot(slot, image)
+            return result, ready - started, time.monotonic() - ready
+        finally:
+            self._available_models.put(slot)
 
     def _face_is_large_enough(
         self,
@@ -671,7 +814,10 @@ class FaceRecognitionRuntime:
 class FaceRecognitionSession:
     """Share model/gallery resources while keeping recognition history isolated."""
 
-    def __init__(self, runtime: FaceRecognitionRuntime) -> None:
+    def __init__(
+        self, runtime: FaceRecognitionRuntime, *,
+        observation_store_path: Path | None = None,
+    ) -> None:
         self.runtime = runtime
         self.settings = runtime.settings
         self._tracker = FaceIdentityTracker()
@@ -681,10 +827,57 @@ class FaceRecognitionSession:
         self._last_rich_sequence = -1
         self._last_source_sequence = -1
         self._person_registry: PersonRegistry | None = None
+        self._worker = None
+        self._worker_lock = threading.Lock()
+        self._observation_store_path = observation_store_path
+        self.fast_results = None
 
     def bind_person_registry(self, registry: PersonRegistry) -> None:
         with self._lock:
             self._person_registry = registry
+            self._session_id = registry.stream_session_id
+
+    def submit_window(self, window: FrameWindow, *, on_admitted=None):
+        """Durably register source order before any inference thread can start."""
+        from .face_worker import FaceObservationWorker
+
+        with self._worker_lock:
+            if self._worker is None:
+                run_id = self._session_id or uuid4().hex
+                path = Path(self._observation_store_path or (
+                    self.runtime.config.gallery_path.parent / "private-face"
+                ))
+                if path.suffix.lower() not in {".sqlite", ".sqlite3"}:
+                    path = path / f"{uuid4().hex}.sqlite3"
+                self._worker = FaceObservationWorker(self, path, run_id)
+            worker = self._worker
+        return worker.submit(window, on_admitted=on_admitted)
+
+    def stats(self):
+        with self._worker_lock:
+            return self._worker.stats() if self._worker else {
+                "scheduler": "durable_ordered_pool",
+                "instances": self.runtime.config.inference_instances,
+                "inference_threads": self.runtime.config.inference_threads,
+                "submitted": 0, "completed": 0, "failed": 0, "active": 0, "backlog": 0,
+            }
+
+    def window_for(self, future):
+        return self._worker.window_for(future)
+
+    def close(self, *, wait=False):
+        with self._worker_lock:
+            worker = self._worker
+        if worker is not None:
+            worker.close(wait=wait)
+
+    def complete_observation(self, observation, *, gallery=None):
+        with self._lock:
+            return self.runtime.complete_observation(
+                observation, tracker=self._person_registry or self._tracker,
+                snapshot=self._snapshot_locked(observation.window),
+                gallery=gallery,
+            )
 
     def bind_rich_labels(
         self, session_id: str, coordinator: RichLabelCoordinator | None
@@ -698,35 +891,37 @@ class FaceRecognitionSession:
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         with self._lock:
-            snapshot = None
-            if self._rich_labels is not None:
-                # Raw completed frames only: the display selector may hold or
-                # interpolate boxes past the useful lifetime of identity evidence.
-                candidates = [
-                    item
-                    for item in self._rich_labels.history()
-                    if item.stream_session_id == self._session_id
-                    and item.frame_sequence <= window.newest_frame.source_frame_index
-                    and item.timestamp_seconds <= window.end_timestamp
-                ]
-                snapshot = max(
-                    candidates, key=lambda item: item.timestamp_seconds, default=None
-                )
-                if (
-                    snapshot is not None
-                    and window.end_timestamp - snapshot.timestamp_seconds <= 0.75
-                    and (
-                        window.newest_frame.source_frame_index
-                        > self._last_source_sequence
-                    )
-                ):
-                    self._last_rich_sequence = snapshot.frame_sequence
-                    self._last_source_sequence = window.newest_frame.source_frame_index
             return self.runtime._classify_window(
-                window,
-                tracker=self._person_registry or self._tracker,
-                snapshot=snapshot,
+                window, tracker=self._person_registry or self._tracker,
+                snapshot=self._snapshot_locked(window),
             )
+
+    def _snapshot_locked(self, window):
+        snapshot = None
+        if self._rich_labels is not None:
+            # Raw completed frames only: the display selector may hold or
+            # interpolate boxes past the useful lifetime of identity evidence.
+            candidates = [
+                item
+                for item in self._rich_labels.history()
+                if item.stream_session_id == self._session_id
+                and item.frame_sequence <= window.newest_frame.source_frame_index
+                and item.timestamp_seconds <= window.end_timestamp
+            ]
+            snapshot = max(
+                candidates, key=lambda item: item.timestamp_seconds, default=None
+            )
+            if (
+                snapshot is not None
+                and window.end_timestamp - snapshot.timestamp_seconds <= 0.75
+                and (
+                    window.newest_frame.source_frame_index
+                    > self._last_source_sequence
+                )
+            ):
+                self._last_rich_sequence = snapshot.frame_sequence
+                self._last_source_sequence = window.newest_frame.source_frame_index
+        return snapshot
 
 
 def _strict_identity_quality(
@@ -824,7 +1019,7 @@ def _load_face_analysis_inner(config: FaceRecognizerConfig) -> Any:
         insightface_app = importlib.import_module("insightface.app")
         onnxruntime = importlib.import_module("onnxruntime")
     except ModuleNotFoundError as exc:
-        raise RuntimeError("local face analysis is unavailable") from exc
+        raise LocalFaceUnavailableError("local face analysis is unavailable") from exc
 
     if config.provider == "CUDAExecutionProvider":
         # The GPU distribution can install its CUDA/cuDNN runtime libraries as
@@ -856,6 +1051,7 @@ def _load_face_analysis_inner(config: FaceRecognizerConfig) -> Any:
             allowed_modules=["detection", "recognition"],
             providers=[config.provider],
         )
+        _configure_face_session_threads(model, onnxruntime, config)
         model.prepare(
             ctx_id=-1 if config.provider == "CPUExecutionProvider" else 0,
             det_size=_detector_size(config.det_size),
@@ -865,6 +1061,32 @@ def _load_face_analysis_inner(config: FaceRecognizerConfig) -> Any:
     except Exception as exc:
         raise RuntimeError("local face analysis could not be initialized") from exc
     return model
+
+
+def _configure_face_session_threads(model, onnxruntime, config):
+    """InsightFace 1.0.1 drops sess_options in its model_zoo.get_model.
+
+    Replace each selected module's session before prepare; shape-dependent
+    module metadata still describes the same ONNX file. Avoid global patches.
+    """
+    modules = getattr(model, "models", None)
+    if not isinstance(modules, Mapping) or not {
+        "detection", "recognition",
+    }.issubset(modules):
+        raise RuntimeError("local face CPU thread limits could not be verified")
+    for name in ("detection", "recognition"):
+        module = modules[name]
+        options = onnxruntime.SessionOptions()
+        options.intra_op_num_threads = config.inference_threads
+        options.inter_op_num_threads = 1
+        session = onnxruntime.InferenceSession(
+            module.model_file, sess_options=options, providers=[config.provider],
+        )
+        actual = session.get_session_options()
+        if (actual.intra_op_num_threads != config.inference_threads
+                or actual.inter_op_num_threads != 1):
+            raise RuntimeError("local face CPU thread limits could not be verified")
+        module.session = session
 
 
 def _require_accelerated_face_sessions(model: Any, provider: str) -> None:

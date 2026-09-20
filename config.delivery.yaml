@@ -17,9 +17,7 @@ video:
   realtime: true
   playback_speed: 1.0
   max_sampled_frames: null
-  max_image_side: 360
-  # Exact behavior-model canvas; fit the full image and center black padding.
-  model_image_size: [360, 202]
+  max_image_side: 320
   jpeg_quality: 75
 
 display:
@@ -33,6 +31,9 @@ display:
   # End-to-end completion can exceed raw model latency while concurrent
   # results are applied. Leave enough headroom before publishing each frame.
   delay_seconds: 2.5
+  # Continuous source-aligned contours are published without an extra buffer.
+  # A console-saved buffer delay overrides this route-specific default.
+  tracking_delay_seconds: 0.0
   # Legacy interpolation limit; output now holds the preceding annotation
   # until a new keyframe explicitly updates or clears the state.
   bbox_max_gap_seconds: 0.8
@@ -252,8 +253,8 @@ face:
 runtime:
   # Independent windows are sent concurrently, up to this limit. Windows that
   # would exceed it are dropped (a live feed never queues up the past).
-  # Ten slots provide headroom for slow responses at 2.5 requests/second.
-  max_concurrent_requests: 10
+  # Six slots provide headroom for 2.5 requests/second.
+  max_concurrent_requests: 6
 
 server:
   host: 127.0.0.1

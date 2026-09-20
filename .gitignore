@@ -1,19 +1,63 @@
-.env
-.DS_Store
-.venv/
-.venv-directml/
-.worktrees/
-.audit*/
+# Python environments, package builds, and tool caches.
+.venv*/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+.cache/
 build/
 dist/
+*.whl
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
-# Runtime outputs and private media stay outside Git.
+# Worktrees, local audits, and OS/editor scratch files.
+.worktrees/
+.audit*/
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# Downloaded model weights belong in .models/, never in source control.
+.models/
+/models/
+/checkpoints/
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.ckpt
+*.pdparams
+*.pdiparams
+
+# Put new evaluation runs, exports, and raw captures in these local directories.
+# Reviewed reports belong in docs/validation; reusable data in tests/fixtures.
+logs/
+output/
+outputs/
+tmp/
+/artifacts/
+/media/
+*.log
+goodvision-*.tar
+goodvision-*.tar.gz
+goodvision-*.tar.partial
+goodvision-*.zip
+
+# Private media is excluded by default. Deliberate, non-private fixtures and
+# documentation/application assets have explicit homes below.
 *.mp4
 *.mov
 *.avi
@@ -22,12 +66,39 @@ dist/
 *.jpg
 *.jpeg
 *.png
-logs/
-output/
-tmp/
-.models/
-.goodvision/
+*.webp
+*.heic
 
-# Private fixed-reference images for multimodal memory context.
-/memory/
-/src/goodvision_harness/memory/
+!tests/fixtures/**/*.mp4
+!tests/fixtures/**/*.mov
+!tests/fixtures/**/*.avi
+!tests/fixtures/**/*.mkv
+!tests/fixtures/**/*.webm
+!tests/fixtures/**/*.jpg
+!tests/fixtures/**/*.jpeg
+!tests/fixtures/**/*.png
+!tests/fixtures/**/*.webp
+!tests/fixtures/**/*.heic
+!docs/assets/**/*.jpg
+!docs/assets/**/*.jpeg
+!docs/assets/**/*.png
+!docs/assets/**/*.webp
+!src/goodvision_harness/assets/**/*.jpg
+!src/goodvision_harness/assets/**/*.jpeg
+!src/goodvision_harness/assets/**/*.png
+!src/goodvision_harness/assets/**/*.webp
+
+# Private state and reference memory stay excluded even inside an asset tree.
+.goodvision/
+memory/
+/data/
+/personal/
+
+# Keep credential rules after asset exceptions. Commit only sanitized examples.
+.env
+.env.*
+!.env.example
+!.env.*.example
+.ssh/
+*.pem
+*.key

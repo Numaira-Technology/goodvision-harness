@@ -12,11 +12,11 @@ from typing import Any
 import yaml
 from dotenv import find_dotenv, load_dotenv
 
+from .deployment_settings import validate_processing_method
 from .event_archive import EventArchiveSettings
 from .model_api import ModelAPISettings
 from .model_routing import CUSTOMER_INFERENCE_PROFILE, resolve_model_route
 from .reference_memory import MemoryContext, load_memory_context
-from .sliding_window import BranchSampling
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 
@@ -50,6 +50,7 @@ class DisplaySettings:
     max_image_side: int | None = None
     jpeg_quality: int = 90
     delay_seconds: float = 2.5
+    sam_live_delay_seconds: float = 0.0
     bbox_max_gap_seconds: float = 0.8
 
 
@@ -79,6 +80,14 @@ class RichLabelSettings:
     max_interpolation_gap_seconds: float = 2.0
     max_hold_seconds: float = 2.0
     tracking_enabled: bool = True
+    video_batch_frames: int = 16
+    video_batch_seconds: float = 4.0
+    video_timeout_seconds: float = 75.0
+    video_transport_max_side: int | None = None
+    video_transport_jpeg_quality: int | None = None
+    video_transport_codec: str = "jpeg"
+    video_transport_crf: int = 23
+    processing_method: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,8 +105,6 @@ class InferenceSettings:
     prompt: str
     request_parameters: Mapping[str, Any] = field(default_factory=dict)
     multi_event_prompt: str = ""
-    image_size: tuple[int, int] | None = None
-    image_jpeg_quality: int = 75
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +116,8 @@ class FaceSettings:
     allow_model_download: bool = False
     provider: str = "CPUExecutionProvider"
     live_scheduler: str = "auto"
+    inference_instances: int = 2
+    inference_threads: int = 2
     det_size: int = 640
     threshold: float = 0.4
     min_face_size: int = 20
@@ -121,7 +130,14 @@ class FaceSettings:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
-    max_concurrent_requests: int = 10
+    max_concurrent_requests: int = 4
+    scene_mode: str = "disabled"
+    scene_timeout_seconds: float = 15.0
+    scene_max_image_side: int = 720
+    scene_jpeg_quality: int = 90
+    scene_max_tokens: int = 1600
+    scene_max_in_flight: int = 4
+    scene_observation_fps: float = 1.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,9 +183,6 @@ class HarnessConfig:
     server: ServerSettings
     service: ServiceSettings
     events: EventArchiveSettings = field(default_factory=EventArchiveSettings)
-    # Session-only: set when a mixed safety + stranger session samples each
-    # branch at its own cadence. Never loaded from YAML.
-    branch_sampling: BranchSampling | None = None
 
     @property
     def model_api(self) -> ModelAPISettings:
@@ -278,6 +291,13 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             display_section.get("delay_seconds", 2.5),
             "display.delay_seconds",
         ),
+        sam_live_delay_seconds=_bounded_float(
+            display_section.get(
+                "tracking_delay_seconds",
+                display_section.get("sam_live_delay_seconds", 0.0),
+            ),
+            "display.tracking_delay_seconds", minimum=0, maximum=30,
+        ),
         bbox_max_gap_seconds=_positive_float(
             display_section.get("bbox_max_gap_seconds", 0.8),
             "display.bbox_max_gap_seconds",
@@ -293,8 +313,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             rich_label_section.get("backend", "paddle"), "rich_labeling.backend"
         )
     ).lower()
-    if rich_label_backend not in {"paddle", "vlm"}:
-        raise ValueError("rich_labeling.backend must be paddle or vlm")
+    if rich_label_backend not in {"paddle", "vlm", "sam", "sam31", "sam31_stream"}:
+        raise ValueError(
+            "rich_labeling.backend must be paddle, vlm, sam, sam31 or sam31_stream"
+        )
     rich_label_model = rich_label_section.get("model")
     if rich_label_model is not None and not isinstance(rich_label_model, str):
         raise TypeError("rich_labeling.model must be a string or null")
@@ -355,14 +377,62 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     )
     if rich_label_history_size < 2:
         raise ValueError("rich_labeling.history_size must be at least 2")
+    processing_method = (
+        os.environ.get("PERCEPTION_METHOD", "").strip()
+        or rich_label_section.get("processing_method")
+    )
+    if processing_method is not None:
+        processing_method = validate_processing_method(processing_method)
     rich_labeling = RichLabelSettings(
         enabled=rich_label_enabled,
+        processing_method=processing_method,
         tracking_enabled=_environment_bool(
             "PERSON_TRACKING_ENABLED",
-            _bool(rich_label_section.get("tracking_enabled", True),
-                  "rich_labeling.tracking_enabled"),
+            _bool(
+                rich_label_section.get("tracking_enabled", True),
+                "rich_labeling.tracking_enabled",
+            ),
         ),
         backend=rich_label_backend,
+        video_batch_frames=_bounded_int(
+            int(os.environ["SAM31_BATCH_FRAMES"])
+            if os.environ.get("SAM31_BATCH_FRAMES")
+            else rich_label_section.get("video_batch_frames", 16),
+            "rich_labeling.video_batch_frames", minimum=1, maximum=16,
+        ),
+        video_batch_seconds=_bounded_float(
+            os.environ.get("SAM31_BATCH_SECONDS")
+            or rich_label_section.get("video_batch_seconds", 4.0),
+            "rich_labeling.video_batch_seconds", minimum=0.01, maximum=10,
+        ),
+        video_timeout_seconds=_positive_float(
+            os.environ.get("SAM31_CLIENT_TIMEOUT_SECONDS")
+            or rich_label_section.get("video_timeout_seconds", 75.0),
+            "rich_labeling.video_timeout_seconds",
+        ),
+        video_transport_max_side=_optional_bounded_int(
+            int(os.environ["SAM31_TRANSPORT_MAX_SIDE"])
+            if os.environ.get("SAM31_TRANSPORT_MAX_SIDE")
+            else rich_label_section.get("video_transport_max_side"),
+            "rich_labeling.video_transport_max_side", minimum=128, maximum=1280,
+        ),
+        video_transport_jpeg_quality=_optional_bounded_int(
+            int(os.environ["SAM31_TRANSPORT_JPEG_QUALITY"])
+            if os.environ.get("SAM31_TRANSPORT_JPEG_QUALITY")
+            else rich_label_section.get("video_transport_jpeg_quality"),
+            "rich_labeling.video_transport_jpeg_quality", minimum=1, maximum=100,
+        ),
+        video_transport_codec=_required_string(
+            os.environ.get("SAM31_TRANSPORT_CODEC")
+            or rich_label_section.get("video_transport_codec", "jpeg"),
+            "rich_labeling.video_transport_codec",
+        ).lower(),
+        video_transport_crf=_bounded_int(
+            int(os.environ["SAM31_TRANSPORT_CRF"])
+            if os.environ.get("SAM31_TRANSPORT_CRF")
+            else rich_label_section.get("video_transport_crf", 23),
+            "rich_labeling.video_transport_crf", minimum=18, maximum=35,
+        ),
         model=rich_label_model,
         vlm_wire_format=rich_wire_format,
         vlm_execution_mode=rich_execution_mode,
@@ -374,7 +444,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "rich_labeling.vlm_prompt_cache",
         ),
         vlm_http2=_bool(
-            rich_label_section.get("vlm_http2", False), "rich_labeling.vlm_http2",
+            rich_label_section.get("vlm_http2", False),
+            "rich_labeling.vlm_http2",
         ),
         vlm_trust_env=_bool(
             rich_label_section.get("vlm_trust_env", True),
@@ -397,11 +468,14 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         ),
         endpoint=rich_label_endpoint,
         timeout_seconds=_positive_float(
-            rich_label_section.get("timeout_seconds", 2.0),
+            os.environ.get("RICH_LABEL_TIMEOUT_SECONDS")
+            or rich_label_section.get("timeout_seconds", 2.0),
             "rich_labeling.timeout_seconds",
         ),
         max_fps=_positive_float(
-            rich_label_section.get("max_fps", 7.5), "rich_labeling.max_fps"
+            os.environ.get("RICH_LABEL_MAX_FPS")
+            or rich_label_section.get("max_fps", 7.5),
+            "rich_labeling.max_fps",
         ),
         history_size=rich_label_history_size,
         max_interpolation_gap_seconds=_positive_float(
@@ -413,6 +487,17 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "rich_labeling.max_hold_seconds",
         ),
     )
+    if rich_labeling.backend in {"sam31", "sam31_stream"} and (
+        rich_labeling.max_fps > 30 or rich_labeling.history_size > 4096
+    ):
+        raise ValueError("sam31 max_fps must be <=30 and history_size must be <=4096")
+    if rich_labeling.backend == "sam31_stream" and rich_labeling.max_fps < 0.5:
+        raise ValueError("sam31_stream requires max_fps>=0.5")
+    if rich_labeling.video_transport_codec not in {"jpeg", "h264"}:
+        raise ValueError("video transport codec must be jpeg or h264")
+    if (rich_labeling.video_transport_codec == "h264"
+            and rich_labeling.backend != "sam31_stream"):
+        raise ValueError("H264 transport requires sam31_stream")
     sliding_window = SlidingWindowSettings(
         size_frames=_positive_int(
             window_section.get("size_frames", 4), "sliding_window.size_frames"
@@ -450,14 +535,22 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         prompt=prompt,
         request_parameters=dict(request_parameters),
         multi_event_prompt=multi_event_prompt,
-        image_size=_model_image_size(video_section.get("model_image_size")),
-        image_jpeg_quality=video.jpeg_quality,
     )
     memory = load_memory_context(
         memory_section,
         config_directory=config_path.parent,
     )
     face = FaceSettings(
+        inference_instances=_positive_int(
+            int(os.environ.get("FACE_INFERENCE_INSTANCES") or face_section.get(
+                "inference_instances", 2,
+            )), "face.inference_instances",
+        ),
+        inference_threads=_positive_int(
+            int(os.environ.get("FACE_INFERENCE_THREADS") or face_section.get(
+                "inference_threads", 2,
+            )), "face.inference_threads",
+        ),
         model_name=(
             _face_profile_model(face_section["model_profile"])
             if "model_profile" in face_section
@@ -495,7 +588,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "face.enrollment_min_face_size",
         ),
         sample_fps=_positive_float(
-            face_section.get("sample_fps", 2.5), "face.sample_fps"
+            os.environ.get("FACE_SAMPLE_FPS") or face_section.get("sample_fps", 2.5),
+            "face.sample_fps",
         ),
         max_image_side=_positive_int(
             face_section.get("max_image_side", 1280), "face.max_image_side"
@@ -513,12 +607,78 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             name="face.gallery_path",
         ),
     )
+    scene_mode = (
+        str(
+            os.environ.get("SCENE_ENGINE_MODE")
+            or runtime_section.get("scene_mode", "disabled")
+        )
+        .strip()
+        .lower()
+    )
+    if scene_mode not in {"disabled", "active"}:
+        raise ValueError(
+            "runtime.scene_mode must be disabled or active; shadow mode was removed"
+        )
+    # A false legacy switch is harmless in an existing deployment. It must no
+    # longer enable an observer alongside the original per-frame pipeline.
+    legacy_scene_enabled = _bool(
+        runtime_section.get("scene_enabled", False), "runtime.scene_enabled"
+    )
+    legacy_scene_environment = _environment_bool("SCENE_ENGINE_ENABLED", False)
+    if legacy_scene_enabled or legacy_scene_environment:
+        raise ValueError(
+            "SCENE_ENGINE_ENABLED/runtime.scene_enabled was removed; "
+            "use SCENE_ENGINE_MODE=active or runtime.scene_mode: active"
+        )
+    if face.inference_instances > 4 or face.inference_threads > 16:
+        raise ValueError("face inference capacity exceeds supported limits")
+    scene_timeout = _positive_float(
+        os.environ.get("SCENE_TIMEOUT_SECONDS")
+        or runtime_section.get("scene_timeout_seconds", 15),
+        "runtime.scene_timeout_seconds",
+    )
+    if scene_timeout > 20:
+        raise ValueError("runtime.scene_timeout_seconds must not exceed 20 seconds")
     runtime = RuntimeSettings(
         max_concurrent_requests=_positive_int(
-            runtime_section.get("max_concurrent_requests", 10),
+            runtime_section.get("max_concurrent_requests", 4),
             "runtime.max_concurrent_requests",
-        )
+        ),
+        scene_mode=scene_mode,
+        scene_timeout_seconds=scene_timeout,
+        scene_max_in_flight=_positive_int(
+            int(os.environ.get("SCENE_MAX_IN_FLIGHT") or runtime_section.get(
+                "scene_max_in_flight", 4,
+            )), "runtime.scene_max_in_flight",
+        ),
+        scene_observation_fps=_positive_float(
+            os.environ.get("SCENE_OBSERVATION_FPS") or runtime_section.get(
+                "scene_observation_fps", 1.25,
+            ), "runtime.scene_observation_fps",
+        ),
+        scene_max_image_side=_positive_int(
+            int(os.environ["SCENE_MAX_IMAGE_SIDE"])
+            if os.environ.get("SCENE_MAX_IMAGE_SIDE")
+            else runtime_section.get("scene_max_image_side", 720),
+            "runtime.scene_max_image_side",
+        ),
+        scene_max_tokens=_positive_int(
+            int(os.environ["SCENE_MAX_TOKENS"])
+            if os.environ.get("SCENE_MAX_TOKENS")
+            else runtime_section.get("scene_max_tokens", 1600),
+            "runtime.scene_max_tokens",
+        ),
+        scene_jpeg_quality=_bounded_int(
+            int(os.environ["SCENE_JPEG_QUALITY"])
+            if os.environ.get("SCENE_JPEG_QUALITY")
+            else runtime_section.get("scene_jpeg_quality", 90),
+            "runtime.scene_jpeg_quality", minimum=1, maximum=100,
+        ),
     )
+    if runtime.scene_max_image_side > 2048 or runtime.scene_max_tokens > 16384:
+        raise ValueError("scene image/output budget exceeds supported limits")
+    if runtime.scene_max_in_flight > 4 or runtime.scene_observation_fps > 3:
+        raise ValueError("scene concurrency/cadence exceeds validated tuning range")
     server = ServerSettings(
         host=str(server_section.get("host", "127.0.0.1")),
         port=_positive_int(server_section.get("port", 7900), "server.port"),
@@ -774,6 +934,14 @@ def _optional_positive_int(value: Any, name: str) -> int | None:
     return _positive_int(value, name)
 
 
+def _optional_bounded_int(
+    value: Any, name: str, *, minimum: int, maximum: int,
+) -> int | None:
+    if value is None:
+        return None
+    return _bounded_int(value, name, minimum=minimum, maximum=maximum)
+
+
 def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
     if (
         isinstance(value, bool)
@@ -860,14 +1028,3 @@ def _face_live_scheduler(value: Any) -> str:
             "face.live_scheduler must be auto, full, or single_flight"
         )
     return scheduler
-
-
-def _model_image_size(value: Any) -> tuple[int, int] | None:
-    """Optional exact model canvas size, preserving aspect ratio with padding."""
-    if value is None:
-        return None
-    if not isinstance(value, (list, tuple)) or len(value) != 2:
-        raise ValueError("video.model_image_size must be [width, height] or null")
-    if any(type(side) is not int or side < 1 for side in value):
-        raise ValueError("video.model_image_size dimensions must be positive integers")
-    return value[0], value[1]

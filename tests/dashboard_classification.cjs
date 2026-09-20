@@ -2,55 +2,24 @@
  * No production logic is copied: assertions inspect the rendered panel and log.
  */
 const assert=require("node:assert/strict");
-const fs=require("node:fs");
-const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
-
-class Element{
-  constructor(){
-    this.textContent="";this.className="";this.children=[];this.dataset={};this.style={};
-    this.value="";this.checked=false;
-    this.classList={
-      add:name=>{if(!this.className.split(" ").includes(name))this.className+=" "+name},
-      remove:name=>{this.className=this.className.split(" ").filter(item=>item!==name).join(" ")},
-      toggle:(name,active)=>active?this.classList.add(name):this.classList.remove(name)
-    }
-  }
-  append(...items){for(const item of items){item.parent=this;this.children.push(item)}}
-  appendChild(item){this.append(item)}
-  prepend(item){item.parent=this;this.children.unshift(item)}
-  replaceChildren(...items){this.children=[];this.append(...items)}
-  remove(){this.parent.children=this.parent.children.filter(item=>item!==this)}
-  get lastChild(){return this.children.at(-1)}
-  querySelectorAll(){return []}
-  getAttribute(name){return this[name]||null}
-  setAttribute(name,value){this[name]=value}
-  removeAttribute(name){delete this[name]}
-}
+const {createDocument, runDashboard} = require("./helpers/dashboard.cjs");
 
 function dashboard(){
-  const elements=new Map(),features=["fight","smoking","fall","weapon","stranger"];
-  const featureInputs=features.map(feature=>Object.assign(new Element(),{checked:true,dataset:{feature}}));
-  const document={
-    getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id)},
-    querySelectorAll:()=>featureInputs,createElement:()=>new Element()
-  };
+  const {document, element} = createDocument(["fight", "smoking", "fall", "weapon", "stranger"]);
   const context=vm.createContext({document,window:{isSecureContext:true},
-    location:{hostname:"localhost"},setTimeout,clearTimeout,clearInterval,
-    requestAnimationFrame:()=>{},fetch:async()=>({json:async()=>context.statusData})});
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
-  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  new vm.Script(script); // Parse the complete shipped script, including browser startup.
-  vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+    location:{hostname:"localhost"},setTimeout,clearTimeout,clearInterval,AbortController,
+    requestAnimationFrame:()=>{},fetch:async()=>({ok:true,json:async()=>context.statusData})});
+  runDashboard(context, `
     // These tests exercise classification; video transport has separate coverage.
     openFeed=()=>surfaces();
     state.running=true;state.sessionId="session-1";state.sessionFeatures=detectionEvents;
     state.gallery={ready:true};state.galleryLoading=false;
     globalThis.app={analysis,message,status,reset,renderClassification,state,
       renderSensitivities,selectedSensitivities,sensitivityInputs,controls,start};
-  `,context);
-  return {app:context.app,context,element:id=>document.getElementById(id),
+  `);
+  return {app:context.app,context,element,
     status:event=>document.getElementById("event-statuses").children
       .find(item=>item.dataset.eventLabel===event)?.children[1].textContent};
 }
@@ -66,17 +35,17 @@ function result(timestamp,values,{session="session-1",frame=Math.round(timestamp
 }
 const clear={fight:false,smoking:false,fall:false,weapon:false};
 
-test("behavior alerts clear only after ten distinct negative frames and raw evidence stays negative",()=>{
+test("behavior alerts clear only after two distinct negative frames and raw evidence stays negative",()=>{
   const view=dashboard();view.app.state.sessionFeatures=["smoking"];
   view.app.analysis(result(0,{smoking:true}));
-  for(let frame=1;frame<=9;frame++){
+  for(let frame=1;frame<=1;frame++){
     view.app.analysis(result(frame,{smoking:false}));
     view.app.analysis(result(frame,{smoking:false}));
     view.app.analysis(result(frame+0.1,{fight:false}));
     assert.equal(view.element("verdict").textContent,"SMOKING");
-    assert.match(view.status("smoking"),new RegExp("待解除 "+frame+"/10"));
+    assert.match(view.status("smoking"),new RegExp("待解除 "+frame+"/2"));
   }
-  view.app.analysis(result(10,{smoking:false}));
+  view.app.analysis(result(2,{smoking:false}));
   assert.equal(view.element("verdict").textContent,"CLEAR");
   assert.equal(JSON.parse(view.element("result-json").textContent).judgments[0].detected,false);
 });
@@ -84,38 +53,38 @@ test("behavior alerts clear only after ten distinct negative frames and raw evid
 test("a new positive resets the streak independently for each event",()=>{
   const view=dashboard();view.app.state.sessionFeatures=["smoking","fight"];
   view.app.analysis(result(0,{smoking:true,fight:true}));
-  for(let frame=1;frame<=9;frame++)view.app.analysis(result(frame,{smoking:false,fight:false}));
-  view.app.analysis(result(10,{smoking:true,fight:false}));
+  view.app.analysis(result(1,{smoking:false,fight:false}));
+  view.app.analysis(result(2,{smoking:true,fight:false}));
   assert.equal(view.element("verdict").textContent,"SMOKING");
   assert.equal(view.status("smoking"),"ALERT 90.0%");
-  for(let frame=11;frame<=19;frame++)view.app.analysis(result(frame,{smoking:false}));
+  view.app.analysis(result(3,{smoking:false}));
   assert.equal(view.element("verdict").textContent,"SMOKING");
-  view.app.analysis(result(20,{smoking:false}));
+  view.app.analysis(result(4,{smoking:false}));
   assert.equal(view.element("verdict").textContent,"CLEAR");
 });
 
 test("late positives notify without rolling back confirmed clear, current JSON or description",()=>{
   const view=dashboard();view.app.state.sessionFeatures=["smoking"];
-  for(let frame=1;frame<=10;frame++)view.app.analysis({...result(frame,{smoking:false}),description:"current "+frame});
+  for(let frame=1;frame<=2;frame++)view.app.analysis({...result(frame,{smoking:false}),description:"current "+frame});
   const currentJson=view.element("result-json").textContent;
   view.app.analysis({...result(0,{smoking:true}),description:"old smoking frame"});
   assert.equal(view.element("verdict").textContent,"CLEAR");
   assert.equal(view.element("result-json").textContent,currentJson);
-  assert.equal(view.element("overall-description").textContent,"current 10");
-  assert.match(view.element("decision-meta").textContent,/video 10\.000s/);
+  assert.equal(view.element("overall-description").textContent,"current 2");
+  assert.match(view.element("decision-meta").textContent,/video 2\.000s/);
   assert.equal(view.element("event-notice").hidden,false);
   assert.match(view.element("event-notice").textContent,/迟到事件通知.*SMOKING.*0\.000s/);
   assert.equal(view.element("log-body").children[0].children[2].children[0].textContent,"SMOKING");
 });
 
-test("source-order replay and bounded history retain ten-negative semantics",()=>{
+test("source-order replay and bounded history retain two-negative semantics",()=>{
   const view=dashboard();view.app.state.sessionFeatures=["smoking"];
   view.app.analysis(result(0,{smoking:true}));
-  for(let frame=2;frame<=10;frame++)view.app.analysis(result(frame,{smoking:false}));
+  view.app.analysis(result(2,{smoking:false}));
   assert.equal(view.element("verdict").textContent,"SMOKING");
   view.app.analysis(result(1,{smoking:false}));
   assert.equal(view.element("verdict").textContent,"CLEAR");
-  for(let frame=11;frame<=300;frame++)view.app.analysis(result(frame,{smoking:false}));
+  for(let frame=3;frame<=300;frame++)view.app.analysis(result(frame,{smoking:false}));
   assert.equal(view.app.state.classificationHistory.get("smoking").entries.length,256);
   view.app.analysis(result(0,{smoking:true}));
   assert.equal(view.element("verdict").textContent,"CLEAR");
@@ -467,7 +436,7 @@ test("a newly delivered face branch alerts behind a newer safety frame immediate
   view.app.analysis({...result(2.2,{...clear,smoking:true}),analysis_complete:false,
     missing_event_labels:["stranger"]});
   assert.equal(view.element("verdict").textContent,"SMOKING + STRANGER");
-  assert.equal(view.status("smoking"),"ALERT 90.0% · 待解除 1/10");
+  assert.equal(view.status("smoking"),"ALERT 90.0% · 待解除 1/2");
   assert.equal(view.status("stranger"),"ALERT 90.0%");
 });
 

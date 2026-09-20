@@ -7,12 +7,17 @@ import json
 import math
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from typing import Any
 
 import httpx
 
-from .model_api import ModelAPIError, ModelAPISettings
+from .model_api import (
+    ModelAPIError,
+    ModelAPISettings,
+    environment_api_key,
+    model_request_headers,
+)
 
 
 def _safe_name(value: Any) -> str | None:
@@ -56,6 +61,38 @@ async def _sse_data(response: httpx.Response) -> AsyncIterator[str]:
                 data.append(line[5:].removeprefix(" "))
     if data:
         yield "\n".join(data)
+
+
+@asynccontextmanager
+async def _open_stream(
+    client: httpx.AsyncClient,
+    settings: ModelAPISettings,
+    *,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    timeout: httpx.Timeout,
+    extensions: dict[str, Any] | None,
+) -> AsyncIterator[httpx.Response]:
+    if settings.provider != "local":
+        async with client.stream(
+            "POST", settings.endpoint, json=payload, headers=headers,
+            timeout=timeout, follow_redirects=False, extensions=extensions,
+        ) as response:
+            yield response
+        return
+    # Reuse the connection pool without inheriting cloud headers, cookies,
+    # query parameters or authentication configured on that client.
+    request = httpx.Request(
+        "POST", settings.endpoint, json=payload, headers=headers,
+        extensions={**(extensions or {}), "timeout": timeout.as_dict()},
+    )
+    response = await client.send(
+        request, stream=True, auth=None, follow_redirects=False,
+    )
+    try:
+        yield response
+    finally:
+        await response.aclose()
 
 
 async def _collect(
@@ -122,15 +159,10 @@ async def _collect(
             if phase == "connect_tcp" and state == "complete":
                 transport["tcp_connect_count"] += 1
 
-    headers = httpx.Headers(settings.extra_headers)
-    headers.update({
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    })
-    async with client.stream(
-        "POST", settings.endpoint, json=payload, headers=headers,
-        timeout=httpx.Timeout(deadline_seconds), follow_redirects=False,
+    headers = model_request_headers(settings, api_key, accept="text/event-stream")
+    async with _open_stream(
+        client, settings, payload=payload, headers=headers,
+        timeout=httpx.Timeout(deadline_seconds),
         extensions={"trace": trace} if trace_transport else None,
     ) as stream:
         timing["response_headers_seconds"] = elapsed()
@@ -222,7 +254,7 @@ async def complete_stream(
     model: str,
     messages: Sequence[Mapping[str, Any]],
     request_parameters: Mapping[str, Any] | None = None,
-    api_key: str,
+    api_key: str | None = None,
     deadline_seconds: float,
     trace_transport: bool = False,
 ) -> dict[str, Any]:
@@ -245,7 +277,11 @@ async def complete_stream(
         or not math.isfinite(deadline_seconds) or deadline_seconds <= 0
     ):
         raise ModelAPIError("model stream deadline must be finite and positive")
-    if not isinstance(api_key, str) or not api_key.strip():
+    if api_key is None and settings.provider == "local":
+        api_key = environment_api_key(settings)
+    if not isinstance(api_key, str) or (
+        not api_key.strip() and settings.provider != "local"
+    ):
         raise ModelAPIError("model stream API key is missing")
     if not isinstance(model, str) or not model.strip() or not messages:
         raise ModelAPIError("model stream requires model and messages")

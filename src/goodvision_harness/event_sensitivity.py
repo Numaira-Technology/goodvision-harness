@@ -93,23 +93,47 @@ SENSITIVITY_SYSTEM_PROMPT = (
     "confidence and description. Return only the specified JSON object."
 )
 
-SMOKING_HIGH_RULE = (
+_SMOKING_HIGH_CRITERIA = (
     "Smoking sensitivity HIGH: an identifiable smoking item is NOT required. "
     "Set detected=true when visible evidence plausibly indicates smoking, "
     "including a smoking-like hand-to-mouth or puffing gesture, a small or "
     "partly obscured object near the mouth, or visible handling/posture/context "
     "consistent with smoking. Small size, blur, or partial occlusion alone must "
-    "not force a negative. Lower confidence when uncertain and describe a "
-    "suspected smoking action; do not claim an identifiable cigarette, smoke, "
+    "not force a negative. "
+)
+_SMOKING_HIGH_LIMITS = (
+    "do not claim an identifiable cigarette, smoke, "
     "or a distinguishing feature that is not visible. A clearly unrelated "
-    "activity such as eating, drinking, or wiping the face remains negative. "
+    "activity such as eating, drinking, or wiping the face remains negative."
+)
+SMOKING_HIGH_RULE = (
+    _SMOKING_HIGH_CRITERIA
+    + "Lower confidence when uncertain and describe a suspected smoking action; "
+    + _SMOKING_HIGH_LIMITS
+    + " "
     "For a positive, box the actual smoking item when it is visible; otherwise "
     "box the visible hand/mouth action region (label smoking_action) or the "
     "involved visible person (label person). Never fabricate a cigarette box "
     "on fingers or a concealed object."
 )
 
-_OTHER_POLICIES = {
+_WEAPON_STANDARD_CRITERIA = (
+    "Weapon sensitivity STANDARD: use a high-recall policy for a visible "
+    "firearm, knife, machete, club, or plausible weapon-shaped item held or "
+    "used by a person. Context may support a plausible weapon interpretation; "
+    "certainty or a completed attack is not required."
+)
+_WEAPON_HIGH_CRITERIA = (
+    "Weapon sensitivity HIGH: also flag a small or partly obscured "
+    "weapon-like item when visible shape plus holding, handling, or threat "
+    "cues make a weapon plausible, without requiring full item identification. "
+)
+_WEAPON_HIGH_LIMITS = (
+    "Bare-hand gestures without a visible item and clearly unrelated objects "
+    "are insufficient."
+)
+
+_EVIDENCE_POLICIES = {
     ("fight", "standard"): (
         "Fighting sensitivity STANDARD: flag striking, kicking, pushing, "
         "grabbing, wrestling, aggressive lunging/chasing, raised fists, an "
@@ -135,19 +159,30 @@ _OTHER_POLICIES = {
         "Use lower confidence for ambiguity. A clearly stable supported crouch, "
         "sit, lie, or deliberate bend alone remains negative."
     ),
-    ("weapon", "standard"): (
-        "Weapon sensitivity STANDARD: use a high-recall policy for a visible "
-        "firearm, knife, machete, club, or plausible weapon-shaped item held or "
-        "used by a person. Context may support a plausible weapon interpretation; "
-        "certainty or a completed attack is not required. Box the actual item."
+    ("smoking", "high"): (
+        _SMOKING_HIGH_CRITERIA
+        + "Lower confidence when uncertain; "
+        + _SMOKING_HIGH_LIMITS
     ),
+    ("weapon", "standard"): _WEAPON_STANDARD_CRITERIA,
     ("weapon", "high"): (
-        "Weapon sensitivity HIGH: also flag a small or partly obscured "
-        "weapon-like item when visible shape plus holding, handling, or threat "
-        "cues make a weapon plausible, without requiring full item identification. "
-        "Report suspected weapon and lower confidence if uncertain. Bare-hand "
-        "gestures without a visible item and clearly unrelated objects are "
-        "insufficient. Box only the visible item, never an invented hidden weapon."
+        _WEAPON_HIGH_CRITERIA
+        + "Lower confidence if uncertain. "
+        + _WEAPON_HIGH_LIMITS
+        + " Never invent a hidden weapon."
+    ),
+}
+
+# Grounding still needs descriptions and object boxes. Temporal verdicts use
+# the same evidence criteria but have neither field in their output contract.
+_GROUNDING_POLICIES = {
+    ("smoking", "high"): SMOKING_HIGH_RULE,
+    ("weapon", "standard"): _WEAPON_STANDARD_CRITERIA + " Box the actual item.",
+    ("weapon", "high"): (
+        _WEAPON_HIGH_CRITERIA
+        + "Report suspected weapon and lower confidence if uncertain. "
+        + _WEAPON_HIGH_LIMITS
+        + " Box only the visible item, never an invented hidden weapon."
     ),
 }
 
@@ -156,15 +191,23 @@ def sensitivity_policy_text(
     sensitivities: Mapping[str, str],
     *,
     smoking_standard_rule: str,
+    include_output_guidance: bool = True,
 ) -> str:
+    """Render evidence criteria, optionally with grounding output instructions.
+
+    The caller supplies its standard-smoking policy; when requesting evidence
+    only, that supplied policy must also omit output instructions.
+    """
     rules = []
     for label, level in sensitivities.items():
-        if label == "smoking":
-            rules.append(
-                SMOKING_HIGH_RULE if level == "high" else smoking_standard_rule
-            )
+        if label == "smoking" and level == "standard":
+            rules.append(smoking_standard_rule)
         else:
-            rules.append(_OTHER_POLICIES[(label, level)])
+            key = (label, level)
+            rule = _EVIDENCE_POLICIES[key]
+            if include_output_guidance:
+                rule = _GROUNDING_POLICIES.get(key, rule)
+            rules.append(rule)
     return "\n\n".join(rules)
 
 

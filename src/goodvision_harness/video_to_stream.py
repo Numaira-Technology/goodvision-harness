@@ -218,8 +218,8 @@ class PushSampledSource:
 
     Each pushed JPEG becomes a ``SampledFrame`` stamped with session-relative
     arrival time, so the sliding-window and inference layers treat camera
-    frames exactly like frames sampled from a file. When the queue is full the
-    newest frame is dropped — live sources must never build a backlog.
+    frames exactly like frames sampled from a file. A full queue rejects new
+    admission explicitly; accepted frames remain in order through close/drain.
     """
 
     def __init__(self, *, max_queue: int = 32) -> None:
@@ -232,6 +232,8 @@ class PushSampledSource:
         self._lock = threading.Lock()
         self._closed = threading.Event()
         self.dropped_frames = 0
+        self.capacity_failures = 0
+        self.last_rejection: str | None = None
 
     @property
     def closed(self) -> bool:
@@ -251,6 +253,9 @@ class PushSampledSource:
         if self._closed.is_set() or not jpeg_bytes:
             return False
         with self._lock:
+            if self._closed.is_set():
+                self.last_rejection = "closed"
+                return False
             # Clamp to monotonic non-decreasing session time.
             supplied_timestamp = (
                 time.monotonic() - self._started_wall
@@ -270,37 +275,34 @@ class PushSampledSource:
                 jpeg_bytes=jpeg_bytes,
                 width=width,
                 height=height,
-                captured_monotonic=time.monotonic(),
             )
             try:
                 self._queue.put_nowait(frame)
             except queue.Full:
                 self.dropped_frames += 1
+                self.capacity_failures += 1
+                self.last_rejection = "capacity_fault"
                 return False
             # Only committed frames advance the contiguous sample index.
             self._sample_index += 1
             self._last_timestamp = timestamp
+            self.last_rejection = None
         return True
 
     def close(self) -> None:
         """Stop accepting frames and unblock the consumer."""
 
-        if self._closed.is_set():
-            return
-        self._closed.set()
-        while True:
-            try:
-                self._queue.put_nowait(None)
-                return
-            except queue.Full:
-                try:
-                    self._queue.get_nowait()
-                except queue.Empty:
-                    continue
+        with self._lock:
+            self._closed.set()
 
     def frames(self) -> Iterator[SampledFrame]:
         while True:
-            frame = self._queue.get()
+            try:
+                frame = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                if self._closed.is_set():
+                    return
+                continue
             if frame is None:
                 return
             yield frame

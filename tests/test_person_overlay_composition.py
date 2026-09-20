@@ -204,8 +204,8 @@ def test_late_positive_and_clear_repaint_a_paused_face_frame(fused):
         composer.submit_frame(_packet(1.2))
         assert ready.wait(3)
         cases = [(_event(1), True), *(
-            (_event(1 + index / 100, positive=False), index < 10)
-            for index in range(1, 11)
+            (_event(1 + index / 100, positive=False), index < 2)
+            for index in range(1, 3)
         )]
         for result, positive in cases:
             ready.clear()

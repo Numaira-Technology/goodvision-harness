@@ -54,9 +54,9 @@ def test_network_source_resumes_immediately_after_gap_without_catchup(
 def _network_frames(monkeypatch, protocol: str, arrivals: list[float]):
     url = "rtsp://camera/live" if protocol == "rtsp" else "webrtc+http://camera/whep"
     adapter = NetworkStreamAdapter(url)
-    clock = iter(arrivals)
+    clock = [arrivals[0]]
     monkeypatch.setattr(
-        stream_adapter, "time", SimpleNamespace(monotonic=lambda: next(clock))
+        stream_adapter, "time", SimpleNamespace(monotonic=lambda: clock[0])
     )
     images = iter(range(len(arrivals)))
 
@@ -74,7 +74,9 @@ def _network_frames(monkeypatch, protocol: str, arrivals: list[float]):
 
             def read(self):
                 try:
-                    return True, next(images)
+                    image = next(images)
+                    clock[0] = arrivals[image]
+                    return True, image
                 except StopIteration:
                     adapter.stop()
                     return False, None
@@ -89,6 +91,7 @@ def _network_frames(monkeypatch, protocol: str, arrivals: list[float]):
         async def recv(self):
             try:
                 image = next(images)
+                clock[0] = arrivals[image]
             except StopIteration as exc:
                 raise EndOfStream from exc
             return SimpleNamespace(to_ndarray=lambda **_: image)

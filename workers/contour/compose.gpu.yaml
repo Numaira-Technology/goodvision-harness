@@ -1,0 +1,59 @@
+# Opt in after downloading the approved checkpoint. No worker port is published.
+services:
+  contour:
+    environment:
+      CONTOUR_ENGINE_URL: http://engine:8092
+      CONTOUR_CHECKPOINT_PATH: /models/contour.pt
+    depends_on:
+      engine:
+        condition: service_started
+  engine:
+    build:
+      context: ..
+      dockerfile: contour/Dockerfile.engine
+      args:
+        TORCH_CUDA: ${CONTOUR_TORCH_CUDA:-cu128}
+    image: goodvision-contour-runtime:0.1.0
+    init: true
+    restart: unless-stopped
+    environment:
+      SAM_SCENE_IMAGE_ENABLED: "false"
+      SAM31_ENABLED: "true"
+      SAM31_SESSION_ENABLED: "false"
+      SAM31_LIVE_ENABLED: "true"
+      SAM31_LIVE_CAMERAS: "${CONTOUR_CAPACITY:-1}"
+      SAM31_SESSION_H264_ENABLED: "true"
+      SAM31_CHECKPOINT_PATH: /models/contour.pt
+      SAM31_FIXED_PERSON_TEXT: "${CONTOUR_FIXED_PERSON_TEXT:-true}"
+      SAM31_GPU_DIAGNOSTICS: "${CONTOUR_GPU_DIAGNOSTICS:-false}"
+      HF_HUB_OFFLINE: "1"
+      HF_HOME: /tmp/huggingface
+      TORCH_HOME: /tmp/torch
+    volumes:
+      - type: bind
+        source: ${CONTOUR_MODELS_DIR:-./models}
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${CONTOUR_GPU_ID:-0}"]
+              capabilities: [gpu]
+    read_only: true
+    tmpfs: ["/tmp:size=2g"]
+    shm_size: 2g
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 90s
+    healthcheck:
+      test: [CMD, python, -c, "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8092/health/perception/sam_live',timeout=2)); assert r['enabled'] and r['ready'] and r['gpu_ready']"]
+      interval: 15s
+      timeout: 3s
+      start_period: 300s
+      retries: 10
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

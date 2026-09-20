@@ -1,0 +1,56 @@
+# Continuous person/event engine. Requires compose.yaml and local SAM 3 weights.
+# docker compose -f compose.yaml -f compose.scene.yaml up --build -d
+services:
+  harness:
+    depends_on:
+      sam-scene-worker:
+        condition: service_healthy
+    environment:
+      SCENE_ENGINE_MODE: active
+      SCENE_TIMEOUT_SECONDS: "${SCENE_TIMEOUT_SECONDS:-15}"
+      SCENE_MAX_IMAGE_SIDE: "${SCENE_MAX_IMAGE_SIDE:-720}"
+      SCENE_MAX_TOKENS: "${SCENE_MAX_TOKENS:-1600}"
+      RICH_LABEL_ENABLED: "true"
+      RICH_LABEL_BACKEND: sam
+      RICH_LABEL_TIMEOUT_SECONDS: "20"
+      RICH_LABEL_MAX_FPS: "4"
+      PERSON_TRACKING_ENABLED: "true"
+      RICH_LABEL_ENDPOINT: http://sam-scene-worker:8092/v1/tracks
+
+  sam-scene-worker:
+    build:
+      context: ./workers/sam_scene
+    image: goodvision-sam-scene:experimental
+    init: true
+    restart: unless-stopped
+    gpus: all
+    environment:
+      SAM_SCENE_CHECKPOINT_PATH: /models/sam3.pt
+      SAM_SCENE_LABELS: person
+      SAM_SCENE_KEYFRAME_SECONDS: "${SAM_SCENE_KEYFRAME_SECONDS:-0.4}"
+      SAM_SCENE_KEYFRAME_REQUESTS: "${SAM_SCENE_KEYFRAME_REQUESTS:-5}"
+      SAM_SCENE_MAX_SESSIONS: "${SAM_SCENE_MAX_SESSIONS:-8}"
+      SAM_SCENE_MAX_TRACKS: "${SAM_SCENE_MAX_TRACKS:-64}"
+      SAM_SCENE_REQUEST_TIMEOUT_SECONDS: "${SAM_SCENE_REQUEST_TIMEOUT_SECONDS:-15}"
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - type: bind
+        source: ${SAM_SCENE_CHECKPOINT_FILE:-./.models/sam3/sam3.pt}
+        target: /models/sam3.pt
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:8092:8092"
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+    shm_size: 2g
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

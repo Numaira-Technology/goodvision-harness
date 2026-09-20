@@ -21,6 +21,11 @@
     "missing_event_labels"
   ],
   "properties": {
+    "camera_id": {
+      "type": "string",
+      "pattern": "^camera(?:0[1-9]|[1-9][0-9]+)$",
+      "description": "Present on camera-scoped fleet outputs; legacy outputs are unchanged."
+    },
     "type": {
       "const": "analysis_result"
     },
@@ -95,7 +100,7 @@
     "description": {
       "type": "string",
       "minLength": 1,
-      "description": "Bilingual detected-event summary. Incomplete analyses explicitly report missing results; complete negative analyses return 无异常 / No anomalies detected."
+      "description": "Bilingual detected-event summary. Incomplete analyses explicitly report missing results. Complete negative raw analyses return 无异常 / No anomalies detected; scene_state projections with no confirmed event return 暂无已确认的事件。 / No confirmed events."
     },
     "judgments": {
       "type": "array",

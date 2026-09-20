@@ -23,7 +23,7 @@ _ResultKey = tuple[float, int, int, str]
 _StateKey = tuple[str, str]
 _FACE_STATUSES = frozenset(("known", "unknown", "unusable"))
 _FACE_LABELS = frozenset(("known person", "unknown person", "unusable face"))
-CLEAR_AFTER_NEGATIVES = 10
+CLEAR_AFTER_NEGATIVES = 2
 
 
 @dataclass(frozen=True, slots=True)

@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
+from .service_locations import SERVICE_LOCATION_FIELDS, validate_service_location
 
 SETTINGS_SCHEMA_VERSION = 1
 # Stable, neutral names keep each route's credentials independent. The original
@@ -18,6 +19,8 @@ _API_KEY_FILENAMES = {
     "aiclub": "model-api-key",
     "openrouter": "model-api-key-2",
     "dashscope": "model-api-key-3",
+    "local": "local-model-api-key",
+    "tracking": "tracking-node-key",
 }
 
 
@@ -30,6 +33,30 @@ class DeploymentSettings:
     autostart: bool
     buffer_delay_seconds: float | None = None
     camera_layout: str | None = None
+    processing_method: str | None = None
+    local_inference_enabled: bool | None = None
+    local_tracking_enabled: bool | None = None
+    inference_mode: str | None = None
+    tracking_mode: str | None = None
+    inference_server_url: str | None = None
+    inference_server_model: str | None = None
+    tracking_server_url: str | None = None
+    tracking_server_capacity: int | None = None
+    tracking_server_protocol: str | None = None
+    tracking_sample_fps: float | None = None
+
+
+def validate_local_gpu_enabled(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be boolean")
+    return value
+
+
+def validate_processing_method(value: object) -> str:
+    """SAM continuous analysis is the only supported production method."""
+    if not isinstance(value, str) or value not in {"sam_live", "person_tracking"}:
+        raise ValueError("processing_method must be person_tracking")
+    return "sam_live"
 
 
 def validate_camera_layout(value: object) -> str:
@@ -82,16 +109,41 @@ class DeploymentSettingsStore:
             raise TypeError("deployment autostart must be boolean")
         buffer_delay_seconds = (
             validate_buffer_delay_seconds(payload["buffer_delay_seconds"])
-            if "buffer_delay_seconds" in payload else None
+            if "buffer_delay_seconds" in payload
+            else None
         )
         return DeploymentSettings(
+            **{
+                name: validate_service_location(name, payload[name])
+                for name in SERVICE_LOCATION_FIELDS if name in payload
+            },
             stream_url=stream_url.strip(),
             dry_run=dry_run,
             autostart=autostart,
             buffer_delay_seconds=buffer_delay_seconds,
+            local_inference_enabled=(
+                validate_local_gpu_enabled(
+                    payload["local_inference_enabled"], "local_inference_enabled",
+                ) if "local_inference_enabled" in payload else None
+            ),
+            local_tracking_enabled=(
+                validate_local_gpu_enabled(
+                    payload["local_tracking_enabled"], "local_tracking_enabled",
+                ) if "local_tracking_enabled" in payload else None
+            ),
             camera_layout=(
                 validate_camera_layout(payload["camera_layout"])
-                if "camera_layout" in payload else None
+                if "camera_layout" in payload
+                else None
+            ),
+            processing_method=(
+                # Migrate a previously saved choice without exposing the retired
+                # route to new writes or requiring manual settings repair.
+                "sam_live"
+                if payload.get("processing_method") == "hybrid"
+                else validate_processing_method(payload["processing_method"])
+                if "processing_method" in payload
+                else None
             ),
         )
 
@@ -108,6 +160,18 @@ class DeploymentSettingsStore:
             )
         if settings.camera_layout is not None:
             payload["camera_layout"] = validate_camera_layout(settings.camera_layout)
+        if settings.processing_method is not None:
+            payload["processing_method"] = validate_processing_method(
+                settings.processing_method
+            )
+        for name in ("local_inference_enabled", "local_tracking_enabled"):
+            value = getattr(settings, name)
+            if value is not None:
+                payload[name] = validate_local_gpu_enabled(value, name)
+        for name in SERVICE_LOCATION_FIELDS:
+            value = getattr(settings, name)
+            if value is not None:
+                payload[name] = validate_service_location(name, value)
         self._atomic_write(
             self.path,
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -161,9 +225,7 @@ class DeploymentSettingsStore:
     def _atomic_write(self, destination: Path, content: str) -> None:
         with self._lock:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary = destination.with_name(
-                f".{destination.name}.{uuid4().hex}.tmp"
-            )
+            temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
             try:
                 with temporary.open("x", encoding="utf-8", newline="\n") as handle:
                     handle.write(content)
@@ -189,6 +251,24 @@ class DeploymentSettingsStore:
         if not isinstance(route_id, str) or route_id not in ROUTES_BY_ID:
             raise ValueError("invalid saved route")
         return route_id
+
+    def load_analysis_settings(self) -> dict | None:
+        """Camera-local analysis choices are independent of shared deployment routes."""
+        with self._lock:
+            path = self.path.with_name("analysis-settings.json")
+            if not path.exists():
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ValueError("invalid analysis settings")
+        return {name: payload[name] for name in ("features", "event_sensitivities")
+                if name in payload}
+
+    def save_analysis_settings(self, settings: dict) -> None:
+        self._atomic_write(
+            self.path.with_name("analysis-settings.json"),
+            json.dumps({"schema_version": 1, **settings}, sort_keys=True) + "\n",
+        )
 
     def save_model_route(self, route_id: str) -> None:
         from .route_probe import ROUTES_BY_ID

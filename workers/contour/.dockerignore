@@ -1,0 +1,11 @@
+*
+!Dockerfile
+!requirements.txt
+!__init__.py
+!settings.py
+!contracts.py
+!engine_adapter.py
+!app.py
+!static/
+!static/**
+!THIRD_PARTY_NOTICES.md

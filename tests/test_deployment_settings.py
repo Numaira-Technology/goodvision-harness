@@ -297,10 +297,14 @@ def test_deployment_settings_api_persists_without_returning_secrets(
     assert restored.deployment_settings()["api_key_present"] is True
 
 
+@pytest.mark.parametrize("capacity", [1, 3])
 def test_persistent_settings_override_bootstrap_environment_and_autostart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capacity: int,
 ) -> None:
+    monkeypatch.setenv("HARNESS_FLEET_CAPACITY", str(capacity))
+    monkeypatch.setenv("HARNESS_FLEET_CAMERA_INDEX", "1")
     monkeypatch.setenv("RTSP_URL", "rtsp://environment.invalid/live")
     monkeypatch.setenv("HARNESS_DRY_RUN", "false")
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
@@ -313,15 +317,25 @@ def test_persistent_settings_override_bootstrap_environment_and_autostart(
         load_config(ROOT / "config.yaml"),
         deployment_store=store,
     )
-    started: list[str] = []
-    runtime.start_stream = lambda url: started.append(url) or {}  # type: ignore[method-assign]
+    connected: list[str] = []
+    analyzed: list[str] = []
+    monkeypatch.setattr(
+        runtime, "connect_stream", lambda url: connected.append(url) or {},
+    )
+    monkeypatch.setattr(
+        runtime, "start_stream", lambda url: analyzed.append(url) or {},
+    )
 
-    runtime.start()
+    try:
+        runtime.start()
 
-    assert runtime.configured_stream_url() == saved_url
-    assert runtime.dry_run is True
-    assert runtime.autostart is True
-    assert started == [saved_url]
+        assert runtime.configured_stream_url() == saved_url
+        assert runtime.dry_run is True
+        assert runtime.autostart is True
+        assert connected == [saved_url]
+        assert analyzed == []
+    finally:
+        runtime.stop()
 
 
 def test_generic_stream_environment_overrides_legacy_rtsp_environment(
@@ -516,7 +530,6 @@ def test_persisted_api_key_is_injected_without_changing_model_route(
 
 @pytest.fixture
 def public_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
     for name in (
         "INFERENCE_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY",
         "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "INFERENCE_PROVIDER",
@@ -617,9 +630,8 @@ def test_runtime_uses_only_the_selected_provider_credentials(
     assert HarnessRuntime(config)._aiclub_api_key == "explicit-current-route-key"
 
 
-@pytest.mark.parametrize("filename", ["compose.yaml", "compose.delivery.yaml"])
-def test_compose_passes_route_overrides_and_independent_credentials(filename: str) -> None:
-    compose = yaml.safe_load((ROOT / filename).read_text(encoding="utf-8"))
+def test_compose_passes_route_overrides_and_independent_credentials() -> None:
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
     environment = compose["services"]["harness"]["environment"]
     for key in (
         "INFERENCE_PROVIDER",

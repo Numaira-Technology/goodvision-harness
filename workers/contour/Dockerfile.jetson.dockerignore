@@ -1,0 +1,16 @@
+*
+!sam_scene/
+!sam_scene/requirements.txt
+!sam_scene/app.py
+!sam_scene/sam31.py
+!sam_scene/continuous.py
+!sam_scene/streaming_state.py
+!sam_scene/h264_transport.py
+!sam_scene/perception_routes.py
+!sam_scene/sam_live.py
+!sam_scene/multistream.py
+!contour/
+!contour/Dockerfile.jetson
+!contour/prepare_jetson.py
+!contour/jetson_runtime.py
+!contour/THIRD_PARTY_NOTICES.md

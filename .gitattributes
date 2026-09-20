@@ -1,0 +1,2 @@
+# Keep the reviewed vendor bytes and integrity hash identical on Windows.
+src/goodvision_harness/assets/opencv-4.13.0.js -text -whitespace

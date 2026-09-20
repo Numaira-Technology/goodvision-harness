@@ -16,6 +16,7 @@ Runtime components retain their original license and attribution files.
 """ }
 requires-python = ">=3.10"
 dependencies = [
+  "anyio>=4,<5",
   "certifi>=2024.2.2",
   "fastapi>=0.115,<1",
   "starlette>=1.5.1,<2",
@@ -31,6 +32,9 @@ dependencies = [
 [project.optional-dependencies]
 vlm = [
   "httpx[http2]>=0.27,<1",
+]
+video = [
+  "av==17.1.0",
 ]
 dev = [
   "jsonschema>=4.23,<5",
@@ -67,6 +71,11 @@ include = ["goodvision_harness*"]
 goodvision_harness = [
   "config.yaml",
   "dashboard.html",
+  "fleet_console.js",
+  "camera_display.js",
+  "camera_display_dense.js",
+  "assets/*.js",
+  "assets/*.txt",
   "fonts/*.otf",
   "fonts/*.txt",
 ]

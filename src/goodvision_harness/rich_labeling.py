@@ -41,6 +41,40 @@ class RichLabelProtocolError(RuntimeError):
     """The detector returned a response outside the rich-label contract."""
 
 
+def validate_mask_contours(value: object) -> None:
+    """Validate a bounded source-mask outline before copying untrusted JSON."""
+    if not isinstance(value, Mapping) or set(value) != {
+        "coordinate_system", "source_frame_sequence", "source_timestamp_seconds",
+        "polygons",
+    }:
+        raise ValueError("invalid mask_contours fields")
+    if value["coordinate_system"] != "normalized":
+        raise ValueError("mask_contours coordinates must be normalized")
+    _frame_sequence(value["source_frame_sequence"])
+    _timestamp(value["source_timestamp_seconds"])
+    polygons = value["polygons"]
+    if not isinstance(polygons, (list, tuple)) or not 1 <= len(polygons) <= 16:
+        raise ValueError("mask_contours must contain 1 to 16 polygons")
+    total = 0
+    for polygon in polygons:
+        if not isinstance(polygon, (list, tuple)) or not 3 <= len(polygon) <= 128:
+            raise ValueError("mask_contours polygons need 3 to 128 points")
+        total += len(polygon)
+        if total > 1024:
+            raise ValueError("mask_contours exceeds 1024 points")
+        for point in polygon:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                raise ValueError("mask_contours points must be xy pairs")
+            _unit_interval(point[0], "mask_contours.x")
+            _unit_interval(point[1], "mask_contours.y")
+        if len({tuple(point) for point in polygon}) < 3 or abs(sum(
+            float(polygon[index - 1][0]) * float(point[1])
+            - float(point[0]) * float(polygon[index - 1][1])
+            for index, point in enumerate(polygon)
+        )) <= 1e-12:
+            raise ValueError("mask_contours polygons must enclose area")
+
+
 @dataclass(frozen=True, slots=True)
 class RichLabelObject:
     """One tracked object in source-normalized coordinates."""
@@ -76,6 +110,10 @@ class RichLabelObject:
             value is None for value in metadata
         ):
             raise ValueError("track observation metadata must be complete")
+        if isinstance(self.attributes, Mapping) and "mask_contours" in self.attributes:
+            validate_mask_contours(self.attributes["mask_contours"])
+            if self.observation_state == "predicted":
+                raise ValueError("predicted tracks cannot carry source-mask contours")
         object.__setattr__(
             self,
             "attributes",
@@ -186,6 +224,12 @@ class RichLabelSnapshot:
         if len(track_ids) != len(set(track_ids)):
             raise ValueError("track_id values must be unique within a snapshot")
         for item in self.objects:
+            contours = item.attributes.get("mask_contours")
+            if contours is not None and (
+                contours["source_frame_sequence"] != self.frame_sequence
+                or contours["source_timestamp_seconds"] != self.timestamp_seconds
+            ):
+                raise ValueError("mask contours must reference the snapshot frame")
             if item.observation_state is None:
                 continue
             if (
@@ -716,6 +760,13 @@ class RichLabelCoordinator:
         )
         self._thread.start()
 
+    def close_complete(self) -> bool:
+        """Allow route changes to wait until the previous worker has retired."""
+        with self._condition:
+            return self._closed and (
+                self._thread is None or not self._thread.is_alive()
+            )
+
     def _run(self) -> None:
         try:
             while True:
@@ -743,7 +794,6 @@ class RichLabelCoordinator:
                 latency = max(0.0, completed_at - started_at)
                 accepted = False
                 with self._condition:
-                    self._in_flight = False
                     if (
                         item.generation != self._generation
                         or item.stream_session_id != self._stream_session_id
@@ -790,6 +840,12 @@ class RichLabelCoordinator:
                         self._on_snapshot(snapshot)
                     except Exception:
                         LOGGER.warning("tracking snapshot consumer failed")
+                # Identity/scene commits are part of this accepted work. A
+                # lifecycle drain must not pass while the callback still owns
+                # the final tracking result.
+                with self._condition:
+                    self._in_flight = False
+                    self._condition.notify_all()
         finally:
             self._close_client()
             with self._condition:
@@ -961,6 +1017,13 @@ def _interpolate_snapshot(
     right_by_track = {item.track_id: item for item in right.objects}
     objects: list[RichLabelObject] = []
     for item in left.objects:
+        if "mask_contours" in item.attributes:
+            # Polygon vertices belong to a real segmentation of one source.
+            # Interpolating boxes does not create a segmentation of a new frame.
+            item = replace(item, attributes={
+                key: value for key, value in item.attributes.items()
+                if key != "mask_contours"
+            })
         if item.observation_state is not None:
             item = replace(item, observation_state="predicted")
         candidate = right_by_track.get(item.track_id)
@@ -1104,7 +1167,10 @@ def _frame_sequence(value: object) -> int:
 def _timestamp(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("timestamp_seconds must be a finite non-negative number")
-    rendered = float(value)
+    try:
+        rendered = float(value)
+    except OverflowError as exc:
+        raise ValueError("timestamp_seconds must be finite") from exc
     if not math.isfinite(rendered) or rendered < 0:
         raise ValueError("timestamp_seconds must be a finite non-negative number")
     return rendered
@@ -1113,7 +1179,10 @@ def _timestamp(value: object) -> float:
 def _unit_interval(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be between 0 and 1")
-    rendered = float(value)
+    try:
+        rendered = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{name} must be between 0 and 1") from exc
     if not math.isfinite(rendered) or not 0.0 <= rendered <= 1.0:
         raise ValueError(f"{name} must be between 0 and 1")
     return rendered

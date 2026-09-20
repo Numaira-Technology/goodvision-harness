@@ -1,0 +1,38 @@
+# JetPack 6.2.x / Linux ARM64. Use NVIDIA's iGPU build, not the x86 CUDA wheels.
+ARG JETSON_BASE_IMAGE=nvcr.io/nvidia/pytorch:25.06-py3-igpu@sha256:05bb8855c5ab94a556653fe4f7206e922c8ec93fdb0c88a02c2e013e20cff1d2
+FROM ${JETSON_BASE_IMAGE}
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HUB_OFFLINE=1 HF_HOME=/tmp/huggingface TORCH_HOME=/tmp/torch \
+    PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=10
+WORKDIR /engine
+COPY sam_scene/requirements.txt /tmp/runtime-requirements.txt
+# Our service supplies decoded PIL frames; it never calls the upstream video-file
+# loader that needs decord (whose published wheel is x86-only).
+# NVIDIA packages the triton module under the pytorch-triton distribution name.
+# Preserve these compatible GPU binaries rather than resolving replacements.
+RUN python3 -c "from pathlib import Path; import importlib.metadata as m; p=Path('/tmp/runtime-requirements.txt'); p.write_text(''.join(line for line in p.read_text().splitlines(True) if not line.startswith('decord=='))); Path('/tmp/gpu-constraints.txt').write_text(''.join(name+'=='+m.version(name)+'\n' for name in ('torch','torchvision','pytorch-triton')))" \
+    && python3 -m pip install --no-cache-dir -c /tmp/gpu-constraints.txt -r /tmp/runtime-requirements.txt
+RUN git clone https://github.com/facebookresearch/sam3.git /opt/upstream \
+    && git -C /opt/upstream checkout 660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7 \
+    && mkdir -p /opt/notices/model \
+    && cp /opt/upstream/LICENSE /opt/notices/model/LICENSE \
+    && python3 -m pip install --no-cache-dir -c /tmp/gpu-constraints.txt \
+        git+file:///opt/upstream@660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7 \
+    && rm -rf /opt/upstream \
+    && python3 -m pip check
+COPY sam_scene/app.py sam_scene/sam31.py sam_scene/continuous.py ./
+COPY sam_scene/streaming_state.py sam_scene/h264_transport.py ./
+COPY sam_scene/perception_routes.py sam_scene/sam_live.py sam_scene/multistream.py ./
+COPY contour/THIRD_PARTY_NOTICES.md /opt/notices/THIRD_PARTY_NOTICES.md
+COPY contour/prepare_jetson.py /opt/build/prepare_jetson.py
+COPY contour/jetson_runtime.py /engine/jetson_runtime.py
+RUN python3 /opt/build/prepare_jetson.py \
+    && python3 -c "from sam3.model_builder import build_sam3_multiplex_video_predictor; from sam31 import verify_installed_source; verify_installed_source()" \
+    && groupadd --system --gid 10004 contour \
+    && useradd --system --uid 10004 --gid contour --home-dir /nonexistent contour
+ENV XDG_CACHE_HOME=/tmp/cache MPLCONFIGDIR=/tmp/matplotlib \
+    TRITON_CACHE_DIR=/tmp/triton TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor \
+    TORCH_EXTENSIONS_DIR=/tmp/torch_extensions CUDA_CACHE_PATH=/tmp/cuda \
+    OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2
+USER 10004:10004
+CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8092", "--workers", "1", "--no-server-header", "--no-access-log", "--timeout-graceful-shutdown", "60"]
