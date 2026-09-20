@@ -852,7 +852,9 @@ def test_camera_websocket_sends_geometry_without_waiting_for_another_upload(
                                   "stream_session_id": sid, "generation": 8,
                                   "crop_version": 0, "report_sequence": 1,
                                   "captured_frames": 1})
-                _await(lambda: runtime._state["local_camera_display"] is not None)
+                _await(lambda: runtime.status(lightweight=True)[
+                    "local_camera_display"
+                ] is not None)
             assert "local_camera_display_timing" in caplog.text
             socket.send_json({"type": "stop"})
             while socket.receive_json()["type"] != "ended":
@@ -1008,7 +1010,7 @@ def test_blocked_status_does_not_stall_display_metadata_event_loop():
     entered, release = Event(), Event()
     metadata = CameraDisplayMetadata()
 
-    def slow_status():
+    def slow_status(**_kwargs):
         entered.set()
         release.wait(2)
         return {"pipeline_state": "running"}

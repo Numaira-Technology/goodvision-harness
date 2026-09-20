@@ -52,7 +52,9 @@ class IndependentVLMInspector(TemporalVLMInspector):
             "of the requested actions. Return only compact JSON with exactly "
             "subjects and verdicts. subjects is an array of {subject_id,bbox}: "
             "assign response-local IDs p1, p2, etc.; bbox is the visible person's "
-            "normalized [x1,y1,x2,y2] in the last image. These are local references, "
+            "normalized [x1,y1,x2,y2] in the last image. Every coordinate MUST be "
+            "a number from 0 to 1 (for example [0.2,0.1,0.6,0.9]), never pixels "
+            "or 0..1000 coordinates; x1<x2 and y1<y2. These are local references, "
             "not real identities. Do not invent hidden people or reuse an earlier "
             "position. verdicts is an array of {event_label,subject_ids,detected,"
             "confidence}. subject_ids identifies the evaluated visible people in "
@@ -126,7 +128,12 @@ class IndependentVLMInspector(TemporalVLMInspector):
                 or any(type(x) not in (int, float) or not math.isfinite(x) for x in box)
             ):
                 raise _ResponseValidationError("invalid_subject", "verdict_grounding")
-            boxes[sid] = NormalizedBBox(*box)
+            try:
+                boxes[sid] = NormalizedBBox(*box)
+            except ValueError:
+                raise _ResponseValidationError(
+                    "invalid_subject_bbox", "verdict_grounding"
+                ) from None
         result, seen = [], set()
         for item in verdicts:
             if not isinstance(item, dict) or set(item) != {

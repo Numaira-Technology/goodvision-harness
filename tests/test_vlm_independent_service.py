@@ -124,7 +124,11 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
             assert runtime.readiness() == (True, "ready")
 
             # The old fused projector must not replace independent safety results.
+            await_condition(lambda: branch.wait_until_idle(0.02))
             old_id = runtime.results.latest(feature="smoking").payload["message_id"]
+            latest_id = runtime.results.latest().payload["message_id"]
+            # Exercise a real stranger projection without loading a Face model.
+            runtime._state["event_labels"] = ["smoking", "stranger"]
             runtime._scene_result_publisher.observe_reference(
                 session_id, FrameReference(100, 10.0, "now", 64, 48)
             )
@@ -135,8 +139,15 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
                         "stream_session_id": session_id,
                         "source_id": runtime.source_id,
                         "timestamp_seconds": 10.0,
-                        "entities": [],
-                        "events": [],
+                        "entities": [{
+                            "subject_id": "person-a", "observation_state": "visible",
+                            "last_observed_timestamp_seconds": 10.0, "frame_sequence": 100,
+                            "bbox": {"x1": 0.1, "y1": 0.1, "x2": 0.5, "y2": 0.9},
+                        }],
+                        "events": [{
+                            "event_id": "stranger-event", "event_label": "stranger",
+                            "subject_ids": ["person-a"], "phase": "confirmed",
+                        }],
                     },
                 }
             )
@@ -144,6 +155,8 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
                 runtime.results.latest(feature="smoking").payload["message_id"]
                 == old_id
             )
+            assert runtime.results.latest().payload["message_id"] == latest_id
+            assert runtime.results.latest(feature="stranger") is not None
     finally:
         release.set()
         if blocker is not None:

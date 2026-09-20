@@ -336,6 +336,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
     def evaluate(job):
         started, started_at = time.monotonic(), utc_now()
         verdicts, error = (), None
+        validation_reason = None
         try:
             if not hasattr(thread_state, "inspector"):
                 thread_state.inspector = inspector_factory(config)
@@ -352,6 +353,18 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 "empty_response",
             }:
                 error = "inspection_failed"
+            reason = getattr(exc, "validation_reason", None)
+            if reason in {
+                "invalid_subject_bbox", "invalid_subject", "invalid_verdict",
+                "duplicate_verdict", "subject_fields", "verdict_fields",
+                "independent_object_required", "independent_capacity",
+                "completion_not_finished", "duplicate_json_field",
+                "nonfinite_json_number", "invalid_json_syntax",
+                "invalid_json_encoding", "json_nesting_limit", "response_size_limit",
+            }:
+                validation_reason = reason
+            elif error in {"invalid_response", "empty_response"}:
+                validation_reason = "invalid_response_shape"
         return (
             verdicts,
             error,
@@ -360,6 +373,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 "request_ended_at": utc_now(),
                 "request_started_monotonic": started,
                 "model_seconds": time.monotonic() - started,
+                "validation_reason": validation_reason,
             },
         )
 
@@ -431,7 +445,12 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 if not error and not verdicts:
                     stats["empty_reports"] += 1
                 stats["ungrounded_verdicts"] += sum(not v.subject_ids for v in verdicts)
-                report["process_metrics"] = dict(stats)
+                inflight = sum(not item[2].done() for item in pending.values())
+                report["process_metrics"] = {
+                    **stats, "active_requests": len(pending),
+                    "inflight_requests": inflight,
+                    "pending_requests": len(pending) - inflight,
+                }
                 emit({"kind": "report", "report": report})
             if history and len(pending) < config.max_in_flight:
                 sample = history[-1]
@@ -482,6 +501,12 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                         "stats": {
                             **stats,
                             "active_requests": len(pending),
+                            "inflight_requests": sum(
+                                not item[2].done() for item in pending.values()
+                            ),
+                            "pending_requests": sum(
+                                item[2].done() for item in pending.values()
+                            ),
                             "retained_frames": len(history),
                             "retained_bytes": sum(
                                 len(x.frame.jpeg_bytes) for x in history
@@ -548,10 +573,14 @@ class IndependentVLMBranch:
             "state": "starting",
             "succeeded_requests": 0,
             "failed_requests": 0,
+            "last_attempt_state": None,
+            "last_attempt_error": None,
+            "analysis_complete": False,
         }
         self._stats = Counter()
         self._last_sequence = -1
         self._last_source_monotonic = self._last_publish_monotonic = None
+        self._last_success_monotonic = None
         self._next_sample = -math.inf
         self._started = False
         self._reader = self._source = self._reaper = None
@@ -688,12 +717,19 @@ class IndependentVLMBranch:
                 self._status.update(report.get("process_metrics", {}))
                 self._status.update(
                     last_result_at=report["emitted_at"],
+                    last_attempt_state=report["state"],
+                    last_attempt_error=report.get("error_code"),
+                    last_attempt_validation_reason=report["timing"].get("validation_reason"),
+                    analysis_complete=report.get("analysis_complete", False),
                     last_source_to_publish_seconds=report["timing"][
                         "source_to_publish_seconds"
                     ],
                 )
                 self._stats["published_reports"] += 1
                 self._last_publish_monotonic = now
+                if report["state"] == "completed":
+                    self._last_success_monotonic = now
+                    self._status["last_success_at"] = report["emitted_at"]
                 evidence = tuple(
                     self._evidence[item["frame_sequence"]].frame
                     for item in report["evidence"]
@@ -709,6 +745,8 @@ class IndependentVLMBranch:
                 source_timestamp_seconds=report["frame"]["timestamp_seconds"],
                 source_to_publish_seconds=report["timing"]["source_to_publish_seconds"],
                 state=report["state"],
+                error_code=report.get("error_code"),
+                validation_reason=report["timing"].get("validation_reason"),
                 process_pid=self._process.pid,
             )
 
@@ -748,7 +786,8 @@ class IndependentVLMBranch:
             return False
         return self._camera_dispatch.offer(jpeg, timestamp, sequence)
 
-    def stats(self):
+    def health(self):
+        """Bounded local counters only; never query fusion, archives or workers."""
         with self._lock:
             result = {
                 **self._status,
@@ -767,11 +806,21 @@ class IndependentVLMBranch:
                     if self._last_publish_monotonic is None
                     else max(0.0, time.monotonic() - self._last_publish_monotonic)
                 ),
+                "last_success_age_seconds": (
+                    None if self._last_success_monotonic is None
+                    else max(0.0, time.monotonic() - self._last_success_monotonic)
+                ),
+                "pending_requests": self._status.get("pending_requests", 0),
+                "inflight_requests": self._status.get("inflight_requests", 0),
                 "input_capacity": INPUT_CAPACITY,
                 "output_capacity": OUTPUT_CAPACITY,
                 "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
                 "observation_fps": self.config.observation_fps,
             }
+        return result
+
+    def stats(self):
+        result = self.health()
         if self.fusion is not None:
             result["fusion"] = self.fusion.stats()
         if self._camera_dispatch is not None:

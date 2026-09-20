@@ -37,8 +37,10 @@ class ResultBus:
         self.epoch = str(uuid4())
 
     def publish(
-        self, payload: Mapping[str, Any], *, expected_epoch: str | None = None
+        self, payload: Mapping[str, Any], *, expected_epoch: str | None = None,
+        promote_latest: bool = True,
     ) -> ResultRecord | None:
+        """Deliver every record; auxiliary projections may skip global promotion."""
         safe = public_safe_value(copy.deepcopy(dict(payload)))
         with self._condition:
             if expected_epoch is not None and expected_epoch != self.epoch:
@@ -46,8 +48,9 @@ class ResultBus:
             self._cursor += 1
             record = ResultRecord(cursor=self._cursor, payload=safe)
             self._history.append(record)
-            if self._latest is None or _frame_order(record) >= _frame_order(
-                self._latest
+            if promote_latest and (
+                self._latest is None
+                or _frame_order(record) >= _frame_order(self._latest)
             ):
                 self._latest = record
             judgments = record.payload.get("judgments", ())

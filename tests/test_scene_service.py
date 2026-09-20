@@ -282,8 +282,8 @@ def test_real_dry_run_camera_feeds_scene_and_releases_evidence_on_stop(
     received = Event()
     original = runtime._on_display_frame
 
-    def record(*args):
-        original(*args)
+    def record(*args, **kwargs):
+        original(*args, **kwargs)
         received.set()
 
     monkeypatch.setattr(runtime, "_on_display_frame", record)

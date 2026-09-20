@@ -431,6 +431,10 @@ class TemporalVLMInspector:
             return verdicts
         self._record_completion(started, error=error)
         if error.code in {"invalid_response", "empty_response"}:
+            # Preserve the safe closed-vocabulary diagnosis across the process
+            # boundary; never attach the model's response or request content.
+            error.validation_stage = validation_stage or "response"
+            error.validation_reason = validation_reason or "invalid_response_shape"
             log_timing(
                 "vlm_response_validation",
                 stream_session_id=trace_id(job.stream_session_id),

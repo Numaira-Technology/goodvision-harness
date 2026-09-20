@@ -309,7 +309,11 @@ def test_fleet_busy_peer_blocks_global_changes_through_original_api(
 
 def test_fleet_remote_switch_after_idle_disables_extra_routes(rig, monkeypatch):
     monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "16")
-    runtime = rig.make()
+    # This scenario requests tracking in remote mode too. Face/VLM-only
+    # deployments instead use the provisioned application-worker capacity.
+    runtime = HarnessRuntime(replace(
+        rig.config, rich_labeling=replace(rig.config.rich_labeling, tracking_enabled=True),
+    ), deployment_store=rig.store)
     runtime.update_deployment_settings({"local_tracking_enabled": True})
     app = create_app(lambda: runtime)
     app.state.fleet._peer_client = httpx.AsyncClient(
@@ -372,8 +376,8 @@ def test_fleet_start_synchronizes_real_peer_runtime_before_start(
     ))
     monkeypatch.setattr(peer, "prepare_analysis", lambda: {"prepared": True})
     original_status = peer.status
-    monkeypatch.setattr(peer, "status", lambda: {
-        **original_status(), "connected": True, "connection_state": "connected",
+    monkeypatch.setattr(peer, "status", lambda **kwargs: {
+        **original_status(**kwargs), "connected": True, "connection_state": "connected",
     })
     app.state.fleet._peer_client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=peer_app),
@@ -550,8 +554,8 @@ def test_server_peer_sync_uses_own_camera_lane_without_main_gpu(rig, monkeypatch
     ))
     monkeypatch.setattr(peer, "prepare_analysis", lambda: {"prepared": True})
     original_status = peer.status
-    monkeypatch.setattr(peer, "status", lambda: {
-        **original_status(), "connected": True, "connection_state": "connected",
+    monkeypatch.setattr(peer, "status", lambda **kwargs: {
+        **original_status(**kwargs), "connected": True, "connection_state": "connected",
     })
     transport = httpx.ASGITransport(app=peer_app)
 
