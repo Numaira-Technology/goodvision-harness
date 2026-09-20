@@ -1458,9 +1458,26 @@ class HarnessRuntime:
         with self._state_lock:
             if revision != self._rich_config_revision:
                 return
-            self._on_tracking_batch(batch)
+            coordinator = self._rich_labels
+            load_sources = getattr(coordinator, "retained_sources", None)
+        # This read may wait behind a durable SQLite write. Do not freeze every
+        # service callback while fetching immutable, already-admitted evidence.
+        try:
+            sources = load_sources(batch) if load_sources else ()
+        except Exception:
+            with self._state_lock:
+                if (revision != self._rich_config_revision
+                        or coordinator is not self._rich_labels):
+                    return
+            raise
+        with self._state_lock:
+            if (revision != self._rich_config_revision
+                    or coordinator is not self._rich_labels):
+                return
+            self._on_tracking_batch(batch, retained_sources=sources)
 
-    def _on_tracking_batch(self, batch: VideoTrackingBatch) -> None:
+    def _on_tracking_batch(self, batch: VideoTrackingBatch, *,
+                           retained_sources=None) -> None:
         # Bounded in-memory commit. Lifecycle lock excludes source replacement
         # between epoch activation, canonical mapping and scene submission.
         with self._state_lock:
@@ -1494,15 +1511,15 @@ class HarnessRuntime:
 
             scene = getattr(self, "_scene", None)
             if scene is not None:
-                retained_sources = getattr(self._rich_labels, "retained_sources", None)
+                if retained_sources is None:
+                    load_sources = getattr(self._rich_labels, "retained_sources", None)
+                    retained_sources = load_sources(batch) if load_sources else ()
                 if not scene.commit_native_tracking_batch(
                     batch.frames,
                     completed_timestamp_seconds=batch.completed_timestamp_seconds,
                     completed_frame_sequence=batch.completed_frame_sequence,
                     canonicalize=canonicalize,
-                    retained_sources=(
-                        retained_sources(batch) if retained_sources else ()
-                    ),
+                    retained_sources=retained_sources,
                 ):
                     if scene.tracking_last_rejection == "inspection_capacity":
                         raise TrackingCommitBackpressure("inspection capacity")
@@ -5113,18 +5130,24 @@ def create_app(
         )
 
     @application.get("/v1/video/display/metadata")
-    def camera_display_metadata(request: Request) -> JSONResponse:
-        return JSONResponse(
-            request.app.state.runtime._camera_display_metadata.snapshot(),
-            headers={"Cache-Control": "no-store"},
-        )
+    def camera_display_metadata(request: Request, revision: int = -1,
+                                stream_session_id: str = "") -> Response:
+        metadata = request.app.state.runtime._camera_display_metadata
+        payload = (metadata.delta(revision if revision >= 0 else None,
+                                  stream_session_id=stream_session_id)
+                   if stream_session_id else metadata.snapshot())
+        if payload is None:
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     @application.get("/v1/video/display/frames")
     def network_display_frames(request: Request, after: int = -1,
                                connection_id: str = "", revision: int = -1,
-                               stream_session_id: str = "") -> Response:
-        from .network_display import display_response
-        return display_response(_runtime(request), after=after,
+                               stream_session_id: str = "",
+                               continuous: bool = False) -> Response:
+        from .network_display import display_response, display_stream_response
+        respond = display_stream_response if continuous else display_response
+        return respond(_runtime(request), after=after,
                                 connection_id=connection_id, revision=revision,
                                 stream_session_id=stream_session_id)
 

@@ -146,11 +146,13 @@ class VideoConnection:
         with self._condition:
             return self._jpeg
 
-    def display_frames(self, after: int = -1) -> tuple:
+    def display_frames(self, after: int = -1, *, max_age_seconds: float = 0.5,
+                       limit: int = 8) -> tuple:
         """Bounded presentation history; never used to queue analysis work.
 
-        A viewer more than half a second behind catches up explicitly. The
-        source timestamps expose the gap to the shared contour validator.
+        The caller's playback budget determines which frames are still useful.
+        History remains bounded by the encoder's byte/frame limits. Skipped
+        source sequences remain visible to the contour validator.
         """
         with self._condition:
             if not self._display_frames:
@@ -159,7 +161,8 @@ class VideoConnection:
             if after < 0:
                 return (latest,)
             return tuple(item for item in self._display_frames
-                         if item[0] > after and item[1] >= latest[1] - 0.5)[:8]
+                         if item[0] > after
+                         and item[1] >= latest[1] - max_age_seconds)[:limit]
 
     def subscribe(self) -> VideoSubscription:
         with self._condition:

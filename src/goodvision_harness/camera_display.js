@@ -1286,7 +1286,7 @@
       this.lastPresentedSequence=-1;this.lastDiscardedSequence=-1;this.sourceSequence=0;this.firstMediaTime=null;
       this.nextCaptureAt=0;this.nextAnalysisAt=0;this.latestClock=null;this.lastVideoFrame=-1;
       this.stats={captured_frames:0,analysis_admitted:0,analysis_sent:0,analysis_upload_failures:0,
-        network_requests:0,network_failures:0,network_bytes_received:0,network_frames_received:0,network_source_gap_frames:0,
+        network_requests:0,network_failures:0,network_bytes_received:0,network_frames_received:0,network_source_gap_frames:0,network_queue_dropped_frames:0,
         analysis_prepared:0,
         video_callback_frames:0,video_callback_gap_frames:0,
         analysis_capture_pauses:0,motion_failures:0,metadata_failures:0,frames_without_contours:0,
@@ -1621,8 +1621,12 @@
       const timer=setTimeout(()=>controller.abort(),2000);
       let stage="network";
       try{
-        const response=await fetch(this.config.metadata_url||"/v1/video/display/metadata",{
-          cache:"no-store",signal:controller.signal});
+        const base=this.config.metadata_url||"/v1/video/display/metadata",
+          delta=this.config.transport==="stream",
+          url=delta?base+"?"+new URLSearchParams({stream_session_id:this.config.stream_session_id,
+            revision:this.lastMetadataRevision??-1}):base;
+        const response=await fetch(url,{cache:"no-store",signal:controller.signal});
+        if(response.status===204)return;
         if(!response.ok){stage="http";throw new Error("metadata unavailable");}
         stage="decode";
         const data=await response.json();
@@ -1631,7 +1635,7 @@
         if(!Array.isArray(data.anchors))throw new Error("invalid metadata");
         this.stats.metadata_latency_max_seconds=Math.max(this.stats.metadata_latency_max_seconds,
           (performance.now()-started)/1000);
-        this.receiveMetadata(data);
+        this.receiveMetadata(data,{transport:delta?"http_delta":"http"});
       }catch(error){if(!this.closed){
         this.stats.metadata_failures++;
         if(controller.signal.aborted)this.stats.metadata_timeouts++;
@@ -1650,14 +1654,14 @@
       if(!Array.isArray(data.anchors)){
         this.stats.metadata_failures++;this.stats.metadata_decode_errors++;return false;
       }
-      if(transport==="websocket"){
+      if(["websocket","http_delta"].includes(transport)){
         if(!sequence(data.metadata_revision)){
           this.stats.metadata_failures++;this.stats.metadata_invalid_revisions++;return false;
         }
         if(data.metadata_revision<=(this.lastMetadataRevision??-1)){
           this.stats.metadata_duplicate_revisions++;return false;
         }
-        this.lastMetadataRevision=data.metadata_revision;this.stats.metadata_ws_received++;
+        this.lastMetadataRevision=data.metadata_revision;if(transport==="websocket")this.stats.metadata_ws_received++;
       }
       this.stats.metadata_received++;this.lastMetadataReceivedAt=performance.now();
       this.identities.accept(data);
@@ -1775,7 +1779,7 @@
     const data=JSON.parse(new TextDecoder().decode(bytes.subarray(8,8+size)));
     if(data.protocol!==1||typeof data.connection_id!=="string"||!data.config||
       !safeId(data.config.stream_session_id)||!sequence(data.config.generation)||!sequence(data.config.crop_version)||
-      !Array.isArray(data.frames)||data.frames.length>8)throw new Error("invalid display identity");
+      !Array.isArray(data.frames)||data.frames.length>64)throw new Error("invalid display identity");
     let offset=8+size,previous=-1,stamp=-1;
     for(const frame of data.frames){
       if(!sequence(frame.source_sequence)||frame.source_sequence<=previous||!finite(frame.media_timestamp)||
@@ -1789,6 +1793,32 @@
     return data;
   }
 
+  class DisplayStreamDecoder{
+    constructor(){this.prefix=new Uint8Array(4);this.prefixUsed=0;this.body=null;this.used=0;}
+    feed(chunk){
+      const packets=[];let offset=0;
+      while(offset<chunk.length){
+        if(!this.body){
+          const count=Math.min(4-this.prefixUsed,chunk.length-offset);
+          this.prefix.set(chunk.subarray(offset,offset+count),this.prefixUsed);
+          this.prefixUsed+=count;offset+=count;
+          if(this.prefixUsed<4)break;
+          const size=new DataView(this.prefix.buffer).getUint32(0);
+          if(size<8||size>8*1024**2)throw new Error("invalid display stream length");
+          this.body=new Uint8Array(size);this.used=0;
+        }
+        const count=Math.min(this.body.length-this.used,chunk.length-offset);
+        this.body.set(chunk.subarray(offset,offset+count),this.used);this.used+=count;offset+=count;
+        if(this.used===this.body.length){
+          const data=decodeDisplayBatch(this.body.buffer);data.byte_length=this.body.length;packets.push(data);
+          this.body=null;this.prefixUsed=0;this.used=0;
+        }
+      }
+      return packets;
+    }
+    finish(){if(this.prefixUsed||this.body)throw new Error("truncated display stream");}
+  }
+
   class NetworkController{
     static supported(){return BrowserController.supported(null)&&typeof createImageBitmap==="function";}
     constructor({canvas,url,metricsUrl,onStatus=()=>{},onFailure=()=>{},onFrame=()=>{}}){
@@ -1796,6 +1826,7 @@
       this.onFailure=onFailure;this.onFrame=onFrame;this.closed=false;this.after=-1;
       this.connectionId="";this.session="";this.revision=-1;this.controller=null;this.key=null;
       this.socket={readyState:0,bufferedAmount:0};
+      this.streamConnections=0;this.queue=[];this.queueBytes=0;this.queueFrames=0;this.draining=false;this.acceptEpoch=0;this.queuedKey=null;
     }
     start(){BrowserController.warmupMotion();this.pull();}
     reset(config,connectionId){
@@ -1806,25 +1837,55 @@
       this.canvas.getContext("2d").clearRect(0,0,this.canvas.width,this.canvas.height);
       if(config.enabled){
         this.controller=new BrowserController({video:null,canvas:this.canvas,socket:this.socket,
-          config:{...config,source_mode:"network",transport:"frames",metrics_url:this.metricsUrl},
+          config:{...config,source_mode:"network",transport:config.transport==="stream"?"stream":"frames",
+            metadata_url:this.url.replace(/\/frames(?:\?.*)?$/,"/metadata"),metrics_url:this.metricsUrl},
           settings:{sample_fps:0,max_image_side:1280,jpeg_quality:80},
           onStatus:this.onStatus,onFailure:this.onFailure});
+        this.controller.stats.network_requests=this.streamConnections;
         this.controller.start();
       }
     }
-    async accept(data){
+    enqueue(data){
+      const config=data.config,key=JSON.stringify([data.connection_id,config.stream_session_id,
+        config.generation,config.crop_version,config.enabled,config.delay_seconds]);
+      const changed=key!==this.queuedKey;
+      if(changed){this.queue=[];this.queueBytes=0;this.queueFrames=0;this.acceptEpoch++;this.queuedKey=key;}
+      if(!changed&&!data.frames.length)return;
+      data.received_at=performance.now();
+      const size=data.byte_length||data.frames.reduce((sum,frame)=>sum+frame.jpeg.length,0),
+        latest=data.frames.at(-1)?.media_timestamp,deadline=latest-(Number(config.delay_seconds)||0)-.5;
+      this.queue.push({data,size,epoch:this.acceptEpoch});this.queueBytes+=size;this.queueFrames+=data.frames.length;
+      // Keep still-useful pictures through a short decode stall, not an unlimited
+      // replay backlog. This queue contains display JPEGs only, never SAM work.
+      while(this.queue.length>1&&(this.queueBytes>32*1024**2||this.queueFrames>128||
+        this.queue[0].data.frames.at(-1)?.media_timestamp<deadline)){
+        const old=this.queue.shift();this.queueBytes-=old.size;this.queueFrames-=old.data.frames.length;
+        if(this.controller)this.controller.stats.network_queue_dropped_frames+=old.data.frames.length;
+      }
+      void this.drain();
+    }
+    async drain(){
+      if(this.draining)return;this.draining=true;
+      try{while(this.queue.length&&!this.closed){
+        const item=this.queue.shift();this.queueBytes-=item.size;this.queueFrames-=item.data.frames.length;
+        try{await this.accept(item.data,item.epoch);}
+        catch(error){if(!this.closed){if(this.controller)this.controller.stats.network_failures++;
+          this.onFailure("画面解码暂时失败，正在继续接收。");}}
+      }}finally{this.draining=false;}
+    }
+    async accept(data,epoch=this.acceptEpoch){
       const config=data.config,key=JSON.stringify([data.connection_id,config.stream_session_id,config.generation,
         config.crop_version,config.enabled,config.delay_seconds]);
       if(this.key!==key)this.reset(config,data.connection_id);
       if(this.connectionId!==data.connection_id)this.after=-1;
       this.connectionId=data.connection_id;
-      const latest=data.frames.at(-1)?.media_timestamp,receivedAt=performance.now();
+      const latest=data.frames.at(-1)?.media_timestamp,receivedAt=data.received_at??performance.now();
       for(const frame of data.frames){
         if(frame.source_sequence<=this.after)continue;
         const decodeStarted=performance.now();
         const bitmap=await createImageBitmap(new Blob([frame.jpeg],{type:"image/jpeg"}));
         try{
-          if(this.closed)return;
+          if(this.closed||epoch!==this.acceptEpoch)return;
           if(bitmap.width!==frame.width||bitmap.height!==frame.height)throw new Error("display dimensions changed");
           if(this.controller){
             this.controller.noteTiming("network_decode",performance.now()-decodeStarted);
@@ -1848,26 +1909,43 @@
       if(this.closed)return;
       if(typeof document!=="undefined"&&document.hidden){this.timer=setTimeout(()=>this.pull(),250);return;}
       const started=performance.now(),abort=new AbortController();this.abort=abort;
-      const timeout=setTimeout(()=>abort.abort(),3000);let retry=0;
+      let timeout,reader,retry=0;
+      const touch=()=>{clearTimeout(timeout);timeout=setTimeout(()=>abort.abort(),5000);};touch();
       try{
         const query=new URLSearchParams({after:this.after,connection_id:this.connectionId,
-          revision:this.revision,stream_session_id:this.session});
+          revision:this.revision,stream_session_id:this.session,continuous:"true"});
         const response=await fetch(this.url+"?"+query,{cache:"no-store",signal:abort.signal});
         if(!response.ok)throw new Error("display unavailable");
-        const bytes=await response.arrayBuffer(),downloadSeconds=performance.now()-started;
-        const data=decodeDisplayBatch(bytes);
-        if(!this.closed){await this.accept(data);
-          if(this.controller){this.controller.stats.network_requests++;this.controller.stats.network_bytes_received+=bytes.byteLength;
-            this.controller.noteTiming("network_download",downloadSeconds);}}
+        if(response.headers?.get("content-type")?.split(";")[0]==="application/vnd.goodvision.display-stream"){
+          this.streamConnections++;if(this.controller)this.controller.stats.network_requests++;
+          reader=response.body.getReader();const decoder=new DisplayStreamDecoder();
+          while(!this.closed){
+            const received=await reader.read();if(received.done){decoder.finish();break;}touch();
+            for(const data of decoder.feed(received.value))this.enqueue(data);
+            if(this.controller)this.controller.stats.network_bytes_received+=received.value.byteLength;
+          }
+          if(!this.closed)retry=100;
+        }else{
+          // Compatibility for older servers. New servers use the independent
+          // stream above; the finite transport never has to be deployed first.
+          const bytes=await response.arrayBuffer(),downloadSeconds=performance.now()-started;
+          if(!this.closed){await this.accept(decodeDisplayBatch(bytes));
+            if(this.controller){this.controller.stats.network_requests++;
+              this.controller.stats.network_bytes_received+=bytes.byteLength;
+              this.controller.noteTiming("network_download",downloadSeconds);}}
+        }
       }catch(error){if(!this.closed){if(this.controller)this.controller.stats.network_failures++;
         retry=250;this.onFailure("实时画面暂不可用，正在重新获取。");}}
       finally{
-        clearTimeout(timeout);if(this.abort===abort)this.abort=null;
+        clearTimeout(timeout);if(reader)await reader.cancel().catch(()=>{});
+        if(this.abort===abort)this.abort=null;
         if(!this.closed)this.timer=setTimeout(()=>this.pull(),Math.max(retry,1000/30-(performance.now()-started)));
       }
     }
-    stop(){this.closed=true;clearTimeout(this.timer);this.abort?.abort();this.controller?.stop();this.controller=null;}
+    stop(){this.closed=true;this.acceptEpoch++;this.queue=[];this.queueBytes=this.queueFrames=0;
+      clearTimeout(this.timer);this.abort?.abort();this.controller?.stop();this.controller=null;}
   }
-  return {FrameTimeline,ContourHistory,DisplayIdentities,estimateMotion,warpPolygons,packCameraFrame,sameRun,drawSubjectLabel,
+
+  return {FrameTimeline,ContourHistory,DisplayIdentities,DisplayStreamDecoder,estimateMotion,warpPolygons,packCameraFrame,sameRun,drawSubjectLabel,
     BrowserController,NetworkController,decodeDisplayBatch};
 });

@@ -551,46 +551,41 @@ class CameraDisplayMetadata:
         with self._lock:
             self._forgotten_identities.discard(person_id)
 
-    def delta(
-        self, after_revision: int | None, *, stream_session_id: str,
-    ) -> dict | None:
+    def _snapshot_payload(self, after_revision=None):
+        # Caller holds the lock. Published entries are immutable: writers append
+        # or replace records/lists, never edit existing nested contour geometry.
+        # Capture cheap references here; sanitize/copy outside the producer lock.
+        newest = max(self.last_source[1],
+                     self.anchors[-1]["media_timestamp"] if self.anchors else -1.0)
+        return {
+            "stream_session_id": self.session_id,
+            "generation": self.generation, "crop_version": self.crop_version,
+            "anchors": [anchor for anchor in self.anchors
+                        if anchor["media_timestamp"] >= newest - 8.0
+                        and (after_revision is None or
+                             self._anchor_revisions.get(anchor["source_sequence"], -1)
+                             > after_revision)],
+            "events": self.events,
+            "event_snapshot_timestamp": self._scene_timestamp,
+            "event_snapshot_revision": self.revision,
+            "identities": self.identities,
+            "identity_snapshot_timestamp": self._scene_timestamp,
+            "identity_snapshot_revision": self.identity_revision,
+        }
+
+    def delta(self, after_revision: int | None, *, stream_session_id: str) -> dict | None:
         with self._lock:
             if (stream_session_id != self.session_id or self.generation is None
                     or after_revision == self.metadata_revision):
                 return None
-            payload = self.snapshot()
-            if after_revision is not None and after_revision >= self._reset_revision:
-                payload["anchors"] = [
-                    anchor for anchor in payload["anchors"]
-                    if self._anchor_revisions.get(anchor["source_sequence"], -1)
-                    > after_revision
-                ]
+            cursor = (after_revision if after_revision is not None
+                      and after_revision >= self._reset_revision else None)
+            payload = self._snapshot_payload(cursor)
             payload["metadata_revision"] = self.metadata_revision
-            return payload
+        # Filter before copying. Repeated polls no longer traverse every old mask.
+        return public_safe_value(payload)
 
     def snapshot(self) -> dict:
         with self._lock:
-            # Bound retransmitted display history to the browser's supported
-            # retention window; older anchors cannot support current geometry.
-            # This only bounds presentation metadata, never analysis evidence.
-            newest = max(
-                self.last_source[1],
-                self.anchors[-1]["media_timestamp"] if self.anchors else -1.0,
-            )
-            return public_safe_value(
-                {
-                    "stream_session_id": self.session_id,
-                    "generation": self.generation,
-                    "crop_version": self.crop_version,
-                    "anchors": [
-                        anchor for anchor in self.anchors
-                        if anchor["media_timestamp"] >= newest - 8.0
-                    ],
-                    "events": self.events,
-                    "event_snapshot_timestamp": self._scene_timestamp,
-                    "event_snapshot_revision": self.revision,
-                    "identities": self.identities,
-                    "identity_snapshot_timestamp": self._scene_timestamp,
-                    "identity_snapshot_revision": self.identity_revision,
-                }
-            )
+            payload = self._snapshot_payload()
+        return public_safe_value(payload)

@@ -1062,3 +1062,82 @@ test("late playback discards expired display copies but retains the full four-se
   assert.equal(view.controller.snapshot().analysis_admitted,0);
   view.controller.stop();
 });
+
+
+function streamPacket(sequence,config={}){
+  const data={protocol:1,connection_id:"connection",config:{stream_session_id:"run",generation:2,crop_version:0,
+    enabled:true,delay_seconds:4,target_fps:15,transport:"stream",...config},
+    frames:[{source_sequence:sequence,media_timestamp:sequence/15,width:640,height:480,bytes:4}],metadata:null};
+  const header=new TextEncoder().encode(JSON.stringify(data)),body=new Uint8Array(8+header.length+4);
+  body.set(new TextEncoder().encode("GVD1"));new DataView(body.buffer).setUint32(4,header.length);body.set(header,8);
+  const packet=new Uint8Array(body.length+4);new DataView(packet.buffer).setUint32(0,body.length);packet.set(body,4);
+  return packet;
+}
+
+test("continuous framing accepts arbitrary network splits and multiple pictures without truncation",()=>{
+  const view=browser(),decoder=new view.api.DisplayStreamDecoder(),packets=[];
+  const a=streamPacket(1),b=streamPacket(2),both=new Uint8Array(a.length+b.length);both.set(a);both.set(b,a.length);
+  for(let i=0;i<both.length;i+=7)packets.push(...decoder.feed(both.subarray(i,i+7)));
+  decoder.finish();assert.deepEqual(packets.map(p=>p.frames[0].source_sequence),[1,2]);
+  assert.throws(()=>new view.api.DisplayStreamDecoder().feed(new Uint8Array([127,255,255,255])),/length/);
+  const partial=new view.api.DisplayStreamDecoder();partial.feed(a.subarray(0,-1));assert.throws(()=>partial.finish(),/truncated/);
+  view.controller.stop();
+});
+
+test("continuous video reaches all 15 frames despite an unanswered metadata request",async()=>{
+  let requested=0;
+  const view=browser({globals:{createImageBitmap:async()=>({width:640,height:480,close(){}}),
+    fetch:async()=>{requested++;return new Promise(()=>{});}}});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/v1/fleet/cameras/camera02/video/display/frames",metricsUrl:"/metrics"});
+  for(let i=0;i<15;i++){
+    view.setClock(i/15);
+    const decoder=new view.api.DisplayStreamDecoder();feed.enqueue(decoder.feed(streamPacket(i))[0]);await settle();
+  }
+  assert.equal(requested,1);assert.equal(feed.controller.stats.network_frames_received,15);
+  assert.equal(feed.controller.config.metadata_url,"/v1/fleet/cameras/camera02/video/display/metadata");
+  for(let i=0;i<15;i++){view.setClock(4+i/15+.0001);feed.controller.animate();}
+  assert.equal(feed.controller.snapshot().distinct_presented_frames,15);
+  assert.equal(feed.controller.stats.frames_without_contours,15);
+  feed.stop();view.controller.stop();
+});
+
+test("a short JPEG decode stall retains useful pictures and bounds an expired backlog",async()=>{
+  let release;
+  const view=browser({globals:{createImageBitmap:()=>new Promise(resolve=>{release=()=>resolve({width:640,height:480,close(){}});})}});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",metricsUrl:"/metrics"}),decoder=new view.api.DisplayStreamDecoder();
+  for(let i=0;i<31;i++)feed.enqueue(decoder.feed(streamPacket(i,{transport:"frames"}))[0]);
+  assert.equal(feed.queueFrames,30); // Two seconds survive inside the four-second buffer.
+  for(let i=31;i<300;i++)feed.enqueue(decoder.feed(streamPacket(i,{transport:"frames"}))[0]);
+  assert.ok(feed.queueFrames<=69);assert.ok(feed.queueBytes<=32*1024**2);
+  assert.ok(feed.controller.stats.network_queue_dropped_frames>0);
+  feed.stop();release();await settle();assert.equal(feed.queueFrames,0);view.controller.stop();
+});
+
+test("independent metadata accepts 204 and rejects stale delta revisions",async()=>{
+  const view=browser({config:{transport:"stream"},globals:{fetch:async()=>({ok:true,status:204})}});
+  await view.controller.pollMetadata();assert.equal(view.controller.stats.metadata_failures,0);
+  const data={stream_session_id:"run",generation:2,crop_version:0,metadata_revision:9,anchors:[]};
+  assert.equal(view.controller.receiveMetadata(data,{transport:"http_delta"}),true);
+  assert.equal(view.controller.receiveMetadata({...data,metadata_revision:8},{transport:"http_delta"}),false);
+  assert.equal(view.controller.stats.metadata_ws_received,0);view.controller.stop();
+});
+
+
+test("continuous fetch parses split chunks without waiting for metadata and cancels its reader",async()=>{
+  const packet=streamPacket(1),next=streamPacket(2);let requests=0,cancelled=false,finish;
+  const chunks=[packet.subarray(0,3),packet.subarray(3),next];
+  const view=browser({globals:{createImageBitmap:async()=>({width:640,height:480,close(){}}),
+    fetch:async(url,options)=>{
+      if(url.includes("/metadata"))return new Promise(()=>{});
+      requests++;options.signal.addEventListener("abort",()=>finish?.({done:true}));
+      return {ok:true,headers:{get:()=>"application/vnd.goodvision.display-stream"},body:{getReader:()=>({
+        read:async()=>chunks.length?{value:chunks.shift(),done:false}:new Promise(resolve=>{finish=resolve;}),
+        cancel:async()=>{cancelled=true;finish?.({done:true});},
+      })}};
+    }}});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",metricsUrl:"/metrics"});
+  const running=feed.pull();await settle();await settle();
+  assert.equal(requests,1);assert.equal(feed.controller.stats.network_requests,1);
+  assert.equal(feed.controller.stats.network_frames_received,2);
+  feed.stop();await running;assert.equal(cancelled,true);view.controller.stop();
+});

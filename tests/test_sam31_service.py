@@ -511,3 +511,35 @@ def test_slow_continuous_samples_survive_high_rate_preview(runtime):
         assert after["tracking_rejections"] == {}
     finally:
         runtime._rich_labels = None
+
+
+@pytest.mark.parametrize("replace_run", [False, True])
+def test_private_sam_source_read_releases_state_lock_and_rechecks_revision(replace_run):
+    from types import SimpleNamespace
+    runtime = service.HarnessRuntime.__new__(service.HarnessRuntime)
+    runtime._state_lock = threading.RLock()
+    runtime._rich_config_revision = 3
+    entered, release, lock_available = threading.Event(), threading.Event(), threading.Event()
+    sources, commits = (object(),), []
+    def retained(batch):
+        entered.set()
+        assert release.wait(2)
+        return sources
+    runtime._rich_labels = SimpleNamespace(retained_sources=retained)
+    runtime._on_tracking_batch = lambda batch, **kwargs: commits.append((batch, kwargs))
+    batch = object()
+    worker = threading.Thread(target=lambda: runtime._on_processing_batch(3, batch))
+    def control():
+        with runtime._state_lock:
+            if replace_run:
+                runtime._rich_config_revision = 4
+                runtime._rich_labels = None
+            lock_available.set()
+    worker.start()
+    assert entered.wait(1)
+    reader = threading.Thread(target=control); reader.start()
+    try:
+        assert lock_available.wait(1), "private spool read held the service lock"
+    finally:
+        release.set(); worker.join(2); reader.join(2)
+    assert commits == ([] if replace_run else [(batch, {"retained_sources": sources})])

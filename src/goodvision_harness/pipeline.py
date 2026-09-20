@@ -34,6 +34,7 @@ from .contracts import (
     GroundedObject,
 )
 from .event_archive import EventArchive
+from .face_admission import FaceAdmissionQueue
 from .face_recognition import FaceRecognitionRuntime, FaceRecognitionSession
 from .frame_crop import FrameCropSelector
 from .grounding import (
@@ -181,6 +182,12 @@ class StreamingSession:
         self._result_sequence = 0
         self._started_wall: float | None = None
         self._thread: threading.Thread | None = None
+        self._face_admission = (
+            FaceAdmissionQueue(self._admit_ordered_face)
+            if mode == STREAM_MODE and self._drop_when_saturated
+            and self._ordered_face_client is not None
+            else None
+        )
 
     @classmethod
     def for_file(
@@ -354,6 +361,11 @@ class StreamingSession:
         except Exception:
             reason, error = "error", PUBLIC_ANALYSIS_ERROR
         finally:
+            if self._face_admission is not None:
+                try:
+                    self._face_admission.close()
+                except Exception:
+                    reason, error = "error", PUBLIC_ANALYSIS_ERROR
             # Stopping capture must not discard accepted face/model requests.
             while self._has_pending() and (
                 not self._stop.is_set() or self._drain_on_stop
@@ -389,6 +401,8 @@ class StreamingSession:
         for frame in self.frame_crop_selector.frames(
             self.video_stream.frames(), stopped=self._stop.is_set,
         ):
+            if self._face_admission is not None:
+                self._face_admission.raise_if_failed()
             # Decide before display, tracking, evidence and inference see any
             # frames, so every consumer uses one stable coordinate system.
             frame_bgr = frame.bgr
@@ -519,6 +533,25 @@ class StreamingSession:
         )
 
     def _schedule_ordered_face(self, window, *, branch):
+        if self._face_admission is None:
+            return self._admit_ordered_face(window, branch=branch)
+        if not self._face_admission.offer(window, branch=branch):
+            # Reject only this not-yet-admitted face sample. Capture/SAM continue;
+            # durable face observations and their ordered identity commits survive.
+            organizer = self._face_organizer if branch == "stranger" else self.organizer
+            record, snapshot = organizer.note_dropped(
+                window, elapsed_seconds=self._elapsed(),
+            )
+            self._emit_branch_state(record, snapshot, branch)
+            self._archive_window(window, "dropped", branch=branch)
+            log_timing(
+                "face_ingress_backpressure",
+                stream_session_id=trace_id(self.stream_session_id),
+                source_frame_sequence=window.newest_frame.source_frame_index,
+                outcome="not_admitted",
+            )
+
+    def _admit_ordered_face(self, window, *, branch):
         face = self._ordered_face_client
         organizer = self._face_organizer if branch == "stranger" else self.organizer
         pending = self._face_pending if branch == "stranger" else self._pending

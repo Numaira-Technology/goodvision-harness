@@ -99,25 +99,16 @@ References: [FFmpeg tone mapping](https://ffmpeg.org/ffmpeg-filters.html#tonemap
 
 ## Full-pipeline follow-up outcome
 
-The peer task's second H100 reached readiness, but its optional CPU monitoring
-launcher attempted `docker cp` into a read-only container and failed before the
-five-minute analysis began. Cleanup released that instance. No new five-minute
-result exists, and the failed startup is not counted as a performance test.
-No third instance had been created when that recovery attempt stopped: no
-budget-compatible Taiwan H100 was available. The peer task subsequently verified
-that both rented instances were released and both original services had their
-settings restored and saved sources reconnected.
+The peer task eventually completed a valid five-minute proper-SDR + `0748e76`
+comparison with four-second playback buffering. Both inputs stayed at 15 FPS,
+while browser presentation was 7.79/4.64 FPS and median SAM result latency was
+2.279/1.785 seconds. No sustained SAM queue growth occurred in that run. All GPU
+instances were released, original services/settings restored, and the peer task
+stopped further experiments at the user's request.
 
-The user then explicitly authorized further necessary tests at a rental rate
-strictly below USD 8 per hour. That authorization was forwarded to the peer task:
-expand eligible locations/GPU options, preflight the corrected launcher before
-renting, reuse dependency caches where available, and complete the proper-SDR
-full-pipeline comparison with four-second playback buffering. The earlier recovery
-budget/deadline is not a reason to stop this newly authorized work. Keep the
-successful input checks and first H100 baseline separate from the failed startup;
-no result-path speedup has yet been measured or claimed.
-
-The display catch-up counter is included in the server's strict numeric telemetry
-schema, so reporting remains valid after deploying the browser change. Eight
-telemetry validation checks cover accepted counters and invalid values. Deploy
-`display_telemetry.py` together with `camera_display.js`.
+Earlier monitor/recorder startup failures and the 155-second interrupted sample
+are retained separately and are not included in the valid comparison. The H100
+test did not deploy this branch's FFmpeg HDR decoder or subsequent continuous
+transport, playback catch-up, face-admission and lock changes. See
+`continuous-video-face-admission-20260921.md` for those changes and their local
+validation limits.
