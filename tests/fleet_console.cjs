@@ -28,7 +28,7 @@ function fixture({count=3,allowed=true,mode=allowed?"local":"legacy",usable=allo
   const errors=new Map(),revoked=[],scheduled=[];let blobId=0;
   const fetch=async(url,options={})=>{
     requests.push({url,method:options.method||"GET",body:options.body&&JSON.parse(options.body)});
-    if(errors.has(url))throw new Error(errors.get(url));
+    if(errors.has(url)||errors.has(url.split("?")[0]))throw new Error(errors.get(url)||errors.get(url.split("?")[0]));
     if(url==="/v1/fleet")return {ok:true,json:async()=>data};
     if(url===data.analysis_start_url||url===data.analysis_stop_url){
       const start=url===data.analysis_start_url;
@@ -60,6 +60,20 @@ test("status request failure does not label a still-playing video offline",async
   assert.match(row.state.textContent,/暂时无法确认/);assert.doesNotMatch(row.state.textContent,/离线/);
   view.errors.delete(row.camera.status_url);await view.app.pollStatus();
   assert.equal(row.unreachable,false);view.app.close();
+});
+
+test("routine fleet health uses the lightweight status path",async()=>{
+  const view=fixture({count:2});await view.app.refresh();
+  const statuses=view.requests.filter(r=>r.url.includes("/status"));
+  assert.equal(statuses.length,2);assert.ok(statuses.every(r=>r.url.endsWith("?lightweight=true")));
+  view.app.close();
+});
+
+test("independent Face and VLM lanes do not claim a GPU or single-stream limit",async()=>{
+  const view=fixture({count:2,allowed:true,mode:"legacy"});view.data.tracking_enabled=false;
+  await view.app.refresh();
+  assert.match(view.app.ui.mode.textContent,/人脸与 VLM/);
+  assert.doesNotMatch(view.app.ui.capacity.textContent,/仅支持单路/);view.app.close();
 });
 
 test("VLM health distinguishes recent success, incomplete labels and a failed attempt",async()=>{

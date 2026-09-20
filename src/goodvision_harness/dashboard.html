@@ -2073,7 +2073,8 @@ async function status(){
   const current=()=>sessionRevision===(state.sessionRevision||0)&&sessionId===state.sessionId;
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
   try{
-    const response=await fetch("/v1/status",{cache:"no-store",signal:controller.signal});
+    const statusUrl=globalThis.GoodvisionFleet?.detailHidden?.()?"/v1/status?lightweight=true":"/v1/status";
+    const response=await fetch(statusUrl,{cache:"no-store",signal:controller.signal});
     if(!response.ok)throw new Error("HTTP "+response.status);
     const data=await response.json();
     // A response from before a session transition cannot stop or revive its successor.

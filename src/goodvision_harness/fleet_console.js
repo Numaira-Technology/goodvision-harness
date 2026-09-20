@@ -26,7 +26,7 @@
     const cameras=(Array.isArray(data.cameras)?data.cameras:[]).filter(camera=>camera&&typeof camera.id==="string");
     const count=(value,fallback)=>Number.isFinite(Number(value))&&Number(value)>=0?Math.floor(Number(value)):fallback;
     const seen=new Set();
-    return {allowed,trackingMode:Object.hasOwn(MODES,data.tracking_mode)?data.tracking_mode:"legacy",
+    return {allowed,trackingEnabled:data.tracking_enabled!==false,trackingMode:Object.hasOwn(MODES,data.tracking_mode)?data.tracking_mode:"legacy",
       analysis:data.analysis&&typeof data.analysis==="object"?data.analysis:{state:"unknown",camera_ids:[],errors:{}},
       analysisStartUrl:safeEndpoint(data.analysis_start_url),analysisStopUrl:safeEndpoint(data.analysis_stop_url),
       capacity:count(data.capacity,cameras.length),usableCapacity:count(data.usable_capacity,cameras.filter(camera=>camera.enabled===true).length),reason:String(data.reason||""),
@@ -270,9 +270,9 @@
       const displayed=[...this.rows.values()].filter(row=>this.visible.has(row.camera.id));
       const available=this.fleet.cameras.filter(camera=>camera.enabled).length;
       const spare=this.fleet.cameras.some(camera=>camera.enabled&&!this.visible.has(camera.id));
-      this.ui.mode.textContent=this.fleet.allowed?MODES[this.fleet.trackingMode]:
+      this.ui.mode.textContent=!this.fleet.trackingEnabled?"视频播放 · 人脸与 VLM 识别":this.fleet.allowed?MODES[this.fleet.trackingMode]:
         MODES[this.fleet.trackingMode].replace("多路模式","当前可用 "+this.fleet.usableCapacity+" 路");
-      const capacityNote=this.fleet.trackingMode==="server"
+      const capacityNote=!this.fleet.trackingEnabled?"可使用已部署的视频通道；人物描边未启用。":this.fleet.trackingMode==="server"
         ?"可用路数由追踪服务器容量与已部署通道共同决定。"
         :this.fleet.trackingMode==="local"?"可按需添加通道，实际可同时运行的路数以本机 GPU 负载为准。"
         :this.fleet.trackingMode==="cloud"?"可按需部署 N 路通道；各路分配到云 GPU，实际容量取决于租用算力和负载。"
@@ -361,7 +361,8 @@
       try{await pooled(cameras,4,async row=>{
         const generation=row.generation;
         try{
-          const status=await this.request(row.camera.status_url);
+          const statusUrl=row.camera.status_url;
+          const status=await this.request(statusUrl?statusUrl+(statusUrl.includes("?")?"&":"?")+"lightweight=true":statusUrl);
           if(generation!==row.generation||this.closed)return;
           const sessionChanged=row.status?.stream_session_id!==status.stream_session_id;
           if(sessionChanged)this.releasePreview(row);
