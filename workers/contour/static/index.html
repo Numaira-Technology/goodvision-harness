@@ -31,6 +31,16 @@
         <article class="panel"><p class="metric-label">推理设备</p><h2 id="gpu-state">—</h2><p id="gpu-note" class="muted">连接后检查推理就绪状态</p></article>
         <article class="panel"><p class="metric-label">模型文件</p><h2 id="model-state">—</h2><p id="model-note" class="muted">本地挂载 · 按需接入</p></article>
       </section>
+      <section class="panel memory-panel" aria-labelledby="memory-title">
+        <div class="section-heading"><h2 id="memory-title">GPU 显存</h2><span class="tag" id="memory-state">等待连接</span></div>
+        <dl class="memory-grid">
+          <div><dt>张量实际占用</dt><dd id="memory-allocated">—</dd></div>
+          <div><dt>空闲缓存保留</dt><dd id="memory-cached">—</dd></div>
+          <div><dt>整卡可用 / 总量</dt><dd id="memory-free">—</dd></div>
+        </dl>
+        <p class="fine" id="memory-note">全部会话结束后，自动回收空闲缓存。</p>
+        <p class="fine">张量占用包含常驻模型和跟踪状态；缓存回收不卸载模型。整卡可用量还受其他进程影响。</p>
+      </section>
       <div class="details">
         <section class="panel deployment" aria-labelledby="deploy-title">
           <div class="section-heading"><h2 id="deploy-title">部署进度</h2><span class="tag" id="mode-label">节点未连接</span></div>

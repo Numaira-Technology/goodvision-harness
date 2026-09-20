@@ -647,6 +647,7 @@ def create_app(
     # Both package tests and the standalone Docker /worker/app.py entry point.
     if __package__:
         from .continuous import SessionEngine, SessionRegistry, register_session_routes
+        from .gpu_memory import GPUMemory, maintain_idle_gpu
         from .multistream import (
             CameraFleet,
             FairGPUAdmission,
@@ -660,6 +661,7 @@ def create_app(
         from .sam31 import VideoEngine, register_video_routes
     else:
         from continuous import SessionEngine, SessionRegistry, register_session_routes
+        from gpu_memory import GPUMemory, maintain_idle_gpu
         from multistream import (
             CameraFleet,
             FairGPUAdmission,
@@ -676,6 +678,8 @@ def create_app(
     selected_video = video_engine or VideoEngine()
     selected_session = session_engine or SessionEngine(selected_video)
     sessions = SessionRegistry()
+    gpu_memory = GPUMemory()
+    sessions.on_state_discarded = gpu_memory.mark_pending
     sessions.add(selected_session)
     selected_routes = (
         build_perception_engines(selected_video, sessions)
@@ -725,14 +729,15 @@ def create_app(
             except Exception:
                 LOGGER.exception("SAM camera lanes initialization failed")
 
+        gpu_memory.mark_pending()
+        await asyncio.to_thread(maintain_idle_gpu, sessions, admission, gpu_memory)
+
         async def reap_sessions():
             while True:
                 await asyncio.sleep(5)
-                if admission.acquire(blocking=False):
-                    try:
-                        sessions.expire()
-                    finally:
-                        admission.release()
+                await asyncio.to_thread(
+                    maintain_idle_gpu, sessions, admission, gpu_memory
+                )
 
         reaper = asyncio.create_task(reap_sessions())
         try:
@@ -760,6 +765,12 @@ def create_app(
     )
     app.state.engine = selected
     app.state.perception_sessions = sessions
+    app.state.gpu_memory = gpu_memory
+
+    @app.get("/health/gpu-memory")
+    async def gpu_memory_status():
+        return await asyncio.to_thread(gpu_memory.snapshot)
+
     register_video_routes(app, selected_video, admission, decode_jpeg)
     register_session_routes(app, selected_session, admission, decode_jpeg)
     register_perception_routes(app, selected_routes, admission, decode_jpeg)

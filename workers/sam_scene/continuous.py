@@ -263,6 +263,11 @@ class SessionRegistry:
     def __init__(self):
         self.engines = []
         self.mutex = threading.RLock()
+        self.on_state_discarded = None
+
+    def note_state_discarded(self):
+        if self.on_state_discarded is not None:
+            self.on_state_discarded()
 
     def add(self, engine):
         with self.mutex:
@@ -662,9 +667,12 @@ class SessionEngine:
                 self.session.last_response = None
 
     def _discard(self, session):
+        had_state = session.status == "active" or session.native_state is not None
         self.backend.discard(session)
         session.sources.clear()
         session.status = "closed"
+        if had_state and self.registry is not None:
+            self.registry.note_state_discarded()
 
     def delete(self, token):
         with self._mutex:

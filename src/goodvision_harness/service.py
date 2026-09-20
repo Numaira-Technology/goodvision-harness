@@ -5082,6 +5082,13 @@ def create_app(
             name=f"{feature}_result_events",
         )
 
+    @application.get("/assets/cloud_gpu_console.js")
+    async def cloud_gpu_console_script() -> Response:
+        return Response(
+            Path(__file__).with_name("cloud_gpu_console.js").read_text(encoding="utf-8"),
+            media_type="text/javascript",
+        )
+
     @application.get("/assets/fleet_console.js")
     async def fleet_console_script() -> Response:
         return Response(

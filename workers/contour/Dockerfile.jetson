@@ -23,6 +23,7 @@ RUN git clone https://github.com/facebookresearch/sam3.git /opt/upstream \
 COPY sam_scene/app.py sam_scene/sam31.py sam_scene/continuous.py ./
 COPY sam_scene/streaming_state.py sam_scene/h264_transport.py ./
 COPY sam_scene/perception_routes.py sam_scene/sam_live.py sam_scene/multistream.py ./
+COPY sam_scene/gpu_memory.py ./
 COPY contour/THIRD_PARTY_NOTICES.md /opt/notices/THIRD_PARTY_NOTICES.md
 COPY contour/prepare_jetson.py /opt/build/prepare_jetson.py
 COPY contour/jetson_runtime.py /engine/jetson_runtime.py

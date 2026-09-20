@@ -173,7 +173,7 @@ class FleetController:
         if index > self.usable_capacity():
             raise HTTPException(
                 409,
-                "此通道超出人物追踪服务可用路数。请配置本地或自建追踪服务并扩容。",
+                "此通道超出人物追踪服务可用路数。请配置云 GPU、本地或自建追踪服务并扩容。",
             )
 
     def descriptor(self) -> dict[str, Any]:
@@ -221,6 +221,7 @@ class FleetController:
             "connect_url": f"{base}/connect",
             "disconnect_url": f"{base}/disconnect",
             "detail_url": f"{base}/details",
+            "diagnostics_url": f"{base}/diagnostics",
             "results_url": f"{base}/results/latest",
             "scene_url": f"{base}/scene",
             "settings_url": f"{base}/settings",
@@ -666,6 +667,8 @@ class FleetController:
 def install_fleet_routes(application: FastAPI) -> FleetController:
     controller = FleetController(application)
     application.state.fleet = controller
+    from .cloud_gpu import install_cloud_gpu_routes
+    install_cloud_gpu_routes(application, controller)
 
     @application.get("/v1/fleet")
     async def fleet() -> JSONResponse:
@@ -794,7 +797,9 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
         return await controller.request_json(controller.resolve_camera(camera_id), "POST",
                                              "/v1/video/display/metrics", await _json_body(request))
 
+    from .fleet_diagnostics import install_diagnostic_routes
     from .fleet_outputs import install_output_routes
 
+    install_diagnostic_routes(application, controller, _json_body)
     install_output_routes(application, controller)
     return controller

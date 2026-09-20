@@ -157,6 +157,9 @@ class _LaneOwnership:
     def expire(self):
         self.fleet.registry.expire()
 
+    def note_state_discarded(self):
+        self.fleet.registry.note_state_discarded()
+
 
 class CameraFleet:
     """Aggregate ownership for legacy exclusion; one SessionEngine per camera."""

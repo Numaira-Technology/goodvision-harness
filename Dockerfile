@@ -8,20 +8,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates openssh-client \
     && rm -rf /var/lib/apt/lists/* \
-    && python -m pip install --no-cache-dir vastai==1.5.6 'python-dotenv>=1,<2'
+    && python -m pip install --no-cache-dir vastai==1.5.6 'python-dotenv>=1,<2' \
+       'fastapi>=0.115,<1' 'uvicorn>=0.30,<1'
 
 WORKDIR /app
 COPY tools/start_sam.py ./tools/start_sam.py
+COPY tools/cloud_gpu_settings.py tools/cloud_gpu_controller.py ./tools/
 COPY workers/sam_scene/app.py workers/sam_scene/sam31.py \
     workers/sam_scene/continuous.py workers/sam_scene/streaming_state.py \
     workers/sam_scene/perception_routes.py workers/sam_scene/sam_live.py \
-    workers/sam_scene/multistream.py \
+    workers/sam_scene/multistream.py workers/sam_scene/gpu_memory.py \
+    workers/sam_scene/cloud_pool.py \
     workers/sam_scene/hybrid.py workers/sam_scene/hybrid_tracker.py \
     workers/sam_scene/h264_transport.py workers/sam_scene/requirements.txt \
     ./workers/sam_scene/
 
 STOPSIGNAL SIGTERM
-CMD ["python", "-u", "tools/start_sam.py"]
+CMD ["python", "-u", "tools/cloud_gpu_controller.py"]
 
 FROM python:3.11-slim
 

@@ -11,7 +11,7 @@
   function connected(status){return status?.connected===true||connectionState(status)==="connected";}
   function connectionBusy(status){return ["connecting","connected","disconnecting"].includes(connectionState(status));}
   function analyzing(status){return ACTIVE.has(status?.analysis_state||status?.pipeline_state);}
-  const MODES={legacy:"原部署追踪服务 · 单路模式",local:"本机 GPU 人物追踪 · 多路模式",server:"独立 GPU 追踪服务器 · 多路模式"};
+  const MODES={legacy:"原部署追踪服务 · 单路模式",cloud:"云 GPU 人物追踪 · 多路模式",local:"本机 GPU 人物追踪 · 多路模式",server:"独立 GPU 追踪服务器 · 多路模式"};
   async function pooled(items,limit,action){
     let cursor=0;
     await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{
@@ -36,6 +36,7 @@
         status_url:safeEndpoint(camera.status_url),connect_url:safeEndpoint(camera.connect_url),
         disconnect_url:safeEndpoint(camera.disconnect_url),settings_url:safeEndpoint(camera.settings_url),
         detail_url:safeEndpoint(camera.detail_url),results_url:safeEndpoint(camera.results_url),scene_url:safeEndpoint(camera.scene_url),
+        diagnostics_url:safeEndpoint(camera.diagnostics_url),
         preview_url:safeEndpoint(camera.preview_url),display_url:safeEndpoint(camera.display_url),
         display_metrics_url:safeEndpoint(camera.display_metrics_url)
       }))};
@@ -91,7 +92,7 @@
     applyFleet(fleet){
       this.fleet=fleet;
       const ids=new Set(fleet.cameras.map(camera=>camera.id));
-      for(const [id,row] of this.rows){if(!ids.has(id)){this.releasePreview(row);row.card.remove();this.rows.delete(id);this.visible.delete(id);}}
+      for(const [id,row] of this.rows){if(!ids.has(id)){this.closeDiagnostics(row);this.releasePreview(row);row.card.remove();this.rows.delete(id);this.visible.delete(id);}}
       for(const camera of fleet.cameras){
         let row=this.rows.get(camera.id);
         if(!row){row=this.makeRow(camera);this.rows.set(camera.id,row);}
@@ -128,10 +129,31 @@
         status:null,busy:false,error:"",notice:"",previewUrl:null,previewError:false,generation:0,layoutDirty:false,
         detailOpen:false,prefsLoaded:false,prefsLoading:false,prefsDirty:false,prefsSaving:false,detailPolling:false};
       this.makeDetail(row);
+      const diagnostics=this.element("button","btn","本机摄像头 / 诊断");diagnostics.type="button";
+      const diagnosticsPanel=this.element("div","fleet-diagnostics");diagnosticsPanel.hidden=true;
+      diagnosticsPanel.id="diagnostics-"+camera.id;
+      diagnostics.setAttribute("aria-controls",diagnosticsPanel.id);diagnostics.setAttribute("aria-expanded","false");
+      diagnostics.setAttribute("aria-label",camera.label+" 本机摄像头 / 诊断");
+      buttons.append(diagnostics);card.append(diagnosticsPanel);
+      Object.assign(row,{diagnostics,diagnosticsPanel,diagnosticsFrame:null});
+      diagnostics.onclick=()=>this.toggleDiagnostics(row);
       start.onclick=()=>this.start(row);stop.onclick=()=>this.stop(row);save.onclick=()=>this.save(row);
       remove.onclick=()=>this.remove(row);detail.onclick=()=>this.toggleDetail(row);
       input.oninput=()=>{row.notice="";row.error="";this.updateRow(row);};layout.onchange=()=>{row.layoutDirty=true;};
       return row;
+    }
+    toggleDiagnostics(row){
+      if(row.diagnosticsFrame){this.closeDiagnostics(row);return;}
+      if(!row.camera.diagnostics_url){row.error="该通道暂未提供诊断入口，请更新该通道服务。";this.updateRow(row);return;}
+      const frame=this.element("iframe");frame.title=row.camera.label+" 本机摄像头与诊断";
+      frame.src=row.camera.diagnostics_url;frame.setAttribute("allow","camera 'self'");
+      row.diagnosticsFrame=frame;row.diagnosticsPanel.append(frame);row.diagnosticsPanel.hidden=false;
+      row.diagnostics.textContent="收起本机摄像头 / 诊断";row.diagnostics.setAttribute("aria-expanded","true");
+    }
+    closeDiagnostics(row){
+      // Removing the document closes its event streams, timers and local camera.
+      row.diagnosticsFrame?.remove();row.diagnosticsFrame=null;row.diagnosticsPanel.hidden=true;
+      row.diagnostics.textContent="本机摄像头 / 诊断";row.diagnostics.setAttribute("aria-expanded","false");
     }
     showDetail(show){
       this.ui["detail-console"].hidden=!show;
@@ -149,7 +171,7 @@
     }
     remove(row){
       if(row.camera.own||row.busy||connectionBusy(row.status)||this.analysisLocked())return;
-      this.visible.delete(row.camera.id);row.card.hidden=true;this.releasePreview(row);this.update();
+      this.visible.delete(row.camera.id);row.card.hidden=true;this.closeDiagnostics(row);this.releasePreview(row);this.update();
     }
     analysisLocked(){
       const analysis=this.fleet?.analysis,rows=[...this.rows.values()];
@@ -252,6 +274,7 @@
       const capacityNote=this.fleet.trackingMode==="server"
         ?"可用路数由追踪服务器容量与已部署通道共同决定。"
         :this.fleet.trackingMode==="local"?"可按需添加通道，实际可同时运行的路数以本机 GPU 负载为准。"
+        :this.fleet.trackingMode==="cloud"?"可按需部署 N 路通道；各路分配到云 GPU，实际容量取决于租用算力和负载。"
         :"原部署追踪服务仅支持单路；选择本机 GPU 或独立 GPU 追踪服务器后可使用多路通道。";
       this.ui.capacity.textContent="已部署 "+this.fleet.capacity+" 路通道，当前可用 "+this.fleet.usableCapacity+" 路。"+capacityNote+
         (this.fleet.reason?" "+this.fleet.reason:"")+(disabledActive?" 停用通道仍有历史会话运行，可在下方停止。":"");
@@ -464,7 +487,7 @@
       if(!this.closed)this.timer=this.setTimeout(()=>this.tick(),2000);
     }
     async startPolling(){await this.refresh();if(!this.closed){this.timer=this.setTimeout(()=>this.tick(),2000);this.previews();}}
-    close(){this.closed=true;this.clearTimeout(this.timer);this.clearTimeout(this.previewTimer);for(const row of this.rows.values())this.releasePreview(row);}
+    close(){this.closed=true;this.clearTimeout(this.timer);this.clearTimeout(this.previewTimer);for(const row of this.rows.values()){this.closeDiagnostics(row);this.releasePreview(row);}}
   }
   const api={FleetConsole,normalizeFleet,pooled};
   if(typeof module!=="undefined"&&module.exports)module.exports=api;

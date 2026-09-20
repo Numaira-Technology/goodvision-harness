@@ -62,6 +62,7 @@ def validate_service_location(name: str, value: object) -> Any:
             if name == "inference_mode"
             else {
                 "legacy",
+                "cloud",
                 "local",
                 "server",
             }
@@ -191,6 +192,9 @@ class ServiceLocations:
                     except (TypeError, ValueError, OverflowError):
                         raise ValueError("LOCAL_TRACKING_FPS must be within 0.5..30") from None
             values[name] = value
+        # Existing cloud deployments saved "legacy" before there was a cloud mode.
+        if values["tracking_mode"] == "legacy" and os.environ.get("CLOUD_GPU_CONTROLLER_URL"):
+            values["tracking_mode"] = "cloud"
         return cls(**values)
 
     def updated(self, payload: Mapping[str, Any]) -> ServiceLocations:
@@ -216,6 +220,8 @@ class ServiceLocations:
         return {field.name: getattr(self, field.name) for field in fields(self)}
 
     def tracking_capacity(self, local_capacity: int, gpu: LocalGPUDeployment) -> int:
+        if self.tracking_mode == "cloud":
+            return max(1, local_capacity)
         if self.tracking_mode == "server":
             return self.tracking_server_capacity
         if self.tracking_mode == "local" and gpu.available:
@@ -267,6 +273,18 @@ class ServiceLocations:
                         vlm_request_parameters=config.inference.request_parameters,
                     ),
                 )
+        if self.tracking_mode == "cloud":
+            origin = _service_origin(os.environ.get("CLOUD_TRACKING_URL", "http://sam-remote:8092"), "CLOUD_TRACKING_URL")
+            config = replace(
+                config,
+                rich_labeling=replace(
+                    config.rich_labeling, enabled=True, tracking_enabled=True,
+                    backend="sam31_stream", processing_method="sam_live",
+                    max_fps=self.tracking_sample_fps,
+                    endpoint=f"{origin}/v1/cameras/camera-{camera_index:02d}/perception/sam_live/sessions",
+                ),
+                runtime=replace(config.runtime, scene_mode="active"),
+            )
         if self.tracking_mode == "server":
             path = (
                 f"/v1/cameras/camera-{camera_index:02d}/perception/sam_live/sessions"
