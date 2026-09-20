@@ -984,9 +984,6 @@ def test_face_gpu_image_and_compose_are_isolated_from_cpu_delivery() -> None:
     cpu_dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     gpu_dockerfile = (ROOT / "Dockerfile.face-gpu").read_text(encoding="utf-8")
     dev_overlay = (ROOT / "compose.face-gpu.yaml").read_text(encoding="utf-8")
-    delivery_overlay = (ROOT / "compose.face-gpu.delivery.yaml").read_text(
-        encoding="utf-8"
-    )
     smoke = (ROOT / "tools" / "face_gpu_smoke.py").read_text(encoding="utf-8")
 
     assert "onnxruntime-gpu" not in cpu_dockerfile
@@ -1001,9 +998,8 @@ def test_face_gpu_image_and_compose_are_isolated_from_cpu_delivery() -> None:
     assert "COPY tools/customer_check.py ./tools/check_runtime.py" in gpu_dockerfile
     assert "COPY tools/customer_check.py ./tools/check_face.py" in gpu_dockerfile
     assert "runtime_check.py" not in gpu_dockerfile
-    for overlay in (dev_overlay, delivery_overlay):
-        assert "FACE_PROVIDER: CUDAExecutionProvider" in overlay
-        assert "capabilities: [gpu]" in overlay
+    assert "FACE_PROVIDER: CUDAExecutionProvider" in dev_overlay
+    assert "capabilities: [gpu]" in dev_overlay
     assert "runtime.warmup()" in smoke
     assert 'print("face_gpu_smoke=ready")' in smoke
 

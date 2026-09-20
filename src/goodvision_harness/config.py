@@ -46,7 +46,7 @@ class VideoSettings:
 class DisplaySettings:
     """Live display settings; no side limit preserves the selected source view."""
 
-    fps: float = 15.0
+    fps: float = 30.0
     max_image_side: int | None = None
     jpeg_quality: int = 90
     delay_seconds: float = 2.5
@@ -277,7 +277,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         ),
     )
     display = DisplaySettings(
-        fps=_positive_float(display_section.get("fps", 15.0), "display.fps"),
+        fps=_positive_float(display_section.get("fps", 30.0), "display.fps"),
         max_image_side=_optional_positive_int(
             display_section.get("max_image_side"), "display.max_image_side"
         ),

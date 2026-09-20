@@ -68,6 +68,23 @@ def _await(predicate, timeout=3):
         time.sleep(0.005)
 
 
+def _await_scene_drain(runtime):
+    # Finalization includes durable writes and an encoder with a 10-second
+    # budget. These tests assert completion/order, not a three-second SLA.
+    deadline = time.monotonic() + 15
+    while True:
+        status = runtime.status()
+        drain = status["scene_drain"]
+        if drain == {"state": "completed"}:
+            return
+        if drain == {"state": "failed"} or time.monotonic() >= deadline:
+            pytest.fail(
+                f"scene drain did not complete: {drain}; "
+                f"postprocessing={status['postprocessing_runs']}"
+            )
+        time.sleep(0.01)
+
+
 class OfflineTracker:
     def infer(self, _jpeg, *, stream_session_id, frame_sequence, timestamp_seconds):
         return RichLabelSnapshot(
@@ -376,7 +393,7 @@ def test_active_exact_face_frame_keeps_source_bytes_and_rejects_stale_or_foreign
             "current scene overlays must not alter historical evidence"
         )
 
-    monkeypatch.setattr(runtime._delayed_overlay, "submit_analysis_frame", forbidden)
+    monkeypatch.setattr(runtime._delayed_overlay, "submit_frame", forbidden)
     monkeypatch.setattr(service, "_render_analysis_jpeg", forbidden)
     jpeg = _jpeg()
     result = AnalysisResult(
@@ -502,7 +519,7 @@ def test_temporal_events_keep_separate_videos_for_the_same_person(factory):
         canonical = runtime.scene_snapshot()["scene"]["entities"][0]["subject_id"]
         assert runtime.stop_session()
         _await(lambda: runtime.status()["pipeline_state"] == "idle")
-        _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+        _await_scene_drain(runtime)
         events = client.get("/v1/events").json()["events"]
         assert {event["event_label"] for event in events} == {"smoking", "fall"}
         assert len({event["event_id"] for event in events}) == 2
@@ -552,7 +569,7 @@ def test_full_archive_queue_retains_distinct_episodes_until_stop_drain(
         assert runtime.status()["postprocessing_runs"][-1]["state"] == "running"
         allow.set()
         _await(lambda: runtime.status()["pipeline_state"] == "idle")
-        _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+        _await_scene_drain(runtime)
         events = archive.list_events(stream_session_id=session.stream_session_id)[
             "events"
         ]
@@ -587,7 +604,7 @@ def test_stop_finishes_accepted_model_response_before_permitting_restart(factory
         runtime.start_camera(dry_run=True, features=["smoking"])
     inspector.release.set()
     _await(lambda: runtime.status()["pipeline_state"] == "idle")
-    _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+    _await_scene_drain(runtime)
     assert not inspector.closed.is_set()  # Keep transport for the next run.
     assert old_scene.snapshot()["stats"]["completed_inspections"] >= 1
     assert old_scene.snapshot()["scene"]["events"]
@@ -637,7 +654,7 @@ def test_temporal_transport_survives_runs_and_retires_on_credential_change(
         _await(lambda: runtime._scene.snapshot()["stats"]["completed_inspections"] >= 1)
         assert runtime.stop_session()
         _await(lambda: runtime.status()["pipeline_state"] == "idle")
-        _await(lambda: runtime.status()["scene_drain"] == {"state": "completed"})
+        _await_scene_drain(runtime)
 
     run_once()
     run_once()

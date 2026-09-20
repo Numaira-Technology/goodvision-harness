@@ -1,0 +1,2 @@
+timestamp, uuid, name, driver_version, memory.used [MiB], memory.free [MiB], utilization.gpu [%]
+2026/09/18 18:56:04.710, GPU-46b4ef0c-d6d5-9252-682e-5527891b51f1, NVIDIA L40S, 560.28.03, 20939 MiB, 24550 MiB, 0 %

@@ -13,6 +13,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from compose_support import isolated_docker_config
+
 from tools import start_modular as launcher
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -364,7 +366,7 @@ class ModularLauncherTests(unittest.TestCase):
                 )
                 environment = dict(os.environ)
                 environment.update(launcher.main_environment({}, args))
-                environment["DOCKER_CONFIG"] = temporary
+                environment["DOCKER_CONFIG"] = isolated_docker_config(Path(temporary))
                 environment["HARNESS_STREAM_URL"] = "rtsp://example/first"
                 result = subprocess.run(
                     [
@@ -440,7 +442,7 @@ class ModularLauncherTests(unittest.TestCase):
                 environment.update(
                     launcher.worker_environment(module, {}, args, DEVICES)
                 )
-                environment["DOCKER_CONFIG"] = temporary
+                environment["DOCKER_CONFIG"] = isolated_docker_config(Path(temporary))
                 result = subprocess.run(
                     [
                         "docker",

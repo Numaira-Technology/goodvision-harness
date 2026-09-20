@@ -58,6 +58,7 @@ class ArchiveIngress:
         self._inflight = deque()
         self._volatile = {}
         self._failed = set()
+        self._prune_positions = {}
         self.max_bytes = max_bytes
         self._bytes = self._db.execute(
             "SELECT COALESCE(SUM(LENGTH(jpeg)),0) FROM sources"
@@ -259,13 +260,111 @@ class ArchiveIngress:
                 "SELECT DISTINCT run FROM ingress WHERE state!='done' AND run!=''"
             )}
 
-    def prune_completed_runs(self, *, before: float, protected: set[str]) -> int:
-        """Release expired source material only after every fact in its run is done."""
+    @property
+    def storage_pressure(self) -> bool:
+        with self._condition:
+            return self._bytes >= self.max_bytes * 3 // 4
+
+    def prune_processed(
+        self, run: str, *, before: float,
+        protected_ranges: list[tuple[float, float]],
+        protected_windows: set[str],
+    ) -> int:
+        """Reclaim an acknowledged prefix without deleting replay or clip inputs.
+
+        The owner supplies source-time/revision boundaries after persisting its
+        event state. Pending non-frame facts and failures protect the whole run;
+        pending frame facts protect their exact sources. Keep a source-time
+        checkpoint plus start/end/window context for processed_runs() recovery.
+        Cursors bound each pass even when old protected clips cannot be deleted.
+        """
+        source_cursor, fact_cursor = self._prune_positions.get(run, (-1, 0))
+        with self._read_lock:
+            checkpoint = self._reader.execute(
+                "SELECT id FROM ingress WHERE run=? AND state='done' "
+                "AND kind IN ('frame','window') "
+                "ORDER BY CASE kind WHEN 'frame' THEN json_extract(payload,'$[2]') "
+                "ELSE json_extract(payload,'$.timestamp') END DESC,id DESC LIMIT 1",
+                (run,),
+            ).fetchone()
+            sources = self._reader.execute(
+                "SELECT sequence,timestamp,LENGTH(jpeg) FROM sources "
+                "WHERE run=? AND timestamp<? AND sequence>? "
+                "ORDER BY sequence LIMIT 64", (run, before, source_cursor),
+            ).fetchall()
+            facts = self._reader.execute(
+                "SELECT id,kind,payload FROM ingress WHERE run=? AND state='done' "
+                "AND id>? ORDER BY id LIMIT 128", (run, fact_cursor),
+            ).fetchall()
+            ranges = []
+            for start, end in protected_ranges:
+                # source_window also needs the first frame at/after the clip end.
+                successor = self._reader.execute(
+                    "SELECT MIN(timestamp) FROM sources WHERE run=? AND timestamp>=?",
+                    (run, end - 1e-6),
+                ).fetchone()[0]
+                ranges.append((start - 1e-6, max(end, successor or end)))
+        with self._condition:
+            if self._db.execute(
+                "SELECT 1 FROM ingress WHERE run=? AND "
+                "(state='failed' OR (state='pending' AND kind!='frame')) LIMIT 1",
+                (run,),
+            ).fetchone():
+                return 0
+            expired_sources = []
+            size = 0
+            for sequence, stamp, length in sources:
+                if size and size + length > 4 * 1024 * 1024:
+                    break
+                source_cursor = sequence
+                if any(start <= stamp <= end for start, end in ranges):
+                    continue
+                if self._db.execute(
+                    "SELECT 1 FROM ingress WHERE run=? AND kind='frame' "
+                    "AND state!='done' AND json_extract(payload,'$[1]')=? LIMIT 1",
+                    (run, sequence),
+                ).fetchone():
+                    continue
+                expired_sources.append((run, sequence))
+                size += length
+            expired_facts = []
+            for record_id, kind, encoded in facts:
+                if kind in {'start', 'end'} or checkpoint == (record_id,):
+                    continue
+                if kind == 'window':
+                    payload = json.loads(encoded)
+                    if (payload['window_id'] in protected_windows
+                            or payload['timestamp'] >= before):
+                        continue
+                expired_facts.append((record_id,))
+                size += len(encoded.encode('utf-8'))
+            with self._db:
+                self._db.executemany(
+                    "DELETE FROM sources WHERE run=? AND sequence=?", expired_sources,
+                )
+                self._db.executemany("DELETE FROM ingress WHERE id=?", expired_facts)
+            self._prune_positions[run] = (
+                source_cursor if sources else -1, facts[-1][0] if facts else 0,
+            )
+            self._bytes -= size
+            if size:
+                self._db.execute("PRAGMA incremental_vacuum(32)")
+                self._condition.notify_all()
+            return size
+
+    def prune_completed_runs(
+        self, *, before: float, protected: set[str], include_interrupted: bool = False,
+    ) -> int:
+        """Release sources only after every fact in their run is done.
+
+        An interrupted run need not have an end fact. Its owner may include it
+        only when all current sessions and outstanding evidence are protected.
+        """
         with self._read_lock:
             candidates = self._reader.execute(
                 "SELECT run FROM ingress WHERE run!='' GROUP BY run "
                 "HAVING MAX(created)<? AND SUM(state!='done')=0 "
-                "AND SUM(kind='end')>0", (before,),
+                "AND (SUM(kind='end')>0 OR ?)", (before, include_interrupted),
             ).fetchall()
         for (run,) in candidates:
             if run in protected:

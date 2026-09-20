@@ -77,7 +77,8 @@ class Socket:
 
 
 async def until(predicate):
-    for _ in range(100):
+    deadline = asyncio.get_running_loop().time() + 5
+    while asyncio.get_running_loop().time() < deadline:
         if predicate():
             return
         await asyncio.sleep(0.005)

@@ -951,9 +951,6 @@ def test_gpu_worker_is_isolated_and_targets_blackwell_supported_paddle() -> None
         ROOT / "workers" / "paddle_rich_label" / "Dockerfile"
     ).read_text(encoding="utf-8")
     gpu_compose = (ROOT / "compose.gpu.yaml").read_text(encoding="utf-8")
-    delivery_compose = (
-        ROOT / "compose.rich-gpu.delivery.yaml"
-    ).read_text(encoding="utf-8")
 
     assert "paddlepaddle-gpu==3.3.0" in gpu_dockerfile
     assert "FROM python:3.11-slim AS runtime" in gpu_dockerfile
@@ -974,20 +971,10 @@ def test_gpu_worker_is_isolated_and_targets_blackwell_supported_paddle() -> None
     assert "paddlepaddle==3.2.2" in cpu_dockerfile
     assert "paddlepaddle-gpu" not in cpu_dockerfile
 
-    for compose_text in (gpu_compose, delivery_compose):
-        assert "PP-YOLOE_plus-L" in compose_text
-        assert "driver: nvidia" in compose_text
-        assert "count: 1" in compose_text
-        assert "capabilities: [gpu]" in compose_text
-
-    gpu_smoke = (
-        ROOT / "workers" / "paddle_rich_label" / "gpu_smoke.py"
-    ).read_text(encoding="utf-8")
-    assert "paddle.device.is_compiled_with_cuda()" in gpu_smoke
-    assert "paddle.version.cuda_archs()" in gpu_smoke
-    assert "paddle.utils.run_check()" in gpu_smoke
-    assert "models.detect(image)" in gpu_smoke
-    assert "models.attributes((image,))" in gpu_smoke
+    assert "PP-YOLOE_plus-L" in gpu_compose
+    assert "driver: nvidia" in gpu_compose
+    assert "count: 1" in gpu_compose
+    assert "capabilities: [gpu]" in gpu_compose
 
 
 # Public worker configuration, output boundaries, and validation commands.

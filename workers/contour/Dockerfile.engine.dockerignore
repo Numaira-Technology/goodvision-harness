@@ -13,4 +13,5 @@
 !contour/
 !contour/Dockerfile.engine
 !contour/repair_decord_metadata.py
+!contour/benchmark_gpu.py
 !contour/THIRD_PARTY_NOTICES.md

@@ -24,6 +24,8 @@ services:
       SAM31_LIVE_CAMERAS: "${CONTOUR_CAPACITY:-1}"
       SAM31_SESSION_H264_ENABLED: "true"
       SAM31_CHECKPOINT_PATH: /models/contour.pt
+      SAM31_FIXED_PERSON_TEXT: "${CONTOUR_FIXED_PERSON_TEXT:-true}"
+      SAM31_GPU_DIAGNOSTICS: "${CONTOUR_GPU_DIAGNOSTICS:-false}"
       HF_HUB_OFFLINE: "1"
       HF_HOME: /tmp/huggingface
       TORCH_HOME: /tmp/torch

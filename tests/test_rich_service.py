@@ -19,6 +19,7 @@ from goodvision_harness.contracts import (
     GroundedObject,
     NormalizedBBox,
 )
+from goodvision_harness.delayed_overlay import OverlaySelection
 from goodvision_harness.deployment_settings import DeploymentSettingsStore
 from goodvision_harness.grounding import DETECTION_EVENT_LABELS, DryRunGroundingClient
 from goodvision_harness.rich_labeling import (
@@ -91,6 +92,7 @@ class _RichCoordinator:
         timestamp_seconds: float,
         *,
         frame_sequence: int | None = None,
+        interpolate: bool = True,
     ) -> RichLabelSelection:
         assert stream_session_id == "stream-rich"
         assert timestamp_seconds == 1.0
@@ -240,6 +242,41 @@ def test_runtime_queues_display_frames_and_renders_rich_labels() -> None:
     assert coordinator.closed
 
 
+def test_only_display_callbacks_disable_rich_interpolation() -> None:
+    modes = []
+
+    class Coordinator(_RichCoordinator):
+        def select(self, *args: Any, **kwargs: Any) -> RichLabelSelection:
+            modes.append(kwargs.get("interpolate", True))
+            return super().select(*args, **kwargs)
+
+    runtime = _runtime(Coordinator())
+    source, selection = _jpeg(), OverlaySelection(None, "none")
+    try:
+        assert runtime._delayed_overlay._compose is not None
+        runtime._delayed_overlay._compose(source, selection, 1.0, 4)
+        runtime._render_rich_label_jpeg(source, 1.0, 4)
+        runtime._render_fused_label_jpeg(source, selection, 1.0, 4)
+        assert modes == [False, False, True]
+    finally:
+        runtime.stop()
+
+
+def test_disabled_rich_display_has_no_composition_callback() -> None:
+    config = load_config(ROOT / "config.yaml")
+    runtime = HarnessRuntime(replace(
+        config,
+        rich_labeling=replace(
+            config.rich_labeling, enabled=False, tracking_enabled=False,
+        ),
+    ))
+    try:
+        assert runtime._delayed_overlay._compose is None
+        assert runtime._delayed_overlay._enrich is None
+    finally:
+        runtime.stop()
+
+
 def test_exact_analysis_frame_fuses_alert_with_one_jpeg_codec_pass(
     monkeypatch: Any,
 ) -> None:
@@ -269,6 +306,7 @@ def test_exact_analysis_frame_fuses_alert_with_one_jpeg_codec_pass(
 
     def capture_event(image: Any, **kwargs: Any) -> Any:
         captured["event_objects"] = tuple(kwargs["objects"])
+        captured["face_objects"] = tuple(kwargs["face_objects"])
         return image.copy()
 
     monkeypatch.setattr(service_module.cv2, "imdecode", count_decode)
@@ -325,6 +363,7 @@ def test_face_reference_box_stays_independent_from_rich_body_track(
 
     def capture_event(image: Any, **kwargs: Any) -> Any:
         captured["event_objects"] = tuple(kwargs["objects"])
+        captured["face_objects"] = tuple(kwargs["face_objects"])
         return image.copy()
 
     monkeypatch.setattr(runtime._overlay_fusion, "plan", fail_fusion)
@@ -336,14 +375,15 @@ def test_face_reference_box_stays_independent_from_rich_body_track(
 
         assert [item.track_id for item in captured["rich_objects"]] == ["P0001"]
         assert captured["rich_kwargs"] == {}
-        assert [item.object_id for item in captured["event_objects"]] == [
+        assert captured["event_objects"] == ()
+        assert [item.object_id for item in captured["face_objects"]] == [
             "event-person"
         ]
     finally:
         runtime.stop()
 
 
-def test_selected_stranger_uses_person_track_and_smoking_item_uses_rich_fallback(
+def test_selected_stranger_has_independent_face_box_and_smoking_uses_rich_fallback(
     monkeypatch: Any,
 ) -> None:
     coordinator = _RichCoordinator()
@@ -375,6 +415,7 @@ def test_selected_stranger_uses_person_track_and_smoking_item_uses_rich_fallback
 
     def capture_summary(image: Any, **kwargs: Any) -> Any:
         captured["summary_objects"] = tuple(kwargs["objects"])
+        captured["face_objects"] = tuple(kwargs["face_objects"])
         return image.copy()
 
     monkeypatch.setattr(service_module, "draw_rich_overlay", capture_rich)
@@ -388,10 +429,8 @@ def test_selected_stranger_uses_person_track_and_smoking_item_uses_rich_fallback
         runtime._on_analysis_frame(_smoking_stranger_analysis(), _jpeg())
 
         assert [item.track_id for item in captured["rich_objects"]] == ["P0001"]
-        assert [
-            alert.event_label
-            for alert in captured["track_alerts"]["P0001"]
-        ] == ["stranger"]
+        assert captured["track_alerts"] == {}
+        assert [item.label for item in captured["face_objects"]] == ["unknown_person"]
         assert [
             item.object_id for item in captured["fallback_objects"]
         ] == ["cigarette"]

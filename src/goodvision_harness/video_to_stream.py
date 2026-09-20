@@ -121,7 +121,7 @@ class VideoFileStream:
         self,
         path: str | Path,
         *,
-        display_fps: float = 15.0,
+        display_fps: float = 30.0,
         playback_speed: float = 1.0,
         start_seconds: float = 0.0,
         realtime: bool = True,

@@ -1,23 +1,13 @@
 const assert=require("node:assert/strict");
-const fs=require("node:fs");
-const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
+const {createDocument, runDashboard} = require("./helpers/dashboard.cjs");
 
 function dashboard(){
-  const elements=new Map(),requests=[];
-  function node(tag="div"){
-    return {tag,children:[],dataset:{},style:{},value:"",textContent:"",className:"",checked:false,
-      classList:{toggle(){}},setAttribute(key,value){this[key]=value},
-      appendChild(child){this.children.push(child)},replaceChildren(){this.children=[]},
-      querySelectorAll(tag){return this.children.flatMap(child=>[
-        ...(child.tag===tag?[child]:[]),...child.querySelectorAll(tag),
-      ])},
-    }
-  }
-  function element(id){if(!elements.has(id))elements.set(id,node());return elements.get(id)}
+  const {document, element} = createDocument();
+  const requests=[];
   const context=vm.createContext({
-    document:{getElementById:element,querySelectorAll:()=>[],createElement:node},
+    document,
     window:{isSecureContext:true},location:{hostname:"localhost"},
     fetch:async(url,options)=>{
       requests.push({url,options});
@@ -27,14 +17,12 @@ function dashboard(){
         selected_label:"线路 "+id,selection_method:"manual",selection_persisted:true})}
     },
   });
-  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
-  const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+  runDashboard(context, `
     state.routes={supported:true,can_select:true,can_probe:true,state:"idle",
       selected_id:"A",selected_label:"线路 A",trials_per_route:3,
       results:["A","B"].map(id=>({id,label:"线路 "+id,state:"pending",samples:[],median_seconds:null}))};
     globalThis.app={state,renderRoutes,selectRoute,controls};renderRoutes();
-  `,context);
+  `);
   return {element,requests,context,...context.app}
 }
 

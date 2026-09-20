@@ -82,17 +82,7 @@ and performance test.
 
 ## 连续事件与证据存储
 
-即时识别保持原采样与发布节奏，后台事件归并和视频编码不阻塞当前结果。
-事件列表与视频接口见 [事件证据说明](EVENT_EVIDENCE.md)。默认每个连续事件
-保留首次阳性前1秒后2秒的5 FPS MP4，保留7天且总量不超过10 GiB。
-
-容器使用现有 `/data/event-evidence` 持久目录；Windows 默认在已知人脸库旁的
-`event-evidence` 子目录，可用 `EVENT_EVIDENCE_DIRECTORY` 覆盖。需要可执行的
-FFmpeg H.264 编码器；交付自检应实际生成、下载并解码视频。
-
-GPU detector-only `/health/tracking` 就绪即可开启 `/v1/tracks`，与属性及界面
-标注开关独立。无GPU时保持现有模型人物框/本地人脸位置追踪，不增加必需服务。
-
-旧陌生人照片接口返回410。旧 `face-gallery-strangers.json` 和 `stranger-captures/`
-不再加载或写入；确认备份后可由运维清理。保留 `face-gallery.json`、模型和部署
-设置，不能通过删除持久卷来升级。归档状态和录制失败计数见 `/v1/status`。
+Windows 默认把视频证据保存在已知人脸库旁的 `event-evidence` 子目录，
+可用 `EVENT_EVIDENCE_DIRECTORY` 覆盖。需要可执行的 FFmpeg H.264 编码器，
+应实际生成、下载并解码视频。事件接口、保留期限、迁移和故障状态统一见
+[事件证据说明](docs/architecture/event-evidence.md)。
