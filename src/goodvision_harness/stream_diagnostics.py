@@ -62,6 +62,21 @@ class StreamDiagnostics:
         with self._lock:
             self._timing(name, value)
 
+    def configure_decoder(self, backend, metadata, errors, discontinuities):
+        with self._lock:
+            self._state.update(
+                decoder_backend=backend,
+                source_video_format={key: metadata.get(key) for key in (
+                    "codec_name", "pix_fmt", "color_space", "color_transfer",
+                    "color_primaries", "color_range", "avg_frame_rate",
+                )},
+                normalized_to_sdr=metadata.get("color_transfer") in {
+                    "smpte2084", "arib-std-b67",
+                },
+                decoder_error_chunks=errors,
+                source_clock_discontinuities=discontinuities,
+            )
+
     def configure_sdp(self, sdp: str):
         video = False
         codecs = []
@@ -76,10 +91,15 @@ class StreamDiagnostics:
             rates = {c['clock_rate'] for c in codecs if c['clock_rate'] > 0}
             self._clock_rate = next(iter(rates)) if len(rates) == 1 else None
 
-    def received(self, frame: Any, now: float, wait: float, source_sequence: int | None):
+    def received(
+        self, frame: Any, now: float, wait: float, source_sequence: int | None,
+        *, source_pts_seconds: float | None = None,
+    ):
         pts = getattr(frame, 'pts', None)
         base = getattr(frame, 'time_base', None)
         pts_seconds = _number(pts * base) if pts is not None and base is not None else None
+        if source_pts_seconds is not None:
+            pts_seconds = _number(source_pts_seconds)
         corrupt = getattr(frame, 'is_corrupt', None)
         key_frame = getattr(frame, 'key_frame', None)
         shape = getattr(frame, 'shape', ())

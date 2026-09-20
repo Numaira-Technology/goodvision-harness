@@ -332,6 +332,14 @@ class TemporalVLMInspector:
                 timing["total_seconds"] = time.monotonic() - started
                 log_timing("vlm_inspection_timing", **timing)
 
+    def build_messages(self, job):
+        response_format = self._parameters.get("response_format")
+        return build_temporal_messages(
+            job, max_image_side=self._max_image_side, jpeg_quality=self._jpeg_quality,
+            verdicts_wrapper=(isinstance(response_format, Mapping)
+                              and response_format.get("type") == "json_object"),
+        )
+
     def _inspect_locked(
         self, job: TemporalInspection, *, timing: dict
     ) -> tuple[TemporalVerdict, ...]:
@@ -339,16 +347,7 @@ class TemporalVLMInspector:
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
-        response_format = self._parameters.get("response_format")
-        messages = build_temporal_messages(
-            job,
-            max_image_side=self._max_image_side,
-            jpeg_quality=self._jpeg_quality,
-            verdicts_wrapper=(
-                isinstance(response_format, Mapping)
-                and response_format.get("type") == "json_object"
-            ),
-        )
+        messages = self.build_messages(job)
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
             key = environment_api_key(self.settings)

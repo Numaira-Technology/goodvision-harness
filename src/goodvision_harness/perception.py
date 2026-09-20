@@ -288,6 +288,14 @@ def create_tracking_coordinator(client, rich, on_batch):
         if rich.backend == "sam31_stream"
         else VideoTrackingCoordinator
     )
+    if coordinator is PipelinedVideoSessionTrackingCoordinator:
+        options.update(
+            queue_policy=rich.video_queue_policy,
+            realtime_append_frames=rich.video_realtime_append_frames,
+            realtime_pending_frames=rich.video_realtime_pending_frames,
+            realtime_max_age_seconds=rich.video_realtime_max_age_seconds,
+            result_deadline_seconds=rich.video_result_deadline_seconds,
+        )
     return coordinator(client, **options)
 
 
@@ -322,4 +330,13 @@ def processing_status(coordinator, method):
         "queue_frames": stats.get("pending_frames", 0),
         "processed_frames": stats.get("processed_frames", 0),
         "dropped_frames": stats.get("dropped_backpressure", 0),
+        "queue_policy": stats.get("queue_policy"),
+        "effective_max_append_frames": stats.get("effective_max_append_frames"),
+        "skipped_by_reason": stats.get("skipped_by_reason", {}),
+        "latest_result_age_seconds": stats.get("latest_result_age_seconds"),
+        "oldest_pending_seconds": stats.get("oldest_pending_seconds"),
+        "result_deadline_seconds": stats.get("result_deadline_seconds"),
+        "results_within_deadline": stats.get("results_within_deadline", 0),
+        "results_after_deadline": stats.get("results_after_deadline", 0),
+        "admitted_deadline_coverage": stats.get("admitted_deadline_coverage"),
     }

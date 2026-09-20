@@ -144,6 +144,7 @@ class SceneRuntime:
         max_pending_inspections: int = 4,
         inspection_image_budget_bytes: int = 16 * 1024 * 1024,
         stranger_enabled: bool = False,
+        independent_temporal_inference: bool = False,
     ) -> None:
         if mode != "active":
             raise ValueError("scene mode must be active")
@@ -197,6 +198,7 @@ class SceneRuntime:
             normalize_event_sensitivities(event_sensitivities, event_labels).items()
         )
         self.automatic_temporal_inference = False
+        self.independent_temporal_inference = independent_temporal_inference
         self.scene = SceneState(
             stream_session_id,
             source_id,
@@ -228,6 +230,7 @@ class SceneRuntime:
         self._now = 0.0
         self._tracking_completed_timestamp: float | None = None
         self._tracking_completed_sequence: int | None = None
+        self._tracking_sources_finished = False
         self._tracking_frames: OrderedDict[int, float] = OrderedDict()
         self._tracking_rejections: dict[str, int] = {}
         self._tracking_last_rejection: str | None = None
@@ -637,7 +640,8 @@ class SceneRuntime:
                         return self._reject_tracking_batch(
                             "inconsistent_source_history"
                         )
-            if self.temporal_observation_fps is not None and self.event_labels:
+            if (not self.independent_temporal_inference
+                    and self.temporal_observation_fps is not None and self.event_labels):
                 incoming = self._temporal_source_records(snapshots)
                 if not self._temporal_sources_fit(incoming):
                     # Nothing from this batch has been committed. The owner must
@@ -919,7 +923,7 @@ class SceneRuntime:
     def _enqueue_tracking_intervals(
         self, snapshots: Sequence[RichLabelSnapshot]
     ) -> None:
-        if not self.event_labels:
+        if self.independent_temporal_inference or not self.event_labels:
             return
         if self.temporal_observation_fps is not None:
             for source in self._temporal_source_records(snapshots):
@@ -1484,6 +1488,8 @@ class SceneRuntime:
                 )
 
     def _plan(self) -> None:
+        if self.independent_temporal_inference:
+            return
         if self.tracking_mode == "batch":
             self._drain_tracking_intervals()
             return
@@ -1804,6 +1810,11 @@ class SceneRuntime:
         with self._lock:
             return self._latest_inspection
 
+    def finish_tracking_sources(self):
+        """No new tracking result can arrive after the coordinator has drained."""
+        with self._lock:
+            self._tracking_sources_finished = True
+
     def unavailable_display_sources(
         self, sources: Sequence[tuple[int, float]]
     ) -> tuple[int, ...]:
@@ -1839,8 +1850,9 @@ class SceneRuntime:
                 )
                 is None
                 or (
-                    self._tracking_completed_sequence is not None
-                    and sequence <= self._tracking_completed_sequence
+                    (self._tracking_sources_finished or (
+                        self._tracking_completed_sequence is not None
+                        and sequence <= self._tracking_completed_sequence))
                     and self._tracking_frames.get(sequence) != timestamp
                 )
             )
@@ -2012,6 +2024,7 @@ class SceneRuntime:
                     self._tracking_completed_timestamp
                 ),
                 "tracking_completed_frame_sequence": self._tracking_completed_sequence,
+                "tracking_sources_finished": self._tracking_sources_finished,
                 "tracking_lag_seconds": (
                     None
                     if self._tracking_completed_timestamp is None
@@ -2042,6 +2055,7 @@ class SceneRuntime:
                     else "source_time"
                 ),
                 "inspection_timeout_seconds": _INSPECTION_TIMEOUT_SECONDS,
+                "independent_temporal_inference": self.independent_temporal_inference,
                 "temporal_observation_fps": self.temporal_observation_fps,
                 "max_pending_inspections": self.max_pending_inspections,
                 "retained_temporal_sources": len(self._temporal_sources),

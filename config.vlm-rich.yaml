@@ -23,7 +23,7 @@ video:
 display:
   # Original source frames fill the gaps between sparse inference frames.
   # Each frame inherits the preceding annotation without increasing inference FPS.
-  fps: 30.0
+  fps: 15.0
   max_image_side: 720
   jpeg_quality: 70
   # Bound the experimental rich request at 8s; reserve 2s for queue/display work.
