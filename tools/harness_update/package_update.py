@@ -47,6 +47,7 @@ def package(output, release=RELEASE):
         "COPY --chown=10001:10001 . "
         "/usr/local/lib/python3.11/site-packages/goodvision_harness/\n"
         "COPY --chown=10001:10001 . /app/src/goodvision_harness/\n"
+        "ENV LOCAL_CAMERA_TARGET_FPS=15 SCENE_ENGINE_MODE=active SCENE_INDEPENDENT_VLM=true\n"
         f'LABEL goodvision.ui.release="{release}"\n'
     ).encode()
     for name, option in (
