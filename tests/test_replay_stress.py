@@ -156,6 +156,35 @@ def test_manifest_requires_explicit_reviewed_labels(clip, tmp_path):
         replay.load_manifest(manifest)
 
 
+def test_incomplete_drain_fails_instead_of_publishing_partial_metrics(clip):
+    with pytest.raises(TimeoutError, match="did not drain"):
+        replay.replay_clip(
+            clip,
+            config(),
+            synthetic_tracks=True,
+            realtime=False,
+            sample_fps=4,
+            drain_seconds=0.01,
+            profile=replay.SimulationProfile(latency_ms=200),
+        )
+
+
+def test_changed_source_is_rejected_before_report(clip, monkeypatch):
+    original = replay._sha256
+    source_reads = 0
+
+    def changed(path):
+        nonlocal source_reads
+        if path == clip.path:
+            source_reads += 1
+            return "before" if source_reads == 1 else "after"
+        return original(path)
+
+    monkeypatch.setattr(replay, "_sha256", changed)
+    with pytest.raises(RuntimeError, match="input changed"):
+        run(clip)
+
+
 def test_real_budget_preflight_fails_before_replay_or_output(
     clip, tmp_path, monkeypatch
 ):
@@ -244,6 +273,36 @@ def test_cli_reports_multiple_clips_and_speeds_with_one_budget(clip, tmp_path):
     with pytest.raises(FileExistsError):
         replay.main(args)
     assert output.read_bytes() == before
+
+
+def test_cli_failure_leaves_no_empty_or_partial_report(clip, tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "clips": [{"path": str(clip.path), "events": []}],
+            }
+        )
+    )
+    output = tmp_path / "report.json"
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected replay failure")
+
+    monkeypatch.setattr(replay, "replay_clip", fail)
+    with pytest.raises(RuntimeError, match="injected replay failure"):
+        replay.main(
+            [
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(output),
+                "--synthetic-tracks",
+                "--no-realtime",
+            ]
+        )
+    assert not output.exists()
+    assert list(tmp_path.glob(".report.json.*.tmp")) == []
 
 
 def test_missing_recorded_tracks_are_not_synthetic_negatives(clip, tmp_path):

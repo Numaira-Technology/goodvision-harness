@@ -7,16 +7,12 @@ never enter diagnostics. Missing/unknown verdicts never count as negative.
 
 from __future__ import annotations
 
-import base64
 import copy
-import io
 import itertools
 import math
 import time
 from collections import Counter, OrderedDict, deque
 from threading import RLock
-
-from PIL import Image
 
 
 def note(job, method, *args, **kwargs):
@@ -158,18 +154,15 @@ class SceneDiagnostics:
             )
             self._counts["claimed"] += 1
 
-    def prepared(self, job, messages):
-        """Read the JPEG bytes from the final multimodal payload, without resizing."""
+    def prepared(self, job, encoded_images):
+        """Retain JPEG bytes produced for the final multimodal payload."""
         frames, images = [], {}
-        parts = [p for p in messages[1]["content"] if p["type"] == "image_url"]
-        if len(parts) != len(job.frames):
+        if len(encoded_images) != len(job.frames):
             raise ValueError("diagnostic payload does not match temporal sources")
-        for source, part in zip(job.frames, parts, strict=True):
-            jpeg = base64.b64decode(
-                part["image_url"]["url"].split(",", 1)[1], validate=True
-            )
-            with Image.open(io.BytesIO(jpeg)) as image:
-                width, height = image.size
+        for expected, prepared in zip(job.frames, encoded_images, strict=True):
+            source, jpeg, width, height = prepared
+            if source is not expected or not isinstance(jpeg, bytes):
+                raise ValueError("diagnostic payload source does not match inspection")
             frames.append(
                 {
                     "frame_sequence": source.frame_sequence,

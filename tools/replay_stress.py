@@ -14,8 +14,10 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import random
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, replace
@@ -297,6 +299,22 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+def _write_new_json(path, payload):
+    """Publish a complete report atomically without replacing an existing one."""
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(payload, output, indent=2, allow_nan=False)
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def replay_clip(
     clip,
     config,
@@ -324,6 +342,8 @@ def replay_clip(
     sample_fps = config.rich_labeling.max_fps if sample_fps is None else sample_fps
     if not math.isfinite(sample_fps) or not 0 < sample_fps <= 30:
         raise ValueError("sample fps must be in (0,30]")
+    source_sha256 = _sha256(clip.path)
+    tracks_sha256 = _sha256(clip.tracks) if clip.tracks else None
     tracks = read_tracks(clip.tracks)
     if not synthetic_tracks and not tracks:
         raise ValueError("recorded tracks are empty")
@@ -492,8 +512,16 @@ def replay_clip(
                 completed = True
                 break
             time.sleep(0.01)
+        if not completed:
+            raise TimeoutError("replay did not drain before the reporting deadline")
         # The callback follows completion, so give its lock a final consistent view.
         worker.close(timeout_seconds=drain_seconds)
+        if worker.stats()["state"] != "stopped":
+            raise TimeoutError("replay worker did not stop before report generation")
+        if _sha256(clip.path) != source_sha256 or (
+            clip.tracks is not None and _sha256(clip.tracks) != tracks_sha256
+        ):
+            raise RuntimeError("replay input changed while it was being evaluated")
         report = {
             "clip_id": clip.clip_id,
             "speed": speed,
@@ -513,8 +541,8 @@ def replay_clip(
             "missing_track_frames": missing_tracks,
             "max_arrival_lag_seconds": max_arrival_lag,
             "event_sensitivities": dict(scene.event_sensitivities),
-            "source_sha256": _sha256(clip.path),
-            "tracks_sha256": _sha256(clip.tracks) if clip.tracks else None,
+            "source_sha256": source_sha256,
+            "tracks_sha256": tracks_sha256,
             "configuration": {
                 "sample_fps": sample_fps,
                 "observation_fps": config.runtime.scene_observation_fps,
@@ -663,35 +691,37 @@ def main(argv=None):
             )
     except ValueError as error:
         parser.error(str(error))
-    # Reserve the output before any external request; never overwrite an old run.
+    # Reject the ordinary case before external requests; publication also performs
+    # an atomic no-overwrite check to close the concurrent-creator race.
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("x", encoding="utf-8") as output:
-        report = {
-            "schema_version": 1,
-            "estimated_requests": estimate,
-            "manifest_sha256": _sha256(args.manifest),
-            "config_sha256": _sha256(args.config),
-            "replay_tool_sha256": _sha256(Path(__file__)),
-            "runs": [],
-        }
-        for clip in clips:
-            for speed in speeds:
-                report["runs"].append(
-                    replay_clip(
-                        clip,
-                        config,
-                        speed=speed,
-                        real=args.real,
-                        synthetic_tracks=args.synthetic_tracks,
-                        profile=profile,
-                        budget=budget,
-                        sensitivities=sensitivities,
-                        realtime=not args.no_realtime,
-                        sample_fps=args.sample_fps,
-                    )
+    if args.output.exists():
+        raise FileExistsError(args.output)
+    report = {
+        "schema_version": 1,
+        "estimated_requests": estimate,
+        "manifest_sha256": _sha256(args.manifest),
+        "config_sha256": _sha256(args.config),
+        "replay_tool_sha256": _sha256(Path(__file__)),
+        "runs": [],
+    }
+    for clip in clips:
+        for speed in speeds:
+            report["runs"].append(
+                replay_clip(
+                    clip,
+                    config,
+                    speed=speed,
+                    real=args.real,
+                    synthetic_tracks=args.synthetic_tracks,
+                    profile=profile,
+                    budget=budget,
+                    sensitivities=sensitivities,
+                    realtime=not args.no_realtime,
+                    sample_fps=args.sample_fps,
                 )
-        report["request_budget"] = {"limit": budget.limit, "used": budget.used}
-        json.dump(report, output, indent=2, allow_nan=False)
+            )
+    report["request_budget"] = {"limit": budget.limit, "used": budget.used}
+    _write_new_json(args.output, report)
     return 0
 
 

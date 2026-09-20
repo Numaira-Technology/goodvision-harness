@@ -25,13 +25,13 @@ parallel live-output/event-log implementation were not migrated.
 ## Checks and scope
 
 Full regression on the identical source/test tree in an isolated worktree:
-**4163 passed, 10 skipped, 2 warnings** in 88.35 seconds, using
+**4166 passed, 10 skipped, 2 warnings** in 91.09 seconds, using
 `PYTHONPATH=src python -m pytest --disable-warnings --tb=short -rs`.
 Skips cover unavailable PyAV, a Linux-root-only check and PowerShell launchers;
 those platform/runtime paths are not validated here.
 
 Environment: local macOS, Python 3.13, Node.js 22, FFmpeg 7.1. The focused set
-below passed all **59 tests** in the original working directory:
+below passed all **62 tests** in the original working directory:
 
 ```bash
 PYTHONPATH=src python -m pytest \
@@ -45,6 +45,8 @@ labels, retained positives, image eviction, old/new run isolation, late expired
 responses, accepted evidence and event confirmation, camera-scoped APIs,
 out-of-order completions, source-time compression, missing tracking records,
 shared request caps, preflight rejection and refusal to overwrite reports.
+Follow-up review coverage also checks that incomplete drains fail, changed input
+files are rejected and failed runs leave no empty or partial report.
 The out-of-order test explicitly gates the first response; it does not assume
 identical source endpoints between independently scheduled unpaced runs.
 

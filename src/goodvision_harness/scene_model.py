@@ -346,6 +346,7 @@ class TemporalVLMInspector:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
         response_format = self._parameters.get("response_format")
+        encoded_images = []
         messages = build_temporal_messages(
             job,
             max_image_side=self._max_image_side,
@@ -354,8 +355,9 @@ class TemporalVLMInspector:
                 isinstance(response_format, Mapping)
                 and response_format.get("type") == "json_object"
             ),
+            encoded_images=encoded_images,
         )
-        note(job, "prepared", messages)
+        note(job, "prepared", encoded_images)
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
             key = environment_api_key(self.settings)

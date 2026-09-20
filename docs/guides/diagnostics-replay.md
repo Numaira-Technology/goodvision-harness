@@ -22,7 +22,9 @@ and actual encoded dimensions. These are distinct from `/v1/scene/evidence`,
 which exposes the retained original source images. Images live only in memory:
 at most eight requests and 16 MiB per run; evicted JPEGs return 404. Metadata is
 bounded to 256 requests. No provider response text, prompts, credentials or
-camera addresses are recorded. Persistent model clients use the diagnostic
+camera addresses are recorded. The diagnostic collector retains the JPEG bytes
+at their original encoding boundary; it does not decode the Base64 payload or
+open the images a second time. Persistent model clients use the diagnostic
 collector attached to each immutable job, so old responses stay with their run.
 
 Interpret the stages separately:
@@ -113,6 +115,10 @@ a preflight estimate and an atomic check before dispatch. Exhaustion is a
 classified failure, not a negative. Reports include the fault profile and seed,
 source/track/config/tool hashes and effective settings. Real mode rejects synthetic tracks,
 unpaced playback and injected faults. Reports never overwrite an existing file.
+Source and track hashes are captured before execution and verified again before
+publication. An input change, incomplete drain or worker shutdown timeout fails
+the run and publishes no report. Successful reports are written completely to a
+temporary file and atomically linked into place.
 
 `--speeds 2` halves source timestamps, event intervals and ambiguous intervals;
 sampling stays fixed in compressed time, so brief actions can fall between

@@ -121,7 +121,9 @@ def test_input_memory_eviction_and_late_response_do_not_revive_evidence():
     second = replace(first, request=replace(first.request, request_id="second"))
     for value in (first, second):
         diagnostics.claimed(value)
-        diagnostics.prepared(value, build_temporal_messages(value))
+        encoded_images = []
+        build_temporal_messages(value, encoded_images=encoded_images)
+        diagnostics.prepared(value, encoded_images)
     assert diagnostics.jpeg(first.request.request_id, 0) is None
     assert diagnostics.jpeg(second.request.request_id, 0)
     diagnostics.completed(second, success=False, expired=True)
@@ -202,7 +204,9 @@ def test_exact_input_api_and_eviction(runtime_factory):
     scene = SceneRuntime("run", "source")
     runtime._scene = scene
     value = job(scene.diagnostics)
-    scene.diagnostics.prepared(value, build_temporal_messages(value, max_image_side=24))
+    encoded_images = []
+    build_temporal_messages(value, max_image_side=24, encoded_images=encoded_images)
+    scene.diagnostics.prepared(value, encoded_images)
     with TestClient(create_app(runtime_factory=lambda: runtime)) as client:
         response = client.get("/v1/scene/diagnostics")
         assert response.status_code == 200
