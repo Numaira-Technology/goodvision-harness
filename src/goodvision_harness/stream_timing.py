@@ -1,4 +1,5 @@
 """Source-clock sampling without cumulative drift from network arrival jitter."""
+
 from __future__ import annotations
 
 import math
@@ -45,6 +46,8 @@ class SourceCadence:
         tolerance = min(0.001, self.period * 0.02)
         selected = timestamp + tolerance >= self.next_sample
         if selected:
-            slots = math.floor((timestamp + tolerance - self.next_sample) / self.period) + 1
+            slots = (
+                math.floor((timestamp + tolerance - self.next_sample) / self.period) + 1
+            )
             self.next_sample += slots * self.period
         return timestamp, selected

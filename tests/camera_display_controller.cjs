@@ -1035,3 +1035,30 @@ test("geometry cache counters exclude expired work and results that never perfor
   assert.equal(stats.geometry_cache_misses,1);assert.equal(stats.worker_present_expired,1);
   assert.equal(stats.worker_results_received,5);view.controller.stop();
 });
+
+
+test("late playback discards expired display copies but retains the full four-second buffer",()=>{
+  const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:4}});
+  for(let i=0;i<13;i++){
+    view.setClock(i);
+    view.controller.capture(i*1000,{mediaTime:i,presentedFrames:i+1},
+      {width:640,height:480,origin:i});
+  }
+  view.controller.pendingPresent.add(1);view.controller.requested.add(1);
+  view.controller.requestedRevision.set(1,0);view.controller.overlays.set(1,{subjects:[]});
+  const oldBitmap=view.controller.frames.frames[0].bitmap;
+  view.render(13);
+  assert.equal(view.canvas.dataset.frameSequence,"10"); // external sequence is presentedFrames
+  assert.equal(view.canvas.dataset.mediaTimestamp,"9");
+  assert.equal(view.controller.frames.delay,4);
+  assert.equal(view.controller.snapshot().display_catchup_expired,9);
+  assert.equal(oldBitmap.closed,true);
+  assert.equal(view.controller.pendingPresent.has(1),false);
+  assert.equal(view.controller.overlays.has(1),false);
+  const presented=view.controller.snapshot().distinct_presented_frames;
+  view.render(13.2);assert.equal(view.controller.snapshot().distinct_presented_frames,presented);
+  view.controller.worker.onmessage({data:{type:"present",sequence:1,result:{subjects:[]}}});
+  assert.equal(view.controller.overlays.has(1),false);
+  assert.equal(view.controller.snapshot().analysis_admitted,0);
+  view.controller.stop();
+});

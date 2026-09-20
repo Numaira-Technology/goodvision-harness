@@ -238,7 +238,7 @@
     constructor({delaySeconds=1,maxFrames=90,dispose=()=>{}}={}){
       this.delay=delaySeconds;this.maxFrames=maxFrames;this.dispose=dispose;
       this.frames=[];this.lastSequence=-1;this.lastTimestamp=-1;this.presented=0;
-      this.expired=0;this.rejected=0;this.firstPresentedAt=null;this.lastPresentedAt=null;
+      this.expired=0;this.catchupExpired=0;this.rejected=0;this.firstPresentedAt=null;this.lastPresentedAt=null;
     }
     push(frame){
       if(!frame||!sequence(frame.sequence)||!finite(frame.timestamp)||frame.timestamp<0||
@@ -246,6 +246,14 @@
       this.lastSequence=frame.sequence;this.lastTimestamp=frame.timestamp;this.frames.push(frame);
       while(this.frames.length>this.maxFrames){this.dispose(this.frames.shift());this.expired++;}
       return true;
+    }
+    discardBefore(timestamp){
+      let last=-1;
+      while(this.frames.length&&this.frames[0].timestamp<timestamp){
+        const frame=this.frames.shift();last=frame.sequence;
+        this.dispose(frame);this.expired++;this.catchupExpired++;
+      }
+      return last;
     }
     take(nowMedia){
       if(!this.frames.length||!finite(nowMedia)||this.frames[0].timestamp>nowMedia-this.delay)return null;
@@ -257,6 +265,7 @@
     }
     reset(){for(const frame of this.frames)this.dispose(frame);this.frames=[];}
     stats(){return {distinct_presented_frames:this.presented,display_buffer_expired:this.expired,
+      display_catchup_expired:this.catchupExpired,
       rejected_source_frames:this.rejected,buffered_frames:this.frames.length,
       distinct_presented_fps:this.presented>1&&this.lastPresentedAt>this.firstPresentedAt?
         (this.presented-1)*1000/(this.lastPresentedAt-this.firstPresentedAt):null};}
@@ -1191,7 +1200,7 @@
           else if(message.geometry_cache_hit===false)this.stats.geometry_cache_misses++;
           if(finite(message.queued_at))this.stats.worker_result_latency_max_seconds=Math.max(
             this.stats.worker_result_latency_max_seconds,(performance.now()-message.queued_at)/1000);
-          if(message.sequence>this.lastPresentedSequence){
+          if(message.sequence>Math.max(this.lastPresentedSequence,this.lastDiscardedSequence)){
             this.overlays.set(message.sequence,message.result);
             if(this.overlays.size>120)this.overlays.delete(this.overlays.keys().next().value);
           }else this.stats.worker_results_late++;
@@ -1274,7 +1283,7 @@
       this.presentGraceSeconds=Math.max(0,.15-this.frames.delay);
       this.uploads=[];this.uploading=false;
       this.pendingAck=null;this.analysisPause=null;
-      this.lastPresentedSequence=-1;this.sourceSequence=0;this.firstMediaTime=null;
+      this.lastPresentedSequence=-1;this.lastDiscardedSequence=-1;this.sourceSequence=0;this.firstMediaTime=null;
       this.nextCaptureAt=0;this.nextAnalysisAt=0;this.latestClock=null;this.lastVideoFrame=-1;
       this.stats={captured_frames:0,analysis_admitted:0,analysis_sent:0,analysis_upload_failures:0,
         network_requests:0,network_failures:0,network_bytes_received:0,network_frames_received:0,network_source_gap_frames:0,
@@ -1517,6 +1526,15 @@
       const now=performance.now();
       if(this.latestClock){
         const mediaNow=this.latestClock.timestamp+(now-this.latestClock.now)/1000;
+        // Preserve the configured playback delay, but never replay a growing
+        // backlog after a hidden tab or slow renderer. Only presentation copies
+        // older than the delayed playhead plus a bounded grace are discarded.
+        const discarded=this.frames.discardBefore(mediaNow-this.frames.delay-.5);
+        if(discarded>=0){
+          this.lastDiscardedSequence=Math.max(this.lastDiscardedSequence,discarded);
+          for(const collection of [this.overlays,this.requested,this.pendingPresent,this.requestedRevision])
+            for(const key of collection.keys())if(key<=discarded)collection.delete(key);
+        }
         for(const frame of this.frames.frames){
           if(frame.timestamp>mediaNow-this.frames.delay+this.presentPrefetchSeconds)break;
           if(!this.requested.has(frame.sequence)&&!this.pendingPresent.has(frame.sequence)){

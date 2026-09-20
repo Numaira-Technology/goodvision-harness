@@ -62,6 +62,21 @@ class StreamDiagnostics:
         with self._lock:
             self._timing(name, value)
 
+    def configure_decoder(self, backend, metadata, errors, discontinuities):
+        with self._lock:
+            self._state.update(
+                decoder_backend=backend,
+                source_video_format={key: metadata.get(key) for key in (
+                    "codec_name", "pix_fmt", "color_space", "color_transfer",
+                    "color_primaries", "color_range", "avg_frame_rate",
+                )},
+                normalized_to_sdr=metadata.get("color_transfer") in {
+                    "smpte2084", "arib-std-b67",
+                },
+                decoder_error_chunks=errors,
+                source_clock_discontinuities=discontinuities,
+            )
+
     def configure_sdp(self, sdp: str):
         video = False
         codecs = []

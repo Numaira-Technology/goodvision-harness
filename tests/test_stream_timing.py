@@ -5,7 +5,7 @@ def test_source_pts_keep_all_frames_despite_bursty_arrival():
     cadence = SourceCadence(15)
     timestamps = []
     for i in range(150):
-        now = 10 + (i // 15) + (i % 15) * .003
+        now = 10 + (i // 15) + (i % 15) * 0.003
         timestamp, accepted = cadence.select(now, i / 15)
         assert accepted
         timestamps.append(timestamp)
@@ -32,5 +32,7 @@ def test_pts_restart_and_reconnect_keep_strictly_increasing_time():
 
 def test_arrival_fallback_does_not_accumulate_interval_drift():
     cadence = SourceCadence(15)
-    accepted = sum(cadence.select(i / 15 + (0.0004 if i % 2 else 0), None)[1] for i in range(150))
+    accepted = sum(
+        cadence.select(i / 15 + (0.0004 if i % 2 else 0), None)[1] for i in range(150)
+    )
     assert accepted == 150
