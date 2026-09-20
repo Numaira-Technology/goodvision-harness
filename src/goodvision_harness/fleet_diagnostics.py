@@ -32,9 +32,11 @@ body{background:#fff}main{max-width:none;margin:0;padding:12px}
 </style>
 <script>
 globalThis.GoodvisionDiagnostic=true;
+globalThis.GoodvisionDiagnosticCameraId=CAMERA_ID;
 globalThis.GoodvisionFleet={detailHidden:()=>false,extraBusy:()=>false};
 </script>
 """
+    setup = setup.replace("CAMERA_ID", json.dumps(camera_id))
     page = page.replace("</head>", setup + "</head>")
     page = page.replace(
         "本机摄像头 / 诊断 · 网络视频请使用上方各路卡片设置，"

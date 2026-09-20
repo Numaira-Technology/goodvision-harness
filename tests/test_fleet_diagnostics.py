@@ -19,7 +19,8 @@ def test_diagnostic_document_is_scoped_and_has_no_global_controls(
         page = client.get(descriptor["diagnostics_url"])
         assert page.status_code == 200
         assert page.headers["x-frame-options"] == "SAMEORIGIN"
-        assert f'fetch("/v1/fleet/cameras/{camera}/status"' in page.text
+        assert f'const statusUrl="/v1/fleet/cameras/{camera}/status?lightweight=true"' in page.text
+        assert f'globalThis.GoodvisionDiagnosticCameraId="{camera}"' in page.text
         assert f'fetch("/v1/fleet/cameras/{camera}/deployment/settings"' in page.text
         assert (
             f'new EventSource("/v1/fleet/cameras/{camera}/results/events' in page.text

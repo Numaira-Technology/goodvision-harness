@@ -111,6 +111,7 @@
       const placeholder=this.element("div","fleet-preview-note","连接后在此显示实时画面");viewport.append(image,canvas,placeholder);
       const displayNote=this.element("div","fleet-card-detail","播放目标 15 帧/秒 · 画面与分析独立更新");
       const vlmNote=this.element("div","fleet-card-detail","VLM · 等待开始分析");vlmNote.setAttribute("role","status");
+      const vlmEvents=this.element("div","fleet-card-detail","本次事件观察 · 等待开始分析");vlmEvents.setAttribute("role","status");
       const fields=this.element("div","fleet-card-fields"),source=this.element("label","field");
       source.append(this.element("span","","网络视频地址"));
       const input=this.element("input");input.type="text";input.autocomplete="off";input.spellcheck=false;
@@ -125,8 +126,8 @@
       for(const button of [start,stop,save,detail,remove]){button.type="button";buttons.append(button);}
       remove.setAttribute("aria-label","移除 "+camera.label);
       const message=this.element("div","fleet-card-detail");message.setAttribute("role","status");
-      fields.append(source,layoutField,sourceNote,buttons,message);card.append(head,viewport,displayNote,vlmNote,fields);this.ui.grid.append(card);
-      const row={camera,card,title,state,image,canvas,displayNote,vlmNote,placeholder,input,layout,sourceNote,start,stop,save,detail,remove,message,
+      fields.append(source,layoutField,sourceNote,buttons,message);card.append(head,viewport,displayNote,vlmNote,vlmEvents,fields);this.ui.grid.append(card);
+      const row={camera,card,title,state,image,canvas,displayNote,vlmNote,vlmEvents,placeholder,input,layout,sourceNote,start,stop,save,detail,remove,message,
         status:null,busy:false,error:"",notice:"",previewUrl:null,previewError:false,generation:0,layoutDirty:false,
         detailOpen:false,prefsLoaded:false,prefsLoading:false,prefsDirty:false,prefsSaving:false,detailPolling:false};
       this.makeDetail(row);
@@ -355,6 +356,21 @@
       row.prefsNote.className="fleet-card-detail"+(row.prefsError?" error":"");
       row.detailSummary.textContent="当前状态："+row.state.textContent+" · 已接收 "+(Number(status.source_frames_received)||0)+" 帧 · 已发布 "+(Number(status.results_published)||0)+" 条结果";
     }
+    async pollVlm(row){
+      if(!analyzing(row.status)||!row.status.vlm?.independent){row.vlmReport=null;row.vlmEvents.textContent="本次事件观察 · 等待开始分析";return;}
+      const session=row.status.stream_session_id,generation=row.generation;
+      try{
+        const url=row.camera.status_url?.replace(/\/status$/, "/vlm/results/latest");
+        const report=await this.request(url,{},3000);
+        if(this.closed||row.generation!==generation||row.status.stream_session_id!==session||report.stream_session_id!==session)return;
+        if(report.state==="completed")row.vlmReport=report;
+        const current=row.vlmReport?.stream_session_id===session?row.vlmReport:null;
+        const summary=root.GoodvisionCameraDisplay?.eventObservationSummary?.(current)||"等待事件判断";
+        const age=current?Math.max(0,(this.clock()-Date.parse(current.emitted_at))/1000):null;
+        row.vlmEvents.textContent="本次事件观察 · "+summary+(Number.isFinite(age)?"（"+age.toFixed(1)+" 秒前）":"")+
+          (report.state==="failed"?" · 新一轮正在重试":"");
+      }catch(_){row.vlmEvents.textContent="事件结果更新延迟，正在重试；请结合上方最近成功时间。";}
+    }
     async pollStatus(discover=false){
       if(this.closed||this.polling)return;this.polling=true;
       const cameras=[...this.rows.values()].filter(row=>discover||row.camera.enabled||row.busy||connectionBusy(row.status)||analyzing(row.status));
@@ -373,7 +389,7 @@
           row.card.hidden=!this.visible.has(row.camera.id);
         }catch(error){if(generation!==row.generation||this.closed)return;row.unreachable=true;row.error="无法连接通道服务："+error.message;}
         this.updateRow(row);
-        if(!row.unreachable)await this.pollDetail(row);
+        if(!row.unreachable)await Promise.all([this.pollDetail(row),this.pollVlm(row)]);
       });}finally{
         this.polling=false;
         if(!this.initializedLayout){this.compact=[...this.rows.values()].filter(row=>connectionBusy(row.status)).length>=4;this.initializedLayout=true;}
