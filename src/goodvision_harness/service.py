@@ -2474,6 +2474,7 @@ class HarnessRuntime:
                         tuple(selected_sensitivities.items()),
                         self.config.runtime.scene_observation_fps,
                         self.config.runtime.scene_max_in_flight,
+                        route_id=PUBLIC_ROUTE_IDS.get(self._selected_route_id),
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,

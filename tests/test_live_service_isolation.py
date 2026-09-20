@@ -238,12 +238,18 @@ def test_invalid_coordinate_response_retains_safe_diagnosis(monkeypatch):
     import httpx
 
     from goodvision_harness import scene_model
-    from goodvision_harness.model_api import ModelAPIError
     from goodvision_harness.vlm_independent_model import IndependentVLMInspector
 
     response = {
         "subjects": [{"subject_id": "p1", "bbox": [100, 100, 500, 900]}],
-        "verdicts": [],
+        "verdicts": [
+            {
+                "event_label": "smoking",
+                "subject_ids": ["p1"],
+                "detected": True,
+                "confidence": 0.9,
+            }
+        ],
     }
     monkeypatch.setattr(
         scene_model,
@@ -272,11 +278,10 @@ def test_invalid_coordinate_response_retains_safe_diagnosis(monkeypatch):
         cfg.model_settings, model="test", api_key="PRIVATE_KEY"
     )
     try:
-        with pytest.raises(ModelAPIError) as raised:
-            inspector.inspect(job(cfg, 1.0, 15))
-        assert raised.value.code == "invalid_response"
-        assert raised.value.validation_reason == "invalid_subject_bbox"
-        assert raised.value.validation_stage == "verdict_grounding"
-        assert "PRIVATE" not in str(vars(raised.value))
+        (observed,) = inspector.inspect(job(cfg, 1.0, 15))
+        assert observed.detected is True
+        assert not observed.subject_boxes
+        assert observed.grounding_issues == ("invalid_subject_bbox",)
+        assert "PRIVATE" not in str(observed)
     finally:
         inspector.close()
