@@ -9,6 +9,7 @@ of the sampling, windowing, inference, and display pipeline unchanged.
 from __future__ import annotations
 
 import asyncio
+import math
 import queue
 import threading
 import time
@@ -22,6 +23,7 @@ import cv2
 
 from .privacy import PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR
 from .stream_diagnostics import StreamDiagnostics
+from .stream_timing import SourceCadence
 from .video_to_stream import LiveFrame
 
 StreamProtocol = Literal["rtsp", "rtmp", "webrtc"]
@@ -154,12 +156,10 @@ class NetworkStreamAdapter:
     def _opencv_frames(self) -> Iterator[LiveFrame]:
         failures = 0
         emitted = 0
-        origin: float | None = None
-        last_timestamp = 0.0
-        period = 1.0 / self.output_fps
-        next_emit = 0.0
+        cadence = SourceCadence(self.output_fps)
 
         while not self.stopped:
+            cadence.reconnect()
             capture = cv2.VideoCapture(self.source.transport_url)
             with self._capture_lock:
                 self._capture = capture
@@ -179,18 +179,16 @@ class NetworkStreamAdapter:
                             break
                         failures = 0
                         now = time.monotonic()
+                        raw_pts = capture.get(cv2.CAP_PROP_POS_MSEC)
+                        pts = raw_pts / 1000 if math.isfinite(raw_pts) and raw_pts > 0 else None
+                        timestamp, selected = cadence.select(now, pts)
                         self._diagnostics.received(image, now, now-read_started,
-                                                   emitted if now+1e-9 >= next_emit else None)
-                        if now + 1e-9 < next_emit:
+                                                   emitted if selected else None)
+                        if not selected:
                             self.dropped_frames += 1
                             self._diagnostics.count('rate_limit_skipped_frames')
                             self._diagnostics.emit()
                             continue
-                        next_emit = now + period
-                        if origin is None:
-                            origin = now
-                        timestamp = max(last_timestamp, now - origin)
-                        last_timestamp = timestamp
                         self._diagnostics.enqueued(emitted)
                         self._diagnostics.dequeued(emitted)
                         self._diagnostics.emit()
@@ -371,10 +369,7 @@ class NetworkStreamAdapter:
         self, track: Any, pc: Any, media_stream_error: type[BaseException]
     ) -> None:
         emitted = 0
-        origin: float | None = None
-        last_timestamp = 0.0
-        period = 1.0 / self.output_fps
-        next_emit = 0.0
+        cadence = SourceCadence(self.output_fps)
         receive_started = time.monotonic()
         receive_task: asyncio.Task[Any] | None = asyncio.create_task(track.recv())
         try:
@@ -391,19 +386,17 @@ class NetworkStreamAdapter:
                     self._diagnostics.count('track_ended')
                     return
                 now = time.monotonic()
+                pts = (float(frame.pts * frame.time_base)
+                       if frame.pts is not None and frame.time_base is not None else None)
+                timestamp, selected = cadence.select(now, pts)
                 self._diagnostics.received(frame, now, now-receive_started,
-                                           emitted if now+1e-9 >= next_emit else None)
+                                           emitted if selected else None)
                 receive_started = now
                 receive_task = asyncio.create_task(track.recv())
-                if now + 1e-9 < next_emit:
+                if not selected:
                     self.dropped_frames += 1
                     self._diagnostics.count('rate_limit_skipped_frames')
                     continue
-                next_emit = now + period
-                if origin is None:
-                    origin = now
-                timestamp = max(last_timestamp, now - origin)
-                last_timestamp = timestamp
                 conversion_started = time.monotonic()
                 try:
                     bgr = frame.to_ndarray(format="bgr24")
