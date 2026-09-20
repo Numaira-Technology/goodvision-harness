@@ -156,7 +156,15 @@ def test_manifest_requires_explicit_reviewed_labels(clip, tmp_path):
         replay.load_manifest(manifest)
 
 
-def test_incomplete_drain_fails_instead_of_publishing_partial_metrics(clip):
+def test_incomplete_drain_waits_for_worker_shutdown_before_returning(clip, monkeypatch):
+    states = []
+    close = replay.SceneInspectionWorker.close
+
+    def observed_close(self, *args, **kwargs):
+        close(self, *args, **kwargs)
+        states.append(self.stats()["state"])
+
+    monkeypatch.setattr(replay.SceneInspectionWorker, "close", observed_close)
     with pytest.raises(TimeoutError, match="did not drain"):
         replay.replay_clip(
             clip,
@@ -165,8 +173,9 @@ def test_incomplete_drain_fails_instead_of_publishing_partial_metrics(clip):
             realtime=False,
             sample_fps=4,
             drain_seconds=0.01,
-            profile=replay.SimulationProfile(latency_ms=200),
+            profile=replay.SimulationProfile(latency_ms=1200),
         )
+    assert states[-1] == "stopped"
 
 
 def test_changed_source_is_rejected_before_report(clip, monkeypatch):
@@ -265,17 +274,22 @@ def test_cli_reports_multiple_clips_and_speeds_with_one_budget(clip, tmp_path):
     ]
     assert replay.main(args) == 0
     report = json.loads(output.read_text())
+    assert report["status"] == "complete"
     assert len(report["runs"]) == 4
     assert report["request_budget"] == {"limit": 2, "used": 2}
     assert sum(len(r["calls"]) for r in report["runs"]) == 2
     assert all(r["drain_complete"] for r in report["runs"])
+    assert not replay._partial_output_path(output).exists()
+    assert not replay._reservation_path(output).exists()
     before = output.read_bytes()
     with pytest.raises(FileExistsError):
         replay.main(args)
     assert output.read_bytes() == before
 
 
-def test_cli_failure_leaves_no_empty_or_partial_report(clip, tmp_path, monkeypatch):
+def test_cli_failure_before_first_run_leaves_no_empty_report(
+    clip, tmp_path, monkeypatch
+):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         json.dumps(
@@ -302,7 +316,80 @@ def test_cli_failure_leaves_no_empty_or_partial_report(clip, tmp_path, monkeypat
             ]
         )
     assert not output.exists()
+    assert not replay._partial_output_path(output).exists()
+    assert not replay._reservation_path(output).exists()
     assert list(tmp_path.glob(".report.json.*.tmp")) == []
+
+
+def test_cli_preserves_completed_runs_when_a_later_run_fails(
+    clip, tmp_path, monkeypatch
+):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "clips": [
+                    {"id": name, "path": str(clip.path), "events": []}
+                    for name in ("first", "second")
+                ]
+            }
+        )
+    )
+    output = tmp_path / "report.json"
+    completed = {"clip_id": "first", "drain_complete": True}
+    calls = 0
+
+    def complete_then_fail(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return completed
+        raise RuntimeError("injected later failure")
+
+    monkeypatch.setattr(replay, "replay_clip", complete_then_fail)
+    with pytest.raises(RuntimeError, match="injected later failure"):
+        replay.main(
+            [
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(output),
+                "--synthetic-tracks",
+                "--no-realtime",
+            ]
+        )
+
+    checkpoint = replay._partial_output_path(output)
+    report = json.loads(checkpoint.read_text())
+    assert not output.exists()
+    assert report["status"] == "failed"
+    assert report["runs"] == [completed]
+    assert report["failure"] == {"error_type": "RuntimeError"}
+    assert not replay._reservation_path(output).exists()
+
+
+def test_cli_reserves_output_before_model_requests(clip, tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"clips": [{"path": str(clip.path), "events": []}]}))
+    output = tmp_path / "report.json"
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("a competing writer must be rejected before replay")
+
+    monkeypatch.setattr(replay, "replay_clip", forbidden)
+    with replay._reserve_output(output):
+        with pytest.raises(FileExistsError):
+            replay.main(
+                [
+                    "--manifest",
+                    str(manifest),
+                    "--output",
+                    str(output),
+                    "--synthetic-tracks",
+                    "--no-realtime",
+                ]
+            )
+    assert not replay._reservation_path(output).exists()
 
 
 def test_missing_recorded_tracks_are_not_synthetic_negatives(clip, tmp_path):

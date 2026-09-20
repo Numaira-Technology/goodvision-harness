@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from uuid import uuid4
@@ -299,8 +300,8 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def _write_new_json(path, payload):
-    """Publish a complete report atomically without replacing an existing one."""
+def _write_json(path, payload, *, replace_existing):
+    """Atomically write JSON, optionally replacing an owned checkpoint."""
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )
@@ -310,9 +311,51 @@ def _write_new_json(path, payload):
             json.dump(payload, output, indent=2, allow_nan=False)
             output.flush()
             os.fsync(output.fileno())
-        os.link(temporary, path)
+        if replace_existing:
+            os.replace(temporary, path)
+        else:
+            os.link(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _write_new_json(path, payload):
+    """Publish a complete report atomically without replacing an existing one."""
+    _write_json(path, payload, replace_existing=False)
+
+
+def _partial_output_path(path):
+    return path.with_name(f".{path.name}.partial")
+
+
+def _reservation_path(path):
+    return path.with_name(f".{path.name}.lock")
+
+
+def _path_exists(path):
+    return os.path.lexists(path)
+
+
+@contextmanager
+def _reserve_output(path):
+    """Own an output name before any model requests are admitted."""
+    partial = _partial_output_path(path)
+    reservation = _reservation_path(path)
+    if _path_exists(path) or _path_exists(partial):
+        raise FileExistsError(path if _path_exists(path) else partial)
+    descriptor = os.open(reservation, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as marker:
+            marker.write(f"pid={os.getpid()}\n")
+            marker.flush()
+            os.fsync(marker.fileno())
+        # An uncooperative writer may have published between the first check and
+        # our reservation. Never spend against an already-owned final name.
+        if _path_exists(path) or _path_exists(partial):
+            raise FileExistsError(path if _path_exists(path) else partial)
+        yield partial
+    finally:
+        reservation.unlink(missing_ok=True)
 
 
 def replay_clip(
@@ -417,6 +460,12 @@ def replay_clip(
     next_sample = 0
     max_arrival_lag = 0
     completed = False
+    shutdown_seconds = max(
+        1.0,
+        settings.timeout_seconds + 1.0,
+        profile.latency_ms / 1000 + 1.0,
+        profile.slow_ms / 1000 + 1.0,
+    )
     worker.start()
     try:
         while True:
@@ -610,9 +659,14 @@ def replay_clip(
         report["false_alarm_instances"] = len(false_alarms)
         return report
     finally:
-        worker.close(timeout_seconds=1)
-        scene.close()
-        capture.release()
+        worker.close(timeout_seconds=shutdown_seconds)
+        stopped = worker.stats()["state"] == "stopped"
+        try:
+            scene.close()
+        finally:
+            capture.release()
+        if not stopped:
+            raise TimeoutError("replay worker did not stop during cleanup")
 
 
 def main(argv=None):
@@ -691,37 +745,53 @@ def main(argv=None):
             )
     except ValueError as error:
         parser.error(str(error))
-    # Reject the ordinary case before external requests; publication also performs
-    # an atomic no-overwrite check to close the concurrent-creator race.
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    if args.output.exists():
-        raise FileExistsError(args.output)
-    report = {
-        "schema_version": 1,
-        "estimated_requests": estimate,
-        "manifest_sha256": _sha256(args.manifest),
-        "config_sha256": _sha256(args.config),
-        "replay_tool_sha256": _sha256(Path(__file__)),
-        "runs": [],
-    }
-    for clip in clips:
-        for speed in speeds:
-            report["runs"].append(
-                replay_clip(
-                    clip,
-                    config,
-                    speed=speed,
-                    real=args.real,
-                    synthetic_tracks=args.synthetic_tracks,
-                    profile=profile,
-                    budget=budget,
-                    sensitivities=sensitivities,
-                    realtime=not args.no_realtime,
-                    sample_fps=args.sample_fps,
-                )
-            )
-    report["request_budget"] = {"limit": budget.limit, "used": budget.used}
-    _write_new_json(args.output, report)
+    with _reserve_output(args.output) as partial:
+        report = {
+            "schema_version": 1,
+            "status": "incomplete",
+            "estimated_requests": estimate,
+            "manifest_sha256": _sha256(args.manifest),
+            "config_sha256": _sha256(args.config),
+            "replay_tool_sha256": _sha256(Path(__file__)),
+            "runs": [],
+        }
+        try:
+            for clip in clips:
+                for speed in speeds:
+                    report["runs"].append(
+                        replay_clip(
+                            clip,
+                            config,
+                            speed=speed,
+                            real=args.real,
+                            synthetic_tracks=args.synthetic_tracks,
+                            profile=profile,
+                            budget=budget,
+                            sensitivities=sensitivities,
+                            realtime=not args.no_realtime,
+                            sample_fps=args.sample_fps,
+                        )
+                    )
+                    report["request_budget"] = {
+                        "limit": budget.limit,
+                        "used": budget.used,
+                    }
+                    _write_json(partial, report, replace_existing=True)
+        except Exception as error:
+            if report["runs"]:
+                report["status"] = "failed"
+                report["failure"] = {"error_type": type(error).__name__}
+                report["request_budget"] = {
+                    "limit": budget.limit,
+                    "used": budget.used,
+                }
+                _write_json(partial, report, replace_existing=True)
+            raise
+        report["status"] = "complete"
+        report["request_budget"] = {"limit": budget.limit, "used": budget.used}
+        _write_new_json(args.output, report)
+        partial.unlink(missing_ok=True)
     return 0
 
 
