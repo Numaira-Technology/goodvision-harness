@@ -91,10 +91,15 @@ class StreamDiagnostics:
             rates = {c['clock_rate'] for c in codecs if c['clock_rate'] > 0}
             self._clock_rate = next(iter(rates)) if len(rates) == 1 else None
 
-    def received(self, frame: Any, now: float, wait: float, source_sequence: int | None):
+    def received(
+        self, frame: Any, now: float, wait: float, source_sequence: int | None,
+        *, source_pts_seconds: float | None = None,
+    ):
         pts = getattr(frame, 'pts', None)
         base = getattr(frame, 'time_base', None)
         pts_seconds = _number(pts * base) if pts is not None and base is not None else None
+        if source_pts_seconds is not None:
+            pts_seconds = _number(source_pts_seconds)
         corrupt = getattr(frame, 'is_corrupt', None)
         key_frame = getattr(frame, 'key_frame', None)
         shape = getattr(frame, 'shape', ())

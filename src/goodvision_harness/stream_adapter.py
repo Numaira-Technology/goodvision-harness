@@ -1,6 +1,6 @@
 """Network video adapters for RTSP, RTMP, and WebRTC/WHEP sources.
 
-RTSP and RTMP use the OpenCV video backend. WebRTC uses a WHEP endpoint,
+RTSP/RTMP use OpenCV or an explicit FFmpeg color pipeline. WebRTC uses WHEP,
 written as webrtc+https:// (or webrtc+http:// for local development). The
 adapter emits the same LiveFrame objects as VideoFileStream, keeping the rest
 of the sampling, windowing, inference, and display pipeline unchanged.
@@ -114,8 +114,8 @@ class NetworkStreamAdapter:
         connection_id: str | None = None,
         decoder_backend: str | None = None,
     ) -> None:
-        if output_fps <= 0:
-            raise ValueError("output_fps must be positive")
+        if not math.isfinite(output_fps) or output_fps <= 0:
+            raise ValueError("output_fps must be positive and finite")
         if reconnect_attempts < 0:
             raise ValueError("reconnect_attempts must be non-negative")
         if reconnect_delay_seconds < 0:
@@ -125,7 +125,9 @@ class NetworkStreamAdapter:
         self.reconnect_attempts = reconnect_attempts
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self.whep_headers = dict(whep_headers or {})
-        self.decoder_backend = decoder_backend or os.getenv("HARNESS_STREAM_DECODER", "opencv")
+        self.decoder_backend = decoder_backend or os.getenv(
+            "HARNESS_STREAM_DECODER", "opencv",
+        )
         if self.decoder_backend not in {"opencv", "ffmpeg"}:
             raise ValueError("stream decoder must be opencv or ffmpeg")
         self._receiver: FFmpegReceiver | None = None
@@ -184,8 +186,11 @@ class NetworkStreamAdapter:
                         return
                     failures = 0
                     now = time.monotonic()
-                    pts = (float(frame.pts * frame.time_base)
-                           if frame.pts is not None and frame.time_base is not None else None)
+                    pts = (
+                        float(frame.pts * frame.time_base)
+                        if frame.pts is not None and frame.time_base is not None
+                        else None
+                    )
                     timestamp, selected = cadence.select(now, pts)
                     self._diagnostics.received(frame, now, now-wait_started,
                                                emitted if selected else None)
@@ -200,11 +205,15 @@ class NetworkStreamAdapter:
                         continue
                     started = time.monotonic()
                     image = frame.to_ndarray(format="bgr24")
-                    self._diagnostics.timing("color_conversion", time.monotonic()-started)
+                    self._diagnostics.timing(
+                        "color_conversion", time.monotonic()-started,
+                    )
                     self._diagnostics.enqueued(emitted)
                     self._diagnostics.dequeued(emitted)
                     self._diagnostics.emit()
-                    yield LiveFrame(index=emitted, timestamp_seconds=timestamp, bgr=image)
+                    yield LiveFrame(
+                        index=emitted, timestamp_seconds=timestamp, bgr=image,
+                    )
                     emitted += 1
                 failures += 1
             except DecodeSupportError as exc:
@@ -253,10 +262,15 @@ class NetworkStreamAdapter:
                         failures = 0
                         now = time.monotonic()
                         raw_pts = capture.get(cv2.CAP_PROP_POS_MSEC)
-                        pts = raw_pts / 1000 if math.isfinite(raw_pts) and raw_pts > 0 else None
+                        pts = (
+                            raw_pts / 1000
+                            if math.isfinite(raw_pts) and raw_pts > 0 else None
+                        )
                         timestamp, selected = cadence.select(now, pts)
-                        self._diagnostics.received(image, now, now-read_started,
-                                                   emitted if selected else None)
+                        self._diagnostics.received(
+                            image, now, now-read_started,
+                            emitted if selected else None, source_pts_seconds=pts,
+                        )
                         if not selected:
                             self.dropped_frames += 1
                             self._diagnostics.count('rate_limit_skipped_frames')
@@ -459,8 +473,10 @@ class NetworkStreamAdapter:
                     self._diagnostics.count('track_ended')
                     return
                 now = time.monotonic()
-                pts = (float(frame.pts * frame.time_base)
-                       if frame.pts is not None and frame.time_base is not None else None)
+                pts = (
+                    float(frame.pts * frame.time_base)
+                    if frame.pts is not None and frame.time_base is not None else None
+                )
                 timestamp, selected = cadence.select(now, pts)
                 self._diagnostics.received(frame, now, now-receive_started,
                                            emitted if selected else None)
@@ -476,7 +492,9 @@ class NetworkStreamAdapter:
                 except Exception:
                     self._diagnostics.count('color_conversion_errors')
                     raise
-                self._diagnostics.timing('color_conversion', time.monotonic()-conversion_started)
+                self._diagnostics.timing(
+                    'color_conversion', time.monotonic()-conversion_started,
+                )
                 self._put_latest(
                     LiveFrame(
                         index=emitted,
