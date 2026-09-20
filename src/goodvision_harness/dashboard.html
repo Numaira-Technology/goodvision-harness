@@ -1217,7 +1217,10 @@ async function pullLatestFrame(generation){
   }
 }
 function openFeed(){
-  if(globalThis.GoodvisionFleet?.detailHidden?.()){stopLatestFeed();return;}
+  if(globalThis.GoodvisionFleet?.detailHidden?.()){
+    networkVideoDisplay?.stop();networkVideoDisplay=null;
+    stopLatestFeed();return;
+  }
   if(typeof localCameraActive==="function"&&localCameraActive()){surfaces();return;}
   const Network=globalThis.GoodvisionCameraDisplay?.NetworkController;
   if(state.running&&state.sessionMode!=="camera"&&Network?.supported()){

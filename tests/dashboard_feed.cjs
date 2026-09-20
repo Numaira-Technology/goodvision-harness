@@ -34,6 +34,15 @@ function player(){
 }
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
+test("a hidden diagnostic console releases an existing continuous display",()=>{
+  const view=player();let stopped=0;
+  view.context.networkVideoDisplay={stop(){stopped++;}};
+  view.context.GoodvisionFleet={detailHidden:()=>true};
+  view.openFeed();view.openFeed();
+  assert.equal(stopped,1);assert.equal(view.context.networkVideoDisplay,null);
+  assert.equal(view.requests.length,0);assert.equal(view.timers.size,0);
+});
+
 test("slow delivery keeps one request and resumes from the newest frame",async()=>{
   const view=player();view.openFeed();view.openFeed();
   assert.equal(view.requests.length,1);

@@ -1133,6 +1133,8 @@
       context.fillText(line,x+padding,y+padding+index*lineHeight,available);});
     context.restore();
   }
+  let displayInstanceSequence=0;
+  const displayDocumentId=Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
   class BrowserController{
     static supported(video){return typeof Worker==="function"&&typeof OffscreenCanvas==="function"&&
       typeof MessageChannel==="function"&&
@@ -1165,6 +1167,7 @@
       warm.disposed=true;warm.resolve(false);warm.worker.terminate();
     }
     constructor({video,canvas,config,settings,socket,onStatus=()=>{},onFailure=()=>{},onMotionTrace=null,motionTraceOptions={}}){
+      this.displayInstanceId=displayDocumentId+"-"+(++displayInstanceSequence);
       this.video=video;this.canvas=canvas;this.config=config;this.settings={...settings};this.socket=socket;
       if(finite(config.analysis_max_image_side)&&config.analysis_max_image_side>0)
         this.settings.max_image_side=Math.min(this.settings.max_image_side,Math.max(1,Math.floor(config.analysis_max_image_side)));
@@ -1757,7 +1760,7 @@
       return finite(timestamp)&&this.latestClock?Math.max(0,this.latestClock.timestamp+
         (performance.now()-this.latestClock.now)/1000-timestamp):null;
     }
-    snapshot(){return {...this.frames.stats(),...this.stats,analysis_pending:this.uploads.length,
+    snapshot(){return {display_instance_id:this.displayInstanceId,...this.frames.stats(),...this.stats,analysis_pending:this.uploads.length,
       configured_display_delay_seconds:this.frames.delay,
       presentation_prefetch_seconds:this.presentPrefetchSeconds,pending_present_queries:this.pendingPresent.size,
       source_width:this.sourceSize?.[0]||0,source_height:this.sourceSize?.[1]||0,

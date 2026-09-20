@@ -109,7 +109,8 @@
       const viewport=this.element("div","fleet-preview"),image=this.element("img");image.alt=camera.label+" 实时人物描边画面";image.hidden=true;
       const canvas=this.element("canvas");canvas.hidden=true;
       const placeholder=this.element("div","fleet-preview-note","连接后在此显示实时画面");viewport.append(image,canvas,placeholder);
-      const displayNote=this.element("div","fleet-card-detail","画面与分析独立更新");
+      const displayNote=this.element("div","fleet-card-detail","播放目标 15 帧/秒 · 画面与分析独立更新");
+      const vlmNote=this.element("div","fleet-card-detail","VLM · 等待开始分析");vlmNote.setAttribute("role","status");
       const fields=this.element("div","fleet-card-fields"),source=this.element("label","field");
       source.append(this.element("span","","网络视频地址"));
       const input=this.element("input");input.type="text";input.autocomplete="off";input.spellcheck=false;
@@ -124,8 +125,8 @@
       for(const button of [start,stop,save,detail,remove]){button.type="button";buttons.append(button);}
       remove.setAttribute("aria-label","移除 "+camera.label);
       const message=this.element("div","fleet-card-detail");message.setAttribute("role","status");
-      fields.append(source,layoutField,sourceNote,buttons,message);card.append(head,viewport,displayNote,fields);this.ui.grid.append(card);
-      const row={camera,card,title,state,image,canvas,displayNote,placeholder,input,layout,sourceNote,start,stop,save,detail,remove,message,
+      fields.append(source,layoutField,sourceNote,buttons,message);card.append(head,viewport,displayNote,vlmNote,fields);this.ui.grid.append(card);
+      const row={camera,card,title,state,image,canvas,displayNote,vlmNote,placeholder,input,layout,sourceNote,start,stop,save,detail,remove,message,
         status:null,busy:false,error:"",notice:"",previewUrl:null,previewError:false,generation:0,layoutDirty:false,
         detailOpen:false,prefsLoaded:false,prefsLoading:false,prefsDirty:false,prefsSaving:false,detailPolling:false};
       this.makeDetail(row);
@@ -315,8 +316,20 @@
       const status=row.status||{},active=connectionBusy(status),locked=this.analysisLocked();
       const enabled=row.camera.enabled&&this.metadataOk;
       row.title.textContent=row.camera.label;
-      row.state.textContent=row.busy?"正在处理":row.unreachable?"服务离线":(CONNECTION[connectionState(status)]||"正在检查")+" · "+(ANALYSIS[status.analysis_state||status.pipeline_state]||"未分析");
+      const videoFresh=Number.isFinite(row.lastPresentedAt)&&this.clock()-row.lastPresentedAt<2500;
+      row.state.textContent=row.busy?"正在处理":row.unreachable?(videoFresh?"视频播放中 · 状态更新延迟":"暂时无法确认服务状态"):(CONNECTION[connectionState(status)]||"正在检查")+" · "+(ANALYSIS[status.analysis_state||status.pipeline_state]||"未分析");
       row.state.className="fleet-camera-state"+(row.unreachable||row.error||status.last_error?" error":active?" good":"");
+      const vlm=status.vlm,age=vlm?.last_success_age_seconds;
+      if(row.unreachable)row.vlmNote.textContent="VLM · 状态更新延迟，正在重新确认";
+      else if(!analyzing(status))row.vlmNote.textContent="VLM · 等待开始分析";
+      else if(!vlm?.independent)row.vlmNote.textContent="VLM · 正在读取识别状态";
+      else if(vlm.ready){
+        row.vlmNote.textContent="VLM · 识别持续返回"+(Number.isFinite(age)?" · 最近成功 "+age.toFixed(1)+" 秒前":"")+
+          (vlm.last_attempt_state==="failed"?" · 最近一次失败，继续识别":vlm.analysis_complete===false?" · 部分检测项待确认":"");
+      }else if(vlm.running){
+        row.vlmNote.textContent="VLM · "+(Number.isFinite(age)?"结果延迟 · 最近成功 "+age.toFixed(1)+" 秒前":"等待首次有效结果")+
+          (vlm.last_attempt_state==="failed"?" · 最近一次失败，继续识别":"");
+      }else row.vlmNote.textContent="VLM · 识别暂不可用，视频继续播放";
       row.input.disabled=active||row.busy||locked;row.layout.disabled=active||row.busy||locked;
       row.start.disabled=!enabled||row.busy||active||locked||!row.status||row.unreachable||!row.camera.connect_url;
       row.stop.disabled=row.busy||!active||locked||connectionState(status)==="disconnecting"||!row.camera.disconnect_url;
@@ -334,7 +347,7 @@
       if(!show)this.releasePreview(row);
       row.placeholder.hidden=!!(row.previewUrl||row.networkHasFrame)&&!row.previewError&&!row.networkBuffering;
       row.placeholder.className="fleet-preview-note"+(row.previewUrl&&row.previewError?" over-image":"");
-      row.placeholder.textContent=row.previewError?"画面暂不可用，正在重试…":row.networkBuffering?"正在缓冲连续画面并准备人物描边…":row.unreachable?"通道服务暂时离线":active?"正在等待视频画面…":"连接后在此显示实时画面";
+      row.placeholder.textContent=row.previewError?"画面暂不可用，正在重试…":row.networkBuffering?"正在缓冲连续画面…":row.unreachable?"正在重新确认通道状态…":active?"正在等待视频画面…":"连接后在此显示实时画面";
       const prefsBusy=locked||row.prefsLoading||row.prefsSaving||!row.prefsLoaded;
       for(const [key,input] of row.features){input.disabled=prefsBusy;const sensitivity=row.sensitivities.get(key);if(sensitivity)sensitivity.select.disabled=prefsBusy||!input.checked;}
       row.prefsSave.disabled=prefsBusy||!row.prefsDirty;row.prefsReload.disabled=locked||row.prefsLoading||row.prefsSaving;
@@ -434,6 +447,7 @@
     }
     releasePreview(row){
       row.networkDisplay?.stop();row.networkDisplay=null;row.networkHasFrame=false;row.networkBuffering=false;
+      row.lastPresentedAt=null;row.displaySample=null;
       row.canvas.hidden=true;
       row.previewGeneration=(row.previewGeneration||0)+1;
       row.previewController?.abort();row.previewController=null;
@@ -451,8 +465,12 @@
               row.placeholder.hidden=!buffering;},
             onStatus:stats=>{row.networkBuffering=stats.distinct_presented_frames===0;
               row.placeholder.hidden=!row.networkBuffering&&!row.previewError;
-              row.displayNote.textContent="播放缓冲 "+stats.configured_display_delay_seconds+" 秒 · 实际 "+
-                (stats.distinct_presented_fps??0).toFixed(1)+" 帧/秒 · 完整描边 "+
+              const now=this.clock(),previous=row.displaySample;
+              const same=previous&&previous.id===stats.display_instance_id&&stats.distinct_presented_frames>=previous.frames;
+              const fps=same&&now>previous.at?(stats.distinct_presented_frames-previous.frames)*1000/(now-previous.at):(stats.distinct_presented_fps??0);
+              if((same&&stats.distinct_presented_frames>previous.frames)||(!same&&stats.distinct_presented_frames>0))row.lastPresentedAt=now;
+              row.displaySample={id:stats.display_instance_id,at:now,frames:stats.distinct_presented_frames};
+              row.displayNote.textContent="播放 "+fps.toFixed(1)+" / 15 帧/秒 · 缓冲 "+stats.configured_display_delay_seconds+" 秒 · 完整描边 "+
                 (100*stats.complete_contour_frames/Math.max(1,stats.distinct_presented_frames)).toFixed(0)+"%";},
             onFailure:message=>{row.displayNote.textContent=message;}});
           row.networkDisplay.start();
@@ -467,6 +485,7 @@
         nextUrl=this.URL.createObjectURL(await response.blob());
         if(this.closed||generation!==(row.previewGeneration||0)||this.document.hidden)return;
         const previous=row.previewUrl;row.image.src=nextUrl;row.image.hidden=false;row.previewUrl=nextUrl;nextUrl=null;row.previewError=false;
+        row.lastPresentedAt=this.clock();
         if(previous)this.URL.revokeObjectURL(previous);
         row.placeholder.hidden=true;
       }catch(_){row.previewError=true;this.updateRow(row);}
