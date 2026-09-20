@@ -87,9 +87,17 @@ class Engine:
         return json.loads(output)
 
 
-def replacement_config(original, image):
+def replacement_config(original, image, *, continuous_playback_vlm=False):
     config = copy.deepcopy(original["Config"])
     config["Image"] = image
+    if continuous_playback_vlm:
+        environment = dict(value.split("=", 1) for value in config.get("Env", []))
+        environment.update(
+            LOCAL_CAMERA_TARGET_FPS="15",
+            SCENE_ENGINE_MODE="active",
+            SCENE_INDEPENDENT_VLM="true",
+        )
+        config["Env"] = [f"{key}={value}" for key, value in environment.items()]
     # These are image metadata, not ContainerCreate fields.
     for key in ("OnBuild", "Shell"):
         config.pop(key, None)
@@ -240,7 +248,7 @@ def upgrade(
         raise RuntimeError("No compatible GoodVision main application found.")
     for target in targets:
         assert_idle(engine, target)
-        replacement_config(target, image)
+        replacement_config(target, image, continuous_playback_vlm=manifest.get("continuous_playback_vlm", False))
     metadata = read_metadata(installation, base_id)
     print(f"Verified {len(targets)} application containers.", flush=True)
     if check_only:
@@ -250,7 +258,7 @@ def upgrade(
     # Create the replacements before interrupting the installed services.
     try:
         for target in targets:
-            config = replacement_config(target, image)
+            config = replacement_config(target, image, continuous_playback_vlm=manifest.get("continuous_playback_vlm", False))
             if "com.docker.compose.image" in (config.get("Labels") or {}):
                 config["Labels"]["com.docker.compose.image"] = new_id
             name = target["Name"].lstrip("/")
