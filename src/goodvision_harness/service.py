@@ -150,6 +150,7 @@ from .run_postprocess import RunPostprocess
 from .scene_archive import SceneArchive
 from .scene_capture import SceneCaptureClient
 from .scene_delivery import SceneDisplayWorker, TrackedSceneDisplayWorker
+from .continuous_display import ContinuousTrackedSceneDisplayWorker
 from .scene_model import TemporalVLMInspector
 from .scene_results import SceneResultPublisher
 from .scene_runtime import SceneRuntime
@@ -2524,13 +2525,13 @@ class HarnessRuntime:
                     )
                 next_scene.automatic_temporal_inference = True
             display_class = (
-                TrackedSceneDisplayWorker
+                ContinuousTrackedSceneDisplayWorker
                 if self.config.rich_labeling.backend == "sam31_stream"
                 else SceneDisplayWorker
             )
             display_options = (
                 {"delay_seconds": self._display_settings.delay_seconds}
-                if display_class is TrackedSceneDisplayWorker else {}
+                if issubclass(display_class, TrackedSceneDisplayWorker) else {}
             )
             next_display = (
                 display_class(
