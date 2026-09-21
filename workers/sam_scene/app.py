@@ -11,7 +11,6 @@ import os
 import threading
 import time
 import uuid
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -623,15 +622,20 @@ def decode_jpeg(payload: bytes, settings: Settings) -> Any:
     if not payload or len(payload) > settings.max_jpeg_bytes:
         raise HTTPException(413, "JPEG size outside allowed bounds")
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(payload)) as image:
-                if image.format != "JPEG":
-                    raise HTTPException(400, "payload is not JPEG")
-                if image.width * image.height > settings.max_image_pixels:
-                    raise HTTPException(413, "JPEG pixel count exceeds limit")
-                # Match source pixel coordinates; do not apply EXIF rotation.
-                return image.convert("RGB")
+        with Image.open(io.BytesIO(payload)) as image:
+            if image.format != "JPEG":
+                raise HTTPException(400, "payload is not JPEG")
+            pixels = image.width * image.height
+            pillow_limit = Image.MAX_IMAGE_PIXELS
+            # Parallel decoders must not mutate process-wide warning filters.
+            # Explicitly enforce both caps before RGB allocation, even when the
+            # caller ignores Pillow's warning or disables its own pixel limit.
+            if pixels > settings.max_image_pixels or (
+                pillow_limit is not None and pixels > pillow_limit
+            ):
+                raise HTTPException(413, "JPEG pixel count exceeds limit")
+            # Match source pixel coordinates; do not apply EXIF rotation.
+            return image.convert("RGB")
     except (Image.DecompressionBombWarning, Image.DecompressionBombError):
         raise HTTPException(413, "JPEG pixel count exceeds limit") from None
     except (UnidentifiedImageError, OSError, ValueError):

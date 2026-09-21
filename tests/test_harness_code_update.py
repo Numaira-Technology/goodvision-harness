@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -262,20 +263,37 @@ def test_unknown_secondary_version_is_rejected_before_any_mutation(tmp_path):
     assert not any(method != "GET" for method, _, _ in engine.calls)
 
 
-def test_windows_launcher_accepts_update_and_keeps_archive_reference(tmp_path):
-    import hashlib
-
-    # The old multi-GB delivery can be removed without disabling updater tests.
-    before = {
-        "RELEASE.json": json.dumps({"accepted_image_ids": list(WINDOWS_BASE_IDS), "image": "original-image.tar"}).encode(),
-        "SOURCE_HASHES.json": json.dumps({"image_id": WINDOWS_BASE_IDS[0], "source": "original", "files": {}}).encode(),
+@pytest.fixture
+def windows_release(tmp_path):
+    # A checkout has no locally built dist/ bundle. Model its metadata contract
+    # here, including real checksums, without requiring a published image archive.
+    metadata = {
+        "RELEASE.json": {
+            "accepted_image_ids": list(WINDOWS_BASE_IDS),
+            "image": {"file": "image.tar", "sha256": "original-archive-hash"},
+        },
+        "SOURCE_HASHES.json": {
+            "image_id": WINDOWS_BASE_IDS[0],
+            "files": {"fleet_diagnostics.py": "original-source"},
+        },
     }
-    before["FILES.json"] = json.dumps({"files": [
-        {"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-        for name, data in before.items()
-    ]}).encode()
-    for name, data in before.items():
+    inventory = []
+    for name, value in metadata.items():
+        data = (json.dumps(value, indent=2) + "\n").encode("utf-8")
         (tmp_path / name).write_bytes(data)
+        inventory.append({
+            "path": name, "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        })
+    (tmp_path / "FILES.json").write_text(
+        json.dumps({"files": inventory}), encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_windows_launcher_accepts_update_and_keeps_archive_reference(windows_release):
+    tmp_path = windows_release
+    before = (tmp_path / "RELEASE.json").read_bytes()
     backup = read_metadata(tmp_path, WINDOWS_BASE_IDS[0])
     manifest = MANIFEST | {
         "files": [{"path": "payload/fleet_diagnostics.py", "sha256": "updated-source"}]
@@ -283,7 +301,7 @@ def test_windows_launcher_accepts_update_and_keeps_archive_reference(tmp_path):
     update_metadata(tmp_path, backup, manifest, "new-image")
     release = json.loads((tmp_path / "RELEASE.json").read_text())
     assert "new-image" in release["accepted_image_ids"]
-    assert release["image"] == json.loads(before["RELEASE.json"])["image"]
+    assert release["image"] == json.loads(before)["image"]
     read_metadata(tmp_path, "new-image")
     assert (
         json.loads((tmp_path / "SOURCE_HASHES.json").read_text())["files"][
@@ -291,6 +309,14 @@ def test_windows_launcher_accepts_update_and_keeps_archive_reference(tmp_path):
         ]
         == "updated-source"
     )
+
+
+@pytest.mark.parametrize("name", ["RELEASE.json", "SOURCE_HASHES.json"])
+def test_windows_release_rejects_tampered_metadata(windows_release, name):
+    path = windows_release / name
+    path.write_bytes(path.read_bytes() + b"\n")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        read_metadata(windows_release, WINDOWS_BASE_IDS[0])
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows entry points")

@@ -1945,7 +1945,7 @@
         latest=data.frames.at(-1)?.media_timestamp,deadline=latest-(Number(config.delay_seconds)||0)-.5;
       this.queue.push({data,size,epoch:this.acceptEpoch});this.queueBytes+=size;this.queueFrames+=data.frames.length;
       // Keep still-useful pictures through a short decode stall, not an unlimited
-      // replay backlog. This queue contains display JPEGs only, never SAM work.
+      // replay backlog. This queue contains display JPEGs only, never inference work.
       while(this.queue.length>1&&(this.queueBytes>32*1024**2||this.queueFrames>128||
         this.queue[0].data.frames.at(-1)?.media_timestamp<deadline)){
         const old=this.queue.shift();this.queueBytes-=old.size;this.queueFrames-=old.data.frames.length;

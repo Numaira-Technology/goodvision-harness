@@ -399,6 +399,11 @@ def test_fleet_start_synchronizes_real_peer_runtime_before_start(
 
 def test_slow_start_is_visible_cancellable_and_blocks_configuration(rig, monkeypatch):
     runtime = rig.make()
+    # Readiness gates fused sessions; independent VLM sessions deliberately
+    # bypass this optional tracker gate (covered in test_vlm_independent_service).
+    runtime.config = replace(runtime.config, runtime=replace(
+        runtime.config.runtime, scene_independent_vlm=False,
+    ))
     entered, release = Event(), Event()
 
     def wait_for_readiness():

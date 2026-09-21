@@ -35,7 +35,11 @@ def runtime(tmp_path, monkeypatch):
     config = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     config = replace(
         config,
-        runtime=replace(config.runtime, scene_mode="active"),
+        # Fused mode requires face readiness at startup. Independent VLM mode
+        # intentionally loads optional face models later, in its face worker.
+        runtime=replace(
+            config.runtime, scene_mode="active", scene_independent_vlm=False
+        ),
         rich_labeling=replace(
             config.rich_labeling, enabled=False, tracking_enabled=False
         ),
