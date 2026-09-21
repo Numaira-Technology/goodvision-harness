@@ -97,17 +97,21 @@ COMPACT_NO_EVENTS_RULE = (
     "Compact negative output exception (overrides all full-event JSON examples, "
     "description requirements, and actor instructions below): after checking "
     "EVERY requested safety event, if ALL are negative, return ONLY "
-    '{"no_events":0.95}. Replace 0.95 with your numeric confidence (0..1) in '
-    "the all-negative verdict. Include no other keys, events, descriptions, "
-    "actors, boxes, or prose. This is a completed negative verdict for every "
-    "requested label, never a substitute for an error or an unperformed check. "
-    "If ANY requested event is positive, do NOT use no_events. You MAY return "
-    "ONLY {\"alerts\":{\"smoking\":0.82}} listing each positive event_label with "
-    "confidence 0..1, omitting boxes, actors, descriptions, and negative labels. "
-    "Omitted requested labels are completed negatives. A later full events array "
-    "may add boxes; alerts is already a completed positive verdict. Otherwise "
-    "return the full events array for every requested label, with bilingual "
-    "descriptions and grounded target boxes as specified."
+    '{"no_events":0.95,"scene":"两人沿走廊走过"}. Replace 0.95 with your numeric '
+    "confidence (0..1) in the all-negative verdict. scene is a brief visible "
+    "caption of the newest image (a short phrase, not a paragraph). Include no "
+    "other keys, events, descriptions, actors, boxes, or prose. This is a "
+    "completed negative verdict for every requested label, never a substitute "
+    "for an error or an unperformed check. If ANY requested event is positive, "
+    "do NOT use no_events. You MAY return "
+    'ONLY {"alerts":{"smoking":0.82},"scene":"男子站着抽烟"} listing each '
+    "positive event_label with confidence 0..1, omitting boxes, actors, "
+    "descriptions, and negative labels. Omitted requested labels are completed "
+    "negatives. A later full events array may add boxes; alerts is already a "
+    "completed positive verdict. Always include scene with no_events, alerts, "
+    "or a full events array. Otherwise return the full events array for every "
+    "requested label, with bilingual descriptions and grounded target boxes as "
+    "specified."
 )
 ACTOR_ASSOCIATION_RULE = (
     "Additional optional tracking metadata, without changing any event verdict "
@@ -318,14 +322,26 @@ class GroundedEventClassification:
         object.__setattr__(self, "matched_memory_ids", memory_ids)
 
 
+def _parse_optional_scene(payload: Mapping[str, Any]) -> str:
+    raw = payload.get("scene_summary", payload.get("scene"))
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise TypeError("scene must be text")
+    text = " ".join(raw.split()).strip()
+    if len(text) > 80:
+        text = text[:80].rstrip()
+    return text
+
+
 def _parse_compact_alerts(
     payload: Mapping[str, Any],
     *,
     requested_labels: tuple[str, ...],
     analysis_kind: str,
 ) -> MultiGroundedClassification:
-    if set(payload) != {"alerts"}:
-        raise ValueError("alerts must be the only response field")
+    if not {"alerts"} <= set(payload) <= {"alerts", "scene", "scene_summary"}:
+        raise ValueError("alerts may only include an optional scene caption")
     raw_alerts = payload["alerts"]
     if not isinstance(raw_alerts, Mapping) or not raw_alerts:
         raise TypeError("alerts must be a non-empty object")
@@ -365,6 +381,7 @@ def _parse_compact_alerts(
             for label in requested_labels
         ),
         analysis_kind=analysis_kind,
+        scene_summary=_parse_optional_scene(payload),
     )
 
 
@@ -380,6 +397,7 @@ class MultiGroundedClassification:
     # Observations such as known faces belong in the frame result without
     # becoming evidence for a positive safety or stranger judgment.
     supporting_objects: tuple[ModelObject, ...] = ()
+    scene_summary: str = ""
 
     def __post_init__(self) -> None:
         judgments = tuple(self.judgments)
@@ -910,8 +928,8 @@ def parse_multi_grounded_classification(
 
     payload = _json_object(text)
     if "no_events" in payload:
-        if set(payload) != {"no_events"}:
-            raise ValueError("no_events must be the only response field")
+        if not {"no_events"} <= set(payload) <= {"no_events", "scene", "scene_summary"}:
+            raise ValueError("no_events may only include an optional scene caption")
         confidence = _number(payload["no_events"], "no_events")
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("no_events must be between 0 and 1")
@@ -930,6 +948,7 @@ def parse_multi_grounded_classification(
                 for label in requested_labels
             ),
             analysis_kind=analysis_kind,
+            scene_summary=_parse_optional_scene(payload),
         )
     if "alerts" in payload:
         return _parse_compact_alerts(
@@ -1001,6 +1020,7 @@ def parse_multi_grounded_classification(
         judgments=tuple(parsed[label] for label in requested_labels),
         analysis_kind=analysis_kind,
         actors=_parse_actors(payload),
+        scene_summary=_parse_optional_scene(payload),
     )
 
 
@@ -1204,8 +1224,8 @@ def build_multi_grounding_messages(
         f"Sample timestamps: {timestamps}"
         f"{contract_section}\n\n"
         f"{_sensitivity_actor_rule(POSITIVE_EVENT_ACTOR_RULE, smoking_high)}\n"
-        'If ALL requested events are negative, return only {"no_events":0.95} '
-        "with your confidence; omit all other fields.\n"
+        'If ALL requested events are negative, return {"no_events":0.95,"scene":"..."} '
+        "with your confidence and a brief visible caption.\n"
         "The live JPEG images follow in chronological order."
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]

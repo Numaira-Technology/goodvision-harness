@@ -232,6 +232,7 @@ class AnalysisResult:
     model_latency_seconds: float
     analysis_kind: str = "event"
     missing_event_labels: tuple[str, ...] = ()
+    scene_summary: str = ""
 
     def __post_init__(self) -> None:
         for name, value in {
@@ -297,6 +298,7 @@ class AnalysisResult:
             "emitted_at": self.emitted_at,
             "frame": self.frame.as_dict(),
             "description": self.description,
+            "scene_summary": str(self.scene_summary or "").strip(),
             "analysis_complete": not self.missing_event_labels,
             "missing_event_labels": list(self.missing_event_labels),
             "judgments": [item.as_dict() for item in self.judgments],

@@ -1381,8 +1381,9 @@ function resetOverallDescription(){
 function renderOverallDescription(result){
   if(state.overallResult&&compareClassificationFrames(result,state.overallResult)<0)return;
   state.overallResult=result;
-  ui.overallDescription.textContent=typeof result.description==="string"&&result.description.trim()
-    ?result.description:"本帧未提供整体描述 / No overall description for this frame";
+  const scene=typeof result.scene_summary==="string"?result.scene_summary.trim():"";
+  const fallback=typeof result.description==="string"?result.description.trim():"";
+  ui.overallDescription.textContent=scene||fallback||"本帧未提供整体描述 / No overall description for this frame";
   const frame=result.frame||{};
   ui.overallDescriptionMeta.textContent="Frame "+(frame.source_frame_index??"-")+
     " · "+number(frame.timestamp_seconds,3)+"s"
@@ -1584,7 +1585,8 @@ function log(result,judgments,boxes){
   const confidences=(active.length?active:evaluated).map(judgment=>Number(judgment.confidence)).filter(Number.isFinite);
   const aggregateConfidence=confidences.length
     ?(active.length?Math.max(...confidences):Math.min(...confidences)):null;
-  const description=(active.length
+  const scene=typeof result.scene_summary==="string"?result.scene_summary.trim():"";
+  const description=(scene?scene+" · ":"")+(active.length
     ?active.map(judgment=>String(judgment.event_label||"event")+": "+(judgment.description||"Detected.")).join(" | ")
     :missing.length?(evaluated.length?"Clear in this frame: "+[...observed].join(", ")+".":"No completed feature judgment in this frame.")
       :"All selected events clear in this frame.")+

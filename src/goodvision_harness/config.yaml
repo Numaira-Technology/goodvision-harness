@@ -63,7 +63,7 @@ sliding_window:
 inference_service:
   # INFERENCE_PROVIDER selects a route without changing the pipeline.
   provider: aiclub
-  timeout_seconds: 60.0
+  timeout_seconds: 90.0
   # Avoid retrying provider errors into stale live results.
   max_retries: 0
   retry_backoff_seconds: 1.0

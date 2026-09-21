@@ -708,6 +708,9 @@ class StreamingSession:
                             analysis_kind=getattr(
                                 classification, "analysis_kind", "event"
                             ),
+                            scene_summary=str(
+                                getattr(classification, "scene_summary", "") or ""
+                            ).strip(),
                         )
                         try:
                             timeline_result = self.person_registry.prepare_analysis(

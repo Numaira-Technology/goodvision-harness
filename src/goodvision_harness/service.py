@@ -3058,7 +3058,9 @@ def _overall_description_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "analysis_complete",
                 "missing_event_labels",
             )
+            if key in payload
         },
+        "scene_summary": str(payload.get("scene_summary") or "").strip(),
     }
 
 
