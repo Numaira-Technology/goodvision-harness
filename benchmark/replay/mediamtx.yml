@@ -1,0 +1,25 @@
+# Minimal MediaMTX config for benchmark replay.
+# MediaMTX ingests RTSP (published by ffmpeg) and re-serves it as WHEP/WebRTC,
+# which is the live protocol the harness consumes. Mainline ffmpeg cannot publish
+# WHIP/WHEP directly, so we publish RTSP here and let MediaMTX convert.
+#
+# Endpoints once running (default ports):
+#   RTSP publish/read : rtsp://localhost:8554/<path>
+#   WHEP (read)       : http://localhost:8889/<path>/whep   <- harness --stream-url
+#
+# Run: mediamtx ./mediamtx.yml   (download the single binary from bluenviron/mediamtx)
+
+logLevel: info
+
+rtsp: yes
+rtspAddress: :8554
+
+webrtc: yes
+webrtcAddress: :8889
+
+# Named paths, one per benchmark video. Publishers push to these over RTSP.
+paths:
+  benchA:   # sample_91ffb5b98379cc5a (NTU CCTV fight, .mpeg)
+    source: publisher
+  benchB:   # crowd_mot17_mot17_02 (MOT17-02, assembled mp4)
+    source: publisher
