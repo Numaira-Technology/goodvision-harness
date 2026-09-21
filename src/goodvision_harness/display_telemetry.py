@@ -1,6 +1,7 @@
 """Validate image-free browser presentation measurements."""
 
 import math
+import re
 
 COUNTERS = frozenset({
     "network_requests", "network_failures", "network_bytes_received",
@@ -80,12 +81,17 @@ IDENTITY = frozenset({"stream_session_id", "generation", "crop_version"})
 
 def validate_display_metrics(payload: object) -> dict:
     if not isinstance(payload, dict) or not IDENTITY <= payload.keys() or (
-        payload.keys() - IDENTITY - COUNTERS - MEASUREMENTS
+        payload.keys() - IDENTITY - COUNTERS - MEASUREMENTS - {"display_instance_id"}
     ):
         raise ValueError("invalid display metrics fields")
     sid = payload["stream_session_id"]
     if not isinstance(sid, str) or not 1 <= len(sid) <= 256:
         raise ValueError("invalid display run")
+    if "display_instance_id" in payload and (
+        not isinstance(payload["display_instance_id"], str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{1,96}", payload["display_instance_id"]) is None
+    ):
+        raise ValueError("invalid display instance")
     for key in (COUNTERS | {"generation", "crop_version"}) & payload.keys():
         if type(payload[key]) is not int or not 0 <= payload[key] <= 2**53 - 1:
             raise ValueError("invalid display counter")

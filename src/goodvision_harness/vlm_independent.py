@@ -110,6 +110,7 @@ class VLMProcessConfig:
     sensitivities: tuple[tuple[str, str], ...] = ()
     observation_fps: float = 1.25
     max_in_flight: int = 4
+    route_id: str | None = None
 
     def __post_init__(self):
         if not self.stream_session_id or not self.source_id or not self.labels:
@@ -170,12 +171,16 @@ class IndependentEventState:
             )
         observations = []
         for index, verdict in enumerate(verdicts):
-            ids = tuple(sorted(mapping[sid] for sid in verdict.subject_ids))
+            ids = tuple(
+                sorted(mapping[sid] for sid in verdict.subject_ids if sid in mapping)
+            )
+            grounded = bool(verdict.subject_ids) and len(ids) == len(
+                verdict.subject_ids
+            )
             evidence_id = f"vlm:{job.request.request_id}:{index}"
-            # An unlocalized negative may coexist with a valid positive in a
-            # model response. Retain it for audit, but it cannot clear a person
-            # event, count as evaluated coverage or cancel the grounded positive.
-            accepted = bool(ids) and self.scene.observe_event(
+            # Event assessment survives bad geometry. Only complete grounding
+            # can update a person's confirmation/clear votes or enter SAM fusion.
+            accepted = grounded and self.scene.observe_event(
                 verdict.event_label,
                 ids,
                 timestamp_seconds=at,
@@ -192,7 +197,8 @@ class IndependentEventState:
                     "confidence": verdict.confidence,
                     "evidence_id": evidence_id,
                     "accepted": accepted,
-                    "grounded": bool(ids),
+                    "grounded": grounded,
+                    "grounding_issues": list(verdict.grounding_issues),
                 }
             )
         self.scene.advance(at)
@@ -201,14 +207,45 @@ class IndependentEventState:
             {**event, "alert": event["phase"] == "confirmed"}
             for event in snapshot["events"]
         ]
-        reported = {v.event_label for v in verdicts if v.subject_ids}
+        reported = {v.event_label for v in verdicts}
         judgments = []
         for label in self.config.labels:
             if label not in reported:
                 continue
             relevant = [event for event in events if event["event_label"] == label]
             confirmed = [event for event in relevant if event["phase"] == "confirmed"]
-            votes = [v for v in verdicts if v.event_label == label and v.subject_ids]
+            votes = [v for v in verdicts if v.event_label == label]
+            assessments = [o for o in observations if o["event_label"] == label]
+            observed_detected = (
+                True
+                if any(v.detected is True for v in votes)
+                else False
+                if all(v.detected is False for v in votes)
+                else None
+            )
+            observation_name = (
+                "positive"
+                if observed_detected is True
+                else "negative"
+                if observed_detected is False
+                else "uncertain"
+            )
+            localization_state = (
+                "available"
+                if all(o["grounded"] for o in assessments)
+                else "partial"
+                if any(o["subject_ids"] for o in assessments)
+                else "unavailable"
+            )
+            confirmation_state = (
+                "confirmed"
+                if confirmed
+                else "pending"
+                if observed_detected is True
+                else "not_detected"
+                if observed_detected is False
+                else "uncertain"
+            )
             detected = (
                 True
                 if confirmed
@@ -218,10 +255,21 @@ class IndependentEventState:
                 {
                     "event_label": label,
                     "detected": detected,
-                    "confidence": max(
-                        (v.confidence or 0.0 for v in votes), default=0.0
+                    "observed_detected": observed_detected,
+                    "localization_state": localization_state,
+                    "confirmation_state": confirmation_state,
+                    "grounding_issues": sorted(
+                        {issue for vote in votes for issue in vote.grounding_issues}
                     ),
-                    "description": f"{label}: independent temporal observation",
+                    "confidence": max(
+                        (v.confidence for v in votes if v.confidence is not None),
+                        default=None,
+                    ),
+                    "description": (
+                        f"{label}: model observation {observation_name}; "
+                        f"confirmation {confirmation_state}; "
+                        f"localization {localization_state}"
+                    ),
                     "object_ids": sorted(
                         {sid for e in confirmed for sid in e["subject_ids"]}
                     ),
@@ -243,6 +291,8 @@ class IndependentEventState:
             "observation_id": message_id,
             "description": "Independent VLM temporal report",
             "analysis_complete": not error and reported == set(self.config.labels),
+            "localization_complete": bool(observations)
+            and all(item["grounded"] for item in observations),
             "request_id": job.request.request_id,
             "sequence": self.sequence,
             "state": "failed" if error else "completed",
@@ -270,6 +320,7 @@ class IndependentEventState:
             },
             "model": {
                 "name": PUBLIC_MODEL_NAME,
+                "route_id": self.config.route_id,
                 "latency_seconds": timing["model_seconds"],
             },
             "judgments": judgments,
@@ -336,6 +387,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
     def evaluate(job):
         started, started_at = time.monotonic(), utc_now()
         verdicts, error = (), None
+        validation_reason = None
         try:
             if not hasattr(thread_state, "inspector"):
                 thread_state.inspector = inspector_factory(config)
@@ -352,6 +404,27 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 "empty_response",
             }:
                 error = "inspection_failed"
+            reason = getattr(exc, "validation_reason", None)
+            if reason in {
+                "invalid_subject_bbox",
+                "invalid_subject",
+                "invalid_verdict",
+                "duplicate_verdict",
+                "subject_fields",
+                "verdict_fields",
+                "independent_object_required",
+                "independent_capacity",
+                "completion_not_finished",
+                "duplicate_json_field",
+                "nonfinite_json_number",
+                "invalid_json_syntax",
+                "invalid_json_encoding",
+                "json_nesting_limit",
+                "response_size_limit",
+            }:
+                validation_reason = reason
+            elif error in {"invalid_response", "empty_response"}:
+                validation_reason = "invalid_response_shape"
         return (
             verdicts,
             error,
@@ -360,6 +433,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 "request_ended_at": utc_now(),
                 "request_started_monotonic": started,
                 "model_seconds": time.monotonic() - started,
+                "validation_reason": validation_reason,
             },
         )
 
@@ -430,8 +504,20 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                     stats["incomplete_reports"] += 1
                 if not error and not verdicts:
                     stats["empty_reports"] += 1
-                stats["ungrounded_verdicts"] += sum(not v.subject_ids for v in verdicts)
-                report["process_metrics"] = dict(stats)
+                stats["ungrounded_verdicts"] += sum(
+                    not item["grounded"] for item in report["observations"]
+                )
+                if verdicts and not report["localization_complete"]:
+                    stats["unlocalized_reports"] += 1
+                if any("invalid_subject_bbox" in v.grounding_issues for v in verdicts):
+                    stats["invalid_bbox_reports"] += 1
+                inflight = sum(not item[2].done() for item in pending.values())
+                report["process_metrics"] = {
+                    **stats,
+                    "active_requests": len(pending),
+                    "inflight_requests": inflight,
+                    "pending_requests": len(pending) - inflight,
+                }
                 emit({"kind": "report", "report": report})
             if history and len(pending) < config.max_in_flight:
                 sample = history[-1]
@@ -482,6 +568,12 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                         "stats": {
                             **stats,
                             "active_requests": len(pending),
+                            "inflight_requests": sum(
+                                not item[2].done() for item in pending.values()
+                            ),
+                            "pending_requests": sum(
+                                item[2].done() for item in pending.values()
+                            ),
                             "retained_frames": len(history),
                             "retained_bytes": sum(
                                 len(x.frame.jpeg_bytes) for x in history
@@ -548,10 +640,15 @@ class IndependentVLMBranch:
             "state": "starting",
             "succeeded_requests": 0,
             "failed_requests": 0,
+            "last_attempt_state": None,
+            "last_attempt_error": None,
+            "analysis_complete": False,
+            "localization_complete": False,
         }
         self._stats = Counter()
         self._last_sequence = -1
         self._last_source_monotonic = self._last_publish_monotonic = None
+        self._last_success_monotonic = None
         self._next_sample = -math.inf
         self._started = False
         self._reader = self._source = self._reaper = None
@@ -688,12 +785,22 @@ class IndependentVLMBranch:
                 self._status.update(report.get("process_metrics", {}))
                 self._status.update(
                     last_result_at=report["emitted_at"],
+                    last_attempt_state=report["state"],
+                    last_attempt_error=report.get("error_code"),
+                    last_attempt_validation_reason=report["timing"].get(
+                        "validation_reason"
+                    ),
+                    analysis_complete=report.get("analysis_complete", False),
+                    localization_complete=report.get("localization_complete", False),
                     last_source_to_publish_seconds=report["timing"][
                         "source_to_publish_seconds"
                     ],
                 )
                 self._stats["published_reports"] += 1
                 self._last_publish_monotonic = now
+                if report["state"] == "completed":
+                    self._last_success_monotonic = now
+                    self._status["last_success_at"] = report["emitted_at"]
                 evidence = tuple(
                     self._evidence[item["frame_sequence"]].frame
                     for item in report["evidence"]
@@ -709,6 +816,8 @@ class IndependentVLMBranch:
                 source_timestamp_seconds=report["frame"]["timestamp_seconds"],
                 source_to_publish_seconds=report["timing"]["source_to_publish_seconds"],
                 state=report["state"],
+                error_code=report.get("error_code"),
+                validation_reason=report["timing"].get("validation_reason"),
                 process_pid=self._process.pid,
             )
 
@@ -748,7 +857,8 @@ class IndependentVLMBranch:
             return False
         return self._camera_dispatch.offer(jpeg, timestamp, sequence)
 
-    def stats(self):
+    def health(self):
+        """Bounded local counters only; never query fusion, archives or workers."""
         with self._lock:
             result = {
                 **self._status,
@@ -756,6 +866,7 @@ class IndependentVLMBranch:
                 "pid": self._process.pid,
                 "stream_session_id": self.config.stream_session_id,
                 "generation": self.config.generation,
+                "route_id": self.config.route_id,
                 "independent": True,
                 "last_source_age_seconds": (
                     None
@@ -767,11 +878,22 @@ class IndependentVLMBranch:
                     if self._last_publish_monotonic is None
                     else max(0.0, time.monotonic() - self._last_publish_monotonic)
                 ),
+                "last_success_age_seconds": (
+                    None
+                    if self._last_success_monotonic is None
+                    else max(0.0, time.monotonic() - self._last_success_monotonic)
+                ),
+                "pending_requests": self._status.get("pending_requests", 0),
+                "inflight_requests": self._status.get("inflight_requests", 0),
                 "input_capacity": INPUT_CAPACITY,
                 "output_capacity": OUTPUT_CAPACITY,
                 "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
                 "observation_fps": self.config.observation_fps,
             }
+        return result
+
+    def stats(self):
+        result = self.health()
         if self.fusion is not None:
             result["fusion"] = self.fusion.stats()
         if self._camera_dispatch is not None:

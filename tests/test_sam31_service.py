@@ -518,6 +518,7 @@ def test_private_sam_source_read_releases_state_lock_and_rechecks_revision(repla
     from types import SimpleNamespace
     runtime = service.HarnessRuntime.__new__(service.HarnessRuntime)
     runtime._state_lock = threading.RLock()
+    runtime._source_commit_lock = threading.RLock()
     runtime._rich_config_revision = 3
     entered, release, lock_available = threading.Event(), threading.Event(), threading.Event()
     sources, commits = (object(),), []

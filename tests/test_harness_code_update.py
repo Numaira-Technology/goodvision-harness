@@ -152,6 +152,29 @@ def test_recreation_preserves_secrets_ports_networks_and_anonymous_models():
     }
 
 
+def test_realtime_release_migrates_old_flags_without_losing_credentials():
+    original = container(1)
+    original["Config"]["Env"] += ["LOCAL_CAMERA_TARGET_FPS=5", "SCENE_INDEPENDENT_VLM=false"]
+    value = replacement_config(original, "updated", continuous_playback_vlm=True)
+    environment = dict(item.split("=", 1) for item in value["Env"])
+    assert environment["LOCAL_CAMERA_TARGET_FPS"] == "15"
+    assert environment["SCENE_INDEPENDENT_VLM"] == "true"
+    assert environment["SCENE_ENGINE_MODE"] == "active"
+    assert environment["KEY"] == "keep-secret"
+    assert environment["HARNESS_FLEET_CAPACITY"] == "2"
+
+
+def test_release_contains_independent_vlm_and_browser_runtime_but_no_local_data(tmp_path):
+    output = tmp_path / "update.zip"
+    package(output)
+    with zipfile.ZipFile(output) as archive:
+        manifest_path = next(name for name in archive.namelist() if name.endswith("/manifest.json"))
+        manifest = json.loads(archive.read(manifest_path))
+        paths = {item["path"] for item in manifest["files"]}
+    assert {"payload/vlm_independent.py", "payload/vlm_independent_model.py", "payload/result_bus.py", "payload/camera_display.js", "payload/assets/opencv-4.13.0.js"} <= paths
+    assert not any(name.endswith((".sqlite3", ".pyc", ".mp4", ".onnx", ".env")) for name in paths)
+
+
 def test_success_replaces_original_containers_without_retaining_backups(tmp_path):
     engine = FakeEngine()
     record = tmp_path / "state.json"
@@ -246,7 +269,7 @@ def windows_release(tmp_path):
     # here, including real checksums, without requiring a published image archive.
     metadata = {
         "RELEASE.json": {
-            "accepted_image_ids": [WINDOWS_BASE_IDS[0]],
+            "accepted_image_ids": list(WINDOWS_BASE_IDS),
             "image": {"file": "image.tar", "sha256": "original-archive-hash"},
         },
         "SOURCE_HASHES.json": {

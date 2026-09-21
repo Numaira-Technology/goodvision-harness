@@ -229,7 +229,7 @@ def test_secondary_preview_does_not_depend_on_stale_local_tracking_settings(
     monkeypatch.setenv("HARNESS_FLEET_CAMERA_INDEX", "2")
     monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "16")
     runtime = rig.make()
-    assert runtime.tracking_camera_capacity() == 1
+    assert runtime.tracking_camera_capacity() == 16
     assert runtime.service_execution_settings()["tracking_mode"] == "legacy"
     adapter = ControlledAdapter("rtsp://camera02.local/live")
     monkeypatch.setattr(

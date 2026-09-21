@@ -155,8 +155,10 @@ def test_independent_model_prompt_and_strict_grounding():
     assert parsed[0].subject_boxes == (("p1", BOX),)
     raw["verdicts"][0]["subject_ids"] = ["p2"]
     response["choices"][0]["message"]["content"] = json.dumps(raw)
-    with pytest.raises(ValueError):
-        inspector._parse(inspection, response)
+    unlocalized, = inspector._parse(inspection, response)
+    assert unlocalized.detected is True
+    assert unlocalized.subject_boxes == ()
+    assert "missing_subject" in unlocalized.grounding_issues
     inspector.close()
 
 
@@ -408,17 +410,19 @@ def test_unlocalized_negatives_do_not_clear_events_or_discard_valid_positives():
     report(state, 1.0, 10, parsed())
     result = report(state, 1.8, 18, parsed())
     assert result["events"][0]["phase"] == "confirmed"
-    assert not result["analysis_complete"]
-    assert result["missing_event_labels"] == ["fall"]
+    assert result["analysis_complete"]
+    assert not result["localization_complete"]
+    assert result["missing_event_labels"] == []
     assert not result["observations"][1]["accepted"]
     unknown_negative = IndependentVerdict("smoking", (), False, 0.9, ())
     for at, seq in ((2.6, 26), (3.4, 34)):
         result = report(state, at, seq, (unknown_negative,))
         assert result["events"][0]["phase"] == "confirmed"
-        assert result["judgments"] == []
+        assert result["judgments"][0]["observed_detected"] is False
+        assert result["judgments"][0]["detected"] is True
     raw["verdicts"][1]["detected"] = True
-    with pytest.raises(ValueError):
-        parsed()
+    assert parsed()[1].detected is True
+    assert not parsed()[1].subject_boxes
     inspector.close()
 
 

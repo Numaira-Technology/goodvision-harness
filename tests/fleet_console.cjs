@@ -28,7 +28,7 @@ function fixture({count=3,allowed=true,mode=allowed?"local":"legacy",usable=allo
   const errors=new Map(),revoked=[],scheduled=[];let blobId=0;
   const fetch=async(url,options={})=>{
     requests.push({url,method:options.method||"GET",body:options.body&&JSON.parse(options.body)});
-    if(errors.has(url))throw new Error(errors.get(url));
+    if(errors.has(url)||errors.has(url.split("?")[0]))throw new Error(errors.get(url)||errors.get(url.split("?")[0]));
     if(url==="/v1/fleet")return {ok:true,json:async()=>data};
     if(url===data.analysis_start_url||url===data.analysis_stop_url){
       const start=url===data.analysis_start_url;
@@ -49,6 +49,44 @@ function fixture({count=3,allowed=true,mode=allowed?"local":"legacy",usable=allo
     AbortController,URL:{createObjectURL:()=>"blob:frame-"+(++blobId),revokeObjectURL:value=>revoked.push(value)}});
   return {app,data,document,requests,statuses,prefs,errors,revoked,scheduled};
 }
+
+test("status request failure does not label a still-playing video offline",async()=>{
+  const view=fixture({count:1});await view.app.refresh();
+  const row=view.app.rows.get("camera01");
+  row.status={connection_state:"connected",analysis_state:"running"};row.lastPresentedAt=100;
+  view.errors.set(row.camera.status_url,"timeout");await view.app.pollStatus();
+  assert.equal(row.unreachable,true);assert.match(row.state.textContent,/视频播放中.*状态更新延迟/);
+  row.lastPresentedAt=-5000;view.app.updateRow(row);
+  assert.match(row.state.textContent,/暂时无法确认/);assert.doesNotMatch(row.state.textContent,/离线/);
+  view.errors.delete(row.camera.status_url);await view.app.pollStatus();
+  assert.equal(row.unreachable,false);view.app.close();
+});
+
+test("routine fleet health uses the lightweight status path",async()=>{
+  const view=fixture({count:2});await view.app.refresh();
+  const statuses=view.requests.filter(r=>r.url.includes("/status"));
+  assert.equal(statuses.length,2);assert.ok(statuses.every(r=>r.url.endsWith("?lightweight=true")));
+  view.app.close();
+});
+
+test("independent Face and VLM lanes do not claim a GPU or single-stream limit",async()=>{
+  const view=fixture({count:2,allowed:true,mode:"legacy"});view.data.tracking_enabled=false;
+  await view.app.refresh();
+  assert.match(view.app.ui.mode.textContent,/人脸与 VLM/);
+  assert.doesNotMatch(view.app.ui.capacity.textContent,/仅支持单路/);view.app.close();
+});
+
+test("VLM health distinguishes recent success, incomplete labels and a failed attempt",async()=>{
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  row.status={connection_state:"connected",analysis_state:"running",vlm:{independent:true,running:true,ready:true,last_success_age_seconds:1.2,analysis_complete:false}};
+  view.app.updateRow(row);assert.match(row.vlmNote.textContent,/识别持续返回.*1.2.*部分检测项待确认/);
+  row.status.vlm.last_attempt_state="failed";view.app.updateRow(row);
+  assert.match(row.vlmNote.textContent,/最近一次失败/);assert.doesNotMatch(row.vlmNote.textContent,/离线/);
+  Object.assign(row.status.vlm,{ready:false,last_success_age_seconds:20});view.app.updateRow(row);
+  assert.match(row.vlmNote.textContent,/结果延迟.*20.0/);
+  row.status.vlm.running=false;view.app.updateRow(row);assert.match(row.vlmNote.textContent,/暂不可用.*视频继续/);
+  view.app.close();
+});
 
 test("each lane owns its diagnostic document; closing one leaves the others open",async()=>{
   const view=fixture({count:37});await view.app.refresh();

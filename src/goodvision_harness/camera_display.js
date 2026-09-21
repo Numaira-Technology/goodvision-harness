@@ -1133,6 +1133,8 @@
       context.fillText(line,x+padding,y+padding+index*lineHeight,available);});
     context.restore();
   }
+  let displayInstanceSequence=0;
+  const displayDocumentId=Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
   class BrowserController{
     static supported(video){return typeof Worker==="function"&&typeof OffscreenCanvas==="function"&&
       typeof MessageChannel==="function"&&
@@ -1165,6 +1167,7 @@
       warm.disposed=true;warm.resolve(false);warm.worker.terminate();
     }
     constructor({video,canvas,config,settings,socket,onStatus=()=>{},onFailure=()=>{},onMotionTrace=null,motionTraceOptions={}}){
+      this.displayInstanceId=displayDocumentId+"-"+(++displayInstanceSequence);
       this.video=video;this.canvas=canvas;this.config=config;this.settings={...settings};this.socket=socket;
       if(finite(config.analysis_max_image_side)&&config.analysis_max_image_side>0)
         this.settings.max_image_side=Math.min(this.settings.max_image_side,Math.max(1,Math.floor(config.analysis_max_image_side)));
@@ -1757,7 +1760,7 @@
       return finite(timestamp)&&this.latestClock?Math.max(0,this.latestClock.timestamp+
         (performance.now()-this.latestClock.now)/1000-timestamp):null;
     }
-    snapshot(){return {...this.frames.stats(),...this.stats,analysis_pending:this.uploads.length,
+    snapshot(){return {display_instance_id:this.displayInstanceId,...this.frames.stats(),...this.stats,analysis_pending:this.uploads.length,
       configured_display_delay_seconds:this.frames.delay,
       presentation_prefetch_seconds:this.presentPrefetchSeconds,pending_present_queries:this.pendingPresent.size,
       source_width:this.sourceSize?.[0]||0,source_height:this.sourceSize?.[1]||0,
@@ -2032,6 +2035,47 @@
       clearTimeout(this.timer);this.abort?.abort();this.controller?.stop();this.controller=null;}
   }
 
+  function eventObservationSummary(report){
+    if(!report||report.state!=="completed")return "等待本次事件判断";
+    const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械"};
+    const judgments=new Map((report.judgments||[]).map(value=>[value.event_label,value]));
+    const parts=Object.entries(labels).filter(([key])=>judgments.has(key)).map(([key,label])=>{
+      const value=judgments.get(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;
+      let result=observed===true?(value.confirmation_state==="confirmed"?"已确认":"发现，待确认"):observed===false?"未发现":"待判断";
+      if(observed===true&&["unavailable","partial"].includes(value.localization_state))result+="，定位待确认";
+      return label+"："+result;
+    });
+    return parts.length?parts.join(" · "):"本次返回尚无可用事件判断";
+  }
+
+  // A same-origin diagnostic view reuses the already decoded and annotated
+  // fleet canvas. It owns no stream, decoder, motion worker or telemetry slot.
+  class SharedController {
+    constructor({canvas,source,onStatus=()=>{},requestFrame=callback=>requestAnimationFrame(callback),cancelFrame=id=>cancelAnimationFrame(id)}){
+      Object.assign(this,{canvas,source,onStatus,requestFrame,cancelFrame});
+      this.closed=true;this.lastKey=null;this.frameId=null;this.lastStatus=0;
+    }
+    start(){if(!this.closed)return;this.closed=false;this.tick();}
+    tick(){
+      if(this.closed)return;
+      const value=this.source(),media=value?.media,stats=value?.stats;
+      const key=String(stats?.display_instance_id||"")+":"+String(media?.dataset?.frameSequence||"");
+      const width=media?.naturalWidth||media?.width,height=media?.naturalHeight||media?.height;
+      if(width&&height&&key!==this.lastKey){
+        if(this.canvas.width!==width)this.canvas.width=width;
+        if(this.canvas.height!==height)this.canvas.height=height;
+        this.canvas.getContext("2d").drawImage(media,0,0,width,height);
+        for(const name of ["frameSequence","observedAt","mediaTimestamp","receivedAt"]){
+          if(media.dataset?.[name]!==undefined)this.canvas.dataset[name]=media.dataset[name];
+        }
+        this.lastKey=key;
+      }
+      if(stats&&Date.now()-this.lastStatus>=1000){this.lastStatus=Date.now();this.onStatus(stats);}
+      this.frameId=this.requestFrame(()=>this.tick());
+    }
+    stop(){this.closed=true;if(this.frameId!==null)this.cancelFrame(this.frameId);this.frameId=null;}
+  }
+
   return {FrameTimeline,ContourHistory,DisplayIdentities,DisplayStreamDecoder,estimateMotion,warpPolygons,packCameraFrame,sameRun,drawSubjectLabel,
-    BrowserController,NetworkController,decodeDisplayBatch};
+    BrowserController,NetworkController,SharedController,eventObservationSummary,decodeDisplayBatch};
 });

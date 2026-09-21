@@ -33,6 +33,16 @@ def test_receive_apply_and_browser_stall_diagnostics_are_accepted():
     assert validate_display_metrics(report) == report
 
 
+def test_display_instance_is_optional_and_cannot_contain_arbitrary_text():
+    report = {"stream_session_id": "run", "generation": 2, "crop_version": 0}
+    assert validate_display_metrics(report) == report
+    report["display_instance_id"] = "viewer-abc_123"
+    assert validate_display_metrics(report) == report
+    for value in ("https://private.example/path", "x" * 97, "", 3):
+        with pytest.raises(ValueError):
+            validate_display_metrics({**report, "display_instance_id": value})
+
+
 @pytest.mark.parametrize("field,value", [
     ("longtask_entries", [{"name": "private page"}]),
     ("window_capture_total_count", 0.5),
