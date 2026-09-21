@@ -19,8 +19,10 @@ from urllib.parse import quote
 
 if __package__:
     from .release_metadata import read_metadata, update_metadata
+    from .verify_installation import verify_installation
 else:
     from release_metadata import read_metadata, update_metadata
+    from verify_installation import verify_installation
 
 
 class EngineConnection(http.client.HTTPConnection):
@@ -216,9 +218,24 @@ def upgrade(
     project="goodvision-harness",
     base_id=None,
     installation=None,
+    container_names=None,
+    verification_base_id=None,
 ):
+    requested_names = set(container_names or ())
+    if requested_names and (
+        len(requested_names) != len(container_names)
+        or any(
+            not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name)
+            for name in requested_names
+        )
+    ):
+        raise RuntimeError("Invalid or duplicate container names.")
     if record_path.exists():
         record = json.loads(record_path.read_text(encoding="utf-8"))
+        if requested_names and requested_names != {
+            item["name"] for item in record["containers"]
+        }:
+            raise RuntimeError("Containers differ from the recorded update.")
         if record.get("state") == "complete":
             for item in record["containers"]:
                 if engine.inspect(item["name"])["Image"] != record["new_image_id"]:
@@ -226,14 +243,18 @@ def upgrade(
             print("This update is already installed.", flush=True)
             return
     base_id = base_id or manifest["base_id"]
-    if base_id not in manifest["accepted_base_ids"]:
-        raise RuntimeError("Unsupported installed version.")
     targets = []
     for candidate in engine.request("GET", "/containers/json?all=1"):
+        names = {name.lstrip("/") for name in candidate.get("Names", [])}
+        if requested_names and not names & requested_names:
+            continue
         labels = candidate.get("Labels") or {}
         if (
             labels.get("com.docker.compose.project") != project
             or labels.get("goodvision.update.helper") == "true"
+            # Match the Windows selector: retained pre-update containers are
+            # backups, not application lanes that should be upgraded.
+            or any("-before-" in name for name in candidate.get("Names", []))
             or not re.fullmatch(
                 r"harness(?:-\d+)?", labels.get("com.docker.compose.service", "")
             )
@@ -244,8 +265,16 @@ def upgrade(
                 "Main application versions differ. No containers were changed."
             )
         targets.append(engine.inspect(candidate["Id"]))
+    if (
+        requested_names
+        and {target["Name"].lstrip("/") for target in targets} != requested_names
+    ):
+        raise RuntimeError(
+            "One or more selected application containers were not found."
+        )
     if not targets:
         raise RuntimeError("No compatible GoodVision main application found.")
+    verify_installation(engine, manifest, base_id, targets, verification_base_id)
     for target in targets:
         assert_idle(engine, target)
         replacement_config(target, image, continuous_playback_vlm=manifest.get("continuous_playback_vlm", False))
@@ -316,7 +345,9 @@ if __name__ == "__main__":
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--project", default="goodvision-harness")
     parser.add_argument("--base-id")
+    parser.add_argument("--verification-base-id")
     parser.add_argument("--installation", type=Path)
+    parser.add_argument("--containers", help="Comma-separated exact container names")
     args = parser.parse_args()
     manifest = json.loads(Path("/update/manifest.json").read_text(encoding="utf-8"))
     try:
@@ -329,6 +360,8 @@ if __name__ == "__main__":
             args.project,
             args.base_id,
             args.installation,
+            args.containers.split(",") if args.containers else None,
+            args.verification_base_id,
         )
     except Exception as error:
         print(f"Update stopped: {error}", flush=True)
