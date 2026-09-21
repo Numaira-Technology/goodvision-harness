@@ -1,0 +1,1841 @@
+{
+  "trial_id": "aiclub:DeepSeek-V4.1-Flash",
+  "model": "DeepSeek-V4.1-Flash",
+  "provider": "aiclub",
+  "requests": 31,
+  "valid": 26,
+  "wall_seconds": 106.84297689999221,
+  "p50_latency": 4.609500000020489,
+  "p95_latency": 12.30800000000454,
+  "mean_latency": 5.752999999999212,
+  "mean_actors": 0.06451612903225806,
+  "label_accuracy": 0.9326923076923077,
+  "correct_labels": 97,
+  "scored_labels": 104,
+  "labels": {
+    "fight": {
+      "tp": 0,
+      "fp": 0,
+      "tn": 25,
+      "fn": 1,
+      "unscored": 0,
+      "missing": 5,
+      "precision": null,
+      "recall": 0.0
+    },
+    "smoking": {
+      "tp": 2,
+      "fp": 0,
+      "tn": 23,
+      "fn": 1,
+      "unscored": 0,
+      "missing": 5,
+      "precision": 1.0,
+      "recall": 0.6666666666666666
+    },
+    "fall": {
+      "tp": 0,
+      "fp": 0,
+      "tn": 23,
+      "fn": 3,
+      "unscored": 0,
+      "missing": 5,
+      "precision": null,
+      "recall": 0.0
+    },
+    "weapon": {
+      "tp": 1,
+      "fp": 0,
+      "tn": 23,
+      "fn": 2,
+      "unscored": 0,
+      "missing": 5,
+      "precision": 1.0,
+      "recall": 0.3333333333333333
+    }
+  },
+  "clips": [
+    {
+      "clip_id": "caviar:Browse1",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 384,
+      "height": 288,
+      "duration": 42.04,
+      "file": "Browse1.mpg",
+      "source": "goodvision CAVIAR annotation",
+      "scene": "Browsing a window (hard fall negative)",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 8.749500000005355,
+      "max_latency": 12.51500000001397,
+      "mean_actors": 0.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 8,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "caviar:LeftBag",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 384,
+      "height": 288,
+      "duration": 57.88,
+      "file": "LeftBag.mpg",
+      "source": "goodvision CAVIAR annotation",
+      "scene": "Leaves a bag, not a fight",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 3.9375,
+      "max_latency": 4.547000000020489,
+      "mean_actors": 0.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 8,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "caviar:Meet_Crowd",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 384,
+      "height": 288,
+      "duration": 19.84,
+      "file": "Meet_Crowd.mpg",
+      "source": "goodvision CAVIAR annotation",
+      "scene": "Several people walking, no fight",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 3.234500000020489,
+      "max_latency": 3.3130000000237487,
+      "mean_actors": 0.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 8,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "caviar:Meet_Split_3rdGuy",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 384,
+      "height": 288,
+      "duration": 37.2,
+      "file": "Meet_Split_3rdGuy.mpg",
+      "source": "goodvision CAVIAR annotation",
+      "scene": "Three people meet then split",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 3.117500000022119,
+      "max_latency": 3.6880000000237487,
+      "mean_actors": 0.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 8,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "caviar:Rest_FallOnFloor",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 384,
+      "height": 288,
+      "duration": 40.6,
+      "file": "Rest_FallOnFloor.mpg",
+      "source": "goodvision CAVIAR annotation",
+      "scene": "Walk then collapse",
+      "valid": 1,
+      "errors": 1,
+      "mean_latency": 2.8669999999692664,
+      "max_latency": 2.9689999999827705,
+      "mean_actors": 0.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 4,
+      "scored_labels": 4
+    },
+    {
+      "clip_id": "caviar:Rest_SlumpOnFloor",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 384,
+      "height": 288,
+      "duration": 36.76,
+      "file": "Rest_SlumpOnFloor.mpg",
+      "source": "goodvision CAVIAR annotation",
+      "scene": "Person slumps onto the floor",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 3.2115000000048894,
+      "max_latency": 4.89100000000326,
+      "mean_actors": 0.0,
+      "label_accuracy": 0.875,
+      "correct_labels": 7,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "caviar:Walk1",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 384,
+      "height": 288,
+      "duration": 24.76,
+      "file": "Walk1.mpg",
+      "source": "goodvision CAVIAR annotation",
+      "scene": "One person walking (fight negative)",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 4.249999999970896,
+      "max_latency": 5.10999999998603,
+      "mean_actors": 0.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 8,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "commons:feldschiessen",
+      "fps": 29.97002997002997,
+      "frames": 2,
+      "width": 320,
+      "height": 240,
+      "duration": 81.24783333333333,
+      "file": "weapon-feldschiessen.ogv",
+      "source": "Wikimedia Commons Feldschiessen.ogv (sport shooting)",
+      "scene": "People on a range holding and firing rifles",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 7.171999999991385,
+      "max_latency": 10.90700000000652,
+      "mean_actors": 0.0,
+      "label_accuracy": 0.75,
+      "correct_labels": 6,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "ntu:fight_0472",
+      "fps": 23.976023976023978,
+      "frames": 2,
+      "width": 1280,
+      "height": 720,
+      "duration": 40.665625,
+      "file": "0057__ntu_cctv_fights__non_cctv_data__fight_0472__6cb70182630c.mpeg",
+      "source": "fixed_conflict50 / ntu_cctv_fights",
+      "scene": "Fight throughout the clip",
+      "valid": 0,
+      "errors": 2,
+      "mean_latency": 13.132500000006985,
+      "max_latency": 13.25,
+      "mean_actors": 0.0,
+      "label_accuracy": null,
+      "correct_labels": 0,
+      "scored_labels": 0
+    },
+    {
+      "clip_id": "ntu:fight_0822",
+      "fps": 29.97002997002997,
+      "frames": 2,
+      "width": 960,
+      "height": 720,
+      "duration": 37.00363333333333,
+      "file": "0209__ntu_cctv_fights__non_cctv_data__fight_0822__d7255c527cdf.mpeg",
+      "source": "fixed_conflict50 / ntu_cctv_fights",
+      "scene": "Quiet then fight",
+      "valid": 1,
+      "errors": 1,
+      "mean_latency": 7.1714999999676365,
+      "max_latency": 11.420999999972992,
+      "mean_actors": 0.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 4,
+      "scored_labels": 4
+    },
+    {
+      "clip_id": "ntu:fight_0912",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 480,
+      "height": 360,
+      "duration": 62.68,
+      "file": "0337__ntu_cctv_fights__cctv_data__fight_0912__0a41e789ee9d.mpeg",
+      "source": "fixed_conflict50 / ntu_cctv_fights",
+      "scene": "CCTV fight after a delay",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 3.5785000000032596,
+      "max_latency": 5.125,
+      "mean_actors": 0.0,
+      "label_accuracy": 0.875,
+      "correct_labels": 7,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "pexels:rifle-reenactment",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 1920,
+      "height": 1080,
+      "duration": 15.44,
+      "file": "weapon-reenactment-pexels.mp4",
+      "source": "Pexels 9466302 (ordinary camera, not CCTV)",
+      "scene": "Men with rifles in a historical reenactment",
+      "valid": 1,
+      "errors": 1,
+      "mean_latency": 14.202999999979511,
+      "max_latency": 16.71899999998277,
+      "mean_actors": 0.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 4,
+      "scored_labels": 4
+    },
+    {
+      "clip_id": "pexels:smoking-man",
+      "fps": 25.0,
+      "frames": 2,
+      "width": 1920,
+      "height": 1080,
+      "duration": 11.16,
+      "file": "smoking-man-pexels.mp4",
+      "source": "Pexels 9644233 (ordinary camera, not CCTV)",
+      "scene": "Man smoking a cigarette outdoors",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 14.03100000001723,
+      "max_latency": 20.0,
+      "mean_actors": 1.0,
+      "label_accuracy": 1.0,
+      "correct_labels": 8,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "pexels:smoking-night",
+      "fps": 29.97002997002997,
+      "frames": 1,
+      "width": 3840,
+      "height": 2160,
+      "duration": 14.4144,
+      "file": "smoking-night-pexels.mp4",
+      "source": "Pexels 9897062 (ordinary camera, not CCTV)",
+      "scene": "Close-up of a man smoking at night",
+      "valid": 1,
+      "errors": 0,
+      "mean_latency": 6.077999999979511,
+      "max_latency": 6.077999999979511,
+      "mean_actors": 0.0,
+      "label_accuracy": 0.75,
+      "correct_labels": 3,
+      "scored_labels": 4
+    },
+    {
+      "clip_id": "urfall:fall-01",
+      "fps": 30.0,
+      "frames": 2,
+      "width": 320,
+      "height": 240,
+      "duration": 5.333333333333333,
+      "file": "fall-01-cam0-rgb.mp4",
+      "source": "UR Fall Detection Dataset (University of Rzeszow)",
+      "scene": "Staged indoor fall, side camera RGB half",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 6.2735000000102445,
+      "max_latency": 9.969000000040978,
+      "mean_actors": 0.0,
+      "label_accuracy": 0.875,
+      "correct_labels": 7,
+      "scored_labels": 8
+    },
+    {
+      "clip_id": "urfall:fall-02",
+      "fps": 30.0,
+      "frames": 2,
+      "width": 320,
+      "height": 240,
+      "duration": 3.6666666666666665,
+      "file": "fall-02-cam0-rgb.mp4",
+      "source": "UR Fall Detection Dataset (University of Rzeszow)",
+      "scene": "Second staged indoor fall",
+      "valid": 2,
+      "errors": 0,
+      "mean_latency": 5.507500000006985,
+      "max_latency": 6.342999999993481,
+      "mean_actors": 0.0,
+      "label_accuracy": 0.875,
+      "correct_labels": 7,
+      "scored_labels": 8
+    }
+  ],
+  "frames": [
+    {
+      "clip_id": "ntu:fight_0472",
+      "file": "0057__ntu_cctv_fights__non_cctv_data__fight_0472__6cb70182630c.mpeg",
+      "scene": "Fight throughout the clip",
+      "timestamp": 25.0,
+      "actual_timestamp": 24.98328888888889,
+      "width": 1280,
+      "height": 720,
+      "latency_seconds": 13.01500000001397,
+      "error": "analysis request failed",
+      "expected": {
+        "fight": true,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [],
+      "actor_count": 0,
+      "scene_summary": "",
+      "score": {
+        "cells": {
+          "fight": "missing",
+          "smoking": "missing",
+          "fall": "missing",
+          "weapon": "missing"
+        },
+        "scored": 0,
+        "correct": 0
+      }
+    },
+    {
+      "clip_id": "ntu:fight_0472",
+      "file": "0057__ntu_cctv_fights__non_cctv_data__fight_0472__6cb70182630c.mpeg",
+      "scene": "Fight throughout the clip",
+      "timestamp": 8.0,
+      "actual_timestamp": 8.008000000000001,
+      "width": 1280,
+      "height": 720,
+      "latency_seconds": 13.25,
+      "error": "analysis request failed",
+      "expected": {
+        "fight": true,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [],
+      "actor_count": 0,
+      "scene_summary": "",
+      "score": {
+        "cells": {
+          "fight": "missing",
+          "smoking": "missing",
+          "fall": "missing",
+          "weapon": "missing"
+        },
+        "scored": 0,
+        "correct": 0
+      }
+    },
+    {
+      "clip_id": "ntu:fight_0822",
+      "file": "0209__ntu_cctv_fights__non_cctv_data__fight_0822__d7255c527cdf.mpeg",
+      "scene": "Quiet then fight",
+      "timestamp": 1.0,
+      "actual_timestamp": 1.0010000000000001,
+      "width": 960,
+      "height": 720,
+      "latency_seconds": 2.9219999999622814,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.9
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u591c\u665a\u660f\u6697\u8d70\u5eca\u4e2d\u4eba\u7fa4\u7684\u80cc\u5f71\uff0c\u753b\u9762\u6a21\u7cca",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "ntu:fight_0912",
+      "file": "0337__ntu_cctv_fights__cctv_data__fight_0912__0a41e789ee9d.mpeg",
+      "scene": "CCTV fight after a delay",
+      "timestamp": 5.0,
+      "actual_timestamp": 5.0,
+      "width": 480,
+      "height": 360,
+      "latency_seconds": 2.0320000000065193,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.93
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.93
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.93
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.93
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u9ed1\u767d\u76d1\u63a7\u753b\u9762\u4e2d\u591a\u8f86\u6c7d\u8f66\u505c\u653e\u5728\u5efa\u7b51\u524d\uff0c\u672a\u89c1\u4eba\u7269",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "ntu:fight_0912",
+      "file": "0337__ntu_cctv_fights__cctv_data__fight_0912__0a41e789ee9d.mpeg",
+      "scene": "CCTV fight after a delay",
+      "timestamp": 16.0,
+      "actual_timestamp": 16.0,
+      "width": 480,
+      "height": 360,
+      "latency_seconds": 5.125,
+      "error": null,
+      "expected": {
+        "fight": true,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.9
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u8857\u9053\u4e0a\u6709\u4e00\u540d\u7a7f\u6df1\u8272\u8863\u670d\u7684\u4eba\u7ad9\u5728\u8f66\u8f86\u65c1\uff0c\u753b\u9762\u6a21\u7cca / A person in dark clothing stands near vehicles on a st",
+      "score": {
+        "cells": {
+          "fight": "fn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 3
+      }
+    },
+    {
+      "clip_id": "ntu:fight_0822",
+      "file": "0209__ntu_cctv_fights__non_cctv_data__fight_0822__d7255c527cdf.mpeg",
+      "scene": "Quiet then fight",
+      "timestamp": 6.0,
+      "actual_timestamp": 6.006,
+      "width": 960,
+      "height": 720,
+      "latency_seconds": 11.420999999972992,
+      "error": "analysis request failed",
+      "expected": {
+        "fight": true,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [],
+      "actor_count": 0,
+      "scene_summary": "",
+      "score": {
+        "cells": {
+          "fight": "missing",
+          "smoking": "missing",
+          "fall": "missing",
+          "weapon": "missing"
+        },
+        "scored": 0,
+        "correct": 0
+      }
+    },
+    {
+      "clip_id": "urfall:fall-01",
+      "file": "fall-01-cam0-rgb.mp4",
+      "scene": "Staged indoor fall, side camera RGB half",
+      "timestamp": 1.0,
+      "actual_timestamp": 1.0,
+      "width": 320,
+      "height": 240,
+      "latency_seconds": 2.577999999979511,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u7537\u5b50\u7ad9\u5728\u529e\u516c\u5ba4\u4e2d\uff0c\u623f\u95f4\u5185\u6709\u684c\u6905\u548c\u6728\u95e8",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "urfall:fall-02",
+      "file": "fall-02-cam0-rgb.mp4",
+      "scene": "Second staged indoor fall",
+      "timestamp": 0.8,
+      "actual_timestamp": 0.8,
+      "width": 320,
+      "height": 240,
+      "latency_seconds": 6.342999999993481,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.96
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.96
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.96
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.96
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4e00\u540d\u7537\u5b50\u5728\u529e\u516c\u5ba4\u5185\u5c48\u819d\u8e72\u4e0b",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "urfall:fall-01",
+      "file": "fall-01-cam0-rgb.mp4",
+      "scene": "Staged indoor fall, side camera RGB half",
+      "timestamp": 4.0,
+      "actual_timestamp": 4.0,
+      "width": 320,
+      "height": 240,
+      "latency_seconds": 9.969000000040978,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": true,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.9
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u6709\u4eba\u4ef0\u5367\u5728\u529e\u516c\u5ba4\u5730\u677f\u4e0a\uff0c\u53cc\u817f\u62ac\u8d77",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "fn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 3
+      }
+    },
+    {
+      "clip_id": "urfall:fall-02",
+      "file": "fall-02-cam0-rgb.mp4",
+      "scene": "Second staged indoor fall",
+      "timestamp": 2.5,
+      "actual_timestamp": 2.5,
+      "width": 320,
+      "height": 240,
+      "latency_seconds": 4.672000000020489,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": true,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4e00\u4eba\u8eba\u5728\u529e\u516c\u5ba4\u5730\u677f\u4e0a",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "fn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 3
+      }
+    },
+    {
+      "clip_id": "caviar:Rest_FallOnFloor",
+      "file": "Rest_FallOnFloor.mpg",
+      "scene": "Walk then collapse",
+      "timestamp": 8.0,
+      "actual_timestamp": 7.999700000000001,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 2.764999999955762,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4e00\u4eba\u8d70\u8fc7\u7a7a\u65f7\u5927\u5385 / One person walking through an empty lobby",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Rest_SlumpOnFloor",
+      "file": "Rest_SlumpOnFloor.mpg",
+      "scene": "Person slumps onto the floor",
+      "timestamp": 10.0,
+      "actual_timestamp": 9.9997,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 1.5320000000065193,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.92
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.92
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.92
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.92
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u7a7a\u65f7\u7684\u5ba4\u5185\u5927\u5385\u4e0e\u697c\u68af\uff0c\u672a\u89c1\u4eba\u7269 / Empty indoor lobby with stairs, no people visible",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Rest_FallOnFloor",
+      "file": "Rest_FallOnFloor.mpg",
+      "scene": "Walk then collapse",
+      "timestamp": 27.6,
+      "actual_timestamp": 27.599700000000002,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 2.9689999999827705,
+      "error": "analysis request failed",
+      "expected": {
+        "fight": false,
+        "fall": true,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [],
+      "actor_count": 0,
+      "scene_summary": "",
+      "score": {
+        "cells": {
+          "fight": "missing",
+          "smoking": "missing",
+          "fall": "missing",
+          "weapon": "missing"
+        },
+        "scored": 0,
+        "correct": 0
+      }
+    },
+    {
+      "clip_id": "caviar:Rest_SlumpOnFloor",
+      "file": "Rest_SlumpOnFloor.mpg",
+      "scene": "Person slumps onto the floor",
+      "timestamp": 30.0,
+      "actual_timestamp": 29.9597,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 4.89100000000326,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": true,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.88
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u5927\u5385\u5730\u9762\u4e0a\u6709\u4e00\u4eba\u5750\u7740\uff0c\u672a\u89c1\u5176\u4ed6\u5f02\u5e38",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "fn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 3
+      }
+    },
+    {
+      "clip_id": "caviar:LeftBag",
+      "file": "LeftBag.mpg",
+      "scene": "Leaves a bag, not a fight",
+      "timestamp": 8.0,
+      "actual_timestamp": 7.999700000000001,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 4.547000000020489,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.92
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.92
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.92
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.92
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u51e0\u4e2a\u4eba\u5728\u94fa\u77f3\u5730\u9762\u7684\u5927\u5385\u8d70\u5eca\u4e2d\u884c\u8d70\u6216\u8e72\u7740 / Several people walking or crouching in a stone-floored lob",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Meet_Split_3rdGuy",
+      "file": "Meet_Split_3rdGuy.mpg",
+      "scene": "Three people meet then split",
+      "timestamp": 6.0,
+      "actual_timestamp": 5.999711111111111,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 2.547000000020489,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.9
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4fef\u89c6\u5927\u5385\u5185\u6709\u4eba\u5750\u5728\u5ea7\u6905\u65c1\uff0c\u672a\u89c1\u5f02\u5e38\u884c\u4e3a",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:LeftBag",
+      "file": "LeftBag.mpg",
+      "scene": "Leaves a bag, not a fight",
+      "timestamp": 16.0,
+      "actual_timestamp": 15.9997,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 3.327999999979511,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.94
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.94
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.94
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.94
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4e24\u4eba\u5728\u5927\u5385\u74f7\u7816\u5730\u9762\u4e0a\u884c\u8d70",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Meet_Split_3rdGuy",
+      "file": "Meet_Split_3rdGuy.mpg",
+      "scene": "Three people meet then split",
+      "timestamp": 18.0,
+      "actual_timestamp": 17.99971111111111,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 3.6880000000237487,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.9
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u51e0\u4eba\u6cbf\u5927\u5802\u8d70\u5eca\u884c\u8d70 / People walking through a lobby corridor",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Meet_Crowd",
+      "file": "Meet_Crowd.mpg",
+      "scene": "Several people walking, no fight",
+      "timestamp": 4.0,
+      "actual_timestamp": 3.9997111111111114,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 3.3130000000237487,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u7a7a\u65f7\u7684\u74f7\u7816\u5927\u5385\uff0c\u6709\u7eff\u690d\u3001\u5ea7\u6905\u548c\u884c\u674e\uff0c\u672a\u89c1\u4eba\u7269\u6d3b\u52a8",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Meet_Crowd",
+      "file": "Meet_Crowd.mpg",
+      "scene": "Several people walking, no fight",
+      "timestamp": 10.0,
+      "actual_timestamp": 9.999711111111111,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 3.1560000000172295,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u51e0\u4eba\u8d70\u5728\u94fa\u77f3\u5730\u9762\u7684\u5927\u5385\u91cc / Several people walking in a tiled lobby",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Walk1",
+      "file": "Walk1.mpg",
+      "scene": "One person walking (fight negative)",
+      "timestamp": 4.0,
+      "actual_timestamp": 3.9997111111111114,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 3.389999999955762,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4e00\u540d\u7537\u5b50\u5728\u7a7a\u65f7\u5927\u5385\u4e2d\u72ec\u81ea\u884c\u8d70\uff0c\u4e00\u81c2\u4f38\u51fa / A man walking alone in an open lobby with one arm extended",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Walk1",
+      "file": "Walk1.mpg",
+      "scene": "One person walking (fight negative)",
+      "timestamp": 10.0,
+      "actual_timestamp": 9.999711111111111,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 5.10999999998603,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.88
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u7a7a\u65f7\u7684\u74f7\u7816\u5927\u5385\u4e0e\u8d70\u5eca\uff0c\u672a\u89c1\u4eba\u5458\u6216\u53ef\u7591\u7269\u54c1 / Empty tiled lobby and corridor with no people or suspicio",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "pexels:smoking-man",
+      "file": "smoking-man-pexels.mp4",
+      "scene": "Man smoking a cigarette outdoors",
+      "timestamp": 6.0,
+      "actual_timestamp": 6.0,
+      "width": 1920,
+      "height": 1080,
+      "latency_seconds": 8.062000000034459,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": true,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": true,
+          "confidence": 0.72
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 1,
+      "scene_summary": "\u8001\u4eba\u7ad9\u5728\u6237\u5916\u6811\u6797\u524d\u62bd\u70df",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tp",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "pexels:smoking-night",
+      "file": "smoking-night-pexels.mp4",
+      "scene": "Close-up of a man smoking at night",
+      "timestamp": 3.0,
+      "actual_timestamp": 3.003,
+      "width": 3840,
+      "height": 2160,
+      "latency_seconds": 6.077999999979511,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": true,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.88
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.88
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u591c\u665a\u8fd1\u8ddd\u79bb\u62cd\u6444\u4e00\u540d\u7537\u5b50\u4fa7\u8138\uff0c\u80cc\u666f\u662f\u865a\u5316\u706f\u5149 / Night close-up of a man's profile with blurred lights in",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "fn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 3
+      }
+    },
+    {
+      "clip_id": "pexels:smoking-man",
+      "file": "smoking-man-pexels.mp4",
+      "scene": "Man smoking a cigarette outdoors",
+      "timestamp": 2.0,
+      "actual_timestamp": 2.0,
+      "width": 1920,
+      "height": 1080,
+      "latency_seconds": 20.0,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": true,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.02
+        },
+        {
+          "event_label": "smoking",
+          "detected": true,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.02
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.02
+        }
+      ],
+      "actor_count": 1,
+      "scene_summary": "",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tp",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "commons:feldschiessen",
+      "file": "weapon-feldschiessen.ogv",
+      "scene": "People on a range holding and firing rifles",
+      "timestamp": 45.0,
+      "actual_timestamp": 45.011633333333336,
+      "width": 320,
+      "height": 240,
+      "latency_seconds": 3.4369999999762513,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": true
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u6237\u5916\u9776\u573a\u8349\u5730\u4e0a\u6709\u6570\u540d\u7a7f\u7ea2\u8863\u7684\u4eba\u7ad9\u5728\u9776\u4f4d\u65c1 / several people in red jackets standing by target boards o",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "fn"
+        },
+        "scored": 4,
+        "correct": 3
+      }
+    },
+    {
+      "clip_id": "commons:feldschiessen",
+      "file": "weapon-feldschiessen.ogv",
+      "scene": "People on a range holding and firing rifles",
+      "timestamp": 15.0,
+      "actual_timestamp": 15.015,
+      "width": 320,
+      "height": 240,
+      "latency_seconds": 10.90700000000652,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": true
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4eba\u4eec\u8eba\u5728\u57ab\u5b50\u4e0a\uff0c\u4e00\u4eba\u5728\u65c1\u7ad9\u7acb / People lying on mats with one person standing",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "fn"
+        },
+        "scored": 4,
+        "correct": 3
+      }
+    },
+    {
+      "clip_id": "pexels:rifle-reenactment",
+      "file": "weapon-reenactment-pexels.mp4",
+      "scene": "Men with rifles in a historical reenactment",
+      "timestamp": 4.0,
+      "actual_timestamp": 4.0,
+      "width": 1920,
+      "height": 1080,
+      "latency_seconds": 11.686999999976251,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": true
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.1
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.05
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.05
+        },
+        {
+          "event_label": "weapon",
+          "detected": true,
+          "confidence": 0.9
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tp"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "pexels:rifle-reenactment",
+      "file": "weapon-reenactment-pexels.mp4",
+      "scene": "Men with rifles in a historical reenactment",
+      "timestamp": 10.0,
+      "actual_timestamp": 10.0,
+      "width": 1920,
+      "height": 1080,
+      "latency_seconds": 16.71899999998277,
+      "error": "analysis request failed",
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": true
+      },
+      "judgments": [],
+      "actor_count": 0,
+      "scene_summary": "",
+      "score": {
+        "cells": {
+          "fight": "missing",
+          "smoking": "missing",
+          "fall": "missing",
+          "weapon": "missing"
+        },
+        "scored": 0,
+        "correct": 0
+      }
+    },
+    {
+      "clip_id": "caviar:Browse1",
+      "file": "Browse1.mpg",
+      "scene": "Browsing a window (hard fall negative)",
+      "timestamp": 6.0,
+      "actual_timestamp": 5.999700000000001,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 12.51500000001397,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.95
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.95
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4e00\u4eba\u8d70\u8fc7\u94fa\u7816\u5927\u5385 / A person walking across a tiled lobby",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    },
+    {
+      "clip_id": "caviar:Browse1",
+      "file": "Browse1.mpg",
+      "scene": "Browsing a window (hard fall negative)",
+      "timestamp": 14.0,
+      "actual_timestamp": 13.9997,
+      "width": 384,
+      "height": 288,
+      "latency_seconds": 4.98399999999674,
+      "error": null,
+      "expected": {
+        "fight": false,
+        "fall": false,
+        "smoking": false,
+        "weapon": false
+      },
+      "judgments": [
+        {
+          "event_label": "fight",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "smoking",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "fall",
+          "detected": false,
+          "confidence": 0.9
+        },
+        {
+          "event_label": "weapon",
+          "detected": false,
+          "confidence": 0.9
+        }
+      ],
+      "actor_count": 0,
+      "scene_summary": "\u4fef\u89c6\u7684\u7a7a\u65f7\u74f7\u7816\u5927\u5385\uff0c\u5de6\u4e0b\u89d2\u6709\u4e00\u4eba\u5750\u5728\u7eff\u690d\u65c1 / Empty tiled atrium seen from above with one person seate",
+      "score": {
+        "cells": {
+          "fight": "tn",
+          "smoking": "tn",
+          "fall": "tn",
+          "weapon": "tn"
+        },
+        "scored": 4,
+        "correct": 4
+      }
+    }
+  ]
+}
