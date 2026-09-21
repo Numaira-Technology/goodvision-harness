@@ -44,6 +44,36 @@ def output_sequences(batches):
     return [snapshot.frame_sequence for batch in batches for snapshot in batch.frames]
 
 
+@pytest.mark.parametrize("queue_policy", ["durable_ordered", "realtime_latest"])
+@pytest.mark.parametrize("reuse_worker", [False, True])
+def test_empty_run_finishes_and_allows_next_run(tmp_path, queue_policy, reuse_worker):
+    received = []
+    server, _, coordinator = setup_pipeline(
+        tmp_path, received.append, queue_policy=queue_policy,
+    )
+    try:
+        if reuse_worker:
+            submit(coordinator, frames(1, 1))
+            coordinator.flush()
+            assert coordinator.wait_until_idle(3)
+        coordinator.reset("empty")
+        requests = len(server.requests)
+        coordinator.flush()
+        assert coordinator.wait_until_idle(1), (
+            "empty run must not wait for a native session"
+        )
+        assert coordinator.stats()["state"] == "finished"
+        assert len(server.requests) == requests
+        coordinator.reset("next")
+        submit(coordinator, frames(1, 1), session="next")
+        coordinator.flush()
+        assert coordinator.wait_until_idle(3)
+        assert received[-1].stream_session_id == "next"
+        assert output_sequences(received)[-1] == 3
+    finally:
+        coordinator.close()
+
+
 @pytest.mark.parametrize("prefix_frames", [1, 2, 3])
 def test_learned_prepare_overlaps_prefix_without_new_arrival(
     tmp_path, monkeypatch, prefix_frames,

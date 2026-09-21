@@ -3497,7 +3497,7 @@ class HarnessRuntime:
         source_age = health["last_source_age_seconds"]
         success_age = health["last_success_age_seconds"]
         reason = "ready"
-        if state in {"failed", "stopped", "stopping"}:
+        if state == "failed":
             reason = "event_analysis_failed"
         elif state != "running":
             reason = state
@@ -4049,6 +4049,22 @@ class HarnessRuntime:
                 # callbacks before declaring the tracking watermark final.
                 while current() and not worker.finish_camera_sources():
                     time.sleep(.02)
+                # Independent verdicts must finish even when tracking has
+                # already failed. Checking tracking first used to close this
+                # worker with accepted VLM requests still in flight.
+                failure_stage = "inspection"
+                self._update_state(
+                    scene_drain={"state": "running", "stage": "inspection"}
+                )
+                while current() and not worker.wait_until_idle(timeout_seconds=.1):
+                    if worker.health()["state"] in {"failed", "stopped", "stopping"}:
+                        raise RuntimeError("independent inspection drain failed")
+                if not current():
+                    return
+                failure_stage = "tracking"
+                self._update_state(
+                    scene_drain={"state": "running", "stage": "tracking"}
+                )
             if current() and isinstance(coordinator, VideoSessionTrackingCoordinator):
                 coordinator.mark_capture_finished(
                     stream_session_id=session.stream_session_id,
@@ -4073,10 +4089,6 @@ class HarnessRuntime:
                 scene.finish_inspection_sources()
             worker = self._scene_worker
             if isinstance(worker, IndependentVLMBranch):
-                worker.finish_source()
-                while current() and not worker.wait_until_idle(timeout_seconds=.1):
-                    if worker.stats()["state"] in {"failed", "stopped", "stopping"}:
-                        raise RuntimeError("independent inspection drain failed")
                 if worker.fusion is not None:
                     worker.fusion.finish()
                     while current() and worker.fusion.stats()["pending_reports"]:

@@ -6,9 +6,10 @@ import asyncio
 import time
 from dataclasses import replace
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, RLock, Thread
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from test_vlm_independent import await_condition, jpeg, stub_factory
 
@@ -23,6 +24,60 @@ ROOT = Path(__file__).resolve().parents[1]
 class LocalBranch(IndependentVLMBranch):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, inspector_factory=stub_factory, **kwargs)
+
+
+@pytest.mark.parametrize("state", ["stopped", "stopping", "drained", "failed"])
+def test_vlm_health_distinguishes_stop_from_failure(state):
+    branch = SimpleNamespace(health=lambda: {
+        "state": state, "last_source_age_seconds": 0,
+        "last_success_age_seconds": 0,
+    })
+    result = service.HarnessRuntime._vlm_health(None, branch)
+    assert result["readiness_reason"] == (
+        "event_analysis_failed" if state == "failed" else state
+    )
+    assert not result["running"] and not result["ready"]
+
+
+def test_failed_tracking_drain_preserves_inflight_vlm_results(monkeypatch):
+    from test_vlm_independent import config
+
+    branch = IndependentVLMBranch(config(), inspector_factory=stub_factory)
+    runtime = service.HarnessRuntime.__new__(service.HarnessRuntime)
+    runtime._state_lock = RLock()
+    runtime._state = {}
+    runtime._generation = 1
+    session = SimpleNamespace(stream_session_id=branch.config.stream_session_id)
+    runtime._session = session
+    runtime._scene_worker = branch
+    control = SimpleNamespace(lock=RLock(), state="running", error=None)
+    monkeypatch.setattr(runtime, "_archive_run", lambda _: control)
+    finished = []
+
+    def finish(_reason, error):
+        # Real process output must be published before the failure closes it.
+        finished.append((error, branch.health(), branch.results.latest()))
+        branch.close()
+
+    monkeypatch.setattr(runtime, "_finish_scene_end", finish)
+    coordinator = SimpleNamespace(stats=lambda: {"state": "failed"})
+    branch.start()
+    try:
+        await_condition(lambda: branch.health()["state"] == "running")
+        assert branch.offer(jpeg(), 0, 0)
+        assert branch.offer(jpeg(), .8, 12)
+        # Stop immediately: the requests are still queued or in flight.
+        runtime._drain_native_end(1, session, None, coordinator, "stopped")
+        assert len(finished) == 1
+        error, health, latest = finished[0]
+        assert error == service.PUBLIC_TRACKING_ERROR
+        assert health["state"] == "drained"
+        assert health["succeeded_requests"] >= 1
+        assert health["active_requests"] == 0
+        assert latest is not None
+        assert control.state == "failed"  # Tracking failure remains visible.
+    finally:
+        branch.close(timeout_seconds=6)
 
 
 def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(

@@ -126,7 +126,9 @@ def test_analysis_starts_and_stops_on_existing_source_and_video_keeps_running(
     connected_runtime,
 ):
     runtime, connection, adapter, adapters = connected_runtime
-    runtime.update_deployment_settings({"dry_run": True})
+    # This lifecycle test uses a two-second watchdog and a manually fed source.
+    # Do not inherit a production playback buffer longer than that watchdog.
+    runtime.update_deployment_settings({"dry_run": True, "buffer_delay_seconds": 0})
     runtime.update_analysis_settings({"features": ["smoking"]})
     ready = runtime.prepare_analysis()
     assert ready == {"prepared": True, "connection_id": connection.connection_id}

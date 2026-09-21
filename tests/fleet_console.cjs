@@ -85,6 +85,8 @@ test("VLM health distinguishes recent success, incomplete labels and a failed at
   Object.assign(row.status.vlm,{ready:false,last_success_age_seconds:20});view.app.updateRow(row);
   assert.match(row.vlmNote.textContent,/结果延迟.*20.0/);
   row.status.vlm.running=false;view.app.updateRow(row);assert.match(row.vlmNote.textContent,/暂不可用.*视频继续/);
+  row.status.analysis_state="error";row.status.vlm.state="stopped";view.app.updateRow(row);
+  assert.match(row.vlmNote.textContent,/本轮识别已停止/);assert.doesNotMatch(row.vlmNote.textContent,/暂不可用/);
   view.app.close();
 });
 

@@ -322,6 +322,8 @@
       row.state.className="fleet-camera-state"+(row.unreachable||row.error||status.last_error?" error":active?" good":"");
       const vlm=status.vlm,age=vlm?.last_success_age_seconds;
       if(row.unreachable)row.vlmNote.textContent="VLM · 状态更新延迟，正在重新确认";
+      else if(vlm?.independent&&["stopping","stopped","drained"].includes(vlm.state))
+        row.vlmNote.textContent=vlm.state==="stopping"?"VLM · 正在停止":"VLM · 本轮识别已停止";
       else if(!analyzing(status))row.vlmNote.textContent="VLM · 等待开始分析";
       else if(!vlm?.independent)row.vlmNote.textContent="VLM · 正在读取识别状态";
       else if(vlm.ready){
