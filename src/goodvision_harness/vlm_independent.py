@@ -26,7 +26,6 @@ from .latency_trace import log_timing
 from .result_bus import ResultBus
 from .scene_evidence import EvidenceFrame, InspectionRequest
 from .scene_runtime import TemporalInspection
-from .scene_state import SceneState
 from .vlm_independent_model import IndependentVLMInspector
 
 MAX_FRAME_BYTES = 4 * 1024**2
@@ -36,64 +35,6 @@ OUTPUT_CAPACITY = 16
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
-
-
-def overlap(a, b):
-    intersection = max(0.0, min(a.x2, b.x2) - max(a.x1, b.x1)) * max(
-        0.0, min(a.y2, b.y2) - max(a.y1, b.y1)
-    )
-    union = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - intersection
-    return intersection / union if union else 0.0
-
-
-def unambiguous_matches(boxes, candidates, *, pose_tolerance=False):
-    """Mutual unique overlap; ambiguous people never share confirmation votes.
-
-    Nearby VLM windows may describe the same person standing or on the floor.
-    Permit a moderate overlap only when both box centers stay inside each other.
-    SAM association retains its stricter overlap threshold.
-    """
-
-    def score(box, other):
-        value = overlap(box, other)
-        if pose_tolerance and value >= 0.35:
-            bx, by = (box.x1 + box.x2) / 2, (box.y1 + box.y2) / 2
-            ox, oy = (other.x1 + other.x2) / 2, (other.y1 + other.y2) / 2
-            if not (
-                box.x1 <= ox <= box.x2
-                and box.y1 <= oy <= box.y2
-                and other.x1 <= bx <= other.x2
-                and other.y1 <= by <= other.y2
-            ):
-                return 0.0
-        return value
-
-    scores = {
-        key: {sid: score(box, other) for sid, other in candidates.items()}
-        for key, box in boxes.items()
-    }
-    minimum = 0.35 if pose_tolerance else 0.5
-
-    def winner(rows):
-        ranked = sorted(rows, reverse=True)
-        if (
-            ranked
-            and ranked[0][0] >= minimum
-            and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 0.15)
-        ):
-            return ranked[0][1]
-        return None
-
-    matches = {}
-    for key, values in scores.items():
-        target = winner((value, sid) for sid, value in values.items())
-        if (
-            target is not None
-            and winner((values[target], other) for other, values in scores.items())
-            == key
-        ):
-            matches[key] = target
-    return matches
 
 
 @dataclass(frozen=True)
@@ -129,46 +70,21 @@ class SourceSample:
 
 
 class IndependentEventState:
-    """Use the existing two-positive/two-negative source evidence rules unchanged."""
+    """Publish current observations; the tracked scene owns person-event lifecycles.
+
+    Subject references are scoped to one report, even when boxes or model-local
+    IDs repeat. There is no VLM track history or independent confirmation vote.
+    """
 
     def __init__(self, config):
         self.config = config
-        self.scene = SceneState(config.stream_session_id, config.source_id)
-        self.subjects = {}
-        self.namespace = uuid4().hex[:12]
         self.sequence = 0
-        self.subject_sequence = 0
 
     def report(self, job, sample, verdicts, timing, *, error=None):
         at, sequence = sample.frame.timestamp_seconds, sample.frame.frame_sequence
-        self.subjects = {
-            sid: item for sid, item in self.subjects.items() if at - item[1] <= 3.0
-        }
+        message_id = str(uuid4())
         boxes = {sid: box for verdict in verdicts for sid, box in verdict.subject_boxes}
-        mapping = unambiguous_matches(
-            boxes, {sid: item[0] for sid, item in self.subjects.items()}
-        )
-        nearby = unambiguous_matches(
-            boxes,
-            {
-                sid: item[0]
-                for sid, item in self.subjects.items()
-                if at - item[1] <= 1.2
-            },
-            pose_tolerance=True,
-        )
-        for key, sid in nearby.items():
-            if key not in mapping and sid not in mapping.values():
-                mapping[key] = sid
-        for sid, box in boxes.items():
-            if sid not in mapping:
-                self.subject_sequence += 1
-                mapping[sid] = f"vlm-{self.namespace}-{self.subject_sequence}"
-            public_id = mapping[sid]
-            self.subjects[public_id] = (box, at)
-            self.scene.observe_person(
-                public_id, timestamp_seconds=at, frame_sequence=sequence, bbox=box
-            )
+        mapping = {sid: f"vlm-{message_id}-{sid}" for sid in boxes}
         observations = []
         for index, verdict in enumerate(verdicts):
             ids = tuple(
@@ -178,17 +94,8 @@ class IndependentEventState:
                 verdict.subject_ids
             )
             evidence_id = f"vlm:{job.request.request_id}:{index}"
-            # Event assessment survives bad geometry. Only complete grounding
-            # can update a person's confirmation/clear votes or enter SAM fusion.
-            accepted = grounded and self.scene.observe_event(
-                verdict.event_label,
-                ids,
-                timestamp_seconds=at,
-                frame_sequence=sequence,
-                detected=verdict.detected,
-                confidence=verdict.confidence,
-                evidence_id=evidence_id,
-            )
+            # Acceptance only admits this observation to background association.
+            # Confirmation/clear votes belong to the matched tracking IDs there.
             observations.append(
                 {
                     "event_label": verdict.event_label,
@@ -196,24 +103,16 @@ class IndependentEventState:
                     "detected": verdict.detected,
                     "confidence": verdict.confidence,
                     "evidence_id": evidence_id,
-                    "accepted": accepted,
+                    "accepted": grounded,
                     "grounded": grounded,
                     "grounding_issues": list(verdict.grounding_issues),
                 }
             )
-        self.scene.advance(at)
-        snapshot = self.scene.snapshot(include_history=False)
-        events = [
-            {**event, "alert": event["phase"] == "confirmed"}
-            for event in snapshot["events"]
-        ]
         reported = {v.event_label for v in verdicts}
         judgments = []
         for label in self.config.labels:
             if label not in reported:
                 continue
-            relevant = [event for event in events if event["event_label"] == label]
-            confirmed = [event for event in relevant if event["phase"] == "confirmed"]
             votes = [v for v in verdicts if v.event_label == label]
             assessments = [o for o in observations if o["event_label"] == label]
             observed_detected = (
@@ -238,19 +137,13 @@ class IndependentEventState:
                 else "unavailable"
             )
             confirmation_state = (
-                "confirmed"
-                if confirmed
-                else "pending"
+                "pending"
                 if observed_detected is True
                 else "not_detected"
                 if observed_detected is False
                 else "uncertain"
             )
-            detected = (
-                True
-                if confirmed
-                else (False if all(v.detected is False for v in votes) else None)
-            )
+            detected = False if observed_detected is False else None
             judgments.append(
                 {
                     "event_label": label,
@@ -270,16 +163,13 @@ class IndependentEventState:
                         f"confirmation {confirmation_state}; "
                         f"localization {localization_state}"
                     ),
-                    "object_ids": sorted(
-                        {sid for e in confirmed for sid in e["subject_ids"]}
-                    ),
-                    "event_ids": [e["event_id"] for e in relevant],
+                    "object_ids": [],
+                    "event_ids": [],
                 }
             )
         with Image.open(io.BytesIO(sample.frame.jpeg_bytes)) as image:
             width, height = image.size
         self.sequence += 1
-        message_id = str(uuid4())
         return {
             "schema_version": "1",
             "type": "vlm_report",
@@ -289,6 +179,7 @@ class IndependentEventState:
             "generation": self.config.generation,
             "message_id": message_id,
             "observation_id": message_id,
+            "subject_id_scope": "observation",
             "description": "Independent VLM temporal report",
             "analysis_complete": not error and reported == set(self.config.labels),
             "localization_complete": bool(observations)
@@ -325,32 +216,21 @@ class IndependentEventState:
             },
             "judgments": judgments,
             "observations": observations,
-            "events": events,
-            "missing_event_labels": [
-                label for label in self.config.labels if label not in reported
-            ],
             "objects": [
                 {
-                    "object_id": person["subject_id"],
+                    "object_id": mapping[sid],
                     "label": "person",
-                    "bbox": person["bbox"],
+                    "bbox": box.as_dict(),
                     "attributes": {
-                        "subject_id": person["subject_id"],
+                        "subject_id": mapping[sid],
                         "identity_status": "unassociated",
-                        "observation_state": person["observation_state"],
-                        "source_timestamp_seconds": person[
-                            "last_observed_timestamp_seconds"
-                        ],
-                        "source_frame_sequence": person["frame_sequence"],
+                        "observation_state": "observed",
+                        "source_timestamp_seconds": at,
+                        "source_frame_sequence": sequence,
                     },
                 }
-                for person in snapshot["entities"]
+                for sid, box in boxes.items()
             ],
-            "association": {"state": "independent", "results_url": "/v1/scene"},
-            "confirmation": {
-                "positive_observations": self.scene.confirm_observations,
-                "negative_observations": self.scene.clear_observations,
-            },
         }
 
 
@@ -365,7 +245,7 @@ def _inspector(config):
 
 
 def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspector):
-    """Spawn target: image windows, inference, evidence confirmation, then IPC."""
+    """Spawn target: image windows, inference, observation reports, then IPC."""
     state = IndependentEventState(config)
     stats = Counter()
     history = deque(maxlen=12)
@@ -867,6 +747,7 @@ class IndependentVLMBranch:
                 "stream_session_id": self.config.stream_session_id,
                 "generation": self.config.generation,
                 "route_id": self.config.route_id,
+                "event_labels": list(self.config.labels),
                 "independent": True,
                 "last_source_age_seconds": (
                     None

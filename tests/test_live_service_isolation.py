@@ -8,9 +8,18 @@ from types import SimpleNamespace
 
 import pytest
 from test_local_gpu_runtime import rig as rig
-from test_vlm_independent import config, job, jpeg, report, verdict
+from test_vlm_independent import (
+    config,
+    job,
+    jpeg,
+    observe_person,
+    report,
+    tracked_fusion,
+    verdict,
+)
 
 from goodvision_harness import service
+from goodvision_harness.contracts import FrameReference
 from goodvision_harness.result_bus import ResultBus
 from goodvision_harness.vlm_independent import (
     IndependentEventState,
@@ -38,6 +47,37 @@ def test_scene_publication_keeps_vlm_latest_and_preserves_feature_history():
     bus.reset()
     bus.publish(stranger)  # Legacy mode retains the original promotion behavior.
     assert bus.latest().payload == stranger
+
+
+def test_tracking_owned_safety_confirmation_reaches_delivery_without_replacing_vlm(
+    rig, monkeypatch,
+):
+    runtime = rig.make()
+    cfg = replace(config(), source_id=runtime.source_id)
+    state, fusion = IndependentEventState(cfg), tracked_fusion(cfg)
+    runtime._state["event_labels"] = ["smoking"]
+    runtime._scene_result_publisher.reset(cfg.stream_session_id)
+    delivered = []
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime, "_delivery", SimpleNamespace(submit=delivered.append))
+        for n, detected in enumerate((True, True, False, False)):
+            at, sequence = round(1.0 + n * 0.8, 1), 10 + n * 8
+            raw = report(state, at, sequence, (verdict(detected),))
+            runtime.results.publish(raw)
+            observe_person(fusion, at, sequence)
+            assert fusion._associate(raw, (), set())
+            runtime._scene_result_publisher.observe_reference(
+                cfg.stream_session_id,
+                FrameReference(sequence, at, "2026-09-21T08:00:00Z", 64, 48),
+            )
+            runtime._publish_scene_result(fusion.scene.snapshot(include_history=False))
+            assert runtime.results.latest().payload["message_id"] == raw["message_id"]
+            result = runtime.results.latest(feature="smoking").payload
+            assert result["analysis_kind"] == "scene_state"
+            assert result["judgments"][0]["detected"] is (n in (1, 2))
+            assert result["objects"][0]["object_id"] == "sam-person"
+            assert delivered[-1]["message_id"] == result["message_id"]
+    assert len(delivered) == 4
 
 
 def test_viewer_sequences_are_independent_and_do_not_wait_for_state_lock(rig):

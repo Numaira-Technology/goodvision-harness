@@ -13,6 +13,7 @@
 | [人物身份与陌生人证据](person-identity-evidence.md) | 身份关联、姓名与陌生人判断 |
 | [网络视频连续显示](network-display.md) | 源画面、轮廓传播与显示统计 |
 | [VLM 请求时序](vlm-request-timing.md) | 时序请求与处理边界 |
+| [VLM 观察与跟踪关联](vlm-observation-association.md) | 单次观察的人物引用与跟踪模块负责的事件确认 |
 
 ## 带版本的设计与方案
 

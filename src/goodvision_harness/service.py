@@ -3451,10 +3451,9 @@ class HarnessRuntime:
         with self._state_lock:
             result = self._scene_result_publisher.project(
                 snapshot,
-                labels=tuple(label for label in self._state.get("event_labels", ())
-                             if not snapshot.get("independent_temporal_inference",
-                                                 getattr(self._scene, "independent_temporal_inference", False))
-                             or label == "stranger"),
+                # Independent VLM reports contain observations only. Publish
+                # tracking-owned safety confirmations as well as face events.
+                labels=tuple(self._state.get("event_labels", ())),
                 emitted_at=_utc_now(),
             )
             if result is not None:
@@ -5534,9 +5533,10 @@ def _overall_description_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "frame",
                 "description",
                 "analysis_complete",
-                "missing_event_labels",
             )
         },
+        **({"missing_event_labels": payload["missing_event_labels"]}
+           if "missing_event_labels" in payload else {}),
     }
 
 

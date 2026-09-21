@@ -2041,7 +2041,7 @@
     const judgments=new Map((report.judgments||[]).map(value=>[value.event_label,value]));
     const parts=Object.entries(labels).filter(([key])=>judgments.has(key)).map(([key,label])=>{
       const value=judgments.get(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;
-      let result=observed===true?(value.confirmation_state==="confirmed"?"已确认":"发现，待确认"):observed===false?"未发现":"待判断";
+      let result=observed===true?(report.type==="vlm_report"?"发现":value.confirmation_state==="confirmed"?"已确认":"发现，待确认"):observed===false?"未发现":"待判断";
       if(observed===true&&["unavailable","partial"].includes(value.localization_state))result+="，定位待确认";
       return label+"："+result;
     });

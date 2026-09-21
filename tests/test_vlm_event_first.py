@@ -6,7 +6,15 @@ from pathlib import Path
 
 import pytest
 from test_local_gpu_runtime import rig as rig
-from test_vlm_independent import BOX, config, job, report, verdict
+from test_vlm_independent import (
+    BOX,
+    config,
+    job,
+    observe_person,
+    report,
+    tracked_fusion,
+    verdict,
+)
 
 from goodvision_harness.scene_model import _ResponseValidationError
 from goodvision_harness.vlm_independent import IndependentEventState
@@ -70,7 +78,8 @@ def test_bad_box_preserves_reliable_positive_without_creating_confirmed_person(b
         result = report(state, at, seq, votes)
         assert result["state"] == "completed" and result["analysis_complete"]
         assert not result["localization_complete"]
-        assert result["objects"] == result["events"] == []
+        assert result["objects"] == []
+        assert "events" not in result
         (observation,) = result["observations"]
         assert observation["detected"] is True and not observation["accepted"]
         (judgment,) = result["judgments"]
@@ -92,7 +101,7 @@ def test_one_bad_person_cannot_be_replaced_by_the_other_fight_participant():
     assert not result["observations"][0]["accepted"]
     assert result["judgments"][0]["localization_state"] == "partial"
     assert result["judgments"][0]["observed_detected"] is True
-    assert result["events"] == []
+    assert "events" not in result
 
 
 @pytest.mark.parametrize(
@@ -145,17 +154,22 @@ def test_unreliable_event_fields_still_fail_explicitly(field, value):
 
 
 def test_unlocalized_negative_does_not_clear_confirmed_person_event():
-    state = IndependentEventState(config())
+    cfg = config()
+    state, fusion = IndependentEventState(cfg), tracked_fusion(cfg)
     for at, seq in ((1.0, 15), (1.8, 27)):
-        report(state, at, seq, (verdict(),))
+        result = report(state, at, seq, (verdict(),))
+        observe_person(fusion, at, seq)
+        assert fusion._associate(result, (), set())
     for at, seq in ((2.6, 39), (3.4, 51)):
         result = report(
             state, at, seq, parse(payload([100, 100, 500, 900], detected=False))
         )
-        assert result["events"][0]["phase"] == "confirmed"
+        observe_person(fusion, at, seq)
+        assert not fusion._associate(result, (), set())
+        assert fusion.scene.snapshot()["scene"]["events"][0]["phase"] == "confirmed"
         (judgment,) = result["judgments"]
         assert judgment["observed_detected"] is False
-        assert judgment["detected"] is True
+        assert judgment["detected"] is False
         assert not result["observations"][0]["accepted"]
 
 

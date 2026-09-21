@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -102,7 +103,7 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
     blocker = None
     try:
         with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:
-            runtime.start_camera(dry_run=False, features=["smoking"])
+            runtime.start_camera(dry_run=False, features=["smoking", "fall"])
             branch = runtime._vlm_branch
             assert branch is not None
             await_condition(lambda: branch.stats()["state"] == "running")
@@ -138,17 +139,32 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
             assert independent.status_code == 200
             payload = independent.json()
             assert payload["analysis_kind"] == "vlm_event"
-            assert any(e["phase"] == "confirmed" for e in payload["events"])
+            removed = {"events", "missing_event_labels", "association", "confirmation"}
+            assert removed.isdisjoint(payload)
+            assert payload["judgments"][0]["observed_detected"] is True
+            assert payload["judgments"][0]["detected"] is None
+            overall = client.get("/v1/results/overall/latest")
+            assert overall.status_code == 200
+            assert removed.isdisjoint(overall.json())
+            assert overall.json()["message_id"] == payload["message_id"]
             assert (
                 client.get("/v1/results/smoking/latest").json()["analysis_kind"]
                 == "vlm_event"
             )
-            assert client.get("/v1/vlm/status").json()["independent"]
+            status = client.get("/v1/vlm/status").json()
+            assert status["independent"]
+            assert status["stream_session_id"] == payload["stream_session_id"]
+            assert status["generation"] == payload["generation"]
+            assert set(status["event_labels"]) == {"smoking", "fall"}
+            assert set(status["event_labels"]) - {
+                j["event_label"] for j in payload["judgments"]
+            } == {"fall"}
+            assert not payload["analysis_complete"]
             assert client.get("/v1/vlm/associations").json()["associations"] == []
 
             # Consume the actual SSE generator without TestClient buffering an
             # intentionally unending HTTP response.
-            async def read_event():
+            async def read_event(*, overall_only=False):
                 request = SimpleNamespace(
                     headers={}, is_disconnected=lambda: asyncio.sleep(0, result=False)
                 )
@@ -157,7 +173,8 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
                     runtime,
                     after=0,
                     result_bus=branch.results,
-                    event_name="vlm_report",
+                    event_name=None if overall_only else "vlm_report",
+                    overall_only=overall_only,
                 )
                 chunk = await anext(response.body_iterator)
                 await response.body_iterator.aclose()
@@ -166,6 +183,17 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
             chunk = asyncio.run(read_event())
             assert b"event: vlm_report" in chunk
             assert session_id.encode() in chunk
+            data = next(
+                line[6:] for line in chunk.splitlines() if line.startswith(b"data: ")
+            )
+            assert removed.isdisjoint(json.loads(data))
+            overall_chunk = asyncio.run(read_event(overall_only=True))
+            assert b"event: overall_description" in overall_chunk
+            overall_data = next(
+                line[6:] for line in overall_chunk.splitlines()
+                if line.startswith(b"data: ")
+            )
+            assert removed.isdisjoint(json.loads(overall_data))
             assert (
                 branch.stats()["camera_source_dispatch"].get(
                     "unsent_sources_superseded", 0
@@ -196,7 +224,8 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
                         "timestamp_seconds": 10.0,
                         "entities": [{
                             "subject_id": "person-a", "observation_state": "visible",
-                            "last_observed_timestamp_seconds": 10.0, "frame_sequence": 100,
+                            "last_observed_timestamp_seconds": 10.0,
+                            "frame_sequence": 100,
                             "bbox": {"x1": 0.1, "y1": 0.1, "x2": 0.5, "y2": 0.9},
                         }],
                         "events": [{

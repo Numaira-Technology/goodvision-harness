@@ -18,6 +18,14 @@ test('an invalid or empty VLM response never displays an all-clear',()=>{
   assert.match(eventObservationSummary({state:'completed',judgments:[]}),/尚无可用/);
 });
 
+test('observation-only reports leave confirmation to the tracked scene',()=>{
+  const summary=eventObservationSummary({type:'vlm_report',state:'completed',judgments:[
+    {event_label:'smoking',observed_detected:true,detected:null,localization_state:'available',confirmation_state:'pending'},
+    {event_label:'fight',observed_detected:true,detected:null,localization_state:'unavailable',confirmation_state:'pending'},
+  ]});
+  assert.equal(summary,'打架：发现，定位待确认 · 吸烟：发现');
+});
+
 test('diagnostic mirror draws only new source frames and owns no processing resources',()=>{
   let callback,cancelled=0,draws=0;
   const media={width:1280,height:730,dataset:{frameSequence:'9',mediaTimestamp:'0.6'}};
