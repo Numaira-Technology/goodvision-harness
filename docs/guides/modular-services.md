@@ -46,7 +46,7 @@ python tools/start_modular.py main --streams 12 --tracking-server http://192.168
 
 然后打开 [控制台](http://127.0.0.1:8080)，在每一路填入视频地址并连接。也可以预填 `LOCAL_CAMERA_01_STREAM_URL`、`LOCAL_CAMERA_02_STREAM_URL` 等。第一路兼容已有 `HARNESS_STREAM_URL` / `RTSP_URL`；默认启动后保持空闲，等待控制台连接。不同路数使用独立的数据卷，其他摄像头通过主控制台访问，只有主控制台发布端口。
 
-“连接视频”只建立该路预览，不调用 SAM、大模型或人脸分析。每一路均可展开“详细控制”，保存检测项目、敏感度并查看结果；服务位置和密钥统一在主控制台配置。视频可分别连接，分析必须点击“开始全部分析”，一起处理所有已连接视频。停止使用“停止全部分析”，视频连接和预览会保留；本次分析启动、运行或收尾期间不能增减连接或修改检测与部署设置。接口接入使用 `/v1/fleet/cameras/cameraNN/connect`、`/details` 和 `/v1/fleet/analysis/start`、`/stop`，详见 [接口说明](../API_DELIVERY.md)。
+“连接视频”只建立该路预览，不调用 SAM、大模型或人脸分析。每一路均可展开“详细控制”，保存检测项目、敏感度并查看结果；服务位置和密钥统一在主控制台配置。视频可分别连接，分析必须点击“开始全部分析”，一起处理所有已连接视频。停止使用“停止全部分析”，视频连接和预览会保留；本次分析启动、运行或收尾期间不能增减连接或修改检测与部署设置。接口接入使用 `/v1/fleet/cameras/cameraNN/connect`、`/details` 和 `/v1/fleet/analysis/start`、`/stop`，详见 [接口说明](../../API_DELIVERY.md)。
 
 主程序入口不会探测 NVIDIA，不会启动模型容器，也不会检查 SAM 或 Qwen 权重。人脸处理使用 CPU；这部分能力需要结合主机 CPU、视频分辨率和路数测试。
 
@@ -127,7 +127,7 @@ SAM 与大模型两种选择互相独立；SAM 使用独立服务器、VLM 使�
 ## 检查计划与日志
 
 对现有 Contour 链路做实时队列 A/B 时，参见
-[配置与现场验收](guides/contour-realtime-validation.md)。主程序支持
+[配置与现场验收](contour-realtime-validation.md)。主程序支持
 `--sam-queue-policy durable_ordered|realtime_latest` 和独立的 `--tracking-fps`；
 不指定时不改变原队列和采样默认值。实时策略是实验开关，不保证十二路容量。
 

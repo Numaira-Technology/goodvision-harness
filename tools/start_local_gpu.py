@@ -225,7 +225,8 @@ def validate_weights(
     if not directory.is_dir() or not (directory / "config.json").is_file():
         raise LaunchError(
             f"Missing complete local vision model at {directory}. "
-            "See docs/local-gpu.md; this launcher does not download model weights."
+            "See docs/guides/local-gpu.md; "
+            "this launcher does not download model weights."
         )
     config = _model_json(directory, "config.json")
     _model_json(directory, "preprocessor_config.json")

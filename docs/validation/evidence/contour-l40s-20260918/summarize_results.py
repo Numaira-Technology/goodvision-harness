@@ -8,7 +8,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
     "--results",
     type=Path,
-    default=Path(__file__).resolve().parents[3] / "tmp/l40s-20260918/results",
+    default=Path(__file__).resolve().parents[4] / "tmp/l40s-20260918/results",
 )
 args = parser.parse_args()
 root = args.results

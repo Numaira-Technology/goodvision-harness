@@ -54,4 +54,4 @@ copy to maintain in the working tree. Dated measurement reports remain in
 `docs/validation/`.
 
 `audit_customer_bundle.py` checks customer bundles or the repository (`--repository`)
-for the anonymization patterns recorded in [the validation report](../docs/validation/anonymization-audit-20260918.md).
+for the anonymization patterns recorded in [交付与升级检查](../docs/validation/delivery-and-updates.md).

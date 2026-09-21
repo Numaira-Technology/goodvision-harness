@@ -54,7 +54,7 @@
 ## 参数、续传与错误
 
 每个接口保留原接口的查询参数、校验和状态码，详见主程序 `/docs`、`/openapi.json`
-或 [接口交付说明](../API_DELIVERY.md)。例如：
+或 [接口交付说明](../../API_DELIVERY.md)。例如：
 
 ```text
 C/events?event_label=smoking&subject_id=person-1&limit=50&before=...

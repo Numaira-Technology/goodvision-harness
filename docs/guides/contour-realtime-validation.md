@@ -105,7 +105,7 @@ python tools/start_modular.py main --streams 12 \
 | `SAM31_RESULT_DEADLINE_SECONDS` | 4 | 及时率统计阈值：0.01–30 秒；不强制取消请求 |
 
 启动器选实时策略时同时设置 `PERCEPTION_METHOD=sam_live`；直接运行 Compose 时需显式设置。
-窗口默认值不是已证明的最优值。[已有实验](../validation/sam-realtime-queue-experiment-20260920.md)
+窗口默认值不是已证明的最优值。[追踪性能与验收边界](../validation/tracking-performance.md)
 表明过早丢帧会损失及时覆盖率。已发送请求不被年龄阈值取消，因此没有硬性延迟上限。
 
 分析启动后查看每路状态的 `processing` 对象：

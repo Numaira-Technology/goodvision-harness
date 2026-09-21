@@ -57,7 +57,7 @@
 单路沿用原 `face-data` 卷，多路按 N 创建独立摄像头数据卷。
 每路大模型分析目标为 1.25 次/秒，N 路共 1.25 × N 请求/秒；默认追踪为每路 2 帧/秒。
 12 路仅是容量参考值，各部署规模的实际吞吐仍需实机验证。启动、参数与容量验证见
-[本地 GPU 部署说明](docs/local-gpu.md) 和 [模块化部署说明](docs/modular-services.md)。
+[本地 GPU 部署说明](docs/guides/local-gpu.md) 和 [模块化部署说明](docs/guides/modular-services.md)。
 
 ## 多路视频连接与统一分析
 
@@ -104,7 +104,7 @@
 JSON/SSE 增加 `camera_id`，二进制响应带 `X-Camera-Id`，GVD1 数据包头也带 `camera_id`。
 证据和录像链接指向所属通道，游标按通道及接口独立保存；原标识与旧单路接口保持兼容。
 完整路径表、参数、断线续传、录像 Range 和接入示例见
-[N 路视频输出接口](docs/multi-camera-api.md)。
+[N 路视频输出接口](docs/reference/multi-camera-api.md)。
 
 ## 访问地址与交付范围
 
