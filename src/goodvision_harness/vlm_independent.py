@@ -252,6 +252,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
     history = deque(maxlen=12)
     inflight = OrderedDict()
     ready = {}
+    pending_report = None
     next_dispatch_order = next_publish_order = 0
     thread_state, clients = local(), []
     last_sequence, last_endpoint, next_due = -1, -1, -math.inf
@@ -261,7 +262,8 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
         max_workers=config.max_in_flight, thread_name_prefix="vlm-model"
     )
 
-    def emit(item):
+    def emit_status(item):
+        # Status snapshots are replaceable; completed reports must be retried.
         try:
             outgoing.put_nowait(item)
         except Full:
@@ -332,7 +334,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
         }
 
     try:
-        emit(
+        emit_status(
             {
                 "kind": "status",
                 "state": "running",
@@ -383,38 +385,51 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 inflight.pop(order)
                 ready[order] = (job, sample, future.result(), dispatched)
 
-            while next_publish_order in ready:
-                job, sample, result, dispatched = ready.pop(next_publish_order)
+            while not stop.is_set() and next_publish_order in ready:
+                if pending_report is None:
+                    job, sample, result, dispatched = ready[next_publish_order]
+                    verdicts, error, timing = result
+                    now = time.monotonic()
+                    timing.update(
+                        dispatch_wait_seconds=timing["request_started_monotonic"]
+                        - dispatched,
+                        source_to_request_seconds=timing["request_started_monotonic"]
+                        - sample.received_monotonic,
+                        reorder_wait_seconds=max(
+                            0.0,
+                            now
+                            - timing["request_started_monotonic"]
+                            - timing["model_seconds"],
+                        ),
+                    )
+                    pending_report = state.report(
+                        job, sample, verdicts, timing, error=error,
+                    )
+                    stats["failed_requests" if error else "succeeded_requests"] += 1
+                    if not error and not pending_report["analysis_complete"]:
+                        stats["incomplete_reports"] += 1
+                    if not error and not verdicts:
+                        stats["empty_reports"] += 1
+                    stats["ungrounded_verdicts"] += sum(
+                        not item["grounded"] for item in pending_report["observations"]
+                    )
+                    if verdicts and not pending_report["localization_complete"]:
+                        stats["unlocalized_reports"] += 1
+                    if any(
+                        "invalid_subject_bbox" in v.grounding_issues for v in verdicts
+                    ):
+                        stats["invalid_bbox_reports"] += 1
+                pending_report["process_metrics"] = metrics()
+                try:
+                    outgoing.put_nowait({"kind": "report", "report": pending_report})
+                except Full:
+                    # Keep both the result and its prepared report until admitted.
+                    # Resume the scheduler so input, inference and stop still progress.
+                    stats["output_backpressure"] += 1
+                    break
+                ready.pop(next_publish_order)
                 next_publish_order += 1
-                verdicts, error, timing = result
-                now = time.monotonic()
-                timing.update(
-                    dispatch_wait_seconds=timing["request_started_monotonic"]
-                    - dispatched,
-                    source_to_request_seconds=timing["request_started_monotonic"]
-                    - sample.received_monotonic,
-                    reorder_wait_seconds=max(
-                        0.0,
-                        now
-                        - timing["request_started_monotonic"]
-                        - timing["model_seconds"],
-                    ),
-                )
-                report = state.report(job, sample, verdicts, timing, error=error)
-                stats["failed_requests" if error else "succeeded_requests"] += 1
-                if not error and not report["analysis_complete"]:
-                    stats["incomplete_reports"] += 1
-                if not error and not verdicts:
-                    stats["empty_reports"] += 1
-                stats["ungrounded_verdicts"] += sum(
-                    not item["grounded"] for item in report["observations"]
-                )
-                if verdicts and not report["localization_complete"]:
-                    stats["unlocalized_reports"] += 1
-                if any("invalid_subject_bbox" in v.grounding_issues for v in verdicts):
-                    stats["invalid_bbox_reports"] += 1
-                report["process_metrics"] = metrics()
-                emit({"kind": "report", "report": report})
+                pending_report = None
 
             active_requests = len(inflight) + len(ready)
             if (
@@ -462,7 +477,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                     next_due = frame.timestamp_seconds + 1.0 / config.observation_fps
                     stats["claimed_requests"] += 1
             if time.monotonic() - last_status >= 1.0:
-                emit(
+                emit_status(
                     {
                         "kind": "status",
                         "state": "drained"
@@ -480,7 +495,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 )
                 last_status = time.monotonic()
     except Exception:
-        emit(
+        emit_status(
             {
                 "kind": "status",
                 "state": "failed",
