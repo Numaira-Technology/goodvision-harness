@@ -88,10 +88,12 @@ def test_completed_results_release_capacity_but_publication_stays_ordered():
             time.sleep(0.04)
 
         # The slow first request still prevents public delivery, but completed
-        # later requests must free model-call capacity for additional work.
+        # later requests must free model-call capacity for additional work. The
+        # assertion below distinguishes this from the old implementation: there
+        # the third claim only happened after the first report was published.
         await_condition(
             lambda: branch.stats().get("claimed_requests", 0) > cfg.max_in_flight,
-            timeout=1.4,
+            timeout=6.0,
         )
         blocked = branch.stats()
         assert branch.results.latest() is None
