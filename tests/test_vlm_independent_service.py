@@ -257,8 +257,9 @@ def test_default_configuration_enables_independent_process(monkeypatch):
     assert load_config(ROOT / "config.yaml").runtime.scene_independent_vlm is True
 
 
-def test_mixed_vlm_start_does_not_wait_for_optional_face_or_tracker(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("cancel_preparation", [False, True])
+def test_mixed_start_prepares_resident_face_outside_lock_before_admission(
+    tmp_path, monkeypatch, cancel_preparation
 ):
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_kwargs: "")
@@ -267,7 +268,6 @@ def test_mixed_vlm_start_does_not_wait_for_optional_face_or_tracker(
     def forbidden(*_args, **_kwargs):
         raise AssertionError("optional model readiness must not gate the VLM")
 
-    monkeypatch.setattr(service.FaceRecognitionRuntime, "warmup", forbidden)
     base = load_config(ROOT / "config.yaml")
     cfg = replace(
         base,
@@ -282,10 +282,58 @@ def test_mixed_vlm_start_does_not_wait_for_optional_face_or_tracker(
     runtime = service.HarnessRuntime(cfg)
     runtime._aiclub_api_key = "TEST_KEY"
     monkeypatch.setattr(runtime, "_require_processing_ready", forbidden)
+    preparing, release = Event(), Event()
+    slot_calls, errors = [], []
+
+    def warm_slot(face, slot, _image):
+        assert runtime._session is None and runtime._vlm_branch is None
+        slot_calls.append((face, slot))
+        preparing.set()
+        assert release.wait(6)
+        return []
+
+    monkeypatch.setattr(service.FaceRecognitionRuntime, "_infer_slot", warm_slot)
+
+    def start():
+        try:
+            runtime.start_camera(dry_run=False, features=["smoking", "stranger"])
+        except Exception as error:
+            errors.append(error)
+
+    starter = Thread(target=start)
+    starter.start()
     try:
-        runtime.start_camera(dry_run=False, features=["smoking", "stranger"])
+        assert preparing.wait(3)
+        # Public status/stop must remain usable during slow model loading.
+        status = []
+        reader = Thread(target=lambda: status.append(runtime.status()))
+        reader.start()
+        reader.join(1)
+        assert not reader.is_alive() and status
+        assert runtime._session is None and runtime._vlm_branch is None
+        if cancel_preparation:
+            assert runtime.stop_session()
+        release.set()
+        starter.join(6)
+        assert not starter.is_alive()
+        if cancel_preparation:
+            assert len(errors) == 1 and str(errors[0]) == "session start cancelled"
+            assert runtime._session is None and runtime._vlm_branch is None
+            return
+        assert not errors
         branch = runtime._vlm_branch
         assert branch is not None
         await_condition(lambda: branch.stats()["state"] == "running")
+        resident = runtime._face_runtime
+        assert resident.warmed
+        assert len(slot_calls) == cfg.face.inference_instances
+        assert all(face is resident for face, _ in slot_calls)
+        assert runtime.stop_session()
+        await_condition(lambda: runtime._session is None)
+        runtime.start_camera(dry_run=False, features=["smoking", "stranger"])
+        assert runtime._face_runtime is resident and resident.warmed
+        assert len(slot_calls) == cfg.face.inference_instances
     finally:
+        release.set()
+        starter.join(6)
         runtime.stop()

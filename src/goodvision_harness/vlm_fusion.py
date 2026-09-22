@@ -52,8 +52,8 @@ def _unambiguous_matches(boxes, candidates):
 class VLMFusion:
     """Slow scene/archive callbacks run here, never on VLM input/output threads."""
 
-    def __init__(self, scene, on_update=None, delivery=None):
-        self.scene, self.on_update, self.delivery = scene, on_update, delivery
+    def __init__(self, scene, on_update=None):
+        self.scene, self.on_update = scene, on_update
         self._lock, self._stop, self._wake = Lock(), Event(), Event()
         self._pending, self._links = OrderedDict(), OrderedDict()
         self._stats = Counter()
@@ -113,7 +113,6 @@ class VLMFusion:
             return copy.deepcopy(tuple(self._links.values()))
 
     def _run(self):
-        delivered = set()
         while not self._stop.is_set():
             with self._lock:
                 rows = tuple(self._pending.items())
@@ -121,14 +120,6 @@ class VLMFusion:
             for message_id, (report, evidence, _size, done, admitted) in rows:
                 if self._stop.is_set():
                     return
-                if message_id not in delivered and self.delivery is not None:
-                    # Webhook admission is optional background I/O, after JSON/SSE.
-                    try:
-                        self.delivery.submit(report)
-                    except Exception:
-                        with self._lock:
-                            self._stats["delivery_failures"] += 1
-                    delivered.add(message_id)
                 expired = time.monotonic() - admitted > 90.0
                 try:
                     if not expired:
@@ -151,8 +142,6 @@ class VLMFusion:
                             self._stats[
                                 "expired_reports" if expired else "completed_reports"
                             ] += 1
-            if len(delivered) > 128:
-                delivered.intersection_update(key for key, _ in rows)
             if changed and not self._stop.is_set() and self.on_update is not None:
                 try:
                     self.on_update()

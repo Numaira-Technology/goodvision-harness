@@ -239,11 +239,15 @@ def queue_environment(settings: Mapping[str, str], args) -> dict[str, str]:
     if args.sam_queue_policy is not None:
         environment["SAM31_QUEUE_POLICY"] = args.sam_queue_policy
     policy = environment.get("SAM31_QUEUE_POLICY")
-    if policy is not None and policy not in {"durable_ordered", "realtime_latest"}:
-        raise LaunchError("SAM31_QUEUE_POLICY must be durable_ordered|realtime_latest")
-    if policy == "realtime_latest":
+    if policy is not None and policy not in {
+        "durable_ordered", "realtime_latest", "latest_only",
+    }:
+        raise LaunchError(
+            "SAM31_QUEUE_POLICY must be latest_only|durable_ordered|realtime_latest"
+        )
+    if policy in {"realtime_latest", "latest_only"}:
         if environment.get("PERCEPTION_METHOD", "sam_live") != "sam_live":
-            raise LaunchError("realtime_latest requires PERCEPTION_METHOD=sam_live")
+            raise LaunchError(f"{policy} requires PERCEPTION_METHOD=sam_live")
         environment["PERCEPTION_METHOD"] = "sam_live"
     # Match the runtime's bounded settings; validate even when the policy is off,
     # because config loading also validates dormant experiment parameters.
@@ -431,8 +435,8 @@ def parser() -> argparse.ArgumentParser:
         if module == "main":
             command.add_argument(
                 "--sam-queue-policy",
-                choices=("durable_ordered", "realtime_latest"),
-                help="Explicit queue override; realtime_latest is an opt-in experiment",
+                choices=("latest_only", "durable_ordered", "realtime_latest"),
+                help="Queue override; latest_only keeps two replaceable candidates",
             )
             command.add_argument(
                 "--tracking-fps",

@@ -257,7 +257,8 @@ class TemporalVLMInspector:
                 if self._closed:
                     outcome = "closed"
                     return False
-                deadline = min(2.0, self.settings.timeout_seconds)
+                # Real TLS handshakes can exceed two seconds on this route.
+                deadline = min(5.0, self.settings.timeout_seconds)
                 self._ensure_transport()
                 remaining = deadline - (time.monotonic() - started)
                 if remaining <= 0:

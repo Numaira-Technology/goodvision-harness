@@ -87,7 +87,7 @@ class RichLabelSettings:
     video_transport_jpeg_quality: int | None = None
     video_transport_codec: str = "jpeg"
     video_transport_crf: int = 23
-    video_queue_policy: str = "durable_ordered"
+    video_queue_policy: str = "latest_only"
     video_realtime_append_frames: int = 1
     video_realtime_pending_frames: int = 2
     video_realtime_max_age_seconds: float = 2.0
@@ -144,6 +144,8 @@ class RuntimeSettings:
     scene_max_in_flight: int = 4
     scene_observation_fps: float = 1.25
     scene_independent_vlm: bool = True
+    # Experiment only: full, compact, or paired information/grounding.
+    scene_vlm_output_mode: str = "full"
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,10 +393,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         processing_method = validate_processing_method(processing_method)
     video_queue_policy = _required_string(
         os.environ.get("SAM31_QUEUE_POLICY")
-        or rich_label_section.get("video_queue_policy", "durable_ordered"),
+        or rich_label_section.get("video_queue_policy", "latest_only"),
         "rich_labeling.video_queue_policy",
     )
-    if video_queue_policy not in {"durable_ordered", "realtime_latest"}:
+    if video_queue_policy not in {"durable_ordered", "realtime_latest", "latest_only"}:
         raise ValueError("unsupported rich_labeling.video_queue_policy")
     if video_queue_policy == "realtime_latest" and processing_method != "sam_live":
         raise ValueError("realtime_latest requires sam_live")
@@ -690,6 +692,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "SCENE_INDEPENDENT_VLM", _bool(runtime_section.get("scene_independent_vlm", True),
                                           "runtime.scene_independent_vlm"),
         ),
+        scene_vlm_output_mode=(
+            os.environ.get("SCENE_VLM_OUTPUT_MODE")
+            or runtime_section.get("scene_vlm_output_mode", "full")
+        ),
         scene_timeout_seconds=scene_timeout,
         scene_max_in_flight=_positive_int(
             int(os.environ.get("SCENE_MAX_IN_FLIGHT") or runtime_section.get(
@@ -722,6 +728,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     )
     if runtime.scene_max_image_side > 2048 or runtime.scene_max_tokens > 16384:
         raise ValueError("scene image/output budget exceeds supported limits")
+    if runtime.scene_vlm_output_mode not in {"full", "compact", "parallel"}:
+        raise ValueError("scene_vlm_output_mode must be full, compact or parallel")
     if runtime.scene_max_in_flight > 4 or runtime.scene_observation_fps > 3:
         raise ValueError("scene concurrency/cadence exceeds validated tuning range")
     server = ServerSettings(

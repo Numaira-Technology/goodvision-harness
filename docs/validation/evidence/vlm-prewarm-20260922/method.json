@@ -1,0 +1,49 @@
+{
+  "date": "2026-09-22",
+  "baseline_commit": "f08886c",
+  "video_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "upload_fps": 5,
+  "gpu_enabled": false,
+  "face_enabled": true,
+  "output_mode": "parallel",
+  "comparisons": [
+    {
+      "runs": [
+        "parallel-baseline",
+        "parallel-warm-only",
+        "parallel-both-profile"
+      ],
+      "instrumentation": "identical main-thread cProfile + GC timing",
+      "note": "baseline had model timeouts; do not attribute the entire receipt-latency difference to local changes"
+    },
+    {
+      "runs": [
+        "parallel-both-watchdog",
+        "parallel-face-prepared"
+      ],
+      "instrumentation": "same watchdog and detailed timing; cProfile disabled",
+      "note": "same application source; face-prepared calls the existing CPU face warmup before starting the source clock"
+    }
+  ],
+  "production_changes": [
+    "Prewarm every independent VLM worker before camera startup acknowledgment/source sampling; reuse clients.",
+    "Increase bounded connection-preparation budget from 2 to 5 seconds.",
+    "Disable redundant WebSocket compression at the application server entry point."
+  ],
+  "experiment_only_change": "Move CPU face initialization before replay using its existing warmup method. No application face startup behavior was changed in this commit.",
+  "limitations": [
+    "Single runs per diagnostic condition, not a repeated performance guarantee.",
+    "Cloud provider/network timing varies; local stages and no-new-TLS observations are the direct evidence.",
+    "Playback-only watchdog/loop metrics exclude preparation and shutdown. Raw logs retain those phases.",
+    "Failed prewarm remains bounded and fail-open; external disconnects cannot be guaranteed away."
+  ],
+  "warmup_requests": "Credential-free HEAD only; no images or billed model generations.",
+  "metadata_success_ids": 458,
+  "metadata_attempts": 491,
+  "actual_providers": {
+    "Alibaba": 456,
+    "Parasail": 2
+  },
+  "raw_root": "C:\\Users\\frank\\.codex\\worktrees\\vlm-jev-experiment\\goodvision-harness\\artifacts\\parallel-delivery-warmup",
+  "harness_root": "C:\\Users\\frank\\.codex\\worktrees\\vlm-jev-experiment\\goodvision-harness\\artifacts\\parallel-delivery-warmup\\harness"
+}

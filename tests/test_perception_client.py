@@ -253,6 +253,7 @@ def test_route_dispatches_first_frame_and_preserves_ordered_backlog_without_gpu(
         backend="sam31_stream",
         processing_method=server.method.id,
         max_fps=4,
+        video_queue_policy="durable_ordered",
     )
     received = []
     coordinator = create_tracking_coordinator(client, rich, received.append)

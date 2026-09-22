@@ -1279,6 +1279,7 @@ class VideoSessionTrackingCoordinator(VideoTrackingCoordinator):
                         timing["outcome"] = "stale"
                         self._discard()
                         continue
+                    self._publish_native(result, generation)
                     commit_started = time.monotonic()
                     if result.frames and self._on_batch is not None:
                         self._on_batch(result)

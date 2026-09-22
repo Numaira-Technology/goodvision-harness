@@ -42,7 +42,8 @@ def test_default_plan_does_not_override_queue_or_sampling_defaults():
     assert "LOCAL_TRACKING_FPS" not in env
 
 
-def test_queue_switch_preserves_custom_window_and_does_not_change_fps():
+@pytest.mark.parametrize("policy", ["realtime_latest", "latest_only"])
+def test_queue_switch_preserves_custom_window_and_does_not_change_fps(policy):
     settings = {
         "SAM31_QUEUE_POLICY": "durable_ordered",
         "SAM31_REALTIME_PENDING_FRAMES": "8",
@@ -53,9 +54,9 @@ def test_queue_switch_preserves_custom_window_and_does_not_change_fps():
     }
     env = launcher.main_environment(
         settings,
-        args("--sam-queue-policy", "realtime_latest"),
+        args("--sam-queue-policy", policy),
     )
-    assert env["SAM31_QUEUE_POLICY"] == "realtime_latest"
+    assert env["SAM31_QUEUE_POLICY"] == policy
     assert env["PERCEPTION_METHOD"] == "sam_live"
     for key in launcher.QUEUE_SETTINGS - {"SAM31_QUEUE_POLICY"}:
         assert env[key] == settings[key]
@@ -142,7 +143,9 @@ def test_dry_run_shows_effective_contour_plan_without_keys_or_writes(
     run.assert_not_called()
 
 
-@pytest.mark.parametrize("policy", [None, "durable_ordered", "realtime_latest"])
+@pytest.mark.parametrize(
+    "policy", [None, "durable_ordered", "realtime_latest", "latest_only"],
+)
 def test_twelve_rendered_contour_lanes_load_actual_config(
     tmp_path,
     monkeypatch,
@@ -218,7 +221,7 @@ def test_twelve_rendered_contour_lanes_load_actual_config(
         assert rich.endpoint == (
             f"http://node:8093/v1/cameras/camera-{index:02d}/contour/sessions"
         )
-        assert rich.video_queue_policy == (policy or "durable_ordered")
+        assert rich.video_queue_policy == (policy or "latest_only")
         assert rich.max_fps == 1
         assert rich.processing_method == "sam_live"
         if policy is not None:
@@ -233,14 +236,19 @@ def test_twelve_rendered_contour_lanes_load_actual_config(
         coordinator = create_tracking_coordinator(client, rich, None)
         try:
             status = processing_status(coordinator, "sam_live")
-            assert status["queue_policy"] == (policy or "durable_ordered")
+            assert status["queue_policy"] == (policy or "latest_only")
             if policy == "realtime_latest":
                 assert status["pending_capacity"] == 4
                 assert status["realtime_max_age_seconds"] == 3
                 assert status["effective_max_append_frames"] == 2
                 assert status["result_deadline_seconds"] == 5
-            else:
+            elif policy == "durable_ordered":
                 assert status["realtime_max_age_seconds"] is None
+            if policy in {None, "latest_only"}:
+                assert status["pending_capacity"] == 2
+                assert status["realtime_max_age_seconds"] == (3 if policy else 2)
+                assert status["effective_max_append_frames"] == 1
+                assert status["candidate_frames"] == 0
             assert status["session_admitted_frames"] == 0
             assert status["admitted_deadline_coverage"] is None
         finally:

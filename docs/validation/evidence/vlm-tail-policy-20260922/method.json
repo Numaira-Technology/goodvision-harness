@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-22",
+  "baseline_commit": "34cb7bd",
+  "upload_fps": 5,
+  "gpu_enabled": false,
+  "face_enabled": true,
+  "output_mode": "parallel",
+  "video_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "information_http_deadline_seconds": 5,
+  "grounding_http_deadline_seconds": 15,
+  "per_lane_capacity": 4,
+  "new_policy": [
+    "Prepare and retain CPU face models before first live frame.",
+    "Publish completed information immediately in source order; discard superseded late information.",
+    "Cancel information HTTP after min(configured_timeout, 5s); no retry.",
+    "Independent lane admission, same evidence when both have capacity, skip busy lanes without queuing old windows."
+  ],
+  "limitations": [
+    "One live validation run; provider timing varies between runs.",
+    "Grounding retains its own configured timeout and ordered publication.",
+    "Dropping superseded or timed-out observations can lose a brief event seen only in that window.",
+    "Timeout is HTTP wall time, not a five-second end-to-end delivery guarantee."
+  ],
+  "raw_root": "C:\\Users\\frank\\.codex\\worktrees\\vlm-jev-experiment\\goodvision-harness\\artifacts\\parallel-delivery-tail-policy"
+}

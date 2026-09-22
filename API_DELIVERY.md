@@ -120,6 +120,35 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 
 ## 通用 JSON 与五能力独立 JSON
 
+### 独立 VLM 即时观测通道
+
+`SCENE_ENGINE_MODE=active` 且 `SCENE_INDEPENDENT_VLM=true` 时，VLM 直接从
+源视频取样，推理结果完成后发布，不等待人员追踪、人脸识别或场景关联。
+
+| 内容 | 接口 |
+| --- | --- |
+| VLM 原始结果 SSE，事件名 `vlm_report` | `GET /v1/vlm/results/events` |
+| 最新 VLM 原始结果 | `GET /v1/vlm/results/latest` |
+| 当前会话、请求成功/失败数、启用类别 | `GET /v1/vlm/status` |
+| 后台完成的人物/事件关联 | `GET /v1/vlm/associations` |
+
+原始包使用 `type="vlm_report"`、`analysis_kind="vlm_event"`，也进入通用及
+对应能力的结果流。配置了 Webhook 时，成功结果直接进入独立发送队列。
+这些接口复用同一推理；接入时用 `stream_session_id` 和 `message_id` 去重。
+
+**即时发现应检查 `judgments[].observed_detected === true`。** 阳性观测的
+`detected` 为 `null`，`confirmation_state="pending"`；这不表示没有收到模型结果，
+也不表示当前包正在等待人员追踪。缺少人物框时也可能有有效阳性观测，应单独读取
+`localization_state`。`state="failed"` 和未返回的类别不能作为阴性。
+
+持续的、按人物确认的报警状态仍从 `/v1/scene` 和事件档案取得，可能等待追踪
+关联、证据规则及后台处理。它们不会回写原始包的 `detected`。VLM 的即时阳性
+可用于“发现异常/待确认”通知，不能直接当作已经确认的事实。
+
+下节场景状态说明适用于场景投影消息 `analysis_kind="scene_state"`；启用独立
+VLM 时，通用结果流可以同时出现原始观测和场景状态，接收方须区分消息类型。
+完整字段语义见 [VLM 观测与关联](docs/architecture/vlm-observation-association.md)。
+
 ### 持续事件模式的兼容输出（2026-09-19）
 
 `SCENE_ENGINE_MODE=active` 时，`/v1/results/latest`、五能力独立 `latest`、

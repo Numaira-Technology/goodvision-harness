@@ -64,6 +64,7 @@ class TemporalInspection:
     subject_boxes: tuple[tuple[int, str, NormalizedBBox], ...] = ()
     event_sensitivities: tuple[tuple[str, str], ...] = ()
     evidence_after_frame_sequence: int | None = None
+    grounding_required: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -1912,6 +1913,11 @@ class SceneRuntime:
         clock deliberately does not change the source time of boxes or masks;
         evidence/planning keep using SceneState.snapshot_at unchanged.
         """
+        metadata = getattr(self, "display_metadata", None)
+        if metadata is not None:
+            view = metadata.display_snapshot(timestamp_seconds)
+            view["state"] = "stopped" if self._closed else "running"
+            return view
         with self._lock:
             view = self.scene.snapshot_at(timestamp_seconds)
             current = self._alert_snapshot(include_history=False)

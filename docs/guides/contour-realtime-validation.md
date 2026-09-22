@@ -3,7 +3,34 @@
 本轮基于 `codex/entity-event-engine` 的 `bcceda6`，包含 PR #21 和后续 HDR、
 采样时钟、实时队列、独立 VLM、浏览器工作量限制等改动。先补配置透传、
 显式实验入口和运行状态字段；后续增加多路 worker 的有界 CPU 解码准备阶段。
-不替换 Contour，不改默认队列策略、检测阈值、播放缓冲或分辨率。
+不替换 Contour，不改检测阈值、播放缓冲或分辨率。2026-09-22 起，主程序的
+`sam_live` 默认使用下述 `latest_only`；显式配置的旧策略仍保留。
+
+## 默认策略：两个近期候选与提前准备
+
+`latest_only` 固定保留最多两个尚未开始处理的内存候选。新采样到来时，容量已满则
+淘汰最旧候选，剩余候选按源序号处理。提交通道有容量时，准备线程可在上一个 HTTP
+请求运行期间取走一帧、落盘并编码。另有且仅有一个正在准备或准备完成的槽位；
+它不计入两个可替换候选。HTTP 仍只有一个在途请求，不并发修改同一跟踪会话。
+
+未发送候选和准备完成的帧复用 `SAM31_REALTIME_MAX_AGE_SECONDS`，默认 2 秒，
+从本机收到该采样时计时。没有新帧到来也会清理过期等待；正在编码的工作不强制
+中断，编码结束后、发送前再次检查年龄。过期准备批次保留审计记录并释放源图/
+请求体；已发送请求和已返回结果不会因该期限被取消。不会为凑批等待，也不预测
+请求完成时间；本次仍固定单帧发送，未改变采样率。
+
+候选阶段没有持久化保证，覆盖记录写入诊断计数和日志；选中的源图在发送前可靠落盘。
+已发送请求、结果持久化、身份/事件提交和失败恢复沿用原有顺序。源序号与时间戳不
+重编号，同一跟踪会话继续推进。这个保证不等于跳帧后真实身份/事件召回率不变。
+
+该模式固定单帧追加、双候选，忽略旧实验的 `SAM31_REALTIME_APPEND_FRAMES` 和
+`SAM31_REALTIME_PENDING_FRAMES`，但使用 `SAM31_REALTIME_MAX_AGE_SECONDS`。
+`SAM31_RESULT_DEADLINE_SECONDS` 仍只用于统计。需要处理全部采样时显式选择
+`durable_ordered`；旧 `realtime_latest` 的数量/年龄实验仍可使用。
+
+本次同时将 SAM 源图接纳落盘移出采集回调，并省去选中帧落盘后立即回读的步骤。
+未将事件归档改成丢弃模式，未改变其他分支采样频率、显示缓冲或传播有效期。
+[实现验证和取舍](../validation/tracking-performance.md)。
 
 ## 后续调整：解码不再占用共享 GPU 槽
 
@@ -98,10 +125,10 @@ python tools/start_modular.py main --streams 12 \
 
 | 变量 | 仓库默认 | 含义 |
 | --- | --- | --- |
-| `SAM31_QUEUE_POLICY` | `durable_ordered` | 显式 `realtime_latest` 才启用实验，仅支持 `sam_live` |
-| `SAM31_REALTIME_APPEND_FRAMES` | 1 | 追加上限：1、2、4 |
-| `SAM31_REALTIME_PENDING_FRAMES` | 2 | 未准备候选数：1–8；不是全链路总帧数 |
-| `SAM31_REALTIME_MAX_AGE_SECONDS` | 2 | 未发送候选年龄上限：0.01–30 秒 |
+| `SAM31_QUEUE_POLICY` | `latest_only` | `sam_live` 双候选、单槽提前准备；可选 `durable_ordered` 或旧实验 `realtime_latest` |
+| `SAM31_REALTIME_APPEND_FRAMES` | 1 | 仅旧实验：追加上限 1、2、4 |
+| `SAM31_REALTIME_PENDING_FRAMES` | 2 | 仅旧实验：未准备候选数 1–8 |
+| `SAM31_REALTIME_MAX_AGE_SECONDS` | 2 | 两种实时策略的未发送帧年龄上限 0.01–30 秒，含准备完成的帧 |
 | `SAM31_RESULT_DEADLINE_SECONDS` | 4 | 及时率统计阈值：0.01–30 秒；不强制取消请求 |
 
 启动器选实时策略时同时设置 `PERCEPTION_METHOD=sam_live`；直接运行 Compose 时需显式设置。
@@ -111,7 +138,9 @@ python tools/start_modular.py main --streams 12 \
 分析启动后查看每路状态的 `processing` 对象：
 
 - 生效配置：`queue_policy`、`effective_max_append_frames`、`pending_capacity`、`realtime_max_age_seconds`。
-- 积压：`queue_frames`、`oldest_pending_seconds`、`latest_result_age_seconds`。
+- 积压：`candidate_frames`、`queue_frames`、`oldest_pending_seconds`、`latest_result_age_seconds`。
+  `latest_only` 的候选数最多 2；`queue_frames` 还含一个正在准备/准备完成的帧，最多 3，
+  不包括在途 HTTP 请求和等待提交的结果。
 - 处理与跳过：`processed_frames`、`skipped_by_reason`、`session_admitted_frames`。
 - 及时率：`result_deadline_seconds`、`results_within_deadline`、`results_after_deadline`、`admitted_deadline_coverage`。
 
@@ -119,7 +148,10 @@ python tools/start_modular.py main --streams 12 \
 `camera12/status`，也可打开每路诊断页。未创建协调器时配置为 `null`，不会伪装成已生效。
 停止后可能保留上轮统计，采集前确认当前分析与会话。
 
-及时率分母包括已接纳但跳过的帧，不含采样前忽略的帧；它不是播放轮廓覆盖率、事件召回率
+`latest_only` 的 `session_candidate_frames` 包含被覆盖候选，`session_admitted_frames`
+只统计已选中并落盘的帧，含之后因准备过期未发送的帧；其及时率分母不含在内存中
+被覆盖或过期的候选，必须同时查看处理与跳过数量。
+旧 `realtime_latest` 的及时率分母包括已接纳但跳过的帧。它们都不是播放轮廓覆盖率、事件召回率
 或摄像头采集到结果的完整端到端延迟。还需记录源时间落后、播放、描边率、事件检出、CPU、
 显存、GPU 等待、推理和 VLM 延迟。PR #21 的诊断保留，见
 [Contour 性能文档](../../workers/contour/PERFORMANCE.md)。
@@ -133,55 +165,11 @@ python tools/start_modular.py main --streams 12 \
 
 本地自动化只验证配置、协议、队列边界和状态；真实双卡、GPU 性能、长时播放与检测质量待现场验收。
 
-## 本轮本地验证记录
+## 本地回归入口
 
-2026-09-20，macOS / Python 3.13，未使用 GPU 或真实模型服务：
-
-- 初轮全量：4216 通过、25 失败、46 跳过。未修改的 `bcceda6` 独立快照在同一
-  Python 环境、同一工作目录下复跑：4193 通过、同样 25 项失败、46 跳过；失败项一致。
-- 补充极端整数输入校验后，部署、实时队列和 Contour 集成定向回归：62 通过、1 跳过。
-  跳过的是缺少 PyAV 的 H.264 集成用例。
-- 全量中的 5 项回环网络失败是沙箱禁止监听端口。允许本地回环监听后，相关测试组
-  22 项全部通过。其余失败涉及既有测试/默认值差异、环境配置及缺失编码器或交付产物，
-  不在本次补丁中顺带修复。
-- 改动 Python 文件 Ruff、`git diff --check`、仓库 hygiene 检查通过。
-
-定向复跑（使用已安装开发依赖的环境）：
-
-```sh
-PYTHONPATH=src:tests:. python -m pytest -o addopts='' -q \
-  tests/test_realtime_deployment.py tests/test_modular_deploy.py \
-  tests/test_sam_realtime_queue.py tests/test_contour_integration.py \
-  tests/test_contour_multistream.py
-```
-
-测试使用模拟模型/HTTP 和真实 Compose 配置渲染，没有启动 12 路实际视频。
-
-后续有界预解码补丁（同日、同一基线）：
-
-- 新增 20 项准备阶段测试；连同旧会话、H.264、多路、云端分流、Contour 集成与
-  前述配置入口，定向回归 **197 通过、1 跳过**（缺少 PyAV）。
-- 最终全量 **4237 通过、25 失败、46 跳过**；逐项对比原始 `bcceda6` 的测试报告，
-  25 个失败用例集合完全一致，没有新增失败。Ruff、diff 与仓库 hygiene 检查通过。
-- 准备阶段及多路并发的 61 项测试连续三轮通过。
-- 允许本地回环监听后，传输复用和超时相关的三个测试文件 **44 项通过**。
-- 模拟编解码/模型输出验证通过，不代表真实 H.264 编解码或 CUDA 数值等价验证。
-
-解码调整的定向复跑：
-
-```sh
-PYTHONPATH=src:tests:. python -m pytest -o addopts='' -q \
-  tests/test_sam_preparation.py tests/test_sam31_continuous_worker.py \
-  tests/test_sam31_h264_sessions.py tests/test_sam_multistream.py \
-  tests/test_contour_multistream.py tests/test_cloud_gpu.py
-```
-
-以上六个文件共 139 项通过。首次使用 H.264 的 GPU 主机仍需验证其实际 PyAV/FFmpeg
-依赖，以及相同输入帧的 mask、ID、置信度和事件检测结果。
-
-JPEG 告警竞争修复追加验证：新增 `tests/test_sam_jpeg_decode.py` 的 21 项测试，
-覆盖正常/失败解码的交错退出、全局过滤器不变、Pillow 阈值及告警策略变化。
-其中 3 项并发回归在修复前均能复现失败，修复后全部通过；连同图片、批处理、
-会话及多路 worker 相关回归，共 275 项通过。
-修复后全量为 **4258 通过、25 失败、46 跳过**；对比原始基线报告，失败用例集合
-仍完全一致，没有新增失败。21 项新增测试连续三轮通过，Ruff、diff 与 hygiene 检查通过。
+运行 `python -m pytest`；队列、生命周期和部署配置的定向检查见
+`tests/test_sam_latest_only.py`、`tests/test_sam_realtime_queue.py`、
+`tests/test_sam_tracking_pipeline.py` 与 `tests/test_realtime_deployment.py`。
+预解码及真实编码依赖检查见 `tests/test_sam_preparation.py`、
+`tests/test_sam31_h264_sessions.py` 和 `tests/test_sam_jpeg_decode.py`。
+本地替身测试不证明 CUDA 性能或检测质量；历史测量边界统一见[追踪性能](../validation/tracking-performance.md)。

@@ -1,0 +1,153 @@
+{
+  "checked_date": "2026-09-22",
+  "docs": "https://simple-jev.featherless.ai/docs",
+  "mechanism": "https://simple-jev.featherless.ai/how-it-works",
+  "simple_model": "featherless-ai/Qwen3.6-35B-A3B-classifier",
+  "public_demo_requires_key": false,
+  "public_demo_image_support": "Observed in this deployment despite text-only documentation; not a documented stability guarantee.",
+  "direct_image_probe": {
+    "status": 200,
+    "seconds": 9.336815599999682,
+    "response": {
+      "model": "featherless-ai/Qwen3.6-35B-A3B-classifier",
+      "answers": {
+        "fall": {
+          "type": "choice",
+          "choice": "present",
+          "confidence": 0.9561440944671631,
+          "probabilities": {
+            "present": 0.9561440944671631,
+            "absent": 0.042010050266981125,
+            "uncertain": 0.0018457924015820026
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 687,
+        "output_tokens": 1
+      }
+    },
+    "frames": 4,
+    "side": 320,
+    "endpoint": 12.8
+  },
+  "four_question_probes": [
+    {
+      "side": 720,
+      "endpoint": 12.8,
+      "status": 200,
+      "seconds": 10.421949600000517,
+      "response": {
+        "model": "featherless-ai/Qwen3.6-35B-A3B-classifier",
+        "answers": {
+          "fight": {
+            "type": "choice",
+            "choice": "absent",
+            "confidence": 0.945072591304779,
+            "probabilities": {
+              "present": 0.053317345678806305,
+              "absent": 0.945072591304779,
+              "uncertain": 0.001610045088455081
+            }
+          },
+          "smoking": {
+            "type": "choice",
+            "choice": "absent",
+            "confidence": 0.9518444538116455,
+            "probabilities": {
+              "present": 0.047389544546604156,
+              "absent": 0.9518444538116455,
+              "uncertain": 0.0007659803377464414
+            }
+          },
+          "fall": {
+            "type": "choice",
+            "choice": "absent",
+            "confidence": 0.5793864727020264,
+            "probabilities": {
+              "present": 0.3514156639575958,
+              "absent": 0.5793864727020264,
+              "uncertain": 0.06919785588979721
+            }
+          },
+          "weapon": {
+            "type": "choice",
+            "choice": "absent",
+            "confidence": 0.8789287805557251,
+            "probabilities": {
+              "present": 0.10497308522462845,
+              "absent": 0.8789287805557251,
+              "uncertain": 0.0160981435328722
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 2310,
+          "output_tokens": 4
+        }
+      }
+    },
+    {
+      "side": 720,
+      "endpoint": 42.4,
+      "status": 200,
+      "seconds": 2.1260618999949656,
+      "response": {
+        "model": "featherless-ai/Qwen3.6-35B-A3B-classifier",
+        "answers": {
+          "fight": {
+            "type": "choice",
+            "choice": "absent",
+            "confidence": 0.9838559627532959,
+            "probabilities": {
+              "present": 0.015902550891041756,
+              "absent": 0.9838559627532959,
+              "uncertain": 0.00024146746727637947
+            }
+          },
+          "smoking": {
+            "type": "choice",
+            "choice": "absent",
+            "confidence": 0.9793652296066284,
+            "probabilities": {
+              "present": 0.020326076075434685,
+              "absent": 0.9793652296066284,
+              "uncertain": 0.0003086351789534092
+            }
+          },
+          "fall": {
+            "type": "choice",
+            "choice": "absent",
+            "confidence": 0.9872201681137085,
+            "probabilities": {
+              "present": 0.01242726668715477,
+              "absent": 0.9872201681137085,
+              "uncertain": 0.000352534611010924
+            }
+          },
+          "weapon": {
+            "type": "choice",
+            "choice": "absent",
+            "confidence": 0.9945785999298096,
+            "probabilities": {
+              "present": 0.005219069309532642,
+              "absent": 0.9945785999298096,
+              "uncertain": 0.000202365277800709
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 2310,
+          "output_tokens": 4
+        }
+      }
+    }
+  ],
+  "openrouter_logprobs_observations": {
+    "qwen/qwen3-vl-8b-instruct": "Alibaba returned HTTP 200 but logprobs=null with top_logprobs=5.",
+    "qwen/qwen3.6-flash": "Synthetic text-only prefill probe returned A/B/C scores with top_logprobs=5. This does not guarantee coverage for image questions; no missing label score was replaced by zero.",
+    "top_logprobs_20": "Both models rejected the tested requests with HTTP 400.",
+    "qwen3.6_35b_alibaba": "Pinned Alibaba route returned 404; not evidence that the model is unavailable at every OpenRouter provider."
+  },
+  "probe_comparability": "320-pixel single short fall question and 720-pixel four-policy questions differ in resolution and prompt; no causal attribution to question count or resolution."
+}

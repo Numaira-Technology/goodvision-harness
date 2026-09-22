@@ -80,14 +80,15 @@ def test_overload_replaces_only_unsent_frames_and_preserves_one_epoch(tmp_path):
         coordinator.close()
 
 
+@pytest.mark.parametrize("queue_policy", ["realtime_latest", "latest_only"])
 def test_pending_expires_without_another_arrival_while_request_stays_owned(
-    tmp_path, monkeypatch, advance_age
+    tmp_path, monkeypatch, advance_age, queue_policy
 ):
     received = []
     server, _, coordinator = setup_pipeline(
         tmp_path,
         received.append,
-        queue_policy="realtime_latest",
+        queue_policy=queue_policy,
         realtime_max_age_seconds=30,
     )
     server.release.clear()
@@ -117,20 +118,22 @@ def test_pending_expires_without_another_arrival_while_request_stays_owned(
         coordinator.flush()
         assert coordinator.wait_until_idle(3)
         assert output_sequences(received) == [3]
-        assert coordinator._spool.skipped_records()[0]["sequence"] == 6
+        if queue_policy == "realtime_latest":
+            assert coordinator._spool.skipped_records()[0]["sequence"] == 6
     finally:
         server.release.set()
         coordinator.close()
 
 
+@pytest.mark.parametrize("queue_policy", ["realtime_latest", "latest_only"])
 def test_slow_preparation_is_retired_before_send_and_empty_session_can_finish(
-    tmp_path, monkeypatch, advance_age
+    tmp_path, monkeypatch, advance_age, queue_policy
 ):
     received = []
     server, client, coordinator = setup_pipeline(
         tmp_path,
         received.append,
-        queue_policy="realtime_latest",
+        queue_policy=queue_policy,
         realtime_max_age_seconds=30,
     )
     entered, release = threading.Event(), threading.Event()
@@ -159,6 +162,51 @@ def test_slow_preparation_is_retired_before_send_and_empty_session_can_finish(
         assert coordinator._spool.skipped_records()[0]["reason"] == "expired"
     finally:
         release.set()
+        coordinator.close()
+
+
+def test_latest_only_expires_prepared_and_memory_candidates_without_cancelling_http(
+    tmp_path, advance_age,
+):
+    received = []
+    server, _, coordinator = setup_pipeline(
+        tmp_path, received.append, queue_policy="latest_only",
+        realtime_max_age_seconds=30,
+    )
+    server.release.clear()
+    try:
+        submit(coordinator, frames(1, 1))
+        assert server.entered.wait(2)
+        submit(coordinator, frames(2, 1))
+        wait_for(lambda: coordinator.stats()["prepared_frames"] == 1)
+        submit(coordinator, frames(3, 2))
+        assert coordinator.stats()["candidate_frames"] == 2
+        advance_age(coordinator)
+        wait_for(lambda: coordinator.stats()["skipped_by_reason"]["expired"] == 3)
+        assert coordinator.stats()["pending_frames"] == 0
+        assert not coordinator._candidate_frames
+        assert list(coordinator._source_arrivals) == [3]
+        assert len(server.requests) == 1
+        assert coordinator._requesting is not None
+        assert coordinator._spool.stats()["retained_sources"] == 1
+        skipped = coordinator._spool.skipped_records()
+        assert [row["sequence"] for row in skipped] == [6]
+        assert skipped[0]["reason"] == "expired"
+        abandoned = coordinator._spool.records()[1]
+        assert abandoned["state"] == "abandoned"
+        assert abandoned["payload"] is None and abandoned["payload_hash"]
+        # The preparation slot is reusable before the original request returns.
+        submit(coordinator, frames(5, 1))
+        wait_for(lambda: coordinator.stats()["prepared_frames"] == 1)
+        assert len(server.requests) == 1
+        server.release.set()
+        coordinator.flush()
+        assert coordinator.wait_until_idle(4)
+        assert output_sequences(received) == [3, 15]
+        assert server.creates == ["camera"]
+        assert not coordinator._source_arrivals
+    finally:
+        server.release.set()
         coordinator.close()
 
 

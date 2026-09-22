@@ -8,6 +8,7 @@ import os
 import time
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -16,6 +17,7 @@ from goodvision_harness.config import load_config
 from goodvision_harness.contracts import NormalizedBBox
 from goodvision_harness.result_bus import ResultBus
 from goodvision_harness.rich_labeling import RichLabelObject, RichLabelSnapshot
+from goodvision_harness.sam_display_fusion import SAMDisplayFusion
 from goodvision_harness.scene_evidence import EvidenceFrame, InspectionRequest
 from goodvision_harness.scene_runtime import SceneRuntime, TemporalInspection
 from goodvision_harness.vlm_fusion import VLMFusion
@@ -217,8 +219,12 @@ def test_actual_process_publishes_while_scene_and_background_are_blocked():
         independent_temporal_inference=True,
     )
     fusion = VLMFusion(scene)
+    display_fusion = SAMDisplayFusion(cfg.stream_session_id, cfg.source_id)
+    delivered = []
     branch = IndependentVLMBranch(
-        cfg, results=bus, fusion=fusion, inspector_factory=stub_factory
+        cfg, results=bus, fusion=fusion, display_fusion=display_fusion,
+        delivery=SimpleNamespace(submit=delivered.append),
+        inspector_factory=stub_factory,
     )
     release, held = Event(), Event()
 
@@ -252,6 +258,11 @@ def test_actual_process_publishes_while_scene_and_background_are_blocked():
         assert time.monotonic() - started < 5.0
         assert bus.latest(feature="smoking").payload["analysis_kind"] == "vlm_event"
         assert fusion.stats()["pending_reports"] > 0
+        assert len(display_fusion._inbox["vlm"]) >= 4
+        assert len(delivered) >= 4
+        assert [item["message_id"] for item in delivered[:4]] == [
+            item.payload["message_id"] for item in records[:4]
+        ]
         sequences = [r.payload["frame"]["source_frame_index"] for r in records]
         assert sequences == sorted(set(sequences))
         old_epoch = bus.epoch

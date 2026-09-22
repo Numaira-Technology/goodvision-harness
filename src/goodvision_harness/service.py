@@ -53,6 +53,7 @@ from .config import (
     ServiceSettings,
     load_config,
 )
+from .continuous_display import ContinuousTrackedSceneDisplayWorker
 from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
 from .delayed_overlay import (
     DelayedOverlayComposer,
@@ -147,10 +148,10 @@ from .route_probe import (
     probe_sample,
 )
 from .run_postprocess import RunPostprocess
+from .sam_display_fusion import SAMDisplayFusion
 from .scene_archive import SceneArchive
 from .scene_capture import SceneCaptureClient
 from .scene_delivery import SceneDisplayWorker, TrackedSceneDisplayWorker
-from .continuous_display import ContinuousTrackedSceneDisplayWorker
 from .scene_model import TemporalVLMInspector
 from .scene_results import SceneResultPublisher
 from .scene_runtime import SceneRuntime
@@ -2078,7 +2079,8 @@ class HarnessRuntime:
         else:
             processing_ready = self._require_processing_ready()
 
-        with self._control_lock:
+        def validate_start():
+            # Called under the control lock before and after model preparation.
             if self._closed:
                 raise RuntimeError("harness service is stopping")
             if video_connection_id is not None and (
@@ -2111,6 +2113,30 @@ class HarnessRuntime:
                 raise MissingAPIKeyError(
                     "missing model API key; set " + self.config.model_api.api_key_env
                 )
+
+        needs_face = not use_dry_run and (
+            selected_analysis == FACE_ANALYSIS_MODE
+            or (selected_analysis == MULTI_ANALYSIS_MODE
+                and "stranger" in selected_features)
+        )
+        with self._control_lock:
+            validate_start()
+            prepared_face = self._ensure_face_runtime() if needs_face else None
+        if prepared_face is not None:
+            # Load once before admitting frames, without holding the service
+            # lock. The runtime and its warmed models survive session stops.
+            face_prepare_started = time.monotonic()
+            warmup_seconds = prepared_face.warmup()
+            log_timing(
+                "face_analysis_preparation",
+                total_seconds=time.monotonic() - face_prepare_started,
+                model_warmup_seconds=warmup_seconds,
+                reused=warmup_seconds == 0.0,
+            )
+            if warmup_seconds:
+                LOGGER.info("warmed local face analysis in %.3fs", warmup_seconds)
+        with self._control_lock:
+            validate_start()
             self._ensure_delivery()
 
             face_session = None
@@ -2137,12 +2163,7 @@ class HarnessRuntime:
                     retention_days=self.config.events.retention_days,
                 )
             if selected_analysis == FACE_ANALYSIS_MODE:
-                face_runtime = self._ensure_face_runtime()
-                warmup_seconds = face_runtime.warmup()
-                if warmup_seconds:
-                    LOGGER.info(
-                        "warmed local face analysis in %.3fs", warmup_seconds
-                    )
+                face_runtime = prepared_face
                 face = self.config.face
                 face_live_scheduler = _resolved_face_live_scheduler(
                     provider=face.provider,
@@ -2189,14 +2210,7 @@ class HarnessRuntime:
                 include_stranger = "stranger" in selected_features
                 face_runtime = None
                 if include_stranger and not use_dry_run:
-                    face_runtime = self._ensure_face_runtime()
-                    # In mixed independent mode, model loading belongs to the
-                    # face inference worker, so it cannot gate VLM startup.
-                    warmup_seconds = 0.0 if independent_requested else face_runtime.warmup()
-                    if warmup_seconds:
-                        LOGGER.info(
-                            "warmed local face analysis in %.3fs", warmup_seconds
-                        )
+                    face_runtime = prepared_face
                     if isinstance(face_runtime, FaceRecognitionRuntime):
                         face_session = FaceRecognitionSession(
                             face_runtime,
@@ -2444,6 +2458,18 @@ class HarnessRuntime:
                 if self._scene_enabled
                 else None
             )
+            display_fusion = (
+                SAMDisplayFusion(
+                    session.stream_session_id, self.source_id,
+                    stranger_enabled=next_scene.stranger_enabled,
+                )
+                if (scene_active and not use_dry_run and next_scene is not None
+                    and self.config.runtime.scene_independent_vlm
+                    and self.config.rich_labeling.backend == "sam31_stream")
+                else None
+            )
+            if display_fusion is not None:
+                next_scene.display_metadata = self._camera_display_metadata
             next_worker = None
             if scene_active and not use_dry_run and scene_labels:
                 model_settings = replace(
@@ -2476,6 +2502,7 @@ class HarnessRuntime:
                         self.config.runtime.scene_observation_fps,
                         self.config.runtime.scene_max_in_flight,
                         route_id=PUBLIC_ROUTE_IDS.get(self._selected_route_id),
+                        output_mode=self.config.runtime.scene_vlm_output_mode,
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
@@ -2487,8 +2514,9 @@ class HarnessRuntime:
                         fusion=VLMFusion(
                             next_scene,
                             on_update=lambda: self._guarded_callback(generation, self._on_scene_update),
-                            delivery=self._delivery,
                         ),
+                        display_fusion=display_fusion,
+                        delivery=self._delivery,
                     )
                 else:
                     def build_inspector():
@@ -2554,6 +2582,7 @@ class HarnessRuntime:
                     stream_session_id=(session.stream_session_id
                                        if face_session is not None else None),
                     source_id=self.source_id, generation=generation,
+                    display_fusion=display_fusion,
                 )
                 if face_session is not None:
                     face_session.fast_results = self.face_fast_results
@@ -2576,6 +2605,7 @@ class HarnessRuntime:
                 self._session = session
                 self._camera_display_metadata.reset(
                     session.stream_session_id,
+                    fusion=display_fusion,
                     native_token=(self._rich_config_revision, id(self._rich_labels),
                                   self._rich_labels._generation)
                     if hasattr(self._rich_labels, "on_native_batch") else None,
@@ -5794,6 +5824,9 @@ def main() -> None:
         port=port,
         timeout_graceful_shutdown=10,
         server_header=False,
+        # Camera payloads already contain JPEG. Deflate adds synchronous work
+        # to the same protocol loop that must deliver ACKs and event reports.
+        ws_per_message_deflate=False,
     )
 
 

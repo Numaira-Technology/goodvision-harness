@@ -1,0 +1,50 @@
+{
+  "date": "2026-09-22",
+  "source_code_commit": "c32d7bc",
+  "last_application_change": "54787d6",
+  "source_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "duration_seconds": 55.798021,
+  "upload_fps": 5,
+  "frames_per_run": 279,
+  "order": [
+    "full-0",
+    "parallel-0",
+    "parallel-1",
+    "full-1",
+    "full-2",
+    "parallel-2"
+  ],
+  "repetitions_per_mode": 3,
+  "gpu_enabled": false,
+  "face_provider": "CPUExecutionProvider",
+  "actual_runtime_gpu_disabled_verified": true,
+  "observed_sam_calls": 0,
+  "source_sample_fps_configuration": 2.5,
+  "observation_fps_configuration": 1.25,
+  "retained_temporal_evidence_frames": 4,
+  "max_inflight_per_lane": 4,
+  "model": "qwen/qwen3-vl-8b-instruct:nitro",
+  "request_policy": {
+    "sort": "throughput",
+    "allow_fallbacks": true,
+    "ignore": [
+      "coreweave",
+      "novita"
+    ]
+  },
+  "actual_providers_from_metadata": "See generation-metadata.jsonl; never infer from the config file.",
+  "ingress": "GVC2 WebSocket replay; source PTS retained; newest cached image no later than each 0.2-second tick; same JPEG bytes as previous tests. No new ACK gate or dropping policy.",
+  "time_reference": "Primary delay: Windows frame send time to separate Windows worker receipt. Secondary PTS delay includes the source-frame selection age and sender scheduling delay.",
+  "clock_alignment": "Before/after 7 HTTP clock probes, lowest RTT offset used for cross-host intermediate stages. Primary end-to-end metric does not need offset correction.",
+  "raw_root": "C:\\Users\\frank\\.codex\\worktrees\\vlm-jev-experiment\\goodvision-harness\\artifacts\\parallel-delivery-5fps",
+  "harness_root": "C:\\Users\\frank\\.codex\\worktrees\\vlm-jev-experiment\\goodvision-harness\\artifacts\\parallel-delivery-5fps\\harness",
+  "output_semantics": "Raw four-event observations; observed_detected=true does not imply confirmed person alarm. Grounding lane remains active, GPU geometry is disabled.",
+  "limitations": [
+    "One previously annotated demo video; three repetitions are not a representative accuracy benchmark.",
+    "Historical ~13.7 FPS tests also enabled GPU/SAM; changes versus those tests cannot all be attributed to upload frequency.",
+    "Full video includes cold starts; no trials or startup reports were discarded.",
+    "Configured VLM sampling remains unchanged; actual source intervals and report counts depend on timestamp gating, concurrency and expiration.",
+    "Stage percentiles have overlapping scopes and cannot be summed.",
+    "This replay sends without waiting for frame ACK and is not the production browser upload loop."
+  ]
+}

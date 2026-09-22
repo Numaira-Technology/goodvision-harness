@@ -6,10 +6,10 @@
 
 | 专题 | 重点结论与缺口 |
 | --- | --- |
-| [网络与显示](network-and-display.md) | 接收隔离对照有效；计算压力下 HTTP 输出仍降帧，真实摄像头与完整多路待验收 |
+| [网络与显示](network-and-display.md) | 接收隔离、SAM 显示覆盖及 VLM 长尾实测；当前预热与独立接纳策略、真实摄像头和多路验收边界 |
 | [事件、归档与收尾](events-and-lifecycle.md) | 独立发布、身份纠正及收尾修复；归档现场持续消费与恢复边界待验收 |
 | [追踪性能](tracking-performance.md) | L40S 正式权重容量、缓存收益及可选队列取舍；长期容量和质量未证明 |
-| [识别质量](recognition-quality.md) | 真实 30B 回复与坐标回归；小目标、误报和一般准确率仍需标注验证 |
+| [识别质量](recognition-quality.md) | 30 段分层复测：8B 精简 JSON 最快但有日常误报；Simple Jev 漏检更多，定位与一般质量待验收 |
 | [交付与升级](delivery-and-updates.md) | 连续升级、PowerShell 5.1 和对客审计；本地检查不能代替客户现场升级 |
 
 ## 维护规则

@@ -282,8 +282,8 @@ def create_tracking_coordinator(client, rich, on_batch):
         batch_seconds=rich.video_batch_seconds,
     )
     if rich.processing_method is not None:
-        # Dispatch as soon as HTTP is idle; prepare at most four accumulated
-        # sources ahead. SAM's durable ingress never overwrites pending samples.
+        # The causal route defaults to two recent candidates; explicitly selected
+        # durable/experimental policies keep their own admission semantics.
         options.update(batch_frames=1, batch_seconds=0.1, pending_capacity=4)
     coordinator = (
         PipelinedVideoSessionTrackingCoordinator
@@ -332,6 +332,8 @@ def processing_status(coordinator, method):
         "completed_after_capture": stats.get("completed_after_capture", 0),
         "capture_elapsed_seconds": stats.get("capture_elapsed_seconds", 0),
         "queue_frames": stats.get("pending_frames", 0),
+        "candidate_frames": stats.get("candidate_frames", 0),
+        "session_candidate_frames": stats.get("session_candidate_frames", 0),
         "processed_frames": stats.get("processed_frames", 0),
         "dropped_frames": stats.get("dropped_backpressure", 0),
         "queue_policy": stats.get("queue_policy"),

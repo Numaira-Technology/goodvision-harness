@@ -44,7 +44,9 @@ def output_sequences(batches):
     return [snapshot.frame_sequence for batch in batches for snapshot in batch.frames]
 
 
-@pytest.mark.parametrize("queue_policy", ["durable_ordered", "realtime_latest"])
+@pytest.mark.parametrize(
+    "queue_policy", ["durable_ordered", "realtime_latest", "latest_only"],
+)
 @pytest.mark.parametrize("reuse_worker", [False, True])
 def test_empty_run_finishes_and_allows_next_run(tmp_path, queue_policy, reuse_worker):
     received = []
@@ -490,11 +492,14 @@ def test_commit_backpressure_retries_same_result_without_duplicate_requests(tmp_
         coordinator.close()
 
 
-def test_commit_failure_retains_original_frames_payload_and_result(tmp_path):
+@pytest.mark.parametrize("queue_policy", ["durable_ordered", "latest_only"])
+def test_commit_failure_retains_original_frames_payload_and_result(
+    tmp_path, queue_policy,
+):
     def reject(_batch):
         raise ValueError("private callback error")
 
-    server, _, coordinator = setup_pipeline(tmp_path, reject)
+    server, _, coordinator = setup_pipeline(tmp_path, reject, queue_policy=queue_policy)
     try:
         submit(coordinator, frames(1, 1))
         wait_for(lambda: coordinator.stats()["state"] == "failed")
@@ -542,13 +547,17 @@ def test_spool_quota_rejects_new_work_without_erasing_admitted_bytes(tmp_path):
     assert reopened.stats()["retained_sources"] == 1
 
 
+@pytest.mark.parametrize("queue_policy", ["durable_ordered", "latest_only"])
 def test_close_waits_for_preparation_to_unwind_and_keeps_uncommitted_sources(
     tmp_path,
     monkeypatch,
+    queue_policy,
 ):
     entered, release = threading.Event(), threading.Event()
     received = []
-    _, client, coordinator = setup_pipeline(tmp_path, received.append)
+    _, client, coordinator = setup_pipeline(
+        tmp_path, received.append, queue_policy=queue_policy,
+    )
     prepare = client.prepare_append
 
     def blocked_prepare(inputs, **kwargs):

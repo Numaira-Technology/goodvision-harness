@@ -13,10 +13,10 @@ import os
 import time
 from collections import Counter, OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from queue import Empty, Full
-from threading import Event, Lock, Thread, local
+from threading import Barrier, BrokenBarrierError, Event, Lock, Thread, local
 from uuid import uuid4
 
 from PIL import Image
@@ -31,6 +31,7 @@ from .vlm_independent_model import IndependentVLMInspector
 MAX_FRAME_BYTES = 4 * 1024**2
 INPUT_CAPACITY = 8
 OUTPUT_CAPACITY = 16
+INFORMATION_HTTP_DEADLINE_SECONDS = 5.0
 
 
 def utc_now():
@@ -52,8 +53,11 @@ class VLMProcessConfig:
     observation_fps: float = 1.25
     max_in_flight: int = 4
     route_id: str | None = None
+    output_mode: str = "full"
 
     def __post_init__(self):
+        if self.output_mode not in {"full", "compact", "parallel", "events"}:
+            raise ValueError("invalid VLM output mode")
         if not self.stream_session_id or not self.source_id or not self.labels:
             raise ValueError("VLM process requires a scoped source and event labels")
         if not 0 < self.observation_fps <= 3 or not math.isfinite(self.observation_fps):
@@ -235,28 +239,64 @@ class IndependentEventState:
 
 
 def _inspector(config):
-    return IndependentVLMInspector(
-        config.model_settings,
+    from .vlm_compact_model import CompactGroundingInspector, EventJSONInspector
+
+    cls = {"events": EventJSONInspector, "compact": CompactGroundingInspector}.get(
+        config.output_mode, IndependentVLMInspector
+    )
+    options = dict(config.options)
+    settings = config.model_settings
+    if config.output_mode == "events":
+        options["max_tokens"] = 160
+        # The transport uses asyncio.wait_for: expiry cancels the HTTP request
+        # and releases its worker, rather than abandoning a running Future.
+        settings = replace(
+            settings,
+            timeout_seconds=min(
+                settings.timeout_seconds,
+                INFORMATION_HTTP_DEADLINE_SECONDS,
+            ),
+        )
+    return cls(
+        settings,
         model=config.model,
         api_key=config.api_key,
         request_parameters=config.parameters,
-        **config.options,
+        **options,
     )
 
 
-def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspector):
+def run_vlm_process(
+    config,
+    incoming,
+    outgoing,
+    stop,
+    inspector_factory=_inspector,
+    grounding_required=None,
+    startup_ready=None,
+):
     """Spawn target: image windows, inference, observation reports, then IPC."""
     state = IndependentEventState(config)
     stats = Counter()
     history = deque(maxlen=12)
-    pending = OrderedDict()
+    lanes = (
+        ("events", "compact")
+        if config.output_mode == "parallel"
+        else (config.output_mode,)
+    )
+    queues = {lane: OrderedDict() for lane in lanes}
+    last_published = {lane: -1 for lane in lanes}
+    last_lane_endpoint = {lane: -1 for lane in lanes}
     thread_state, clients = local(), []
     last_sequence, last_endpoint, next_due = -1, -1, -math.inf
     last_status = 0.0
     source_finished = False
-    executor = ThreadPoolExecutor(
-        max_workers=config.max_in_flight, thread_name_prefix="vlm-model"
-    )
+    executors = {
+        lane: ThreadPoolExecutor(
+            max_workers=config.max_in_flight, thread_name_prefix="vlm-" + lane
+        )
+        for lane in lanes
+    }
 
     def emit(item):
         try:
@@ -264,15 +304,38 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
         except Full:
             stats["output_dropped"] += 1
 
-    def evaluate(job):
+    def worker_inspector(lane):
+        if not hasattr(thread_state, "inspector"):
+            thread_state.inspector = inspector_factory(
+                replace(config, output_mode=lane)
+            )
+            clients.append(thread_state.inspector)
+        return thread_state.inspector
+
+    warm_barrier = Barrier(len(lanes) * config.max_in_flight)
+
+    def prepare_worker(lane):
+        # Occupy every worker before any prime task can finish. Otherwise a
+        # fast HEAD could prime one idle thread repeatedly and leave others cold.
+        try:
+            warm_barrier.wait(timeout=5.0)
+        except BrokenBarrierError:
+            return False
+        if stop.is_set():
+            return False
+        try:
+            warmup = getattr(worker_inspector(lane), "warmup", None)
+            return bool(warmup()) if callable(warmup) else None
+        except Exception:
+            # A failed best-effort transport probe must not disable inference.
+            return False
+
+    def evaluate(job, lane):
         started, started_at = time.monotonic(), utc_now()
         verdicts, error = (), None
         validation_reason = None
         try:
-            if not hasattr(thread_state, "inspector"):
-                thread_state.inspector = inspector_factory(config)
-                clients.append(thread_state.inspector)
-            verdicts = thread_state.inspector.inspect(job)
+            verdicts = worker_inspector(lane).inspect(job)
         except Exception as exc:
             # Closed vocabulary only: no endpoints, credentials or model text.
             error = getattr(exc, "code", None)
@@ -318,6 +381,27 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
         )
 
     try:
+        emit({"kind": "status", "state": "warming", "pid": os.getpid()})
+        warm_started = time.monotonic()
+        primes = [
+            executors[lane].submit(prepare_worker, lane)
+            for lane in lanes
+            for _ in range(config.max_in_flight)
+        ]
+        outcomes = [future.result() for future in primes]
+        stats["transport_warmup_slots"] = len(outcomes)
+        stats["transport_warmup_ready"] = sum(x is True for x in outcomes)
+        stats["transport_warmup_failed"] = sum(x is False for x in outcomes)
+        log_timing(
+            "vlm_independent_warmup_timing",
+            stream_session_id=config.stream_session_id,
+            slots=len(outcomes),
+            ready=stats["transport_warmup_ready"],
+            failed=stats["transport_warmup_failed"],
+            total_seconds=time.monotonic() - warm_started,
+        )
+        if startup_ready is not None:
+            startup_ready.set()
         emit(
             {
                 "kind": "status",
@@ -359,47 +443,83 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                     or sum(len(x.frame.jpeg_bytes) for x in history) > 16 * 1024**2
                 ):
                     history.popleft()
-            while pending:
-                key, (job, sample, future, dispatched) = next(iter(pending.items()))
-                if not future.done():
-                    break
-                pending.pop(key)
-                verdicts, error, timing = future.result()
-                now = time.monotonic()
-                timing.update(
-                    dispatch_wait_seconds=timing["request_started_monotonic"]
-                    - dispatched,
-                    source_to_request_seconds=timing["request_started_monotonic"]
-                    - sample.received_monotonic,
-                    reorder_wait_seconds=max(
-                        0.0,
-                        now
-                        - timing["request_started_monotonic"]
-                        - timing["model_seconds"],
-                    ),
-                )
-                report = state.report(job, sample, verdicts, timing, error=error)
-                stats["failed_requests" if error else "succeeded_requests"] += 1
-                if not error and not report["analysis_complete"]:
-                    stats["incomplete_reports"] += 1
-                if not error and not verdicts:
-                    stats["empty_reports"] += 1
-                stats["ungrounded_verdicts"] += sum(
-                    not item["grounded"] for item in report["observations"]
-                )
-                if verdicts and not report["localization_complete"]:
-                    stats["unlocalized_reports"] += 1
-                if any("invalid_subject_bbox" in v.grounding_issues for v in verdicts):
-                    stats["invalid_bbox_reports"] += 1
-                inflight = sum(not item[2].done() for item in pending.values())
-                report["process_metrics"] = {
-                    **stats,
-                    "active_requests": len(pending),
-                    "inflight_requests": inflight,
-                    "pending_requests": len(pending) - inflight,
-                }
-                emit({"kind": "report", "report": report})
-            if history and len(pending) < config.max_in_flight:
+            for lane, pending in queues.items():
+                for key, (job, sample, future, dispatched) in list(pending.items()):
+                    if not future.done():
+                        if lane == "events":
+                            continue  # Fresh information never waits for an old RPC.
+                        break
+                    pending.pop(key)
+                    verdicts, error, timing = future.result()
+                    if lane == "events" and error == "timeout":
+                        stats["information_http_timeouts"] += 1
+                    if (
+                        lane == "events"
+                        and sample.frame.frame_sequence <= last_published[lane]
+                    ):
+                        stats["late_information_reports_discarded"] += 1
+                        log_timing(
+                            "vlm_information_report_discarded",
+                            stream_session_id=config.stream_session_id,
+                            request_id=job.request.request_id,
+                            source_sequence=sample.frame.frame_sequence,
+                            reason="superseded",
+                            error_code=error,
+                            model_seconds=timing["model_seconds"],
+                        )
+                        continue
+                    last_published[lane] = sample.frame.frame_sequence
+                    now = time.monotonic()
+                    timing.update(
+                        dispatch_wait_seconds=timing["request_started_monotonic"]
+                        - dispatched,
+                        source_to_request_seconds=timing["request_started_monotonic"]
+                        - sample.received_monotonic,
+                        reorder_wait_seconds=max(
+                            0.0,
+                            now
+                            - timing["request_started_monotonic"]
+                            - timing["model_seconds"],
+                        ),
+                    )
+                    report = state.report(job, sample, verdicts, timing, error=error)
+                    stats["failed_requests" if error else "succeeded_requests"] += 1
+                    if not error and not report["analysis_complete"]:
+                        stats["incomplete_reports"] += 1
+                    if not error and not verdicts:
+                        stats["empty_reports"] += 1
+                    stats["ungrounded_verdicts"] += sum(
+                        not item["grounded"] for item in report["observations"]
+                    )
+                    if verdicts and not report["localization_complete"]:
+                        stats["unlocalized_reports"] += 1
+                    if any(
+                        "invalid_subject_bbox" in v.grounding_issues for v in verdicts
+                    ):
+                        stats["invalid_bbox_reports"] += 1
+                    remaining = [item for q in queues.values() for item in q.values()]
+                    inflight = sum(not item[2].done() for item in remaining)
+                    report["process_metrics"] = {
+                        **stats,
+                        "active_requests": len(remaining),
+                        "inflight_requests": inflight,
+                        "pending_requests": len(remaining) - inflight,
+                    }
+                    if config.output_mode != "full":
+                        report["vlm_lane"] = (
+                            "information"
+                            if lane == "events"
+                            else "grounding"
+                            if config.output_mode == "parallel"
+                            else "combined"
+                        )
+                        report["window_id"] = job.request.request_id
+                        report["output_mode"] = lane
+                    emit({"kind": "report", "report": report})
+            available_lanes = [
+                lane for lane in lanes if len(queues[lane]) < config.max_in_flight
+            ]
+            if history and available_lanes:
                 sample = history[-1]
                 frame = sample.frame
                 window = tuple(x.frame for x in list(history)[-4:])
@@ -426,17 +546,34 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                         window,
                         event_sensitivities=config.sensitivities,
                         evidence_after_frame_sequence=last_endpoint,
+                        grounding_required=bool(
+                            grounding_required and grounding_required.is_set()
+                        ),
                     )
                     dispatched = time.monotonic()
-                    pending[request.request_id] = (
-                        job,
-                        sample,
-                        executor.submit(evaluate, job),
-                        dispatched,
-                    )
+                    for lane in lanes:
+                        if lane not in available_lanes:
+                            stats[lane + "_busy_windows_skipped"] += 1
+                            continue
+                        lane_job = replace(
+                            job,
+                            evidence_after_frame_sequence=last_lane_endpoint[lane],
+                        )
+                        queues[lane][request.request_id] = (
+                            lane_job,
+                            sample,
+                            executors[lane].submit(evaluate, lane_job, lane),
+                            dispatched,
+                        )
+                        last_lane_endpoint[lane] = frame.frame_sequence
                     last_endpoint = frame.frame_sequence
                     next_due = frame.timestamp_seconds + 1.0 / config.observation_fps
-                    stats["claimed_requests"] += 1
+                    stats["claimed_requests"] += len(available_lanes)
+            pending = {
+                str((lane, key)): value
+                for lane, q in queues.items()
+                for key, value in q.items()
+            }
             if time.monotonic() - last_status >= 1.0:
                 emit(
                     {
@@ -474,7 +611,8 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
         )
         raise RuntimeError("independent VLM process failed") from None
     finally:
-        executor.shutdown(wait=True, cancel_futures=True)
+        for executor in executors.values():
+            executor.shutdown(wait=True, cancel_futures=True)
         for client in clients:
             client.close()
         outgoing.close()
@@ -491,17 +629,24 @@ class IndependentVLMBranch:
         results=None,
         connection=None,
         fusion=None,
+        display_fusion=None,
+        delivery=None,
         camera_callback=None,
         inspector_factory=_inspector,
     ):
         self.config, self.connection, self.fusion = config, connection, fusion
+        self._display_fusion = display_fusion
+        self._delivery = delivery
         self.results = ResultBus(128)
+        self.grounding_results = ResultBus(128)
         self._shared_results = results
         self._shared_epoch = results.epoch if results is not None else None
         context = mp.get_context("spawn")
         self._incoming = context.Queue(INPUT_CAPACITY)
         self._outgoing = context.Queue(OUTPUT_CAPACITY)
         self._process_stop = context.Event()
+        self._grounding_required = context.Event()
+        self._startup_ready = context.Event()
         self._stop, self._lock = Event(), Lock()
         self._source_finished = Event()
         self._process = context.Process(
@@ -512,6 +657,8 @@ class IndependentVLMBranch:
                 self._outgoing,
                 self._process_stop,
                 inspector_factory,
+                self._grounding_required,
+                self._startup_ready,
             ),
             name="goodvision-vlm",
             daemon=True,
@@ -553,6 +700,17 @@ class IndependentVLMBranch:
             self._camera_dispatch.start()
         if self.fusion is not None:
             self.fusion.start()
+        # start_camera runs off the HTTP event loop. Finish normal transport
+        # preparation before its session ACK allows the first uploaded frame.
+        # Keep failures bounded; readiness still requires a real model result.
+        deadline = time.monotonic() + 10.0
+        while not self._startup_ready.wait(0.05):
+            if (
+                self._stop.is_set()
+                or not self._process.is_alive()
+                or time.monotonic() >= deadline
+            ):
+                break
         if self.connection is not None:
             self._source = Thread(
                 target=self._sample_connection, name="vlm-original-source", daemon=True
@@ -623,6 +781,11 @@ class IndependentVLMBranch:
 
     def _read(self):
         while not self._stop.is_set():
+            if self._display_fusion is not None:
+                if getattr(self._display_fusion, "grounding_required", False):
+                    self._grounding_required.set()
+                else:
+                    self._grounding_required.clear()
             try:
                 message = self._outgoing.get(timeout=0.1)
             except Empty:
@@ -658,10 +821,37 @@ class IndependentVLMBranch:
             )
             report["timing"].pop("request_started_monotonic", None)
             # Independent publication precedes every optional fusion/archive action.
-            self.results.publish(report)
-            if self._shared_results is not None:
+            information = report.get("vlm_lane") != "grounding"
+            grounding = report.get("vlm_lane") != "information"
+            (self.results if information else self.grounding_results).publish(report)
+            if information and self._shared_results is not None:
                 self._shared_results.publish(report, expected_epoch=self._shared_epoch)
+            if (
+                information
+                and self._delivery is not None
+                and report["state"] == "completed"
+            ):
+                try:
+                    # submit only admits to the webhook's own bounded queue.
+                    # Network I/O and SAM association cannot delay later reports.
+                    self._delivery.submit(report)
+                except Exception as exc:
+                    log_timing(
+                        "vlm_delivery_admission_failure", error_type=type(exc).__name__
+                    )
+            if grounding and self._display_fusion is not None:
+                try:
+                    self._display_fusion.offer_vlm(report)
+                except Exception as exc:
+                    log_timing(
+                        "vlm_display_handoff_failure", error_type=type(exc).__name__
+                    )
             with self._lock:
+                self._status[report.get("vlm_lane", "combined") + "_last_result"] = {
+                    "frame_sequence": report["frame"]["source_frame_index"],
+                    "state": report["state"],
+                    "seconds": report["timing"]["source_to_publish_seconds"],
+                }
                 self._status.update(report.get("process_metrics", {}))
                 self._status.update(
                     last_result_at=report["emitted_at"],
@@ -686,7 +876,7 @@ class IndependentVLMBranch:
                     for item in report["evidence"]
                     if item["frame_sequence"] in self._evidence
                 )
-            if self.fusion is not None and report["state"] == "completed":
+            if grounding and self.fusion is not None and report["state"] == "completed":
                 self.fusion.offer(report, evidence)
             log_timing(
                 "vlm_independent_report",
@@ -770,6 +960,9 @@ class IndependentVLMBranch:
                 "output_capacity": OUTPUT_CAPACITY,
                 "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
                 "observation_fps": self.config.observation_fps,
+                "output_mode": self.config.output_mode,
+                "paired_admission": False,
+                "independent_lane_admission": self.config.output_mode == "parallel",
             }
         return result
 
