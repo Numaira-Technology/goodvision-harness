@@ -182,7 +182,10 @@ class FleetController:
         usable = self.usable_capacity()
         tracking_mode = self.tracking_mode()
         reason = ""
-        if tracking_mode == "legacy":
+        tracking_enabled = getattr(self.application.state.runtime, "_tracking_requested", True)
+        if not tracking_enabled:
+            reason = "人物描边未启用；视频播放、人脸与 VLM 识别独立运行。"
+        elif tracking_mode == "legacy":
             reason = "原远程人物追踪仅支持一路。配置本地或自建追踪服务可使用多路。"
         elif usable < self.capacity:
             reason = f"当前人物追踪服务允许 {usable} 路。其余通道需增加服务容量后使用。"
@@ -193,6 +196,7 @@ class FleetController:
             "capacity": self.capacity,
             "usable_capacity": usable,
             "tracking_mode": tracking_mode,
+            "tracking_enabled": tracking_enabled,
             "mode": "multi" if allowed else "single",
             "reason": reason,
             "analysis": self._analysis,
@@ -293,7 +297,7 @@ class FleetController:
                     response = await self.request_json(
                         index,
                         "GET",
-                        "/v1/status",
+                        "/v1/status?lightweight=true",
                         timeout=5,
                     )
                     status = json.loads(response.body)
@@ -582,7 +586,7 @@ class FleetController:
                     response = await self.request_json(
                         index,
                         "GET",
-                        "/v1/status",
+                        "/v1/status?lightweight=true",
                         timeout=5,
                     )
                     status = json.loads(response.body)
@@ -610,7 +614,7 @@ class FleetController:
         route = runtime.route_probe_status()
         if route.get("state") == "running":
             raise HTTPException(409, "请等待大模型线路检查完成后再连接视频。")
-        current = await self.request_json(index, "GET", "/v1/status", timeout=5)
+        current = await self.request_json(index, "GET", "/v1/status?lightweight=true", timeout=5)
         status = json.loads(current.body)
         if (
             current.status_code != 200

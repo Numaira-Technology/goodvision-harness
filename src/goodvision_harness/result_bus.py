@@ -43,7 +43,9 @@ class ResultBus:
         *,
         expected_epoch: str | None = None,
         update_snapshots: bool = True,
+        promote_latest: bool = True,
     ) -> ResultRecord | None:
+        """Deliver every record; auxiliary projections may skip global promotion."""
         safe = public_safe_value(copy.deepcopy(dict(payload)))
         with self._condition:
             if expected_epoch is not None and expected_epoch != self.epoch:
@@ -52,7 +54,7 @@ class ResultBus:
             record = ResultRecord(cursor=self._cursor, payload=safe)
             history = self._history if update_snapshots else self._transient_history
             history.append(record)
-            if update_snapshots and (
+            if update_snapshots and promote_latest and (
                 self._latest is None
                 or _frame_order(record) >= _frame_order(self._latest)
             ):

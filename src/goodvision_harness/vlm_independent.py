@@ -26,7 +26,6 @@ from .latency_trace import log_timing
 from .result_bus import ResultBus
 from .scene_evidence import EvidenceFrame, InspectionRequest
 from .scene_runtime import TemporalInspection
-from .scene_state import SceneState
 from .vlm_independent_model import IndependentVLMInspector
 
 MAX_FRAME_BYTES = 4 * 1024**2
@@ -36,64 +35,6 @@ OUTPUT_CAPACITY = 16
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
-
-
-def overlap(a, b):
-    intersection = max(0.0, min(a.x2, b.x2) - max(a.x1, b.x1)) * max(
-        0.0, min(a.y2, b.y2) - max(a.y1, b.y1)
-    )
-    union = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - intersection
-    return intersection / union if union else 0.0
-
-
-def unambiguous_matches(boxes, candidates, *, pose_tolerance=False):
-    """Mutual unique overlap; ambiguous people never share confirmation votes.
-
-    Nearby VLM windows may describe the same person standing or on the floor.
-    Permit a moderate overlap only when both box centers stay inside each other.
-    SAM association retains its stricter overlap threshold.
-    """
-
-    def score(box, other):
-        value = overlap(box, other)
-        if pose_tolerance and value >= 0.35:
-            bx, by = (box.x1 + box.x2) / 2, (box.y1 + box.y2) / 2
-            ox, oy = (other.x1 + other.x2) / 2, (other.y1 + other.y2) / 2
-            if not (
-                box.x1 <= ox <= box.x2
-                and box.y1 <= oy <= box.y2
-                and other.x1 <= bx <= other.x2
-                and other.y1 <= by <= other.y2
-            ):
-                return 0.0
-        return value
-
-    scores = {
-        key: {sid: score(box, other) for sid, other in candidates.items()}
-        for key, box in boxes.items()
-    }
-    minimum = 0.35 if pose_tolerance else 0.5
-
-    def winner(rows):
-        ranked = sorted(rows, reverse=True)
-        if (
-            ranked
-            and ranked[0][0] >= minimum
-            and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 0.15)
-        ):
-            return ranked[0][1]
-        return None
-
-    matches = {}
-    for key, values in scores.items():
-        target = winner((value, sid) for sid, value in values.items())
-        if (
-            target is not None
-            and winner((values[target], other) for other, values in scores.items())
-            == key
-        ):
-            matches[key] = target
-    return matches
 
 
 @dataclass(frozen=True)
@@ -110,6 +51,7 @@ class VLMProcessConfig:
     sensitivities: tuple[tuple[str, str], ...] = ()
     observation_fps: float = 1.25
     max_in_flight: int = 4
+    route_id: str | None = None
 
     def __post_init__(self):
         if not self.stream_session_id or not self.source_id or not self.labels:
@@ -128,62 +70,32 @@ class SourceSample:
 
 
 class IndependentEventState:
-    """Use the existing two-positive/two-negative source evidence rules unchanged."""
+    """Publish current observations; the tracked scene owns person-event lifecycles.
+
+    Subject references are scoped to one report, even when boxes or model-local
+    IDs repeat. There is no VLM track history or independent confirmation vote.
+    """
 
     def __init__(self, config):
         self.config = config
-        self.scene = SceneState(config.stream_session_id, config.source_id)
-        self.subjects = {}
-        self.namespace = uuid4().hex[:12]
         self.sequence = 0
-        self.subject_sequence = 0
 
     def report(self, job, sample, verdicts, timing, *, error=None):
         at, sequence = sample.frame.timestamp_seconds, sample.frame.frame_sequence
-        self.subjects = {
-            sid: item for sid, item in self.subjects.items() if at - item[1] <= 3.0
-        }
+        message_id = str(uuid4())
         boxes = {sid: box for verdict in verdicts for sid, box in verdict.subject_boxes}
-        mapping = unambiguous_matches(
-            boxes, {sid: item[0] for sid, item in self.subjects.items()}
-        )
-        nearby = unambiguous_matches(
-            boxes,
-            {
-                sid: item[0]
-                for sid, item in self.subjects.items()
-                if at - item[1] <= 1.2
-            },
-            pose_tolerance=True,
-        )
-        for key, sid in nearby.items():
-            if key not in mapping and sid not in mapping.values():
-                mapping[key] = sid
-        for sid, box in boxes.items():
-            if sid not in mapping:
-                self.subject_sequence += 1
-                mapping[sid] = f"vlm-{self.namespace}-{self.subject_sequence}"
-            public_id = mapping[sid]
-            self.subjects[public_id] = (box, at)
-            self.scene.observe_person(
-                public_id, timestamp_seconds=at, frame_sequence=sequence, bbox=box
-            )
+        mapping = {sid: f"vlm-{message_id}-{sid}" for sid in boxes}
         observations = []
         for index, verdict in enumerate(verdicts):
-            ids = tuple(sorted(mapping[sid] for sid in verdict.subject_ids))
-            evidence_id = f"vlm:{job.request.request_id}:{index}"
-            # An unlocalized negative may coexist with a valid positive in a
-            # model response. Retain it for audit, but it cannot clear a person
-            # event, count as evaluated coverage or cancel the grounded positive.
-            accepted = bool(ids) and self.scene.observe_event(
-                verdict.event_label,
-                ids,
-                timestamp_seconds=at,
-                frame_sequence=sequence,
-                detected=verdict.detected,
-                confidence=verdict.confidence,
-                evidence_id=evidence_id,
+            ids = tuple(
+                sorted(mapping[sid] for sid in verdict.subject_ids if sid in mapping)
             )
+            grounded = bool(verdict.subject_ids) and len(ids) == len(
+                verdict.subject_ids
+            )
+            evidence_id = f"vlm:{job.request.request_id}:{index}"
+            # Acceptance only admits this observation to background association.
+            # Confirmation/clear votes belong to the matched tracking IDs there.
             observations.append(
                 {
                     "event_label": verdict.event_label,
@@ -191,47 +103,73 @@ class IndependentEventState:
                     "detected": verdict.detected,
                     "confidence": verdict.confidence,
                     "evidence_id": evidence_id,
-                    "accepted": accepted,
-                    "grounded": bool(ids),
+                    "accepted": grounded,
+                    "grounded": grounded,
+                    "grounding_issues": list(verdict.grounding_issues),
                 }
             )
-        self.scene.advance(at)
-        snapshot = self.scene.snapshot(include_history=False)
-        events = [
-            {**event, "alert": event["phase"] == "confirmed"}
-            for event in snapshot["events"]
-        ]
-        reported = {v.event_label for v in verdicts if v.subject_ids}
+        reported = {v.event_label for v in verdicts}
         judgments = []
         for label in self.config.labels:
             if label not in reported:
                 continue
-            relevant = [event for event in events if event["event_label"] == label]
-            confirmed = [event for event in relevant if event["phase"] == "confirmed"]
-            votes = [v for v in verdicts if v.event_label == label and v.subject_ids]
-            detected = (
+            votes = [v for v in verdicts if v.event_label == label]
+            assessments = [o for o in observations if o["event_label"] == label]
+            observed_detected = (
                 True
-                if confirmed
-                else (False if all(v.detected is False for v in votes) else None)
+                if any(v.detected is True for v in votes)
+                else False
+                if all(v.detected is False for v in votes)
+                else None
             )
+            observation_name = (
+                "positive"
+                if observed_detected is True
+                else "negative"
+                if observed_detected is False
+                else "uncertain"
+            )
+            localization_state = (
+                "available"
+                if all(o["grounded"] for o in assessments)
+                else "partial"
+                if any(o["subject_ids"] for o in assessments)
+                else "unavailable"
+            )
+            confirmation_state = (
+                "pending"
+                if observed_detected is True
+                else "not_detected"
+                if observed_detected is False
+                else "uncertain"
+            )
+            detected = False if observed_detected is False else None
             judgments.append(
                 {
                     "event_label": label,
                     "detected": detected,
+                    "observed_detected": observed_detected,
+                    "localization_state": localization_state,
+                    "confirmation_state": confirmation_state,
+                    "grounding_issues": sorted(
+                        {issue for vote in votes for issue in vote.grounding_issues}
+                    ),
                     "confidence": max(
-                        (v.confidence or 0.0 for v in votes), default=0.0
+                        (v.confidence for v in votes if v.confidence is not None),
+                        default=None,
                     ),
-                    "description": f"{label}: independent temporal observation",
-                    "object_ids": sorted(
-                        {sid for e in confirmed for sid in e["subject_ids"]}
+                    "description": (
+                        f"{label}: model observation {observation_name}; "
+                        f"confirmation {confirmation_state}; "
+                        f"localization {localization_state}"
                     ),
-                    "event_ids": [e["event_id"] for e in relevant],
+                    "object_ids": [],
+                    "event_ids": [],
                 }
             )
         with Image.open(io.BytesIO(sample.frame.jpeg_bytes)) as image:
             width, height = image.size
         self.sequence += 1
-        message_id = str(uuid4())
         return {
             "schema_version": "1",
             "type": "vlm_report",
@@ -241,8 +179,11 @@ class IndependentEventState:
             "generation": self.config.generation,
             "message_id": message_id,
             "observation_id": message_id,
+            "subject_id_scope": "observation",
             "description": "Independent VLM temporal report",
             "analysis_complete": not error and reported == set(self.config.labels),
+            "localization_complete": bool(observations)
+            and all(item["grounded"] for item in observations),
             "request_id": job.request.request_id,
             "sequence": self.sequence,
             "state": "failed" if error else "completed",
@@ -270,36 +211,26 @@ class IndependentEventState:
             },
             "model": {
                 "name": PUBLIC_MODEL_NAME,
+                "route_id": self.config.route_id,
                 "latency_seconds": timing["model_seconds"],
             },
             "judgments": judgments,
             "observations": observations,
-            "events": events,
-            "missing_event_labels": [
-                label for label in self.config.labels if label not in reported
-            ],
             "objects": [
                 {
-                    "object_id": person["subject_id"],
+                    "object_id": mapping[sid],
                     "label": "person",
-                    "bbox": person["bbox"],
+                    "bbox": box.as_dict(),
                     "attributes": {
-                        "subject_id": person["subject_id"],
+                        "subject_id": mapping[sid],
                         "identity_status": "unassociated",
-                        "observation_state": person["observation_state"],
-                        "source_timestamp_seconds": person[
-                            "last_observed_timestamp_seconds"
-                        ],
-                        "source_frame_sequence": person["frame_sequence"],
+                        "observation_state": "observed",
+                        "source_timestamp_seconds": at,
+                        "source_frame_sequence": sequence,
                     },
                 }
-                for person in snapshot["entities"]
+                for sid, box in boxes.items()
             ],
-            "association": {"state": "independent", "results_url": "/v1/scene"},
-            "confirmation": {
-                "positive_observations": self.scene.confirm_observations,
-                "negative_observations": self.scene.clear_observations,
-            },
         }
 
 
@@ -314,7 +245,7 @@ def _inspector(config):
 
 
 def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspector):
-    """Spawn target: image windows, inference, evidence confirmation, then IPC."""
+    """Spawn target: image windows, inference, observation reports, then IPC."""
     state = IndependentEventState(config)
     stats = Counter()
     history = deque(maxlen=12)
@@ -336,6 +267,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
     def evaluate(job):
         started, started_at = time.monotonic(), utc_now()
         verdicts, error = (), None
+        validation_reason = None
         try:
             if not hasattr(thread_state, "inspector"):
                 thread_state.inspector = inspector_factory(config)
@@ -352,6 +284,27 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 "empty_response",
             }:
                 error = "inspection_failed"
+            reason = getattr(exc, "validation_reason", None)
+            if reason in {
+                "invalid_subject_bbox",
+                "invalid_subject",
+                "invalid_verdict",
+                "duplicate_verdict",
+                "subject_fields",
+                "verdict_fields",
+                "independent_object_required",
+                "independent_capacity",
+                "completion_not_finished",
+                "duplicate_json_field",
+                "nonfinite_json_number",
+                "invalid_json_syntax",
+                "invalid_json_encoding",
+                "json_nesting_limit",
+                "response_size_limit",
+            }:
+                validation_reason = reason
+            elif error in {"invalid_response", "empty_response"}:
+                validation_reason = "invalid_response_shape"
         return (
             verdicts,
             error,
@@ -360,6 +313,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 "request_ended_at": utc_now(),
                 "request_started_monotonic": started,
                 "model_seconds": time.monotonic() - started,
+                "validation_reason": validation_reason,
             },
         )
 
@@ -430,8 +384,20 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                     stats["incomplete_reports"] += 1
                 if not error and not verdicts:
                     stats["empty_reports"] += 1
-                stats["ungrounded_verdicts"] += sum(not v.subject_ids for v in verdicts)
-                report["process_metrics"] = dict(stats)
+                stats["ungrounded_verdicts"] += sum(
+                    not item["grounded"] for item in report["observations"]
+                )
+                if verdicts and not report["localization_complete"]:
+                    stats["unlocalized_reports"] += 1
+                if any("invalid_subject_bbox" in v.grounding_issues for v in verdicts):
+                    stats["invalid_bbox_reports"] += 1
+                inflight = sum(not item[2].done() for item in pending.values())
+                report["process_metrics"] = {
+                    **stats,
+                    "active_requests": len(pending),
+                    "inflight_requests": inflight,
+                    "pending_requests": len(pending) - inflight,
+                }
                 emit({"kind": "report", "report": report})
             if history and len(pending) < config.max_in_flight:
                 sample = history[-1]
@@ -482,6 +448,12 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                         "stats": {
                             **stats,
                             "active_requests": len(pending),
+                            "inflight_requests": sum(
+                                not item[2].done() for item in pending.values()
+                            ),
+                            "pending_requests": sum(
+                                item[2].done() for item in pending.values()
+                            ),
                             "retained_frames": len(history),
                             "retained_bytes": sum(
                                 len(x.frame.jpeg_bytes) for x in history
@@ -548,10 +520,15 @@ class IndependentVLMBranch:
             "state": "starting",
             "succeeded_requests": 0,
             "failed_requests": 0,
+            "last_attempt_state": None,
+            "last_attempt_error": None,
+            "analysis_complete": False,
+            "localization_complete": False,
         }
         self._stats = Counter()
         self._last_sequence = -1
         self._last_source_monotonic = self._last_publish_monotonic = None
+        self._last_success_monotonic = None
         self._next_sample = -math.inf
         self._started = False
         self._reader = self._source = self._reaper = None
@@ -688,12 +665,22 @@ class IndependentVLMBranch:
                 self._status.update(report.get("process_metrics", {}))
                 self._status.update(
                     last_result_at=report["emitted_at"],
+                    last_attempt_state=report["state"],
+                    last_attempt_error=report.get("error_code"),
+                    last_attempt_validation_reason=report["timing"].get(
+                        "validation_reason"
+                    ),
+                    analysis_complete=report.get("analysis_complete", False),
+                    localization_complete=report.get("localization_complete", False),
                     last_source_to_publish_seconds=report["timing"][
                         "source_to_publish_seconds"
                     ],
                 )
                 self._stats["published_reports"] += 1
                 self._last_publish_monotonic = now
+                if report["state"] == "completed":
+                    self._last_success_monotonic = now
+                    self._status["last_success_at"] = report["emitted_at"]
                 evidence = tuple(
                     self._evidence[item["frame_sequence"]].frame
                     for item in report["evidence"]
@@ -709,6 +696,8 @@ class IndependentVLMBranch:
                 source_timestamp_seconds=report["frame"]["timestamp_seconds"],
                 source_to_publish_seconds=report["timing"]["source_to_publish_seconds"],
                 state=report["state"],
+                error_code=report.get("error_code"),
+                validation_reason=report["timing"].get("validation_reason"),
                 process_pid=self._process.pid,
             )
 
@@ -748,7 +737,8 @@ class IndependentVLMBranch:
             return False
         return self._camera_dispatch.offer(jpeg, timestamp, sequence)
 
-    def stats(self):
+    def health(self):
+        """Bounded local counters only; never query fusion, archives or workers."""
         with self._lock:
             result = {
                 **self._status,
@@ -756,6 +746,8 @@ class IndependentVLMBranch:
                 "pid": self._process.pid,
                 "stream_session_id": self.config.stream_session_id,
                 "generation": self.config.generation,
+                "route_id": self.config.route_id,
+                "event_labels": list(self.config.labels),
                 "independent": True,
                 "last_source_age_seconds": (
                     None
@@ -767,11 +759,22 @@ class IndependentVLMBranch:
                     if self._last_publish_monotonic is None
                     else max(0.0, time.monotonic() - self._last_publish_monotonic)
                 ),
+                "last_success_age_seconds": (
+                    None
+                    if self._last_success_monotonic is None
+                    else max(0.0, time.monotonic() - self._last_success_monotonic)
+                ),
+                "pending_requests": self._status.get("pending_requests", 0),
+                "inflight_requests": self._status.get("inflight_requests", 0),
                 "input_capacity": INPUT_CAPACITY,
                 "output_capacity": OUTPUT_CAPACITY,
                 "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
                 "observation_fps": self.config.observation_fps,
             }
+        return result
+
+    def stats(self):
+        result = self.health()
         if self.fusion is not None:
             result["fusion"] = self.fusion.stats()
         if self._camera_dispatch is not None:

@@ -76,6 +76,21 @@ def report(state, at, sequence, verdicts):
     return state.report(inspection, sample, verdicts, {"model_seconds": 0.1})
 
 
+def tracked_fusion(cfg):
+    return VLMFusion(SceneRuntime(
+        cfg.stream_session_id, cfg.source_id, independent_temporal_inference=True,
+    ))
+
+
+def observe_person(fusion, at, sequence, *, box=BOX, sid="sam-person"):
+    scene = fusion.scene
+    scene.observe_frame(jpeg(), at, sequence)
+    scene.observe_tracks(RichLabelSnapshot(
+        scene.stream_session_id, sequence, at,
+        (RichLabelObject(sid, "person", box, 0.99),),
+    ))
+
+
 def await_condition(predicate, timeout=10.0):
     deadline = time.monotonic() + timeout
     while not predicate():
@@ -96,33 +111,64 @@ def stub_factory(_config):
     return StubInspector()
 
 
-def test_source_confirmation_rules_and_omission_are_unchanged():
+def test_reports_never_reuse_people_or_confirm_events_without_tracking():
     state = IndependentEventState(config())
     first = report(state, 1.0, 10, (verdict(),))
-    assert first["events"][0]["phase"] == "suspected"
     duplicate = report(state, 1.0, 10, (verdict(),))
-    assert duplicate["events"][0]["positive_observations"] == 1
     second = report(state, 1.8, 18, (verdict(),))
-    assert second["events"][0]["phase"] == "confirmed"
     unknown = report(state, 2.6, 26, (verdict(None),))
-    assert unknown["events"][0]["phase"] == "confirmed"
+    reports = (first, duplicate, second, unknown)
+    # Identical geometry and repeated p1 references do not establish continuity.
+    assert len({r["objects"][0]["object_id"] for r in reports}) == len(reports)
+    for result in reports:
+        assert result["subject_id_scope"] == "observation"
+        assert {
+            "events", "missing_event_labels", "association", "confirmation",
+        }.isdisjoint(result)
+        assert result["judgments"][0]["detected"] is None
+        assert result["observations"][0]["accepted"]
+        assert result["observations"][0]["subject_ids"] == [
+            result["objects"][0]["object_id"]
+        ]
+    assert second["judgments"][0]["observed_detected"] is True
+    assert second["judgments"][0]["confirmation_state"] == "pending"
+    assert unknown["judgments"][0]["observed_detected"] is None
     omitted = report(state, 3.4, 34, ())
     assert omitted["judgments"] == []
-    assert omitted["missing_event_labels"] == ["smoking", "fall"]
+    assert omitted["objects"] == []
+    assert not omitted["analysis_complete"]
+    returned = {j["event_label"] for j in omitted["judgments"]}
+    assert set(state.config.labels) - returned == {"smoking", "fall"}
     negative = report(state, 4.2, 42, (verdict(False),))
-    assert negative["events"][0]["phase"] == "confirmed"
-    cleared = report(state, 5.0, 50, (verdict(False),))
-    assert cleared["events"][0]["phase"] == "ended"
-    assert cleared["frame"]["timestamp_seconds"] == 5.0
-    assert cleared["model"]["latency_seconds"] == 0.1
+    assert "events" not in negative
+    assert negative["judgments"][0]["detected"] is False
+    assert negative["frame"]["timestamp_seconds"] == 4.2
+    assert negative["model"]["latency_seconds"] == 0.1
 
 
-def test_unrelated_people_do_not_combine_votes():
+def test_report_objects_only_contain_current_participants():
     state = IndependentEventState(config())
     report(state, 1.0, 10, (verdict(),))
     result = report(state, 1.8, 18, (verdict(box=NormalizedBBox(0.6, 0.1, 0.95, 0.9)),))
-    assert all(event["phase"] == "suspected" for event in result["events"])
-    assert len({sid for event in result["events"] for sid in event["subject_ids"]}) == 2
+    assert "events" not in result
+    assert len(result["objects"]) == 1
+    assert result["objects"][0]["bbox"]["x1"] == 0.6
+
+
+@pytest.mark.parametrize("detected", [True, False, None])
+def test_requested_labels_distinguish_omission_from_returned_decisions(detected):
+    cfg = config()
+    state = IndependentEventState(cfg)
+    partial = report(state, 1.0, 10, (verdict(detected),))
+    returned = {j["event_label"] for j in partial["judgments"]}
+    assert set(cfg.labels) - returned == {"fall"}
+    assert not partial["analysis_complete"]
+    complete = report(state, 1.8, 18, (
+        verdict(detected),
+        IndependentVerdict("fall", ("p1",), detected, None, (("p1", BOX),)),
+    ))
+    assert set(cfg.labels) == {j["event_label"] for j in complete["judgments"]}
+    assert complete["analysis_complete"]
 
 
 def test_independent_model_prompt_and_strict_grounding():
@@ -155,8 +201,10 @@ def test_independent_model_prompt_and_strict_grounding():
     assert parsed[0].subject_boxes == (("p1", BOX),)
     raw["verdicts"][0]["subject_ids"] = ["p2"]
     response["choices"][0]["message"]["content"] = json.dumps(raw)
-    with pytest.raises(ValueError):
-        inspector._parse(inspection, response)
+    unlocalized, = inspector._parse(inspection, response)
+    assert unlocalized.detected is True
+    assert unlocalized.subject_boxes == ()
+    assert "missing_subject" in unlocalized.grounding_issues
     inspector.close()
 
 
@@ -194,9 +242,9 @@ def test_actual_process_publishes_while_scene_and_background_are_blocked():
         await_condition(lambda: branch.stats().get("published_reports", 0) >= 4)
         records = branch.results.records_after(0)
         assert len(records) >= 4
-        assert any(
-            event["phase"] == "confirmed" for event in records[-1].payload["events"]
-        )
+        assert all("events" not in item.payload for item in records)
+        assert records[-1].payload["judgments"][0]["observed_detected"] is True
+        assert records[-1].payload["judgments"][0]["detected"] is None
         assert all(
             item.payload["timing"]["source_to_publish_seconds"] < 2.0
             for item in records
@@ -260,8 +308,10 @@ def test_fusion_uses_original_evidence_and_does_not_modify_public_report(trackin
     assert event["last_evidence_timestamp_seconds"] == 1.8
     assert len(fusion.links()) == 2
     assert all(
-        link["vlm_event_ids"] and link["scene_event_ids"] for link in fusion.links()
+        link["vlm_event_ids"] == [] and link["scene_event_ids"]
+        for link in fusion.links()
     )
+    assert len({link["subjects"][0]["vlm_subject_id"] for link in fusion.links()}) == 2
     assert all(
         abs(link["subjects"][0]["source_delta_seconds"] - 0.1) < 1e-6
         for link in fusion.links()
@@ -405,58 +455,85 @@ def test_unlocalized_negatives_do_not_clear_events_or_discard_valid_positives():
         )
 
     state = IndependentEventState(cfg)
-    report(state, 1.0, 10, parsed())
-    result = report(state, 1.8, 18, parsed())
-    assert result["events"][0]["phase"] == "confirmed"
-    assert not result["analysis_complete"]
-    assert result["missing_event_labels"] == ["fall"]
+    fusion = tracked_fusion(cfg)
+    for at, seq in ((1.0, 10), (1.8, 18)):
+        result = report(state, at, seq, parsed())
+        observe_person(fusion, at, seq)
+        assert fusion._associate(result, (), set())
+    assert fusion.scene.snapshot()["scene"]["events"][0]["phase"] == "confirmed"
+    assert result["analysis_complete"]
+    assert not result["localization_complete"]
+    assert set(cfg.labels) == {j["event_label"] for j in result["judgments"]}
     assert not result["observations"][1]["accepted"]
     unknown_negative = IndependentVerdict("smoking", (), False, 0.9, ())
     for at, seq in ((2.6, 26), (3.4, 34)):
         result = report(state, at, seq, (unknown_negative,))
-        assert result["events"][0]["phase"] == "confirmed"
-        assert result["judgments"] == []
+        observe_person(fusion, at, seq)
+        assert not fusion._associate(result, (), set())
+        assert fusion.scene.snapshot()["scene"]["events"][0]["phase"] == "confirmed"
+        assert result["judgments"][0]["observed_detected"] is False
+        assert result["judgments"][0]["detected"] is False
     raw["verdicts"][1]["detected"] = True
-    with pytest.raises(ValueError):
-        parsed()
+    assert parsed()[1].detected is True
+    assert not parsed()[1].subject_boxes
     inspector.close()
 
 
-def test_pose_change_clears_same_episode_without_merging_ambiguous_people():
-    from goodvision_harness.vlm_independent import unambiguous_matches
-
-    # Recorded model boxes during the fall/get-up transition, not stable IDs.
-    boxes = [
-        NormalizedBBox(*box)
-        for box in (
-            (0.37, 0.24, 0.73, 0.68),
-            (0.36, 0.34, 0.72, 0.68),
-            (0.41, 0.37, 0.72, 0.68),
-            (0.43, 0.27, 0.75, 0.83),
-        )
-    ]
-    state = IndependentEventState(config())
-    for n, box in enumerate(boxes):
+def test_only_tracking_ids_accumulate_confirmation_and_clear_across_movement():
+    cfg = config()
+    state, fusion = IndependentEventState(cfg), tracked_fusion(cfg)
+    far_box = NormalizedBBox(0.6, 0.1, 0.95, 0.9)
+    ids, event_ids = set(), set()
+    for n, (detected, phase) in enumerate((
+        (True, "suspected"), (True, "confirmed"), (None, "confirmed"),
+        (False, "confirmed"), (False, "ended"),
+    )):
+        # Successive VLM boxes do not overlap; the SAM track supplies continuity.
+        box = BOX if n % 2 == 0 else far_box
+        at, seq = 1.0 + n * 0.8, 10 + n * 8
         result = report(
-            state,
-            12.8 + n * 0.8,
-            192 + n * 12,
-            (IndependentVerdict("fall", ("p1",), n < 2, 0.9, (("p1", box),)),),
+            state, at, seq, (verdict(detected, sid=f"p{n + 1}", box=box),),
         )
-    assert len(result["events"]) == 1
-    assert result["events"][0]["phase"] == "ended"
-    # Two plausible overlapping actors must not share confirmation/clear votes.
-    assert (
-        unambiguous_matches(
-            {"p1": boxes[2]}, {"a": boxes[2], "b": boxes[2]}, pose_tolerance=True
-        )
-        == {}
+        ids.add(result["objects"][0]["object_id"])
+        assert "events" not in result
+        observe_person(fusion, at, seq, box=box)
+        assert fusion._associate(result, (), set())
+        (event,) = fusion.scene.snapshot()["scene"]["events"]
+        assert event["phase"] == phase
+        assert event["subject_ids"] == ["sam-person"]
+        event_ids.add(event["event_id"])
+        if n == 0:
+            # A duplicate reply cannot provide another positive source vote.
+            duplicate = report(state, at, seq, (verdict(),))
+            assert not fusion._associate(duplicate, (), set())
+            assert fusion.scene.snapshot()["scene"]["events"][0]["phase"] == "suspected"
+    assert len(ids) == 5
+    assert len(event_ids) == 1
+
+
+def test_identical_geometry_cannot_merge_different_tracking_ids():
+    cfg = config()
+    state, fusion = IndependentEventState(cfg), tracked_fusion(cfg)
+    for n, sid in enumerate(("sam-a", "sam-b")):
+        at, seq = 1.0 + n * 0.8, 10 + n * 8
+        result = report(state, at, seq, (verdict(),))
+        observe_person(fusion, at, seq, sid=sid)
+        assert fusion._associate(result, (), set())
+    events = fusion.scene.snapshot()["scene"]["events"]
+    assert len(events) == 2
+    assert all(
+        e["phase"] == "suspected" and e["positive_observations"] == 1 for e in events
     )
-    assert (
-        unambiguous_matches(
-            {"p1": boxes[2], "p2": boxes[2]}, {"a": boxes[2]}, pose_tolerance=True
-        )
-        == {}
-    )
-    # Looser temporal matching must not leak into delayed SAM fusion.
-    assert unambiguous_matches({"p1": boxes[3]}, {"a": boxes[2]}) == {}
+    assert {tuple(e["subject_ids"]) for e in events} == {("sam-a",), ("sam-b",)}
+
+
+def test_source_aligned_binding_still_rejects_ambiguity_and_low_overlap():
+    from goodvision_harness.vlm_fusion import _unambiguous_matches
+
+    assert _unambiguous_matches({"p1": BOX}, {"a": BOX, "b": BOX}) == {}
+    assert _unambiguous_matches({"p1": BOX, "p2": BOX}, {"a": BOX}) == {}
+    # Former 0.35 pose tolerance does not apply to VLM-to-SAM binding.
+    low = NormalizedBBox(0.41, 0.37, 0.72, 0.68)
+    high = NormalizedBBox(0.43, 0.27, 0.75, 0.83)
+    assert _unambiguous_matches({"p1": high}, {"a": low}) == {}
+    assert _unambiguous_matches({"p1": BOX}, {"a": BOX}) == {"p1": "a"}

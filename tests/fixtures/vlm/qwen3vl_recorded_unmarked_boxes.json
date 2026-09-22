@@ -1,0 +1,20 @@
+{
+  "provenance": {
+    "model": "qwen/qwen3-vl-8b-instruct:nitro",
+    "source_seconds": 53.6,
+    "source": "20260921 run-v3/model-observations.jsonl; earlier 8B replay, not nonsam-v1 30B"
+  },
+  "response": {
+    "subjects": [
+      {"subject_id": "p1", "bbox": [305, 219, 546, 568]},
+      {"subject_id": "p2", "bbox": [546, 17, 623, 191]},
+      {"subject_id": "p3", "bbox": [823, 113, 873, 186]}
+    ],
+    "verdicts": [
+      {"event_label": "smoking", "subject_ids": ["p1"], "detected": false, "confidence": null},
+      {"event_label": "fight", "subject_ids": ["p1"], "detected": false, "confidence": null},
+      {"event_label": "fall", "subject_ids": ["p1"], "detected": false, "confidence": null},
+      {"event_label": "weapon", "subject_ids": ["p1"], "detected": false, "confidence": null}
+    ]
+  }
+}

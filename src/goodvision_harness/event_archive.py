@@ -16,6 +16,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import pairwise
@@ -24,6 +25,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .archive_ingress import ArchiveIngress
+from .latency_trace import log_timing
 from .person_identity import stranger_evidence
 from .video_evidence import (
     EvidenceFrame,
@@ -105,6 +107,25 @@ class _Session:
     pins: dict[str, list[EvidenceFrame]] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class _ReadView:
+    """Published values are never mutated by the archive owner or HTTP readers."""
+
+    events: dict[str, dict[str, Any]]
+    aliases: dict[str, str]
+    subjects: dict[tuple[str, str], str]
+    links: dict[str, frozenset[str]]
+    changes: tuple[dict[str, Any], ...]
+    epoch: str
+    cursor: int
+    reset_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ClipPlan:
+    metadata: dict[str, Any]
+
+
 class EventArchive:
     """Bounded nonblocking ingress, with read snapshots safe for HTTP threads."""
 
@@ -124,7 +145,9 @@ class EventArchive:
         )
         self._recovered_runs = self._queue.processed_runs(pending_only=True)
         self._recoverable_runs = self._queue.recoverable_runs()
-        self._encode_queue: queue.Queue[tuple[Path, Path] | None] = queue.Queue(32)
+        self._encode_queue: queue.Queue[tuple[Path, Path] | _ClipPlan | None] = (
+            queue.Queue(32)
+        )
         self._lock = threading.RLock()
         self._ingest_lock = threading.Lock()
         self._closed = threading.Event()
@@ -141,6 +164,7 @@ class EventArchive:
         self._videos: dict[tuple[str, int], Path] = {}
         self._leases: dict[tuple[str, int], int] = {}
         self._jobs: dict[tuple[str, int], dict[str, Any]] = {}
+        self._queued_jobs: set[tuple[str, int]] = set()
         self._changes: deque[dict[str, Any]] = deque(maxlen=2000)
         self._epoch = uuid4().hex
         self._reset_reason = "epoch_changed"
@@ -157,15 +181,23 @@ class EventArchive:
         self._error: str | None = None
         self._status_snapshot: dict[str, Any] = {"state": "initializing"}
         self._db: sqlite3.Connection | None = None
-        self._persisted_events: dict[str, str] = {}
-        self._persisted_scene_events: dict[str, str] = {}
-        self._persisted_observations: dict[str, str] = {}
+        self._persisted_events: dict[str, dict[str, Any]] = {}
+        self._persisted_scene_events: dict[str, dict[str, Any]] = {}
+        self._persisted_observations: dict[str, dict[str, Any]] = {}
         self._persisted_anchors: dict[str, tuple[int, str]] = {}
         self._persisted_aliases: dict[str, str] = {}
         self._persisted_links: dict[str, frozenset[str]] = {}
+        self._persisted_jobs: dict[tuple[str, int], dict[str, Any]] = {}
+        self._unpersisted_events: dict[str, dict[str, Any]] = {}
         self._queued_frame_bytes = 0
         self._storage_bytes = 0
         self._last_maintenance = self._clock()
+        self._read_view = _ReadView(
+            {}, {}, {}, {}, (), self._epoch, 0, self._reset_reason,
+        )
+        self._work_timing: dict[str, Any] = {}
+        self._current_work: tuple[str, float] | None = None
+        self._last_timing_log = time.monotonic()
         self._thread = threading.Thread(
             target=self._run,
             name="event-archive",
@@ -380,88 +412,98 @@ class EventArchive:
         self._await_ready()
         if not 1 <= limit <= 500:
             raise ValueError("limit must be between 1 and 500")
-        with self._lock:
+        view = self._read_view
+        values = [
+            item for key, item in view.events.items() if key not in view.aliases
+        ]
+        if message_id is not None:
+            linked = view.links.get(message_id, frozenset())
+            try:
+                # A separate WAL reader never waits for evidence staging or
+                # the owner lock. Historical links stay bounded on disk.
+                uri = (self.settings.directory / "events.sqlite3").resolve().as_uri()
+                with closing(sqlite3.connect(uri + "?mode=ro", uri=True)) as db:
+                    linked = linked | {
+                        row[0]
+                        for row in db.execute(
+                            "SELECT event_id FROM links WHERE message_id=?",
+                            (message_id,),
+                        )
+                    }
+            except sqlite3.Error:
+                raise RuntimeError("event_storage_error") from None
+            linked = {view.aliases.get(key, key) for key in linked}
+            values = [item for item in values if item["event_id"] in linked]
+        if stream_session_id:
             values = [
-                item for key, item in self._events.items() if key not in self._aliases
+                v for v in values if v["stream_session_id"] == stream_session_id
             ]
-            if message_id is not None:
-                linked = self._links.get(message_id, set())
-                if self._db is not None:
-                    try:
-                        linked = linked | {
-                            row[0]
-                            for row in self._db.execute(
-                                "SELECT event_id FROM links WHERE message_id=?",
-                                (message_id,),
-                            )
-                        }
-                    except sqlite3.Error:
-                        self._error = "event_storage_error"
-                linked = {self._aliases.get(key, key) for key in linked}
-                values = [item for item in values if item["event_id"] in linked]
-            if stream_session_id:
-                values = [
-                    v for v in values if v["stream_session_id"] == stream_session_id
-                ]
-            if event_label:
-                values = [v for v in values if v["event_label"] == _label(event_label)]
-            if subject_id:
-                values = [
-                    value
-                    for value in values
-                    if self._canonical_subject(value["stream_session_id"], subject_id)
-                    in value.get("subject_ids", [value["subject_id"]])
-                ]
-            for value, lower in ((since, True), (until, False)):
-                if value is not None:
-                    if isinstance(value, (int, float)):
-                        values = [
-                            v
-                            for v in values
-                            if (
-                                v["start_seconds"] >= value
-                                if lower
-                                else v["start_seconds"] <= value
-                            )
-                        ]
-                    else:
-                        values = [
-                            v
-                            for v in values
-                            if (
-                                v["started_at"] >= value
-                                if lower
-                                else v["started_at"] <= value
-                            )
-                        ]
-            values = self._representative_events(values)
-            values.sort(key=lambda v: (v["created_at"], v["event_id"]), reverse=True)
-            if before:
-                position = next(
-                    (i for i, v in enumerate(values) if v["event_id"] == before), None
-                )
-                values = values[position + 1 :] if position is not None else []
-            page = values[:limit]
-            return {
-                "events": copy.deepcopy(page),
-                "count": len(page),
-                "next_cursor": page[-1]["event_id"] if len(values) > limit else None,
-                "epoch": self._epoch,
-                "cursor": self._cursor,
-            }
+        if event_label:
+            values = [v for v in values if v["event_label"] == _label(event_label)]
+        if subject_id:
+            def canonical(session_id):
+                subject, seen = subject_id, set()
+                while (session_id, subject) in view.subjects and subject not in seen:
+                    seen.add(subject)
+                    subject = view.subjects[session_id, subject]
+                return subject
+
+            values = [
+                value
+                for value in values
+                if canonical(value["stream_session_id"])
+                in value.get("subject_ids", [value["subject_id"]])
+            ]
+        for value, lower in ((since, True), (until, False)):
+            if value is not None:
+                if isinstance(value, (int, float)):
+                    values = [
+                        v
+                        for v in values
+                        if (
+                            v["start_seconds"] >= value
+                            if lower
+                            else v["start_seconds"] <= value
+                        )
+                    ]
+                else:
+                    values = [
+                        v
+                        for v in values
+                        if (
+                            v["started_at"] >= value
+                            if lower
+                            else v["started_at"] <= value
+                        )
+                    ]
+        values = self._representative_events(values)
+        values.sort(key=lambda v: (v["created_at"], v["event_id"]), reverse=True)
+        if before:
+            position = next(
+                (i for i, v in enumerate(values) if v["event_id"] == before), None
+            )
+            values = values[position + 1 :] if position is not None else []
+        page = values[:limit]
+        return {
+            "events": copy.deepcopy(page),
+            "count": len(page),
+            "next_cursor": page[-1]["event_id"] if len(values) > limit else None,
+            "epoch": view.epoch,
+            "cursor": view.cursor,
+        }
 
     def get_event(self, event_id: str) -> dict[str, Any] | None:
         self._await_ready()
-        with self._lock:
-            if event_id in self._aliases:
-                canonical = self._aliases[event_id]
-                event = copy.deepcopy(self._events.get(canonical))
-                if event is not None:
-                    event.update(
-                        requested_event_id=event_id, canonical_event_id=canonical
-                    )
-                return event
-            return copy.deepcopy(self._events.get(event_id))
+        view = self._read_view
+        if event_id in view.aliases:
+            canonical = view.aliases[event_id]
+            event = copy.deepcopy(view.events.get(canonical))
+            if event is not None:
+                event.update(
+                    requested_event_id=event_id, canonical_event_id=canonical
+                )
+            return event
+        return copy.deepcopy(view.events.get(event_id))
 
     def video_path(self, event_id: str, revision: int | None = None) -> Path | None:
         self._await_ready()
@@ -481,35 +523,35 @@ class EventArchive:
         self, cursor: str | int | None = None, limit: int = 100
     ) -> dict[str, Any]:
         self._await_ready()
-        with self._lock:
-            reset = None
-            position = 0
-            if cursor is not None:
-                try:
-                    if isinstance(cursor, str) and ":" in cursor:
-                        epoch, value = cursor.rsplit(":", 1)
-                        if epoch != self._epoch:
-                            reset = self._reset_reason
-                        position = int(value)
-                    else:
-                        position = int(cursor)
-                except (ValueError, TypeError):
-                    reset = "invalid_cursor"
-                if position > self._cursor:
-                    reset = "cursor_ahead"
-                elif self._changes and position < self._changes[0]["sequence"] - 1:
-                    reset = "history_expired"
-            if reset:
-                records = []
-            else:
-                records = [v for v in self._changes if v["sequence"] > position][:limit]
-            next_position = records[-1]["sequence"] if records else self._cursor
-            return {
-                "epoch": self._epoch,
-                "cursor": next_position,
-                "reset_reason": reset,
-                "changes": copy.deepcopy(records),
-            }
+        view = self._read_view
+        reset = None
+        position = 0
+        if cursor is not None:
+            try:
+                if isinstance(cursor, str) and ":" in cursor:
+                    epoch, value = cursor.rsplit(":", 1)
+                    if epoch != view.epoch:
+                        reset = view.reset_reason
+                    position = int(value)
+                else:
+                    position = int(cursor)
+            except (ValueError, TypeError):
+                reset = "invalid_cursor"
+            if position > view.cursor:
+                reset = "cursor_ahead"
+            elif view.changes and position < view.changes[0]["sequence"] - 1:
+                reset = "history_expired"
+        if reset:
+            records = []
+        else:
+            records = [v for v in view.changes if v["sequence"] > position][:limit]
+        next_position = records[-1]["sequence"] if records else view.cursor
+        return {
+            "epoch": view.epoch,
+            "cursor": next_position,
+            "reset_reason": reset,
+            "changes": copy.deepcopy(records),
+        }
 
     def acquire_video(
         self,
@@ -542,7 +584,7 @@ class EventArchive:
 
     def status(self) -> dict[str, Any]:
         if not self._lock.acquire(blocking=False):
-            return copy.deepcopy(self._status_snapshot)
+            return {**copy.deepcopy(self._status_snapshot), **self._timing_status()}
         try:
             snapshot = {
                 "state": "error"
@@ -569,11 +611,22 @@ class EventArchive:
                     job.get("reserved_bytes", 0) for job in self._jobs.values()
                 ),
                 **self._counts,
+                **self._timing_status(),
             }
             self._status_snapshot = snapshot
             return copy.deepcopy(snapshot)
         finally:
             self._lock.release()
+
+    def _timing_status(self) -> dict[str, Any]:
+        current = self._current_work
+        return {
+            **self._work_timing,
+            "processing_kind": current[0] if current else None,
+            "processing_seconds": (
+                max(0.0, time.monotonic() - current[1]) if current else 0.0
+            ),
+        }
 
     def _await_ready(self) -> None:
         if not self._initialized.wait(5.0):
@@ -698,6 +751,9 @@ class EventArchive:
             CREATE TABLE IF NOT EXISTS videos (
                 event_id TEXT, revision INTEGER, path TEXT, created_at REAL,
                 PRIMARY KEY(event_id,revision));
+            CREATE TABLE IF NOT EXISTS evidence_jobs (
+                event_id TEXT, revision INTEGER, payload TEXT NOT NULL,
+                PRIMARY KEY(event_id,revision));
         """)
         self._db = db
         self._subject_identities.update(
@@ -707,8 +763,8 @@ class EventArchive:
         for session_id in tuple(self._recovered_runs):
             self._session(session_id)
         for key, payload in db.execute("SELECT event_id,payload FROM events"):
-            self._persisted_events[key] = payload
             event = json.loads(payload)
+            self._persisted_events[key] = copy.deepcopy(event)
             if (
                 not event.get("finalized")
                 and event.get("stream_session_id") not in self._recoverable_runs
@@ -729,9 +785,9 @@ class EventArchive:
             ):
                 observation = json.loads(payload)
                 if observation.get("session_id") in self._recoverable_runs:
+                    self._persisted_observations[key] = copy.deepcopy(observation)
                     observation["admitted"] = self._clock()
                     self._observations[key] = observation
-                    self._persisted_observations[key] = payload
                     message = observation.get("message_id")
                     if message:
                         self._links[message].update(
@@ -742,7 +798,7 @@ class EventArchive:
                         )
         for key, payload in db.execute("SELECT event_id,payload FROM scene_episodes"):
             self._scene_events[key] = json.loads(payload)
-            self._persisted_scene_events[key] = payload
+            self._persisted_scene_events[key] = copy.deepcopy(self._scene_events[key])
         for key, sequence, anchor in db.execute("SELECT * FROM anchors"):
             self._anchors[key] = (sequence, anchor)
             self._persisted_anchors[key] = (sequence, anchor)
@@ -798,11 +854,22 @@ class EventArchive:
                 if (event_id, revision) in self._videos:
                     shutil.rmtree(manifest.parent)
                     continue
-                destination = root / "videos" / f"{event_id}-r{revision}.mp4"
-                self._encode_queue.put_nowait((manifest, destination))
                 self._jobs[event_id, revision] = metadata
             except (OSError, ValueError, KeyError, queue.Full):
                 continue
+        for event_id, revision, payload in db.execute("SELECT * FROM evidence_jobs"):
+            metadata = json.loads(payload)
+            self._persisted_jobs[event_id, revision] = metadata
+            if (event_id, revision) in self._jobs:
+                # A completed staging manifest can resume directly at encoding.
+                continue
+            event = self._events.get(event_id)
+            if event is None or (event_id, revision) in self._videos:
+                continue
+            # Like staged manifests, admitted plans for older revisions must
+            # finish after restart. _encoded keeps those immutable videos
+            # without reattaching them to the current/retracted event revision.
+            self._jobs[event_id, revision] = metadata
         for event in self._events.values():
             evidence = event.get("evidence", {})
             if (
@@ -812,6 +879,8 @@ class EventArchive:
             ):
                 evidence.update(status="failed", failure_reason="interrupted")
         self._persist()
+        self._publish_read_view()
+        self._dispatch_evidence()
 
     def _run(self) -> None:
         try:
@@ -835,6 +904,12 @@ class EventArchive:
                 break
             if kind == "tick" and self._closed.is_set():
                 kind, payload = "close_drained", None
+            started = time.monotonic()
+            self._current_work = (kind, started)
+            queue_wait = (
+                (self._queue.last_dequeued or {}).get("queue_wait_seconds", 0.0)
+                if kind not in {"tick", "close_drained"} else 0.0
+            )
             try:
                 with self._lock:
                     if kind in {"close", "close_drained"}:
@@ -846,7 +921,7 @@ class EventArchive:
                         self._schedule_evidence()
                         break
                     if kind == "barrier":
-                        payload.set()
+                        pass
                     elif kind == "start":
                         self._session(*payload)
                     elif kind == "frame":
@@ -912,6 +987,7 @@ class EventArchive:
                         self._retention()
                         self._trim_buffers()
                         self._compact_observations()
+                    self._dispatch_evidence()
             except Exception:
                 if kind not in {"tick", "close_drained"}:
                     self._queue.task_failed()
@@ -934,6 +1010,28 @@ class EventArchive:
                     if failures:
                         self._change(failures)
             finally:
+                # Publish one immutable view before acknowledging a barrier.
+                # Readers never contend with the writer's I/O/maintenance lock.
+                self._publish_read_view()
+                duration = time.monotonic() - started
+                self._work_timing = {
+                    "last_processed_kind": kind,
+                    "last_queue_wait_seconds": queue_wait,
+                    "max_queue_wait_seconds": max(
+                        queue_wait,
+                        self._work_timing.get("max_queue_wait_seconds", 0.0),
+                    ),
+                    "last_processing_seconds": duration,
+                    "max_processing_seconds": max(
+                        duration, self._work_timing.get("max_processing_seconds", 0.0),
+                    ),
+                }
+                self._current_work = None
+                if started - self._last_timing_log >= 5.0:
+                    self._last_timing_log = started
+                    log_timing("event_archive_timing", **self._work_timing)
+                if kind == "barrier":
+                    payload.set()
                 if kind not in {"tick", "close_drained"}:
                     try:
                         self._queue.task_done()
@@ -2033,6 +2131,7 @@ class EventArchive:
     def _persist(self) -> None:
         if self._db is None:
             return
+        updates = []
         with self._db:
             for table, values, persisted in (
                 ("events", self._events, self._persisted_events),
@@ -2040,20 +2139,23 @@ class EventArchive:
                 ("observations", self._observations, self._persisted_observations),
             ):
                 for key, value in values.items():
-                    payload = json.dumps(value, ensure_ascii=False)
-                    if persisted.get(key) != payload:
+                    # Most records belong to past runs. Comparing immutable
+                    # snapshots avoids re-encoding the entire archive per frame.
+                    if persisted.get(key) != value:
+                        snapshot = copy.deepcopy(value)
+                        payload = json.dumps(snapshot, ensure_ascii=False)
                         self._db.execute(
                             f"INSERT OR REPLACE INTO {table} VALUES (?,?)",
                             (key, payload),
                         )
-                        persisted[key] = payload
+                        updates.append((persisted, key, snapshot))
             for key, value in self._anchors.items():
                 if self._persisted_anchors.get(key) != value:
                     self._db.execute(
                         "INSERT OR REPLACE INTO anchors VALUES (?,?,?)",
                         (key, value[0], value[1]),
                     )
-                    self._persisted_anchors[key] = value
+                    updates.append((self._persisted_anchors, key, value))
             for key in self._persisted_aliases.keys() - self._aliases.keys():
                 self._db.execute("DELETE FROM aliases WHERE event_id=?", (key,))
             for key, value in self._aliases.items():
@@ -2061,7 +2163,6 @@ class EventArchive:
                     self._db.execute(
                         "INSERT OR REPLACE INTO aliases VALUES (?,?)", (key, value)
                     )
-            self._persisted_aliases = dict(self._aliases)
             for message, events in self._links.items():
                 value = frozenset(events)
                 if self._persisted_links.get(message) != value:
@@ -2070,7 +2171,41 @@ class EventArchive:
                         "INSERT INTO links VALUES (?,?)",
                         ((message, event) for event in events),
                     )
-                    self._persisted_links[message] = value
+                    updates.append((self._persisted_links, message, value))
+            for key in self._persisted_jobs.keys() - self._jobs.keys():
+                self._db.execute(
+                    "DELETE FROM evidence_jobs WHERE event_id=? AND revision=?", key,
+                )
+            for key, value in self._jobs.items():
+                if self._persisted_jobs.get(key) != value:
+                    snapshot = copy.deepcopy(value)
+                    self._db.execute(
+                        "INSERT OR REPLACE INTO evidence_jobs VALUES (?,?,?)",
+                        (*key, json.dumps(snapshot, ensure_ascii=False)),
+                    )
+                    updates.append((self._persisted_jobs, key, snapshot))
+        # Failed transactions must remain dirty and retryable.
+        for cache, key, value in updates:
+            cache[key] = value
+            if cache is self._persisted_events:
+                self._unpersisted_events.pop(key, None)
+        self._persisted_aliases = dict(self._aliases)
+        for key in self._persisted_jobs.keys() - self._jobs.keys():
+            self._persisted_jobs.pop(key)
+
+    def _publish_read_view(self) -> None:
+        events = dict(self._persisted_events)
+        # Also expose explicit failure transitions when persistence is unavailable.
+        self._unpersisted_events = {
+            key: event for key, event in self._unpersisted_events.items()
+            if key in self._events
+        }
+        events.update(self._unpersisted_events)
+        self._read_view = _ReadView(
+            events, dict(self._aliases), dict(self._subject_aliases),
+            {key: frozenset(value) for key, value in self._links.items()},
+            tuple(self._changes), self._epoch, self._cursor, self._reset_reason,
+        )
 
     def _change(
         self, events: list[dict[str, Any]], aliases: list[dict[str, Any]] | None = None
@@ -2086,6 +2221,13 @@ class EventArchive:
                 "aliases": aliases or [],
             }
         )
+        for event in self._changes[-1]["events"]:
+            key = event["event_id"]
+            if self._persisted_events.get(key) != event:
+                self._unpersisted_events[key] = event
+            else:
+                self._unpersisted_events.pop(key, None)
+        self._publish_read_view()
 
     @staticmethod
     def _touch(event: dict[str, Any]) -> None:
@@ -2384,30 +2526,55 @@ class EventArchive:
                 "requested_start_seconds": window["start_seconds"],
                 "requested_end_seconds": window["end_seconds"],
                 "partial_reason": reason,
-                "reserved_bytes": output_reservation,
+                "reserved_bytes": required,
                 "max_output_bytes": output_reservation,
+                "source_sequences": [frame.source_frame_index for frame in frames],
             }
-            stage = self.settings.directory / "staging" / f"{event_id}-r{revision}"
-            destination = (
-                self.settings.directory / "videos" / f"{event_id}-r{revision}.mp4"
-            )
             try:
-                manifest = stage_clip(stage, frames, metadata)
-                self._encode_queue.put_nowait((manifest, destination))
+                if self._encode_queue.full():
+                    raise queue.Full
+                self._jobs[event_id, revision] = metadata
+                evidence.update(status="encoding", failure_reason=None)
+                # Persist the plan before acknowledging the source fact. A crash
+                # before staging finishes can replay its exact durable sources.
+                self._persist()
+                self._encode_queue.put_nowait(_ClipPlan(copy.deepcopy(metadata)))
+                self._queued_jobs.add((event_id, revision))
             except queue.Full:
+                self._jobs.pop((event_id, revision), None)
                 evidence.update(status="failed", failure_reason="encoding_queue_full")
                 self._counts["encoding_failures"] += 1
             except OSError:
+                self._jobs.pop((event_id, revision), None)
                 evidence.update(
                     status="failed", failure_reason="evidence_storage_unavailable"
                 )
                 self._counts["storage_failures"] += 1
-            else:
-                self._jobs[event_id, revision] = metadata
-                evidence.update(status="encoding", failure_reason=None)
             self._touch(event)
             self._persist()
             self._change([event])
+
+    def _dispatch_evidence(self) -> None:
+        """Resume persisted plans in bounded batches without discarding overflow."""
+        if self._closed.is_set():
+            return
+        for key, metadata in self._jobs.items():
+            if key in self._queued_jobs:
+                continue
+            event_id, revision = key
+            stem = f"{event_id}-r{revision}"
+            if "source_sequences" in metadata and "frames" not in metadata:
+                item = _ClipPlan(copy.deepcopy(metadata))
+            else:
+                item = (
+                    self.settings.directory / "staging" / stem / "manifest.json",
+                    self.settings.directory / "videos" / (stem + ".mp4"),
+                )
+            try:
+                self._encode_queue.put_nowait(item)
+            except queue.Full:
+                break
+            self._queued_jobs.add(key)
 
     def _encode_loop(self) -> None:
         while True:
@@ -2420,10 +2587,22 @@ class EventArchive:
             try:
                 if item is None or self._closed.is_set():
                     return
-                manifest, destination = item
-                stem, revision_text = destination.stem.rsplit("-r", 1)
-                metadata = {"event_id": stem, "revision": int(revision_text)}
+                if isinstance(item, _ClipPlan):
+                    metadata = item.metadata
+                    stem = f"{metadata['event_id']}-r{metadata['revision']}"
+                    stage = self.settings.directory / "staging" / stem
+                    destination = self.settings.directory / "videos" / (stem + ".mp4")
+                else:
+                    manifest, destination = item
+                    stem, revision_text = destination.stem.rsplit("-r", 1)
+                    metadata = {"event_id": stem, "revision": int(revision_text)}
                 try:
+                    if isinstance(item, _ClipPlan):
+                        frames = self._queue.source_frames(
+                            metadata["stream_session_id"],
+                            tuple(metadata["source_sequences"]),
+                        )
+                        manifest = stage_clip(stage, frames, metadata)
                     metadata = json.loads(manifest.read_text(encoding="utf-8"))
                     available = self._encoder(
                         manifest,
@@ -2459,9 +2638,11 @@ class EventArchive:
     ) -> None:
         event_id, revision = metadata["event_id"], metadata["revision"]
         self._jobs.pop((event_id, revision), None)
+        self._queued_jobs.discard((event_id, revision))
         event = self._events.get(event_id)
         if event is None:
             path.unlink(missing_ok=True)
+            self._persist()
             return
         evidence = event["evidence"]
         if available is not None:
@@ -2532,6 +2713,13 @@ class EventArchive:
                  event["evidence"]["requested_window"]["end_seconds"])
                 for event in events
             }
+            # A later event revision/retraction must not release the inputs of
+            # an older admitted job that is still waiting to stage its frames.
+            ranges.update(
+                (job["requested_start_seconds"], job["requested_end_seconds"])
+                for job in self._jobs.values()
+                if job.get("stream_session_id") == run
+            )
             times = [window["timestamp"] for window in windows.values()]
             times.extend(
                 point["timestamp"] for point in self._observations.values()
@@ -2797,3 +2985,4 @@ class EventArchive:
             for key in retired_identities:
                 self._subject_identities.pop(key, None)
         self._storage_bytes = self._physical_usage()
+        self._publish_read_view()

@@ -281,11 +281,11 @@ VLM 时序窗口继续要求不同真实源帧、有效源跨度和足够图像�
 ## 11. 依据与可复核位置
 
 - 本次日志分析：`.goodvision/diagnostics/sam-queue-20260920/sam-latency-analysis.md`；原 ZIP、逐批关联和接口快照保留在同目录。
-- 既有压缩、编译与质量实验：`docs/architecture/sam31-optimization-20260913.md`。该文中的旧 16 帧启动/旧跟踪模式不是当前 sam_live 的配置。
-- 既有并行、证据和显示边界：`docs/architecture/parallel-latency-implementation-20260917.md`；不能将其中未验收的显示实验视为已经可用。
+- 保留的容量、压缩质量和队列结论：[追踪性能](../validation/tracking-performance.md)。早期连续会话验证不代表当前 sam_live 吞吐。
+- 并行发布与证据边界：[事件与收尾](../validation/events-and-lifecycle.md)；真实输出帧率及缺口见[网络与显示](../validation/network-and-display.md)。
 - 当前候选与准备流程：`src/goodvision_harness/sam_tracking_pipeline.py`；持久化：`sam_tracking_spool.py`。
 - 当前 FIFO GPU：`workers/sam_scene/multistream.py`；源序、尺寸、执行与幂等：`continuous.py`。
 - 当前因果输出与三次确认：`workers/sam_scene/sam_live.py`；已审核历史限制：`streaming_state.py`。
 - 当前传输：`src/goodvision_harness/video_transport.py`、`video_tracking_session.py`；云配置：`compose.sam31-remote.yaml`、`tools/start_sam.py`。
 
-首版 worktree 已实现 P1 子集并完成协议模拟回归与过载对照，详见 `docs/validation/sam-realtime-queue-experiment-20260920.md`。其余阶段仍是方案；模型吞吐、质量和实际描边覆盖率尚未经过这台双路 GPU 的新一轮验证。
+首版 worktree 已实现 P1 子集并完成协议模拟回归与过载对照，详见 `docs/validation/tracking-performance.md`。其余阶段仍是方案；模型吞吐、质量和实际描边覆盖率尚未经过这台双路 GPU 的新一轮验证。

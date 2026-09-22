@@ -2,7 +2,7 @@
 
 更新：2026-09-13。分支：`codex/entity-event-engine`。
 研究依据见 [SAM3.1 架构评估](sam31-evaluation-20260912.md)，实机记录见
-[真实 GPU 验证](sam31-gpu-validation-20260912.md)。
+[追踪性能与验收边界](../validation/tracking-performance.md)。
 
 ## 已完成的路径
 
@@ -67,8 +67,8 @@ worker 通过 supervisor 运行，仅绑定服务器回环地址，主程序通�
 - 128 帧未清理追加与有界清理：全部 ID 和 mask hash 全等，清理后的输入及跟踪历史数量稳定。
 - 256 帧真实多人画面（源片 6.0–69.8 秒），加入最新元数据清理和空 EOF：
   未清理参考与清理版本全部 ID 和 mask hash 全等。
-- 已完成真实 48 帧 HTTP 会话到 `HarnessRuntime` 的人物跟踪接入；详细请求、源映射和计时
-  以 [GPU 验证记录](sam31-gpu-validation-20260912.md) 为准。
+- 已完成真实 48 帧 HTTP 会话到 `HarnessRuntime` 的人物跟踪接入；一致性结论及后续容量边界
+  以 [追踪性能与验收边界](../validation/tracking-performance.md) 为准。
 
 实机还发现并修正了 RoPE 派生 buffer 与权重不符、线程间 autocast 上下文，及官方
 processing-order 的 inclusive offset 与 detector 的 exclusive count 冲突。
@@ -81,7 +81,7 @@ processing-order 的 inclusive offset 与 detector 的 exclusive count 冲突。
 ## 运行连续路径
 
 权重固定来自 `facebook/sam3.1/sam3.1_multiplex.pt`，来源 revision 与文件 hash
-记录在 [GPU 验证记录](sam31-gpu-validation-20260912.md)。运行不需要 HF token，
+记录在 [追踪性能与验收边界](../validation/tracking-performance.md)。运行不需要 HF token，
 也不自动下载门控权重。安装步骤和宿主驱动要求见 [worker 文档](../../workers/sam_scene/README.md)。
 
 已安装环境的 GPU worker，从 `workers/sam_scene` 启动：

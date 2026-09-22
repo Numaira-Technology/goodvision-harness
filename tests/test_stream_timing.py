@@ -1,3 +1,5 @@
+import pytest
+
 from goodvision_harness.stream_timing import SourceCadence
 
 
@@ -36,3 +38,36 @@ def test_arrival_fallback_does_not_accumulate_interval_drift():
         cadence.select(i / 15 + (0.0004 if i % 2 else 0), None)[1] for i in range(150)
     )
     assert accepted == 150
+
+
+def test_rtp_forward_wrap_jumps_do_not_expire_recent_evidence():
+    cadence = SourceCadence(15)
+    stamps = []
+    # Reproduce repeated 32-bit / 90 kHz jumps seen on the live WHEP feed.
+    wrap = 2**32 / 90000
+    for index in range(150):
+        now = 10 + index / 15
+        pts = index / 15 + (index // 30) * wrap
+        timestamp, selected = cadence.select(now, pts)
+        assert selected
+        stamps.append(timestamp)
+    assert cadence.discontinuities == 4
+    assert stamps == pytest.approx([index / 15 for index in range(150)])
+    assert stamps[31] - stamps[29] < 1  # In-flight tracking evidence stays fresh.
+
+
+def test_real_receive_outage_preserves_elapsed_media_time():
+    cadence = SourceCadence(15)
+    cadence.select(10, 900)
+    timestamp, selected = cadence.select(30, 920)
+    assert selected and timestamp == 20
+    assert cadence.discontinuities == 0
+
+
+def test_corrected_timestamp_returning_to_original_clock_keeps_progress():
+    cadence = SourceCadence(15)
+    cadence.select(10, 0)
+    jump, _ = cadence.select(10.1, 47722)
+    restored, selected = cadence.select(10.2, .2)
+    assert selected and jump < restored < 1
+    assert cadence.discontinuities == 2

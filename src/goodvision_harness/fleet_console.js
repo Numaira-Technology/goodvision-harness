@@ -26,7 +26,7 @@
     const cameras=(Array.isArray(data.cameras)?data.cameras:[]).filter(camera=>camera&&typeof camera.id==="string");
     const count=(value,fallback)=>Number.isFinite(Number(value))&&Number(value)>=0?Math.floor(Number(value)):fallback;
     const seen=new Set();
-    return {allowed,trackingMode:Object.hasOwn(MODES,data.tracking_mode)?data.tracking_mode:"legacy",
+    return {allowed,trackingEnabled:data.tracking_enabled!==false,trackingMode:Object.hasOwn(MODES,data.tracking_mode)?data.tracking_mode:"legacy",
       analysis:data.analysis&&typeof data.analysis==="object"?data.analysis:{state:"unknown",camera_ids:[],errors:{}},
       analysisStartUrl:safeEndpoint(data.analysis_start_url),analysisStopUrl:safeEndpoint(data.analysis_stop_url),
       capacity:count(data.capacity,cameras.length),usableCapacity:count(data.usable_capacity,cameras.filter(camera=>camera.enabled===true).length),reason:String(data.reason||""),
@@ -109,7 +109,9 @@
       const viewport=this.element("div","fleet-preview"),image=this.element("img");image.alt=camera.label+" 实时人物描边画面";image.hidden=true;
       const canvas=this.element("canvas");canvas.hidden=true;
       const placeholder=this.element("div","fleet-preview-note","连接后在此显示实时画面");viewport.append(image,canvas,placeholder);
-      const displayNote=this.element("div","fleet-card-detail","画面与分析独立更新");
+      const displayNote=this.element("div","fleet-card-detail","播放目标 15 帧/秒 · 画面与分析独立更新");
+      const vlmNote=this.element("div","fleet-card-detail","VLM · 等待开始分析");vlmNote.setAttribute("role","status");
+      const vlmEvents=this.element("div","fleet-card-detail","本次事件观察 · 等待开始分析");vlmEvents.setAttribute("role","status");
       const fields=this.element("div","fleet-card-fields"),source=this.element("label","field");
       source.append(this.element("span","","网络视频地址"));
       const input=this.element("input");input.type="text";input.autocomplete="off";input.spellcheck=false;
@@ -124,8 +126,8 @@
       for(const button of [start,stop,save,detail,remove]){button.type="button";buttons.append(button);}
       remove.setAttribute("aria-label","移除 "+camera.label);
       const message=this.element("div","fleet-card-detail");message.setAttribute("role","status");
-      fields.append(source,layoutField,sourceNote,buttons,message);card.append(head,viewport,displayNote,fields);this.ui.grid.append(card);
-      const row={camera,card,title,state,image,canvas,displayNote,placeholder,input,layout,sourceNote,start,stop,save,detail,remove,message,
+      fields.append(source,layoutField,sourceNote,buttons,message);card.append(head,viewport,displayNote,vlmNote,vlmEvents,fields);this.ui.grid.append(card);
+      const row={camera,card,title,state,image,canvas,displayNote,vlmNote,vlmEvents,placeholder,input,layout,sourceNote,start,stop,save,detail,remove,message,
         status:null,busy:false,error:"",notice:"",previewUrl:null,previewError:false,generation:0,layoutDirty:false,
         detailOpen:false,prefsLoaded:false,prefsLoading:false,prefsDirty:false,prefsSaving:false,detailPolling:false};
       this.makeDetail(row);
@@ -269,9 +271,9 @@
       const displayed=[...this.rows.values()].filter(row=>this.visible.has(row.camera.id));
       const available=this.fleet.cameras.filter(camera=>camera.enabled).length;
       const spare=this.fleet.cameras.some(camera=>camera.enabled&&!this.visible.has(camera.id));
-      this.ui.mode.textContent=this.fleet.allowed?MODES[this.fleet.trackingMode]:
+      this.ui.mode.textContent=!this.fleet.trackingEnabled?"视频播放 · 人脸与 VLM 识别":this.fleet.allowed?MODES[this.fleet.trackingMode]:
         MODES[this.fleet.trackingMode].replace("多路模式","当前可用 "+this.fleet.usableCapacity+" 路");
-      const capacityNote=this.fleet.trackingMode==="server"
+      const capacityNote=!this.fleet.trackingEnabled?"可使用已部署的视频通道；人物描边未启用。":this.fleet.trackingMode==="server"
         ?"可用路数由追踪服务器容量与已部署通道共同决定。"
         :this.fleet.trackingMode==="local"?"可按需添加通道，实际可同时运行的路数以本机 GPU 负载为准。"
         :this.fleet.trackingMode==="cloud"?"可按需部署 N 路通道；各路分配到云 GPU，实际容量取决于租用算力和负载。"
@@ -315,8 +317,22 @@
       const status=row.status||{},active=connectionBusy(status),locked=this.analysisLocked();
       const enabled=row.camera.enabled&&this.metadataOk;
       row.title.textContent=row.camera.label;
-      row.state.textContent=row.busy?"正在处理":row.unreachable?"服务离线":(CONNECTION[connectionState(status)]||"正在检查")+" · "+(ANALYSIS[status.analysis_state||status.pipeline_state]||"未分析");
+      const videoFresh=Number.isFinite(row.lastPresentedAt)&&this.clock()-row.lastPresentedAt<2500;
+      row.state.textContent=row.busy?"正在处理":row.unreachable?(videoFresh?"视频播放中 · 状态更新延迟":"暂时无法确认服务状态"):(CONNECTION[connectionState(status)]||"正在检查")+" · "+(ANALYSIS[status.analysis_state||status.pipeline_state]||"未分析");
       row.state.className="fleet-camera-state"+(row.unreachable||row.error||status.last_error?" error":active?" good":"");
+      const vlm=status.vlm,age=vlm?.last_success_age_seconds;
+      if(row.unreachable)row.vlmNote.textContent="VLM · 状态更新延迟，正在重新确认";
+      else if(vlm?.independent&&["stopping","stopped","drained"].includes(vlm.state))
+        row.vlmNote.textContent=vlm.state==="stopping"?"VLM · 正在停止":"VLM · 本轮识别已停止";
+      else if(!analyzing(status))row.vlmNote.textContent="VLM · 等待开始分析";
+      else if(!vlm?.independent)row.vlmNote.textContent="VLM · 正在读取识别状态";
+      else if(vlm.ready){
+        row.vlmNote.textContent="VLM · 识别持续返回"+(Number.isFinite(age)?" · 最近成功 "+age.toFixed(1)+" 秒前":"")+
+          (vlm.last_attempt_state==="failed"?" · 最近一次失败，继续识别":vlm.analysis_complete===false?" · 部分检测项待确认":"");
+      }else if(vlm.running){
+        row.vlmNote.textContent="VLM · "+(Number.isFinite(age)?"结果延迟 · 最近成功 "+age.toFixed(1)+" 秒前":"等待首次有效结果")+
+          (vlm.last_attempt_state==="failed"?" · 最近一次失败，继续识别":"");
+      }else row.vlmNote.textContent="VLM · 识别暂不可用，视频继续播放";
       row.input.disabled=active||row.busy||locked;row.layout.disabled=active||row.busy||locked;
       row.start.disabled=!enabled||row.busy||active||locked||!row.status||row.unreachable||!row.camera.connect_url;
       row.stop.disabled=row.busy||!active||locked||connectionState(status)==="disconnecting"||!row.camera.disconnect_url;
@@ -334,7 +350,7 @@
       if(!show)this.releasePreview(row);
       row.placeholder.hidden=!!(row.previewUrl||row.networkHasFrame)&&!row.previewError&&!row.networkBuffering;
       row.placeholder.className="fleet-preview-note"+(row.previewUrl&&row.previewError?" over-image":"");
-      row.placeholder.textContent=row.previewError?"画面暂不可用，正在重试…":row.networkBuffering?"正在缓冲连续画面并准备人物描边…":row.unreachable?"通道服务暂时离线":active?"正在等待视频画面…":"连接后在此显示实时画面";
+      row.placeholder.textContent=row.previewError?"画面暂不可用，正在重试…":row.networkBuffering?"正在缓冲连续画面…":row.unreachable?"正在重新确认通道状态…":active?"正在等待视频画面…":"连接后在此显示实时画面";
       const prefsBusy=locked||row.prefsLoading||row.prefsSaving||!row.prefsLoaded;
       for(const [key,input] of row.features){input.disabled=prefsBusy;const sensitivity=row.sensitivities.get(key);if(sensitivity)sensitivity.select.disabled=prefsBusy||!input.checked;}
       row.prefsSave.disabled=prefsBusy||!row.prefsDirty;row.prefsReload.disabled=locked||row.prefsLoading||row.prefsSaving;
@@ -342,13 +358,29 @@
       row.prefsNote.className="fleet-card-detail"+(row.prefsError?" error":"");
       row.detailSummary.textContent="当前状态："+row.state.textContent+" · 已接收 "+(Number(status.source_frames_received)||0)+" 帧 · 已发布 "+(Number(status.results_published)||0)+" 条结果";
     }
+    async pollVlm(row){
+      if(!analyzing(row.status)||!row.status.vlm?.independent){row.vlmReport=null;row.vlmEvents.textContent="本次事件观察 · 等待开始分析";return;}
+      const session=row.status.stream_session_id,generation=row.generation;
+      try{
+        const url=row.camera.status_url?.replace(/\/status$/, "/vlm/results/latest");
+        const report=await this.request(url,{},3000);
+        if(this.closed||row.generation!==generation||row.status.stream_session_id!==session||report.stream_session_id!==session)return;
+        if(report.state==="completed")row.vlmReport=report;
+        const current=row.vlmReport?.stream_session_id===session?row.vlmReport:null;
+        const summary=root.GoodvisionCameraDisplay?.eventObservationSummary?.(current)||"等待事件判断";
+        const age=current?Math.max(0,(this.clock()-Date.parse(current.emitted_at))/1000):null;
+        row.vlmEvents.textContent="本次事件观察 · "+summary+(Number.isFinite(age)?"（"+age.toFixed(1)+" 秒前）":"")+
+          (report.state==="failed"?" · 新一轮正在重试":"");
+      }catch(_){row.vlmEvents.textContent="事件结果更新延迟，正在重试；请结合上方最近成功时间。";}
+    }
     async pollStatus(discover=false){
       if(this.closed||this.polling)return;this.polling=true;
       const cameras=[...this.rows.values()].filter(row=>discover||row.camera.enabled||row.busy||connectionBusy(row.status)||analyzing(row.status));
       try{await pooled(cameras,4,async row=>{
         const generation=row.generation;
         try{
-          const status=await this.request(row.camera.status_url);
+          const statusUrl=row.camera.status_url;
+          const status=await this.request(statusUrl?statusUrl+(statusUrl.includes("?")?"&":"?")+"lightweight=true":statusUrl);
           if(generation!==row.generation||this.closed)return;
           const sessionChanged=row.status?.stream_session_id!==status.stream_session_id;
           if(sessionChanged)this.releasePreview(row);
@@ -359,7 +391,7 @@
           row.card.hidden=!this.visible.has(row.camera.id);
         }catch(error){if(generation!==row.generation||this.closed)return;row.unreachable=true;row.error="无法连接通道服务："+error.message;}
         this.updateRow(row);
-        if(!row.unreachable)await this.pollDetail(row);
+        if(!row.unreachable)await Promise.all([this.pollDetail(row),this.pollVlm(row)]);
       });}finally{
         this.polling=false;
         if(!this.initializedLayout){this.compact=[...this.rows.values()].filter(row=>connectionBusy(row.status)).length>=4;this.initializedLayout=true;}
@@ -434,6 +466,7 @@
     }
     releasePreview(row){
       row.networkDisplay?.stop();row.networkDisplay=null;row.networkHasFrame=false;row.networkBuffering=false;
+      row.lastPresentedAt=null;row.displaySample=null;
       row.canvas.hidden=true;
       row.previewGeneration=(row.previewGeneration||0)+1;
       row.previewController?.abort();row.previewController=null;
@@ -450,9 +483,14 @@
             onFrame:({buffering})=>{row.networkHasFrame=true;row.networkBuffering=buffering;row.previewError=false;
               row.placeholder.hidden=!buffering;},
             onStatus:stats=>{row.networkBuffering=stats.distinct_presented_frames===0;
+              row.latestDisplayStats=stats;
               row.placeholder.hidden=!row.networkBuffering&&!row.previewError;
-              row.displayNote.textContent="播放缓冲 "+stats.configured_display_delay_seconds+" 秒 · 实际 "+
-                (stats.distinct_presented_fps??0).toFixed(1)+" 帧/秒 · 完整描边 "+
+              const now=this.clock(),previous=row.displaySample;
+              const same=previous&&previous.id===stats.display_instance_id&&stats.distinct_presented_frames>=previous.frames;
+              const fps=same&&now>previous.at?(stats.distinct_presented_frames-previous.frames)*1000/(now-previous.at):(stats.distinct_presented_fps??0);
+              if((same&&stats.distinct_presented_frames>previous.frames)||(!same&&stats.distinct_presented_frames>0))row.lastPresentedAt=now;
+              row.displaySample={id:stats.display_instance_id,at:now,frames:stats.distinct_presented_frames};
+              row.displayNote.textContent="播放 "+fps.toFixed(1)+" / 15 帧/秒 · 缓冲 "+stats.configured_display_delay_seconds+" 秒 · 完整描边 "+
                 (100*stats.complete_contour_frames/Math.max(1,stats.distinct_presented_frames)).toFixed(0)+"%";},
             onFailure:message=>{row.displayNote.textContent=message;}});
           row.networkDisplay.start();
@@ -467,6 +505,7 @@
         nextUrl=this.URL.createObjectURL(await response.blob());
         if(this.closed||generation!==(row.previewGeneration||0)||this.document.hidden)return;
         const previous=row.previewUrl;row.image.src=nextUrl;row.image.hidden=false;row.previewUrl=nextUrl;nextUrl=null;row.previewError=false;
+        row.lastPresentedAt=this.clock();
         if(previous)this.URL.revokeObjectURL(previous);
         row.placeholder.hidden=true;
       }catch(_){row.previewError=true;this.updateRow(row);}

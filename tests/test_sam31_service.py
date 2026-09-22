@@ -7,6 +7,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import httpx
@@ -106,9 +107,15 @@ def test_worker_to_http_parser_to_registry_and_scene(runtime):
         )
         assert not client.gpu_ready(), "doubles must never attest GPU validation"
         coordinator = VideoTrackingCoordinator(
-            client, on_batch=runtime._on_tracking_batch, batch_frames=4
+            client,
+            on_batch=partial(
+                runtime._on_processing_batch, runtime._rich_config_revision
+            ),
+            batch_frames=4,
         )
         coordinator.reset(runtime._session.stream_session_id)
+        # Use the production callback's source-retention gate: a fast result
+        # must wait for _on_display_frame to retain the final submitted frame.
         # Injection tests the wire; deployment still requires real GPU readiness.
         runtime._rich_labels = coordinator
         runtime._active_rich_session_id = runtime._session.stream_session_id
@@ -248,7 +255,9 @@ def continuous(runtime):
         )
         coordinator = VideoSessionTrackingCoordinator(
             client,
-            on_batch=runtime._on_tracking_batch,
+            on_batch=partial(
+                runtime._on_processing_batch, runtime._rich_config_revision
+            ),
         )
         coordinator.reset(runtime._session.stream_session_id)
         runtime._rich_labels = coordinator
@@ -518,6 +527,7 @@ def test_private_sam_source_read_releases_state_lock_and_rechecks_revision(repla
     from types import SimpleNamespace
     runtime = service.HarnessRuntime.__new__(service.HarnessRuntime)
     runtime._state_lock = threading.RLock()
+    runtime._source_commit_lock = threading.RLock()
     runtime._rich_config_revision = 3
     entered, release, lock_available = threading.Event(), threading.Event(), threading.Event()
     sources, commits = (object(),), []

@@ -107,8 +107,11 @@ affect the CI check.
 ## Organization and stable paths
 
 Start with the [documentation index](docs/README.md) for the repository map.
-Keep new guides under `docs/guides/`, designs under `docs/architecture/`, and
-dated validation records under `docs/validation/`.
+Keep new guides under `docs/guides/`, API references under `docs/reference/`,
+designs under `docs/architecture/`, and maintained validation conclusions under
+`docs/validation/`. Update the existing topic instead of adding a report for
+every run. Remove superseded notes and unused attachments; keep only necessary
+reviewed evidence under `docs/validation/evidence/` and update affected links.
 
 Root Compose files, Dockerfiles, environment examples and customer delivery
 documents are stable entrypoints used by scripts, tests and operators. Review

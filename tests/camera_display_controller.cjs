@@ -3,6 +3,15 @@ const {test}=require("node:test");
 const code=fs.readFileSync(require.resolve("../src/goodvision_harness/camera_display.js"),"utf8");
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
+test("simultaneous displays have distinct stable telemetry identities",()=>{
+  const view=browser(),second=view.createController();
+  const firstId=view.controller.snapshot().display_instance_id;
+  assert.match(firstId,/^[A-Za-z0-9_-]{1,96}$/);
+  assert.notEqual(second.snapshot().display_instance_id,firstId);
+  view.render(1);assert.equal(view.controller.snapshot().display_instance_id,firstId);
+  view.controller.stop();second.stop();
+});
+
 test("network source preserves server frame IDs, native pixels and playback cadence without uploading analysis",()=>{
   const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:.5}});
   for(let i=0;i<15;i++){
@@ -546,7 +555,8 @@ test("display telemetry reports real presentations and capture age without image
   assert.equal(report.window_presented_fps,stats.distinct_presented_frames/5);
   assert.equal(report.contour_frame_ratio,0);assert.ok(report.source_to_present_p95_seconds>=.5);
   assert.ok(report.source_to_present_max_seconds<.57);assert.ok(report.max_present_gap_seconds<.07);
-  assert.ok(Object.values(report).every(value=>typeof value==="number"||value===null||value==="run"));
+  assert.match(report.display_instance_id,/^[A-Za-z0-9_-]{1,96}$/);
+  assert.ok(Object.entries(report).every(([key,value])=>key==="display_instance_id"||typeof value==="number"||value===null||value==="run"));
   assert.doesNotMatch(view.reports[0].options.body,/polygons|bitmap|subject_id|image|jpeg|identity/);
   view.controller.stop();await settle();
   assert.equal(view.reports.length,2);assert.equal(view.reports[1].options.keepalive,true);

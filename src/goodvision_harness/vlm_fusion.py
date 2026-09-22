@@ -10,7 +10,43 @@ from threading import Event, Lock, Thread
 from .contracts import NormalizedBBox
 from .scene_evidence import InspectionRequest
 from .scene_runtime import TemporalInspection
-from .vlm_independent import unambiguous_matches
+
+
+def _overlap(a, b):
+    intersection = max(0.0, min(a.x2, b.x2) - max(a.x1, b.x1)) * max(
+        0.0, min(a.y2, b.y2) - max(a.y1, b.y1)
+    )
+    union = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - intersection
+    return intersection / union if union else 0.0
+
+
+def _unambiguous_matches(boxes, candidates):
+    """Bind one VLM observation to source-aligned tracking, never across reports."""
+    scores = {
+        key: {sid: _overlap(box, other) for sid, other in candidates.items()}
+        for key, box in boxes.items()
+    }
+
+    def winner(rows):
+        ranked = sorted(rows, reverse=True)
+        if (
+            ranked
+            and ranked[0][0] >= 0.5
+            and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 0.15)
+        ):
+            return ranked[0][1]
+        return None
+
+    matches = {}
+    for key, values in scores.items():
+        target = winner((value, sid) for sid, value in values.items())
+        if (
+            target is not None
+            and winner((values[target], other) for other, values in scores.items())
+            == key
+        ):
+            matches[key] = target
+    return matches
 
 
 class VLMFusion:
@@ -175,7 +211,7 @@ class VLMFusion:
                 for obj in report["objects"]
                 if obj["attributes"]["source_frame_sequence"] == sequence
             }
-            matches = unambiguous_matches(boxes, candidates)
+            matches = _unambiguous_matches(boxes, candidates)
             for observation in report["observations"]:
                 eid = observation["evidence_id"]
                 if eid in done or not observation["accepted"]:
@@ -213,13 +249,7 @@ class VLMFusion:
                         "request_id": report["request_id"],
                         "evidence_id": eid,
                         "event_label": observation["event_label"],
-                        "vlm_event_ids": [
-                            event["event_id"]
-                            for event in report["events"]
-                            if event["event_label"] == observation["event_label"]
-                            and set(event["subject_ids"])
-                            == set(observation["subject_ids"])
-                        ],
+                        "vlm_event_ids": [],
                         "scene_event_ids": [
                             event["event_id"]
                             for event in scene.scene.snapshot(include_history=False)[

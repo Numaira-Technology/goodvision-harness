@@ -152,6 +152,46 @@ def test_recreation_preserves_secrets_ports_networks_and_anonymous_models():
     }
 
 
+def test_realtime_release_migrates_old_flags_without_losing_credentials():
+    original = container(1)
+    original["Config"]["Env"] += ["LOCAL_CAMERA_TARGET_FPS=5", "SCENE_INDEPENDENT_VLM=false"]
+    value = replacement_config(original, "updated", continuous_playback_vlm=True)
+    environment = dict(item.split("=", 1) for item in value["Env"])
+    assert environment["LOCAL_CAMERA_TARGET_FPS"] == "15"
+    assert environment["SCENE_INDEPENDENT_VLM"] == "true"
+    assert environment["SCENE_ENGINE_MODE"] == "active"
+    assert environment["KEY"] == "keep-secret"
+    assert environment["HARNESS_FLEET_CAPACITY"] == "2"
+
+
+@pytest.fixture(scope="module")
+def update_package(tmp_path_factory):
+    output = tmp_path_factory.mktemp("harness-update-package") / "update.zip"
+    package(output, release="test")
+    return output
+
+
+def test_release_contains_independent_vlm_and_browser_runtime_but_no_local_data(
+    update_package,
+):
+    with zipfile.ZipFile(update_package) as archive:
+        manifest_path = next(
+            name for name in archive.namelist() if name.endswith("/manifest.json")
+        )
+        manifest = json.loads(archive.read(manifest_path))
+        paths = {item["path"] for item in manifest["files"]}
+    assert {
+        "payload/vlm_independent.py",
+        "payload/vlm_independent_model.py",
+        "payload/result_bus.py",
+        "payload/camera_display.js",
+        "payload/assets/opencv-4.13.0.js",
+    } <= paths
+    assert not any(
+        name.endswith((".sqlite3", ".pyc", ".mp4", ".onnx", ".env")) for name in paths
+    )
+
+
 def test_success_replaces_original_containers_without_retaining_backups(tmp_path):
     engine = FakeEngine()
     record = tmp_path / "state.json"
@@ -200,6 +240,61 @@ def test_temporary_helper_with_inherited_image_labels_is_excluded(tmp_path):
     assert len(engine.created) == 2
 
 
+@pytest.mark.parametrize("check_only", [True, False])
+def test_retained_old_backups_are_ignored_without_weakening_lane_checks(
+    tmp_path, check_only
+):
+    engine = FakeEngine()
+    backup = container(3)
+    backup["Name"] = "/harness-1-before-20260921-single-video1"
+    backup["Image"] = "older-backup-image"
+    backup["State"]["Running"] = False
+    engine.containers["old3"] = copy.deepcopy(backup)
+    upgrade(engine, MANIFEST, "updated", tmp_path / "state.json", check_only=check_only)
+    assert engine.containers["old3"] == backup
+    assert len(engine.created) == (0 if check_only else 2)
+
+
+@pytest.mark.parametrize("check_only", [True, False])
+def test_exact_selection_preserves_other_same_project_containers(tmp_path, check_only):
+    engine = FakeEngine()
+    unrelated = container(3)
+    unrelated["Image"] = "old-diagnostic-image"
+    engine.containers["old3"] = copy.deepcopy(unrelated)
+    upgrade(
+        engine,
+        MANIFEST,
+        "updated",
+        tmp_path / "state.json",
+        check_only=check_only,
+        container_names=["harness-1", "harness-2"],
+    )
+    assert engine.containers["old3"] == unrelated
+    assert len(engine.created) == (0 if check_only else 2)
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["harness-1", "missing-lane"],
+        ["harness-1", "harness-1"],
+        ["harness-1", "harness-2"],
+    ],
+)
+def test_exact_selection_rejects_missing_duplicate_or_mixed_lanes(tmp_path, names):
+    engine = FakeEngine()
+    engine.containers["old2"]["Image"] = "unrecognized-image"
+    with pytest.raises(RuntimeError):
+        upgrade(
+            engine,
+            MANIFEST,
+            "updated",
+            tmp_path / "state.json",
+            container_names=names,
+        )
+    assert not any(method != "GET" for method, _, _ in engine.calls)
+
+
 @pytest.mark.parametrize("base_id", WINDOWS_BASE_IDS)
 def test_shipped_windows_project_and_secondary_service_are_supported(tmp_path, base_id):
     engine = FakeEngine()
@@ -246,7 +341,7 @@ def windows_release(tmp_path):
     # here, including real checksums, without requiring a published image archive.
     metadata = {
         "RELEASE.json": {
-            "accepted_image_ids": [WINDOWS_BASE_IDS[0]],
+            "accepted_image_ids": list(WINDOWS_BASE_IDS),
             "image": {"file": "image.tar", "sha256": "original-archive-hash"},
         },
         "SOURCE_HASHES.json": {
@@ -297,12 +392,30 @@ def test_windows_release_rejects_tampered_metadata(windows_release, name):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows entry points")
-@pytest.mark.parametrize("entry", ["default", "explicit", "CHECK.cmd", "UPDATE.cmd"])
-def test_native_windows_entry_points(tmp_path, entry):
-    archive = tmp_path / "update.zip"
-    package(archive)
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "default",
+        "explicit",
+        "CHECK.cmd",
+        "UPDATE.cmd",
+        "CHECK-8080.cmd",
+        "UPDATE-8080.cmd",
+    ],
+)
+@pytest.mark.parametrize(
+    "base_id",
+    [
+        WINDOWS_BASE_IDS[2],
+        WINDOWS_BASE_IDS[3],
+        "sha256:" + "d" * 64,
+        "sha256:" + "e" * 64,
+        "sha256:" + "f" * 64,
+    ],
+)
+def test_native_windows_entry_points(tmp_path, entry, base_id, update_package):
     extracted = tmp_path / "package with spaces [test]"
-    with zipfile.ZipFile(archive) as z:
+    with zipfile.ZipFile(update_package) as z:
         z.extractall(extracted)
     bundle = next(extracted.iterdir())
     stub = tmp_path / "fake docker"
@@ -313,7 +426,11 @@ def test_native_windows_entry_points(tmp_path, entry):
     targets = []
     for i in (1, 2):
         target = container(i)
-        target["Image"] = WINDOWS_BASE_IDS[2]
+        if "8080" in entry:
+            target["Name"] = "/" + (
+                "goodvision-live-latest" if i == 1 else "goodvision-contour-camera-02"
+            )
+        target["Image"] = base_id
         target["Config"]["Labels"].update(
             {
                 "com.docker.compose.project": "goodvision-harness-deploy",
@@ -322,7 +439,41 @@ def test_native_windows_entry_points(tmp_path, entry):
             }
         )
         targets.append(target)
+    if "8080" in entry:
+        unrelated = copy.deepcopy(targets[0])
+        unrelated.update(Id="unrelated", Name="/old-diagnostic", Image="unsupported")
+        targets.append(unrelated)
     (stub / "containers.json").write_text(json.dumps(targets), encoding="utf-8")
+    (stub / "current-image.json").write_text(
+        json.dumps(
+            [
+                {
+                    "Id": base_id,
+                    "RootFS": {"Layers": ["original", "source-update"]},
+                    "Config": {
+                        "Labels": {"goodvision.ui.release": "20260921-cloud-health4"}
+                    },
+                }
+            ]
+        )
+    )
+    trusted_images = [
+        {
+            "Id": WINDOWS_BASE_IDS[0],
+            "RootFS": {"Layers": ["original"]},
+        }
+    ]
+    multiple_images = base_id in ("sha256:" + "e" * 64, "sha256:" + "f" * 64)
+    no_matching_base = base_id == "sha256:" + "f" * 64
+    if multiple_images:
+        # PS 5.1 returns the JSON array as one pipeline object. The matching
+        # image is deliberately second, after a different supported base.
+        trusted_images.insert(
+            0, {"Id": WINDOWS_BASE_IDS[1], "RootFS": {"Layers": ["unrelated"]}}
+        )
+    if no_matching_base:
+        trusted_images[1]["RootFS"]["Layers"] = ["also-unrelated"]
+    (stub / "trusted-image.json").write_text(json.dumps(trusted_images))
     (stub / "docker.cmd").write_text(
         r"""@echo off
 >>"%~dp0calls.log" echo %*
@@ -330,15 +481,25 @@ if "%~1"=="context" goto context
 if "%~1"=="info" (echo linux& exit /b 0)
 if "%~1"=="ps" (echo old1& echo old2& exit /b 0)
 if "%~1"=="inspect" (type "%~dp0containers.json"& exit /b 0)
-if "%~1"=="image" (echo BASE_ID& exit /b 0)
+if "%~1"=="image" goto image
 if "%~1"=="run" (echo runner ok& exit /b 0)
 if "%~1"=="build" exit /b 0
 if "%~1"=="tag" exit /b 0
 exit /b 91
+:image
+if "%~2"=="ls" (echo TRUSTED_ID& EXTRA_IMAGES exit /b 0)
+if "%~3"=="--format" (echo BASE_ID& exit /b 0)
+if "%~3"=="TRUSTED_ID" (type "%~dp0trusted-image.json"& exit /b 0)
+type "%~dp0current-image.json"
+exit /b 0
 :context
 echo [{"Name":"desktop-linux","Endpoints":{"docker":{"Host":"npipe://fixture"}}}]
 exit /b 0
-""".replace("BASE_ID", WINDOWS_BASE_IDS[2]),
+""".replace("BASE_ID", base_id)
+        .replace("TRUSTED_ID", WINDOWS_BASE_IDS[0])
+        .replace(
+            "EXTRA_IMAGES", f"echo {WINDOWS_BASE_IDS[1]}&" if multiple_images else ""
+        ),
         encoding="ascii",
     )
     environment = os.environ | {"PATH": str(stub) + os.pathsep + os.environ["PATH"]}
@@ -369,9 +530,25 @@ exit /b 0
         errors="replace",
         timeout=60,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
     calls = (stub / "calls.log").read_text(encoding="utf-8")
+    if no_matching_base:
+        assert result.returncode != 0
+        assert "base image" in result.stdout + result.stderr
+        assert not any(
+            line.startswith(("run ", "build ", "tag ")) for line in calls.splitlines()
+        )
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
     assert "runner ok" in result.stdout
     assert "--project goodvision-harness-deploy" in calls
     assert BASE_ID not in calls
-    assert ("build " in calls) == (entry == "UPDATE.cmd")
+    assert ("build " in calls) == entry.startswith("UPDATE")
+    if base_id not in MANIFEST["accepted_base_ids"]:
+        assert f"{WINDOWS_BASE_IDS[0]} /update/apply_update.py" in calls
+        assert (
+            f"--base-id {base_id} --verification-base-id {WINDOWS_BASE_IDS[0]}" in calls
+        )
+    if "8080" in entry:
+        assert (
+            "--containers goodvision-live-latest,goodvision-contour-camera-02" in calls
+        )

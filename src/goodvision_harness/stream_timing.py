@@ -16,12 +16,14 @@ class SourceCadence:
         self.pts_origin: float | None = None
         self.pts_offset = 0.0
         self.last_pts: float | None = None
+        self.last_pts_arrival: float | None = None
         self.last_timestamp = -self.period
         self.next_sample = 0.0
         self.discontinuities = 0
 
     def reconnect(self) -> None:
         self.pts_origin = self.last_pts = None
+        self.last_pts_arrival = None
 
     def select(self, now: float, pts: float | None) -> tuple[float, bool]:
         if self.origin is None:
@@ -29,14 +31,23 @@ class SourceCadence:
         arrival = now - self.origin
         valid_pts = pts is not None and math.isfinite(pts)
         if valid_pts:
-            if self.last_pts is not None and pts < self.last_pts - 1e-6:
-                self.pts_origin = None
-                self.discontinuities += 1
+            if self.last_pts is not None:
+                delta = pts - self.last_pts
+                elapsed = max(0.0, now - self.last_pts_arrival)
+                # RTP timestamp resets/wrap misinterpretations can jump by
+                # hours while only milliseconds pass on the receive clock.
+                # Rebase that discontinuity before it ages out scene evidence.
+                # Real receive outages keep their media gap; normal bursty
+                # delivery still samples on PTS rather than arrival cadence.
+                if delta < -1e-6 or delta > elapsed + 2.0:
+                    self.pts_origin = None
+                    self.discontinuities += 1
             if self.pts_origin is None:
                 self.pts_origin = pts
                 self.pts_offset = max(arrival, self.last_timestamp + self.period)
             timestamp = self.pts_offset + pts - self.pts_origin
             self.last_pts = pts
+            self.last_pts_arrival = now
         else:
             timestamp = max(arrival, self.last_timestamp)
         if timestamp <= self.last_timestamp + 1e-9:

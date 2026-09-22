@@ -231,6 +231,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
     health_path = "/health/video/session"
     native_sam_video_tracking = True
     append_metadata_fields = frozenset()
+    health_metadata_fields = frozenset()
     append_transport_retries = 0
     validate_limits = staticmethod(_limits)
 
@@ -301,7 +302,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                 deadline=time.monotonic() + min(self._timeout_seconds, 5),
             )
             _require(
-                set(value)
+                set(value) - self.health_metadata_fields
                 == {
                     "enabled",
                     "ready",

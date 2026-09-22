@@ -514,7 +514,10 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                             except Exception as exc:
                                 self._fail(self._generation, "skip", exc)
                                 continue
-                            if (self._realtime and self._flush and not self._pending
+                            # Reused workers also need to finish a run that
+                            # never received a frame, regardless of queue mode.
+                            # No native session exists to receive an EOF append.
+                            if (self._flush and not self._pending
                                     and self._preparing is None
                                     and self._prepared is None
                                     and self._stats["received_batches"] == 0):

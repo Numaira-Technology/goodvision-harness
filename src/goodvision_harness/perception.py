@@ -57,6 +57,10 @@ class PerceptionSessionHTTPClient(VideoSessionTrackingHTTPClient):
     """The route extension is explicit; legacy endpoints never accept it."""
 
     append_metadata_fields = frozenset({"route_metadata"})
+    # Cloud pools add diagnostics alongside the unchanged per-session contract.
+    health_metadata_fields = frozenset({
+        "model_instances", "max_gpu_operations", "max_active_sessions", "gpus",
+    })
     # The causal SAM route replays the last identical request without inference.
     # Legacy session clients retain their fail-closed, non-retrying behavior.
     append_transport_retries = 1

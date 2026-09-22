@@ -7,16 +7,16 @@ annotated video, and event video evidence. It has no runtime dependency on the
 original `goodvision` repository.
 
 本地 NVIDIA 部署**默认 1 路，使用 `--streams N` 按实际需要启动正整数路数**，
-12 路是容量参考值，不是软件上限。3、6、12、16 路示例见 [本地 GPU 部署说明](docs/local-gpu.md)。
+12 路是容量参考值，不是软件上限。3、6、12、16 路示例见 [本地 GPU 部署说明](docs/guides/local-gpu.md)。
 同一控制台可以分别连接和并排显示已部署的 N 路视频；连接只预览，分析通过“开始全部分析”
 和“停止全部分析”统一控制所有已连接的视频。停止分析后预览继续，各路都可展开详细控制，
 独立保存检测项目、敏感度并查看结果。分析运行和收尾期间锁定视频连接、各路设置与共享模型配置。
 人物追踪使用本机 GPU 或
 自备 GPU 服务器均可多路，大模型仍可用云端。受管云 GPU 已支持 N 路视频和 UI 修改租用型号、数量，
-通过 `python tools/start_cloud_gpu.py --streams N` 启动，详见[云 GPU 多路追踪](docs/cloud-gpu.md)。
+通过 `python tools/start_cloud_gpu.py --streams N` 启动，详见[云 GPU 多路追踪](docs/guides/cloud-gpu.md)。
 普通旧版外部单会话追踪服务保留兼容入口。
 主程序、人物追踪、大模型可以分别部署在不同机器，主程序无需显卡；控制台分别设置运行位置、
-服务器地址和追踪容量，见 [模块化部署说明](docs/modular-services.md)。
+服务器地址和追踪容量，见 [模块化部署说明](docs/guides/modular-services.md)。
 同机部署仍支持单卡共用、双卡将大模型与追踪及其他 GPU 工作分开。
 每路大模型分析目标沿用 1.25 次/秒，N 路共 1.25 × N
 请求/秒，默认追踪共 2 × N 帧/秒；12 路参考目标为 15 请求/秒。
@@ -65,9 +65,9 @@ mode keeps the existing per-frame workflow. In fleet deployments, connect each
 preview independently, then start or stop analysis for all connected cameras.
 
 - [Continuous scene operation and validation limits](docs/guides/continuous-scene.md)
-- [Local NVIDIA GPU deployment](docs/local-gpu.md)
-- [Separate application, tracking and model services](docs/modular-services.md)
-- [Multi-camera API](docs/multi-camera-api.md)
+- [Local NVIDIA GPU deployment](docs/guides/local-gpu.md)
+- [Separate application, tracking and model services](docs/guides/modular-services.md)
+- [Multi-camera API](docs/reference/multi-camera-api.md)
 
 ## Repository layout
 
@@ -79,8 +79,9 @@ preview independently, then start or stop analysis for all connected cameras.
 | `schemas/` | Versioned analysis and event contracts |
 | `tools/` | Deployment, diagnostics, benchmarking, and evaluation entrypoints |
 | `docs/guides/` | Runtime, configuration, deployment, and release guides |
+| `docs/reference/` | Specialized API reference documentation |
 | `docs/architecture/` | Design and implementation notes |
-| `docs/validation/` | Dated verification reports and curated aggregate results |
+| `docs/validation/` | Maintained validation conclusions, open acceptance gaps and essential evidence |
 | `docs/internal/` | Internal reference material |
 | Root `compose*.yaml`, `Dockerfile*`, and config examples | Stable build and deployment entrypoints |
 
