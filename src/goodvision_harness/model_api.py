@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 from urllib.error import HTTPError, URLError
@@ -340,8 +341,19 @@ class ModelAPIClient:
 class PooledModelAPIClient(ModelAPIClient):
     """Shared, thread-safe verified HTTPS pool for route probes and live runs."""
 
-    def __init__(self, settings: ModelAPISettings, *, api_key: str | None = None):
+    def __init__(
+        self,
+        settings: ModelAPISettings,
+        *,
+        api_key: str | None = None,
+        timing_sink: Callable[[Mapping[str, Any]], None] | None = None,
+        trace_transport: bool = False,
+    ):
         super().__init__(settings, api_key=api_key)
+        self._timing_sink = timing_sink
+        self._trace_transport = trace_transport
+        self._sequence_lock = threading.Lock()
+        self._request_sequence = 0
         self._http = httpx.Client(
             http2=False, follow_redirects=False,
             limits=httpx.Limits(
@@ -353,14 +365,374 @@ class PooledModelAPIClient(ModelAPIClient):
     def close(self) -> None:
         self._http.close()
 
-    def _post_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _next_request_sequence(self) -> int:
+        with self._sequence_lock:
+            sequence = self._request_sequence
+            self._request_sequence += 1
+            return sequence
+
+    def _emit_timing(self, timing: Mapping[str, Any]) -> None:
+        if self._timing_sink is None:
+            return
+        try:
+            self._timing_sink(dict(timing))
+        except Exception:
+            # Diagnostics must never turn a successful request into a failure.
+            pass
+
+    def _start_timing(
+        self,
+        request_sequence: int,
+        attempt: int,
+        *,
+        streaming: bool,
+    ) -> tuple[float, dict[str, Any], Callable[[str, dict[str, Any]], None]]:
+        started = time.perf_counter()
+        timing: dict[str, Any] = {
+            "type": "model_transport_timing",
+            "request_sequence": request_sequence,
+            "attempt": attempt + 1,
+            "outcome": "error",
+            "streaming": streaming,
+            "trace_enabled": self._trace_transport,
+            "trace_events_observed": False,
+            "tcp_connect_attempt_count": 0,
+            "tcp_connect_count": 0,
+            "tcp_connect_failure_count": 0,
+        }
+        phase_starts: dict[str, float] = {}
+        phases = {
+            "connect_tcp": "connect_tcp_seconds",
+            "start_tls": "tls_seconds",
+            "send_request_headers": "request_headers_seconds",
+            "send_request_body": "request_body_seconds",
+            "receive_response_headers": "wait_response_headers_seconds",
+            "receive_response_body": "response_body_seconds",
+        }
+
+        def trace(name: str, _info: dict[str, Any]) -> None:
+            # Trace metadata can contain URLs and headers. Retain only fixed
+            # phase names and durations, never the provider-supplied info.
+            parts = name.split(".")
+            if (
+                len(parts) != 3
+                or parts[0] not in {"connection", "proxy", "http11", "http2"}
+                or parts[1] not in phases
+                or parts[2] not in {"started", "complete", "failed"}
+            ):
+                return
+            timing["trace_events_observed"] = True
+            identity = ".".join(parts[:2])
+            now = time.perf_counter()
+            if parts[2] == "started":
+                phase_starts[identity] = now
+                if parts[1] == "connect_tcp":
+                    timing["tcp_connect_attempt_count"] += 1
+                return
+            phase_started = phase_starts.pop(identity, None)
+            if phase_started is not None:
+                metric = phases[parts[1]]
+                timing[metric] = round(
+                    timing.get(metric, 0.0) + now - phase_started, 6,
+                )
+            if parts[1:] == ["connect_tcp", "complete"]:
+                timing["tcp_connect_count"] += 1
+            elif parts[1:] == ["connect_tcp", "failed"]:
+                timing["tcp_connect_failure_count"] += 1
+
+        return started, timing, trace
+
+    def _finish_timing(
+        self,
+        timing: dict[str, Any],
+        started: float,
+        outcome: str,
+    ) -> None:
+        timing["outcome"] = outcome
+        timing["total_seconds"] = round(time.perf_counter() - started, 6)
+        timing["connection_reused"] = (
+            timing["tcp_connect_attempt_count"] == 0
+            if timing["trace_events_observed"] else None
+        )
+        self._emit_timing(timing)
+
+    @staticmethod
+    def _response_metadata(
+        response: httpx.Response,
+        timing: dict[str, Any],
+    ) -> None:
+        version = response.extensions.get("http_version")
+        if version in (b"HTTP/1.0", b"HTTP/1.1", b"HTTP/2", b"HTTP/3"):
+            timing["http_version"] = version.decode("ascii")
+        timing["http_status"] = response.status_code
+
+    @staticmethod
+    def _sse_data(response: httpx.Response) -> Iterator[str]:
+        data: list[str] = []
+        for line in response.iter_lines():
+            if not line:
+                if data:
+                    yield "\n".join(data)
+                    data.clear()
+            elif line.startswith("data:"):
+                data.append(line[5:].removeprefix(" "))
+        if data:
+            yield "\n".join(data)
+
+    def chat_completion_stream(
+        self,
+        *,
+        model: str,
+        messages: Sequence[Mapping[str, Any]],
+        on_content: Callable[[str, float], bool] | None = None,
+        **parameters: Any,
+    ) -> dict[str, Any]:
+        """Complete one SSE response while exposing a validated text prefix."""
+
+        if not model.strip():
+            raise ValueError("model must not be empty")
+        if not messages:
+            raise ValueError("messages must not be empty")
+        if {"model", "messages", "stream", "stream_options"} & parameters.keys():
+            raise ValueError("stream parameters override a fixed field")
+        payload = {
+            key: value for key, value in parameters.items() if value is not None
+        }
+        payload.update({
+            "model": model,
+            "messages": list(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        })
+        return self._post_stream(payload, on_content=on_content)
+
+    def _post_stream(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        on_content: Callable[[str, float], bool] | None,
+    ) -> dict[str, Any]:
+        request_sequence = self._next_request_sequence()
         for attempt in range(self.settings.max_retries + 1):
+            started, timing, trace = self._start_timing(
+                request_sequence, attempt, streaming=True,
+            )
+            content = ""
+            finish_reason: str | None = None
+            usage: dict[str, Any] = {}
+            done = False
+            preliminary_emitted = False
+            chunk_count = 0
+            try:
+                with self._http.stream(
+                    "POST",
+                    self.settings.endpoint,
+                    headers=model_request_headers(
+                        self.settings, self._api_key, accept="text/event-stream",
+                    ),
+                    json=payload,
+                    timeout=self.settings.timeout_seconds,
+                    extensions={"trace": trace} if self._trace_transport else None,
+                ) as response:
+                    self._response_metadata(response, timing)
+                    timing["response_headers_seconds"] = round(
+                        time.perf_counter() - started, 6,
+                    )
+                    if not 200 <= response.status_code < 300:
+                        response.read()
+                        timing["response_bytes"] = len(response.content)
+                        self._finish_timing(timing, started, "http_error")
+                        if (
+                            response.status_code in self._RETRYABLE_STATUSES
+                            and attempt < self.settings.max_retries
+                        ):
+                            self._sleep_before_retry(
+                                attempt, response.headers.get("Retry-After"),
+                            )
+                            continue
+                        raise ModelAPIError(
+                            f"model API returned HTTP {response.status_code}",
+                            code="http_error",
+                            status_code=response.status_code,
+                        )
+                    media_type = response.headers.get("content-type", "").split(
+                        ";", 1,
+                    )[0].strip().lower()
+                    if media_type != "text/event-stream":
+                        response.read()
+                        timing["response_bytes"] = len(response.content)
+                        self._finish_timing(timing, started, "invalid_response")
+                        raise ModelAPIError(
+                            "model stream returned an invalid content type",
+                            code="invalid_response",
+                        )
+                    for data in self._sse_data(response):
+                        if not data.strip():
+                            continue
+                        if done:
+                            self._finish_timing(
+                                timing, started, "invalid_response",
+                            )
+                            raise ModelAPIError(
+                                "model stream contains data after DONE",
+                                code="invalid_response",
+                            )
+                        if data.strip() == "[DONE]":
+                            done = True
+                            timing["complete_seconds"] = round(
+                                time.perf_counter() - started, 6,
+                            )
+                            continue
+                        chunk_count += 1
+                        try:
+                            chunk = json.loads(data)
+                        except (TypeError, ValueError):
+                            self._finish_timing(
+                                timing, started, "invalid_response",
+                            )
+                            raise ModelAPIError(
+                                "model stream contains invalid JSON",
+                                code="invalid_response",
+                            ) from None
+                        if not isinstance(chunk, Mapping) or "error" in chunk:
+                            self._finish_timing(
+                                timing, started, "invalid_response",
+                            )
+                            raise ModelAPIError(
+                                "model stream contains an invalid chunk",
+                                code="invalid_response",
+                            )
+                        raw_usage = chunk.get("usage")
+                        if isinstance(raw_usage, Mapping):
+                            for key in (
+                                "prompt_tokens", "completion_tokens", "total_tokens",
+                            ):
+                                value = raw_usage.get(key)
+                                if (
+                                    isinstance(value, int)
+                                    and not isinstance(value, bool)
+                                    and value >= 0
+                                ):
+                                    usage[key] = value
+                        choices = chunk.get("choices", [])
+                        if not isinstance(choices, list):
+                            self._finish_timing(
+                                timing, started, "invalid_response",
+                            )
+                            raise ModelAPIError(
+                                "model stream contains invalid choices",
+                                code="invalid_response",
+                            )
+                        for choice in choices:
+                            if not isinstance(choice, Mapping):
+                                continue
+                            if choice.get("index", 0) != 0:
+                                continue
+                            delta = choice.get("delta", {})
+                            if not isinstance(delta, Mapping):
+                                continue
+                            token = delta.get("content")
+                            if token is not None and not isinstance(token, str):
+                                self._finish_timing(
+                                    timing, started, "invalid_response",
+                                )
+                                raise ModelAPIError(
+                                    "model stream contains invalid content",
+                                    code="invalid_response",
+                                )
+                            if token:
+                                elapsed = round(time.perf_counter() - started, 6)
+                                timing.setdefault(
+                                    "first_content_token_seconds", elapsed,
+                                )
+                                timing["last_content_token_seconds"] = elapsed
+                                content += token
+                                if on_content is not None and not preliminary_emitted:
+                                    try:
+                                        preliminary_emitted = bool(
+                                            on_content(content, elapsed)
+                                        )
+                                    except Exception:
+                                        # Optional early delivery must not corrupt
+                                        # the authoritative final classification.
+                                        on_content = None
+                                    if preliminary_emitted:
+                                        timing["preliminary_decision_seconds"] = elapsed
+                            finish = choice.get("finish_reason")
+                            if finish is not None:
+                                if not isinstance(finish, str):
+                                    self._finish_timing(
+                                        timing, started, "invalid_response",
+                                    )
+                                    raise ModelAPIError(
+                                        "model stream has invalid finish reason",
+                                        code="invalid_response",
+                                    )
+                                finish_reason = finish
+                                timing["finish_reason_seconds"] = round(
+                                    time.perf_counter() - started, 6,
+                                )
+                    timing["response_eof_seconds"] = round(
+                        time.perf_counter() - started, 6,
+                    )
+            except httpx.RequestError as exc:
+                outcome = (
+                    "timeout" if isinstance(exc, httpx.TimeoutException)
+                    else "connection"
+                )
+                self._finish_timing(timing, started, outcome)
+                if (
+                    not preliminary_emitted
+                    and attempt < self.settings.max_retries
+                ):
+                    self._sleep_before_retry(attempt, None)
+                    continue
+                raise ModelAPIError(
+                    "model API request failed", code=outcome,
+                ) from exc
+            if not done or finish_reason != "stop" or not content.strip():
+                self._finish_timing(timing, started, "invalid_response")
+                raise ModelAPIError(
+                    "model stream did not finish normally",
+                    code="invalid_response",
+                )
+            timing["stream_chunk_count"] = chunk_count
+            timing["response_chars"] = len(content)
+            first = timing.get("first_content_token_seconds")
+            last = timing.get("last_content_token_seconds")
+            if isinstance(first, float) and isinstance(last, float):
+                timing["generation_seconds"] = round(last - first, 6)
+            self._finish_timing(timing, started, "completed")
+            return {
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": finish_reason,
+                }],
+                "usage": usage,
+            }
+        raise AssertionError("retry loop terminated unexpectedly")
+
+    def _post_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        request_sequence = self._next_request_sequence()
+        for attempt in range(self.settings.max_retries + 1):
+            started, timing, trace = self._start_timing(
+                request_sequence, attempt, streaming=False,
+            )
+
+            response = None
             try:
                 response = self._http.post(
                     self.settings.endpoint, headers=self._headers(), json=payload,
                     timeout=self.settings.timeout_seconds,
+                    extensions={"trace": trace} if self._trace_transport else None,
                 )
             except httpx.RequestError as exc:
+                outcome = (
+                    "timeout" if isinstance(exc, httpx.TimeoutException)
+                    else "connection"
+                )
+                self._finish_timing(timing, started, outcome)
                 if attempt < self.settings.max_retries:
                     self._sleep_before_retry(attempt, None)
                     continue
@@ -371,7 +743,10 @@ class PooledModelAPIClient(ModelAPIClient):
                         else "connection"
                     ),
                 ) from exc
+            self._response_metadata(response, timing)
+            timing["response_bytes"] = len(response.content)
             if not 200 <= response.status_code < 300:
+                self._finish_timing(timing, started, "http_error")
                 if (response.status_code in self._RETRYABLE_STATUSES
                         and attempt < self.settings.max_retries):
                     self._sleep_before_retry(
@@ -383,18 +758,29 @@ class PooledModelAPIClient(ModelAPIClient):
                     code="http_error", status_code=response.status_code,
                 )
             if not response.content.strip():
+                self._finish_timing(timing, started, "empty_response")
                 raise ModelAPIError(
                     "model API returned an empty response", code="empty_response"
                 )
+            parse_started = time.perf_counter()
             try:
                 decoded = response.json()
             except (ValueError, UnicodeDecodeError) as exc:
+                timing["response_json_decode_seconds"] = round(
+                    time.perf_counter() - parse_started, 6,
+                )
+                self._finish_timing(timing, started, "invalid_response")
                 raise ModelAPIError(
                     "model API returned invalid JSON", code="invalid_response"
                 ) from exc
+            timing["response_json_decode_seconds"] = round(
+                time.perf_counter() - parse_started, 6,
+            )
             if not isinstance(decoded, dict):
+                self._finish_timing(timing, started, "invalid_response")
                 raise ModelAPIError(
                     "model API returned an invalid response", code="invalid_response"
                 )
+            self._finish_timing(timing, started, "completed")
             return decoded
         raise AssertionError("retry loop terminated unexpectedly")

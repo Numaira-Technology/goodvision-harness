@@ -27,6 +27,7 @@ from goodvision_harness.model_api import (
     api_key_present,
     environment_api_key,
 )
+from goodvision_harness.pipeline import _parse_args, _with_openrouter_sort
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -228,6 +229,33 @@ def test_neutral_key_names_can_use_selected_provider_key(
         assert environment_api_key(settings) == "provider-key"
 
 
+def test_cli_openrouter_sort_is_explicit_and_removes_nitro_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "openrouter")
+    config = load_config(ROOT / "config.yaml")
+    assert config.inference.model.endswith(":nitro")
+
+    latency = _with_openrouter_sort(config, "latency")
+    assert latency.inference.model == config.inference.model.removesuffix(":nitro")
+    assert latency.inference.request_parameters["provider"] == {
+        "sort": "latency",
+        "allow_fallbacks": True,
+        "ignore": ["coreweave", "novita"],
+    }
+    throughput = _with_openrouter_sort(config, "throughput")
+    assert throughput.inference.model == config.inference.model.removesuffix(":nitro")
+    assert throughput.inference.request_parameters["provider"]["sort"] == (
+        "throughput"
+    )
+    assert _with_openrouter_sort(config, "configured") is config
+
+
+def test_cli_transport_timing_is_opt_in() -> None:
+    assert _parse_args([]).transport_timing is False
+    assert _parse_args(["--transport-timing"]).transport_timing is True
+
+
 def test_environment_model_and_endpoint_overrides_reach_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -258,7 +286,7 @@ def test_invalid_provider_is_rejected_before_client_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("INFERENCE_PROVIDER", "unrecognized-route")
-    with pytest.raises(ValueError, match="inference_service.provider"):
+    with pytest.raises(ValueError, match=r"inference_service\.provider"):
         load_config(ROOT / "config.yaml")
 
 

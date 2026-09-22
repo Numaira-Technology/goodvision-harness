@@ -187,7 +187,9 @@ def _jpeg(width: int = 200, height: int = 100) -> bytes:
     return encoded.tobytes()
 
 
-def test_harness_defaults_and_high_recall_prompt() -> None:
+def test_harness_defaults_and_high_recall_prompt(monkeypatch) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    monkeypatch.setenv("INFERENCE_MODEL", "")
     config = load_config(ROOT / "config.yaml")
 
     assert config.default_video is None

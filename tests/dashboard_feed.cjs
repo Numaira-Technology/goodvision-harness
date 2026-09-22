@@ -3,13 +3,19 @@ const vm=require("node:vm");
 const {test}=require("node:test");
 const {html, script} = require("./helpers/dashboard.cjs");
 
-function player(){
+function player({browserCamera=false}={}){
   let now=0,id=0;
+  let networkStarts=0;
   const timers=new Map(),requests=[],revoked=[],rawFeed={dataset:{},removeAttribute(name){delete this[name]}};
+  const state={running:true,sessionId:"one",info:{annotated_output:{output_fps:15}}};
+  if(browserCamera)Object.assign(state,{mode:"camera",sessionMode:"stream",cameraStream:{}});
   const context=vm.createContext({
-    state:{running:true,sessionId:"one",info:{annotated_output:{output_fps:15}}},
+    state,
     ui:{rawFeed},document:{hidden:false},performance:{now:()=>now},AbortController,
     networkVideoDisplay:null,
+    GoodvisionCameraDisplay:browserCamera?{NetworkController:class{
+      static supported(){return true} constructor(){networkStarts++} start(){networkStarts++} stop(){}
+    }}:undefined,
     Image:class{async decode(){}},
     URL:{createObjectURL:blob=>"blob:"+blob.sequence,revokeObjectURL:url=>revoked.push(url)},
     setTimeout:(callback,delay)=>{timers.set(++id,{callback,at:now+delay});return id},
@@ -22,7 +28,7 @@ function player(){
   vm.runInContext(script.slice(script.indexOf("const latestFeed="),script.indexOf("function settingsSourceLabel"))+`
     globalThis.player={openFeed,closeFeed};
   `,context);
-  return {context,requests,revoked,rawFeed,timers,...context.player,
+  return {context,requests,revoked,rawFeed,timers,...context.player,networkStarts:()=>networkStarts,
     elapse:ms=>{now+=ms},
     tick:()=>{
       const [key,timer]=[...timers.entries()].sort((a,b)=>a[1].at-b[1].at)[0];
@@ -70,6 +76,12 @@ test("unavailable frames retry without leaving concurrent requests or URLs",asyn
   assert.equal(view.timers.size,1);view.tick();assert.equal(view.requests.length,2);
   view.respond(view.requests[1],5);await settle();assert.equal(view.rawFeed.src,"blob:5");
   view.closeFeed();assert.deepEqual(view.revoked,["blob:5"])
+});
+
+test("a browser camera never enters the server-owned network display transport",()=>{
+  const view=player({browserCamera:true});view.openFeed();
+  assert.equal(view.networkStarts(),0);assert.equal(view.requests.length,1);
+  assert.equal(view.requests[0].url,"/v1/video/annotated/latest.jpg");view.closeFeed()
 });
 
 function cameraSender(){

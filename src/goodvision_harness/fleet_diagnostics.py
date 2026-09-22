@@ -46,8 +46,42 @@ globalThis.GoodvisionFleet={detailHidden:()=>false,extraBusy:()=>false};
     return page
 
 
+def local_camera_document() -> str:
+    """Render the single-runtime console with browser-camera controls enabled."""
+    page = Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
+    page = page.replace(
+        '<div id="fleet-detail-console" hidden>', '<div id="fleet-detail-console">'
+    )
+    page = page.replace('<script src="/assets/fleet_console.js"></script>', "")
+    page = page.replace(
+        'mode("stream");info().finally(loadDeploymentSettings);',
+        'mode("camera");info().finally(loadDeploymentSettings);',
+    )
+    setup = """
+<style>
+#fleet-panel{display:none!important}
+</style>
+"""
+    page = page.replace("</head>", setup + "</head>")
+    page = page.replace(
+        "本机摄像头 / 诊断 · 网络视频请使用上方各路卡片设置，"
+        "并通过顶部统一开始、停止分析。此处保留浏览器摄像头和服务诊断。",
+        "Mac 本机摄像头检测 · 启用摄像头后，选择检测项目并开始分析。",
+    )
+    return page
+
+
 def install_diagnostic_routes(application, controller, json_body):
     prefix = "/v1/fleet/cameras/{camera_id}"
+
+    @application.get(
+        "/local-camera", response_class=HTMLResponse, include_in_schema=False
+    )
+    async def local_camera():
+        return HTMLResponse(
+            local_camera_document(),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @application.get(
         prefix + "/diagnostics", response_class=HTMLResponse, include_in_schema=False

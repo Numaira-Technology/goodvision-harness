@@ -10,6 +10,7 @@ import yaml
 
 import goodvision_harness.config as config_module
 import goodvision_harness.model_api as model_api_module
+import goodvision_harness.service as service_module
 from goodvision_harness.config import load_config
 from goodvision_harness.grounding import (
     SAFETY_EVENT_LABELS,
@@ -250,6 +251,38 @@ def test_customer_console_credential_survives_restart_without_reusing_old_key(
         }]})
 
     monkeypatch.setattr(model_api_module, "urlopen", capture)
+
+    class RecordingPool(ModelAPIClient):
+        def chat_completion_stream(self, **payload):
+            on_content = payload.pop("on_content")
+            decisions = [{
+                "event_label": "smoking", "detected": False, "confidence": 0.9,
+            }]
+            on_content(json.dumps({"decisions": decisions})[:-1] + ",", 0.1)
+            request_payload = {
+                key: value
+                for key, value in payload.items()
+                if key != "stream_decisions"
+            }
+            calls.append(Request(
+                self.settings.endpoint,
+                data=json.dumps(request_payload).encode(),
+                headers=self._headers(),
+                method="POST",
+            ))
+            return {
+                "choices": [{"message": {"content": json.dumps({"events": [{
+                    "event_label": "smoking", "detected": False,
+                    "confidence": 0.9,
+                    "description": "未发现异常事件。 / No visible event.",
+                    "objects": [],
+                }]})}}],
+            }
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(service_module, "PooledModelAPIClient", RecordingPool)
     runtime = HarnessRuntime.from_environment()
     with TestClient(create_app(lambda: runtime)) as client:
         initial = client.get("/v1/deployment/settings")
