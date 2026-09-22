@@ -31,6 +31,7 @@ from .vlm_independent_model import IndependentVLMInspector
 MAX_FRAME_BYTES = 4 * 1024**2
 INPUT_CAPACITY = 8
 OUTPUT_CAPACITY = 16
+REORDER_CAPACITY = 32
 
 
 def utc_now():
@@ -249,7 +250,10 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
     state = IndependentEventState(config)
     stats = Counter()
     history = deque(maxlen=12)
-    pending = OrderedDict()
+    inflight = OrderedDict()
+    ready = {}
+    pending_report = None
+    next_dispatch_order = next_publish_order = 0
     thread_state, clients = local(), []
     last_sequence, last_endpoint, next_due = -1, -1, -math.inf
     last_status = 0.0
@@ -258,7 +262,8 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
         max_workers=config.max_in_flight, thread_name_prefix="vlm-model"
     )
 
-    def emit(item):
+    def emit_status(item):
+        # Status snapshots are replaceable; completed reports must be retried.
         try:
             outgoing.put_nowait(item)
         except Full:
@@ -317,8 +322,19 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
             },
         )
 
+    def metrics():
+        active = len(inflight) + len(ready)
+        return {
+            **stats,
+            "active_requests": active,
+            "inflight_requests": len(inflight),
+            "pending_requests": len(ready),
+            "reorder_capacity": REORDER_CAPACITY,
+            "reorder_buffer_full": active >= REORDER_CAPACITY,
+        }
+
     try:
-        emit(
+        emit_status(
             {
                 "kind": "status",
                 "state": "running",
@@ -359,47 +375,68 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                     or sum(len(x.frame.jpeg_bytes) for x in history) > 16 * 1024**2
                 ):
                     history.popleft()
-            while pending:
-                key, (job, sample, future, dispatched) = next(iter(pending.items()))
+
+            # A completed future no longer consumes model-call capacity. Results
+            # wait in a separately bounded buffer until every earlier request is
+            # available for source-ordered publication.
+            for order, (job, sample, future, dispatched) in tuple(inflight.items()):
                 if not future.done():
+                    continue
+                inflight.pop(order)
+                ready[order] = (job, sample, future.result(), dispatched)
+
+            while not stop.is_set() and next_publish_order in ready:
+                if pending_report is None:
+                    job, sample, result, dispatched = ready[next_publish_order]
+                    verdicts, error, timing = result
+                    now = time.monotonic()
+                    timing.update(
+                        dispatch_wait_seconds=timing["request_started_monotonic"]
+                        - dispatched,
+                        source_to_request_seconds=timing["request_started_monotonic"]
+                        - sample.received_monotonic,
+                        reorder_wait_seconds=max(
+                            0.0,
+                            now
+                            - timing["request_started_monotonic"]
+                            - timing["model_seconds"],
+                        ),
+                    )
+                    pending_report = state.report(
+                        job, sample, verdicts, timing, error=error,
+                    )
+                    stats["failed_requests" if error else "succeeded_requests"] += 1
+                    if not error and not pending_report["analysis_complete"]:
+                        stats["incomplete_reports"] += 1
+                    if not error and not verdicts:
+                        stats["empty_reports"] += 1
+                    stats["ungrounded_verdicts"] += sum(
+                        not item["grounded"] for item in pending_report["observations"]
+                    )
+                    if verdicts and not pending_report["localization_complete"]:
+                        stats["unlocalized_reports"] += 1
+                    if any(
+                        "invalid_subject_bbox" in v.grounding_issues for v in verdicts
+                    ):
+                        stats["invalid_bbox_reports"] += 1
+                pending_report["process_metrics"] = metrics()
+                try:
+                    outgoing.put_nowait({"kind": "report", "report": pending_report})
+                except Full:
+                    # Keep both the result and its prepared report until admitted.
+                    # Resume the scheduler so input, inference and stop still progress.
+                    stats["output_backpressure"] += 1
                     break
-                pending.pop(key)
-                verdicts, error, timing = future.result()
-                now = time.monotonic()
-                timing.update(
-                    dispatch_wait_seconds=timing["request_started_monotonic"]
-                    - dispatched,
-                    source_to_request_seconds=timing["request_started_monotonic"]
-                    - sample.received_monotonic,
-                    reorder_wait_seconds=max(
-                        0.0,
-                        now
-                        - timing["request_started_monotonic"]
-                        - timing["model_seconds"],
-                    ),
-                )
-                report = state.report(job, sample, verdicts, timing, error=error)
-                stats["failed_requests" if error else "succeeded_requests"] += 1
-                if not error and not report["analysis_complete"]:
-                    stats["incomplete_reports"] += 1
-                if not error and not verdicts:
-                    stats["empty_reports"] += 1
-                stats["ungrounded_verdicts"] += sum(
-                    not item["grounded"] for item in report["observations"]
-                )
-                if verdicts and not report["localization_complete"]:
-                    stats["unlocalized_reports"] += 1
-                if any("invalid_subject_bbox" in v.grounding_issues for v in verdicts):
-                    stats["invalid_bbox_reports"] += 1
-                inflight = sum(not item[2].done() for item in pending.values())
-                report["process_metrics"] = {
-                    **stats,
-                    "active_requests": len(pending),
-                    "inflight_requests": inflight,
-                    "pending_requests": len(pending) - inflight,
-                }
-                emit({"kind": "report", "report": report})
-            if history and len(pending) < config.max_in_flight:
+                ready.pop(next_publish_order)
+                next_publish_order += 1
+                pending_report = None
+
+            active_requests = len(inflight) + len(ready)
+            if (
+                history
+                and len(inflight) < config.max_in_flight
+                and active_requests < REORDER_CAPACITY
+            ):
                 sample = history[-1]
                 frame = sample.frame
                 window = tuple(x.frame for x in list(history)[-4:])
@@ -428,7 +465,9 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                         evidence_after_frame_sequence=last_endpoint,
                     )
                     dispatched = time.monotonic()
-                    pending[request.request_id] = (
+                    order = next_dispatch_order
+                    next_dispatch_order += 1
+                    inflight[order] = (
                         job,
                         sample,
                         executor.submit(evaluate, job),
@@ -438,22 +477,15 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                     next_due = frame.timestamp_seconds + 1.0 / config.observation_fps
                     stats["claimed_requests"] += 1
             if time.monotonic() - last_status >= 1.0:
-                emit(
+                emit_status(
                     {
                         "kind": "status",
                         "state": "drained"
-                        if source_finished and not pending
+                        if source_finished and not inflight and not ready
                         else "running",
                         "pid": os.getpid(),
                         "stats": {
-                            **stats,
-                            "active_requests": len(pending),
-                            "inflight_requests": sum(
-                                not item[2].done() for item in pending.values()
-                            ),
-                            "pending_requests": sum(
-                                item[2].done() for item in pending.values()
-                            ),
+                            **metrics(),
                             "retained_frames": len(history),
                             "retained_bytes": sum(
                                 len(x.frame.jpeg_bytes) for x in history
@@ -463,7 +495,7 @@ def run_vlm_process(config, incoming, outgoing, stop, inspector_factory=_inspect
                 )
                 last_status = time.monotonic()
     except Exception:
-        emit(
+        emit_status(
             {
                 "kind": "status",
                 "state": "failed",
@@ -768,6 +800,7 @@ class IndependentVLMBranch:
                 "inflight_requests": self._status.get("inflight_requests", 0),
                 "input_capacity": INPUT_CAPACITY,
                 "output_capacity": OUTPUT_CAPACITY,
+                "reorder_capacity": REORDER_CAPACITY,
                 "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
                 "observation_fps": self.config.observation_fps,
             }

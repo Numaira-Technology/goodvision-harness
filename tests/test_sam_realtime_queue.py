@@ -66,7 +66,9 @@ def test_overload_replaces_only_unsent_frames_and_preserves_one_epoch(tmp_path):
         assert coordinator._spool.load(0, [3])[0].jpeg_bytes == b"jpeg"
         server.release.set()
         coordinator.flush()
-        assert coordinator.wait_until_idle(4)
+        # Allow HTTP completion and durable journal writes on shared runners;
+        # replacement counts, exact output and the epoch are asserted below.
+        assert coordinator.wait_until_idle(10), coordinator.stats()
         assert output_sequences(received) == [3, 57, 60]
         assert server.creates == ["camera"]
         assert {batch.predictor_epoch for batch in received} == {"epoch-1"}
