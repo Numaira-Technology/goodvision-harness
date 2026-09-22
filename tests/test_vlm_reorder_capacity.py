@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import time
 from pathlib import Path
-from threading import Lock
 
 from PIL import Image
 
@@ -50,16 +49,11 @@ def verdicts():
 
 
 class HeadOfLineInspector:
-    """Keep the first request slow while every later request completes quickly."""
+    """Keep the earliest source request slow and later requests fast."""
 
-    _lock = Lock()
-    _calls = 0
-
-    def inspect(self, _inspection):
-        with type(self)._lock:
-            type(self)._calls += 1
-            call = type(self)._calls
-        time.sleep(2.5 if call == 1 else 0.02)
+    def inspect(self, inspection):
+        endpoint = inspection.frames[-1].timestamp_seconds
+        time.sleep(2.5 if endpoint < 1.5 else 0.02)
         return verdicts()
 
     def close(self):
@@ -85,7 +79,7 @@ def test_completed_results_release_capacity_but_publication_stays_ordered():
         await_condition(lambda: branch.stats()["state"] == "running")
         for sequence in range(0, 97, 6):
             branch.offer(jpeg(), sequence / 15.0, sequence)
-            time.sleep(0.04)
+            time.sleep(0.08)
 
         # The slow first request still prevents public delivery, but completed
         # later requests must free model-call capacity for additional work. The
