@@ -174,6 +174,14 @@ they share a window; when one is full, only that lane skips it. A newly availabl
 lane takes the latest window without replaying skipped work. `SCENE_MAX_IN_FLIGHT=4`
 permits four requests per lane, eight total.
 
+Completed calls release their inference slots immediately, even while an earlier
+grounding request or the output queue delays publication. Each lane retains at
+most 32 in-flight plus completed requests. A full output queue retries the same
+report without rebuilding its ID or counting it again; status snapshots remain
+replaceable. `reorder_capacity` reports the total bound (64 in parallel mode),
+`reorder_capacity_per_lane` is 32, and `lanes` exposes each lane's counts. Report
+`sequence` follows actual publication across both lanes.
+
 The information lane uses the smaller of the configured HTTP timeout and five
 seconds. Completed information reports publish immediately; a late result older
 than the last published source sequence is discarded. A non-superseded timeout

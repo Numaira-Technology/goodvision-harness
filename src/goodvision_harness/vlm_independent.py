@@ -31,6 +31,7 @@ from .vlm_independent_model import IndependentVLMInspector
 MAX_FRAME_BYTES = 4 * 1024**2
 INPUT_CAPACITY = 8
 OUTPUT_CAPACITY = 16
+REORDER_CAPACITY = 32  # Per lane, including in-flight and completed requests.
 INFORMATION_HTTP_DEADLINE_SECONDS = 5.0
 
 
@@ -285,6 +286,10 @@ def run_vlm_process(
         else (config.output_mode,)
     )
     queues = {lane: OrderedDict() for lane in lanes}
+    ready = {lane: {} for lane in lanes}
+    next_dispatch_order = {lane: 0 for lane in lanes}
+    next_publish_order = {lane: 0 for lane in lanes}
+    next_report_sequence = 1
     last_published = {lane: -1 for lane in lanes}
     last_lane_endpoint = {lane: -1 for lane in lanes}
     thread_state, clients = local(), []
@@ -298,7 +303,8 @@ def run_vlm_process(
         for lane in lanes
     }
 
-    def emit(item):
+    def emit_status(item):
+        # Status is replaceable; reports retain their slot until delivery.
         try:
             outgoing.put_nowait(item)
         except Full:
@@ -380,8 +386,32 @@ def run_vlm_process(
             },
         )
 
+    def metrics():
+        lane_counts = {
+            lane: {
+                "inflight_requests": len(queues[lane]),
+                "pending_requests": len(ready[lane]),
+                "active_requests": len(queues[lane]) + len(ready[lane]),
+            }
+            for lane in lanes
+        }
+        return {
+            **stats,
+            **{
+                key: sum(counts[key] for counts in lane_counts.values())
+                for key in ("active_requests", "inflight_requests", "pending_requests")
+            },
+            "reorder_capacity": REORDER_CAPACITY * len(lanes),
+            "reorder_capacity_per_lane": REORDER_CAPACITY,
+            "reorder_buffer_full": all(
+                counts["active_requests"] >= REORDER_CAPACITY
+                for counts in lane_counts.values()
+            ),
+            "lanes": lane_counts,
+        }
+
     try:
-        emit({"kind": "status", "state": "warming", "pid": os.getpid()})
+        emit_status({"kind": "status", "state": "warming", "pid": os.getpid()})
         warm_started = time.monotonic()
         primes = [
             executors[lane].submit(prepare_worker, lane)
@@ -402,7 +432,7 @@ def run_vlm_process(
         )
         if startup_ready is not None:
             startup_ready.set()
-        emit(
+        emit_status(
             {
                 "kind": "status",
                 "state": "running",
@@ -443,20 +473,31 @@ def run_vlm_process(
                     or sum(len(x.frame.jpeg_bytes) for x in history) > 16 * 1024**2
                 ):
                     history.popleft()
+            # Collect every completed call before publishing. Waiting for an
+            # earlier result or IPC capacity must not occupy an inference slot.
             for lane, pending in queues.items():
-                for key, (job, sample, future, dispatched) in list(pending.items()):
+                for order, (job, sample, future, dispatched) in tuple(pending.items()):
                     if not future.done():
-                        if lane == "events":
-                            continue  # Fresh information never waits for an old RPC.
-                        break
-                    pending.pop(key)
-                    verdicts, error, timing = future.result()
-                    if lane == "events" and error == "timeout":
+                        continue
+                    pending.pop(order)
+                    result = future.result()
+                    if lane == "events" and result[1] == "timeout":
                         stats["information_http_timeouts"] += 1
-                    if (
-                        lane == "events"
-                        and sample.frame.frame_sequence <= last_published[lane]
-                    ):
+                    ready[lane][order] = (job, sample, result, dispatched, None)
+
+            for lane in lanes:
+                while ready[lane] and not stop.is_set():
+                    # Information bypasses unfinished older calls. Grounding/full
+                    # retain dispatch order independently within their own lane.
+                    order = (min(ready[lane]) if lane == "events"
+                             else next_publish_order[lane])
+                    if order not in ready[lane]:
+                        break
+                    job, sample, result, dispatched, report = ready[lane][order]
+                    verdicts, error, timing = result
+                    if (lane == "events"
+                            and sample.frame.frame_sequence <= last_published[lane]):
+                        ready[lane].pop(order)
                         stats["late_information_reports_discarded"] += 1
                         log_timing(
                             "vlm_information_report_discarded",
@@ -468,56 +509,67 @@ def run_vlm_process(
                             model_seconds=timing["model_seconds"],
                         )
                         continue
-                    last_published[lane] = sample.frame.frame_sequence
-                    now = time.monotonic()
-                    timing.update(
-                        dispatch_wait_seconds=timing["request_started_monotonic"]
-                        - dispatched,
-                        source_to_request_seconds=timing["request_started_monotonic"]
-                        - sample.received_monotonic,
-                        reorder_wait_seconds=max(
-                            0.0,
-                            now
-                            - timing["request_started_monotonic"]
-                            - timing["model_seconds"],
-                        ),
-                    )
-                    report = state.report(job, sample, verdicts, timing, error=error)
-                    stats["failed_requests" if error else "succeeded_requests"] += 1
-                    if not error and not report["analysis_complete"]:
-                        stats["incomplete_reports"] += 1
-                    if not error and not verdicts:
-                        stats["empty_reports"] += 1
-                    stats["ungrounded_verdicts"] += sum(
-                        not item["grounded"] for item in report["observations"]
-                    )
-                    if verdicts and not report["localization_complete"]:
-                        stats["unlocalized_reports"] += 1
-                    if any(
-                        "invalid_subject_bbox" in v.grounding_issues for v in verdicts
-                    ):
-                        stats["invalid_bbox_reports"] += 1
-                    remaining = [item for q in queues.values() for item in q.values()]
-                    inflight = sum(not item[2].done() for item in remaining)
-                    report["process_metrics"] = {
-                        **stats,
-                        "active_requests": len(remaining),
-                        "inflight_requests": inflight,
-                        "pending_requests": len(remaining) - inflight,
-                    }
-                    if config.output_mode != "full":
-                        report["vlm_lane"] = (
-                            "information"
-                            if lane == "events"
-                            else "grounding"
-                            if config.output_mode == "parallel"
-                            else "combined"
+                    if report is None:
+                        now = time.monotonic()
+                        timing.update(
+                            dispatch_wait_seconds=timing["request_started_monotonic"]
+                            - dispatched,
+                            source_to_request_seconds=timing["request_started_monotonic"]
+                            - sample.received_monotonic,
+                            reorder_wait_seconds=max(
+                                0.0,
+                                now - timing["request_started_monotonic"]
+                                - timing["model_seconds"],
+                            ),
                         )
-                        report["window_id"] = job.request.request_id
-                        report["output_mode"] = lane
-                    emit({"kind": "report", "report": report})
+                        report = state.report(
+                            job, sample, verdicts, timing, error=error,
+                        )
+                        stats["failed_requests" if error else "succeeded_requests"] += 1
+                        if not error and not report["analysis_complete"]:
+                            stats["incomplete_reports"] += 1
+                        if not error and not verdicts:
+                            stats["empty_reports"] += 1
+                        stats["ungrounded_verdicts"] += sum(
+                            not item["grounded"] for item in report["observations"]
+                        )
+                        if verdicts and not report["localization_complete"]:
+                            stats["unlocalized_reports"] += 1
+                        if any(
+                            "invalid_subject_bbox" in v.grounding_issues
+                            for v in verdicts
+                        ):
+                            stats["invalid_bbox_reports"] += 1
+                        if config.output_mode != "full":
+                            report["vlm_lane"] = (
+                                "information" if lane == "events" else
+                                "grounding" if config.output_mode == "parallel"
+                                else "combined"
+                            )
+                            report["window_id"] = job.request.request_id
+                            report["output_mode"] = lane
+                        # Retry this exact report without rebuilding its ID or
+                        # counting the result a second time under backpressure.
+                        ready[lane][order] = (job, sample, result, dispatched, report)
+                    report["process_metrics"] = metrics()
+                    # A report prepared in a blocked lane may be overtaken by
+                    # the other lane; sequence describes actual IPC publication.
+                    report["sequence"] = next_report_sequence
+                    try:
+                        outgoing.put_nowait({"kind": "report", "report": report})
+                    except Full:
+                        stats["output_backpressure"] += 1
+                        break
+                    next_report_sequence += 1
+                    ready[lane].pop(order)
+                    last_published[lane] = sample.frame.frame_sequence
+                    if lane != "events":
+                        next_publish_order[lane] += 1
+
             available_lanes = [
-                lane for lane in lanes if len(queues[lane]) < config.max_in_flight
+                lane for lane in lanes
+                if len(queues[lane]) < config.max_in_flight
+                and len(queues[lane]) + len(ready[lane]) < REORDER_CAPACITY
             ]
             if history and available_lanes:
                 sample = history[-1]
@@ -559,7 +611,9 @@ def run_vlm_process(
                             job,
                             evidence_after_frame_sequence=last_lane_endpoint[lane],
                         )
-                        queues[lane][request.request_id] = (
+                        order = next_dispatch_order[lane]
+                        next_dispatch_order[lane] += 1
+                        queues[lane][order] = (
                             lane_job,
                             sample,
                             executors[lane].submit(evaluate, lane_job, lane),
@@ -569,28 +623,17 @@ def run_vlm_process(
                     last_endpoint = frame.frame_sequence
                     next_due = frame.timestamp_seconds + 1.0 / config.observation_fps
                     stats["claimed_requests"] += len(available_lanes)
-            pending = {
-                str((lane, key)): value
-                for lane, q in queues.items()
-                for key, value in q.items()
-            }
             if time.monotonic() - last_status >= 1.0:
-                emit(
+                emit_status(
                     {
                         "kind": "status",
                         "state": "drained"
-                        if source_finished and not pending
+                        if source_finished and not any(queues.values())
+                        and not any(ready.values())
                         else "running",
                         "pid": os.getpid(),
                         "stats": {
-                            **stats,
-                            "active_requests": len(pending),
-                            "inflight_requests": sum(
-                                not item[2].done() for item in pending.values()
-                            ),
-                            "pending_requests": sum(
-                                item[2].done() for item in pending.values()
-                            ),
+                            **metrics(),
                             "retained_frames": len(history),
                             "retained_bytes": sum(
                                 len(x.frame.jpeg_bytes) for x in history
@@ -600,7 +643,7 @@ def run_vlm_process(
                 )
                 last_status = time.monotonic()
     except Exception:
-        emit(
+        emit_status(
             {
                 "kind": "status",
                 "state": "failed",
@@ -958,6 +1001,10 @@ class IndependentVLMBranch:
                 "inflight_requests": self._status.get("inflight_requests", 0),
                 "input_capacity": INPUT_CAPACITY,
                 "output_capacity": OUTPUT_CAPACITY,
+                "reorder_capacity": REORDER_CAPACITY * (
+                    2 if self.config.output_mode == "parallel" else 1
+                ),
+                "reorder_capacity_per_lane": REORDER_CAPACITY,
                 "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
                 "observation_fps": self.config.observation_fps,
                 "output_mode": self.config.output_mode,

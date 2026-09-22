@@ -32,7 +32,9 @@ class ControlledAdapter:
     def frames(self):
         self.frames_calls += 1
         while not self.stop_requested.is_set():
-            item = self.items.get(timeout=3)
+            # The test controls frame/error/end delivery. Idle preparation must
+            # not manufacture a connection failure; stop() wakes this queue.
+            item = self.items.get()
             if item is _END:
                 return
             if isinstance(item, Exception):

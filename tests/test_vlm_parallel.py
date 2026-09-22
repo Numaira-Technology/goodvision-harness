@@ -1,7 +1,7 @@
 import json
 import time
 from dataclasses import replace
-from queue import Queue
+from queue import Full, Queue
 from threading import Event, Thread
 
 import pytest
@@ -499,6 +499,82 @@ def test_full_information_pool_admits_only_latest_window_after_capacity_returns(
         release.set()
         await_condition(lambda: len(endpoints) == 3)
         assert endpoints == [18, 36, 90]
+    finally:
+        release.set()
+        stop.set()
+        worker.join(8)
+        assert not worker.is_alive()
+
+
+def test_grounding_output_backpressure_keeps_both_lanes_progressing_and_retries_once():
+    from goodvision_harness.scene_evidence import EvidenceFrame
+
+    cfg = replace(config(), output_mode="parallel")
+    incoming, stop, release = Queue(), Event(), Event()
+    attempts = {}
+
+    class GatedOutput(OutputQueue):
+        def put_nowait(self, item):
+            if (item["kind"] == "report"
+                    and item["report"]["vlm_lane"] == "grounding"):
+                report = item["report"]
+                attempts.setdefault(report["request_id"], set()).add(
+                    report["message_id"],
+                )
+                if not release.is_set():
+                    raise Full
+            super().put_nowait(item)
+
+    class Inspector:
+        def inspect(self, _job):
+            return (verdict(),)
+
+        def close(self):
+            pass
+
+    outgoing = GatedOutput()
+    worker = Thread(target=run_vlm_process, args=(
+        cfg, incoming, outgoing, stop, lambda _: Inspector(),
+    ))
+    worker.start()
+    reports = []
+
+    def send(sequence):
+        incoming.put(SourceSample(
+            EvidenceFrame(cfg.stream_session_id, sequence, sequence / 15, jpeg()),
+            utc_now(), time.monotonic(),
+        ))
+
+    try:
+        send(0)
+        for sequence in (18, 36, 54, 72):
+            send(sequence)
+            while True:
+                item = outgoing.get(timeout=5)
+                if item["kind"] == "report":
+                    report = item["report"]
+                    assert report["vlm_lane"] == "information"
+                    assert report["frame"]["source_frame_index"] == sequence
+                    reports.append(report)
+                    break
+        # More grounding results are retained than there are inference slots;
+        # completed grounding calls must not block either lane's next window.
+        assert reports[-1]["process_metrics"]["lanes"]["compact"]["active_requests"] > 2
+        incoming.put(None)
+        release.set()
+        while True:
+            item = outgoing.get(timeout=5)
+            if item["kind"] == "report":
+                reports.append(item["report"])
+            elif item.get("state") == "drained":
+                assert item["stats"]["succeeded_requests"] == 8
+                assert item["stats"]["active_requests"] == 0
+                break
+        assert len(reports) == len({r["message_id"] for r in reports}) == 8
+        assert [r["sequence"] for r in reports] == list(range(1, 9))
+        assert [r["frame"]["source_frame_index"] for r in reports
+                if r["vlm_lane"] == "grounding"] == [18, 36, 54, 72]
+        assert len(attempts) == 4 and all(len(ids) == 1 for ids in attempts.values())
     finally:
         release.set()
         stop.set()
