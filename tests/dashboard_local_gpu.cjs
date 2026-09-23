@@ -96,6 +96,18 @@ test("sampling FPS validates, saves and reloads independently of video buffering
   view.state.running=true;view.controls();assert.equal(input.disabled,true);
 });
 
+test("cloud GPU selection saves without a local GPU and shows editable rental controls",async()=>{
+  const view=dashboard({local_gpu:{available:false,gpu_count:0}});
+  view.element("tracking-mode").value="cloud";view.renderLocalGpuSettings();
+  assert.equal(view.element("cloud-gpu-panel").hidden,false);
+  assert.equal(view.element("tracking-server-fields").hidden,true);
+  await view.saveDeploymentSettings();
+  assert.equal(view.requests.at(-1).payload.tracking_mode,"cloud");
+  assert.equal(view.requests.at(-1).payload.local_tracking_enabled,false);
+  assert.match(view.html,/id="cloud-gpu-count"/);
+  assert.match(view.html,/id="cloud-gpu-script"/);
+});
+
 test("one GPU is shared and two GPUs reserve the second for tracking and other work",()=>{
   const view=dashboard({local_inference_enabled:true,local_tracking_enabled:true});
   assert.match(view.element("local-gpu-status").textContent,/2 张.*大模型 → GPU 0.*人物追踪及其他本地 GPU 任务 → GPU 1/);

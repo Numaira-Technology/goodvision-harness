@@ -101,10 +101,10 @@ test("status polling keeps one bounded request so slow status cannot crowd out c
   const view = dashboard();
   const first = view.app.status();
   for(let i=0;i<12;i++)view.app.status();
-  assert.equal(view.requests.filter(request=>request.url==="/v1/status").length,1);
+  assert.equal(view.requests.filter(request=>request.url==="/v1/status?lightweight=true").length,1);
   view.tick(3000);await first;
   const retry=view.app.status();
-  assert.equal(view.requests.filter(request=>request.url==="/v1/status").length,2);
+  assert.equal(view.requests.filter(request=>request.url==="/v1/status?lightweight=true").length,2);
   view.requests.at(-1).reject(new Error("offline"));await retry;
 });
 
@@ -322,7 +322,7 @@ test("released live resources permit a new detection while the old run is being 
     view.app.acceptSceneSnapshot(snapshot({state: "stopped", events: [event()],
       scene_drain: {state: "running", stage: "postprocessing"}}));
     const pending = view.app.status();
-    view.requests.find(request => request.url === "/v1/status").resolve({ok:true,json: async () => ({
+    view.requests.find(request => request.url === "/v1/status?lightweight=true").resolve({ok:true,json: async () => ({
       pipeline_state: pipeline, stream_session_id: "session-a", scene_drain: {state: "running", stage: "postprocessing"},
       postprocessing_runs: [{stream_session_id: "session-a", state: "running", stage: "identity_review"}],
     })});
@@ -341,7 +341,7 @@ test("previous run work and failure stay separate from a new live run", async ()
   view.app.acceptSceneSnapshot(snapshot({events: [event()]}));
   for (const backgroundState of ["running", "finalized", "failed"]) {
     const pending = view.app.status();
-    view.requests.filter(request => request.url === "/v1/status").at(-1).resolve({ok:true,json: async () => ({
+    view.requests.filter(request => request.url === "/v1/status?lightweight=true").at(-1).resolve({ok:true,json: async () => ({
       pipeline_state: "running", stream_session_id: "session-a", input_mode: "stream", ready: true,
       scene_drain: null, postprocessing_runs: [{stream_session_id: "old-run", state: backgroundState, stage: "evidence"}],
     })});

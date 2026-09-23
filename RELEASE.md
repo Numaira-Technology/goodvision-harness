@@ -6,8 +6,8 @@
 一起保留，连续 10 次有效 clear 后一起清除。下文记录的是已生成的 30 FPS
 `full.4` 离线交付包，该包尚不包含这次独立 bbox 更新，其镜像 ID 和哈希保持原记录。
 源码更新全量回归 **2069 passed、6 skipped**，浏览器专项 **7 passed**；本机 30 FPS
-合成复验输出 120/120 帧、29.97 FPS、零丢帧，详见
-[展示验证](docs/validation/display-cadence-20260910.md)。
+合成复验输出 120/120 帧、29.97 FPS、零丢帧。这是当时版本的合成测试；
+后续网络与实际输出的验收边界见[网络与显示验证](docs/validation/network-and-display.md)。
 
 ## 已有离线交付包
 

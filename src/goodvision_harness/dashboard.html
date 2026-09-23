@@ -40,12 +40,15 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
 .fleet-grid{align-items:start}.fleet-camera-details{padding:14px;border-top:1px solid var(--line);display:grid;gap:12px;background:#fff}.fleet-camera-details[hidden]{display:none}.fleet-camera-details h4{margin:0;font-size:13px}.fleet-sensitivities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.fleet-sensitivities .note{line-height:1.5;font-size:11px}.fleet-detail-summary{font-size:12px;line-height:1.6;color:var(--muted)}.fleet-result-details summary{cursor:pointer;font-size:12px;font-weight:650}.fleet-detail-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;font-size:11px;margin:8px 0 0;padding:10px;background:#f3f5f9;border-radius:8px}.fleet-grid.compact .fleet-card-fields{display:grid}.fleet-grid.compact .fleet-card-fields>.field,.fleet-grid.compact .fleet-source{display:none}.fleet-grid.compact .fleet-card-buttons .btn:not([aria-controls]){display:none}.fleet-grid.compact .fleet-card-detail{display:none}.fleet-grid.compact .fleet-camera-details .fleet-card-detail{display:block}.fleet-grid.compact .fleet-camera-details .fleet-card-buttons .btn{display:inline-flex}#fleet-analysis-state{margin-bottom:12px;line-height:1.7}@media(max-width:420px){.fleet-sensitivities{grid-template-columns:1fr}}
 .fleet-preview canvas{position:absolute;width:100%;height:100%;object-fit:contain}
 .fleet-preview canvas[hidden]{display:none}
+.fleet-diagnostics{border-top:1px solid var(--line);background:#fff}
+.fleet-diagnostics[hidden]{display:none}
+.fleet-diagnostics iframe{display:block;width:100%;height:min(85vh,980px);min-height:480px;border:0}
 </style>
 <style>
 .fleet-grid.compact{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}.fleet-grid.compact .fleet-card-head{padding:9px 11px}.fleet-grid.compact .fleet-card-head h3{font-size:12px}.fleet-preview{width:100%}
 </style>
 <style>
-.fleet-panel{margin-bottom:18px}.fleet-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.fleet-heading{display:grid;gap:7px}.fleet-heading h2{font-size:19px;letter-spacing:-.02em}.fleet-actions{display:flex;gap:8px;flex-wrap:wrap}.fleet-mode{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#e8f2ff;color:#1d4ed8;border-radius:999px;font-size:11.5px;font-weight:750}.fleet-count{margin:14px 0 10px;font-size:13px;font-weight:700;color:var(--muted)}.fleet-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:14px}.fleet-card{min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fbfcfe}.fleet-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px}.fleet-card-head h3{font-size:14px}.fleet-camera-state{font-size:11.5px;color:var(--muted);padding:3px 8px;border-radius:999px;background:#edf0f5}.fleet-camera-state.good{color:#166534;background:#dcfce7}.fleet-camera-state.error{color:#991b1b;background:#fee2e2}.fleet-preview{position:relative;aspect-ratio:16/9;background:#111827;display:grid;place-items:center;overflow:hidden}.fleet-preview img{position:absolute;width:100%;height:100%;object-fit:contain}.fleet-preview-note{color:#b5bfd0;padding:20px;text-align:center;font-size:12px;line-height:1.6;z-index:1}.fleet-preview-note.over-image{align-self:end;justify-self:stretch;background:rgba(15,23,42,.8);padding:8px}.fleet-card-fields{padding:12px;display:grid;gap:9px}.fleet-source{font-size:11.5px;color:var(--muted);line-height:1.4}.fleet-card input{min-width:0}.fleet-card .field>span{letter-spacing:0;text-transform:none}.fleet-card select{min-width:0;width:100%}.fleet-card-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.fleet-card-buttons .btn{font-size:12px;padding:7px 10px}.fleet-card-buttons .fleet-remove{margin-left:auto;color:var(--muted)}.fleet-card-detail{font-size:11.5px;min-height:18px;overflow-wrap:anywhere;color:var(--muted)}.fleet-card-detail.error{color:var(--red)}.fleet-summary{margin-top:10px;min-height:19px}.fleet-detail-bar{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}.fleet-detail-bar .note{flex:1}.fleet-detail-label{margin:0 0 14px;color:var(--muted);font-size:13px}.fleet-grid[data-single="true"]{max-width:960px}.fleet-grid[data-single="true"] .fleet-preview{max-height:450px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:minmax(0,2fr) minmax(150px,1fr)}.fleet-grid[data-single="true"] .fleet-card-buttons,.fleet-grid[data-single="true"] .fleet-card-detail,.fleet-grid[data-single="true"] .fleet-source{grid-column:1/-1}@media(min-width:1800px){.fleet-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:600px){.fleet-actions{width:100%}.fleet-actions .btn{flex:1;padding:8px 10px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:1fr}.fleet-panel{padding:12px}}
+.fleet-panel{margin-bottom:18px}.fleet-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.fleet-heading{display:grid;gap:7px}.fleet-heading h2{font-size:19px;letter-spacing:-.02em}.fleet-actions{display:flex;gap:8px;flex-wrap:wrap}.fleet-mode{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#e8f2ff;color:#1d4ed8;border-radius:999px;font-size:11.5px;font-weight:750}.fleet-count{margin:14px 0 10px;font-size:13px;font-weight:700;color:var(--muted)}.fleet-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:14px}.fleet-card{min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fbfcfe}.fleet-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px}.fleet-card-head h3{font-size:14px}.fleet-camera-state{font-size:11.5px;color:var(--muted);padding:3px 8px;border-radius:999px;background:#edf0f5}.fleet-camera-state.good{color:#166534;background:#dcfce7}.fleet-camera-state.error{color:#991b1b;background:#fee2e2}.fleet-preview{position:relative;aspect-ratio:16/9;background:#111827;display:grid;place-items:center;overflow:hidden}.fleet-preview img{position:absolute;width:100%;height:100%;object-fit:contain}.fleet-preview-note{color:#b5bfd0;padding:20px;text-align:center;font-size:12px;line-height:1.6;z-index:1}.fleet-preview-note.over-image{align-self:end;justify-self:stretch;background:rgba(15,23,42,.8);padding:8px}.fleet-card-fields{padding:12px;display:grid;gap:9px}.fleet-source{font-size:11.5px;color:var(--muted);line-height:1.4}.fleet-card input{min-width:0}.fleet-card .field>span{letter-spacing:0;text-transform:none}.fleet-card select{min-width:0;width:100%}.fleet-card-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.fleet-card-buttons .btn{font-size:12px;padding:7px 10px}.fleet-card-buttons .fleet-remove{margin-left:auto;color:var(--muted)}.fleet-card-detail{font-size:11.5px;min-height:18px;overflow-wrap:anywhere;color:var(--muted)}.fleet-card-detail.error{color:var(--red)}.fleet-summary{margin-top:10px;min-height:19px}.fleet-detail-bar{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}.fleet-detail-bar .note{flex:1}.fleet-detail-label{margin:0 0 14px;color:var(--muted);font-size:13px}.fleet-grid[data-single="true"]{grid-template-columns:minmax(0,1fr);max-width:none}.fleet-grid[data-single="true"] .fleet-preview{max-height:70vh}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:minmax(0,2fr) minmax(150px,1fr)}.fleet-grid[data-single="true"] .fleet-card-buttons,.fleet-grid[data-single="true"] .fleet-card-detail,.fleet-grid[data-single="true"] .fleet-source{grid-column:1/-1}@media(min-width:1800px){.fleet-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:600px){.fleet-actions{width:100%}.fleet-actions .btn{flex:1;padding:8px 10px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:1fr}.fleet-panel{padding:12px}}
 </style>
 <style>.face-diagnostic.warning{color:#92400e;background:#fffbeb;border-left-color:var(--amber)}</style>
 </head>
@@ -100,11 +103,30 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
         <label class="field">
           <span>人物追踪运行位置</span>
           <select id="tracking-mode" aria-describedby="local-gpu-status local-gpu-help">
+            <option value="cloud">云 GPU 服务器（多路）</option>
             <option value="legacy">原部署服务（单路）</option>
             <option id="tracking-mode-local" value="local">本机显卡</option>
             <option value="server">独立 GPU 服务器</option>
           </select>
         </label>
+        <div id="cloud-gpu-panel" class="stack" hidden>
+          <label class="field"><span>云 GPU 型号</span>
+            <input id="cloud-gpu-name" type="text" list="cloud-gpu-models" value="RTX_4090" autocomplete="off" spellcheck="false">
+            <datalist id="cloud-gpu-models"><option value="A100"><option value="A100_SXM4"><option value="A100_PCIE"><option value="H100_SXM"><option value="RTX_4090"></datalist>
+          </label>
+          <label class="field"><span>GPU 数量（张）</span><input id="cloud-gpu-count" type="number" min="1" step="1" value="1"></label>
+          <label class="field"><span>本次部署视频路数</span><input id="cloud-gpu-streams" type="number" min="1" step="1" value="1" readonly></label>
+          <label class="field"><span>租用磁盘（GB）</span><input id="cloud-gpu-disk" type="number" min="1" step="1" value="50"></label>
+          <details><summary>编辑租用脚本参数</summary>
+            <label class="field"><span>租用配置（JSON）</span><textarea id="cloud-gpu-script" rows="7" spellcheck="false" style="width:100%;font-family:monospace"></textarea></label>
+            <pre id="cloud-gpu-command" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+          </details>
+          <div class="row"><button id="cloud-gpu-save" class="btn" type="button" disabled>保存租用配置</button>
+            <button id="cloud-gpu-start" class="btn" type="button" disabled>启动租用（开始计费）</button>
+            <button id="cloud-gpu-stop" class="btn danger" type="button" disabled>释放云 GPU</button></div>
+          <div id="cloud-gpu-status" class="secret-status" role="status" aria-live="polite">正在读取云 GPU 状态…</div>
+          <div class="secret-status">例如 A100 × 5：每张卡独立运行追踪模型，多路视频固定分配到不同卡。先保存运行位置，再启动租用；改型号或数量前先停止全部分析并释放云 GPU。关闭页面不会释放租用。视频路数与本地部署一样通过启动参数 --streams N 配置，无固定产品上限。只租所填数量，无匹配机器时明确报错。</div>
+        </div>
         <div id="tracking-server-fields" class="stack" hidden>
           <label class="field"><span>追踪节点类型</span>
             <select id="tracking-server-protocol">
@@ -231,8 +253,9 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
     <div id="fleet-grid" class="fleet-grid" aria-label="摄像头画面"></div>
     <div id="fleet-note" class="status fleet-summary" role="status" aria-live="polite"></div>
     <div class="fleet-detail-bar">
-      <span class="note">每路独立连接、断开视频，在各自“详细控制”中设置检测项目与敏感度。全部已连接视频统一开始、停止分析；分析期间先停止全部分析，再增减视频。总览画面每秒最多刷新 4 次。</span>
-      <button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false">本机摄像头 / 诊断</button>
+      <span class="note">每路独立连接、断开视频，在各自“详细控制”中设置检测项目与敏感度。全部已连接视频统一开始、停止分析；分析期间先停止全部分析，再增减视频。视频以 15 帧/秒连续播放，分析暂未完成的画面仍正常显示。</span>
+      <span class="note">播放缓冲、结果和服务状态请打开各路的“本机摄像头 / 诊断”。</span>
+      <button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false" hidden>本机摄像头 / 诊断</button>
     </div>
   </section>
 
@@ -375,6 +398,11 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
         <span class="detection-rail-title"><span class="detection-rail-dot"></span>Detection</span>
         <button id="detection-overlay-toggle" class="overlay-toggle" type="button"
                 aria-controls="decision" aria-expanded="true" hidden>Minimize</button>
+      </div>
+      <div class="decision" style="margin-bottom:12px">
+        <div class="eyebrow">本次事件观察 · VLM</div>
+        <div id="vlm-current-observation" class="description" role="status">等待事件判断</div>
+        <div class="meta">先显示当前画面的事件判断；人物关联与连续事件确认分别更新。</div>
       </div>
       <div id="decision" class="decision">
         <div id="decision-eyebrow" class="eyebrow">Live selected-feature classification</div>
@@ -1194,8 +1222,27 @@ async function pullLatestFrame(generation){
   }
 }
 function openFeed(){
-  if(globalThis.GoodvisionFleet?.detailHidden?.()){stopLatestFeed();return;}
+  if(globalThis.GoodvisionFleet?.detailHidden?.()){
+    networkVideoDisplay?.stop();networkVideoDisplay=null;
+    stopLatestFeed();return;
+  }
   if(typeof localCameraActive==="function"&&localCameraActive()){surfaces();return;}
+  if(state.running&&state.sessionMode!=="camera"&&globalThis.GoodvisionDiagnosticCameraId){
+    let rows=null;
+    try{rows=window.parent!==window?window.parent.GoodvisionFleet?.app?.rows:null;}catch(_){}
+    if(rows?.has(globalThis.GoodvisionDiagnosticCameraId)&&globalThis.GoodvisionCameraDisplay?.SharedController){
+      if(!networkVideoDisplay){
+        stopLatestFeed();networkVideoDisplay=new globalThis.GoodvisionCameraDisplay.SharedController({canvas:ui.localCameraCanvas,
+          source:()=>{const row=rows.get(globalThis.GoodvisionDiagnosticCameraId);return {
+            media:row?.canvas&&!row.canvas.hidden?row.canvas:row?.image,
+            stats:row?.latestDisplayStats};},
+          onStatus:stats=>{ui.rawBadgeText.textContent="连续画面 · "+(stats.distinct_presented_fps??0).toFixed(1)+
+            " 帧/秒 · 缓冲 "+stats.configured_display_delay_seconds+" 秒";}});
+        networkVideoDisplay.start();
+      }
+      surfaces();return;
+    }
+  }
   const Network=globalThis.GoodvisionCameraDisplay?.NetworkController;
   if(state.running&&state.sessionMode!=="camera"&&Network?.supported()){
     if(!networkVideoDisplay){
@@ -1224,7 +1271,7 @@ function settingsSourceLabel(value){
   return source.charAt(0).toUpperCase()+source.slice(1)
 }
 function savedExecutionMode(kind){
-  const modes=kind==="inference"?["cloud","local","server"]:["legacy","local","server"];
+  const modes=kind==="inference"?["cloud","local","server"]:["legacy","cloud","local","server"];
   const candidates=state.deployment?[state.deployment]:[state.info,state.info?.deployment];
   for(const data of candidates){
     if(modes.includes(data?.[kind+"_mode"]))return data[kind+"_mode"];
@@ -1235,7 +1282,7 @@ function savedExecutionMode(kind){
 }
 function draftExecutionMode(kind){
   const value=(kind==="inference"?ui.inferenceMode:ui.trackingMode).value;
-  return (kind==="inference"?["cloud","local","server"]:["legacy","local","server"]).includes(value)
+  return (kind==="inference"?["cloud","local","server"]:["legacy","cloud","local","server"]).includes(value)
     ?value:savedExecutionMode(kind)
 }
 function localInferenceEnabled(){
@@ -1253,6 +1300,7 @@ function renderLocalGpuSettings(){
   const localInference=inference==="local",localTracking=tracking==="local";
   ui.localInference.checked=localInference;ui.localTracking.checked=localTracking;
   ui.inferenceServerFields.hidden=inference!=="server";ui.trackingServerFields.hidden=tracking!=="server";
+  $("cloud-gpu-panel").hidden=tracking!=="cloud";
   ui.trackingNodeKeyFields.hidden=tracking!=="server"||ui.trackingServerProtocol.value!=="contour";
   const changed=inference!==savedExecutionMode("inference")||tracking!==savedExecutionMode("tracking")||
     inference==="server"&&(ui.inferenceServerUrl.value.trim()!==(data.inference_server_url||"")||
@@ -1269,7 +1317,7 @@ function renderLocalGpuSettings(){
   const allocation=[localInference?"大模型 → "+inferenceDevice:
     inference==="server"?"大模型 → 独立模型服务器":"大模型 → 云端 API",
     localTracking?"人物追踪及其他本地 GPU 任务 → "+trackingDevice:
-    tracking==="server"?"人物追踪 → 独立 GPU 服务器":"人物追踪 → 原部署服务（单路）"].join("；");
+    tracking==="server"?"人物追踪 → 独立 GPU 服务器":tracking==="cloud"?"人物追踪 → 云 GPU 服务器（多路）":"人物追踪 → 原部署服务（单路）"].join("；");
   ui.localGpuStatus.className="secret-status";
   if(known&&count>0&&gpu.available!==false){
     ui.localGpuStatus.textContent="检测到 "+count+" 张本地显卡。"+allocation+"。"
@@ -2046,7 +2094,8 @@ async function status(){
   const current=()=>sessionRevision===(state.sessionRevision||0)&&sessionId===state.sessionId;
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
   try{
-    const response=await fetch("/v1/status",{cache:"no-store",signal:controller.signal});
+    const statusUrl="/v1/status?lightweight=true";
+    const response=await fetch(statusUrl,{cache:"no-store",signal:controller.signal});
     if(!response.ok)throw new Error("HTTP "+response.status);
     const data=await response.json();
     // A response from before a session transition cannot stop or revive its successor.
@@ -2086,9 +2135,9 @@ async function status(){
     controls();renderScene()
   }catch(error){
     if(!current())return;
-    ui.service.textContent="unreachable";ui.sourceChip.textContent="unknown";ui.readinessChip.textContent="unreachable";
-    ui.statusJson.textContent=String(error);setConnection("Service unreachable","GET /v1/status failed: "+error.message,"bad");
-    setChannel(ui.lastUpdate,"Status · unreachable","warn")
+    ui.service.textContent="状态更新延迟";ui.readinessChip.textContent="正在重试";
+    ui.statusJson.textContent=String(error);setConnection("状态暂未更新","正在重新获取服务状态；上次结果不代表当前识别状态。","warn");
+    setChannel(ui.lastUpdate,"状态更新延迟","warn")
   }finally{clearTimeout(timer);state.statusLoading=false;}
 }
 function resetOverallDescription(){
@@ -2400,6 +2449,7 @@ async function loadEventArchive(append=false){
 }
 function connectArchiveEvents(cursor){
   if(archiveView.stream)archiveView.stream.close();
+  if(globalThis.GoodvisionDiagnostic||globalThis.GoodvisionFleet?.app)return;
   const stream=new EventSource("/v1/events/stream?after="+encodeURIComponent(cursor));archiveView.stream=stream;
   stream.addEventListener("event_change",message=>{
     try{
@@ -2467,7 +2517,43 @@ if(!cameraAllowed){
   ui.cameraNote.textContent="HTTPS or localhost required";ui.cameraNote.className="note error"
 }
 let events=null;
+const diagnosticResults=new Map();
+async function pollDiagnosticResults(){
+  if(sceneView.closed)return;
+  if(!document.hidden&&!globalThis.GoodvisionFleet?.detailHidden?.()){
+    try{
+      let parentRow=null;
+      try{parentRow=window.parent!==window?window.parent.GoodvisionFleet?.app?.rows?.get(globalThis.GoodvisionDiagnosticCameraId):null;}catch(_){}
+      if(parentRow){$("vlm-current-observation").textContent=parentRow.vlmEvents.textContent;}
+      else{
+        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
+        try{
+          const response=await fetch("/v1/vlm/results/latest",{cache:"no-store",signal:controller.signal});
+          if(response.ok){const result=await response.json();
+            if(result.stream_session_id===state.sessionId)$("vlm-current-observation").textContent=
+              globalThis.GoodvisionCameraDisplay?.eventObservationSummary?.(result)||"等待事件判断";}
+        }finally{clearTimeout(timer);}
+      }
+    }catch(_){}
+    for(const feature of ["overall",...detectionEvents]){
+      if(sceneView.closed)break;
+      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
+      try{
+        const response=await fetch("/v1/results/"+feature+"/latest",{cache:"no-store",signal:controller.signal});
+        if(response.ok&&response.status!==204){
+          const result=await response.json(),id=result.message_id;
+          if(id&&diagnosticResults.get(feature)!==id){diagnosticResults.set(feature,id);analysis(result);}
+        }
+      }catch(_){}finally{clearTimeout(timer);}
+    }
+    setChannel(ui.sseChannel,"Results · 本路最新结果（定时刷新）","good");
+  }
+  if(!sceneView.closed)setTimeout(pollDiagnosticResults,2000);
+}
 async function connectResultEvents(){
+  // Each open lane uses finite requests so N panels cannot exhaust the
+  // browser's per-origin HTTP connection limit with persistent event streams.
+  if(globalThis.GoodvisionDiagnostic||globalThis.GoodvisionFleet?.app){await pollDiagnosticResults();return;}
   let after=0;
   try{
     const latest=await fetch("/v1/results/latest",{cache:"no-store"});
@@ -2495,7 +2581,11 @@ document.addEventListener("visibilitychange",()=>{
 mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
 loadRoutes();setInterval(loadRoutes,1500);
 loadEventArchive();
+setInterval(()=>{
+  if(!document.hidden&&!sceneView.closed&&!archiveView.loading&&!globalThis.GoodvisionFleet?.detailHidden?.())loadEventArchive();
+},5000);
 </script>
 <script src="/assets/fleet_console.js"></script>
+<script src="/assets/cloud_gpu_console.js"></script>
 </body>
 </html>

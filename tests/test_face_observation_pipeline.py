@@ -332,3 +332,67 @@ def test_ort_threads_are_applied_to_each_actual_selected_session(tmp_path):
     assert all(
         model.models[name].session.path == f"{name}.onnx" for name in model.models
     )
+
+
+def test_network_face_disk_admission_cannot_stall_source_or_sam_callbacks(tmp_path, monkeypatch):
+    from goodvision_harness.video_to_stream import LiveFrame
+    gate, entered, captured = threading.Event(), threading.Event(), []
+    engine, _, calls, _ = runtime(tmp_path, monkeypatch)
+    face = FaceRecognitionSession(engine, observation_store_path=tmp_path / "facts.sqlite")
+    original = face.submit_window
+    def slow_admit(*args, **kwargs):
+        entered.set()
+        assert gate.wait(8)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(face, "submit_window", slow_admit)
+    class Source:
+        realtime = True
+        def frames(self):
+            for index in range(8):
+                if index == 1:
+                    assert entered.wait(2)
+                yield LiveFrame(index, index/15, np.full((96, 128, 3), index, np.uint8))
+        def stop(self):
+            pass
+    config = load_config()
+    config = replace(config, video=replace(config.video, fps=15),
+                     sliding_window=replace(config.sliding_window, size_frames=1, stride_frames=1))
+    delivered, ends = [], []
+    session = StreamingSession.for_stream(config, face, SessionCallbacks(
+        on_display_frame=lambda jpeg, stamp, sequence: captured.append(sequence),
+        on_analysis_result=lambda result: delivered.append(result.frame.source_frame_index),
+        on_end=lambda reason, error: ends.append((reason, error)),
+    ), stream_url="rtsp://test/source", video_stream=Source())
+    try:
+        session.start()
+        assert entered.wait(2)
+        wait_for(lambda: len(captured) == 8)
+        assert session.running and not delivered
+        assert session.organizer.snapshot()["counts"]["dropped"] == 6
+        gate.set()
+        session.join(8)
+        assert not session.running
+        assert delivered == calls == [0, 1]
+        assert all(row["state"] == "committed" for row in face._worker.store.records())
+        assert ends == [("disconnected", None)]
+    finally:
+        gate.set(); session.stop(drain=True); session.join(8)
+
+
+def test_network_admission_failure_is_reported_even_at_end_of_capture():
+    from goodvision_harness.face_admission import FaceAdmissionQueue
+    def fail(*args, **kwargs):
+        raise OSError("storage failure")
+    admission = FaceAdmissionQueue(fail)
+    assert admission.offer(window(0), branch=None)
+    with pytest.raises(RuntimeError, match="live face admission failed"):
+        admission.close()
+
+
+def test_live_face_candidate_bytes_are_bounded_before_durable_admission():
+    from goodvision_harness.face_admission import FaceAdmissionQueue
+    seen = []
+    admission = FaceAdmissionQueue(lambda *a, **k: seen.append(a), max_bytes=1)
+    assert not admission.offer(window(0), branch=None)
+    admission.close()
+    assert not seen

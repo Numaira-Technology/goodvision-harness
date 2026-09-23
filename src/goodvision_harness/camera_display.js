@@ -26,6 +26,13 @@
       root.postMessage(message);
     }
     function release(message){message.frame?.bitmap?.close();}
+    function expireFrame(message){
+      if(!["frame","frame_bitmap"].includes(message.type)||
+        !Number.isFinite(message.motion_deadline_epoch_ms)||Date.now()<=message.motion_deadline_epoch_ms)return false;
+      release(message);
+      reply(message,{type:"frame_processed",sequence:message.frame.sequence,
+        queued_at:message.queued_at,accepted:false,expired:true,compute_ms:0});return true;
+    }
     function releasePending(){for(const message of pending)release(message);pending=[];}
     function prepareBitmap(message){
       const frame=message.frame,started=performance.now(),bitmap=frame.bitmap;
@@ -55,6 +62,7 @@
       finally{bitmap.close();}
     }
     function process(message){
+      if(expireFrame(message))return;
       try{
         const started=performance.now();
         if(history&&message.type==="frame"){
@@ -88,7 +96,7 @@
             queued_at:message.queued_at,result,geometry_cache_hit:result.geometry_cache_hit,
             compute_ms:performance.now()-started,motion_queue_ms:queueMs});
         }
-      }catch(error){reply(message,{type:"failure",request_type:message.type,id:message.id,sequence:message.sequence});}
+      }catch(error){reply(message,{type:"failure",request_type:message.type,id:message.id,sequence:message.frame?.sequence??message.sequence});}
     }
     function loadDenseRuntime(){
       if(runtimePromise)return runtimePromise;
@@ -134,6 +142,7 @@
       }
       if(message.type==="stop_motion_trace"){stopTrace(message.reason||"requested");return;}
       if(forward){
+        if(expireFrame(message))return;
         const started=performance.now(),queueMs=Number.isFinite(message.queued_epoch_ms)?
           Math.max(0,Date.now()-message.queued_epoch_ms):undefined;
         try{
@@ -148,15 +157,18 @@
             sequence:message.frame.sequence,compute_ms:performance.now()-started,queue_ms:queueMs});
           if(traced)try{root.postMessage({type:"motion_trace_input",message:traced},
             traced.type==="frame"?[traced.frame.pixels.buffer]:[]);}catch(_){stopTrace("delivery_failure");}
-        }catch(error){root.postMessage({type:"failure",stage:"motion_preprocess",sequence:message.frame?.sequence});}
+        }catch(error){reply(message,{type:"failure",stage:"motion_preprocess",request_type:message.type,
+          id:message.id,sequence:message.frame?.sequence??message.sequence});}
         return;
       }
       // Encoding has its own Worker and cannot occupy the motion history queue.
       if(message.type==="encode_jpeg"){encode(message);return;}
       if(message.type==="frame_bitmap"){
+        if(expireFrame(message))return;
         if(!loading&&!history){release(message);return;}
         try{message=prepareBitmap(message);}
-        catch(error){root.postMessage({type:"failure",stage:"motion_preprocess",sequence:message.frame?.sequence});return;}
+        catch(error){reply(message,{type:"failure",stage:"motion_preprocess",request_type:message.type,
+          sequence:message.frame?.sequence});return;}
       }
       if(message.type==="reset"){
         const current=++revision;history=null;releasePending();
@@ -238,7 +250,7 @@
     constructor({delaySeconds=1,maxFrames=90,dispose=()=>{}}={}){
       this.delay=delaySeconds;this.maxFrames=maxFrames;this.dispose=dispose;
       this.frames=[];this.lastSequence=-1;this.lastTimestamp=-1;this.presented=0;
-      this.expired=0;this.rejected=0;this.firstPresentedAt=null;this.lastPresentedAt=null;
+      this.expired=0;this.catchupExpired=0;this.rejected=0;this.firstPresentedAt=null;this.lastPresentedAt=null;
     }
     push(frame){
       if(!frame||!sequence(frame.sequence)||!finite(frame.timestamp)||frame.timestamp<0||
@@ -246,6 +258,14 @@
       this.lastSequence=frame.sequence;this.lastTimestamp=frame.timestamp;this.frames.push(frame);
       while(this.frames.length>this.maxFrames){this.dispose(this.frames.shift());this.expired++;}
       return true;
+    }
+    discardBefore(timestamp){
+      let last=-1;
+      while(this.frames.length&&this.frames[0].timestamp<timestamp){
+        const frame=this.frames.shift();last=frame.sequence;
+        this.dispose(frame);this.expired++;this.catchupExpired++;
+      }
+      return last;
     }
     take(nowMedia){
       if(!this.frames.length||!finite(nowMedia)||this.frames[0].timestamp>nowMedia-this.delay)return null;
@@ -257,6 +277,7 @@
     }
     reset(){for(const frame of this.frames)this.dispose(frame);this.frames=[];}
     stats(){return {distinct_presented_frames:this.presented,display_buffer_expired:this.expired,
+      display_catchup_expired:this.catchupExpired,
       rejected_source_frames:this.rejected,buffered_frames:this.frames.length,
       distinct_presented_fps:this.presented>1&&this.lastPresentedAt>this.firstPresentedAt?
         (this.presented-1)*1000/(this.lastPresentedAt-this.firstPresentedAt):null};}
@@ -1112,6 +1133,8 @@
       context.fillText(line,x+padding,y+padding+index*lineHeight,available);});
     context.restore();
   }
+  let displayInstanceSequence=0;
+  const displayDocumentId=Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
   class BrowserController{
     static supported(video){return typeof Worker==="function"&&typeof OffscreenCanvas==="function"&&
       typeof MessageChannel==="function"&&
@@ -1144,6 +1167,7 @@
       warm.disposed=true;warm.resolve(false);warm.worker.terminate();
     }
     constructor({video,canvas,config,settings,socket,onStatus=()=>{},onFailure=()=>{},onMotionTrace=null,motionTraceOptions={}}){
+      this.displayInstanceId=displayDocumentId+"-"+(++displayInstanceSequence);
       this.video=video;this.canvas=canvas;this.config=config;this.settings={...settings};this.socket=socket;
       if(finite(config.analysis_max_image_side)&&config.analysis_max_image_side>0)
         this.settings.max_image_side=Math.min(this.settings.max_image_side,Math.max(1,Math.floor(config.analysis_max_image_side)));
@@ -1170,6 +1194,7 @@
       this.worker.onmessage=event=>{
         const message=event.data;
         if(this.closed)return;
+        this.retireMotionWork(message);
         if(message.type==="motion_trace_input"||message.type==="motion_trace_stopped"){
           this.recordMotionTrace(message);return;
         }
@@ -1191,15 +1216,16 @@
           else if(message.geometry_cache_hit===false)this.stats.geometry_cache_misses++;
           if(finite(message.queued_at))this.stats.worker_result_latency_max_seconds=Math.max(
             this.stats.worker_result_latency_max_seconds,(performance.now()-message.queued_at)/1000);
-          if(message.sequence>this.lastPresentedSequence){
+          if(message.sequence>Math.max(this.lastPresentedSequence,this.lastDiscardedSequence)){
             this.overlays.set(message.sequence,message.result);
             if(this.overlays.size>120)this.overlays.delete(this.overlays.keys().next().value);
           }else this.stats.worker_results_late++;
         }else if(message.type==="frame_processed"){
-          this.stats.worker_frames_completed++;
-          if(finite(message.compute_ms))this.noteTiming("motion_compute",message.compute_ms);
+          if(message.expired)this.stats.motion_frames_expired++;
+          else this.stats.worker_frames_completed++;
+          if(!message.expired&&finite(message.compute_ms))this.noteTiming("motion_compute",message.compute_ms);
           if(finite(message.motion_queue_ms))this.noteTiming("motion_frame_queue",message.motion_queue_ms);
-          if(!message.accepted)this.stats.motion_failures++;
+          if(!message.accepted&&!message.expired)this.stats.motion_failures++;
           if(finite(message.queued_at))this.stats.worker_frame_latency_max_seconds=Math.max(
             this.stats.worker_frame_latency_max_seconds,(performance.now()-message.queued_at)/1000);
         }else if(message.type==="frame_preprocessed"){
@@ -1234,6 +1260,7 @@
           }
           this.stats.motion_failures++;
           if(message.stage==="motion_initialization"){
+            this.disableMotionWork();
             this.stats.motion_initialization_failures++;
             this.onFailure("轮廓跟随组件加载失败，视频继续播放；请重新开始检测。");
           }else if(message.stage==="motion_preprocess"){
@@ -1242,11 +1269,12 @@
           }
         }
       };
-      this.worker.onerror=()=>{this.claimedWarmup?.resolve(false);
+      this.worker.onerror=()=>{this.claimedWarmup?.resolve(false);this.disableMotionWork();
         this.stats.motion_failures++;this.onFailure("轮廓补帧暂不可用，视频继续播放。");};
       this.worker.onmessageerror=this.worker.onerror;
       this.preprocessWorker.onmessage=this.worker.onmessage;
       this.preprocessWorker.onerror=()=>{
+        this.disableMotionWork();
         this.stats.preprocess_failures++;this.stats.motion_failures++;
         this.onFailure("轮廓画面预处理组件失败，视频继续播放；请重新开始检测。");
       };
@@ -1265,6 +1293,10 @@
           this.pendingEncode.reject(new Error("analysis encoding worker failed"));this.pendingEncode=null;}
       };
       this.encodeWorker.onmessageerror=this.encodeWorker.onerror;
+      // Admission spans both workers: releasing a frame after grayscale alone
+      // would merely move an unbounded backlog into the motion worker's port.
+      this.motionFrames=new Map();this.motionPresents=new Set();this.motionFailed=false;
+      this.motionMetadataInFlight=false;this.pendingMotionMetadata=null;
       this.overlays=new Map();this.requested=new Set();this.pendingPresent=new Set();this.requestedRevision=new Map();
       this.identities=new DisplayIdentities(this.config);
       this.geometryRevision=0;
@@ -1274,10 +1306,10 @@
       this.presentGraceSeconds=Math.max(0,.15-this.frames.delay);
       this.uploads=[];this.uploading=false;
       this.pendingAck=null;this.analysisPause=null;
-      this.lastPresentedSequence=-1;this.sourceSequence=0;this.firstMediaTime=null;
+      this.lastPresentedSequence=-1;this.lastDiscardedSequence=-1;this.sourceSequence=0;this.firstMediaTime=null;
       this.nextCaptureAt=0;this.nextAnalysisAt=0;this.latestClock=null;this.lastVideoFrame=-1;
       this.stats={captured_frames:0,analysis_admitted:0,analysis_sent:0,analysis_upload_failures:0,
-        network_requests:0,network_failures:0,network_bytes_received:0,network_frames_received:0,network_source_gap_frames:0,
+        network_requests:0,network_failures:0,network_bytes_received:0,network_frames_received:0,network_source_gap_frames:0,network_queue_dropped_frames:0,
         analysis_prepared:0,
         video_callback_frames:0,video_callback_gap_frames:0,
         analysis_capture_pauses:0,motion_failures:0,metadata_failures:0,frames_without_contours:0,
@@ -1292,6 +1324,8 @@
         metadata_ws_received:0,metadata_duplicate_revisions:0,metadata_invalid_revisions:0,
         metadata_latency_max_seconds:0,worker_frames_completed:0,worker_metadata_accepted:0,
         preprocess_frames_completed:0,preprocess_failures:0,
+        motion_frames_admitted:0,motion_frames_skipped:0,motion_frames_expired:0,
+        motion_metadata_coalesced:0,
         worker_anchor_rejections:0,worker_results_received:0,worker_results_late:0,
         worker_present_expired:0,
         geometry_cache_hits:0,geometry_cache_misses:0,
@@ -1341,8 +1375,63 @@
       // Fixed-size sample rings bound telemetry memory even if reporting is delayed.
       window.samples[(window.count-1)%256]=milliseconds;
     }
+    disableMotionWork(){
+      // A terminal worker failure has no future ACKs. Retire actual ownership
+      // and stop optional admissions while the original video keeps playing.
+      this.motionFailed=true;this.motionFrames.clear();this.motionPresents.clear();
+      this.pendingMotionMetadata=null;this.motionMetadataInFlight=false;
+      this.pendingPresent.clear();this.requestedRevision.clear();
+      this.worker.terminate();this.preprocessWorker.terminate();
+    }
+    retireMotionWork(message){
+      if(message.type==="frame_preprocessed"&&this.motionFrames.has(message.sequence))
+        this.motionFrames.set(message.sequence,true);
+      if(message.type==="frame_processed"||message.type==="failure"&&
+        ["frame","frame_bitmap"].includes(message.request_type))this.motionFrames.delete(message.sequence);
+      if(message.type==="present"||message.type==="failure"&&message.request_type==="present")
+        this.motionPresents.delete(message.sequence);
+      if(message.type==="metadata_processed"||message.type==="failure"&&message.request_type==="metadata"){
+        this.motionMetadataInFlight=false;
+        const pending=this.pendingMotionMetadata;this.pendingMotionMetadata=null;
+        if(pending)try{this.postMotion(pending);}
+        catch(error){this.stats.metadata_failures++;}
+      }
+    }
     postMotion(message,transfers=[]){
-      this.preprocessWorker.postMessage({...message,queued_epoch_ms:Date.now()},transfers);
+      if(this.motionFailed)return false;
+      const frame=message.type==="frame_bitmap",present=message.type==="present",metadata=message.type==="metadata";
+      if(frame&&this.motionFrames.size>=2||present&&this.motionPresents.size>=2)return false;
+      if(metadata&&this.motionMetadataInFlight){
+        if(this.pendingMotionMetadata){
+          // Delta transports can carry different real anchors. Keep a bounded
+          // union, with the newest snapshot authoritative for events/identities.
+          const previous=this.pendingMotionMetadata,anchors=new Map();
+          for(const anchor of [...previous.data.anchors,...message.data.anchors])
+            anchors.set(anchor?.source_sequence,anchor);
+          const preserveEvents=sequence(previous.data.event_snapshot_revision)&&
+            (!sequence(message.data.event_snapshot_revision)||
+              previous.data.event_snapshot_revision>message.data.event_snapshot_revision);
+          message={...message,queued_at:previous.queued_at,data:{...message.data,
+            ...(preserveEvents?{events:previous.data.events,event_snapshot_revision:previous.data.event_snapshot_revision,
+              event_snapshot_timestamp:previous.data.event_snapshot_timestamp}:{}),
+            anchors:[...anchors.values()].sort((a,b)=>(a?.source_sequence??-1)-(b?.source_sequence??-1)).slice(-256)}};
+          this.stats.motion_metadata_coalesced++;
+        }
+        this.pendingMotionMetadata=message;return true;
+      }
+      if(frame){this.motionFrames.set(message.frame.sequence,false);
+        message={...message,motion_deadline_epoch_ms:Date.now()+1000};}
+      if(present)this.motionPresents.add(message.sequence);
+      if(metadata)this.motionMetadataInFlight=true;
+      try{this.preprocessWorker.postMessage({...message,queued_epoch_ms:Date.now()},transfers);}
+      catch(error){
+        if(frame)this.motionFrames.delete(message.frame.sequence);
+        if(present)this.motionPresents.delete(message.sequence);
+        if(metadata)this.motionMetadataInFlight=false;
+        throw error;
+      }
+      if(frame)this.stats.motion_frames_admitted++;
+      return true;
     }
     start(){if(this.config.source_mode!=="network")this.scheduleCapture();this.animate();
       if(!["websocket","frames"].includes(this.config.transport))this.pollMetadata();}
@@ -1410,18 +1499,21 @@
       this.noteTiming("display_capture",performance.now()-stageStarted);stageStarted=performance.now();
       // Bound motion work by area, not only width: a 4:3 camera otherwise
       // costs a third more pixels than the wide-video acceptance sample.
-      // Keep one fixed scale for the run and retain every captured motion frame.
+      // Keep one fixed scale for the run. Optional motion work has a bounded
+      // admission window; original playback and model uploads keep their clocks.
       const requestedWidth=clamp(Number(this.config.motion_width)||160,160,320),
         motionScale=Math.min(requestedWidth/width,240/height,Math.sqrt(requestedWidth**2*9/16/(width*height))),
         grayWidth=Math.max(16,Math.floor(width*motionScale)),grayHeight=Math.max(16,Math.floor(height*motionScale));
       if(this.grayCanvas.width!==grayWidth)this.grayCanvas.width=grayWidth;
       if(this.grayCanvas.height!==Math.min(240,grayHeight))this.grayCanvas.height=Math.min(240,grayHeight);
-      this.grayContext.drawImage(bitmap,0,0,this.grayCanvas.width,this.grayCanvas.height);
-      const motionBitmap=this.grayCanvas.transferToImageBitmap();
-      try{this.postMotion({type:"frame_bitmap",queued_at:performance.now(),frame:{sequence:seq,timestamp,
-        width:this.grayCanvas.width,height:this.grayCanvas.height,bitmap:motionBitmap}},[motionBitmap]);}
-      catch(error){motionBitmap.close();this.stats.motion_failures++;
-        this.onFailure("轮廓画面传送失败，视频继续播放；请重新开始检测。");}
+      if(!this.motionFailed&&this.motionFrames.size<2){
+        this.grayContext.drawImage(bitmap,0,0,this.grayCanvas.width,this.grayCanvas.height);
+        const motionBitmap=this.grayCanvas.transferToImageBitmap();
+        try{this.postMotion({type:"frame_bitmap",queued_at:performance.now(),frame:{sequence:seq,timestamp,
+          width:this.grayCanvas.width,height:this.grayCanvas.height,bitmap:motionBitmap}},[motionBitmap]);}
+        catch(error){motionBitmap.close();this.stats.motion_failures++;
+          this.onFailure("轮廓画面传送失败，视频继续播放；请重新开始检测。");}
+      }else this.stats.motion_frames_skipped++;
       this.noteTiming("motion_capture",performance.now()-stageStarted);stageStarted=performance.now();
       if(sample){
         const analysisPeriod=1/Math.max(Number(this.config.analysis_sample_fps)||3,Number(this.settings.sample_fps)||0);
@@ -1517,9 +1609,21 @@
       const now=performance.now();
       if(this.latestClock){
         const mediaNow=this.latestClock.timestamp+(now-this.latestClock.now)/1000;
+        // Preserve the configured playback delay, but never replay a growing
+        // backlog after a hidden tab or slow renderer. Only presentation copies
+        // older than the delayed playhead plus a bounded grace are discarded.
+        const discarded=this.frames.discardBefore(mediaNow-this.frames.delay-.5);
+        if(discarded>=0){
+          this.lastDiscardedSequence=Math.max(this.lastDiscardedSequence,discarded);
+          for(const collection of [this.overlays,this.requested,this.pendingPresent,this.requestedRevision])
+            for(const key of collection.keys())if(key<=discarded)collection.delete(key);
+        }
         for(const frame of this.frames.frames){
           if(frame.timestamp>mediaNow-this.frames.delay+this.presentPrefetchSeconds)break;
           if(!this.requested.has(frame.sequence)&&!this.pendingPresent.has(frame.sequence)){
+            // Display retirement does not cancel a message already in a worker
+            // port. Bound actual outstanding queries, independently of overlays.
+            if(this.motionFailed||this.motionPresents.size>=2)break;
             this.requested.add(frame.sequence);this.pendingPresent.add(frame.sequence);
             this.requestedRevision.set(frame.sequence,this.geometryRevision);
             this.postMotion({type:"present",id:frame.sequence,queued_at:now,
@@ -1603,8 +1707,12 @@
       const timer=setTimeout(()=>controller.abort(),2000);
       let stage="network";
       try{
-        const response=await fetch(this.config.metadata_url||"/v1/video/display/metadata",{
-          cache:"no-store",signal:controller.signal});
+        const base=this.config.metadata_url||"/v1/video/display/metadata",
+          delta=this.config.transport==="stream",
+          url=delta?base+"?"+new URLSearchParams({stream_session_id:this.config.stream_session_id,
+            revision:this.lastMetadataRevision??-1}):base;
+        const response=await fetch(url,{cache:"no-store",signal:controller.signal});
+        if(response.status===204)return;
         if(!response.ok){stage="http";throw new Error("metadata unavailable");}
         stage="decode";
         const data=await response.json();
@@ -1613,7 +1721,7 @@
         if(!Array.isArray(data.anchors))throw new Error("invalid metadata");
         this.stats.metadata_latency_max_seconds=Math.max(this.stats.metadata_latency_max_seconds,
           (performance.now()-started)/1000);
-        this.receiveMetadata(data);
+        this.receiveMetadata(data,{transport:delta?"http_delta":"http"});
       }catch(error){if(!this.closed){
         this.stats.metadata_failures++;
         if(controller.signal.aborted)this.stats.metadata_timeouts++;
@@ -1629,17 +1737,17 @@
       if(!data||!sameRun(data,this.config)){
         this.stats.metadata_failures++;this.stats.metadata_run_mismatches++;return false;
       }
-      if(!Array.isArray(data.anchors)){
+      if(!Array.isArray(data.anchors)||data.anchors.length>256){
         this.stats.metadata_failures++;this.stats.metadata_decode_errors++;return false;
       }
-      if(transport==="websocket"){
+      if(["websocket","http_delta"].includes(transport)){
         if(!sequence(data.metadata_revision)){
           this.stats.metadata_failures++;this.stats.metadata_invalid_revisions++;return false;
         }
         if(data.metadata_revision<=(this.lastMetadataRevision??-1)){
           this.stats.metadata_duplicate_revisions++;return false;
         }
-        this.lastMetadataRevision=data.metadata_revision;this.stats.metadata_ws_received++;
+        this.lastMetadataRevision=data.metadata_revision;if(transport==="websocket")this.stats.metadata_ws_received++;
       }
       this.stats.metadata_received++;this.lastMetadataReceivedAt=performance.now();
       this.identities.accept(data);
@@ -1652,7 +1760,7 @@
       return finite(timestamp)&&this.latestClock?Math.max(0,this.latestClock.timestamp+
         (performance.now()-this.latestClock.now)/1000-timestamp):null;
     }
-    snapshot(){return {...this.frames.stats(),...this.stats,analysis_pending:this.uploads.length,
+    snapshot(){return {display_instance_id:this.displayInstanceId,...this.frames.stats(),...this.stats,analysis_pending:this.uploads.length,
       configured_display_delay_seconds:this.frames.delay,
       presentation_prefetch_seconds:this.presentPrefetchSeconds,pending_present_queries:this.pendingPresent.size,
       source_width:this.sourceSize?.[0]||0,source_height:this.sourceSize?.[1]||0,
@@ -1662,9 +1770,11 @@
       analysis_prepared_pending:this.uploads.slice(1).filter(task=>!!task.packet).length,
       source_callback_fps:this.latestClock?.timestamp>0?
         (this.stats.video_callback_frames-1)/(this.latestClock.timestamp-(this.config.source_mode==="network"?this.firstMediaTime:0)||1):null,
-      worker_pending_frames:Math.max(0,this.stats.captured_frames-this.stats.worker_frames_completed),
-      preprocess_pending_frames:Math.max(0,this.stats.captured_frames-this.stats.preprocess_frames_completed),
-      motion_pending_frames:Math.max(0,this.stats.preprocess_frames_completed-this.stats.worker_frames_completed),
+      worker_pending_frames:this.motionFrames.size,
+      preprocess_pending_frames:[...this.motionFrames.values()].filter(prepared=>!prepared).length,
+      motion_pending_frames:[...this.motionFrames.values()].filter(Boolean).length,
+      worker_pending_present_queries:this.motionPresents.size,
+      worker_pending_metadata:Number(this.motionMetadataInFlight)+Number(!!this.pendingMotionMetadata),
       last_metadata_received_age_seconds:this.lastMetadataReceivedAt===undefined?null:
         Math.max(0,(performance.now()-this.lastMetadataReceivedAt)/1000),
       last_metadata_applied_age_seconds:this.lastMetadataAppliedAt===undefined?null:
@@ -1744,6 +1854,7 @@
       if(typeof document!=="undefined")document.removeEventListener?.("visibilitychange",this.onVisibilityChange);
       this.worker.terminate();this.preprocessWorker.terminate();this.encodeWorker.terminate();this.frames.reset();this.overlays.clear();
       this.requested.clear();this.pendingPresent.clear();this.requestedRevision.clear();
+      this.motionFrames.clear();this.motionPresents.clear();this.pendingMotionMetadata=null;this.motionMetadataInFlight=false;
       this.identities.records=[];
       for(const task of this.uploads)task.image?.close();
     }
@@ -1757,7 +1868,7 @@
     const data=JSON.parse(new TextDecoder().decode(bytes.subarray(8,8+size)));
     if(data.protocol!==1||typeof data.connection_id!=="string"||!data.config||
       !safeId(data.config.stream_session_id)||!sequence(data.config.generation)||!sequence(data.config.crop_version)||
-      !Array.isArray(data.frames)||data.frames.length>8)throw new Error("invalid display identity");
+      !Array.isArray(data.frames)||data.frames.length>64)throw new Error("invalid display identity");
     let offset=8+size,previous=-1,stamp=-1;
     for(const frame of data.frames){
       if(!sequence(frame.source_sequence)||frame.source_sequence<=previous||!finite(frame.media_timestamp)||
@@ -1771,6 +1882,32 @@
     return data;
   }
 
+  class DisplayStreamDecoder{
+    constructor(){this.prefix=new Uint8Array(4);this.prefixUsed=0;this.body=null;this.used=0;}
+    feed(chunk){
+      const packets=[];let offset=0;
+      while(offset<chunk.length){
+        if(!this.body){
+          const count=Math.min(4-this.prefixUsed,chunk.length-offset);
+          this.prefix.set(chunk.subarray(offset,offset+count),this.prefixUsed);
+          this.prefixUsed+=count;offset+=count;
+          if(this.prefixUsed<4)break;
+          const size=new DataView(this.prefix.buffer).getUint32(0);
+          if(size<8||size>8*1024**2)throw new Error("invalid display stream length");
+          this.body=new Uint8Array(size);this.used=0;
+        }
+        const count=Math.min(this.body.length-this.used,chunk.length-offset);
+        this.body.set(chunk.subarray(offset,offset+count),this.used);this.used+=count;offset+=count;
+        if(this.used===this.body.length){
+          const data=decodeDisplayBatch(this.body.buffer);data.byte_length=this.body.length;packets.push(data);
+          this.body=null;this.prefixUsed=0;this.used=0;
+        }
+      }
+      return packets;
+    }
+    finish(){if(this.prefixUsed||this.body)throw new Error("truncated display stream");}
+  }
+
   class NetworkController{
     static supported(){return BrowserController.supported(null)&&typeof createImageBitmap==="function";}
     constructor({canvas,url,metricsUrl,onStatus=()=>{},onFailure=()=>{},onFrame=()=>{}}){
@@ -1778,6 +1915,7 @@
       this.onFailure=onFailure;this.onFrame=onFrame;this.closed=false;this.after=-1;
       this.connectionId="";this.session="";this.revision=-1;this.controller=null;this.key=null;
       this.socket={readyState:0,bufferedAmount:0};
+      this.streamConnections=0;this.queue=[];this.queueBytes=0;this.queueFrames=0;this.draining=false;this.acceptEpoch=0;this.queuedKey=null;
     }
     start(){BrowserController.warmupMotion();this.pull();}
     reset(config,connectionId){
@@ -1788,25 +1926,55 @@
       this.canvas.getContext("2d").clearRect(0,0,this.canvas.width,this.canvas.height);
       if(config.enabled){
         this.controller=new BrowserController({video:null,canvas:this.canvas,socket:this.socket,
-          config:{...config,source_mode:"network",transport:"frames",metrics_url:this.metricsUrl},
+          config:{...config,source_mode:"network",transport:config.transport==="stream"?"stream":"frames",
+            metadata_url:this.url.replace(/\/frames(?:\?.*)?$/,"/metadata"),metrics_url:this.metricsUrl},
           settings:{sample_fps:0,max_image_side:1280,jpeg_quality:80},
           onStatus:this.onStatus,onFailure:this.onFailure});
+        this.controller.stats.network_requests=this.streamConnections;
         this.controller.start();
       }
     }
-    async accept(data){
+    enqueue(data){
+      const config=data.config,key=JSON.stringify([data.connection_id,config.stream_session_id,
+        config.generation,config.crop_version,config.enabled,config.delay_seconds]);
+      const changed=key!==this.queuedKey;
+      if(changed){this.queue=[];this.queueBytes=0;this.queueFrames=0;this.acceptEpoch++;this.queuedKey=key;}
+      if(!changed&&!data.frames.length)return;
+      data.received_at=performance.now();
+      const size=data.byte_length||data.frames.reduce((sum,frame)=>sum+frame.jpeg.length,0),
+        latest=data.frames.at(-1)?.media_timestamp,deadline=latest-(Number(config.delay_seconds)||0)-.5;
+      this.queue.push({data,size,epoch:this.acceptEpoch});this.queueBytes+=size;this.queueFrames+=data.frames.length;
+      // Keep still-useful pictures through a short decode stall, not an unlimited
+      // replay backlog. This queue contains display JPEGs only, never inference work.
+      while(this.queue.length>1&&(this.queueBytes>32*1024**2||this.queueFrames>128||
+        this.queue[0].data.frames.at(-1)?.media_timestamp<deadline)){
+        const old=this.queue.shift();this.queueBytes-=old.size;this.queueFrames-=old.data.frames.length;
+        if(this.controller)this.controller.stats.network_queue_dropped_frames+=old.data.frames.length;
+      }
+      void this.drain();
+    }
+    async drain(){
+      if(this.draining)return;this.draining=true;
+      try{while(this.queue.length&&!this.closed){
+        const item=this.queue.shift();this.queueBytes-=item.size;this.queueFrames-=item.data.frames.length;
+        try{await this.accept(item.data,item.epoch);}
+        catch(error){if(!this.closed){if(this.controller)this.controller.stats.network_failures++;
+          this.onFailure("画面解码暂时失败，正在继续接收。");}}
+      }}finally{this.draining=false;}
+    }
+    async accept(data,epoch=this.acceptEpoch){
       const config=data.config,key=JSON.stringify([data.connection_id,config.stream_session_id,config.generation,
         config.crop_version,config.enabled,config.delay_seconds]);
       if(this.key!==key)this.reset(config,data.connection_id);
       if(this.connectionId!==data.connection_id)this.after=-1;
       this.connectionId=data.connection_id;
-      const latest=data.frames.at(-1)?.media_timestamp,receivedAt=performance.now();
+      const latest=data.frames.at(-1)?.media_timestamp,receivedAt=data.received_at??performance.now();
       for(const frame of data.frames){
         if(frame.source_sequence<=this.after)continue;
         const decodeStarted=performance.now();
         const bitmap=await createImageBitmap(new Blob([frame.jpeg],{type:"image/jpeg"}));
         try{
-          if(this.closed)return;
+          if(this.closed||epoch!==this.acceptEpoch)return;
           if(bitmap.width!==frame.width||bitmap.height!==frame.height)throw new Error("display dimensions changed");
           if(this.controller){
             this.controller.noteTiming("network_decode",performance.now()-decodeStarted);
@@ -1830,26 +1998,84 @@
       if(this.closed)return;
       if(typeof document!=="undefined"&&document.hidden){this.timer=setTimeout(()=>this.pull(),250);return;}
       const started=performance.now(),abort=new AbortController();this.abort=abort;
-      const timeout=setTimeout(()=>abort.abort(),3000);let retry=0;
+      let timeout,reader,retry=0;
+      const touch=()=>{clearTimeout(timeout);timeout=setTimeout(()=>abort.abort(),5000);};touch();
       try{
         const query=new URLSearchParams({after:this.after,connection_id:this.connectionId,
-          revision:this.revision,stream_session_id:this.session});
+          revision:this.revision,stream_session_id:this.session,continuous:"true"});
         const response=await fetch(this.url+"?"+query,{cache:"no-store",signal:abort.signal});
         if(!response.ok)throw new Error("display unavailable");
-        const bytes=await response.arrayBuffer(),downloadSeconds=performance.now()-started;
-        const data=decodeDisplayBatch(bytes);
-        if(!this.closed){await this.accept(data);
-          if(this.controller){this.controller.stats.network_requests++;this.controller.stats.network_bytes_received+=bytes.byteLength;
-            this.controller.noteTiming("network_download",downloadSeconds);}}
+        if(response.headers?.get("content-type")?.split(";")[0]==="application/vnd.goodvision.display-stream"){
+          this.streamConnections++;if(this.controller)this.controller.stats.network_requests++;
+          reader=response.body.getReader();const decoder=new DisplayStreamDecoder();
+          while(!this.closed){
+            const received=await reader.read();if(received.done){decoder.finish();break;}touch();
+            for(const data of decoder.feed(received.value))this.enqueue(data);
+            if(this.controller)this.controller.stats.network_bytes_received+=received.value.byteLength;
+          }
+          if(!this.closed)retry=100;
+        }else{
+          // Compatibility for older servers. New servers use the independent
+          // stream above; the finite transport never has to be deployed first.
+          const bytes=await response.arrayBuffer(),downloadSeconds=performance.now()-started;
+          if(!this.closed){await this.accept(decodeDisplayBatch(bytes));
+            if(this.controller){this.controller.stats.network_requests++;
+              this.controller.stats.network_bytes_received+=bytes.byteLength;
+              this.controller.noteTiming("network_download",downloadSeconds);}}
+        }
       }catch(error){if(!this.closed){if(this.controller)this.controller.stats.network_failures++;
         retry=250;this.onFailure("实时画面暂不可用，正在重新获取。");}}
       finally{
-        clearTimeout(timeout);if(this.abort===abort)this.abort=null;
+        clearTimeout(timeout);if(reader)await reader.cancel().catch(()=>{});
+        if(this.abort===abort)this.abort=null;
         if(!this.closed)this.timer=setTimeout(()=>this.pull(),Math.max(retry,1000/30-(performance.now()-started)));
       }
     }
-    stop(){this.closed=true;clearTimeout(this.timer);this.abort?.abort();this.controller?.stop();this.controller=null;}
+    stop(){this.closed=true;this.acceptEpoch++;this.queue=[];this.queueBytes=this.queueFrames=0;
+      clearTimeout(this.timer);this.abort?.abort();this.controller?.stop();this.controller=null;}
   }
-  return {FrameTimeline,ContourHistory,DisplayIdentities,estimateMotion,warpPolygons,packCameraFrame,sameRun,drawSubjectLabel,
-    BrowserController,NetworkController,decodeDisplayBatch};
+
+  function eventObservationSummary(report){
+    if(!report||report.state!=="completed")return "等待本次事件判断";
+    const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械"};
+    const judgments=new Map((report.judgments||[]).map(value=>[value.event_label,value]));
+    const parts=Object.entries(labels).filter(([key])=>judgments.has(key)).map(([key,label])=>{
+      const value=judgments.get(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;
+      let result=observed===true?(report.type==="vlm_report"?"发现":value.confirmation_state==="confirmed"?"已确认":"发现，待确认"):observed===false?"未发现":"待判断";
+      if(observed===true&&["unavailable","partial"].includes(value.localization_state))result+="，定位待确认";
+      return label+"："+result;
+    });
+    return parts.length?parts.join(" · "):"本次返回尚无可用事件判断";
+  }
+
+  // A same-origin diagnostic view reuses the already decoded and annotated
+  // fleet canvas. It owns no stream, decoder, motion worker or telemetry slot.
+  class SharedController {
+    constructor({canvas,source,onStatus=()=>{},requestFrame=callback=>requestAnimationFrame(callback),cancelFrame=id=>cancelAnimationFrame(id)}){
+      Object.assign(this,{canvas,source,onStatus,requestFrame,cancelFrame});
+      this.closed=true;this.lastKey=null;this.frameId=null;this.lastStatus=0;
+    }
+    start(){if(!this.closed)return;this.closed=false;this.tick();}
+    tick(){
+      if(this.closed)return;
+      const value=this.source(),media=value?.media,stats=value?.stats;
+      const key=String(stats?.display_instance_id||"")+":"+String(media?.dataset?.frameSequence||"");
+      const width=media?.naturalWidth||media?.width,height=media?.naturalHeight||media?.height;
+      if(width&&height&&key!==this.lastKey){
+        if(this.canvas.width!==width)this.canvas.width=width;
+        if(this.canvas.height!==height)this.canvas.height=height;
+        this.canvas.getContext("2d").drawImage(media,0,0,width,height);
+        for(const name of ["frameSequence","observedAt","mediaTimestamp","receivedAt"]){
+          if(media.dataset?.[name]!==undefined)this.canvas.dataset[name]=media.dataset[name];
+        }
+        this.lastKey=key;
+      }
+      if(stats&&Date.now()-this.lastStatus>=1000){this.lastStatus=Date.now();this.onStatus(stats);}
+      this.frameId=this.requestFrame(()=>this.tick());
+    }
+    stop(){this.closed=true;if(this.frameId!==null)this.cancelFrame(this.frameId);this.frameId=null;}
+  }
+
+  return {FrameTimeline,ContourHistory,DisplayIdentities,DisplayStreamDecoder,estimateMotion,warpPolygons,packCameraFrame,sameRun,drawSubjectLabel,
+    BrowserController,NetworkController,SharedController,eventObservationSummary,decodeDisplayBatch};
 });

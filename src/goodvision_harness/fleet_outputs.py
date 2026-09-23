@@ -41,6 +41,10 @@ OUTPUT_PATHS = (
     ),
     "/rich-labels/latest",
     "/faces/fast",
+    "/vlm/status",
+    "/vlm/results/latest",
+    "/vlm/results/events",
+    "/vlm/associations",
     "/faces/gallery",
     "/faces/strangers",
     "/faces/strangers/{stranger_id}/photo",
@@ -200,7 +204,9 @@ class CameraOutputResponse(Response):
                     if k.lower() in _RESPONSE_HEADERS
                 ]
                 content_type = dict(headers).get(b"content-type", b"").split(b";")[0]
-                if content_type == b"application/json":
+                if message["status"] == 204:
+                    mode = "binary"
+                elif content_type == b"application/json":
                     mode = "json"
                 elif content_type == b"text/event-stream":
                     mode = "sse"
@@ -209,6 +215,7 @@ class CameraOutputResponse(Response):
                 elif content_type == b"image/jpeg":
                     mode = "finite"
                 elif content_type in {
+                    b"application/vnd.goodvision.display-stream",
                     b"video/mp4",
                     b"multipart/x-mixed-replace",
                     b"multipart/byteranges",
@@ -325,6 +332,7 @@ class CameraOutputResponse(Response):
             response.raw_headers = [(k.lower(), v) for k, v in upstream.headers.raw]
             content_type = upstream.headers.get("content-type", "").split(";")[0]
             if content_type in {
+                "application/vnd.goodvision.display-stream",
                 "text/event-stream",
                 "multipart/x-mixed-replace",
                 "video/mp4",

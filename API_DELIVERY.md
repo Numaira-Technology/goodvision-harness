@@ -57,7 +57,7 @@
 单路沿用原 `face-data` 卷，多路按 N 创建独立摄像头数据卷。
 每路大模型分析目标为 1.25 次/秒，N 路共 1.25 × N 请求/秒；默认追踪为每路 2 帧/秒。
 12 路仅是容量参考值，各部署规模的实际吞吐仍需实机验证。启动、参数与容量验证见
-[本地 GPU 部署说明](docs/local-gpu.md) 和 [模块化部署说明](docs/modular-services.md)。
+[本地 GPU 部署说明](docs/guides/local-gpu.md) 和 [模块化部署说明](docs/guides/modular-services.md)。
 
 ## 多路视频连接与统一分析
 
@@ -104,7 +104,7 @@
 JSON/SSE 增加 `camera_id`，二进制响应带 `X-Camera-Id`，GVD1 数据包头也带 `camera_id`。
 证据和录像链接指向所属通道，游标按通道及接口独立保存；原标识与旧单路接口保持兼容。
 完整路径表、参数、断线续传、录像 Range 和接入示例见
-[N 路视频输出接口](docs/multi-camera-api.md)。
+[N 路视频输出接口](docs/reference/multi-camera-api.md)。
 
 ## 访问地址与交付范围
 
@@ -119,6 +119,35 @@ GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务�
 识别需配置视频源、相应模型及推理服务凭据，并切换为 `dry_run=false`。
 
 ## 通用 JSON 与五能力独立 JSON
+
+### 独立 VLM 即时观测通道
+
+`SCENE_ENGINE_MODE=active` 且 `SCENE_INDEPENDENT_VLM=true` 时，VLM 直接从
+源视频取样，推理结果完成后发布，不等待人员追踪、人脸识别或场景关联。
+
+| 内容 | 接口 |
+| --- | --- |
+| VLM 原始结果 SSE，事件名 `vlm_report` | `GET /v1/vlm/results/events` |
+| 最新 VLM 原始结果 | `GET /v1/vlm/results/latest` |
+| 当前会话、请求成功/失败数、启用类别 | `GET /v1/vlm/status` |
+| 后台完成的人物/事件关联 | `GET /v1/vlm/associations` |
+
+原始包使用 `type="vlm_report"`、`analysis_kind="vlm_event"`，也进入通用及
+对应能力的结果流。配置了 Webhook 时，成功结果直接进入独立发送队列。
+这些接口复用同一推理；接入时用 `stream_session_id` 和 `message_id` 去重。
+
+**即时发现应检查 `judgments[].observed_detected === true`。** 阳性观测的
+`detected` 为 `null`，`confirmation_state="pending"`；这不表示没有收到模型结果，
+也不表示当前包正在等待人员追踪。缺少人物框时也可能有有效阳性观测，应单独读取
+`localization_state`。`state="failed"` 和未返回的类别不能作为阴性。
+
+持续的、按人物确认的报警状态仍从 `/v1/scene` 和事件档案取得，可能等待追踪
+关联、证据规则及后台处理。它们不会回写原始包的 `detected`。VLM 的即时阳性
+可用于“发现异常/待确认”通知，不能直接当作已经确认的事实。
+
+下节场景状态说明适用于场景投影消息 `analysis_kind="scene_state"`；启用独立
+VLM 时，通用结果流可以同时出现原始观测和场景状态，接收方须区分消息类型。
+完整字段语义见 [VLM 观测与关联](docs/architecture/vlm-observation-association.md)。
 
 ### 持续事件模式的兼容输出（2026-09-19）
 

@@ -1,0 +1,78 @@
+{
+  "date": "2026-09-22",
+  "tested_source_commit": "30ac2a5",
+  "main_snapshot": "7c9a789c26b7bb857bd0c52f12641eac2776c09c",
+  "reference_thread": "验证 VLM 独立告警链路",
+  "reference_thread_id": "01a0c48e-f673-7521-87e9-2b48473139c2",
+  "input_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "duration_seconds": 55.798021,
+  "frame_cache_sha256": "bd9cc782059e7d3726c81615c090482cccebc9c035d1ba0006150e74437c1696",
+  "frames": 767,
+  "ingress_max_side": 1280,
+  "ingress_jpeg_quality": 90,
+  "vlm_max_side": 720,
+  "vlm_jpeg_quality": 90,
+  "requested_model": "qwen/qwen3-vl-8b-instruct:nitro",
+  "provider_policy": {
+    "sort": "throughput",
+    "allow_fallbacks": true,
+    "ignore": [
+      "coreweave",
+      "novita"
+    ]
+  },
+  "observation_fps": 1.25,
+  "input_sample_fps": 2.5,
+  "max_in_flight_per_lane": 4,
+  "timeout_seconds": 15,
+  "retries": 0,
+  "max_tokens": {
+    "full_or_grounding": 1600,
+    "information": 160
+  },
+  "parallel_pair_admission": true,
+  "features": [
+    "fight",
+    "smoking",
+    "fall",
+    "weapon",
+    "stranger"
+  ],
+  "sensitivities": {
+    "fight": "standard",
+    "smoking": "high",
+    "fall": "standard",
+    "weapon": "standard"
+  },
+  "sam_instance": 52032490,
+  "sam_gpu": "RTX 4090",
+  "sam_queue_policy": "latest_only",
+  "sam_transport": "H.264 384px CRF28",
+  "sam_batch_frames": 4,
+  "sam_batch_seconds": 0.5,
+  "sam_tracking_fps": 1,
+  "display_delay": 6,
+  "face_provider": "CPUExecutionProvider",
+  "face_sample_fps": 1.25,
+  "run_order": [
+    "full-0",
+    "parallel-0",
+    "parallel-1",
+    "full-1",
+    "full-2",
+    "parallel-2"
+  ],
+  "receiver": "tools/vlm_delivery_probe.py, separate Windows process; VLM SSE + shared SSE + faces/status/scene/association polls + live/annotated video",
+  "primary_metric": "receiver wall clock minus actual send time of newest evidence frame; same host clock",
+  "cross_clock": "before/after 7 clock round-trips; offset from minimum RTT sample; internal durations monotonic",
+  "p95": "nearest rank",
+  "gpu_release": "not released; reserved for 测试单 SAM 延迟",
+  "limitations": [
+    "predecoded original video, no real-camera encoding or external LAN",
+    "each run uses fresh service/data volume; model initial request and connection effects included",
+    "three temporal repetitions, one annotated video; no causal isolation of ingress contention",
+    "original reference 35s SAM/face withholding control was not repeated; paired publications measured directly",
+    "reports are raw observations, positives pending, not independently confirmed alarms",
+    "provider policy is throughput routing with fallback, not forced Alibaba; actual providers recorded per response"
+  ]
+}

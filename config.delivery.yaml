@@ -23,7 +23,7 @@ video:
 display:
   # Original source frames fill the gaps between sparse inference frames.
   # Each frame inherits the preceding annotation without increasing inference FPS.
-  fps: 30.0
+  fps: 15.0
   # null preserves the source dimensions AFTER selecting the camera view.
   # A positive integer optionally caps the longest side without upscaling.
   max_image_side: null

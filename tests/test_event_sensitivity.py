@@ -93,6 +93,28 @@ def test_each_other_event_has_distinct_real_policy(label, standard, high):
     assert standard_text != high_text
 
 
+@pytest.mark.parametrize("multi", [False, True])
+def test_weapon_standard_prompt_preserves_visible_weapons_and_rejects_pose_only(multi):
+    text = _text(_messages("standard", multi=multi, labels=("weapon",)))
+    assert "weapon-specific features" in text
+    assert "weapon does not require an attack to be positive" in text
+    assert "object itself is being used to strike, stab" in text
+    assert "punching or raised fists must not turn an unidentified handheld" in text
+    assert "Carrying, placing, dropping, picking up" in text
+    assert "high-recall policy" not in text
+
+
+def test_temporal_weapon_policy_has_same_evidence_floor_without_box_instructions():
+    text = sensitivity_policy_text(
+        {"weapon": "standard"}, smoking_standard_rule="unused",
+        include_output_guidance=False,
+    )
+    assert "a blade with its handle" in text
+    assert "firearm's barrel and grip" in text
+    assert "mere possession or movement is insufficient" in text
+    assert "Box the actual item" not in text
+
+
 @pytest.mark.parametrize("levels", product(("standard", "high"), repeat=4))
 def test_evidence_only_policies_preserve_each_level_without_output_conflicts(levels):
     choices = dict(zip(("fight", "smoking", "fall", "weapon"), levels, strict=True))
@@ -116,7 +138,13 @@ def test_evidence_only_policies_preserve_each_level_without_output_conflicts(lev
     for label, level in choices.items():
         assert criteria[(label, level)] in text
         other_level = "high" if level == "standard" else "standard"
-        assert criteria[(label, other_level)] not in text
+        own_policy = sensitivity_policy_text(
+            {label: level}, smoking_standard_rule=standard_smoking,
+            include_output_guidance=False,
+        )
+        # Another event may mention the cue to reject a cross-label inference
+        # (e.g. raised fists alone are not weapon evidence).
+        assert criteria[(label, other_level)] not in own_policy
     for output_instruction in ("box", "describe", "description", "report suspected"):
         assert output_instruction not in text.lower()
     if choices["smoking"] == "high":

@@ -9,6 +9,7 @@
 !sam_scene/perception_routes.py
 !sam_scene/sam_live.py
 !sam_scene/multistream.py
+!sam_scene/gpu_memory.py
 !contour/
 !contour/Dockerfile.engine
 !contour/repair_decord_metadata.py

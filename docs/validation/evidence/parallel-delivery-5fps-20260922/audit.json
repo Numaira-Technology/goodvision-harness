@@ -1,0 +1,1033 @@
+{
+  "runs": {
+    "full-0": {
+      "assertions_passed": true,
+      "source_snapshot_sha256": "ef9b8772ab922742ca50f9d7ba379f1aa4b202e682881962dd9f6deb29b0dad1",
+      "actual_upload_fps": 4.998609291698348,
+      "scheduled_frames": 279,
+      "source_age_at_upload": {
+        "n": 279,
+        "median": 0.033333333333333215,
+        "p95": 0.06833333333332803,
+        "mean": 0.03101553166069132,
+        "max": 0.08333333333333215
+      },
+      "sender_schedule_lag": {
+        "n": 279,
+        "median": 0.018999999997323158,
+        "p95": 0.03799999999464454,
+        "mean": 0.019681003578305552,
+        "max": 0.05299999999406246
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 47,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 22,
+        "source_samples": 108,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 6,
+        "retained_bytes": 432729,
+        "claimed_requests": 47,
+        "combined_last_result": {
+          "frame_sequence": 2764,
+          "state": "completed",
+          "seconds": 3.7619007359899115
+        },
+        "ungrounded_verdicts": 129,
+        "last_result_at": "2026-09-22T09:50:26.108024+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.7619007359899115,
+        "last_success_at": "2026-09-22T09:50:26.108024+00:00",
+        "unlocalized_reports": 35,
+        "admitted_samples": 108,
+        "published_reports": 47,
+        "stream_session_id": "b2acdf27-9330-40bb-a654-67934f86bff9",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 12.225958338996861,
+        "last_result_age_seconds": 8.464059903009911,
+        "last_success_age_seconds": 8.46406070300145,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "full",
+        "paired_admission": false,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "api_calls": 47,
+      "all_lane_publication_states": {
+        "completed": 47
+      },
+      "actual_outgoing_policies": [
+        "{\"allow_fallbacks\": true, \"ignore\": [\"coreweave\", \"novita\"], \"sort\": \"throughput\"}"
+      ],
+      "api_http": {
+        "n": 47,
+        "median": 3.0831239223480225,
+        "p95": 6.361994504928589,
+        "mean": 3.4046466807101634,
+        "max": 6.656073808670044
+      },
+      "receiver_connection_errors": []
+    },
+    "full-1": {
+      "assertions_passed": true,
+      "source_snapshot_sha256": "ef9b8772ab922742ca50f9d7ba379f1aa4b202e682881962dd9f6deb29b0dad1",
+      "actual_upload_fps": 4.9998752493046785,
+      "scheduled_frames": 279,
+      "source_age_at_upload": {
+        "n": 279,
+        "median": 0.033333333333333215,
+        "p95": 0.06833333333332803,
+        "mean": 0.03101553166069132,
+        "max": 0.08333333333333215
+      },
+      "sender_schedule_lag": {
+        "n": 279,
+        "median": 0.01600000000325963,
+        "p95": 0.031000000002677552,
+        "mean": 0.016605734769471886,
+        "max": 0.041000000003259984
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 49,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 22,
+        "source_samples": 108,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 6,
+        "retained_bytes": 432729,
+        "claimed_requests": 49,
+        "combined_last_result": {
+          "frame_sequence": 2764,
+          "state": "completed",
+          "seconds": 2.9614466979983263
+        },
+        "ungrounded_verdicts": 129,
+        "last_result_at": "2026-09-22T09:55:06.218972+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 2.9614466979983263,
+        "last_success_at": "2026-09-22T09:55:06.218972+00:00",
+        "unlocalized_reports": 35,
+        "admitted_samples": 108,
+        "published_reports": 49,
+        "stream_session_id": "fa3c3b3c-4c6f-4355-8bda-65d6348b0514",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 12.214878294005757,
+        "last_result_age_seconds": 9.253433997000684,
+        "last_success_age_seconds": 9.253434497004491,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "full",
+        "paired_admission": false,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "api_calls": 49,
+      "all_lane_publication_states": {
+        "completed": 49
+      },
+      "actual_outgoing_policies": [
+        "{\"allow_fallbacks\": true, \"ignore\": [\"coreweave\", \"novita\"], \"sort\": \"throughput\"}"
+      ],
+      "api_http": {
+        "n": 49,
+        "median": 3.059037446975708,
+        "p95": 5.999082803726196,
+        "mean": 3.428190216726186,
+        "max": 6.243018627166748
+      },
+      "receiver_connection_errors": []
+    },
+    "full-2": {
+      "assertions_passed": true,
+      "source_snapshot_sha256": "ef9b8772ab922742ca50f9d7ba379f1aa4b202e682881962dd9f6deb29b0dad1",
+      "actual_upload_fps": 4.999134261673997,
+      "scheduled_frames": 279,
+      "source_age_at_upload": {
+        "n": 279,
+        "median": 0.033333333333333215,
+        "p95": 0.06833333333332803,
+        "mean": 0.03101553166069132,
+        "max": 0.08333333333333215
+      },
+      "sender_schedule_lag": {
+        "n": 279,
+        "median": 0.018999999997319605,
+        "p95": 0.031000000002677552,
+        "mean": 0.017297491036029188,
+        "max": 0.03699999999080461
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 50,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 22,
+        "source_samples": 108,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 6,
+        "retained_bytes": 432729,
+        "claimed_requests": 50,
+        "combined_last_result": {
+          "frame_sequence": 2764,
+          "state": "completed",
+          "seconds": 3.500837765997858
+        },
+        "ungrounded_verdicts": 129,
+        "unlocalized_reports": 36,
+        "last_result_at": "2026-09-22T09:56:40.174622+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.500837765997858,
+        "last_success_at": "2026-09-22T09:56:40.174622+00:00",
+        "admitted_samples": 108,
+        "published_reports": 50,
+        "stream_session_id": "b8de637a-e15d-4869-97bc-973216f589d1",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 12.231244146998506,
+        "last_result_age_seconds": 8.73040798099828,
+        "last_success_age_seconds": 8.730408180999802,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "full",
+        "paired_admission": false,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "api_calls": 50,
+      "all_lane_publication_states": {
+        "completed": 50
+      },
+      "actual_outgoing_policies": [
+        "{\"allow_fallbacks\": true, \"ignore\": [\"coreweave\", \"novita\"], \"sort\": \"throughput\"}"
+      ],
+      "api_http": {
+        "n": 50,
+        "median": 3.0335479974746704,
+        "p95": 6.462746620178223,
+        "mean": 3.2856630992889406,
+        "max": 7.287668228149414
+      },
+      "receiver_connection_errors": []
+    },
+    "parallel-0": {
+      "assertions_passed": true,
+      "source_snapshot_sha256": "ef9b8772ab922742ca50f9d7ba379f1aa4b202e682881962dd9f6deb29b0dad1",
+      "actual_upload_fps": 5.001136507188901,
+      "scheduled_frames": 279,
+      "source_age_at_upload": {
+        "n": 279,
+        "median": 0.033333333333333215,
+        "p95": 0.06833333333332803,
+        "mean": 0.03101553166069132,
+        "max": 0.08333333333333215
+      },
+      "sender_schedule_lag": {
+        "n": 279,
+        "median": 0.02499999999999858,
+        "p95": 0.046999999991385266,
+        "mean": 0.02536559139503963,
+        "max": 0.07899999999790452
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 84,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 23,
+        "expired_source_dropped": 4,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 6,
+        "retained_bytes": 432729,
+        "source_samples": 102,
+        "claimed_requests": 84,
+        "information_last_result": {
+          "frame_sequence": 2743,
+          "state": "completed",
+          "seconds": 2.211124710011063
+        },
+        "ungrounded_verdicts": 288,
+        "unlocalized_reports": 74,
+        "last_result_at": "2026-09-22T09:52:00.705635+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.862455716007389,
+        "last_success_at": "2026-09-22T09:52:00.705635+00:00",
+        "grounding_last_result": {
+          "frame_sequence": 2743,
+          "state": "completed",
+          "seconds": 3.862455716007389
+        },
+        "admitted_samples": 106,
+        "input_backpressure_dropped": 2,
+        "published_reports": 84,
+        "stream_session_id": "4425b029-b837-4db7-9b70-b96b38d3e710",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 12.074062621002668,
+        "last_result_age_seconds": 8.730493983995984,
+        "last_success_age_seconds": 8.730494584000553,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "parallel",
+        "paired_admission": true,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "api_calls": 84,
+      "all_lane_publication_states": {
+        "completed": 84
+      },
+      "actual_outgoing_policies": [
+        "{\"allow_fallbacks\": true, \"ignore\": [\"coreweave\", \"novita\"], \"sort\": \"throughput\"}"
+      ],
+      "api_http": {
+        "n": 84,
+        "median": 2.4998470544815063,
+        "p95": 5.458718776702881,
+        "mean": 2.6352746231215343,
+        "max": 8.191633224487305
+      },
+      "receiver_connection_errors": []
+    },
+    "parallel-1": {
+      "assertions_passed": true,
+      "source_snapshot_sha256": "ef9b8772ab922742ca50f9d7ba379f1aa4b202e682881962dd9f6deb29b0dad1",
+      "actual_upload_fps": 4.999033485290081,
+      "scheduled_frames": 279,
+      "source_age_at_upload": {
+        "n": 279,
+        "median": 0.033333333333333215,
+        "p95": 0.06833333333332803,
+        "mean": 0.03101553166069132,
+        "max": 0.08333333333333215
+      },
+      "sender_schedule_lag": {
+        "n": 279,
+        "median": 0.01900000001187152,
+        "p95": 0.03200000000651926,
+        "mean": 0.01801433692354329,
+        "max": 0.04100000000325821
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 100,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 22,
+        "source_samples": 108,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 6,
+        "retained_bytes": 432729,
+        "claimed_requests": 100,
+        "information_last_result": {
+          "frame_sequence": 2743,
+          "state": "completed",
+          "seconds": 1.6221816670004046
+        },
+        "ungrounded_verdicts": 325,
+        "unlocalized_reports": 84,
+        "last_result_at": "2026-09-22T09:53:32.765085+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.182805225995253,
+        "last_success_at": "2026-09-22T09:53:32.765085+00:00",
+        "grounding_last_result": {
+          "frame_sequence": 2743,
+          "state": "completed",
+          "seconds": 3.182805225995253
+        },
+        "incomplete_reports": 1,
+        "admitted_samples": 108,
+        "published_reports": 100,
+        "stream_session_id": "7270aed1-531f-4c4c-b41d-cce976dad027",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 12.193582841005991,
+        "last_result_age_seconds": 9.427145474997815,
+        "last_success_age_seconds": 9.42714587500086,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "parallel",
+        "paired_admission": true,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "api_calls": 100,
+      "all_lane_publication_states": {
+        "completed": 100
+      },
+      "actual_outgoing_policies": [
+        "{\"allow_fallbacks\": true, \"ignore\": [\"coreweave\", \"novita\"], \"sort\": \"throughput\"}"
+      ],
+      "api_http": {
+        "n": 100,
+        "median": 2.5718249082565308,
+        "p95": 4.682263135910034,
+        "mean": 2.5951786994934083,
+        "max": 6.7740137577056885
+      },
+      "receiver_connection_errors": []
+    },
+    "parallel-2": {
+      "assertions_passed": true,
+      "source_snapshot_sha256": "ef9b8772ab922742ca50f9d7ba379f1aa4b202e682881962dd9f6deb29b0dad1",
+      "actual_upload_fps": 4.999472241573822,
+      "scheduled_frames": 279,
+      "source_age_at_upload": {
+        "n": 279,
+        "median": 0.033333333333333215,
+        "p95": 0.06833333333332803,
+        "mean": 0.03101553166069132,
+        "max": 0.08333333333333215
+      },
+      "sender_schedule_lag": {
+        "n": 279,
+        "median": 0.018999999997319605,
+        "p95": 0.030999999988125637,
+        "mean": 0.01798207884695919,
+        "max": 0.04099999998870807
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 100,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 22,
+        "source_samples": 108,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 6,
+        "retained_bytes": 432729,
+        "claimed_requests": 100,
+        "information_last_result": {
+          "frame_sequence": 2764,
+          "state": "completed",
+          "seconds": 1.513250550997327
+        },
+        "ungrounded_verdicts": 315,
+        "unlocalized_reports": 83,
+        "last_result_at": "2026-09-22T09:58:13.681628+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.3093985650048126,
+        "last_success_at": "2026-09-22T09:58:13.681628+00:00",
+        "grounding_last_result": {
+          "frame_sequence": 2764,
+          "state": "completed",
+          "seconds": 3.3093985650048126
+        },
+        "incomplete_reports": 1,
+        "admitted_samples": 108,
+        "published_reports": 100,
+        "stream_session_id": "58717a75-ec1c-401b-b729-ffc2785faf0e",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 12.19755316300143,
+        "last_result_age_seconds": 8.888156197994249,
+        "last_success_age_seconds": 8.888156797998818,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "parallel",
+        "paired_admission": true,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "api_calls": 100,
+      "all_lane_publication_states": {
+        "completed": 100
+      },
+      "actual_outgoing_policies": [
+        "{\"allow_fallbacks\": true, \"ignore\": [\"coreweave\", \"novita\"], \"sort\": \"throughput\"}"
+      ],
+      "api_http": {
+        "n": 100,
+        "median": 2.428051233291626,
+        "p95": 4.574459791183472,
+        "mean": 2.4478470063209534,
+        "max": 7.096373558044434
+      },
+      "receiver_connection_errors": []
+    }
+  },
+  "aggregate": {
+    "full": {
+      "report_count": 146,
+      "source_pts_to_receive": {
+        "n": 146,
+        "median": 3.4108153947194406,
+        "p95": 7.399135335286458,
+        "mean": 3.8661060498947406,
+        "max": 10.39866894086202
+      },
+      "positive_report_delay": {
+        "n": 30,
+        "median": 4.3322449922561646,
+        "p95": 9.200265645980835,
+        "mean": 5.524745138486226,
+        "max": 10.374207019805908
+      },
+      "negative_report_delay": {
+        "n": 116,
+        "median": 3.2863426208496094,
+        "p95": 4.727550983428955,
+        "mean": 3.3980365477759262,
+        "max": 4.976221561431885
+      },
+      "frame_metrics": {
+        "send_to_protocol_ready": {
+          "n": 837,
+          "median": 0.011745452880859375,
+          "p95": 0.7550170421600342,
+          "mean": 0.10496415829857902,
+          "max": 2.1217668056488037
+        },
+        "protocol_queue_wait": {
+          "n": 837,
+          "median": 0.00030493736267089844,
+          "p95": 0.05349564552307129,
+          "mean": 0.02466357623092305,
+          "max": 1.5363287925720215
+        },
+        "jpeg_decode": {
+          "n": 837,
+          "median": 0.006626151007367298,
+          "p95": 0.02933131900499575,
+          "mean": 0.012059057096707586,
+          "max": 0.6055296090053162
+        },
+        "push_threadpool_wait": {
+          "n": 837,
+          "median": 0.000684554994222708,
+          "p95": 0.009493734993156977,
+          "mean": 0.003950185322244051,
+          "max": 0.8198968170036096
+        },
+        "push_execution": {
+          "n": 837,
+          "median": 0.007817150006303564,
+          "p95": 0.03525722399353981,
+          "mean": 0.014093332532698705,
+          "max": 0.606298856990179
+        },
+        "backend_app_to_ack": {
+          "n": 837,
+          "median": 0.017256736755371094,
+          "p95": 0.1008601188659668,
+          "mean": 0.04522380179401794,
+          "max": 1.7351231575012207
+        },
+        "total_ack_roundtrip": {
+          "n": 837,
+          "median": 0.038277387619018555,
+          "p95": 1.0862512588500977,
+          "mean": 0.1757982130403872,
+          "max": 2.74096417427063
+        }
+      },
+      "request_lanes": {
+        "combined": {
+          "request_prepare_seconds": {
+            "n": 146,
+            "median": 0.19194952349789673,
+            "p95": 0.32349311900907196,
+            "mean": 0.19856322100681048,
+            "max": 0.39173213399772067
+          },
+          "image_resize_seconds": {
+            "n": 146,
+            "median": 0.13138949598942418,
+            "p95": 0.21613980901020113,
+            "mean": 0.1367421017445214,
+            "max": 0.2479523590009194
+          },
+          "http_total_seconds": {
+            "n": 146,
+            "median": 3.0621870175018557,
+            "p95": 6.245264204000705,
+            "mean": 3.371565475980177,
+            "max": 7.2870540720032295
+          },
+          "tls_handshake_seconds": {
+            "n": 12,
+            "median": 2.3348319555007038,
+            "p95": 2.4134894980088575,
+            "mean": 2.3451089095845723,
+            "max": 2.4134894980088575
+          },
+          "openrouter_generation_time_seconds": {
+            "n": 146,
+            "median": 2.0585,
+            "p95": 2.905,
+            "mean": 2.1226712328767126,
+            "max": 3.629
+          },
+          "openrouter_latency_seconds": {
+            "n": 146,
+            "median": 0.4225,
+            "p95": 0.741,
+            "mean": 0.45707534246575343,
+            "max": 1.528
+          },
+          "completion_tokens": {
+            "n": 146,
+            "median": 223.0,
+            "p95": 279,
+            "mean": 220.83561643835617,
+            "max": 304
+          },
+          "reorder_wait_seconds": {
+            "n": 146,
+            "median": 0.004075227501743939,
+            "p95": 0.1695439479954075,
+            "mean": 0.032028883733277926,
+            "max": 1.0123377130075824
+          },
+          "postprocess_ipc_publish_seconds": {
+            "n": 146,
+            "median": 0.001998610998271033,
+            "p95": 0.046150846988894045,
+            "mean": 0.014033556773988307,
+            "max": 0.43855931800499093
+          },
+          "publish_to_receive_seconds": {
+            "n": 146,
+            "median": 0.03223526477813721,
+            "p95": 0.10451102256774902,
+            "mean": 0.062328789332141615,
+            "max": 1.3172550201416016
+          }
+        }
+      },
+      "steady_after_10_source_seconds": {
+        "source_to_receive": {
+          "n": 129,
+          "median": 3.343557596206665,
+          "p95": 4.727550983428955,
+          "mean": 3.4497159784154374,
+          "max": 5.7940592765808105
+        },
+        "before_branch_ingress": {
+          "n": 129,
+          "median": 0.018708467483520508,
+          "p95": 0.08658123016357422,
+          "mean": 0.04522384414377138,
+          "max": 1.2681427001953125
+        },
+        "model_seconds": {
+          "n": 129,
+          "median": 3.204358377988683,
+          "p95": 4.576987046995782,
+          "mean": 3.303538063457127,
+          "max": 4.787964144008583
+        },
+        "reorder_wait": {
+          "n": 129,
+          "median": 0.003993518999777734,
+          "p95": 0.029270976010593586,
+          "mean": 0.028925790604882578,
+          "max": 1.0123377130075824
+        }
+      },
+      "episodes": {
+        "smoking": {
+          "n": 3,
+          "median": 9.11547040939331,
+          "p95": 11.590335607528687,
+          "min": 8.452713251113892,
+          "max": 11.590335607528687,
+          "mean": 9.719506422678629
+        },
+        "fight": {
+          "n": 3,
+          "median": 5.241139602661133,
+          "p95": 6.494123888015747,
+          "min": 5.176208448410034,
+          "max": 6.494123888015747,
+          "mean": 5.637157313028972
+        },
+        "fall": {
+          "n": 3,
+          "median": 4.695042133331299,
+          "p95": 4.9332427978515625,
+          "min": 3.8985910415649414,
+          "max": 4.9332427978515625,
+          "mean": 4.508958657582601
+        }
+      }
+    },
+    "parallel": {
+      "report_count": 142,
+      "source_pts_to_receive": {
+        "n": 142,
+        "median": 2.1339699157079046,
+        "p95": 6.062285407384237,
+        "mean": 2.679555339790844,
+        "max": 10.835422865549724
+      },
+      "positive_report_delay": {
+        "n": 22,
+        "median": 5.025961756706238,
+        "p95": 10.023073434829712,
+        "mean": 5.052177342501554,
+        "max": 10.814062595367432
+      },
+      "negative_report_delay": {
+        "n": 120,
+        "median": 2.0131012201309204,
+        "p95": 3.7807352542877197,
+        "mean": 2.206402188539505,
+        "max": 6.96138858795166
+      },
+      "frame_metrics": {
+        "send_to_protocol_ready": {
+          "n": 837,
+          "median": 0.028758525848388672,
+          "p95": 2.0775721073150635,
+          "mean": 0.30037684793825503,
+          "max": 3.8490097522735596
+        },
+        "protocol_queue_wait": {
+          "n": 837,
+          "median": 0.0006740093231201172,
+          "p95": 0.13223719596862793,
+          "mean": 0.05284208579160264,
+          "max": 3.0685102939605713
+        },
+        "jpeg_decode": {
+          "n": 837,
+          "median": 0.011399205002817325,
+          "p95": 0.04824100399855524,
+          "mean": 0.023901268862298576,
+          "max": 1.5614713959948858
+        },
+        "push_threadpool_wait": {
+          "n": 837,
+          "median": 0.0010882950009545311,
+          "p95": 0.013667790990439244,
+          "mean": 0.004002240523127082,
+          "max": 0.4148218500049552
+        },
+        "push_execution": {
+          "n": 837,
+          "median": 0.013442395997117274,
+          "p95": 0.06404521300282795,
+          "mean": 0.028282305945050063,
+          "max": 1.5635714600066422
+        },
+        "backend_app_to_ack": {
+          "n": 837,
+          "median": 0.029102087020874023,
+          "p95": 0.19865632057189941,
+          "mean": 0.07263825985123465,
+          "max": 2.153442859649658
+        },
+        "total_ack_roundtrip": {
+          "n": 837,
+          "median": 0.08201909065246582,
+          "p95": 2.5738391876220703,
+          "mean": 0.42308999332760683,
+          "max": 4.343435525894165
+        }
+      },
+      "request_lanes": {
+        "grounding": {
+          "request_prepare_seconds": {
+            "n": 142,
+            "median": 0.2865863714905572,
+            "p95": 0.552022350995685,
+            "mean": 0.3009759281550019,
+            "max": 0.7176086510007735
+          },
+          "image_resize_seconds": {
+            "n": 142,
+            "median": 0.1937245544977486,
+            "p95": 0.3365331730019534,
+            "mean": 0.2009161708921171,
+            "max": 0.45845916897815187
+          },
+          "http_total_seconds": {
+            "n": 142,
+            "median": 3.0421964039924205,
+            "p95": 6.23353200800193,
+            "mean": 3.3227119793450135,
+            "max": 8.193021309009055
+          },
+          "tls_handshake_seconds": {
+            "n": 12,
+            "median": 2.338461058003304,
+            "p95": 2.6958836400008295,
+            "mean": 2.400878677667303,
+            "max": 2.6958836400008295
+          },
+          "openrouter_generation_time_seconds": {
+            "n": 142,
+            "median": 2.0484999999999998,
+            "p95": 2.702,
+            "mean": 2.066507042253521,
+            "max": 4.111
+          },
+          "openrouter_latency_seconds": {
+            "n": 142,
+            "median": 0.4195,
+            "p95": 0.938,
+            "mean": 0.4792957746478873,
+            "max": 1.479
+          },
+          "completion_tokens": {
+            "n": 142,
+            "median": 218.0,
+            "p95": 279,
+            "mean": 210.80281690140845,
+            "max": 300
+          },
+          "reorder_wait_seconds": {
+            "n": 142,
+            "median": 0.00461406800604891,
+            "p95": 0.0987056739977561,
+            "mean": 0.04416481502779225,
+            "max": 1.4959020419919398
+          },
+          "postprocess_ipc_publish_seconds": {
+            "n": 142,
+            "median": 0.0058736319915624335,
+            "p95": 0.0767323540057987,
+            "mean": 0.027243223936751184,
+            "max": 0.8011869909969391
+          },
+          "publish_to_receive_seconds": null
+        },
+        "information": {
+          "request_prepare_seconds": {
+            "n": 142,
+            "median": 0.28365782399487216,
+            "p95": 0.568571259995224,
+            "mean": 0.31195430191476425,
+            "max": 0.9528647190018091
+          },
+          "image_resize_seconds": {
+            "n": 142,
+            "median": 0.19625426000129664,
+            "p95": 0.3476237559953006,
+            "mean": 0.19967144356376876,
+            "max": 0.5224556009925436
+          },
+          "http_total_seconds": {
+            "n": 142,
+            "median": 1.5060477900042315,
+            "p95": 4.62308237500838,
+            "mean": 1.7867716882051161,
+            "max": 5.460869735994493
+          },
+          "tls_handshake_seconds": {
+            "n": 12,
+            "median": 2.3399950270031695,
+            "p95": 2.608572612996795,
+            "mean": 2.362941976166136,
+            "max": 2.608572612996795
+          },
+          "openrouter_generation_time_seconds": {
+            "n": 142,
+            "median": 0.587,
+            "p95": 0.794,
+            "mean": 0.5922464788732394,
+            "max": 1.366
+          },
+          "openrouter_latency_seconds": {
+            "n": 142,
+            "median": 0.4305,
+            "p95": 0.603,
+            "mean": 0.4273098591549296,
+            "max": 1.183
+          },
+          "completion_tokens": {
+            "n": 142,
+            "median": 22.0,
+            "p95": 22,
+            "mean": 22,
+            "max": 22
+          },
+          "reorder_wait_seconds": {
+            "n": 142,
+            "median": 0.003978638495027553,
+            "p95": 0.011462140988442115,
+            "mean": 0.031898995619562366,
+            "max": 1.690041909008869
+          },
+          "postprocess_ipc_publish_seconds": {
+            "n": 142,
+            "median": 0.007896486495155841,
+            "p95": 0.30079623000347055,
+            "mean": 0.047519450317158256,
+            "max": 0.9091263000009349
+          },
+          "publish_to_receive_seconds": {
+            "n": 142,
+            "median": 0.047931790351867676,
+            "p95": 0.2392890453338623,
+            "mean": 0.10292522000594878,
+            "max": 2.031183958053589
+          }
+        }
+      },
+      "steady_after_10_source_seconds": {
+        "source_to_receive": {
+          "n": 126,
+          "median": 1.9976779222488403,
+          "p95": 3.721914768218994,
+          "mean": 2.1797085016492814,
+          "max": 5.940743446350098
+        },
+        "before_branch_ingress": {
+          "n": 126,
+          "median": 0.03880429267883301,
+          "p95": 1.2136530876159668,
+          "mean": 0.20167570076291524,
+          "max": 3.7466650009155273
+        },
+        "model_seconds": {
+          "n": 126,
+          "median": 1.826613664496108,
+          "p95": 2.3276198850071523,
+          "mean": 1.8298439813801133,
+          "max": 2.8324784230062505
+        },
+        "reorder_wait": {
+          "n": 126,
+          "median": 0.0034018744991044514,
+          "p95": 0.009446330004720949,
+          "mean": 0.004235477555503455,
+          "max": 0.017736311012413353
+        }
+      },
+      "episodes": {
+        "smoking": {
+          "n": 3,
+          "median": 9.421922445297241,
+          "p95": 14.218756198883057,
+          "min": 7.601880311965942,
+          "max": 14.218756198883057,
+          "mean": 10.414186318715414
+        },
+        "fight": {
+          "n": 3,
+          "median": 4.918528270721436,
+          "p95": 10.529917430877685,
+          "min": 4.534087371826172,
+          "max": 10.529917430877685,
+          "mean": 6.660844357808431
+        },
+        "fall": {
+          "n": 3,
+          "median": 3.1824264526367188,
+          "p95": 5.868515729904175,
+          "min": 2.4512991905212402,
+          "max": 5.868515729904175,
+          "mean": 3.834080457687378
+        }
+      }
+    }
+  },
+  "metadata": {
+    "attempts": 431,
+    "generations": 430,
+    "statuses": {
+      "200": 430
+    },
+    "providers": {
+      "Alibaba": 430
+    }
+  }
+}

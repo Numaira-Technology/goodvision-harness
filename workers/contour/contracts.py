@@ -129,3 +129,23 @@ class SessionAppended(Identity):
     emitted_timestamp_seconds: Number | None
     pending_frame_count: Literal[0]
     route_metadata: RouteMetadata
+
+
+class CacheReclaim(Record):
+    time: Sequence
+    released_bytes: Sequence
+
+
+class GPUMemoryStatus(Record):
+    available: bool
+    reason: Literal["cuda_not_initialized", "telemetry_unavailable"] | None
+    reclaim_pending: bool
+    reclaim_count: Sequence
+    last_reclaim: CacheReclaim | None
+    error_code: Literal["cache_reclaim_failed"] | None
+    allocated_bytes: Sequence | None = None
+    reserved_bytes: Sequence | None = None
+    unused_reserved_bytes: Sequence | None = None
+    peak_allocated_bytes: Sequence | None = None
+    device_free_bytes: Sequence | None = None
+    device_total_bytes: Sequence | None = None

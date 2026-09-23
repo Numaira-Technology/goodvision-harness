@@ -76,14 +76,30 @@ function render(value) {
     events.append(item);
   }
 }
+function renderMemory(value) {
+  const bytes = (n) => `${(n / 1048576).toFixed(0)} MiB`;
+  const available = value?.available === true;
+  $("memory-state").textContent = available ? "实时读取" : "暂不可用";
+  $("memory-allocated").textContent = available ? bytes(value.allocated_bytes) : "—";
+  $("memory-cached").textContent = available ? bytes(value.unused_reserved_bytes) : "—";
+  $("memory-free").textContent = available ? `${bytes(value.device_free_bytes)} / ${bytes(value.device_total_bytes)}` : "—";
+  $("memory-note").textContent = !available ? "等待引擎提供显存数据。" : value.error_code
+    ? "上次回收未成功，将在空闲时重试。"
+    : value.reclaim_pending ? "等待所有会话结束后回收缓存。"
+    : value.last_reclaim ? `最近回收 ${bytes(value.last_reclaim.released_bytes)} · ${new Date(value.last_reclaim.time * 1000).toLocaleTimeString("zh-CN", {hour12: false})}`
+    : "全部会话结束后，自动回收空闲缓存。";
+}
 async function refresh() {
   if (!accessKey || refreshing) return false;
   refreshing = true;
   const current = generation;
   try {
-    const result = await api("/api/status");
+    const [result, memory] = await Promise.all([
+      api("/api/status"), api("/api/gpu-memory").catch(() => null),
+    ]);
     if (current !== generation) return false;
     render(result);
+    renderMemory(memory);
     $("connect-form").hidden = true;
     $("disconnect-button").hidden = false;
     $("connection-hint").textContent = "已登录节点控制台。状态每 5 秒自动更新，密钥未写入浏览器存储。主程序仍需单独配置节点地址和密钥。";
@@ -91,6 +107,7 @@ async function refresh() {
     return true;
   } catch (error) {
     if (current !== generation) return false;
+    renderMemory(null);
     notice(error.message || "节点连接失败。", true);
     $("service-state").textContent = "连接中断";
     $("service-note").textContent = "其余数据为上次读取结果";

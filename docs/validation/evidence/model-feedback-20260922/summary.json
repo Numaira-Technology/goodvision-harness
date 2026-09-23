@@ -1,0 +1,353 @@
+{
+  "qwen/qwen3-vl-8b-instruct": {
+    "full": {
+      "attempts": 18,
+      "valid": 17,
+      "p50": 3.642156999994768,
+      "p95": 11.757455940000362,
+      "timeouts": 1,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 17,
+        "unknown": 1
+      },
+      "positive_reports": 8
+    },
+    "events": {
+      "attempts": 18,
+      "valid": 15,
+      "p50": 2.00662650000595,
+      "p95": 3.1148656999997906,
+      "timeouts": 3,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 15,
+        "unknown": 3
+      },
+      "positive_reports": 7
+    },
+    "compact": {
+      "attempts": 18,
+      "valid": 17,
+      "p50": 3.994849599999725,
+      "p95": 10.740395339994574,
+      "timeouts": 0,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {
+        "ConnectError": 1
+      },
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 17,
+        "unknown": 1
+      },
+      "positive_reports": 8
+    },
+    "paired": {
+      "count": 15,
+      "events_faster": 15,
+      "decisions_match": 15,
+      "median_saved_seconds": 1.5084846999816364
+    }
+  },
+  "qwen/qwen3.8-27b:free": {
+    "full": {
+      "attempts": 18,
+      "valid": 4,
+      "p50": 11.891829950000101,
+      "p95": 14.239252660003693,
+      "timeouts": 5,
+      "http_errors": {
+        "429": 9
+      },
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "unknown": 14,
+        "ModelRun": 4
+      },
+      "positive_reports": 1
+    },
+    "events": {
+      "attempts": 18,
+      "valid": 0,
+      "p50": null,
+      "p95": null,
+      "timeouts": 1,
+      "http_errors": {
+        "429": 13
+      },
+      "invalid": 4,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "unknown": 14,
+        "ModelRun": 4
+      },
+      "positive_reports": 0
+    },
+    "compact": {
+      "attempts": 18,
+      "valid": 7,
+      "p50": 8.818491799989715,
+      "p95": 12.386788669998348,
+      "timeouts": 4,
+      "http_errors": {
+        "429": 6
+      },
+      "invalid": 1,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "unknown": 10,
+        "ModelRun": 8
+      },
+      "positive_reports": 5
+    },
+    "paired": {
+      "count": 0,
+      "events_faster": 0,
+      "decisions_match": 0,
+      "median_saved_seconds": null
+    }
+  },
+  "qwen/qwen3.6-flash": {
+    "full": {
+      "attempts": 18,
+      "valid": 17,
+      "p50": 9.13860289999866,
+      "p95": 11.318629100007817,
+      "timeouts": 1,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 17,
+        "unknown": 1
+      },
+      "positive_reports": 4
+    },
+    "events": {
+      "attempts": 18,
+      "valid": 8,
+      "p50": 4.2214939999976195,
+      "p95": 4.938018845003535,
+      "timeouts": 8,
+      "http_errors": {},
+      "invalid": 2,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "unknown": 8,
+        "Alibaba": 10
+      },
+      "positive_reports": 5
+    },
+    "compact": {
+      "attempts": 18,
+      "valid": 3,
+      "p50": 8.869774799997685,
+      "p95": 9.468254909997631,
+      "timeouts": 1,
+      "http_errors": {},
+      "invalid": 14,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 1,
+      "providers": {
+        "Alibaba": 17,
+        "unknown": 1
+      },
+      "positive_reports": 0
+    },
+    "paired": {
+      "count": 7,
+      "events_faster": 7,
+      "decisions_match": 5,
+      "median_saved_seconds": 5.238728699987405
+    }
+  },
+  "qwen/qwen3.7-flash": {
+    "full": {
+      "attempts": 18,
+      "valid": 15,
+      "p50": 9.3017092999944,
+      "p95": 11.782854789998963,
+      "timeouts": 1,
+      "http_errors": {
+        "429": 2
+      },
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 15,
+        "unknown": 3
+      },
+      "positive_reports": 0
+    },
+    "events": {
+      "attempts": 18,
+      "valid": 14,
+      "p50": 4.240460749999329,
+      "p95": 4.939093680003862,
+      "timeouts": 4,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 14,
+        "unknown": 4
+      },
+      "positive_reports": 0
+    },
+    "compact": {
+      "attempts": 18,
+      "valid": 16,
+      "p50": 8.777029200005927,
+      "p95": 11.217182925003726,
+      "timeouts": 2,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 16,
+        "unknown": 2
+      },
+      "positive_reports": 0
+    },
+    "paired": {
+      "count": 12,
+      "events_faster": 12,
+      "decisions_match": 9,
+      "median_saved_seconds": 4.831401700008428
+    }
+  },
+  "qwen/qwen3-vl-30b-a3b-instruct": {
+    "full": {
+      "attempts": 18,
+      "valid": 18,
+      "p50": 3.8725139999951352,
+      "p95": 9.991424214994185,
+      "timeouts": 0,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 18
+      },
+      "positive_reports": 8
+    },
+    "events": {
+      "attempts": 18,
+      "valid": 16,
+      "p50": 1.9647201000043424,
+      "p95": 2.7934543499941356,
+      "timeouts": 2,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 16,
+        "unknown": 2
+      },
+      "positive_reports": 8
+    },
+    "compact": {
+      "attempts": 18,
+      "valid": 7,
+      "p50": 4.190249699997366,
+      "p95": 5.6743493899921305,
+      "timeouts": 0,
+      "http_errors": {},
+      "invalid": 11,
+      "transport_errors": {},
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 18
+      },
+      "positive_reports": 4
+    },
+    "paired": {
+      "count": 16,
+      "events_faster": 15,
+      "decisions_match": 12,
+      "median_saved_seconds": 1.848542699997779
+    }
+  },
+  "qwen/qwen3-vl-32b-instruct": {
+    "full": {
+      "attempts": 18,
+      "valid": 16,
+      "p50": 5.593216000008397,
+      "p95": 11.890681450007833,
+      "timeouts": 0,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {
+        "ConnectError": 1,
+        "ReadError": 1
+      },
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 16,
+        "unknown": 2
+      },
+      "positive_reports": 6
+    },
+    "events": {
+      "attempts": 18,
+      "valid": 12,
+      "p50": 2.2250397999960114,
+      "p95": 2.8153046150036967,
+      "timeouts": 5,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {
+        "ReadError": 1
+      },
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 12,
+        "unknown": 6
+      },
+      "positive_reports": 6
+    },
+    "compact": {
+      "attempts": 18,
+      "valid": 16,
+      "p50": 5.487532899998769,
+      "p95": 12.94019964999461,
+      "timeouts": 0,
+      "http_errors": {},
+      "invalid": 0,
+      "transport_errors": {
+        "ReadError": 2
+      },
+      "deadline_overrun_gt_1s": 0,
+      "providers": {
+        "Alibaba": 16,
+        "unknown": 2
+      },
+      "positive_reports": 6
+    },
+    "paired": {
+      "count": 12,
+      "events_faster": 12,
+      "decisions_match": 12,
+      "median_saved_seconds": 3.1514769500136026
+    }
+  }
+}

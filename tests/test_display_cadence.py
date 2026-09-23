@@ -69,6 +69,9 @@ def _network_frames(monkeypatch, protocol: str, arrivals: list[float]):
             def set(self, *_):
                 return True
 
+            def get(self, _property):
+                return 0.0
+
             def release(self):
                 pass
 
@@ -94,7 +97,7 @@ def _network_frames(monkeypatch, protocol: str, arrivals: list[float]):
                 clock[0] = arrivals[image]
             except StopIteration as exc:
                 raise EndOfStream from exc
-            return SimpleNamespace(to_ndarray=lambda **_: image)
+            return SimpleNamespace(pts=None, time_base=None, to_ndarray=lambda **_: image)
 
     frames = []
     monkeypatch.setattr(adapter, "_put_latest", frames.append)
@@ -151,11 +154,11 @@ def test_display_defaults_leave_inference_and_buffer_delay_unchanged(
 ) -> None:
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_: "")
     raw = yaml.safe_load(path.read_text())
-    assert raw["display"]["fps"] == 30
+    assert raw["display"]["fps"] == 15
     assert raw["video"]["fps"] == raw["face"]["sample_fps"] == 2.5
     assert raw["display"]["delay_seconds"] == buffer_delay
     del raw["display"]["fps"]
     custom = tmp_path / "config.yaml"
     custom.write_text(yaml.safe_dump(raw))
 
-    assert load_config(custom).display.fps == DisplaySettings().fps == 30
+    assert load_config(custom).display.fps == DisplaySettings().fps == 15

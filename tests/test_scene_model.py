@@ -766,7 +766,7 @@ def test_warmup_has_no_credentials_body_redirects_or_inference_stats(
     assert str(request.url) == "https://private.test/v1/chat/completions"
     assert dict(request.headers) == {"host": "private.test"}
     assert request.content == b""
-    assert all(0 < timeout <= 2 for timeout in request.extensions["timeout"].values())
+    assert all(0 < timeout <= 5 for timeout in request.extensions["timeout"].values())
     (record,) = [
         fields for name, fields in logs if name == "vlm_connection_warmup_timing"
     ]

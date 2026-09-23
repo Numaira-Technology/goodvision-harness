@@ -52,7 +52,7 @@ EVENT_SENSITIVITY_OPTIONS = {
         {
             "value": "standard",
             "label": "标准敏感度",
-            "description": "可见武器或被持有、使用的疑似武器",
+            "description": "有可辨认武器特征，或明确被用于攻击的物品",  # noqa: RUF001
         },
         {
             "value": "high",
@@ -118,19 +118,33 @@ SMOKING_HIGH_RULE = (
 )
 
 _WEAPON_STANDARD_CRITERIA = (
-    "Weapon sensitivity STANDARD: use a high-recall policy for a visible "
-    "firearm, knife, machete, club, or plausible weapon-shaped item held or "
-    "used by a person. Context may support a plausible weapon interpretation; "
-    "certainty or a completed attack is not required."
+    "Weapon sensitivity STANDARD: require a visible firearm, knife, machete, "
+    "or other weapon with distinguishable weapon-specific features, such as "
+    "a blade with its handle or a firearm's barrel and grip. A recognizable "
+    "weapon does not require an attack to be positive. An ordinary or "
+    "unidentified object counts as an improvised weapon only when the visible "
+    "object itself is being used to strike, stab, or explicitly threaten a "
+    "person; mere possession or movement is insufficient. "
+    "Small size, dark color, an elongated shape, a closed fist, or a gripping "
+    "pose alone does not identify a weapon. Independently assess fight and "
+    "weapon: punching or raised fists must not turn an unidentified handheld "
+    "item into a weapon. Carrying, placing, dropping, picking up, or arranging "
+    "ordinary objects without weapon-specific features or directed weapon use "
+    "is negative. Do not infer a blade, barrel, or hidden weapon from context."
 )
 _WEAPON_HIGH_CRITERIA = (
     "Weapon sensitivity HIGH: also flag a small or partly obscured "
-    "weapon-like item when visible shape plus holding, handling, or threat "
-    "cues make a weapon plausible, without requiring full item identification. "
+    "weapon-like item when a visible weapon-specific feature plus compatible "
+    "holding or threat cues supports that interpretation, without requiring "
+    "full item identification. Ordinary objects count only with visible "
+    "directed use as a weapon, not from elongated shape or possession alone. "
 )
 _WEAPON_HIGH_LIMITS = (
     "Bare-hand gestures without a visible item and clearly unrelated objects "
-    "are insufficient."
+    "are insufficient. Punching while holding an unidentified small object "
+    "does not by itself establish a weapon. Ordinary carrying, placing, "
+    "dropping, or picking up objects without weapon features or directed "
+    "weapon use remains negative."
 )
 
 _EVIDENCE_POLICIES = {

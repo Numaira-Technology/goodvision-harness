@@ -1,0 +1,107 @@
+{
+  "kind": "synthetic_protocol_experiment_not_gpu_benchmark",
+  "playback_buffer_unchanged_seconds": 4,
+  "source_fps_per_camera": 4,
+  "capture_seconds": 7,
+  "simulated_native_seconds_per_frame": {
+    "normal": 0.03,
+    "overload": 0.6
+  },
+  "overload_window_seconds": [
+    1,
+    5
+  ],
+  "realtime_pending_frames": 4,
+  "realtime_max_age_seconds": 2.0,
+  "note": "Real coordinator/HTTP/FIFO gate; fake image and model output. No accuracy or actual rendered-contour coverage is measured.",
+  "cases": [
+    {
+      "policy": "durable_ordered",
+      "batch_limit": 4,
+      "lanes": [
+        {
+          "source_frames": 28,
+          "processed_during_capture": 15,
+          "processed_total": 28,
+          "durably_admitted_frames": 28,
+          "skipped": {
+            "superseded": 0,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 16,
+          "result_seconds_p50": 2.313000000001921,
+          "result_seconds_p95": 4.563000000001921,
+          "result_seconds_max": 4.813000000001921,
+          "results_within_4_seconds": 23,
+          "admitted_deadline_coverage": 0.8214285714285714,
+          "gpu_gate_wait_max": 2.3910000000032596,
+          "request_hold_max": 0.6089999999967404,
+          "longest_completion_gap": 2.5160000000032596
+        },
+        {
+          "source_frames": 28,
+          "processed_during_capture": 18,
+          "processed_total": 28,
+          "durably_admitted_frames": 28,
+          "skipped": {
+            "superseded": 0,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 16,
+          "result_seconds_p50": 2.188000000001921,
+          "result_seconds_p95": 4.688000000001921,
+          "result_seconds_max": 4.938000000001921,
+          "results_within_4_seconds": 23,
+          "admitted_deadline_coverage": 0.8214285714285714,
+          "gpu_gate_wait_max": 0.6089999999967404,
+          "request_hold_max": 2.4069999999992433,
+          "longest_completion_gap": 3.0
+        }
+      ]
+    },
+    {
+      "policy": "latest_only",
+      "batch_limit": 1,
+      "lanes": [
+        {
+          "source_frames": 28,
+          "processed_during_capture": 15,
+          "processed_total": 15,
+          "durably_admitted_frames": 15,
+          "skipped": {
+            "superseded": 13,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 1,
+          "result_seconds_p50": 0.09399999999732245,
+          "result_seconds_p95": 1.4380000000019209,
+          "result_seconds_max": 1.4380000000019209,
+          "results_within_4_seconds": 15,
+          "admitted_deadline_coverage": 1.0,
+          "gpu_gate_wait_max": 0.6090000000040163,
+          "request_hold_max": 0.6100000000005821,
+          "longest_completion_gap": 1.4380000000019209
+        },
+        {
+          "source_frames": 28,
+          "processed_during_capture": 15,
+          "processed_total": 15,
+          "durably_admitted_frames": 15,
+          "skipped": {
+            "superseded": 13,
+            "expired": 0
+          },
+          "max_sampled_pending_frames": 1,
+          "result_seconds_p50": 0.07800000000133878,
+          "result_seconds_p95": 1.3439999999973224,
+          "result_seconds_max": 1.3439999999973224,
+          "results_within_4_seconds": 15,
+          "admitted_deadline_coverage": 1.0,
+          "gpu_gate_wait_max": 0.6100000000005821,
+          "request_hold_max": 0.625,
+          "longest_completion_gap": 1.2189999999973224
+        }
+      ]
+    }
+  ]
+}

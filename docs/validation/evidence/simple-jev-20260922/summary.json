@@ -1,0 +1,1047 @@
+{
+  "simple_vision": {
+    "scope": "scene_events_only",
+    "attempts": 18,
+    "successes": 18,
+    "complete_labels": 18,
+    "localization_complete": 0,
+    "median_seconds": 2.626736250000249,
+    "p95_seconds": 3.7197796300002657,
+    "all_attempt_median_seconds": 2.626736250000249,
+    "median_output_tokens": 4.0,
+    "reported_cost_usd": null,
+    "providers": {
+      "not_reported": 18
+    },
+    "by_window": {
+      "4.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.507564600004116
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.7855590999970445
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.4584324000024935
+        }
+      ],
+      "9.6": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.5222815000015544
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.6565133999974933
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.723480599997856
+        }
+      ],
+      "12.8": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.6306084000025294
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.622864099997969
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.6531864999997197
+        }
+      ],
+      "20.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.496196300002339
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.454609200001869
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.6067003999996814
+        }
+      ],
+      "24.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.4478693999990355
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.097140700003365
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.788891299998795
+        }
+      ],
+      "42.4": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.4136212000012165
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.2117768000025535
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.586552299995674
+        }
+      ]
+    }
+  },
+  "8b_events": {
+    "scope": "scene_events_only",
+    "attempts": 18,
+    "successes": 18,
+    "complete_labels": 18,
+    "localization_complete": 0,
+    "median_seconds": 3.131118350000179,
+    "p95_seconds": 4.629899984996155,
+    "all_attempt_median_seconds": 3.131118350000179,
+    "median_output_tokens": 22.0,
+    "reported_cost_usd": 0.0040837289999999995,
+    "providers": {
+      "Alibaba": 18
+    },
+    "by_window": {
+      "4.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.4030201000059606
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.5587627999993856
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.492097999995167
+        }
+      ],
+      "9.6": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.3942613000035635
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.509653099994466
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.6878933000043617
+        }
+      ],
+      "12.8": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 2.209008300000278
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 4.607389799995872
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 3.0380403000017395
+        }
+      ],
+      "20.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 1.9984557999996468
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.9204415999993216
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.459721400002309
+        }
+      ],
+      "24.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.1785097000029054
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.5298333000027924
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.4314585000029183
+        }
+      ],
+      "42.4": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 2.009773600002518
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.2241963999986183
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.757457699997758
+        }
+      ]
+    }
+  },
+  "flash_events": {
+    "scope": "scene_events_only",
+    "attempts": 18,
+    "successes": 18,
+    "complete_labels": 18,
+    "localization_complete": 0,
+    "median_seconds": 4.932984049999504,
+    "p95_seconds": 5.871958779999476,
+    "all_attempt_median_seconds": 4.932984049999504,
+    "median_output_tokens": 32.0,
+    "reported_cost_usd": 0.0069249375,
+    "providers": {
+      "Alibaba": 18
+    },
+    "by_window": {
+      "4.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.642737599999236
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.799317199998768
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.040077400000882
+        }
+      ],
+      "9.6": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.329817499994533
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.587199200002942
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.459336100000655
+        }
+      ],
+      "12.8": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 3.5182711999950698
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 6.283594400003494
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 5.075509000002057
+        }
+      ],
+      "20.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.758082899999863
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": null,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.030702000003657
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": null,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.01351849999628
+        }
+      ],
+      "24.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": null,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.0352061000012327
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": null,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.068084200000158
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": null,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.852449600002728
+        }
+      ],
+      "42.4": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.8701803000003565
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.389587199999369
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.610913000004075
+        }
+      ]
+    }
+  },
+  "8b_full": {
+    "scope": "full",
+    "attempts": 18,
+    "successes": 18,
+    "complete_labels": 18,
+    "localization_complete": 4,
+    "median_seconds": 4.599063700003171,
+    "p95_seconds": 5.702024479999815,
+    "all_attempt_median_seconds": 4.599063700003171,
+    "median_output_tokens": 235.0,
+    "reported_cost_usd": 0.006023836,
+    "providers": {
+      "Alibaba": 18
+    },
+    "by_window": {
+      "4.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.814702399999078
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.297936999995727
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.617238099999668
+        }
+      ],
+      "9.6": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.4987135999981547
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.097552799998084
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.580889300006675
+        }
+      ],
+      "12.8": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": null,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 3.725373799999943
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": null,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 4.669511800006148
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": null,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 4.625681400000758
+        }
+      ],
+      "20.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.559313599995221
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 7.541323500001454
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.3774422999995295
+        }
+      ],
+      "24.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.6539976999993087
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.4650617000006605
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.7655642000027
+        }
+      ],
+      "42.4": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 3.0326129000022775
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.741290000005392
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.129408300002979
+        }
+      ]
+    }
+  },
+  "flash_full": {
+    "scope": "full",
+    "attempts": 18,
+    "successes": 18,
+    "complete_labels": 18,
+    "localization_complete": 9,
+    "median_seconds": 8.760831449999387,
+    "p95_seconds": 10.475821959997848,
+    "all_attempt_median_seconds": 8.760831449999387,
+    "median_output_tokens": 296.0,
+    "reported_cost_usd": 0.0129605625,
+    "providers": {
+      "Alibaba": 18
+    },
+    "by_window": {
+      "4.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 7.370389399999112
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 10.218985300001805
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": true,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 9.295624300000782
+        }
+      ],
+      "9.6": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": null
+          },
+          "total_seconds": 7.987584499998775
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": null
+          },
+          "total_seconds": 10.496795200000633
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": true,
+            "smoking": false,
+            "fall": false,
+            "weapon": null
+          },
+          "total_seconds": 8.497694999998203
+        }
+      ],
+      "12.8": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 7.475803599998471
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 8.196524700004375
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": true,
+            "weapon": false
+          },
+          "total_seconds": 5.996920800003863
+        }
+      ],
+      "20.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 5.707075999998779
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 9.156858100002864
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 9.74020990000281
+        }
+      ],
+      "24.0": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 8.613836500000616
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 8.907826399998157
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 10.472120799997356
+        }
+      ],
+      "42.4": [
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 4.963796800002456
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 9.743636200000765
+        },
+        {
+          "ok": true,
+          "decisions": {
+            "fight": false,
+            "smoking": false,
+            "fall": false,
+            "weapon": false
+          },
+          "total_seconds": 9.076106000000436
+        }
+      ]
+    }
+  }
+}

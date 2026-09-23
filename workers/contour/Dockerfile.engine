@@ -29,6 +29,7 @@ RUN git clone https://github.com/facebookresearch/sam3.git /opt/upstream \
 COPY sam_scene/app.py sam_scene/sam31.py sam_scene/continuous.py ./
 COPY sam_scene/streaming_state.py sam_scene/h264_transport.py ./
 COPY sam_scene/perception_routes.py sam_scene/sam_live.py sam_scene/multistream.py ./
+COPY sam_scene/gpu_memory.py ./
 COPY contour/benchmark_gpu.py ./
 COPY contour/THIRD_PARTY_NOTICES.md /opt/notices/THIRD_PARTY_NOTICES.md
 RUN python -c "from sam3.model_builder import build_sam3_multiplex_video_predictor; from sam31 import verify_installed_source; verify_installed_source()" \

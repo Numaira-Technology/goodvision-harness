@@ -1,0 +1,1598 @@
+{
+  "jev-pilot": {
+    "json": {
+      "attempts": 6,
+      "all_attempt_median_seconds": 2.370160999998916,
+      "all_attempt_p95_seconds": 3.1877744750017882,
+      "successes": 6,
+      "complete_labels": 6,
+      "localization_complete": 5,
+      "median_seconds": 2.370160999998916,
+      "p95_seconds": 3.1877744750017882,
+      "median_vlm_seconds": 2.359577299997909,
+      "median_jev_seconds": null,
+      "median_output_tokens": 197.5,
+      "openrouter_cost": 0.00209235,
+      "providers": {
+        "Alibaba": 6
+      },
+      "median_prompt_tokens": 1872.0,
+      "jev_input_tokens": 0,
+      "jev_cost_estimate_usd": 0.0,
+      "warmup_seconds": [
+        4.277857299995958
+      ]
+    },
+    "jev": {
+      "attempts": 6,
+      "all_attempt_median_seconds": 1.7670389999984764,
+      "all_attempt_p95_seconds": 1.8250405249891628,
+      "successes": 6,
+      "complete_labels": 6,
+      "localization_complete": 6,
+      "median_seconds": 1.7670389999984764,
+      "p95_seconds": 1.8250405249891628,
+      "median_vlm_seconds": 1.4217974499915726,
+      "median_jev_seconds": 0.3564998500078218,
+      "median_output_tokens": 93.5,
+      "openrouter_cost": 0.00146861,
+      "providers": {
+        "Alibaba": 6
+      },
+      "median_prompt_tokens": 1525.0,
+      "jev_input_tokens": 9569,
+      "jev_cost_estimate_usd": 0.00040189800000000003,
+      "warmup_seconds": [
+        2.4427149999974063
+      ]
+    },
+    "pairs": [
+      {
+        "repeat": 0,
+        "endpoint": 4.0,
+        "saved_seconds": 0.651230100003886,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 0,
+        "endpoint": 9.6,
+        "saved_seconds": 0.4357202999963192,
+        "same_provider": true,
+        "matching_event_decisions": 2
+      },
+      {
+        "repeat": 0,
+        "endpoint": 12.8,
+        "saved_seconds": 0.7255856999981916,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 0,
+        "endpoint": 20.0,
+        "saved_seconds": 1.5675734000105876,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 0,
+        "endpoint": 24.0,
+        "saved_seconds": 0.7482156000187388,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 0,
+        "endpoint": 42.4,
+        "saved_seconds": 0.568838399995002,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      }
+    ],
+    "jev_faster_pairs": 6,
+    "median_paired_saved_seconds": 0.6884079000010388,
+    "by_window": {
+      "json": {
+        "4.0": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "9.6": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": true
+            }
+          ]
+        },
+        "12.8": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            }
+          ]
+        },
+        "20.0": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "24.0": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "42.4": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        }
+      },
+      "jev": {
+        "4.0": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": null,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "9.6": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "12.8": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            }
+          ]
+        },
+        "20.0": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "24.0": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": true
+            }
+          ]
+        },
+        "42.4": {
+          "attempts": 1,
+          "ok": 1,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        }
+      }
+    },
+    "calls_including_warmup": {
+      "openrouter": 14,
+      "typesafe": 7
+    },
+    "cost_including_warmup": {
+      "openrouter_reported_usd": 0.00412243,
+      "typesafe_estimate_usd": 0.00045066
+    }
+  },
+  "jev-main-standard": {
+    "json": {
+      "attempts": 18,
+      "all_attempt_median_seconds": 2.435327299994242,
+      "all_attempt_p95_seconds": 2.8503865900085654,
+      "successes": 18,
+      "complete_labels": 18,
+      "localization_complete": 15,
+      "median_seconds": 2.435327299994242,
+      "p95_seconds": 2.8503865900085654,
+      "median_vlm_seconds": 2.4258897000036086,
+      "median_jev_seconds": null,
+      "median_output_tokens": 201.0,
+      "openrouter_cost": 0.0063129300000000005,
+      "providers": {
+        "Alibaba": 18
+      },
+      "median_prompt_tokens": 1872.0,
+      "jev_input_tokens": 0,
+      "jev_cost_estimate_usd": 0.0,
+      "warmup_seconds": [
+        2.6640305999899283
+      ]
+    },
+    "jev": {
+      "attempts": 18,
+      "all_attempt_median_seconds": 1.8970053499942878,
+      "all_attempt_p95_seconds": 2.624534854994998,
+      "successes": 18,
+      "complete_labels": 18,
+      "localization_complete": 17,
+      "median_seconds": 1.8970053499942878,
+      "p95_seconds": 2.624534854994998,
+      "median_vlm_seconds": 1.5007177500010584,
+      "median_jev_seconds": 0.37465579999116017,
+      "median_output_tokens": 102.5,
+      "openrouter_cost": 0.00464373,
+      "providers": {
+        "Alibaba": 18
+      },
+      "median_prompt_tokens": 1592.0,
+      "jev_input_tokens": 38004,
+      "jev_cost_estimate_usd": 0.001596168,
+      "warmup_seconds": [
+        2.668642999997246
+      ]
+    },
+    "pairs": [
+      {
+        "repeat": 0,
+        "endpoint": 4.0,
+        "saved_seconds": 0.21878599998308346,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 0,
+        "endpoint": 9.6,
+        "saved_seconds": 1.19517150001775,
+        "same_provider": true,
+        "matching_event_decisions": 2
+      },
+      {
+        "repeat": 0,
+        "endpoint": 12.8,
+        "saved_seconds": 0.6317323999974178,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 0,
+        "endpoint": 20.0,
+        "saved_seconds": 0.874788900007843,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 0,
+        "endpoint": 24.0,
+        "saved_seconds": 0.25677780000842176,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 0,
+        "endpoint": 42.4,
+        "saved_seconds": 0.14364409999689087,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 1,
+        "endpoint": 4.0,
+        "saved_seconds": 0.20144329998583999,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 1,
+        "endpoint": 9.6,
+        "saved_seconds": 1.039254899995285,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 1,
+        "endpoint": 12.8,
+        "saved_seconds": 0.7358716000017012,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 1,
+        "endpoint": 20.0,
+        "saved_seconds": 0.05510490000597201,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 1,
+        "endpoint": 24.0,
+        "saved_seconds": 0.6809894000034546,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 1,
+        "endpoint": 42.4,
+        "saved_seconds": 0.6415784000128042,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 2,
+        "endpoint": 4.0,
+        "saved_seconds": 0.36910169999464415,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 2,
+        "endpoint": 9.6,
+        "saved_seconds": 0.9473983999923803,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 2,
+        "endpoint": 12.8,
+        "saved_seconds": 1.1515736000001198,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 2,
+        "endpoint": 20.0,
+        "saved_seconds": 0.3997086000017589,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 2,
+        "endpoint": 24.0,
+        "saved_seconds": -1.0520309999847086,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 2,
+        "endpoint": 42.4,
+        "saved_seconds": -0.3125500999885844,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      }
+    ],
+    "jev_faster_pairs": 16,
+    "median_paired_saved_seconds": 0.5157204999995884,
+    "by_window": {
+      "json": {
+        "4.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "9.6": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": true
+            },
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": true
+            },
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": true
+            }
+          ]
+        },
+        "12.8": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            }
+          ]
+        },
+        "20.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "24.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "42.4": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        }
+      },
+      "jev": {
+        "4.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "9.6": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": null
+            },
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": null
+            }
+          ]
+        },
+        "12.8": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "20.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "24.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "42.4": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        }
+      }
+    },
+    "calls_including_warmup": {
+      "openrouter": 38,
+      "typesafe": 19
+    },
+    "cost_including_warmup": {
+      "openrouter_reported_usd": 0.01153204,
+      "typesafe_estimate_usd": 0.00164535
+    }
+  },
+  "jev-main-high": {
+    "json": {
+      "attempts": 18,
+      "all_attempt_median_seconds": 2.6403625999955693,
+      "all_attempt_p95_seconds": 3.663500734995614,
+      "successes": 13,
+      "complete_labels": 13,
+      "localization_complete": 13,
+      "median_seconds": 2.462073499991675,
+      "p95_seconds": 3.6648714599956294,
+      "median_vlm_seconds": 2.4509961000003386,
+      "median_jev_seconds": null,
+      "median_output_tokens": 222,
+      "openrouter_cost": 0.00678509,
+      "providers": {
+        "Alibaba": 18
+      },
+      "median_prompt_tokens": 1954.0,
+      "jev_input_tokens": 0,
+      "jev_cost_estimate_usd": 0.0,
+      "warmup_seconds": [
+        3.943675999995321
+      ]
+    },
+    "jev": {
+      "attempts": 18,
+      "all_attempt_median_seconds": 1.817577949994302,
+      "all_attempt_p95_seconds": 2.3423548149970883,
+      "successes": 18,
+      "complete_labels": 18,
+      "localization_complete": 16,
+      "median_seconds": 1.817577949994302,
+      "p95_seconds": 2.3423548149970883,
+      "median_vlm_seconds": 1.429370049998397,
+      "median_jev_seconds": 0.37519145000260323,
+      "median_output_tokens": 106.0,
+      "openrouter_cost": 0.00468221,
+      "providers": {
+        "Alibaba": 18
+      },
+      "median_prompt_tokens": 1592.0,
+      "jev_input_tokens": 41354,
+      "jev_cost_estimate_usd": 0.0017368680000000001,
+      "warmup_seconds": [
+        2.1990015000046697
+      ]
+    },
+    "pairs": [
+      {
+        "repeat": 0,
+        "endpoint": 4.0,
+        "saved_seconds": 1.0122690999996848,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 0,
+        "endpoint": 12.8,
+        "saved_seconds": -0.2265394000132801,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 0,
+        "endpoint": 20.0,
+        "saved_seconds": 0.8127344000095036,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 0,
+        "endpoint": 24.0,
+        "saved_seconds": 0.06744690000778064,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 1,
+        "endpoint": 4.0,
+        "saved_seconds": 0.9778460000088671,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 1,
+        "endpoint": 12.8,
+        "saved_seconds": 0.5862127000000328,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 1,
+        "endpoint": 20.0,
+        "saved_seconds": 0.7768974999926286,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 1,
+        "endpoint": 24.0,
+        "saved_seconds": 0.3677567000122508,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 2,
+        "endpoint": 4.0,
+        "saved_seconds": 2.44029519999458,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 2,
+        "endpoint": 9.6,
+        "saved_seconds": 0.6636898000142537,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 2,
+        "endpoint": 12.8,
+        "saved_seconds": 0.5226835000066785,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 2,
+        "endpoint": 20.0,
+        "saved_seconds": 1.9795389999926556,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 2,
+        "endpoint": 24.0,
+        "saved_seconds": 1.2070391000015661,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      }
+    ],
+    "jev_faster_pairs": 12,
+    "median_paired_saved_seconds": 0.7768974999926286,
+    "by_window": {
+      "json": {
+        "4.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "9.6": {
+          "attempts": 3,
+          "ok": 1,
+          "decisions": [
+            null,
+            null,
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "12.8": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            }
+          ]
+        },
+        "20.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "24.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "42.4": {
+          "attempts": 3,
+          "ok": 0,
+          "decisions": [
+            null,
+            null,
+            null
+          ]
+        }
+      },
+      "jev": {
+        "4.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "9.6": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": null
+            },
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": true
+            }
+          ]
+        },
+        "12.8": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "20.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "24.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "42.4": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        }
+      }
+    },
+    "calls_including_warmup": {
+      "openrouter": 38,
+      "typesafe": 19
+    },
+    "cost_including_warmup": {
+      "openrouter_reported_usd": 0.01204086,
+      "typesafe_estimate_usd": 0.0017883180000000001
+    }
+  },
+  "jev-temporal-high": {
+    "json": {
+      "attempts": 18,
+      "all_attempt_median_seconds": 2.5862938500067685,
+      "all_attempt_p95_seconds": 3.170297995002329,
+      "successes": 15,
+      "complete_labels": 15,
+      "localization_complete": 15,
+      "median_seconds": 2.5698968000069726,
+      "p95_seconds": 3.1687687899990125,
+      "median_vlm_seconds": 2.557689900000696,
+      "median_jev_seconds": null,
+      "median_output_tokens": 222,
+      "openrouter_cost": 0.00666549,
+      "providers": {
+        "Alibaba": 18
+      },
+      "median_prompt_tokens": 1954.0,
+      "jev_input_tokens": 0,
+      "jev_cost_estimate_usd": 0.0,
+      "warmup_seconds": [
+        3.234517099990626
+      ]
+    },
+    "jev": {
+      "attempts": 18,
+      "all_attempt_median_seconds": 1.6917227499943692,
+      "all_attempt_p95_seconds": 2.180967175005935,
+      "successes": 18,
+      "complete_labels": 18,
+      "localization_complete": 18,
+      "median_seconds": 1.6917227499943692,
+      "p95_seconds": 2.180967175005935,
+      "median_vlm_seconds": 1.3087422499957029,
+      "median_jev_seconds": 0.3622216500007198,
+      "median_output_tokens": 87.0,
+      "openrouter_cost": 0.00437541,
+      "providers": {
+        "Alibaba": 18
+      },
+      "median_prompt_tokens": 1560.0,
+      "jev_input_tokens": 37226,
+      "jev_cost_estimate_usd": 0.001563492,
+      "warmup_seconds": [
+        2.4186238999973284
+      ]
+    },
+    "pairs": [
+      {
+        "repeat": 0,
+        "endpoint": 4.0,
+        "saved_seconds": 1.2737856000021566,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 0,
+        "endpoint": 9.6,
+        "saved_seconds": 1.1997602000046754,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 0,
+        "endpoint": 12.8,
+        "saved_seconds": 0.8489700000063749,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 0,
+        "endpoint": 20.0,
+        "saved_seconds": 0.6978545000165468,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 0,
+        "endpoint": 24.0,
+        "saved_seconds": 0.5017265999922529,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 1,
+        "endpoint": 4.0,
+        "saved_seconds": 1.9290934999880847,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 1,
+        "endpoint": 9.6,
+        "saved_seconds": 0.9048640999972122,
+        "same_provider": true,
+        "matching_event_decisions": 1
+      },
+      {
+        "repeat": 1,
+        "endpoint": 12.8,
+        "saved_seconds": -0.2407690999971237,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 1,
+        "endpoint": 20.0,
+        "saved_seconds": 0.8592640000133542,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 1,
+        "endpoint": 24.0,
+        "saved_seconds": 0.36246099999698345,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 2,
+        "endpoint": 4.0,
+        "saved_seconds": 1.8006019000022206,
+        "same_provider": true,
+        "matching_event_decisions": 4
+      },
+      {
+        "repeat": 2,
+        "endpoint": 9.6,
+        "saved_seconds": 0.4307772999891313,
+        "same_provider": true,
+        "matching_event_decisions": 1
+      },
+      {
+        "repeat": 2,
+        "endpoint": 12.8,
+        "saved_seconds": 0.7191164999967441,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 2,
+        "endpoint": 20.0,
+        "saved_seconds": 0.7101911999925505,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      },
+      {
+        "repeat": 2,
+        "endpoint": 24.0,
+        "saved_seconds": 0.4220148999884259,
+        "same_provider": true,
+        "matching_event_decisions": 3
+      }
+    ],
+    "jev_faster_pairs": 14,
+    "median_paired_saved_seconds": 0.7191164999967441,
+    "by_window": {
+      "json": {
+        "4.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "9.6": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "12.8": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": true,
+              "weapon": false
+            }
+          ]
+        },
+        "20.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "24.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "42.4": {
+          "attempts": 3,
+          "ok": 0,
+          "decisions": [
+            null,
+            null,
+            null
+          ]
+        }
+      },
+      "jev": {
+        "4.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "9.6": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": true,
+              "smoking": false,
+              "fall": false,
+              "weapon": null
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": null
+            },
+            {
+              "fight": false,
+              "smoking": true,
+              "fall": false,
+              "weapon": null
+            }
+          ]
+        },
+        "12.8": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "20.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": null,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": null,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "24.0": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": null,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        },
+        "42.4": {
+          "attempts": 3,
+          "ok": 3,
+          "decisions": [
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            },
+            {
+              "fight": false,
+              "smoking": false,
+              "fall": false,
+              "weapon": false
+            }
+          ]
+        }
+      }
+    },
+    "calls_including_warmup": {
+      "openrouter": 38,
+      "typesafe": 19
+    },
+    "cost_including_warmup": {
+      "openrouter_reported_usd": 0.01164722,
+      "typesafe_estimate_usd": 0.0016151100000000001
+    }
+  }
+}

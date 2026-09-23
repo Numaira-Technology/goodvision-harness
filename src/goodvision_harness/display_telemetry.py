@@ -1,12 +1,13 @@
 """Validate image-free browser presentation measurements."""
 
 import math
+import re
 
 COUNTERS = frozenset({
     "network_requests", "network_failures", "network_bytes_received",
     "network_frames_received", "network_source_gap_frames",
     "captured_frames", "distinct_presented_frames", "display_buffer_expired",
-    "video_callback_frames", "video_callback_gap_frames",
+    "display_catchup_expired", "network_queue_dropped_frames", "video_callback_frames", "video_callback_gap_frames",
     "rejected_source_frames", "buffered_frames", "analysis_admitted", "analysis_sent",
     "analysis_pending", "analysis_upload_failures", "analysis_capture_pauses",
     "analysis_prepared", "analysis_prepared_pending",
@@ -25,6 +26,9 @@ COUNTERS = frozenset({
     "metadata_ws_received", "metadata_duplicate_revisions", "metadata_invalid_revisions",
     "worker_anchor_rejections", "worker_results_received", "worker_results_late",
     "worker_present_expired",
+    "motion_frames_admitted", "motion_frames_skipped", "motion_frames_expired",
+    "motion_metadata_coalesced", "worker_pending_present_queries",
+    "worker_pending_metadata",
     "worker_pending_frames", "coverage_not_ready", "coverage_no_anchor",
     "preprocess_frames_completed", "preprocess_failures", "preprocess_pending_frames", "motion_pending_frames",
     "coverage_anchor_expired", "coverage_motion_gap", "coverage_motion_unreliable",
@@ -77,12 +81,17 @@ IDENTITY = frozenset({"stream_session_id", "generation", "crop_version"})
 
 def validate_display_metrics(payload: object) -> dict:
     if not isinstance(payload, dict) or not IDENTITY <= payload.keys() or (
-        payload.keys() - IDENTITY - COUNTERS - MEASUREMENTS
+        payload.keys() - IDENTITY - COUNTERS - MEASUREMENTS - {"display_instance_id"}
     ):
         raise ValueError("invalid display metrics fields")
     sid = payload["stream_session_id"]
     if not isinstance(sid, str) or not 1 <= len(sid) <= 256:
         raise ValueError("invalid display run")
+    if "display_instance_id" in payload and (
+        not isinstance(payload["display_instance_id"], str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{1,96}", payload["display_instance_id"]) is None
+    ):
+        raise ValueError("invalid display instance")
     for key in (COUNTERS | {"generation", "crop_version"}) & payload.keys():
         if type(payload[key]) is not int or not 0 <= payload[key] <= 2**53 - 1:
             raise ValueError("invalid display counter")

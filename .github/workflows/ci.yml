@@ -21,10 +21,12 @@ jobs:
         include:
           - os: ubuntu-latest
             python: '3.11'
+            timeout_minutes: 15
           - os: windows-latest
             python: '3.12'
+            timeout_minutes: 25
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

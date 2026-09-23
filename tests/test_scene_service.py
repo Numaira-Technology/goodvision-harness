@@ -104,7 +104,7 @@ def test_local_motion_assets_and_timing_config_are_delivered_without_models(
     runtime = runtime_factory()
     with TestClient(create_app(runtime_factory=lambda: runtime)) as client:
         settings = client.get("/v1/ui/info").json()["local_camera_display"]
-        assert settings["target_fps"] == 20
+        assert settings["target_fps"] == 15
         assert settings["motion_backend"] == "dense"
         assert settings["delay_seconds"] == 6
         assert settings["motion_width"] == 160
@@ -282,8 +282,8 @@ def test_real_dry_run_camera_feeds_scene_and_releases_evidence_on_stop(
     received = Event()
     original = runtime._on_display_frame
 
-    def record(*args):
-        original(*args)
+    def record(*args, **kwargs):
+        original(*args, **kwargs)
         received.set()
 
     monkeypatch.setattr(runtime, "_on_display_frame", record)
@@ -620,7 +620,10 @@ def test_online_drain_failure_uses_its_stage_not_exception_or_prior_generic_erro
         stats=lambda: {"state": "failed" if stage == "tracking" else "running"},
         wait_until_idle=lambda **kwargs: True,
     )
-    scene = SimpleNamespace(finish_inspection_sources=fail)
+    scene = SimpleNamespace(
+        finish_tracking_sources=lambda: None,
+        finish_inspection_sources=fail,
+    )
     try:
         runtime._drain_native_end(
             runtime._generation, session, scene, coordinator, "stopped",

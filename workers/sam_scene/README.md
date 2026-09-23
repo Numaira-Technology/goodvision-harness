@@ -11,7 +11,7 @@ This worker provides three separately enabled perception paths:
 It contains no simulated production detector and never downloads model weights
 at startup. Native SAM 3.1 strict checkpoint loading, CUDA warmup and real video
 and continuous-session inference have passed on the rented RTX 4090. See the
-[GPU validation record](../../docs/architecture/sam31-gpu-validation-20260912.md)
+[追踪性能与验收边界](../../docs/validation/tracking-performance.md)
 for measured scope and remaining quality/long-run checks. The image adapter's
 unit tests do not constitute its own real-checkpoint GPU acceptance.
 
@@ -609,7 +609,7 @@ allocated 约 7.30 GB。这是特定录像和配置的执行/一致性证据，*
 身份切换或事件识别的准确率，也不等于长期生产验收**。
 
 随后 256 帧真实多人画面（源片 6.0–69.8 秒）加入最新元数据清理和空 EOF，
-与未清理参考逐帧 ID／mask hash 仍全等；[详细 GPU 记录](../../docs/architecture/sam31-gpu-validation-20260912.md)
+与未清理参考逐帧 ID／mask hash 仍全等；[追踪性能与验收边界](../../docs/validation/tracking-performance.md)
 保留对应输入、计时和质量问题。
 
 接口顺序：

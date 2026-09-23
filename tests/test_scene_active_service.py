@@ -143,7 +143,12 @@ def factory(tmp_path, monkeypatch):
         config = replace(
             config,
             runtime=replace(
-                config.runtime, scene_mode="active", scene_max_image_side=scene_side
+                config.runtime,
+                scene_mode="active",
+                scene_max_image_side=scene_side,
+                # This suite exercises tracker-gated temporal scene inspection.
+                # Independent VLM admission has its own service regression suite.
+                scene_independent_vlm=False,
             ),
             rich_labeling=replace(
                 config.rich_labeling,
@@ -297,7 +302,7 @@ def test_scene_confirmation_reaches_legacy_json_sse_and_webhook(factory, monkeyp
     with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:
         runtime.start_camera(dry_run=True, features=["smoking", "fight"])
         runtime._delivery = SimpleNamespace(
-            submit=delivered.append, close=lambda **_kwargs: None,
+            submit=delivered.append, close=lambda **_kwargs: None, stats=lambda: {},
         )
         for seq, detected in ((1, True), (2, True), (3, False), (4, False)):
             runtime._on_display_frame(_jpeg(), float(seq), seq)
@@ -344,6 +349,7 @@ def test_scene_confirmation_reaches_legacy_json_sse_and_webhook(factory, monkeyp
         assert runtime.results.latest().cursor == before
         assert client.get("/v1/results/stranger/latest").status_code == 404
         runtime.stop_session()
+        _await_scene_drain(runtime)
         runtime.start_camera(dry_run=True, features=["smoking"])
         assert client.get("/v1/results/smoking/latest").status_code == 404
         runtime._delivery = None
@@ -852,7 +858,9 @@ def test_camera_websocket_sends_geometry_without_waiting_for_another_upload(
                                   "stream_session_id": sid, "generation": 8,
                                   "crop_version": 0, "report_sequence": 1,
                                   "captured_frames": 1})
-                _await(lambda: runtime._state["local_camera_display"] is not None)
+                _await(lambda: runtime.status(lightweight=True)[
+                    "local_camera_display"
+                ] is not None)
             assert "local_camera_display_timing" in caplog.text
             socket.send_json({"type": "stop"})
             while socket.receive_json()["type"] != "ended":
@@ -1008,7 +1016,7 @@ def test_blocked_status_does_not_stall_display_metadata_event_loop():
     entered, release = Event(), Event()
     metadata = CameraDisplayMetadata()
 
-    def slow_status():
+    def slow_status(**_kwargs):
         entered.set()
         release.wait(2)
         return {"pipeline_state": "running"}

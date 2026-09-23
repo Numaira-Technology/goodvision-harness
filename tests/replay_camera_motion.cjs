@@ -87,3 +87,14 @@ test("counterfactual resize preserves source identity and labels its inability t
   assert.match(report.provenance.transformation.limitation,/Original expired queries stay expired/);
   assert.equal(report.summary.expired_queries,1);
 });
+
+
+test("recorded expired source work is not resurrected in offline motion history",()=>{
+  const trace=fixture(),seen=[];
+  trace.outputs.set(4,{type:"frame_processed",sequence:1,accepted:false,expired:true,trace_id:4});
+  class RecordingHistory extends History{
+    appendFrame(frame){seen.push(frame.sequence);return super.appendFrame(frame);}
+  }
+  const report=replayTrace(trace,{History:RecordingHistory,adapter:{}});
+  assert.deepEqual(seen,[0]);assert.equal(report.mismatches.length,0);
+});

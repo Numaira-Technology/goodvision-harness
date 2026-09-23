@@ -1,0 +1,483 @@
+{
+  "requests": 456,
+  "planned": 456,
+  "formal_requests": 450,
+  "successful_requests": 456,
+  "openrouter_cost_usd": 0.103224888,
+  "by_case": {
+    "simple_vision": {
+      "attempts": 90,
+      "successes": 90,
+      "p50_seconds": 1.4744167999961064,
+      "p95_seconds": 1.8487882299967167,
+      "sample_groups": {
+        "fall": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 7,
+          "any_majority_positive": 7,
+          "any_majority_unknown": 0,
+          "all_majority_false": 3,
+          "any_request_error": 0,
+          "target_majority_true": 7,
+          "target_majority_false": 3,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 7
+        },
+        "adl": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 9,
+          "any_majority_positive": 1,
+          "any_majority_unknown": 0,
+          "all_majority_false": 9,
+          "any_request_error": 0
+        },
+        "smoking": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 8,
+          "any_majority_positive": 8,
+          "any_majority_unknown": 0,
+          "all_majority_false": 2,
+          "any_request_error": 0,
+          "target_majority_true": 8,
+          "target_majority_false": 2,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 8
+        }
+      },
+      "confusion": {
+        "fight": {
+          "reference_negative": 90,
+          "tn": 90
+        },
+        "smoking": {
+          "reference_negative": 60,
+          "tn": 60,
+          "reference_positive": 30,
+          "fn": 6,
+          "tp": 24
+        },
+        "fall": {
+          "reference_positive": 30,
+          "fn": 9,
+          "reference_negative": 60,
+          "tn": 60,
+          "tp": 21
+        },
+        "weapon": {
+          "reference_negative": 90,
+          "tn": 87,
+          "fp": 3
+        }
+      },
+      "per_repeat_p50_seconds": [
+        1.5960718999995152,
+        1.474663850003708,
+        1.457334400001855
+      ],
+      "top_candidate_ties": {
+        "fall": 6
+      },
+      "all_four_decisions_stable_clips": 30,
+      "complete_label_responses": 90,
+      "omitted_labels": [],
+      "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+    },
+    "8b_events": {
+      "attempts": 90,
+      "successes": 90,
+      "p50_seconds": 0.945494300001883,
+      "p95_seconds": 1.2229975850048505,
+      "sample_groups": {
+        "fall": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 9,
+          "any_majority_positive": 10,
+          "any_majority_unknown": 1,
+          "all_majority_false": 0,
+          "any_request_error": 0,
+          "target_majority_true": 10,
+          "target_majority_false": 0,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 10
+        },
+        "adl": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 5,
+          "any_majority_positive": 4,
+          "any_majority_unknown": 1,
+          "all_majority_false": 5,
+          "any_request_error": 0
+        },
+        "smoking": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 10,
+          "any_majority_positive": 10,
+          "any_majority_unknown": 0,
+          "all_majority_false": 0,
+          "any_request_error": 0,
+          "target_majority_true": 10,
+          "target_majority_false": 0,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 10
+        }
+      },
+      "confusion": {
+        "fight": {
+          "reference_negative": 90,
+          "tn": 83,
+          "unknown_negative": 7
+        },
+        "smoking": {
+          "reference_negative": 60,
+          "tn": 50,
+          "fp": 3,
+          "reference_positive": 30,
+          "tp": 30,
+          "unknown_negative": 7
+        },
+        "fall": {
+          "reference_positive": 30,
+          "tp": 30,
+          "reference_negative": 60,
+          "tn": 48,
+          "fp": 9,
+          "unknown_negative": 3
+        },
+        "weapon": {
+          "reference_negative": 90,
+          "tn": 83,
+          "unknown_negative": 7
+        }
+      },
+      "per_repeat_p50_seconds": [
+        1.0009213499979523,
+        0.8746720000017376,
+        0.9459807500024908
+      ],
+      "all_four_decisions_stable_clips": 29,
+      "complete_label_responses": 90,
+      "omitted_labels": [],
+      "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+    },
+    "flash_events": {
+      "attempts": 90,
+      "successes": 90,
+      "p50_seconds": 2.819246250001015,
+      "p95_seconds": 4.433080629996038,
+      "sample_groups": {
+        "fall": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 10,
+          "any_majority_positive": 10,
+          "any_majority_unknown": 0,
+          "all_majority_false": 0,
+          "any_request_error": 0,
+          "target_majority_true": 10,
+          "target_majority_false": 0,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 10
+        },
+        "adl": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 4,
+          "any_majority_positive": 3,
+          "any_majority_unknown": 4,
+          "all_majority_false": 4,
+          "any_request_error": 0
+        },
+        "smoking": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 9,
+          "any_majority_positive": 10,
+          "any_majority_unknown": 1,
+          "all_majority_false": 0,
+          "any_request_error": 0,
+          "target_majority_true": 10,
+          "target_majority_false": 0,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 10
+        }
+      },
+      "confusion": {
+        "fight": {
+          "reference_negative": 90,
+          "tn": 90
+        },
+        "smoking": {
+          "reference_negative": 60,
+          "tn": 45,
+          "unknown_negative": 13,
+          "reference_positive": 30,
+          "tp": 30,
+          "fp": 2
+        },
+        "fall": {
+          "reference_positive": 30,
+          "tp": 30,
+          "reference_negative": 60,
+          "tn": 54,
+          "fp": 6
+        },
+        "weapon": {
+          "reference_negative": 90,
+          "tn": 87,
+          "unknown_negative": 3
+        }
+      },
+      "per_repeat_p50_seconds": [
+        2.7946532999994815,
+        2.7260787499981234,
+        2.9786571500007994
+      ],
+      "all_four_decisions_stable_clips": 29,
+      "complete_label_responses": 90,
+      "omitted_labels": [],
+      "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+    },
+    "8b_full": {
+      "attempts": 90,
+      "successes": 90,
+      "p50_seconds": 2.454969850001362,
+      "p95_seconds": 2.9449558550008077,
+      "sample_groups": {
+        "fall": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 5,
+          "any_majority_positive": 10,
+          "any_majority_unknown": 5,
+          "all_majority_false": 0,
+          "any_request_error": 0,
+          "target_majority_true": 10,
+          "target_majority_false": 0,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 10
+        },
+        "adl": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 3,
+          "any_majority_positive": 3,
+          "any_majority_unknown": 6,
+          "all_majority_false": 3,
+          "any_request_error": 0
+        },
+        "smoking": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 10,
+          "any_majority_positive": 10,
+          "any_majority_unknown": 0,
+          "all_majority_false": 0,
+          "any_request_error": 0,
+          "target_majority_true": 10,
+          "target_majority_false": 0,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 10
+        }
+      },
+      "confusion": {
+        "fight": {
+          "reference_negative": 90,
+          "unknown_negative": 27,
+          "tn": 63
+        },
+        "smoking": {
+          "reference_negative": 60,
+          "unknown_negative": 30,
+          "reference_positive": 30,
+          "tp": 30,
+          "tn": 30
+        },
+        "fall": {
+          "reference_positive": 30,
+          "tp": 30,
+          "reference_negative": 60,
+          "tn": 45,
+          "fp": 9,
+          "unknown_negative": 6
+        },
+        "weapon": {
+          "reference_negative": 90,
+          "tn": 77,
+          "unknown_negative": 13
+        }
+      },
+      "per_repeat_p50_seconds": [
+        2.4360582500012242,
+        2.4375807999967947,
+        2.507007349999185
+      ],
+      "positive_verdicts": 69,
+      "positive_verdicts_with_valid_references": 60,
+      "all_four_decisions_stable_clips": 23,
+      "reference_target_positive_verdicts": 60,
+      "reference_target_positive_verdicts_with_valid_references": 55,
+      "complete_label_responses": 87,
+      "omitted_labels": [
+        {
+          "sample_id": "v04",
+          "repeat": 0,
+          "labels": [
+            "fight",
+            "smoking",
+            "weapon"
+          ]
+        },
+        {
+          "sample_id": "v10",
+          "repeat": 0,
+          "labels": [
+            "fight",
+            "smoking",
+            "weapon"
+          ]
+        },
+        {
+          "sample_id": "v10",
+          "repeat": 1,
+          "labels": [
+            "fight",
+            "smoking",
+            "weapon"
+          ]
+        }
+      ],
+      "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+    },
+    "flash_full": {
+      "attempts": 90,
+      "successes": 90,
+      "p50_seconds": 6.705687150002632,
+      "p95_seconds": 7.908141669999531,
+      "sample_groups": {
+        "fall": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 10,
+          "any_majority_positive": 10,
+          "any_majority_unknown": 0,
+          "all_majority_false": 0,
+          "any_request_error": 0,
+          "target_majority_true": 10,
+          "target_majority_false": 0,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 10
+        },
+        "adl": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 3,
+          "any_majority_positive": 2,
+          "any_majority_unknown": 5,
+          "all_majority_false": 3,
+          "any_request_error": 0
+        },
+        "smoking": {
+          "total_clips": 10,
+          "complete_clips": 10,
+          "majority_all_labels_match": 10,
+          "any_majority_positive": 10,
+          "any_majority_unknown": 0,
+          "all_majority_false": 0,
+          "any_request_error": 0,
+          "target_majority_true": 10,
+          "target_majority_false": 0,
+          "target_majority_unknown": 0,
+          "target_true_all_three": 10
+        }
+      },
+      "confusion": {
+        "fight": {
+          "reference_negative": 90,
+          "tn": 90
+        },
+        "smoking": {
+          "reference_negative": 60,
+          "tn": 48,
+          "unknown_negative": 12,
+          "reference_positive": 30,
+          "tp": 30
+        },
+        "fall": {
+          "reference_positive": 30,
+          "tp": 30,
+          "reference_negative": 60,
+          "tn": 51,
+          "unknown_negative": 3,
+          "fp": 6
+        },
+        "weapon": {
+          "reference_negative": 90,
+          "tn": 90
+        }
+      },
+      "per_repeat_p50_seconds": [
+        6.623049400001037,
+        6.659870349998528,
+        6.76846480000313
+      ],
+      "positive_verdicts": 66,
+      "positive_verdicts_with_valid_references": 66,
+      "all_four_decisions_stable_clips": 30,
+      "reference_target_positive_verdicts": 60,
+      "reference_target_positive_verdicts_with_valid_references": 60,
+      "complete_label_responses": 90,
+      "omitted_labels": [],
+      "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+    }
+  },
+  "paired_latency": [
+    {
+      "baseline": "8b_full",
+      "candidate": "8b_events",
+      "pairs": 90,
+      "candidate_faster_pairs": 89,
+      "median_paired_reduction": 0.6088438770233677,
+      "ratio_of_paired_medians_reduction": 0.6148652090365352
+    },
+    {
+      "baseline": "flash_full",
+      "candidate": "flash_events",
+      "pairs": 90,
+      "candidate_faster_pairs": 90,
+      "median_paired_reduction": 0.584150596711621,
+      "ratio_of_paired_medians_reduction": 0.5795738472529384
+    },
+    {
+      "baseline": "8b_events",
+      "candidate": "simple_vision",
+      "pairs": 90,
+      "candidate_faster_pairs": 2,
+      "median_paired_reduction": -0.561630262622844,
+      "ratio_of_paired_medians_reduction": -0.5594137373363013
+    },
+    {
+      "baseline": "8b_full",
+      "candidate": "simple_vision",
+      "pairs": 90,
+      "candidate_faster_pairs": 90,
+      "median_paired_reduction": 0.38417138920230304,
+      "ratio_of_paired_medians_reduction": 0.39941551624542826
+    },
+    {
+      "baseline": "flash_events",
+      "candidate": "simple_vision",
+      "pairs": 90,
+      "candidate_faster_pairs": 90,
+      "median_paired_reduction": 0.48949207382475723,
+      "ratio_of_paired_medians_reduction": 0.47701737654326026
+    }
+  ],
+  "counting_unit": "Video majority of three repetitions for clip metrics; repeats are not independent videos. Per-request confusion retained separately.",
+  "cost_scope": "This batch only, including warmups. No reported bill from public Simple Jev demo."
+}

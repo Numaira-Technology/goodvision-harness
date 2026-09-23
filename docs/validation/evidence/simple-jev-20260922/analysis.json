@@ -1,0 +1,315 @@
+{
+  "requests": 96,
+  "formal_requests": 90,
+  "requests_by_case": {
+    "simple_vision": 20,
+    "8b_events": 19,
+    "flash_events": 19,
+    "8b_full": 19,
+    "flash_full": 19
+  },
+  "openrouter_reported_cost_usd_including_warmups": 0.031616486,
+  "simple_demo_cost_usd": null,
+  "cost_scope": "Only this authorized 96-request batch; excludes earlier probes and TypeSafe experiment. Demo has no billing metadata.",
+  "reference": {
+    "4.0": "smoking-like gesture under HIGH policy; not proof of tobacco",
+    "9.6": "boxing/striking counts as fight under configured policy",
+    "12.8": "visible loss of support / descent in staged demonstration",
+    "20.0": "ordinary walking",
+    "24.0": "deliberate bend / pick-place",
+    "42.4": "quiet background"
+  },
+  "cases": {
+    "simple_vision": {
+      "target_positive_counts_out_of_3": {
+        "smoking": 3,
+        "fight": 0,
+        "fall": 0
+      },
+      "negative_windows": 9,
+      "negative_windows_all_false": 9,
+      "negative_windows_with_unknown": 0,
+      "negative_windows_with_positive": 0,
+      "per_repeat_median_seconds": [
+        2.5018804500032275,
+        2.721036249997269,
+        2.7561859499983257
+      ]
+    },
+    "8b_events": {
+      "target_positive_counts_out_of_3": {
+        "smoking": 3,
+        "fight": 3,
+        "fall": 3
+      },
+      "negative_windows": 9,
+      "negative_windows_all_false": 9,
+      "negative_windows_with_unknown": 0,
+      "negative_windows_with_positive": 0,
+      "per_repeat_median_seconds": [
+        2.1937590000015916,
+        3.3669247499965422,
+        3.5899956499997643
+      ]
+    },
+    "flash_events": {
+      "target_positive_counts_out_of_3": {
+        "smoking": 3,
+        "fight": 3,
+        "fall": 3
+      },
+      "negative_windows": 9,
+      "negative_windows_all_false": 4,
+      "negative_windows_with_unknown": 5,
+      "negative_windows_with_positive": 0,
+      "per_repeat_median_seconds": [
+        3.6381770499974664,
+        5.4883932000011555,
+        5.026797949998581
+      ]
+    },
+    "8b_full": {
+      "target_positive_counts_out_of_3": {
+        "smoking": 3,
+        "fight": 3,
+        "fall": 3
+      },
+      "negative_windows": 9,
+      "negative_windows_all_false": 9,
+      "negative_windows_with_unknown": 0,
+      "negative_windows_with_positive": 0,
+      "per_repeat_median_seconds": [
+        3.689685749999626,
+        4.70540090000577,
+        4.695622800001729
+      ],
+      "positive_verdicts": 9,
+      "positive_verdicts_with_valid_subject_references": 6,
+      "grounding_issues": {
+        "unlocalized_event": 44
+      }
+    },
+    "flash_full": {
+      "target_positive_counts_out_of_3": {
+        "smoking": 3,
+        "fight": 3,
+        "fall": 3
+      },
+      "negative_windows": 9,
+      "negative_windows_all_false": 9,
+      "negative_windows_with_unknown": 0,
+      "negative_windows_with_positive": 0,
+      "per_repeat_median_seconds": [
+        7.423096499998792,
+        9.450247150001815,
+        9.185865150000609
+      ],
+      "positive_verdicts": 9,
+      "positive_verdicts_with_valid_subject_references": 9,
+      "grounding_issues": {
+        "unlocalized_event": 36
+      }
+    }
+  },
+  "paired_latency_comparisons": [
+    {
+      "baseline": "8b_full",
+      "candidate": "simple_vision",
+      "pairs": 18,
+      "ratio_of_medians_reduction": 0.4288541274176224,
+      "median_paired_relative_reduction": 0.34727124186083286,
+      "candidate_faster_pairs": 18
+    },
+    {
+      "baseline": "8b_events",
+      "candidate": "simple_vision",
+      "pairs": 18,
+      "ratio_of_medians_reduction": 0.16108688449924002,
+      "median_paired_relative_reduction": 0.006746253480719722,
+      "candidate_faster_pairs": 10
+    },
+    {
+      "baseline": "flash_events",
+      "candidate": "simple_vision",
+      "pairs": 18,
+      "ratio_of_medians_reduction": 0.4675157625939389,
+      "median_paired_relative_reduction": 0.3966703083004597,
+      "candidate_faster_pairs": 17
+    },
+    {
+      "baseline": "8b_full",
+      "candidate": "8b_events",
+      "pairs": 18,
+      "ratio_of_medians_reduction": 0.31918352207254275,
+      "median_paired_relative_reduction": 0.3178243414107799,
+      "candidate_faster_pairs": 18
+    },
+    {
+      "baseline": "flash_full",
+      "candidate": "flash_events",
+      "pairs": 18,
+      "ratio_of_medians_reduction": 0.43692741058271933,
+      "median_paired_relative_reduction": 0.4542046841880853,
+      "candidate_faster_pairs": 18
+    }
+  ],
+  "simple_target_probabilities": [
+    {
+      "endpoint": 4.0,
+      "repeat": 0,
+      "event": "smoking",
+      "answer": {
+        "type": "choice",
+        "choice": "present",
+        "confidence": 0.4825230836868286,
+        "probabilities": {
+          "present": 0.4825230836868286,
+          "absent": 0.4825230836868286,
+          "uncertain": 0.03495385870337486
+        }
+      },
+      "top_two_margin": 0.0
+    },
+    {
+      "endpoint": 9.6,
+      "repeat": 0,
+      "event": "fight",
+      "answer": {
+        "type": "choice",
+        "choice": "absent",
+        "confidence": 0.515752911567688,
+        "probabilities": {
+          "present": 0.4551503360271454,
+          "absent": 0.515752911567688,
+          "uncertain": 0.02909678779542446
+        }
+      },
+      "top_two_margin": 0.0606025755405426
+    },
+    {
+      "endpoint": 12.8,
+      "repeat": 0,
+      "event": "fall",
+      "answer": {
+        "type": "choice",
+        "choice": "absent",
+        "confidence": 0.5534884333610535,
+        "probabilities": {
+          "present": 0.3804067373275757,
+          "absent": 0.5534884333610535,
+          "uncertain": 0.06610478460788727
+        }
+      },
+      "top_two_margin": 0.17308169603347778
+    },
+    {
+      "endpoint": 4.0,
+      "repeat": 1,
+      "event": "smoking",
+      "answer": {
+        "type": "choice",
+        "choice": "present",
+        "confidence": 0.4825230836868286,
+        "probabilities": {
+          "present": 0.4825230836868286,
+          "absent": 0.4825230836868286,
+          "uncertain": 0.03495385870337486
+        }
+      },
+      "top_two_margin": 0.0
+    },
+    {
+      "endpoint": 9.6,
+      "repeat": 1,
+      "event": "fight",
+      "answer": {
+        "type": "choice",
+        "choice": "absent",
+        "confidence": 0.515752911567688,
+        "probabilities": {
+          "present": 0.4551503360271454,
+          "absent": 0.515752911567688,
+          "uncertain": 0.02909678779542446
+        }
+      },
+      "top_two_margin": 0.0606025755405426
+    },
+    {
+      "endpoint": 12.8,
+      "repeat": 1,
+      "event": "fall",
+      "answer": {
+        "type": "choice",
+        "choice": "absent",
+        "confidence": 0.5534884333610535,
+        "probabilities": {
+          "present": 0.3804067373275757,
+          "absent": 0.5534884333610535,
+          "uncertain": 0.06610478460788727
+        }
+      },
+      "top_two_margin": 0.17308169603347778
+    },
+    {
+      "endpoint": 4.0,
+      "repeat": 2,
+      "event": "smoking",
+      "answer": {
+        "type": "choice",
+        "choice": "present",
+        "confidence": 0.4825230836868286,
+        "probabilities": {
+          "present": 0.4825230836868286,
+          "absent": 0.4825230836868286,
+          "uncertain": 0.03495385870337486
+        }
+      },
+      "top_two_margin": 0.0
+    },
+    {
+      "endpoint": 9.6,
+      "repeat": 2,
+      "event": "fight",
+      "answer": {
+        "type": "choice",
+        "choice": "absent",
+        "confidence": 0.515752911567688,
+        "probabilities": {
+          "present": 0.4551503360271454,
+          "absent": 0.515752911567688,
+          "uncertain": 0.02909678779542446
+        }
+      },
+      "top_two_margin": 0.0606025755405426
+    },
+    {
+      "endpoint": 12.8,
+      "repeat": 2,
+      "event": "fall",
+      "answer": {
+        "type": "choice",
+        "choice": "absent",
+        "confidence": 0.5534884333610535,
+        "probabilities": {
+          "present": 0.3804067373275757,
+          "absent": 0.5534884333610535,
+          "uncertain": 0.06610478460788727
+        }
+      },
+      "top_two_margin": 0.17308169603347778
+    }
+  ],
+  "blank_control": [
+    {
+      "case": "simple_vision",
+      "decisions": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "total_seconds": 7.966366699998616,
+      "ok": true
+    }
+  ]
+}
