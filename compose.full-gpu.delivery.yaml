@@ -2,7 +2,7 @@ name: goodvision-harness
 
 services:
   harness:
-    image: goodvision-harness:2026.09.10-full.4
+    image: goodvision-harness:20260923-full1
     pull_policy: never
     init: true
     restart: unless-stopped
@@ -52,7 +52,7 @@ services:
     stop_grace_period: 90s
   rich-label-worker:
     profiles: [gpu]
-    image: goodvision-rich-label-worker:2026.09.10-full.4
+    image: goodvision-rich-label-worker:20260923-full1
     pull_policy: never
     init: true
     restart: unless-stopped
