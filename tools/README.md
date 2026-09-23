@@ -154,6 +154,10 @@ See [recognition findings](../docs/validation/recognition-quality.md).
 
 `python tools/benchmark_supervision.py --frames 100` 对 8/64/128 个合成目标测量
 转换、区域、越线和平滑的 CPU 开销，不运行模型。
+`python tools/benchmark_supervision_runtime.py --frames 200` 进一步比较开关前后的
+场景提交、1/12 场景的峰值 RSS 和几何停顿对共享锁的影响；macOS/Linux 可用。
+可传 `--baseline-source /path/to/old/src` 比较提取的旧源码，沿用同一个 Python 环境。
+范围与数字见 [部署评估](../docs/architecture/supervision-deployment-assessment.md)。
 原 `scene_replay.py` 入口继续可用；事件级评测使用
 `python -m goodvision_harness.evaluation.cli predictions.json targets.json --camera-hours 2`。
 输入、开启方式与边界见 [实验说明](../docs/architecture/supervision-experiment.md)。

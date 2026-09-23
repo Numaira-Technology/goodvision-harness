@@ -4,6 +4,9 @@
 依据 Chat 的“分析Supervision优势”：通用 CV 使用成熟组件，GoodVision 维护
 Observation、源时序、事件生命周期、身份关联与事件级可靠性。
 
+适配后的实时部署与硬件结论见[部署评估](supervision-deployment-assessment.md)，
+其中区分原始信号和确认报警，并记录开启组件的 CPU、RSS 与共享锁等待测量。
+
 ## 实际分层
 
 ```text

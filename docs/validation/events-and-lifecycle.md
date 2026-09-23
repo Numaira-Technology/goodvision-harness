@@ -78,6 +78,11 @@ MJPEG。正常轮 VLM 31/31 包实收，与通用结果流逐个消息 ID 对齐
 [结构、开启方式和语义边界](../architecture/supervision-experiment.md)；
 [CPU 原始汇总](evidence/supervision-components-20260923.json)。
 
+后续[部署时延与硬件评估](../architecture/supervision-deployment-assessment.md)补充了
+新旧提交路径 A/B、峰值 RSS 和共享锁故障探测；原始数字在
+[运行时测量](evidence/supervision-runtime-20260923.json)。它明确区分原始结果、
+确认报警与显示延迟，不能把组件基准当作整机部署验收。
+
 使用固定 Supervision 0.30.5，macOS arm64 / Python 3.12.12，
 每个场景预热 10 帧后测量 100 帧，目标为固定合成人框。
 
