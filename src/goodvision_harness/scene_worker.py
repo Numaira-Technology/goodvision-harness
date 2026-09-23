@@ -19,7 +19,7 @@ from .scene_inspection import (
     _validate_job,
     _validate_verdicts,
 )
-from .scene_runtime import SceneRuntime, TemporalInspection, TemporalVerdict
+from .scene_runtime import BenchmarkInspection, SceneRuntime, TemporalInspection, TemporalVerdict
 
 
 @contextmanager
@@ -40,6 +40,7 @@ class _InspectionOutcome:
     success: bool = False
     discarded: bool = False
     finished: float = 0.0
+    benchmark: BenchmarkInspection | None = None
 
 
 def _verdict_log_fields(outcome: _InspectionOutcome) -> dict[str, Any]:
@@ -113,6 +114,7 @@ class SceneInspectionWorker:
         poll_seconds: float = 0.1,
         max_in_flight: int = 1,
         inspector_factory: Callable[[], TemporalInspector] | None = None,
+        on_benchmark: Callable | None = None,
     ) -> None:
         if (
             type(poll_seconds) not in (int, float)
@@ -127,6 +129,7 @@ class SceneInspectionWorker:
         self.runtime = runtime
         self.inspector = inspector
         self._on_update = on_update
+        self._on_benchmark = on_benchmark
         self._poll_seconds = poll_seconds
         self._max_in_flight = max_in_flight
         self._inspector_factory = inspector_factory
@@ -268,6 +271,11 @@ class SceneInspectionWorker:
             if key in self._pending:
                 self._pending[key] = (outcome.job, outcome)
             else:
+                if self._on_benchmark is not None:
+                    self._on_benchmark(
+                        outcome.job, outcome.benchmark,
+                        accepted=False, error="late_response",
+                    )
                 log_timing(
                     "vlm_late_result_timing",
                     stream_session_id=trace_id(outcome.job.stream_session_id),
@@ -345,11 +353,16 @@ class SceneInspectionWorker:
             with _timed_phase(timing, "model_seconds"):
                 response = inspector.inspect(job)
             with _timed_phase(timing, "verdict_validation_seconds"):
+                if isinstance(response, BenchmarkInspection):
+                    outcome.benchmark = response
+                    response = response.verdicts
                 outcome.verdicts = _validate_verdicts(job, response, allowed)
             outcome.success = True
         except Exception as exc:
             # A missing response never becomes negative event evidence.
             outcome.verdicts = ()
+            if job.benchmark_questions and getattr(exc, "benchmark_response", None) is not None:
+                outcome.benchmark = BenchmarkInspection((), (), exc.benchmark_response)
             timing["error_type"] = type(exc).__name__
             if isinstance(exc, ModelAPIError):
                 timing["error_code"] = exc.code
@@ -376,6 +389,7 @@ class SceneInspectionWorker:
             "callback_failures",
         ), 0)
         recorded = False
+        acknowledged = False
         try:
             if outcome.finished:
                 timing["reorder_wait_seconds"] = max(
@@ -415,6 +429,15 @@ class SceneInspectionWorker:
                     timing["callback_error_type"] = type(exc).__name__
                     counts["callback_failures"] = 1
         finally:
+            if self._on_benchmark is not None:
+                try:
+                    self._on_benchmark(
+                        job, outcome.benchmark,
+                        accepted=acknowledged and outcome.success,
+                        error=timing.get("error_type"),
+                    )
+                except Exception:
+                    counts["callback_failures"] += 1
             # Per-job counts are independent of other parallel requests.
             with self._lock:
                 for key, value in counts.items():

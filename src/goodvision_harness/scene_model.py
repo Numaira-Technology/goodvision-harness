@@ -28,8 +28,9 @@ from .scene_inspection import (
     _validate_job,
     _validate_verdicts,
     build_temporal_messages,
+    build_benchmark_answer_messages,
 )
-from .scene_runtime import TemporalInspection, TemporalVerdict
+from .scene_runtime import BenchmarkInspection, TemporalInspection, TemporalVerdict
 from .vlm_transport import create_vlm_http_client
 
 _MAX_RESPONSE_BYTES = 256 * 1024
@@ -307,7 +308,7 @@ class TemporalVLMInspector:
         finally:
             await response.aclose()
 
-    def inspect(self, job: TemporalInspection) -> tuple[TemporalVerdict, ...]:
+    def inspect(self, job: TemporalInspection) -> tuple[TemporalVerdict, ...] | BenchmarkInspection:
         started = time.monotonic()
         timing = {
             "stream_session_id": trace_id(job.stream_session_id),
@@ -318,11 +319,12 @@ class TemporalVLMInspector:
             timing["inspector_lock_wait_seconds"] = time.monotonic() - started
             try:
                 verdicts = self._inspect_locked(job, timing=timing)
+                rows = verdicts.verdicts if isinstance(verdicts, BenchmarkInspection) else verdicts
                 timing.update(
-                    outcome="completed", verdict_count=len(verdicts),
-                    returned_event_count=len({v.event_label for v in verdicts}),
+                    outcome="completed", verdict_count=len(rows),
+                    returned_event_count=len({v.event_label for v in rows}),
                     requested_event_count=len(job.request.event_labels),
-                    empty_verdicts=not verdicts,
+                    empty_verdicts=not rows,
                 )
                 return verdicts
             except ModelAPIError as error:
@@ -334,7 +336,7 @@ class TemporalVLMInspector:
 
     def _inspect_locked(
         self, job: TemporalInspection, *, timing: dict
-    ) -> tuple[TemporalVerdict, ...]:
+    ) -> tuple[TemporalVerdict, ...] | BenchmarkInspection:
         # Called with the inspector lock held, including preparation and parsing.
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
@@ -357,6 +359,8 @@ class TemporalVLMInspector:
         ):
             raise ModelAPIError("temporal model credential is unavailable")
         payload = {**self._parameters, "model": self.model, "messages": messages}
+        if job.benchmark_questions and response_format is not None:
+            payload["response_format"] = {"type": "json_object"}
         # These data URLs were just built locally from bounded JPEGs. Count
         # decoded bytes from Base64 length without copying/decoding pixels.
         encoded_image_bytes = 0
@@ -428,7 +432,9 @@ class TemporalVLMInspector:
                 code="invalid_response",
             )
         else:
-            self._record_completion(started, verdicts=verdicts)
+            self._record_completion(started, verdicts=(
+                verdicts.verdicts if isinstance(verdicts, BenchmarkInspection) else verdicts
+            ))
             return verdicts
         self._record_completion(started, error=error)
         if error.code in {"invalid_response", "empty_response"}:
@@ -441,6 +447,8 @@ class TemporalVLMInspector:
                 validation_reason=validation_reason or "invalid_response_shape",
                 **_response_shape(response),
             )
+        if job.benchmark_questions and isinstance(response, dict):
+            error.benchmark_response = response
         raise error from None
 
     async def _request(
@@ -669,7 +677,7 @@ class TemporalVLMInspector:
     @staticmethod
     def _parse(
         job: TemporalInspection, response: Mapping[str, Any]
-    ) -> tuple[TemporalVerdict, ...]:
+    ) -> tuple[TemporalVerdict, ...] | BenchmarkInspection:
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
             raise _ResponseValidationError("missing_choices", "envelope_schema")
@@ -695,6 +703,43 @@ class TemporalVLMInspector:
             r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL
         )
         raw = _json(fenced.group(1) if fenced else content, stage="verdict_json")
+        observations = []
+        if job.benchmark_questions:
+            if not isinstance(raw, dict) or set(raw) != {"verdicts", "qa_observations"}:
+                raise _ResponseValidationError("benchmark_object_required", "benchmark_schema")
+            observations = raw["qa_observations"]
+            if not isinstance(observations, list):
+                raise _ResponseValidationError("observations_array_required", "benchmark_schema")
+            question_ids = {q["qa_id"] for q in job.benchmark_questions}
+            allowed_subjects = _validate_job(job)
+            for observation in observations:
+                if (
+                    not isinstance(observation, dict)
+                    or set(observation) != {"qa_id", "subject_ids", "observation"}
+                    or observation["qa_id"] not in question_ids
+                    or not isinstance(observation["observation"], str)
+                    or not isinstance(observation["subject_ids"], list)
+                    or any(subject not in allowed_subjects for subject in observation["subject_ids"])
+                ):
+                    raise _ResponseValidationError("invalid_observation", "benchmark_schema")
+            raw = raw["verdicts"]
+        try:
+            verdicts = TemporalVLMInspector._parse_verdicts(job, raw)
+        except _ResponseValidationError as error:
+            if not job.benchmark_questions:
+                raise
+            # Safety events still require grounded people. A rejected event
+            # batch must not discard independently valid question observations.
+            return BenchmarkInspection(
+                (), tuple(observations), dict(response),
+                f"{error.stage}:{error.reason}",
+            )
+        if job.benchmark_questions:
+            return BenchmarkInspection(verdicts, tuple(observations), dict(response))
+        return verdicts
+
+    @staticmethod
+    def _parse_verdicts(job, raw):
         if isinstance(raw, dict) and set(raw) == {"verdicts"}:
             raw = raw["verdicts"]
         if not isinstance(raw, list) or len(raw) > 64:
@@ -725,11 +770,50 @@ class TemporalVLMInspector:
             )
         allowed = _validate_job(job)
         try:
-            return _validate_verdicts(job, verdicts, allowed)
+            verdicts = _validate_verdicts(job, verdicts, allowed)
         except ValueError:
             raise _ResponseValidationError(
                 _verdict_rejection_reason(job, verdicts, allowed), "verdict_grounding"
             ) from None
+        return verdicts
+
+    def answer_benchmark(self, questions, evidence):
+        """One text-only completion on the same frozen route as observation."""
+        with self._call_lock:
+            key = self._api_key() if callable(self._api_key) else self._api_key
+            if self.settings.provider == "local" and not key:
+                key = environment_api_key(self.settings)
+            if not key and self.settings.provider != "local":
+                raise ModelAPIError("benchmark model credential is unavailable")
+            payload = {**self._parameters, "model": self.model,
+                       "messages": build_benchmark_answer_messages(questions, evidence)}
+            if payload.get("response_format") is not None:
+                payload["response_format"] = {"type": "json_object"}
+            self._ensure_transport()
+            response = self._loop.run_until_complete(asyncio.wait_for(
+                self._request(payload, httpx.Headers(model_request_headers(self.settings, key)), timing={}),
+                timeout=self.settings.timeout_seconds,
+            ))
+            self._record_usage(response)
+            try:
+                choice = response["choices"][0]
+                if choice.get("finish_reason") not in (None, "stop"):
+                    raise ValueError("benchmark completion is incomplete")
+                content = ModelAPIClient.assistant_text(response).strip()
+                fenced = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL)
+                parsed = _json(fenced.group(1) if fenced else content, stage="benchmark_answer")
+                rows = parsed["predictions"]
+                expected = {question["qa_id"] for question in questions}
+                if not isinstance(rows, list) or any(
+                    not isinstance(row, dict) or set(row) != {"qa_id", "prediction"}
+                    or not isinstance(row["prediction"], str) for row in rows
+                ) or len(rows) != len(expected) or {row["qa_id"] for row in rows} != expected:
+                    raise ValueError("benchmark predictions must include each qa_id once")
+            except (KeyError, IndexError, TypeError, ValueError, ModelAPIError) as exc:
+                error = ModelAPIError("benchmark model returned an incomplete or invalid answer", code="invalid_response")
+                error.benchmark_response = response
+                raise error from exc
+            return {"predictions": rows, "response": response}
 
     def _record_usage(self, response: Mapping[str, Any]) -> None:
         usage = response.get("usage")

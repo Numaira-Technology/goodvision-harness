@@ -346,7 +346,12 @@ def native_snapshot(
         or masks.dtype != np.bool_
         or masks.shape != (len(ids), height, width)
     ):
-        raise RuntimeError("native video masks or identifiers violate contract")
+        raise RuntimeError(
+            "native video masks or identifiers violate contract: "
+            f"image_size={image_size}, max_objects={max_objects}, "
+            f"ids={ids.shape}/{ids.dtype}, scores={scores.shape}/{scores.dtype}, "
+            f"masks={masks.shape}/{masks.dtype}"
+        )
     source = batch.frames[index]
     objects = []
     for object_id, score, mask in zip(

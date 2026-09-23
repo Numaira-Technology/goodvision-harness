@@ -164,6 +164,11 @@ class Question:
     public_context: dict[str, Any]
     raw: dict[str, Any]
 
+    def public_payload(self) -> dict[str, Any]:
+        fields = ("qa_id", "video_id", "question", "response_options",
+                  "capability", "answer_type", "public_context")
+        return {key: self.raw[key] for key in fields if key in self.raw}
+
     @staticmethod
     def from_json(payload: dict[str, Any]) -> "Question":
         options = payload.get("response_options")

@@ -1,12 +1,134 @@
-# Benchmark V1 runner (streaming harness)
+# Benchmark V1 runner
+
+## Full Harness evaluation from video files
+
+Use `--offline` to process each video once through continuous SAM Live tracking,
+rolling-window event analysis, identity updates, and evidence finalization.
+You supply video files without a real-time playback wait. GPU and model processing
+can still take longer than the video duration. Report answer quality separately
+from live latency.
+
+Each observation window receives that video's original questions, response
+options, and public context. The four existing safety verdicts are retained;
+question-relevant observations are additional output. In this mode only, sampled
+frames with no detected people can also reach the model. Empty detections do not
+establish that no people are visible.
+
+Observation requests include a 1-based window index and source-video start/end
+times. The prompt distinguishes a window boundary from the end of the video or
+an action; it does not label a window as final. The final text-answer request is
+sent after video processing finishes and is explicitly identified as that stage.
+
+After tracking and model work drain and identity/archive updates finish, the
+same configured model route receives the collected **text and structured records
+only**, with no images or video, to answer every question. All four capabilities
+use this final answer step; no per-question rule extractors are used. Private
+answers and annotations are not sent to the Harness.
+
+### Requirements and media paths
+
+- Run this branch's Harness with scene mode `active`, person tracking enabled,
+  and the **SAM Live** processing method (`sam31_stream` backend). Configure the
+  existing SAM worker and event model route as usual. An idle, single-camera
+  deployment is sufficient; do not use an active demo session for evaluation.
+- The runner uses Python's standard library and HTTP. Run it from `benchmark/`.
+- Videos must be readable **on the Harness server/container**, not necessarily
+  on the machine running the command. Prepare files through the existing media
+  workflow; this runner does not download media or rent a GPU.
+- Supply public questions and a media JSONL mapping. Each media row needs
+  `video_id` and a `path` relative to the server-side `--media-root`:
+
+  ```json
+  {"video_id": "example_video", "path": "example.mp4"}
+  ```
+
+  For Docker, place videos in the existing `/data` volume, for example
+  `/data/benchmark/media/example.mp4`, and pass `/data/benchmark/media`.
+  Supply a separate path mapping if the original media manifest has no `path`;
+  do not alter the public question files. Directories of frames must first be
+  assembled into video by the existing preparation workflow.
+
+### Run
+
+With the configured Harness already running, from `benchmark/`:
+
+```bash
+python -m bench.run_bench \
+  --offline \
+  --base-url http://localhost:8080 \
+  --questions /path/to/questions.jsonl \
+  --media /path/to/media-paths.jsonl \
+  --media-root /data/benchmark/media \
+  --output-dir /path/to/results
+```
+
+This makes model calls. Videos run sequentially, and each video's questions share
+one recording. Sampling, window sizes, image settings, and routing come from the
+Harness configuration. The runner does not increase FPS or reduce resolution.
+Timestamps follow the existing file reader and its source FPS; incorrect media
+timing metadata must be fixed during media preparation.
+
+Optional `--observation-max-tokens` and `--answer-max-tokens` control the two
+output budgets separately. If omitted, both use `scene_max_tokens`. A too-small
+budget or oversized evidence context is recorded as a failure, not silently
+truncated or followed by an extra summarization call.
+
+### Results and reuse
+
+- `predictions.jsonl`: every selected `qa_id`, including an empty prediction for
+  failed or unanswered questions. Pass this to the existing **goodvision** grader;
+  this runner does not replace its scoring or omit MAE.
+- `details.jsonl`: per-question capability, answer/error, and artifact location.
+- `videos/video-<encoded-video-id>/result.json`: latest result and actual model,
+  route, sampling, image, and token-budget settings.
+- Session/attempt subdirectories retain previous `result.json` and `records.jsonl`
+  files. Records contain accepted person frames (including empty frames), event
+  revisions, identity merges, observations, raw model responses, and errors.
+  In benchmark mode, a rejected safety-verdict batch is recorded as a
+  `stage: verdicts` error without discarding valid question observations from
+  the same response. Rejected verdicts never update live safety-event state.
+- The server retains its session JSONL under its configured events directory,
+  in `benchmark/`. Keep these records private: they contain questions, model
+  responses, person locations, and configured model/route identifiers.
+
+Rerunning overwrites the top-level predictions/details and latest-result index,
+but retains previous attempt directories. Use a new output directory for a
+separate experiment.
+
+Add `--reuse-results` to reuse matching complete local results with downloaded
+records and run only missing/incomplete videos. Reused videos make no model calls.
+This explicitly retains their recorded configuration, even if the current
+Harness settings differ.
+
+To request **only a new final text answer** from saved sessions, use the same
+command and output directory with `--reanswer` instead of `--reuse-results`.
+The original Harness process must still be running; its frozen model configuration
+is reused. No video is replayed. New token-budget options do not change an existing
+session. This action makes another model call. A processing failure before evidence
+finalization cannot be repaired with `--reanswer`.
+
+After the command prints a session ID, Ctrl+C stops that video session.
+During `--reanswer`, Ctrl+C only stops waiting; the submitted answer request may
+finish on the server. A disconnected runner does not automatically stop the server.
+Its `session.json` identifies the run; retrieve its status and records with:
+
+```text
+GET /v1/benchmark/<stream_session_id>
+GET /v1/benchmark/<stream_session_id>/records
+```
+
+These routes use the service's existing coordinator routing guard, not a new
+authentication system. Use a trusted/local service connection.
+
+## Legacy capture and rule extraction
 
 Feed the Benchmark V1 sample videos into the streaming harness and emit one
 answer per question, in the exact `{"qa_id", "prediction"}` shape
 `bench_v1_sample/how_to_feed.md` asks for. The private answers and scoring live
 on the eval side.
 
-We do **not** send the question text to a generic VLM. We run the harness's real
-capabilities and **read the answers from its structured output**:
+The legacy `--captures` mode reads answers from recorded Harness output using
+fixed rules, without sending question text to a VLM:
 
 | Capability | qa_id suffix | Video | Harness path → what we read |
 | --- | --- | --- | --- |
@@ -36,9 +158,9 @@ running harness.
 
 ## Two ingestion schemes
 
-The service ingests only `rtsp://`, `rtmp://`, or `webrtc+http(s)://` (WHEP) — not
-a bare file — so a file is always published through ffmpeg. Both schemes feed the
-same capture → extract core.
+These legacy schemes publish files through ffmpeg, using `rtsp://`, `rtmp://`, or
+`webrtc+http(s)://` (WHEP). They feed the same capture → rule-extraction core.
+The direct-file `--offline` mode above does not use either scheme.
 
 | | Scheme A — Live (WHEP) | Scheme B — Offline (file replay) |
 | --- | --- | --- |

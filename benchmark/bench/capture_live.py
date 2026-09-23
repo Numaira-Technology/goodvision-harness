@@ -28,14 +28,92 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.request import urlopen
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 
 def _get(url: str, timeout: float) -> dict[str, Any]:
     with urlopen(url, timeout=timeout) as response:  # noqa: S310 - trusted localhost
         return json.loads(response.read().decode("utf-8"))
+
+
+def _post(url, payload, timeout=300):
+    request = Request(url, data=json.dumps(payload).encode("utf-8"),
+                      headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+    except HTTPError as exc:
+        raise RuntimeError(f"Harness HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}") from exc
+
+
+def capture_offline(
+    base_url: str, video_id: str, video_path: str,
+    questions: list[dict[str, Any]], output_dir: Path, *,
+    observation_max_tokens: int | None = None,
+    answer_max_tokens: int | None = None,
+    reanswer: bool = False,
+) -> dict[str, Any]:
+    """Run one full, file-backed Harness session and retain its artifacts."""
+    base_url = base_url.rstrip("/")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if reanswer:
+        started = json.loads((output_dir / "session.json").read_text(encoding="utf-8"))
+        if started["base_url"] != base_url or started["video_id"] != video_id:
+            raise ValueError("re-answer must use the original Harness server and video")
+        previous = _get(f"{base_url}/v1/benchmark/{started['stream_session_id']}", 30)
+        expected = [{key: value for key, value in row.items() if key != "video_id"}
+                    for row in questions]
+        if previous["metadata"]["questions"] != expected:
+            raise ValueError("re-answer requires the original questions")
+        _post(f"{base_url}/v1/benchmark/{started['stream_session_id']}/answer", {})
+    else:
+        started = _post(f"{base_url}/v1/sessions/start", {
+            "mode": "file", "video_path": video_path,
+            "benchmark": {"video_id": video_id, "questions": questions,
+                          "observation_max_tokens": observation_max_tokens,
+                          "answer_max_tokens": answer_max_tokens},
+        })
+    session_id = started["stream_session_id"]
+    endpoint = f"{base_url}/v1/benchmark/{session_id}"
+    (output_dir / "session.json").write_text(json.dumps(
+        {"base_url": base_url, "stream_session_id": session_id, "video_id": video_id},
+        indent=2,
+    ) + "\n", encoding="utf-8")
+    print(f"[offline] {video_id}: session {session_id}", flush=True)
+    # Keep previous attempts, including repeated final answers for one session.
+    attempt = output_dir / session_id / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    attempt.mkdir(parents=True)
+    try:
+        while True:
+            result = _get(endpoint, 30)
+            if result["status"] in {"complete", "failed"} and result["processing_finished"]:
+                break
+            time.sleep(1)
+    except KeyboardInterrupt:
+        if not reanswer:
+            _post(f"{base_url}/v1/sessions/stop", {"stream_session_id": session_id}, 30)
+        raise
+    result["artifacts"] = str(attempt)
+    try:
+        with urlopen(f"{endpoint}/records", timeout=60) as response:
+            with (attempt / "records.jsonl").open("wb") as output:
+                while chunk := response.read(1024 * 1024):
+                    output.write(chunk)
+        result["records_downloaded"] = True
+    except Exception as exc:
+        # Preserve completed answers even when downloading the trace fails.
+        result["records_downloaded"] = False
+        result["artifact_error"] = f"{type(exc).__name__}: {exc}"
+        print(f"[warn] {video_id}: {result['artifact_error']}", file=sys.stderr)
+    rendered = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    (attempt / "result.json").write_text(rendered, encoding="utf-8")
+    (output_dir / "result.json").write_text(rendered, encoding="utf-8")
+    print(f"[offline] {video_id}: {result['status']}", flush=True)
+    return result
 
 
 def _bbox(box: Any) -> list[float]:

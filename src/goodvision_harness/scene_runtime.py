@@ -64,6 +64,8 @@ class TemporalInspection:
     subject_boxes: tuple[tuple[int, str, NormalizedBBox], ...] = ()
     event_sensitivities: tuple[tuple[str, str], ...] = ()
     evidence_after_frame_sequence: int | None = None
+    benchmark_questions: tuple[dict[str, Any], ...] = ()
+    benchmark_window_index: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +89,14 @@ class TemporalVerdict:
     subject_ids: tuple[str, ...]
     detected: bool | None
     confidence: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkInspection:
+    verdicts: tuple[TemporalVerdict, ...]
+    observations: tuple[dict[str, Any], ...]
+    raw_response: dict[str, Any]
+    verdict_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +154,7 @@ class SceneRuntime:
         max_pending_inspections: int = 4,
         inspection_image_budget_bytes: int = 16 * 1024 * 1024,
         stranger_enabled: bool = False,
+        benchmark_questions: tuple[dict[str, Any], ...] = (),
     ) -> None:
         if mode != "active":
             raise ValueError("scene mode must be active")
@@ -182,6 +193,8 @@ class SceneRuntime:
         ):
             raise ValueError("tracking history must be within 3..90 source seconds")
         self.mode = mode
+        self.benchmark_questions = benchmark_questions
+        self.benchmark_epoch: tuple[tuple[str, str], ...] = ()
         self.tracking_mode = tracking_mode
         self.native_memory_scope = native_memory_scope or (
             "batch" if tracking_mode == "batch" else "session"
@@ -1021,7 +1034,7 @@ class SceneRuntime:
                     "observation_state", "observed",
                 )) == "observed"
             )
-            if not observed:
+            if not observed and not self.benchmark_questions:
                 continue
             frame = self._tracking_source_frame(
                 snapshot.frame_sequence, snapshot.timestamp_seconds,
@@ -1032,7 +1045,7 @@ class SceneRuntime:
                 frame,
                 tuple((snapshot.frame_sequence, item.track_id, item.bbox)
                       for item in observed),
-                tuple(sorted({
+                self.benchmark_epoch if self.benchmark_questions else tuple(sorted({
                     (str(native.get("backend", "")), str(native.get("epoch", "")))
                     for item in observed
                     if isinstance(
@@ -1157,6 +1170,11 @@ class SceneRuntime:
             self._jobs[request.request_id] = TemporalInspection(
                 self.stream_session_id, self.source_id, request, frames, boxes,
                 self.event_sensitivities, self._temporal_last_endpoint_sequence,
+                benchmark_questions=self.benchmark_questions,
+                benchmark_window_index=(
+                    self._stats["prepared_inspections"] + 1
+                    if self.benchmark_questions else None
+                ),
             )
             self._stats["queued_tracking_intervals"] += 1
             self._stats["prepared_inspections"] += 1

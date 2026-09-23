@@ -203,6 +203,19 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
 
     submit_frame = submit
 
+    def wait_for_input_capacity(self, stop_event):
+        """Pace an offline producer without changing live admission policy."""
+        with self._condition:
+            while not stop_event.is_set():
+                if self._failed_session:
+                    raise RuntimeError("SAM tracking failed while reading the video")
+                if self._closed or self._finished_session or self._flush:
+                    return False
+                if len(self._source_arrivals) < 2 * self._client.max_append_frames:
+                    return True
+                self._condition.wait(0.1)
+        return False
+
     def flush(self):
         with self._condition:
             if self._closed or self._failed_session or self._finished_session:

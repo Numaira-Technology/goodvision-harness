@@ -1213,6 +1213,7 @@ def register_session_routes(
             log_request("Native session request failed", "failed", exc.status_code)
             raise
         except Exception:
+            LOGGER.exception("Native session operation failed: operation=%s", operation)
             if token is not None and (task is not None or not queued_admission):
                 engine.invalidate(token)
             log_request("native session operation failed", "failed", 503)

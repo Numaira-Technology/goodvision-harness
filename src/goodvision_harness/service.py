@@ -21,6 +21,7 @@ from html import escape
 from pathlib import Path
 from threading import Event, RLock, Thread
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import anyio
@@ -45,6 +46,7 @@ from .camera_display import (
     CameraSocketChannel,
     decode_camera_packet,
 )
+from .benchmark_capture import BenchmarkCapture, public_questions
 from .config import (
     DEFAULT_CONFIG_PATH,
     DisplaySettings,
@@ -112,7 +114,7 @@ from .perception import (
     processing_methods,
     processing_status,
 )
-from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
+from .pipeline import CAMERA_MODE, FILE_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
     PUBLIC_FACE_ERROR,
@@ -237,6 +239,8 @@ class HarnessRuntime:
             os.environ.get("HARNESS_FLEET_CAMERA_INDEX", "1"),
         )
         self._remote_config = config
+        self._benchmark_runs: dict[str, BenchmarkCapture] = {}
+        self._benchmark_model_factories: dict[str, Callable] = {}
         self._base_config_error = config_error
         model_api = config.model_api if config is not None else ModelAPISettings()
         self._inference_provider = model_api.provider
@@ -1472,6 +1476,11 @@ class HarnessRuntime:
             if session is None or batch.stream_session_id != session.stream_session_id:
                 return
             registry = session.person_registry
+            capture = self._benchmark_runs.get(session.stream_session_id)
+            accepted_frames = []
+            worker = self._scene_worker
+            if capture is not None and worker is not None and worker.stats()["state"] == "failed":
+                raise RuntimeError("benchmark observation worker failed")
 
             def canonicalize(snapshots):
                 if not registry.begin_native_epoch(
@@ -1490,6 +1499,7 @@ class HarnessRuntime:
                     ) != (snapshot.timestamp_seconds, snapshot.frame_sequence):
                         raise ValueError("native frame could not be mapped to source")
                     canonical.append(mapped)
+                accepted_frames[:] = canonical
                 merges = registry.drain_subject_merges()
                 if scene is not None:
                     scene.apply_subject_merges(merges)
@@ -1498,6 +1508,10 @@ class HarnessRuntime:
 
             scene = getattr(self, "_scene", None)
             if scene is not None:
+                if capture is not None:
+                    scene.benchmark_epoch = ((
+                        getattr(batch, "backend", NATIVE_VIDEO_BACKEND), batch.predictor_epoch,
+                    ),)
                 retained_sources = getattr(self._rich_labels, "retained_sources", None)
                 if not scene.commit_native_tracking_batch(
                     batch.frames,
@@ -1515,6 +1529,10 @@ class HarnessRuntime:
                     )
             else:
                 canonicalize(batch.frames)
+            if capture is not None:
+                capture.record_frames(accepted_frames)
+                if scene is not None:
+                    capture.record_scene(scene.snapshot())
             self._camera_display_metadata.observe_batch(batch)
             for corrected in registry.drain_reassociated_results():
                 self._on_timeline_result(corrected)
@@ -1944,6 +1962,32 @@ class HarnessRuntime:
             camera_owner=owner,
         )
 
+    def start_benchmark(
+        self, video_path: str, *, video_id: str, questions: list[dict[str, Any]],
+        observation_max_tokens: int | None = None,
+        answer_max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        if self.config is None or self.config_error is not None:
+            raise RuntimeError("Harness configuration unavailable")
+        questions = public_questions(questions, video_id=video_id)
+        for budget in (observation_max_tokens, answer_max_tokens):
+            if budget is not None and (type(budget) is not int or not 1 <= budget <= 16384):
+                raise ValueError("benchmark output budgets must be integers from 1 through 16384")
+        path = Path(video_path).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError("benchmark video_path must exist on the Harness server")
+        if (self._scene_mode != "active" or not self._tracking_requested
+                or self.config.rich_labeling.backend != "sam31_stream"):
+            raise ValueError("offline benchmarking requires active Harness with sam31_stream")
+        return self._start_session(
+            FILE_MODE, video_path=str(path),
+            benchmark={"video_id": video_id, "questions": questions,
+                       "observation_max_tokens": observation_max_tokens,
+                       "answer_max_tokens": answer_max_tokens},
+            analysis_mode=MULTI_ANALYSIS_MODE,
+            features=tuple(sorted(SAFETY_EVENT_LABELS)), dry_run=False,
+        )
+
     def _start_session(
         self, mode: str, **kwargs: Any,
     ) -> dict[str, Any]:
@@ -1977,14 +2021,18 @@ class HarnessRuntime:
         camera_owner: str | None = None,
         camera_layout: str | None = None,
         video_connection_id: str | None = None,
+        video_path: str | None = None,
+        benchmark: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
         if self._fleet_camera_index > self.tracking_camera_capacity():
             raise RuntimeError("该视频通道超出人员追踪模块的配置容量。")
         self._ensure_rich_readiness_probe()
-        if mode not in {CAMERA_MODE, STREAM_MODE}:
+        if mode not in {CAMERA_MODE, STREAM_MODE, FILE_MODE}:
             raise ValueError("unsupported input mode")
+        if mode == FILE_MODE and (benchmark is None or video_path is None):
+            raise ValueError("file sessions require benchmark questions and video_path")
 
         selected_analysis = str(analysis_mode).strip().lower()
         if selected_analysis not in ANALYSIS_MODES:
@@ -2023,6 +2071,8 @@ class HarnessRuntime:
         )
 
         processing_ready = self._require_processing_ready()
+        if mode == FILE_MODE and not hasattr(self._rich_labels, "wait_for_input_capacity"):
+            raise ValueError("offline benchmarking requires the SAM Live processing method")
 
         with self._control_lock:
             if self._closed:
@@ -2252,6 +2302,9 @@ class HarnessRuntime:
             generation = self._generation + 1
             callbacks = SessionCallbacks(
                 on_display_frame=(
+                    (lambda jpeg, timestamp, sequence: self._on_benchmark_frame(
+                        generation, jpeg, timestamp, sequence,
+                    )) if mode == FILE_MODE else
                     (
                         lambda jpeg, timestamp, sequence: self._guarded_callback(
                             generation,
@@ -2280,7 +2333,13 @@ class HarnessRuntime:
                     generation, self._on_timeline_result, result
                 ),
             )
-            if mode == STREAM_MODE:
+            if mode == FILE_MODE:
+                session = StreamingSession.for_file(
+                    session_config, client, callbacks, video_path=video_path,
+                    realtime=False, source_id=self.source_id,
+                    archive=self.event_archive(),
+                )
+            elif mode == STREAM_MODE:
                 assert stream_url is not None
                 connection = self._video_connection
                 stream_options = {}
@@ -2364,6 +2423,7 @@ class HarnessRuntime:
                         "session" if self.config.rich_labeling.backend == "sam31_stream"
                         else None
                     ),
+                    benchmark_questions=tuple(benchmark["questions"]) if benchmark else (),
                     tracking_history_seconds=(
                         continuous_source_history_seconds(
                             self.config.rich_labeling.max_fps
@@ -2393,7 +2453,11 @@ class HarnessRuntime:
                 )
                 model = session_config.inference.model
                 options = {
-                    "max_tokens": self.config.runtime.scene_max_tokens,
+                    "max_tokens": (
+                        benchmark.get("observation_max_tokens")
+                        if benchmark and benchmark.get("observation_max_tokens") is not None
+                        else self.config.runtime.scene_max_tokens
+                    ),
                     "max_image_side": self.config.runtime.scene_max_image_side,
                     "jpeg_quality": self.config.runtime.scene_jpeg_quality,
                 }
@@ -2402,6 +2466,40 @@ class HarnessRuntime:
                     return TemporalVLMInspector(
                         model_settings, model=model, api_key=api_key,
                         request_parameters=parameters, **options,
+                    )
+
+                if benchmark is not None:
+                    answer_options = dict(options)
+                    answer_options["max_tokens"] = (
+                        benchmark["answer_max_tokens"]
+                        if benchmark.get("answer_max_tokens") is not None
+                        else self.config.runtime.scene_max_tokens
+                    )
+                    self._benchmark_model_factories[session.stream_session_id] = (
+                        lambda: TemporalVLMInspector(
+                            model_settings, model=model, api_key=api_key,
+                            request_parameters=parameters, **answer_options,
+                        )
+                    )
+                    self._benchmark_runs[session.stream_session_id] = BenchmarkCapture(
+                        self.config.events.directory / "benchmark"
+                        / f"{session.stream_session_id}.jsonl",
+                        {
+                            "stream_session_id": session.stream_session_id,
+                            "video_id": benchmark["video_id"],
+                            "questions": benchmark["questions"],
+                            "model": model, "provider": model_settings.provider,
+                            "route_id": self._selected_route_id,
+                            "route_host": urlsplit(model_settings.endpoint).hostname,
+                            "provider_order": (parameters.get("provider") or {}).get("order", []),
+                            "source_fps": session.video_stream.info.source_fps,
+                            "tracking_fps": self.config.rich_labeling.max_fps,
+                            "scene_observation_fps": self.config.runtime.scene_observation_fps,
+                            "max_image_side": options["max_image_side"],
+                            "jpeg_quality": options["jpeg_quality"],
+                            "observation_max_tokens": options["max_tokens"],
+                            "answer_max_tokens": answer_options["max_tokens"],
+                        },
                     )
 
                 parallel = self.config.rich_labeling.backend == "sam31_stream"
@@ -2428,6 +2526,10 @@ class HarnessRuntime:
                     inspector_factory=(lambda: next(leases)) if parallel else None,
                     on_update=lambda: self._guarded_callback(
                         generation, self._on_scene_update
+                    ),
+                    on_benchmark=(
+                        self._benchmark_runs[session.stream_session_id].record_inspection
+                        if benchmark is not None else None
                     ),
                 )
                 next_scene.automatic_temporal_inference = True
@@ -2571,6 +2673,10 @@ class HarnessRuntime:
                 if next_display is not None:
                     next_display.start()
             except Exception:
+                capture = self._benchmark_runs.get(session.stream_session_id)
+                if capture is not None:
+                    capture.finish("failed", "startup_failed")
+                    self._benchmark_model_factories.pop(session.stream_session_id, None)
                 with self._state_lock:
                     self._generation += 1
                     self.face_fast_results.stop()
@@ -2636,10 +2742,14 @@ class HarnessRuntime:
             assert isinstance(safe_response, dict)
             return safe_response
 
-    def stop_session(self, *, camera_owner: str | None = None) -> bool:
+    def stop_session(self, *, camera_owner: str | None = None, expected_session_id: str | None = None) -> bool:
         """Stop capture, then finish accepted review and evidence in the background."""
 
         with self._control_lock:
+            if expected_session_id is not None and (
+                self._session is None or self._session.stream_session_id != expected_session_id
+            ):
+                return False
             if getattr(self, "_session_start_pending", False) and (
                 camera_owner is None or camera_owner == self._pending_start_owner
             ):
@@ -3151,6 +3261,9 @@ class HarnessRuntime:
 
     def _queue_archive_subject_merges(self, session, merges=()) -> bool:
         """Retain control updates when the bounded archive ingress is full."""
+        capture = self._benchmark_runs.get(session.stream_session_id)
+        if capture is not None:
+            capture.record_merges(merges)
         if session.archive is None:
             return True
         control = self._archive_run(session)
@@ -3193,6 +3306,9 @@ class HarnessRuntime:
 
     def _queue_archive_scene(self, session, snapshot=None) -> bool:
         """Keep accepted temporal episodes until the video archive admits them."""
+        capture = self._benchmark_runs.get(session.stream_session_id)
+        if capture is not None and snapshot is not None:
+            capture.record_scene(snapshot)
         if session.archive is None:
             return True
         control = self._archive_run(session)
@@ -3260,6 +3376,9 @@ class HarnessRuntime:
         scene = getattr(self, "_scene", None)
         if scene is None:
             return
+        session = self._session
+        if session is not None and session.stream_session_id in self._benchmark_runs:
+            self._benchmark_runs[session.stream_session_id].record_scene(scene.snapshot())
         archive_payload = self.scene_snapshot(include_history=False)
         payload = {
             **archive_payload,
@@ -3331,6 +3450,9 @@ class HarnessRuntime:
                     worker.wake()
             except Exception:
                 self._scene_errors += 1
+                session = self._session
+                if session is not None and session.stream_session_id in self._benchmark_runs:
+                    raise
                 if self._scene_errors == 1:
                     LOGGER.warning(
                         "experimental scene observer rejected an observation"
@@ -3583,6 +3705,17 @@ class HarnessRuntime:
                     LOGGER.warning("could not prime event-to-rich association")
         self._delayed_overlay.submit_result(result)
 
+    def _on_benchmark_frame(self, generation, jpeg, timestamp, sequence):
+        # Do not wait under _guarded_callback's state lock: SAM commits need it.
+        with self._state_lock:
+            if generation != self._generation:
+                return
+            session, coordinator = self._session, self._rich_labels
+        if session is None or coordinator is None:
+            raise RuntimeError("offline benchmark lost its tracking session")
+        if coordinator.wait_for_input_capacity(session._stop):
+            self._guarded_callback(generation, self._on_display_frame, jpeg, timestamp, sequence)
+
     def _on_display_frame(
         self,
         jpeg: bytes,
@@ -3627,6 +3760,8 @@ class HarnessRuntime:
                             timestamp_seconds=float(media_timestamp),
                         )
                     except Exception:
+                        if session.stream_session_id in self._benchmark_runs:
+                            raise
                         LOGGER.warning("could not queue continuous tracking frame")
                 self._observe_scene(
                     "observe_frame", source_jpeg, media_timestamp, frame_sequence,
@@ -3826,6 +3961,9 @@ class HarnessRuntime:
             self._update_state(**values)
 
     def _on_end(self, reason: str, error: str | None) -> None:
+        session = self._session
+        if session is not None and (error or reason != "eof"):
+            self._fail_benchmark(session.stream_session_id, error or reason)
         # This callback also runs under _guarded_callback's state lock. Never
         # wait here: native results need that same lock to reach the scene.
         with self._state_lock:
@@ -3859,6 +3997,7 @@ class HarnessRuntime:
     ):
         """Drain accepted online work, release live resources, then organize."""
         control = self._archive_run(session)
+        worker = self._scene_worker
 
         def current():
             with self._state_lock:
@@ -3879,13 +4018,20 @@ class HarnessRuntime:
             self._update_state(scene_drain={"state": "running", "stage": "inspection"})
             if scene is not None:
                 scene.finish_inspection_sources()
-            worker = self._scene_worker
             if worker is not None:
                 worker.wake()
                 while current() and scene.has_pending_inspections():
                     if worker.stats()["state"] in {"failed", "stopped", "stopping"}:
                         raise RuntimeError("inspection drain failed")
                     time.sleep(0.05)
+                if session.stream_session_id in self._benchmark_runs:
+                    # Join outside the state lock so the last callback and late
+                    # raw responses are saved before building answer evidence.
+                    worker.close(timeout_seconds=0.1)
+                    while current() and worker.stats()["state"] == "stopping":
+                        worker.close(timeout_seconds=0.1)
+                    if worker.stats()["callback_failures"] or worker.stats()["worker_failures"]:
+                        raise RuntimeError("benchmark inspection records are incomplete")
             failure_stage = "display"
             display = self._scene_display
             if isinstance(display, TrackedSceneDisplayWorker):
@@ -3922,18 +4068,38 @@ class HarnessRuntime:
                 )
         except Exception:
             LOGGER.exception("online session drain failed")
+            self._fail_benchmark(session.stream_session_id, "online_drain_failed")
             failure_message = {
                 "tracking": PUBLIC_TRACKING_ERROR,
                 "inspection": PUBLIC_INSPECTION_ERROR,
             }.get(failure_stage, public_error_message(error))
             with control.lock:
                 control.state, control.error = "failed", "online_drain_failed"
+            capture = self._benchmark_runs.get(session.stream_session_id)
             with self._state_lock:
                 if current():
                     self._update_state(scene_drain={"state": "failed"})
                     self._finish_scene_end(reason, failure_message)
-                    if getattr(self, "_stop_requested_session", None) is session:
+                    if capture is not None:
+                        self._scene = None
+                    if (capture is not None
+                            or getattr(self, "_stop_requested_session", None) is session):
                         self._release_stopped_session(session)
+            if capture is not None:
+                # Reset schedules native cleanup. Do not advertise completion
+                # while the failed session can still block the next video.
+                session.join()
+                if worker is not None:
+                    # Late model responses must be saved before records are downloaded.
+                    worker.close(timeout_seconds=0.1)
+                    while worker.stats()["state"] == "stopping":
+                        worker.close(timeout_seconds=0.1)
+                if coordinator is not None:
+                    while not coordinator.wait_until_idle(timeout_seconds=0.1):
+                        pass
+                if scene is not None:
+                    scene.close()
+                capture.processing_finished = True
 
     def _finalize_run_background(self, session, scene, control, reason):
         """L3 owns the retired run; no live global lock during review or I/O."""
@@ -3998,21 +4164,36 @@ class HarnessRuntime:
                         scene_archive.failed_for_run(session.stream_session_id)
                     ):
                         raise RuntimeError("scene archive write failed")
-                with control.lock:
-                    control.state, control.stage = "finalized", "complete"
-                    control.session = control.scene = None
-                with self._state_lock:
-                    if (
-                        self._session is None
-                        and self._state.get("stream_session_id")
-                        == session.stream_session_id
-                    ):
-                        self._last_scene_snapshot = final_snapshot
-                        self._publish_scene_result(final_snapshot)
-                        self._last_identity_review = registry.identity_review_stats()
-                        self._update_state(scene_drain={"state": "completed"})
+            capture = self._benchmark_runs.get(session.stream_session_id)
+            if capture is not None and capture.status()["status"] != "failed":
+                if final_snapshot is not None:
+                    capture.record_scene(final_snapshot)
+                    inspection_stats = final_snapshot.get("stats", {})
+                    for key in ("expired_inspections", "rejected_tracking_intervals"):
+                        if inspection_stats.get(key):
+                            capture.write("error", {"error": key, "count": inspection_stats[key]})
+                capture.answer_ready = True
+                self._finish_benchmark(session.stream_session_id, control)
+            with control.lock:
+                failed = capture is not None and capture.status()["status"] == "failed"
+                control.state = "failed" if failed else "finalized"
+                control.stage = "answer_failed" if failed else "complete"
+                if failed:
+                    control.error = capture.status()["error"]
+                control.session = control.scene = None
+            with self._state_lock:
+                if (
+                    self._session is None
+                    and self._state.get("stream_session_id")
+                    == session.stream_session_id
+                ):
+                    self._last_scene_snapshot = final_snapshot
+                    self._publish_scene_result(final_snapshot)
+                    self._last_identity_review = registry.identity_review_stats()
+                    self._update_state(scene_drain={"state": "failed" if failed else "completed"})
         except Exception:
             LOGGER.exception("background run finalization failed")
+            self._fail_benchmark(session.stream_session_id, "postprocess_failed")
             with control.lock:
                 control.state, control.error = "failed", "postprocess_failed"
             with self._state_lock:
@@ -4020,6 +4201,59 @@ class HarnessRuntime:
                     session.stream_session_id
                 ):
                     self._update_state(scene_drain={"state": "failed"})
+        finally:
+            capture = self._benchmark_runs.get(session.stream_session_id)
+            if capture is not None:
+                capture.processing_finished = True
+
+    def _fail_benchmark(self, session_id, error):
+        capture = self._benchmark_runs.get(session_id)
+        if capture is not None:
+            capture.write("error", {"error": error})
+            capture.finish("failed", error)
+            self._benchmark_model_factories.pop(session_id, None)
+
+    def _finish_benchmark(self, session_id, control):
+        capture = self._benchmark_runs.get(session_id)
+        if capture is None:
+            return
+        factory = self._benchmark_model_factories[session_id]
+        inspector = None
+        try:
+            with control.lock:
+                control.stage = "answering"
+            capture.set_answering()
+            inspector = factory()
+            result = inspector.answer_benchmark(capture.questions, capture.evidence())
+            capture.write("model_response", {"stage": "answer", "response": result["response"]})
+            capture.finish("complete", predictions=result["predictions"])
+        except Exception as exc:
+            response = getattr(exc, "benchmark_response", None)
+            if response is not None:
+                capture.write("model_response", {"stage": "answer", "response": response})
+            error = f"answer_failed:{type(exc).__name__}"
+            capture.write("error", {"stage": "answer", "error": error})
+            capture.finish("failed", error)
+        finally:
+            if inspector is not None:
+                inspector.close()
+            with control.lock:
+                failed = capture.status()["status"] == "failed"
+                control.state = "failed" if failed else "finalized"
+                control.stage = "answer_failed" if failed else "complete"
+                control.error = capture.status()["error"]
+
+    def reanswer_benchmark(self, session_id):
+        """Explicit paid retry of the final text answer, without replaying video."""
+        with self._control_lock:
+            capture = self._benchmark_runs[session_id]
+            if (not capture.answer_ready or not capture.processing_finished
+                    or capture.status()["status"] not in {"complete", "failed"}):
+                raise ValueError("benchmark observations are not ready for another answer")
+            capture.set_answering()
+            control = self._run_postprocess[session_id]
+            self._postprocess_pool.submit(self._finish_benchmark, session_id, control)
+            return capture.status()
 
     def _finish_scene_end(self, reason: str, error: str | None) -> None:
         self._observe_scene("close")
@@ -4760,12 +4994,22 @@ def create_app(
         request: Request,
         payload: Annotated[dict[str, Any] | None, Body()] = None,
     ) -> dict[str, Any]:
-        """Start one network-stream session with any selected feature subset."""
+        """Start a network stream or an offline benchmark file session."""
         require_coordinator(request)
         payload = payload or {}
         mode = payload.get("mode", STREAM_MODE)
-        if not isinstance(mode, str) or mode not in {CAMERA_MODE, STREAM_MODE}:
-            raise HTTPException(status_code=400, detail="mode must be camera or stream")
+        if not isinstance(mode, str) or mode not in {CAMERA_MODE, STREAM_MODE, FILE_MODE}:
+            raise HTTPException(status_code=400, detail="mode must be camera, stream, or file")
+        if mode == FILE_MODE:
+            benchmark = payload.get("benchmark")
+            if not isinstance(benchmark, dict) or not isinstance(payload.get("video_path"), str):
+                raise HTTPException(400, "file mode requires video_path and benchmark")
+            return await camera_action(
+                _runtime(request).start_benchmark, payload["video_path"],
+                video_id=benchmark.get("video_id"), questions=benchmark.get("questions"),
+                observation_max_tokens=benchmark.get("observation_max_tokens"),
+                answer_max_tokens=benchmark.get("answer_max_tokens"),
+            )
         if mode == CAMERA_MODE:
             raise HTTPException(
                 status_code=400,
@@ -4817,11 +5061,37 @@ def create_app(
             ) from exc
 
     @application.post("/v1/sessions/stop")
-    async def stop_session(request: Request) -> dict[str, bool]:
+    async def stop_session(
+        request: Request, payload: Annotated[dict[str, Any] | None, Body()] = None,
+    ) -> dict[str, bool]:
         require_coordinator(request)
         return {
-            "stopped": await asyncio.to_thread(_runtime(request).stop_session)
+            "stopped": await asyncio.to_thread(
+                _runtime(request).stop_session,
+                expected_session_id=(payload or {}).get("stream_session_id"),
+            )
         }
+
+    def benchmark_capture(request, session_id):
+        require_coordinator(request)
+        capture = _runtime(request)._benchmark_runs.get(session_id)
+        if capture is None:
+            raise HTTPException(404, "benchmark session not found")
+        return capture
+
+    @application.get("/v1/benchmark/{session_id}")
+    def benchmark_status(request: Request, session_id: str):
+        return benchmark_capture(request, session_id).status()
+
+    @application.get("/v1/benchmark/{session_id}/records")
+    def benchmark_records(request: Request, session_id: str):
+        capture = benchmark_capture(request, session_id)
+        return FileResponse(capture.path, media_type="application/x-ndjson")
+
+    @application.post("/v1/benchmark/{session_id}/answer")
+    async def benchmark_answer(request: Request, session_id: str):
+        benchmark_capture(request, session_id)
+        return await camera_action(_runtime(request).reanswer_benchmark, session_id)
 
     @application.get("/v1/faces/gallery")
     async def face_gallery(request: Request) -> dict[str, Any]:
