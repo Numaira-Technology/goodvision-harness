@@ -379,7 +379,11 @@ def test_fresh_information_bypasses_slow_rpc_and_full_grounding_pool():
             pass
 
     def send_window(end):
-        for seq in range(end - 18, end + 1, 6):
+        # Seed the temporal history before starting the consumer. Later calls
+        # advance it with one endpoint so an intermediate frame cannot be
+        # dispatched while this producer is still constructing the window.
+        sequences = range(0, 19, 6) if end == 18 else (end,)
+        for seq in sequences:
             incoming.put(
                 SourceSample(
                     EvidenceFrame(cfg.stream_session_id, seq, seq / 15, jpeg()),
@@ -407,9 +411,9 @@ def test_fresh_information_bypasses_slow_rpc_and_full_grounding_pool():
             lambda c: Inspector(c.output_mode),
         ),
     )
+    send_window(18)
     worker.start()
     try:
-        send_window(18)
         assert slow_started.wait(3)
         send_window(36)
         second = receive_information()
