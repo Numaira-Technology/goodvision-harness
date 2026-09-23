@@ -74,7 +74,7 @@ class ModularLauncherTests(unittest.TestCase):
             launcher.main_environment({}, args)["INFERENCE_SERVER_MODEL"], "Qwen3-VL"
         )
 
-    def test_main_starts_n_cpu_runtimes_without_gpu_detection_or_model_validation(self):
+    def test_main_starts_only_gateway_for_remote_gpu(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = io.StringIO()
             with (
@@ -112,10 +112,13 @@ class ModularLauncherTests(unittest.TestCase):
             self.assertEqual(
                 run.call_args.kwargs["env"]["INFERENCE_API_KEY"], "cloud-secret"
             )
-            self.assertEqual(plan["command"][-1], "harness-16")
+            self.assertEqual(plan["command"][-1], "harness")
+            self.assertEqual(plan["environment"]["HARNESS_ANALYSIS_URL"], "http://sam-host:8080")
+            self.assertEqual(plan["analysis_location"], "gpu_host")
+            self.assertIsNone(plan["fleet_overlay"])
             self.assertNotIn("sam-server", plan["command"])
             self.assertNotIn("vlm-server", plan["command"])
-            self.assertTrue(
+            self.assertFalse(
                 (Path(temporary) / ".goodvision/main-server-compose.yaml").is_file()
             )
 

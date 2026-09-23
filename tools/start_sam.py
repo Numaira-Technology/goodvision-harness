@@ -19,11 +19,14 @@ from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
 if __package__:
+    from . import cloud_analysis
     from .cloud_gpu_settings import CloudGPUSettings
 else:
     try:
+        import cloud_analysis
         from cloud_gpu_settings import CloudGPUSettings
     except ModuleNotFoundError:
+        from tools import cloud_analysis
         from tools.cloud_gpu_settings import CloudGPUSettings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -433,13 +436,27 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
         f"{worker_environment} "
         f"{REMOTE}/env/bin/python -m uvicorn cloud_pool:app --host 127.0.0.1 --port 8092 --workers 1"
     )
+    forwards = []
+    scp = ["scp", *options, "-P", str(ssh_port)]
+    if cloud_analysis.enabled():
+        cloud_analysis.prepare(ROOT, REMOTE, ssh, scp, run)
+        worker_command = cloud_analysis.worker_command(REMOTE, environment, worker_command)
+        forwards = [
+            "-L", "0.0.0.0:8094:127.0.0.1:10000",
+            "-L", "127.0.0.1:8095:127.0.0.1:8095",
+            "-R", "127.0.0.1:8096:127.0.0.1:8093",
+        ]
     print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
-    return subprocess.Popen([
+    process = subprocess.Popen([
         *ssh[:-1], "-o", "ExitOnForwardFailure=yes",
         # Compose keeps this port inside its network; it is not published.
         "-L", f"0.0.0.0:{sam_port}:127.0.0.1:8092",
+        *forwards,
         ssh[-1], worker_command,
     ], stdin=subprocess.DEVNULL, start_new_session=True)
+    if cloud_analysis.enabled():
+        process.analysis_connection = (ssh, scp)
+    return process
 
 
 def main() -> int:
@@ -469,6 +486,8 @@ def main() -> int:
     label = f"goodvision-sam-{uuid4().hex[:12]}"
     cleanup_confirmed = True
     failure = None
+    analysis_ready = False
+    backup_failed = False
 
     def report(state, *, clean=False):
         if args.status_file is not None:
@@ -527,6 +546,8 @@ def main() -> int:
             ):
                 raise RuntimeError("Resume requires an existing running GoodVision SAM instance.")
             instance_id = args.resume_instance_id
+            # A resumed host can hold the only copy of data before readiness.
+            analysis_ready = cloud_analysis.enabled()
             cleanup_confirmed = False
             report("starting")
             print(f"Recovering existing instance: {instance_id}; no new rental.", flush=True)
@@ -572,6 +593,8 @@ def main() -> int:
                     settings=settings,
                 )
                 wait_for_worker(worker, args.sam_port)
+                if cloud_analysis.enabled():
+                    cloud_analysis.wait_ready(worker)
             except Exception as error:
                 # Explicit resume never creates a rental; signals also bypass
                 # this handler. Once ready, a live session is not replaced.
@@ -591,6 +614,7 @@ def main() -> int:
                 label = f"goodvision-sam-{uuid4().hex[:12]}"
                 continue
             break
+        analysis_ready = cloud_analysis.enabled()
         report("ready")
         print(
             "SAM is ready: sam_live passed its GPU health check.\n"
@@ -613,6 +637,17 @@ def main() -> int:
         if vast is not None:
             # Fit lookup + destruction inside Compose's 90-second shutdown grace.
             vast.client.timeout = (5, 20)
+        if analysis_ready:
+            report("stopping")
+            try:
+                cloud_analysis.backup(worker, REMOTE, run)
+            except Exception as error:
+                backup_failed = True
+                failure = (
+                    "Analysis backup failed; instance retained for data recovery. "
+                    + creation_diagnostic({"message": str(error)})
+                )
+                print(failure, file=sys.stderr, flush=True)
         try:
             stop_process(worker)
         except OSError:
@@ -635,7 +670,7 @@ def main() -> int:
                     "An instance may appear after this lookup. Destroy that instance in Vast Instances.",
                     file=sys.stderr, flush=True,
                 )
-        if instance_id is not None:
+        if instance_id is not None and not backup_failed:
             try:
                 release_instance(vast, instance_id)
                 cleanup_confirmed = True

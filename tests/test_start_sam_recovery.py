@@ -70,6 +70,36 @@ def test_ready_recovery_resumes_normal_release_with_original_ssh_options(recover
     assert not any("KexAlgorithms" in option for option in options)
 
 
+@pytest.mark.parametrize("backup_fails", [False, True])
+def test_full_analysis_is_backed_up_before_cloud_release(recovery, monkeypatch, backup_fails):
+    monkeypatch.setenv("SAM_ANALYSIS_ENABLED", "true")
+    monkeypatch.setattr(launcher.cloud_analysis, "prepare", Mock())
+    monkeypatch.setattr(launcher.cloud_analysis, "wait_ready", Mock())
+    actions = []
+
+    def backup(*args):
+        actions.append("backup")
+        if backup_fails:
+            raise OSError("backup unavailable")
+
+    monkeypatch.setattr(launcher.cloud_analysis, "backup", backup)
+    recovery.destroy_instance.side_effect = lambda **kwargs: actions.append("release") or {"success": True}
+    assert launcher.main() == 1
+    assert actions == (["backup"] if backup_fails else ["backup", "release"])
+    if backup_fails:
+        recovery.destroy_instance.assert_not_called()
+    command = launcher.subprocess.Popen.call_args.args[0]
+    assert "0.0.0.0:8094:127.0.0.1:10000" in command
+    assert "gpu_analysis_host.py" in command[-1]
+
+
+def test_failed_analysis_recovery_never_destroys_the_only_data_copy(recovery, monkeypatch):
+    monkeypatch.setenv("SAM_ANALYSIS_ENABLED", "true")
+    launcher.wait_for_ssh.side_effect = RuntimeError("unreachable")
+    assert launcher.main() == 1
+    recovery.destroy_instance.assert_not_called()
+
+
 def test_five_a100_and_n_streams_reach_rental_query_and_remote_pool(recovery, monkeypatch, tmp_path):
     status = tmp_path / "state.json"
     monkeypatch.setattr(sys, "argv", ["start_sam.py", "--gpu-name", "A100", "--gpu-count", "5",

@@ -1,4 +1,4 @@
-"""Start the CPU application, a standalone SAM server, or a standalone VLM server.
+"""Start a console gateway, GPU-host analysis, SAM, or VLM.
 
 Python 3.10+ standard library only. Modules can run on different machines.
 --dry-run prints a credential-free plan, without writing files or calling Docker.
@@ -48,11 +48,13 @@ SETTINGS = (
         "VLM_SERVER_PORT",
         "LOCAL_INFERENCE_GPU_ID",
         "PERCEPTION_METHOD",
+        "HARNESS_ANALYSIS_URL",
     }
     | QUEUE_SETTINGS
 )
 COMPOSE_FILES = {
     "main": "compose.main-server.yaml",
+    "analysis": "compose.main-server.yaml",
     "sam": "compose.sam-server.yaml",
     "vlm": "compose.vlm-server.yaml",
 }
@@ -402,11 +404,13 @@ def compose_command(
     streams: int,
     fleet_file: Path | None,
     build: bool,
+    gateway: bool = False,
 ) -> list[str]:
     command = ["docker", "compose", "--project-directory", str(ROOT)]
     if env_file is not None:
         command.extend(["--env-file", str(env_file)])
-    command.extend(["-f", str(ROOT / COMPOSE_FILES[module])])
+    filename = "compose.analysis-gateway.yaml" if gateway else COMPOSE_FILES[module]
+    command.extend(["-f", str(ROOT / filename)])
     if fleet_file is not None:
         command.extend(["-f", str(fleet_file)])
     command.extend(["up", "--detach", "--wait", "--wait-timeout", "900"])
@@ -414,7 +418,7 @@ def compose_command(
         command.append("--build")
     command.extend(
         ["harness", *(f"harness-{index:02d}" for index in range(2, streams + 1))]
-        if module == "main"
+        if module in {"main", "analysis"}
         else [f"{module}-server"]
     )
     return command
@@ -430,9 +434,13 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--no-build", action="store_true")
         command.add_argument("--bind", help="Host IP for the published service port")
         command.add_argument("--port", type=int)
-        if module in {"main", "sam"}:
+        if module in {"main", "analysis", "sam"}:
             command.add_argument("--streams", type=int, default=1)
-        if module == "main":
+        if module in {"main", "analysis"}:
+            command.add_argument(
+                "--analysis-server",
+                help="GPU host Harness origin; defaults to tracking host port 8080 in main mode",
+            )
             command.add_argument(
                 "--sam-queue-policy",
                 choices=("latest_only", "durable_ordered", "realtime_latest"),
@@ -479,8 +487,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         devices = []
         streams = getattr(args, "streams", 1)
-        if args.module == "main":
+        gateway = False
+        if args.module in {"main", "analysis"}:
             environment = main_environment(settings, args)
+            if args.module == "analysis":
+                environment["HARNESS_MANAGED_ANALYSIS"] = "true"
+            analysis_url = args.analysis_server or settings.get(
+                "HARNESS_ANALYSIS_URL", "",
+            )
+            if args.module == "main" and (
+                analysis_url or environment["TRACKING_EXECUTION_MODE"] == "server"
+            ):
+                if not analysis_url:
+                    target = urlsplit(environment["TRACKING_SERVER_URL"])
+                    host = (
+                        f"[{target.hostname}]"
+                        if ":" in target.hostname else target.hostname
+                    )
+                    analysis_url = urlunsplit(
+                        (target.scheme, host + ":8080", "", "", ""),
+                    )
+                environment["HARNESS_ANALYSIS_URL"] = server_origin(
+                    analysis_url, "Analysis server",
+                )
+                gateway = True
+            elif args.module == "analysis" and args.analysis_server:
+                raise LaunchError(
+                    "analysis runs on the GPU host; --analysis-server belongs to main",
+                )
         else:
             if args.gpu_count is not None:
                 if not args.dry_run or not 1 <= args.gpu_count <= 64:
@@ -496,7 +530,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             environment = worker_environment(args.module, settings, args, devices)
         fleet_file = (
             ROOT / ".goodvision" / "main-server-compose.yaml"
-            if args.module == "main"
+            if args.module in {"main", "analysis"} and not gateway
             else None
         )
         overlay = (
@@ -505,9 +539,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = compose_command(
             args.module,
             env_file=env_file if env_file.is_file() else None,
-            streams=streams,
+            streams=1 if gateway else streams,
             fleet_file=fleet_file,
             build=not args.no_build,
+            gateway=gateway,
         )
         # Cloud and worker keys go directly from the existing environment to Compose.
         # They are never included in this plan or written to the generated overlay.
@@ -515,6 +550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(
                 {
                     "module": args.module,
+                    "analysis_location": "gpu_host" if gateway else "this_host",
                     "devices": devices,
                     "environment": environment,
                     "command": command,

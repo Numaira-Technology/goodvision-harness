@@ -12,7 +12,7 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
 from .privacy import public_safe_value
@@ -55,6 +55,19 @@ class FleetController:
     def __init__(self, application: FastAPI) -> None:
         self.application = application
         self.capacity = _positive_environment_integer("HARNESS_FLEET_CAPACITY", 1)
+        self.origins = json.loads(os.environ.get("HARNESS_FLEET_ORIGINS", "[]"))
+        if not isinstance(self.origins, list):
+            raise ValueError("HARNESS_FLEET_ORIGINS must be a list")
+        if self.origins:
+            from .service_locations import _service_origin
+
+            if len(self.origins) != self.capacity:
+                raise ValueError("HARNESS_FLEET_ORIGINS must match fleet capacity")
+            self.origins = [
+                _service_origin(value, "fleet origin") for value in self.origins
+            ]
+            if not all(self.origins):
+                raise ValueError("fleet origins must not be empty")
         self.camera_index = _positive_environment_integer(
             "HARNESS_FLEET_CAMERA_INDEX",
             1,
@@ -122,6 +135,8 @@ class FleetController:
     def _url(self, index: int, path: str) -> str:
         if index == self.camera_index:
             return f"http://fleet-self{path}"
+        if self.origins:
+            return self.origins[index - 1] + path
         service = "harness" if index == 1 else f"harness-{index:02d}"
         return f"http://{service}:8080{path}"
 
@@ -266,8 +281,19 @@ class FleetController:
                     result = json.loads(body)
                 except (ValueError, UnicodeDecodeError):
                     raise HTTPException(502, "camera response must be JSON") from None
+                # These private source transport settings must reach the local
+                # relay verbatim; public text filtering must not corrupt URLs
+                # or camera authentication headers.
+                relay = (
+                    result.pop("video_relay", None)
+                    if path == "/v1/video/connect" and payload and payload.get("relay")
+                    else None
+                )
+                rendered = public_safe_value(result)
+                if relay is not None:
+                    rendered["video_relay"] = relay
                 return JSONResponse(
-                    public_safe_value(result),
+                    rendered,
                     status_code=upstream.status_code,
                     headers=_NO_STORE,
                 )
@@ -763,6 +789,19 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
                 "POST",
                 "/v1/video/disconnect",
                 coordinated=True,
+            )
+
+    @application.websocket("/v1/fleet/cameras/{camera_id}/video/relay/{token}")
+    async def relay(socket: WebSocket, camera_id: str, token: str):
+        from .video_relay import proxy_relay, receive_relay
+
+        index = controller.resolve_camera(camera_id)
+        controller.require_enabled(index)
+        if index == controller.camera_index:
+            await receive_relay(socket, application.state.runtime, token)
+        else:
+            await proxy_relay(
+                socket, controller._url(index, ""), f"/v1/video/relay/{token}",
             )
 
     @application.post("/v1/fleet/cameras/{camera_id}/start")

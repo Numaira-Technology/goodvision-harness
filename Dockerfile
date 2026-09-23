@@ -13,7 +13,9 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY tools/start_sam.py ./tools/start_sam.py
-COPY tools/cloud_gpu_settings.py tools/cloud_gpu_controller.py ./tools/
+COPY tools/cloud_gpu_settings.py tools/cloud_gpu_controller.py tools/cloud_analysis.py tools/gpu_analysis_host.py ./tools/
+COPY pyproject.toml config.yaml ./
+COPY src ./src
 COPY workers/sam_scene/app.py workers/sam_scene/sam31.py \
     workers/sam_scene/continuous.py workers/sam_scene/streaming_state.py \
     workers/sam_scene/perception_routes.py workers/sam_scene/sam_live.py \
@@ -25,6 +27,22 @@ COPY workers/sam_scene/app.py workers/sam_scene/sam31.py \
 
 STOPSIGNAL SIGTERM
 CMD ["python", "-u", "tools/cloud_gpu_controller.py"]
+
+FROM python:3.11-slim AS analysis-gateway
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg libgomp1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY pyproject.toml README.md ./
+COPY src ./src
+# Video ingress dependencies only: no face/ONNX/model inference packages.
+RUN python -m pip install --no-cache-dir '.[webrtc,video]' \
+    && mkdir -p /data && chown 10001:10001 /data
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+USER 10001:10001
+HEALTHCHECK --interval=15s --timeout=3s --retries=4 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=2).read()"]
+CMD ["python", "-m", "goodvision_harness.analysis_gateway"]
 
 FROM python:3.11-slim
 

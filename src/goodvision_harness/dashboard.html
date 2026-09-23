@@ -59,6 +59,7 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
     <div class="brand-subtitle">Video ingest, live analysis, annotated delivery, and face-data diagnostics.</div>
   </div>
   <div class="chips">
+    <a class="chip" id="gateway-video-settings" href="/gateway" hidden>摄像头拉流位置</a>
     <span class="chip">service <b id="service-chip">loading</b></span>
     <span class="chip">source <b id="source-chip">waiting</b></span>
     <span class="chip">readiness <b id="readiness-chip">checking</b></span>
@@ -67,6 +68,7 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
     <span class="chip">sampling <b id="sampling-chip">...</b></span>
   </div>
 </header>
+<script data-gateway-settings>fetch('/gateway/video-source').then(r=>{if(r.ok)document.getElementById('gateway-video-settings').hidden=false;}).catch(()=>{});</script>
 <div id="secure-warning" class="notice" hidden></div>
 
 <main>

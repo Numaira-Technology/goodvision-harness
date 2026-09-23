@@ -27,6 +27,7 @@ dependencies = [
   "python-dotenv>=1,<2",
   "PyYAML>=6,<7",
   "uvicorn[standard]>=0.30,<1",
+  "websockets>=15,<16",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +72,7 @@ include = ["goodvision_harness*"]
 goodvision_harness = [
   "config.yaml",
   "dashboard.html",
+  "analysis_gateway.html",
   "fleet_console.js",
   "cloud_gpu_console.js",
   "camera_display.js",

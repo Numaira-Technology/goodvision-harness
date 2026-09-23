@@ -54,9 +54,15 @@ class CloudController:
                 timeout=8,
             ) as response:
                 data = json.load(response)
-            return all(
+            ready = all(
                 data.get(key) is True for key in ("enabled", "ready", "gpu_ready")
             )
+            if ready and os.environ.get("SAM_ANALYSIS_ENABLED") == "true":
+                with build_opener(ProxyHandler({})).open(
+                    "http://127.0.0.1:8095/health", timeout=8,
+                ) as response:
+                    ready = json.load(response).get("ready") is True
+            return ready
         except (URLError, OSError, ValueError):
             return False
 
@@ -132,7 +138,7 @@ class CloudController:
             # start_sam owns the SSH process and paid-instance cleanup.
             self.process.send_signal(signal.SIGTERM)
             try:
-                await asyncio.to_thread(self.process.wait, timeout=65)
+                await asyncio.to_thread(self.process.wait, timeout=420)
             except subprocess.TimeoutExpired:
                 raise HTTPException(
                     503, "云 GPU 正在释放，请稍后检查状态；不会启动新的租用"
@@ -155,9 +161,9 @@ def create_app(directory=None, capacity=None):
     app.state.manager = manager
 
     @app.get("/settings")
-    async def status():
+    async def status(check_health: bool = True):
         state = manager.status()
-        if state["state"] == "ready" and not await asyncio.to_thread(
+        if check_health and state["state"] == "ready" and not await asyncio.to_thread(
             manager.pool_ready
         ):
             state.update(
@@ -198,4 +204,4 @@ def create_app(directory=None, capacity=None):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(create_app(), host="0.0.0.0", port=8093, timeout_graceful_shutdown=75)
+    uvicorn.run(create_app(), host="0.0.0.0", port=8093, timeout_graceful_shutdown=435)

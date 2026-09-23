@@ -34,6 +34,7 @@ class VideoConnection:
         frame_crop: str = "none",
         preview_max_side: int | None = None,
         jpeg_quality: int = 80,
+        adapter: Any | None = None,
     ) -> None:
         if not math.isfinite(output_fps) or output_fps <= 0:
             raise ValueError("output_fps must be positive and finite")
@@ -43,7 +44,7 @@ class VideoConnection:
             raise ValueError("jpeg_quality must be between 1 and 100")
         self._crop = FrameCropSelector(frame_crop)
         self.connection_id = uuid.uuid4().hex
-        self._adapter = NetworkStreamAdapter(
+        self._adapter = adapter if adapter is not None else NetworkStreamAdapter(
             stream_url, output_fps=output_fps, whep_headers=whep_headers,
             connection_id=self.connection_id,
         )

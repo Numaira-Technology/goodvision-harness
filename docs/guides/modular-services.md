@@ -1,14 +1,16 @@
 # 主程序、SAM 和大模型分机部署
 
-三个模块可以分别部署、更新和重启。主程序通过 HTTP 连接 SAM 和视觉大模型服务，显卡只需要装在运行模型的机器上。
+控制台入口、GPU 主机分析、SAM 和大模型可以分别更新和重启。
+GPU 模式的 CPU 分析也运行在 GPU 主机；本机负责控制台与视频接入，不执行人脸和事件分析。
 
 | 模块 | 部署内容 | GPU 和模型文件 |
 | --- | --- | --- |
-| 主程序 `main` | 控制台、视频接入、每路处理、结果和人脸数据 | 使用 CPU 镜像，不要求 NVIDIA、SAM 或大模型权重；人脸模型沿用主程序的 `/models` 卷 |
+| 本机入口 `main` | 控制台、本机拉流与必要的接入解码、视频和结果转发 | 不加载识别模型，不创建分析进程 |
+| GPU 主机分析 `analysis` | 视频解码、人脸识别、事件处理、结果和证据存储 | 使用 GPU 主机的 CPU；人脸模型保存在该主机的 `/models` 卷 |
 | SAM `sam` | 多路人物追踪，共用一份 SAM 模型 | NVIDIA GPU、SAM3.1 checkpoint |
 | 大模型 `vlm`，可选 | vLLM + Qwen3-VL-30B-A3B-Instruct-FP8 | NVIDIA GPU、完整的离线 Qwen 模型目录 |
 
-例如主程序放在客户机器，SAM 放在一台独立 L40S 服务器，大模型继续调用云端。以后把大模型迁到另一台 GPU 服务器，只需修改控制台的大模型部署位置、服务地址和模型名称。
+例如本机入口放在客户机器，`analysis` 和 SAM 放在同一台 L40S 服务器，大模型继续调用云端。以后把大模型迁到另一台 GPU 服务器，只需修改控制台的大模型部署位置、服务地址和模型名称。
 
 本页使用独立的 `compose.main-server.yaml`、`compose.sam-server.yaml`、`compose.vlm-server.yaml`，不调用云端租机。现有 `tools/start_local_gpu.py` 仍用于所有模块在同一台 NVIDIA 机器上的部署；两个入口不要在相同端口同时启动。
 
@@ -36,19 +38,40 @@ python tools/start_modular.py sam --streams 16 --gpu-id 1 --bind 192.168.10.20 -
 
 该入口只检查 NVIDIA 和 SAM checkpoint，只启动 SAM 容器。checkpoint 可通过这台机器的 `.env` 中的 `SAM31_CHECKPOINT_FILE` 修改。模型文件挂载到容器，启动时不会下载。
 
-## 2. 在主程序机器上连接 SAM，继续使用云端大模型
+## 2. 在 GPU 主机启动 CPU 分析，本机连接控制台
 
-保留主程序机器现有的云端供应商、模型和 API Key 配置，在仓库根目录执行：
+先在 GPU 主机部署完整分析进程，云端供应商、模型和 API Key 配置放在这台机器的 `.env`，也可稍后在控制台保存：
+
+```sh
+python tools/start_modular.py analysis --streams 12 --tracking-server http://host.docker.internal:8092 --tracking-capacity 12 --bind 192.168.10.20
+```
+
+再在本机启动控制台入口：
 
 ```sh
 python tools/start_modular.py main --streams 12 --tracking-server http://192.168.10.20:8092 --tracking-capacity 12
 ```
 
+`main` 在独立 GPU 模式默认连接追踪主机的 8080 分析端口。分析端口不同或使用 HTTPS 时指定
+`--analysis-server https://gpu-host.example`，也可设置 `HARNESS_ANALYSIS_URL`。
+这一步只连接远端，不创建或修改远端通道；路数、模型线路和采样参数在 GPU 主机的
+`analysis` 启动命令或控制台配置。只有旧版无 GPU 追踪的 `main` 入口仍在本机运行分析。
+`/gateway` 可查看连接状态，远端故障返回 503，不会自动切回本机 CPU。
+
 然后打开 [控制台](http://127.0.0.1:8080)，在每一路填入视频地址并连接。也可以预填 `LOCAL_CAMERA_01_STREAM_URL`、`LOCAL_CAMERA_02_STREAM_URL` 等。第一路兼容已有 `HARNESS_STREAM_URL` / `RTSP_URL`；默认启动后保持空闲，等待控制台连接。不同路数使用独立的数据卷，其他摄像头通过主控制台访问，只有主控制台发布端口。
 
 “连接视频”只建立该路预览，不调用 SAM、大模型或人脸分析。每一路均可展开“详细控制”，保存检测项目、敏感度并查看结果；服务位置和密钥统一在主控制台配置。视频可分别连接，分析必须点击“开始全部分析”，一起处理所有已连接视频。停止使用“停止全部分析”，视频连接和预览会保留；本次分析启动、运行或收尾期间不能增减连接或修改检测与部署设置。接口接入使用 `/v1/fleet/cameras/cameraNN/connect`、`/details` 和 `/v1/fleet/analysis/start`、`/stop`，详见 [接口说明](../../API_DELIVERY.md)。
 
-主程序入口不会探测 NVIDIA，不会启动模型容器，也不会检查 SAM 或 Qwen 权重。人脸处理使用 CPU；这部分能力需要结合主机 CPU、视频分辨率和路数测试。
+本机入口不会探测 NVIDIA，不会启动模型容器，也不会检查权重。人脸处理使用 GPU 主机 CPU，需结合该主机 CPU、视频分辨率和路数测试。
+
+浏览器摄像头的控制消息和 JPEG 数据通过网关原样转发。RTSP/RTMP/WHEP 默认在本机拉流，
+经必要的解码后由本机主动建立的连接转发到 GPU 主机；保留源帧编号与时间戳，并限制待传输帧，
+不会因远端变慢无限堆积。GPU 主机不需要访问内网摄像头或连接本机端口。
+控制台“摄像头拉流位置”（`/gateway`）可选择“GPU 主机直接拉流”；保存后在下次连接生效。
+只有选用此项时，才需要 GPU 主机能访问视频源。`HARNESS_VIDEO_PULL_LOCATION=local|gpu`
+提供初始默认值，未配置时为 `local`，控制台保存的值优先。
+升级已有独立服务器部署时，先停止旧分析，将原有 `camera-NN-data` / `face-data` 卷备份并
+迁移到 GPU 主机，之后停止旧本机的多路分析容器。网关不自动复制跨主机 Docker 数据卷。
 
 服务地址填写**主程序容器能访问的服务器地址**，只填写协议、主机和端口，不带 `/v1/...`、用户名、密码或查询参数。另一台机器不能写 `localhost`；如果模型运行在主程序宿主机，Docker 环境下可使用 `http://host.docker.internal:8092`。
 
@@ -97,7 +120,7 @@ python tools/start_modular.py vlm --gpu-id 0 --bind 192.168.10.30 --port 8000
 该入口只检查大模型权重和所选 NVIDIA 卡，不要求 SAM 文件。默认使用 `vllm/vllm-openai:v0.17.1`，服务模型别名为 `local-vision`。启动后，在主程序控制台将大模型部署位置改为“独立模型服务器”，填写 `http://192.168.10.30:8000` 和 `local-vision`。新部署也可直接执行：
 
 ```sh
-python tools/start_modular.py main --streams 12 --tracking-server http://192.168.10.20:8092 --tracking-capacity 12 --inference-server http://192.168.10.30:8000 --inference-model local-vision
+python tools/start_modular.py analysis --streams 12 --tracking-server http://host.docker.internal:8092 --tracking-capacity 12 --inference-server http://192.168.10.30:8000 --inference-model local-vision --bind 192.168.10.20
 ```
 
 SAM 与大模型两种选择互相独立；SAM 使用独立服务器、VLM 使用云端的组合完整支持多路。
@@ -110,6 +133,8 @@ SAM 与大模型两种选择互相独立；SAM 使用独立服务器、VLM 使�
 
 | 环境变量 | 含义 |
 | --- | --- |
+| `HARNESS_ANALYSIS_URL` | 本机网关连接的 GPU 主机 Harness HTTP(S) origin；不填时从追踪主机推导 8080 端口 |
+| `HARNESS_VIDEO_PULL_LOCATION` | 摄像头拉流默认位置：`local`（本机，默认）或 `gpu`（GPU 主机）；控制台可覆盖 |
 | `INFERENCE_EXECUTION_MODE` | `cloud` 或 `server`；同机 GPU 入口还支持 `local` |
 | `TRACKING_EXECUTION_MODE` | `legacy` 或 `server`；同机 GPU 入口还支持 `local` |
 | `INFERENCE_SERVER_URL` | 自备 VLM 服务的 HTTP(S) origin |

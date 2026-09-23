@@ -345,13 +345,12 @@ def test_running_rental_health_is_rechecked_without_another_rental(
         assert client.get("/settings").json()["state"] == "ready"
 
 
-def test_cloud_launcher_provisions_arbitrary_isolated_cpu_lanes():
+def test_cloud_launcher_moves_all_lanes_to_gpu_host_and_mounts_old_data_for_migration():
     text = fleet_overlay(37)
-    assert "harness-37:" in text
-    assert "camera-37-data:/data" in text
-    assert '"HARNESS_FLEET_CAMERA_INDEX": "37"' in text
-    assert "compose.cloud-gpu.yaml" in text and "compose.main-server.yaml" not in text
-    assert "ports: !override []" in text
+    assert "harness-37:" not in text
+    assert "camera-37-data:/legacy/camera-37:ro" in text
+    assert '"SAM31_LIVE_CAMERAS": "37"' in text
+    assert "LOCAL_CAMERA_37_STREAM_URL" in text
 
 
 def test_cloud_launcher_dry_run_never_calls_docker_or_creates_files(

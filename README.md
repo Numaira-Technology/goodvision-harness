@@ -15,8 +15,11 @@ original `goodvision` repository.
 自备 GPU 服务器均可多路，大模型仍可用云端。受管云 GPU 已支持 N 路视频和 UI 修改租用型号、数量，
 通过 `python tools/start_cloud_gpu.py --streams N` 启动，详见[云 GPU 多路追踪](docs/guides/cloud-gpu.md)。
 普通旧版外部单会话追踪服务保留兼容入口。
-主程序、人物追踪、大模型可以分别部署在不同机器，主程序无需显卡；控制台分别设置运行位置、
-服务器地址和追踪容量，见 [模块化部署说明](docs/guides/modular-services.md)。
+云 GPU 和独立 GPU 部署将人脸识别、事件处理与证据生成放到 GPU 主机，使用该主机的 CPU。
+摄像头默认仍由本机拉流并进行必要的接入解码，再转发到 GPU 主机分析；控制台的
+“摄像头拉流位置”可选择 GPU 主机直接拉流。远端不可用时不会回退到本机分析。
+独立服务器先在 GPU 主机启动 `start_modular.py analysis`，再在本机启动 `main`，
+见 [模块化部署说明](docs/guides/modular-services.md)。
 同机部署仍支持单卡共用、双卡将大模型与追踪及其他 GPU 工作分开。
 每路大模型分析目标沿用 1.25 次/秒，N 路共 1.25 × N
 请求/秒，默认追踪共 2 × N 帧/秒；12 路参考目标为 15 请求/秒。

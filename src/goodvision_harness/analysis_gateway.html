@@ -1,0 +1,25 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GoodVision · GPU 分析服务</title>
+<style>body{font:16px system-ui;max-width:760px;margin:60px auto;padding:24px;background:#f6f8fa;color:#17212b}section{background:white;padding:24px;border-radius:12px}label{display:block;margin:14px 0}input,textarea,button{font:inherit;padding:8px}textarea{width:95%;height:140px}button{cursor:pointer;margin:8px 4px 8px 0}pre{white-space:pre-wrap}.error{color:#b42318}</style>
+<h1>GPU 主机分析服务</h1>
+<p>视频分析在 GPU 主机上运行。默认由本机连接摄像头并转发视频，服务断开时不会切回本机分析。</p>
+<p id="connection">正在检查连接…</p><p><a href="/">打开分析控制台</a></p>
+<section><h2>摄像头拉流位置</h2><label><select id="video-pull-location"><option value="local">本机拉流（默认）</option><option value="gpu">GPU 主机直接拉流</option></select></label><button id="save-video-source">保存</button><p>修改在下次连接视频时生效。选择 GPU 主机时，该主机须能访问摄像头地址。</p><p id="video-source-status"></p></section>
+<section id="cloud-gpu-panel" hidden><h2>云 GPU</h2>
+<label>型号 <input id="cloud-gpu-name"></label><label>数量 <input id="cloud-gpu-count" type="number" min="1"></label>
+<label>视频路数 <input id="cloud-gpu-streams" type="number" disabled></label><label>磁盘 GB <input id="cloud-gpu-disk" type="number" min="1"></label>
+<details><summary>编辑租用脚本参数</summary><textarea id="cloud-gpu-script"></textarea><pre id="cloud-gpu-command"></pre></details>
+<button id="cloud-gpu-save">保存配置</button><button id="cloud-gpu-start">启动租用（开始计费）</button><button id="cloud-gpu-stop">保存数据并释放云 GPU</button><p id="cloud-gpu-status"></p></section>
+<script src="/assets/cloud_gpu_console.js"></script>
+<script>
+const pull=document.getElementById('video-pull-location'), pullStatus=document.getElementById('video-source-status');
+fetch('/gateway/video-source').then(r=>r.json()).then(s=>{pull.value=s.pull_location;}).catch(()=>{pullStatus.textContent='无法读取拉流设置。';});
+document.getElementById('save-video-source').onclick=async()=>{
+  try{const r=await fetch('/gateway/video-source',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pull_location:pull.value})});if(!r.ok)throw Error();pullStatus.textContent='已保存，下次连接视频时生效。';}catch(_){pullStatus.textContent='保存失败，请重试。';}
+};
+(async function poll(){
+  try{const c=await fetch('/v1/cloud-gpu').then(r=>r.json());document.getElementById('cloud-gpu-panel').hidden=!c.available;}catch(_){}
+  try{const r=await fetch('/gateway/status');document.getElementById('connection').textContent=r.ok?'分析服务已连接，可以打开控制台。':'分析服务尚未就绪。云模式请先启动租用；独立服务器请检查分析服务。';}catch(_){document.getElementById('connection').textContent='分析服务连接失败。';}
+  setTimeout(poll,3000);
+})();
+</script></html>

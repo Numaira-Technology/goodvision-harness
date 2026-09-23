@@ -1,31 +1,17 @@
-# CPU main application plus an idle, UI-controlled cloud rental service.
+# Local gateway plus an idle, UI-controlled cloud rental service.
 name: goodvision-cloud
 
 services:
   harness:
     extends:
-      file: compose.main-server.yaml
+      file: compose.analysis-gateway.yaml
       service: harness
     depends_on:
       sam-remote:
         condition: service_started
     environment:
-      TRACKING_EXECUTION_MODE: cloud
+      HARNESS_ANALYSIS_URL: http://sam-remote:8094
       CLOUD_GPU_CONTROLLER_URL: http://sam-remote:8093
-      CLOUD_TRACKING_URL: http://sam-remote:8092
-      HARNESS_AUTOSTART: "false"
-      SCENE_ENGINE_MODE: active
-      PERSON_TRACKING_ENABLED: "true"
-      RICH_LABEL_ENABLED: "true"
-      RICH_LABEL_BACKEND: sam31_stream
-      PERCEPTION_METHOD: sam_live
-      LOCAL_TRACKING_FPS: "${LOCAL_TRACKING_FPS:-1.1}"
-      RICH_LABEL_ENDPOINT: http://sam-remote:8092/v1/video/sessions
-      SAM31_BATCH_FRAMES: "4"
-      SAM31_BATCH_SECONDS: "0.5"
-      SAM31_TRANSPORT_CODEC: h264
-      SAM31_TRANSPORT_MAX_SIDE: "${SAM31_TRANSPORT_MAX_SIDE:-512}"
-      SAM31_TRANSPORT_CRF: "${SAM31_TRANSPORT_CRF:-23}"
   sam-remote:
     extends:
       file: compose.sam31-remote.yaml
@@ -34,6 +20,7 @@ services:
 networks:
   default: {}
 volumes:
+  gateway-data: {}
   face-models: {}
   face-data: {}
   cloud-gpu-settings: {}
