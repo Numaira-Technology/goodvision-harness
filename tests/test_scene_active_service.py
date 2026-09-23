@@ -193,6 +193,24 @@ def _observe(runtime, timestamp, sequence):
     runtime._on_display_frame(_jpeg(), timestamp, sequence)
 
 
+def test_enabled_supervision_is_published_by_real_scene_route(factory):
+    pytest.importorskip("supervision")
+    from goodvision_harness.perception.settings import SupervisionSettings, Zone
+
+    runtime = factory(tracker=True)
+    runtime.config = replace(runtime.config, supervision=SupervisionSettings(
+        enabled=True,
+        zones=(Zone("scene", ((0., 0.), (1., 0.), (1., 1.), (0., 1.))),),
+    ))
+    with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:
+        runtime.start_camera(dry_run=True, features=["smoking"])
+        _observe(runtime, 0, 0)
+        payload = client.get("/v1/scene").json()
+        assert payload["supervision"]["enabled"] is True
+        assert payload["supervision"]["observation"]["zones"]["scene"]["count"] == 1
+        assert payload["scene"]["events"] == []
+
+
 def test_temporal_evidence_api_returns_exact_source_and_expires_on_reset(factory):
     runtime = factory(tracker=True, inspector=Inspector())
     with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:

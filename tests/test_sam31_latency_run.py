@@ -10,7 +10,7 @@ import httpx
 import numpy as np
 import pytest
 
-from goodvision_harness import perception
+from goodvision_harness.perception import routes as perception
 
 
 def module(name, path):

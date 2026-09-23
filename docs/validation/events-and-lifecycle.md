@@ -71,3 +71,37 @@ MJPEG。正常轮 VLM 31/31 包实收，与通用结果流逐个消息 ID 对齐
 后续身份关联可因 SAM 长期落后而过期；VLM 临时原图缓存不等于每帧永久留档。私有人脸/追踪事实可用于恢复，不能据此声称全部后台人物整理已支持进程重启后自动续跑。状态锁隔离修复也不代表所有共享锁耗时已被消除。
 
 下一轮需在完整多路分析中验证停止、重启、故障恢复和 JSON/SSE 持续输出。归档隔离探测原始结果在 `.goodvision/diagnostics/archive-stream-fix-20260921/stream-probe.json`；独立 VLM 历史回放资料在 `.goodvision/diagnostics/vlm-independent-20260921/`。
+
+## Supervision 组件实验（2026-09-23）
+
+分支 `codex/supervision-event-runtime`，基于 `24e8ca8`。
+[结构、开启方式和语义边界](../architecture/supervision-experiment.md)；
+[CPU 原始汇总](evidence/supervision-components-20260923.json)。
+
+使用固定 Supervision 0.30.5，macOS arm64 / Python 3.12.12，
+每个场景预热 10 帧后测量 100 帧，目标为固定合成人框。
+
+| 每帧目标数 | 转换 + 区域 + 越线 + 平滑 P50 | P95 |
+| --- | --- | --- |
+| 8 | 0.242 ms | 0.257 ms |
+| 64 | 1.389 ms | 1.409 ms |
+| 128 | 2.737 ms | 2.792 ms |
+
+这些数值只衡量本机 CPU 上的适配与几何组件开销，不含模型、网络、编码或渲染，
+不能作为检测准确率、GPU 吞吐量或端到端告警时延的对照。
+
+新增回归使用真实 Supervision 库，覆盖 mask/框归一化、NMS 元数据保留、
+原生 ID 保护、空帧、预测框、区域/越线、平滑隔离、source/session/epoch、
+有限容量、真实 scene 路由输出、非原生检测客户端、COCO/YOLO 转换与 mAP。
+事件级测试覆盖乱序、重复、撤回、身份与会话隔离、一对一匹配和误报小时分母。
+旧 33 条 smoking replay 仍以同一事件 ended 收尾。
+
+最终本机全量回归：**4621 passed，40 skipped**，142.15 秒，包含 Node 与 FFmpeg
+检查；跳过项不计为验证通过，Windows/真实 GPU 仍未实测。新增分层模块 Ruff、
+`git diff --check`、仓库卫生检查及 `pip check` 均通过。
+
+默认关闭实验；在没有安装 Supervision 的原基础环境中已确认默认服务能够导入。
+源更新包覆盖到仍保留旧 `perception.py` 的目录后，隔离子进程也能正确导入新 package
+及旧 SceneState 兼容入口，未加载可选 Supervision。
+本次不触发真实模型或云 GPU，不证明 SAM 与 ByteTrack 的质量优劣，
+移动摄像头、长会话、十二路并发与真实告警效果仍待验收。

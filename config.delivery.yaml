@@ -1,3 +1,14 @@
+# Optional geometry observations; disabled by default.
+supervision:
+  enabled: false
+  confidence_threshold: null
+  nms_threshold: null
+  smoothing_length: 5
+  max_gap_seconds: 3.0
+  max_tracks: 2048
+  zones: []
+  lines: []
+
 input:
   # Set an explicit local path or pass --video; no sample media is bundled.
   default_video: null

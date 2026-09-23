@@ -8,6 +8,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [Supervision 组件实验](supervision-experiment.md) | 通用 CV 复用、六层结构、Observation 边界与事件级评测 |
 | [持续人物与事件引擎](entity-event-engine.md) | 状态模型、持续分析与事件生命周期 |
 | [事件与视频证据](event-evidence.md) | 独立结果输出、身份连续性与证据修订 |
 | [人物身份与陌生人证据](person-identity-evidence.md) | 身份关联、姓名与陌生人判断 |

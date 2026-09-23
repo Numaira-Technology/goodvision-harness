@@ -15,7 +15,8 @@ from dotenv import find_dotenv, load_dotenv
 from .deployment_settings import validate_processing_method
 from .event_archive import EventArchiveSettings
 from .model_api import ModelAPISettings
-from .model_routing import CUSTOMER_INFERENCE_PROFILE, resolve_model_route
+from .perception.routing import CUSTOMER_INFERENCE_PROFILE, resolve_model_route
+from .perception.settings import SupervisionSettings
 from .reference_memory import MemoryContext, load_memory_context
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
@@ -191,6 +192,7 @@ class HarnessConfig:
     server: ServerSettings
     service: ServiceSettings
     events: EventArchiveSettings = field(default_factory=EventArchiveSettings)
+    supervision: SupervisionSettings = field(default_factory=SupervisionSettings)
 
     @property
     def model_api(self) -> ModelAPISettings:
@@ -854,6 +856,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         server=server,
         service=service,
         events=events,
+        supervision=SupervisionSettings.from_mapping(_mapping_section(raw, "supervision")),
     )
 
 

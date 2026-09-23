@@ -8,8 +8,8 @@ from collections import Counter, OrderedDict
 from threading import Event, Lock, Thread
 
 from .contracts import NormalizedBBox
-from .scene_evidence import InspectionRequest
-from .scene_runtime import TemporalInspection
+from .runtime.scene import TemporalInspection
+from .runtime.scheduling import InspectionRequest
 
 
 def _overlap(a, b):

@@ -186,6 +186,15 @@ def test_release_contains_independent_vlm_and_browser_runtime_but_no_local_data(
         "payload/result_bus.py",
         "payload/camera_display.js",
         "payload/assets/opencv-4.13.0.js",
+        "payload/perception/__init__.py",
+        "payload/perception/routes.py",
+        "payload/perception/adapters/supervision.py",
+        "payload/observations/schema.py",
+        "payload/events/state_machine.py",
+        "payload/runtime/scene.py",
+        "payload/actions/alerts.py",
+        "payload/evaluation/event_metrics.py",
+        "payload/assets/Supervision-LICENSE.txt",
     } <= paths
     assert not any(
         name.endswith((".sqlite3", ".pyc", ".mp4", ".onnx", ".env")) for name in paths

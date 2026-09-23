@@ -149,3 +149,11 @@ Use a new output directory. `--description-style temporal` tests per-frame prose
 `--smoking standard` changes that sensitivity. Qwen receives the authorized images,
 TypeSafe receives descriptions only; both services require configured credentials.
 See [recognition findings](../docs/validation/recognition-quality.md).
+
+## Supervision 组件实验
+
+`python tools/benchmark_supervision.py --frames 100` 对 8/64/128 个合成目标测量
+转换、区域、越线和平滑的 CPU 开销，不运行模型。
+原 `scene_replay.py` 入口继续可用；事件级评测使用
+`python -m goodvision_harness.evaluation.cli predictions.json targets.json --camera-hours 2`。
+输入、开启方式与边界见 [实验说明](../docs/architecture/supervision-experiment.md)。

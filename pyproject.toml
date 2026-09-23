@@ -30,6 +30,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+supervision = [
+  "supervision==0.30.5",
+]
 vlm = [
   "httpx[http2]>=0.27,<1",
 ]
@@ -62,6 +65,8 @@ webrtc = [
 goodvision-harness = "goodvision_harness.service:main"
 goodvision-harness-cli = "goodvision_harness.pipeline:main"
 goodvision-harness-demo = "goodvision_harness.demo.server:main"
+goodvision-event-replay = "goodvision_harness.evaluation.replay:main"
+goodvision-event-evaluate = "goodvision_harness.evaluation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -24,8 +24,8 @@ from PIL import Image
 from .contracts import PUBLIC_MODEL_NAME
 from .latency_trace import log_timing
 from .result_bus import ResultBus
-from .scene_evidence import EvidenceFrame, InspectionRequest
-from .scene_runtime import TemporalInspection
+from .runtime.scene import TemporalInspection
+from .runtime.scheduling import EvidenceFrame, InspectionRequest
 from .vlm_independent_model import IndependentVLMInspector
 
 MAX_FRAME_BYTES = 4 * 1024**2

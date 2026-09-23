@@ -13,13 +13,13 @@ from typing import Any
 
 from .latency_trace import log_timing, trace_id
 from .model_api import ModelAPIError
+from .runtime.scene import SceneRuntime, TemporalInspection, TemporalVerdict
 from .scene_inspection import (
     TemporalInspector,
     _read_image,
     _validate_job,
     _validate_verdicts,
 )
-from .scene_runtime import SceneRuntime, TemporalInspection, TemporalVerdict
 
 
 @contextmanager

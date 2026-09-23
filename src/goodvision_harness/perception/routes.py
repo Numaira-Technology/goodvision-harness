@@ -17,10 +17,10 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .rich_labeling import RichLabelProtocolError
-from .sam_tracking_pipeline import PipelinedVideoSessionTrackingCoordinator
-from .video_tracking import VideoTrackingCoordinator, VideoTrackingHTTPClient
-from .video_tracking_session import (
+from ..rich_labeling import RichLabelProtocolError
+from ..sam_tracking_pipeline import PipelinedVideoSessionTrackingCoordinator
+from ..video_tracking import VideoTrackingCoordinator, VideoTrackingHTTPClient
+from ..video_tracking_session import (
     VideoSessionTrackingCoordinator,
     VideoSessionTrackingHTTPClient,
     _limits,

@@ -19,9 +19,9 @@ from PIL import ImageDraw, ImageFont
 
 from .result_bus import FramePacket
 from .rich_labeling import validate_mask_contours
-from .scene_evidence import EvidenceFrame
+from .runtime.scene import SceneRuntime
+from .runtime.scheduling import EvidenceFrame
 from .scene_inspection import _read_image
-from .scene_runtime import SceneRuntime
 
 _MAX_JPEG_BYTES = 16 * 1024 * 1024
 _MAX_PEOPLE = 128

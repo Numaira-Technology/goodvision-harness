@@ -1,0 +1,26 @@
+{
+  "scope": "synthetic CPU: conversion, polygon, line, smoothing; no inference/rendering",
+  "supervision": "0.30.5",
+  "python": "3.12.12",
+  "platform": "macOS-26.5.1-arm64-arm-64bit",
+  "cases": [
+    {
+      "objects": 8,
+      "frames": 100,
+      "p50_ms": 0.24154200218617916,
+      "p95_ms": 0.25665893917903304
+    },
+    {
+      "objects": 64,
+      "frames": 100,
+      "p50_ms": 1.3889165129512548,
+      "p95_ms": 1.4092727447859943
+    },
+    {
+      "objects": 128,
+      "frames": 100,
+      "p50_ms": 2.736521069891751,
+      "p95_ms": 2.792313206009567
+    }
+  ]
+}
