@@ -43,6 +43,9 @@ class TrackingSpool:
                     request_id TEXT PRIMARY KEY, generation INTEGER,
                     ordinal INTEGER, state TEXT, payload BLOB, payload_hash TEXT,
                     result BLOB, error_type TEXT);
+                CREATE TABLE IF NOT EXISTS skipped_sources (
+                    generation INTEGER, sequence INTEGER, reason TEXT,
+                    PRIMARY KEY (generation, sequence));
                 CREATE TABLE IF NOT EXISTS lifecycle (
                     generation INTEGER PRIMARY KEY, session TEXT, state TEXT,
                     error_type TEXT);
@@ -90,7 +93,10 @@ class TrackingSpool:
             "SELECT COALESCE(SUM(COALESCE(LENGTH(payload),0)"
             "+COALESCE(LENGTH(result),0)+512),0) FROM batches"
         ).fetchone()[0]
-        return source + batches
+        skipped = db.execute(
+            "SELECT COUNT(*) * 128 FROM skipped_sources"
+        ).fetchone()[0]
+        return source + batches + skipped
 
     def begin(self, generation: int, session: str | None):
         with self._lock, self._connect() as db:
@@ -117,6 +123,71 @@ class TrackingSpool:
                     frame.jpeg_bytes,
                 ),
             )
+
+    def skip(self, generation, sequences, reason, *, request_id=None):
+        """Atomically retire only sources proven never sent to the worker.
+
+        Source metadata survives for audit; only this private SAM JPEG copy is
+        released. A prepared batch must be retired whole, with its hash intact.
+        """
+        if reason not in {"superseded", "expired"} or not sequences:
+            raise ValueError("invalid SAM skip decision")
+        sequences = tuple(sequences)
+        if len(set(sequences)) != len(sequences):
+            raise ValueError("duplicate SAM skip sequence")
+        with self._lock, self._connect() as db:
+            if request_id is not None:
+                batch = db.execute(
+                    "SELECT generation,state FROM batches WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+                members = db.execute(
+                    "SELECT sequence FROM sources WHERE batch_id=?",
+                    (request_id,),
+                ).fetchall()
+                if (batch != (generation, "prepared")
+                        or {r[0] for r in members} != set(sequences)):
+                    raise RuntimeError("cannot skip sent or partial SAM batch")
+            for sequence in sequences:
+                row = db.execute(
+                    "SELECT batch_id,jpeg IS NOT NULL FROM sources "
+                    "WHERE generation=? AND sequence=?",
+                    (generation, sequence),
+                ).fetchone()
+                if row != (request_id, 1):
+                    raise RuntimeError("cannot skip unavailable or assigned source")
+            # Releasing JPEG space exceeds the fixed-size audit row cost.
+            # Still check the bound so tiny test frames cannot bypass quota.
+            released = sum(db.execute(
+                "SELECT LENGTH(jpeg) FROM sources WHERE generation=? AND sequence=?",
+                (generation, sequence),
+            ).fetchone()[0] for sequence in sequences)
+            if self._usage(db) - released + 128 * len(sequences) > self.max_bytes:
+                raise TrackingSpoolFull("SAM skip journal capacity exhausted")
+            db.executemany(
+                "INSERT INTO skipped_sources VALUES (?,?,?)",
+                [(generation, sequence, reason) for sequence in sequences],
+            )
+            db.executemany(
+                "UPDATE sources SET jpeg=NULL WHERE generation=? AND sequence=?",
+                [(generation, sequence) for sequence in sequences],
+            )
+            if request_id is not None:
+                db.execute(
+                    "UPDATE batches SET state='abandoned',payload=NULL "
+                    "WHERE request_id=?", (request_id,),
+                )
+
+    def skipped_records(self):
+        """Private audit with original source identity, never image bytes."""
+        with self._lock, self._connect() as db:
+            db.row_factory = sqlite3.Row
+            return [dict(row) for row in db.execute(
+                "SELECT s.generation,s.session,s.sequence,s.timestamp,s.received,"
+                "s.batch_id,k.reason FROM sources s JOIN skipped_sources k "
+                "ON s.generation=k.generation AND s.sequence=k.sequence "
+                "ORDER BY s.generation,s.sequence"
+            )]
 
     def load(self, generation, sequences):
         with self._lock, self._connect() as db:

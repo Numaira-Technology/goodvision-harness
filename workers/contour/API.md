@@ -89,3 +89,33 @@ JPEG 单张最多 8 MiB，整个 JSON 最多 32 MiB。图像及会话其他限�
 | 504 | 请求超时，操作结果可能不确定 |
 
 框架模式下创建会话返回 `model_not_installed`，不会伪造空检测或推理成功。
+
+
+## GPU memory telemetry
+
+`GET /api/gpu-memory` uses the same Bearer key as the session API.
+It reports the inference process's PyTorch allocator, not a separate probe process.
+Existing session and health response schemas are unchanged.
+
+- `available`: whether CUDA memory accounting is available. When false, `reason`
+  is `cuda_not_initialized` or `telemetry_unavailable`; byte counters are null.
+- `allocated_bytes`: live PyTorch tensors, including model and session tensors.
+- `reserved_bytes`: memory managed by this process's PyTorch allocator.
+- `unused_reserved_bytes`: `max(0, reserved_bytes - allocated_bytes)`; some blocks
+  may not be independently releasable while tensors still occupy the same segment.
+- `peak_allocated_bytes`: peak live tensor memory since process startup.
+- `device_free_bytes`, `device_total_bytes`: device-level CUDA accounting, which
+  also reflects allocations outside this process and outside PyTorch.
+- `reclaim_pending`, `reclaim_count`, `last_reclaim` (`time`, `released_bytes`),
+  `error_code`: automatic idle-cache reclamation state. Times are Unix seconds;
+  `released_bytes` is the observed decrease in allocator reservation.
+
+Warmup finishes with cache reclamation. Session deletion, final append, failure,
+expiry and cancellation schedule another reclamation. The five-second maintenance
+loop acquires the same GPU admission slot used for inference, retires expired or
+cancelled state, and only reclaims when every registered session is idle. Pending
+reclamation waits while another lane is active or a worker still owns admission.
+It does not unload the resident model and cannot promise zero device usage.
+
+Windows installations can use the small offline code update described in
+[CODE_UPDATE.md](CODE_UPDATE.md), preserving model weights and installed dependencies.

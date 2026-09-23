@@ -132,7 +132,7 @@ python example_client.py --url http://GPU_SERVER_PRIVATE_IP:8093 --key-file /pri
 主程序源码已提供 Contour 客户端，支持节点认证、视频会话、轮廓和人物追踪结果。
 部署包含此修改的主程序版本后，在部署设置中选择人物追踪“独立 GPU 服务器”、
 节点类型“GoodVision Contour”，填写节点地址、实际部署容量和节点访问密钥。
-详见 [主程序接入说明](../../docs/modular-services.md#连接-goodvision-contour-节点)。
+详见 [主程序接入说明](../../docs/guides/modular-services.md#连接-goodvision-contour-节点)。
 节点控制台的“登录节点控制台”只用于当前浏览器访问节点管理功能；
 主程序需要单独保存地址和密钥。已有内部推理协议由 `engine_adapter.py` 适配。
 通过 `CONTOUR_CAPACITY=2` 可启用两个独立视频通道；控制台和引擎必须使用同一个值。

@@ -184,7 +184,7 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     ) == (
         1,
         0.1,
-        4,
+        2,
     )
     assert result["startup_frames"] == 1 and result["max_append_frames"] == 4
     assert result["requested_batch_frames"] == 16

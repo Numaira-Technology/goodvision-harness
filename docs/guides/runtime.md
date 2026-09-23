@@ -110,8 +110,8 @@ The configured delay stays unchanged. Status reports `publish_lag_seconds`
 for time spent beyond that configured delay, including rendering. The
 `/v1/video/live/*` endpoints remain the unannotated, near-live diagnostic feed.
 
-See the [display validation record](../validation/display-cadence-20260910.md)
-for measured cadence and regression coverage, and the
+See the [网络与显示验证](../validation/network-and-display.md)
+for current evidence and remaining acceptance gaps, and the
 [API contract](../../API_DELIVERY.md#视频与精确证据帧) for receiver integration.
 
 ## Optional rich video labels
@@ -335,10 +335,10 @@ depend on the upstream provider.
 
 The experimental configuration retains an 8-second request deadline and a
 10-second display buffer. These bound waiting and align video, not improve
-inference. The [VLM evaluation report](../validation/vlm-evaluation.md) records
-the September 6–10 latency, recall, caching and model comparisons. Those tests
-did not establish accurate, reliable full-frame annotation within the target;
-provider availability and later source changes need their own verification.
+inference. The [识别质量与局限](../validation/recognition-quality.md) records
+the retained model-output evidence and quality limitations. Earlier tests did
+not establish accurate, reliable full-frame annotation within the target;
+current providers and configurations need their own verification.
 
 Use `tools/vlm_speed_matrix.py` for VLM measurements with an explicit local
 `--cases` JSON file and authorized input images. It compares model/provider

@@ -1,0 +1,224 @@
+{
+  "schema_version": "offline-video-annotation-1",
+  "video": "sample_video.mp4",
+  "duration_seconds": 55.798021,
+  "sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "annotation_date": "2026-09-21",
+  "annotator": "Codex visual review",
+  "time_reference": "video presentation time, seconds from file start",
+  "boundary_tolerance_seconds": 0.5,
+  "review_method": {
+    "full_video_sample_interval_seconds": 0.5,
+    "fight_and_fall_sample_interval_seconds": 0.2,
+    "native_resolution_review": true,
+    "frame_exact": false
+  },
+  "default_sensitivities": {
+    "fight": "standard",
+    "smoking": "high",
+    "fall": "standard",
+    "weapon": "standard"
+  },
+  "subjects": [
+    {
+      "subject_id": "P1",
+      "description": "前景白色短袖、深色长裤、白鞋人物；不推断登记身份。"
+    }
+  ],
+  "annotations": [
+    {
+      "annotation_id": "A01",
+      "subject_id": "P1",
+      "event_label": "smoking",
+      "start_seconds": 0.0,
+      "end_seconds": 5.5,
+      "start_time": "00:00.0",
+      "end_time": "00:05.5",
+      "left_censored": true,
+      "visual_status": "suspected_action_item_unconfirmed",
+      "expected_detected": {
+        "high": true,
+        "standard": false
+      },
+      "confirmed_real_world_event": null,
+      "evidence": "手及黑黄小物件靠近嘴部，随后放下，呈类似吸烟动作；物件无法确定为烟具，未确认烟雾。",
+      "evaluation_note": "高敏感策略阳性；标准模式证据不足。不作为确认吸烟的事实阳性。"
+    },
+    {
+      "annotation_id": "A02",
+      "subject_id": "P1",
+      "event_label": "fight",
+      "start_seconds": 7.3,
+      "end_seconds": 10.5,
+      "start_time": "00:07.3",
+      "end_time": "00:10.5",
+      "visual_status": "visible_punching_attack_posture",
+      "expected_detected": {
+        "high": true,
+        "standard": true
+      },
+      "evidence": "举拳、连续交替前挥拳、前跨和转体；无可见受击者。",
+      "evaluation_note": "按项目攻击姿态规则为阳性，可能是单人演示，不能声称发生两人互殴。连续多拳计一次。",
+      "keyframe_seconds": [
+        7.525,
+        8.3,
+        9.292,
+        10.017
+      ]
+    },
+    {
+      "annotation_id": "A03",
+      "subject_id": "P1",
+      "event_label": "fall",
+      "start_seconds": 12.0,
+      "end_seconds": 12.8,
+      "start_time": "00:12.0",
+      "end_time": "00:12.8",
+      "visual_status": "visible_lateral_descent_to_floor",
+      "expected_detected": {
+        "high": true,
+        "standard": true
+      },
+      "evidence": "由站立向侧下方下降，腿部支撑改变，手撑地后侧坐地面；可能为演示。",
+      "keyframe_seconds": [
+        12.25,
+        12.433,
+        12.617,
+        12.833
+      ],
+      "context_window": {
+        "start_seconds": 12.0,
+        "end_seconds": 15.2
+      },
+      "phases": [
+        {
+          "start_seconds": 12.0,
+          "end_seconds": 12.8,
+          "phase": "descent"
+        },
+        {
+          "start_seconds": 12.8,
+          "end_seconds": 13.8,
+          "phase": "post_fall_on_floor"
+        },
+        {
+          "start_seconds": 13.8,
+          "end_seconds": 15.2,
+          "phase": "recovery"
+        }
+      ],
+      "evaluation_note": "动作窗口用于逐帧评价；落地与恢复为同一事件上下文，不是新的跌倒。"
+    }
+  ],
+  "negative_segments": [
+    {
+      "start_seconds": 5.5,
+      "end_seconds": 7.3,
+      "event_labels": [
+        "fight",
+        "smoking",
+        "fall",
+        "weapon"
+      ],
+      "evidence": "放下手和调整站姿；小物件身份仍不明。"
+    },
+    {
+      "start_seconds": 10.5,
+      "end_seconds": 12.0,
+      "event_labels": [
+        "fight",
+        "smoking",
+        "fall",
+        "weapon"
+      ],
+      "evidence": "挥拳结束，站立及轻微前倾。"
+    },
+    {
+      "start_seconds": 15.2,
+      "end_seconds": 22.0,
+      "event_labels": [
+        "fight",
+        "smoking",
+        "fall",
+        "weapon"
+      ],
+      "evidence": "正常走动。"
+    },
+    {
+      "start_seconds": 22.0,
+      "end_seconds": 23.5,
+      "event_labels": [
+        "fight",
+        "smoking",
+        "fall",
+        "weapon"
+      ],
+      "evidence": "主动弯腰放下长条物品，不是跌倒或武器攻击。"
+    },
+    {
+      "start_seconds": 23.5,
+      "end_seconds": 47.5,
+      "event_labels": [
+        "fight",
+        "smoking",
+        "fall",
+        "weapon"
+      ],
+      "evidence": "前景人物离开，背景办公与起身。"
+    },
+    {
+      "start_seconds": 47.5,
+      "end_seconds": 51.0,
+      "event_labels": [
+        "fight",
+        "smoking",
+        "fall",
+        "weapon"
+      ],
+      "evidence": "返回并向地面放下或丢下物品。"
+    },
+    {
+      "start_seconds": 51.0,
+      "end_seconds": 53.2,
+      "event_labels": [
+        "fight",
+        "smoking",
+        "fall",
+        "weapon"
+      ],
+      "evidence": "支撑稳定地弯腰屈膝调整物品，再起身。"
+    },
+    {
+      "start_seconds": 53.2,
+      "end_seconds": 55.798021,
+      "event_labels": [
+        "fight",
+        "smoking",
+        "fall",
+        "weapon"
+      ],
+      "evidence": "走向后方。"
+    }
+  ],
+  "global_label_assessment": {
+    "weapon": "未观察到足够可见武器证据；普通搬放物品不标武器。"
+  },
+  "evaluation": {
+    "interval_convention": "[start_seconds, end_seconds)",
+    "default_policy_expected_episode_counts": {
+      "smoking": 1,
+      "fight": 1,
+      "fall": 1,
+      "weapon": 0
+    },
+    "all_standard_expected_episode_counts": {
+      "smoking": 0,
+      "fight": 1,
+      "fall": 1,
+      "weapon": 0
+    },
+    "smoking_fact_ground_truth": "unresolved",
+    "identity_events": "not_evaluated",
+    "unlisted_time_note": "按抽帧审阅未见其他目标事件；边界有容差，倒地上下文不能作为新的动作阴性误罚。"
+  }
+}

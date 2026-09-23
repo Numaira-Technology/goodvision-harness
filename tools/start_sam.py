@@ -1,4 +1,4 @@
-"""Manage one remote SAM GPU and SSH tunnel for the Compose sam-remote service."""
+"""Manage a remote SAM GPU pool and SSH tunnel for the Compose controller."""
 
 from __future__ import annotations
 
@@ -18,6 +18,14 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
+if __package__:
+    from .cloud_gpu_settings import CloudGPUSettings
+else:
+    try:
+        from cloud_gpu_settings import CloudGPUSettings
+    except ModuleNotFoundError:
+        from tools.cloud_gpu_settings import CloudGPUSettings
+
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = "/workspace/goodvision-sam"
 IMAGE = "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04"
@@ -32,7 +40,7 @@ chmod 600 /root/.ssh/authorized_keys
 """
 WORKER_FILES = (
     "app.py", "sam31.py", "continuous.py", "streaming_state.py",
-    "perception_routes.py", "sam_live.py", "multistream.py",
+    "perception_routes.py", "sam_live.py", "multistream.py", "gpu_memory.py", "cloud_pool.py",
     "h264_transport.py", "requirements.txt",
 )
 WORKER_ROUTES = ("sam_live",)
@@ -391,7 +399,9 @@ def release_instance(vast, instance_id: int) -> None:
     print(f"Released instance: {instance_id}", flush=True)
 
 
-def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str, sam_port: int):
+def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
+                 sam_port: int, settings: CloudGPUSettings | None = None):
+    settings = settings or CloudGPUSettings()
     print("Waiting for SSH...", flush=True)
     host, ssh_port = wait_for_ssh(vast, instance_id, options)
     ssh = ["ssh", *options, "-p", str(ssh_port), f"root@{host}"]
@@ -413,13 +423,15 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str, s
     run([
         *ssh, f"HF_HUB_OFFLINE=0 {REMOTE}/env/bin/python -c {shlex.quote(download)}",
     ], input=hf_token, timeout=30 * 60)
+    environment = dict(WORKER_ENV, SAM_GPU_COUNT=str(settings.gpu_count),
+                       SAM31_LIVE_CAMERAS=str(settings.streams))
     worker_environment = " ".join(
-        f"{name}={shlex.quote(value)}" for name, value in WORKER_ENV.items()
+        f"{name}={shlex.quote(value)}" for name, value in environment.items()
     )
     worker_command = (
         f"cd {REMOTE}/worker && exec env "
         f"{worker_environment} "
-        f"{REMOTE}/env/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8092 --workers 1"
+        f"{REMOTE}/env/bin/python -m uvicorn cloud_pool:app --host 127.0.0.1 --port 8092 --workers 1"
     )
     print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
     return subprocess.Popen([
@@ -433,7 +445,11 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str, s
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ssh-key", type=Path, help="SSH private key; defaults to SAM_SSH_KEY.")
-    parser.add_argument("--disk-gb", type=int, default=os.environ.get("SAM_DISK_GB", "50"), help="Rented disk size; defaults to SAM_DISK_GB or 50 GB.")
+    parser.add_argument("--disk-gb", type=int, help="Rented disk size; defaults to SAM_DISK_GB or 50 GB.")
+    parser.add_argument("--gpu-name", help="Marketplace GPU name, or A100 for the A100 family.")
+    parser.add_argument("--gpu-count", type=int, help="Exact rented GPU count; defaults to SAM_GPU_COUNT or 1.")
+    parser.add_argument("--streams", type=int, help="Video lanes; defaults to SAM31_LIVE_CAMERAS or 1, without a product cap.")
+    parser.add_argument("--status-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--sam-port", type=int, default=8092, help="SSH forwarding port inside the controller (default: 8092).")
     parser.add_argument(
         "--resume-instance-id", type=int,
@@ -451,6 +467,16 @@ def main() -> int:
     ssh_directory = None
     exit_code = 1
     label = f"goodvision-sam-{uuid4().hex[:12]}"
+    cleanup_confirmed = True
+    failure = None
+
+    def report(state, *, clean=False):
+        if args.status_file is not None:
+            temporary = args.status_file.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"state": state, "cleanup_confirmed": clean,
+                                            "instance_id": instance_id, "label": label,
+                                            "error": failure}), encoding="utf-8")
+            temporary.replace(args.status_file)
 
     def interrupt(_signum, _frame):
         raise KeyboardInterrupt
@@ -468,7 +494,11 @@ def main() -> int:
                 "Missing controller dependencies; rebuild the sam-remote image with Docker Compose."
             ) from error
         load_dotenv(ROOT / ".env", override=False)
-        gpu_name = os.environ.get("SAM_GPU_NAME", "").strip().replace(" ", "_") or "RTX_4090"
+        defaults = CloudGPUSettings.from_environment().public()
+        settings = CloudGPUSettings(**{name: getattr(args, name) if getattr(args, name) is not None
+                                      else value for name, value in defaults.items()})
+        args.disk_gb = settings.disk_gb
+        gpu_name = settings.gpu_name
         for program in ("ssh", "scp", "ssh-keygen"):
             if shutil.which(program) is None:
                 raise RuntimeError(f"Required command is not on PATH: {program}")
@@ -497,22 +527,21 @@ def main() -> int:
             ):
                 raise RuntimeError("Resume requires an existing running GoodVision SAM instance.")
             instance_id = args.resume_instance_id
+            cleanup_confirmed = False
+            report("starting")
             print(f"Recovering existing instance: {instance_id}; no new rental.", flush=True)
         else:
             print(
-                f"Searching for one on-demand {gpu_name} "
+                f"Searching for {settings.gpu_count} on-demand {gpu_name} GPUs "
                 "(CUDA >= 12.6; mainland China excluded)...", flush=True,
             )
             offers = vast.search_offers(
-                query=(
-                    f"gpu_name={gpu_name} num_gpus=1 rentable=true direct_port_count>=1 "
-                    f"cuda_max_good>=12.6 disk_space>={args.disk_gb} geolocation!=CN"
-                ),
+                query=settings.query(),
                 type="on-demand", order="dph_total", storage=float(args.disk_gb), limit=10,
             )
             if not offers:
                 raise RuntimeError(
-                    f"No eligible {gpu_name} offer outside mainland China is available. "
+                    f"No eligible {settings.gpu_count} x {gpu_name} offer outside mainland China is available. "
                     "No instance was created."
                 )
         options = [
@@ -524,6 +553,8 @@ def main() -> int:
         while True:
             if instance_id is None:
                 creation_attempted = True
+                cleanup_confirmed = False
+                report("starting")
                 try:
                     instance_id = create_from_offers(
                         vast, offers, disk_gb=args.disk_gb, label=label,
@@ -531,11 +562,14 @@ def main() -> int:
                     )
                 except CreationRejected:
                     creation_attempted = False
+                    cleanup_confirmed = True
                     raise
                 print(f"Created instance: {instance_id}", flush=True)
+                report("starting")
             try:
                 worker = start_worker(
                     vast, instance_id, options, hf_token=hf_token, sam_port=args.sam_port,
+                    settings=settings,
                 )
                 wait_for_worker(worker, args.sam_port)
             except Exception as error:
@@ -551,11 +585,13 @@ def main() -> int:
                 stop_process(worker)
                 worker = None
                 release_instance(vast, instance_id)
+                cleanup_confirmed = True
                 instance_id = None
                 creation_attempted = False
                 label = f"goodvision-sam-{uuid4().hex[:12]}"
                 continue
             break
+        report("ready")
         print(
             "SAM is ready: sam_live passed its GPU health check.\n"
             f"Perception routes: http://sam-remote:{args.sam_port}/v1/perception/routes\n"
@@ -568,6 +604,7 @@ def main() -> int:
         print("\nStopping SAM session...", flush=True)
         exit_code = 130
     except Exception as error:
+        failure = creation_diagnostic({"message": str(error)})
         print(f"Start failed: {error}", file=sys.stderr, flush=True)
     finally:
         # A second Ctrl+C must not interrupt the short instance-release request.
@@ -601,6 +638,7 @@ def main() -> int:
         if instance_id is not None:
             try:
                 release_instance(vast, instance_id)
+                cleanup_confirmed = True
             except Exception as error:
                 exit_code = 1
                 print(
@@ -612,6 +650,7 @@ def main() -> int:
             ssh_directory.cleanup()
         for item, handler in previous_handlers.items():
             signal.signal(item, handler)
+        report(("error" if failure else "stopped") if cleanup_confirmed else "cleanup_required", clean=cleanup_confirmed)
     return exit_code
 
 

@@ -1,0 +1,1718 @@
+{
+  "runs": {
+    "full-0": {
+      "mode": "full",
+      "requests": 53,
+      "states": {
+        "completed": 53
+      },
+      "final_analysis_state": "idle",
+      "final_scene_drain": {
+        "state": "completed"
+      },
+      "source_sent": 767,
+      "source_accepted": 767,
+      "general_stream_matches": 53,
+      "report_delay": {
+        "n": 53,
+        "median": 4.60674786567688,
+        "p95": 8.790194272994995,
+        "min": 3.6400163173675537,
+        "max": 9.620168209075928,
+        "mean": 5.070360867482312
+      },
+      "all_report_delay": {
+        "n": 53,
+        "median": 4.60674786567688,
+        "p95": 8.790194272994995,
+        "min": 3.6400163173675537,
+        "max": 9.620168209075928,
+        "mean": 5.070360867482312
+      },
+      "model_seconds": {
+        "n": 53,
+        "median": 3.4173812679946423,
+        "p95": 7.002161470998544,
+        "min": 2.5630632559987134,
+        "max": 7.157132951004314,
+        "mean": 3.651359114527674
+      },
+      "reorder_wait": {
+        "n": 53,
+        "median": 0.003261015997850336,
+        "p95": 0.040431271998386364,
+        "min": 0.0001777119978214614,
+        "max": 0.5985108230015612,
+        "mean": 0.022995103188907896
+      },
+      "published_to_received": {
+        "n": 53,
+        "median": 0.06748676300048828,
+        "p95": 0.21738171577453613,
+        "min": 0.010319948196411133,
+        "max": 0.5584976673126221,
+        "mean": 0.09111122365267772
+      },
+      "report_intervals": {
+        "n": 52,
+        "median": 0.8982080221176147,
+        "p95": 2.14267897605896,
+        "min": 0.003537416458129883,
+        "max": 2.519688606262207,
+        "mean": 0.9526356550363394
+      },
+      "source_window_gaps": {
+        "n": 52,
+        "median": 0.875,
+        "p95": 1.7999999999999972,
+        "min": 0.8249999999999957,
+        "max": 4.833333333333334,
+        "mean": 1.0443589743589745
+      },
+      "episodes": [
+        {
+          "label": "smoking",
+          "start": 0.0,
+          "end": 5.5,
+          "hit": true,
+          "first_source_pts": 0.9166666666666667,
+          "onset_to_receive": 10.557201147079468,
+          "newest_frame_to_receive": 9.620168209075928,
+          "left_censored": true
+        },
+        {
+          "label": "fight",
+          "start": 7.3,
+          "end": 10.5,
+          "hit": true,
+          "first_source_pts": 8.350000000000001,
+          "onset_to_receive": 7.564054679870606,
+          "newest_frame_to_receive": 6.503169059753418,
+          "left_censored": false
+        },
+        {
+          "label": "fall",
+          "start": 12.0,
+          "end": 15.2,
+          "hit": true,
+          "first_source_pts": 15.266666666666667,
+          "onset_to_receive": 6.9079976081848145,
+          "newest_frame_to_receive": 3.6400163173675537,
+          "left_censored": false
+        }
+      ],
+      "sam_batches": 71,
+      "sam_http": {
+        "n": 36,
+        "median": 0.960486399999354,
+        "p95": 2.5238134500032174,
+        "min": 0.6689232680000714,
+        "max": 2.8131805419980083,
+        "mean": 1.1573273656661816
+      },
+      "face_reports": 70,
+      "face_errors": {
+        "None": 70
+      },
+      "pairs": 0,
+      "pairs_same_evidence": 0,
+      "pair_information_lead": null,
+      "pairs_information_first": 0,
+      "clock": {
+        "round_trip_seconds": 0.0068759918212890625,
+        "remote_minus_midpoint_seconds": 0.0017592906951904297
+      },
+      "providers": {
+        "Alibaba": 53
+      },
+      "api_calls": 53,
+      "requested_models": {
+        "qwen/qwen3-vl-8b-instruct:nitro": 53
+      },
+      "actual_request_policy": {
+        "sort": "throughput",
+        "allow_fallbacks": true,
+        "ignore": [
+          "coreweave",
+          "novita"
+        ]
+      },
+      "api_cost": 0.018561075,
+      "clock_after": {
+        "round_trip_seconds": 0.005430698394775391,
+        "remote_minus_midpoint_seconds": 8.916854858398438e-05
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 53,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 56,
+        "source_samples": 129,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 7,
+        "retained_bytes": 505836,
+        "claimed_requests": 53,
+        "combined_last_result": {
+          "frame_sequence": 2747,
+          "state": "completed",
+          "seconds": 3.1551915450036176
+        },
+        "ungrounded_verdicts": 160,
+        "unlocalized_reports": 42,
+        "last_result_at": "2026-09-22T08:41:09.232005+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.1551915450036176,
+        "last_success_at": "2026-09-22T08:41:09.232005+00:00",
+        "admitted_samples": 129,
+        "published_reports": 53,
+        "stream_session_id": "0ab54808-045b-43ad-8184-8341916eedce",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 10.431485328997951,
+        "last_result_age_seconds": 7.751997697996558,
+        "last_success_age_seconds": 7.751998398001888,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "full",
+        "paired_admission": false,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "positives": [
+        {
+          "pts": 0.9166666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 1.7916666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 2.6833333333333336,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 3.516666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 8.350000000000001,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 9.225000000000001,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 10.100000000000001,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 10.958333333333334,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 15.266666666666667,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 26.525000000000002,
+          "labels": [
+            "fall"
+          ]
+        }
+      ]
+    },
+    "full-1": {
+      "mode": "full",
+      "requests": 55,
+      "states": {
+        "completed": 55
+      },
+      "final_analysis_state": "error",
+      "final_scene_drain": {
+        "state": "failed"
+      },
+      "source_sent": 767,
+      "source_accepted": 767,
+      "general_stream_matches": 55,
+      "report_delay": {
+        "n": 55,
+        "median": 4.061289548873901,
+        "p95": 7.456802129745483,
+        "min": 2.9425830841064453,
+        "max": 7.972485065460205,
+        "mean": 4.43313705704429
+      },
+      "all_report_delay": {
+        "n": 55,
+        "median": 4.061289548873901,
+        "p95": 7.456802129745483,
+        "min": 2.9425830841064453,
+        "max": 7.972485065460205,
+        "mean": 4.43313705704429
+      },
+      "model_seconds": {
+        "n": 55,
+        "median": 3.3250028859984013,
+        "p95": 6.3574108259999775,
+        "min": 2.62321615700057,
+        "max": 7.102870353999606,
+        "mean": 3.5864492338363725
+      },
+      "reorder_wait": {
+        "n": 55,
+        "median": 0.003976338004576974,
+        "p95": 0.016038242007198278,
+        "min": 0.000178410999069456,
+        "max": 1.4701167289967998,
+        "mean": 0.032572714327464135
+      },
+      "published_to_received": {
+        "n": 55,
+        "median": 0.050871849060058594,
+        "p95": 0.1466693878173828,
+        "min": 0.010896444320678711,
+        "max": 0.17928338050842285,
+        "mean": 0.06493169611150568
+      },
+      "report_intervals": {
+        "n": 54,
+        "median": 0.928457498550415,
+        "p95": 1.9430768489837646,
+        "min": 0.002479076385498047,
+        "max": 2.692570924758911,
+        "mean": 0.9222555955251058
+      },
+      "source_window_gaps": {
+        "n": 54,
+        "median": 0.875,
+        "p95": 2.1916666666666664,
+        "min": 0.8000000000000007,
+        "max": 2.6166666666666667,
+        "mean": 1.0137037037037038
+      },
+      "episodes": [
+        {
+          "label": "smoking",
+          "start": 0.0,
+          "end": 5.5,
+          "hit": true,
+          "first_source_pts": 0.9166666666666667,
+          "onset_to_receive": 8.900117874145508,
+          "newest_frame_to_receive": 7.972485065460205,
+          "left_censored": true
+        },
+        {
+          "label": "fight",
+          "start": 7.3,
+          "end": 10.5,
+          "hit": true,
+          "first_source_pts": 7.916666666666667,
+          "onset_to_receive": 7.327840995788574,
+          "newest_frame_to_receive": 6.692082643508911,
+          "left_censored": false
+        },
+        {
+          "label": "fall",
+          "start": 12.0,
+          "end": 15.2,
+          "hit": true,
+          "first_source_pts": 12.291666666666668,
+          "onset_to_receive": 4.689588308334351,
+          "newest_frame_to_receive": 4.38692831993103,
+          "left_censored": false
+        }
+      ],
+      "sam_batches": 0,
+      "sam_http": null,
+      "face_reports": 70,
+      "face_errors": {
+        "None": 70
+      },
+      "pairs": 0,
+      "pairs_same_evidence": 0,
+      "pair_information_lead": null,
+      "pairs_information_first": 0,
+      "clock": {
+        "round_trip_seconds": 0.006039857864379883,
+        "remote_minus_midpoint_seconds": 0.0012004375457763672
+      },
+      "providers": {
+        "Alibaba": 55
+      },
+      "api_calls": 55,
+      "requested_models": {
+        "qwen/qwen3-vl-8b-instruct:nitro": 55
+      },
+      "actual_request_policy": {
+        "sort": "throughput",
+        "allow_fallbacks": true,
+        "ignore": [
+          "coreweave",
+          "novita"
+        ]
+      },
+      "api_cost": 0.019247033,
+      "clock_after": {
+        "round_trip_seconds": 0.008551359176635742,
+        "remote_minus_midpoint_seconds": 0.0013890266418457031
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 55,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 30,
+        "source_samples": 129,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 7,
+        "retained_bytes": 505836,
+        "claimed_requests": 55,
+        "combined_last_result": {
+          "frame_sequence": 2767,
+          "state": "completed",
+          "seconds": 2.9888287619978655
+        },
+        "ungrounded_verdicts": 144,
+        "unlocalized_reports": 39,
+        "last_result_at": "2026-09-22T08:47:29.896440+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 2.9888287619978655,
+        "last_success_at": "2026-09-22T08:47:29.896440+00:00",
+        "admitted_samples": 129,
+        "published_reports": 55,
+        "stream_session_id": "335ce047-7c75-40e7-87bc-b9fbc70846ec",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 209.85487439199642,
+        "last_result_age_seconds": 206.86604952999915,
+        "last_success_age_seconds": 206.8660501300037,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "full",
+        "paired_admission": false,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "positives": [
+        {
+          "pts": 0.9166666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 1.7916666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 2.6833333333333336,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 3.516666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 7.916666666666667,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 8.783333333333333,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 10.100000000000001,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 12.291666666666668,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 13.583333333333334,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 14.383333333333335,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 15.266666666666667,
+          "labels": [
+            "fall"
+          ]
+        }
+      ]
+    },
+    "full-2": {
+      "mode": "full",
+      "requests": 54,
+      "states": {
+        "completed": 54
+      },
+      "final_analysis_state": "idle",
+      "final_scene_drain": {
+        "state": "completed"
+      },
+      "source_sent": 767,
+      "source_accepted": 767,
+      "general_stream_matches": 54,
+      "report_delay": {
+        "n": 54,
+        "median": 3.5187478065490723,
+        "p95": 7.239526748657227,
+        "min": 2.505557060241699,
+        "max": 8.539292573928833,
+        "mean": 3.930390954017639
+      },
+      "all_report_delay": {
+        "n": 54,
+        "median": 3.5187478065490723,
+        "p95": 7.239526748657227,
+        "min": 2.505557060241699,
+        "max": 8.539292573928833,
+        "mean": 3.930390954017639
+      },
+      "model_seconds": {
+        "n": 54,
+        "median": 3.1552403249988856,
+        "p95": 6.438397709993296,
+        "min": 2.394117047995678,
+        "max": 6.493808285995328,
+        "mean": 3.4268082511111126
+      },
+      "reorder_wait": {
+        "n": 54,
+        "median": 0.004161968499829527,
+        "p95": 0.1088163309977972,
+        "min": 0.00018280700169270858,
+        "max": 1.1213333719933871,
+        "mean": 0.03981687792582778
+      },
+      "published_to_received": {
+        "n": 54,
+        "median": 0.058553457260131836,
+        "p95": 0.13266754150390625,
+        "min": 0.00945281982421875,
+        "max": 0.23472070693969727,
+        "mean": 0.06216822288654469
+      },
+      "report_intervals": {
+        "n": 53,
+        "median": 0.7911839485168457,
+        "p95": 2.452625274658203,
+        "min": 0.0077555179595947266,
+        "max": 2.616081953048706,
+        "mean": 0.9491912778818382
+      },
+      "source_window_gaps": {
+        "n": 53,
+        "median": 0.8666666666666671,
+        "p95": 2.1816666666666684,
+        "min": 0.8333333333333321,
+        "max": 3.4833333333333334,
+        "mean": 1.0246540880503145
+      },
+      "episodes": [
+        {
+          "label": "smoking",
+          "start": 0.0,
+          "end": 5.5,
+          "hit": true,
+          "first_source_pts": 0.9166666666666667,
+          "onset_to_receive": 7.855670690536499,
+          "newest_frame_to_receive": 6.931335687637329,
+          "left_censored": true
+        },
+        {
+          "label": "fight",
+          "start": 7.3,
+          "end": 10.5,
+          "hit": true,
+          "first_source_pts": 7.916666666666667,
+          "onset_to_receive": 5.971121978759766,
+          "newest_frame_to_receive": 5.369304180145264,
+          "left_censored": false
+        },
+        {
+          "label": "fall",
+          "start": 12.0,
+          "end": 15.2,
+          "hit": true,
+          "first_source_pts": 12.291666666666668,
+          "onset_to_receive": 4.048314094543457,
+          "newest_frame_to_receive": 3.7743194103240967,
+          "left_censored": false
+        }
+      ],
+      "sam_batches": 49,
+      "sam_http": {
+        "n": 25,
+        "median": 1.9045344319965807,
+        "p95": 3.1366921640001237,
+        "min": 0.6418619739997666,
+        "max": 3.829873635993863,
+        "mean": 1.953650470720895
+      },
+      "face_reports": 70,
+      "face_errors": {
+        "None": 70
+      },
+      "pairs": 0,
+      "pairs_same_evidence": 0,
+      "pair_information_lead": null,
+      "pairs_information_first": 0,
+      "clock": {
+        "round_trip_seconds": 0.005475044250488281,
+        "remote_minus_midpoint_seconds": 0.00045037269592285156
+      },
+      "providers": {
+        "Alibaba": 54
+      },
+      "api_calls": 54,
+      "requested_models": {
+        "qwen/qwen3-vl-8b-instruct:nitro": 54
+      },
+      "actual_request_policy": {
+        "sort": "throughput",
+        "allow_fallbacks": true,
+        "ignore": [
+          "coreweave",
+          "novita"
+        ]
+      },
+      "api_cost": 0.018900024,
+      "clock_after": {
+        "round_trip_seconds": 0.006000518798828125,
+        "remote_minus_midpoint_seconds": 0.0006489753723144531
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 54,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 30,
+        "source_samples": 129,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 7,
+        "retained_bytes": 505836,
+        "claimed_requests": 54,
+        "combined_last_result": {
+          "frame_sequence": 2747,
+          "state": "completed",
+          "seconds": 2.840037156995095
+        },
+        "ungrounded_verdicts": 141,
+        "unlocalized_reports": 37,
+        "last_result_at": "2026-09-22T08:52:23.329178+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 2.840037156995095,
+        "last_success_at": "2026-09-22T08:52:23.329178+00:00",
+        "admitted_samples": 129,
+        "published_reports": 54,
+        "stream_session_id": "bbf03f9b-5312-4462-a687-6198f98d7428",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 12.061451593996026,
+        "last_result_age_seconds": 9.668575079005677,
+        "last_success_age_seconds": 9.668575979005254,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "full",
+        "paired_admission": false,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "positives": [
+        {
+          "pts": 0.9166666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 1.7916666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 2.6833333333333336,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 3.516666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 7.916666666666667,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 12.291666666666668,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 13.125,
+          "labels": [
+            "fall"
+          ]
+        }
+      ]
+    },
+    "parallel-0": {
+      "mode": "parallel",
+      "requests": 53,
+      "states": {
+        "completed": 53
+      },
+      "final_analysis_state": "idle",
+      "final_scene_drain": {
+        "state": "completed"
+      },
+      "source_sent": 767,
+      "source_accepted": 767,
+      "general_stream_matches": 53,
+      "report_delay": {
+        "n": 53,
+        "median": 6.181559801101685,
+        "p95": 7.320301055908203,
+        "min": 4.329040050506592,
+        "max": 7.535191059112549,
+        "mean": 6.153086270926134
+      },
+      "all_report_delay": {
+        "n": 53,
+        "median": 6.181559801101685,
+        "p95": 7.320301055908203,
+        "min": 4.329040050506592,
+        "max": 7.535191059112549,
+        "mean": 6.153086270926134
+      },
+      "model_seconds": {
+        "n": 53,
+        "median": 1.7641810299974168,
+        "p95": 4.961615658001392,
+        "min": 1.4259662120020948,
+        "max": 5.17180880199885,
+        "mean": 2.1490322873585272
+      },
+      "reorder_wait": {
+        "n": 53,
+        "median": 0.004576882995024789,
+        "p95": 0.14425683700392256,
+        "min": 0.0001585099962539971,
+        "max": 1.02467986800184,
+        "mean": 0.03626690611308045
+      },
+      "published_to_received": {
+        "n": 53,
+        "median": 0.05022096633911133,
+        "p95": 0.20029807090759277,
+        "min": 0.015375137329101562,
+        "max": 0.5443098545074463,
+        "mean": 0.07764321903012833
+      },
+      "report_intervals": {
+        "n": 52,
+        "median": 0.9781537055969238,
+        "p95": 2.392808675765991,
+        "min": 0.013047933578491211,
+        "max": 4.754344940185547,
+        "mean": 1.0447090772482066
+      },
+      "source_window_gaps": {
+        "n": 52,
+        "median": 0.8666666666666671,
+        "p95": 2.6166666666666667,
+        "min": 0.8333333333333335,
+        "max": 3.491666666666667,
+        "mean": 1.0526923076923078
+      },
+      "episodes": [
+        {
+          "label": "smoking",
+          "start": 0.0,
+          "end": 5.5,
+          "hit": true,
+          "first_source_pts": 1.7916666666666667,
+          "onset_to_receive": 7.6245927810668945,
+          "newest_frame_to_receive": 5.825162410736084,
+          "left_censored": true
+        },
+        {
+          "label": "fight",
+          "start": 7.3,
+          "end": 10.5,
+          "hit": true,
+          "first_source_pts": 9.658333333333333,
+          "onset_to_receive": 8.476561975479125,
+          "newest_frame_to_receive": 6.118960618972778,
+          "left_censored": false
+        },
+        {
+          "label": "fall",
+          "start": 12.0,
+          "end": 15.2,
+          "hit": true,
+          "first_source_pts": 13.583333333333334,
+          "onset_to_receive": 9.036118507385254,
+          "newest_frame_to_receive": 7.441357851028442,
+          "left_censored": false
+        }
+      ],
+      "sam_batches": 51,
+      "sam_http": {
+        "n": 26,
+        "median": 1.807457445000182,
+        "p95": 2.870965893001994,
+        "min": 0.35066542999993544,
+        "max": 4.404727204993833,
+        "mean": 1.8885408399230352
+      },
+      "face_reports": 70,
+      "face_errors": {
+        "None": 70
+      },
+      "pairs": 53,
+      "pairs_same_evidence": 53,
+      "pair_information_lead": {
+        "n": 53,
+        "median": 1.7818851470947266,
+        "p95": 2.4138081073760986,
+        "min": 0.9004268646240234,
+        "max": 2.868272066116333,
+        "mean": 1.7581094930756767
+      },
+      "pairs_information_first": 53,
+      "clock": {
+        "round_trip_seconds": 0.005939960479736328,
+        "remote_minus_midpoint_seconds": -0.0005502700805664062
+      },
+      "providers": {
+        "Alibaba": 106
+      },
+      "api_calls": 106,
+      "requested_models": {
+        "qwen/qwen3-vl-8b-instruct:nitro": 106
+      },
+      "actual_request_policy": {
+        "sort": "throughput",
+        "allow_fallbacks": true,
+        "ignore": [
+          "coreweave",
+          "novita"
+        ]
+      },
+      "api_cost": 0.029041844,
+      "clock_after": {
+        "round_trip_seconds": 0.005024433135986328,
+        "remote_minus_midpoint_seconds": -0.0001552104949951172
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 106,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": true,
+        "pid": 30,
+        "source_samples": 129,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 7,
+        "retained_bytes": 505836,
+        "claimed_requests": 106,
+        "information_last_result": {
+          "frame_sequence": 2767,
+          "state": "completed",
+          "seconds": 1.5752753729975666
+        },
+        "ungrounded_verdicts": 325,
+        "unlocalized_reports": 84,
+        "last_result_at": "2026-09-22T08:44:24.315927+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.6723781250038883,
+        "last_success_at": "2026-09-22T08:44:24.315927+00:00",
+        "grounding_last_result": {
+          "frame_sequence": 2767,
+          "state": "completed",
+          "seconds": 3.6723781250038883
+        },
+        "admitted_samples": 129,
+        "published_reports": 106,
+        "stream_session_id": "d0b84d61-c807-4296-936a-712ac17e22e2",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 7.773219258997415,
+        "last_result_age_seconds": 4.100842633997672,
+        "last_success_age_seconds": 4.100843233994965,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "parallel",
+        "paired_admission": true,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "positives": [
+        {
+          "pts": 1.7916666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 3.516666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 9.658333333333333,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 13.583333333333334,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 14.816666666666668,
+          "labels": [
+            "fall"
+          ]
+        }
+      ]
+    },
+    "parallel-1": {
+      "mode": "parallel",
+      "requests": 54,
+      "states": {
+        "completed": 54
+      },
+      "final_analysis_state": "idle",
+      "final_scene_drain": {
+        "state": "completed"
+      },
+      "source_sent": 767,
+      "source_accepted": 767,
+      "general_stream_matches": 54,
+      "report_delay": {
+        "n": 54,
+        "median": 4.612506747245789,
+        "p95": 6.215453624725342,
+        "min": 2.711049795150757,
+        "max": 6.506040096282959,
+        "mean": 4.6044515680383755
+      },
+      "all_report_delay": {
+        "n": 54,
+        "median": 4.612506747245789,
+        "p95": 6.215453624725342,
+        "min": 2.711049795150757,
+        "max": 6.506040096282959,
+        "mean": 4.6044515680383755
+      },
+      "model_seconds": {
+        "n": 54,
+        "median": 1.8494079180018161,
+        "p95": 4.819155306002358,
+        "min": 1.4256150190049084,
+        "max": 4.8992172310026945,
+        "mean": 2.0560046852222986
+      },
+      "reorder_wait": {
+        "n": 54,
+        "median": 0.0038346444962371606,
+        "p95": 0.009743342001456767,
+        "min": 0.00020731200493173674,
+        "max": 0.010529924998991191,
+        "mean": 0.004103197222085092
+      },
+      "published_to_received": {
+        "n": 54,
+        "median": 0.056882619857788086,
+        "p95": 0.18818044662475586,
+        "min": 0.013317108154296875,
+        "max": 0.4392356872558594,
+        "mean": 0.07779007929342764
+      },
+      "report_intervals": {
+        "n": 53,
+        "median": 0.9385449886322021,
+        "p95": 2.021392822265625,
+        "min": 0.0016560554504394531,
+        "max": 2.52512788772583,
+        "mean": 0.993572361064407
+      },
+      "source_window_gaps": {
+        "n": 53,
+        "median": 0.875,
+        "p95": 1.7999999999999972,
+        "min": 0.8333333333333286,
+        "max": 4.283333333333333,
+        "mean": 1.0246540880503145
+      },
+      "episodes": [
+        {
+          "label": "smoking",
+          "start": 0.0,
+          "end": 5.5,
+          "hit": true,
+          "first_source_pts": 1.7916666666666667,
+          "onset_to_receive": 7.1629414558410645,
+          "newest_frame_to_receive": 5.3794708251953125,
+          "left_censored": true
+        },
+        {
+          "label": "fight",
+          "start": 7.3,
+          "end": 10.5,
+          "hit": true,
+          "first_source_pts": 10.100000000000001,
+          "onset_to_receive": 7.715227317810059,
+          "newest_frame_to_receive": 4.916423082351685,
+          "left_censored": false
+        },
+        {
+          "label": "fall",
+          "start": 12.0,
+          "end": 15.2,
+          "hit": true,
+          "first_source_pts": 14.383333333333335,
+          "onset_to_receive": 5.42013955116272,
+          "newest_frame_to_receive": 3.039088487625122,
+          "left_censored": false
+        }
+      ],
+      "sam_batches": 53,
+      "sam_http": {
+        "n": 27,
+        "median": 1.7230435310048051,
+        "p95": 2.5870808209947427,
+        "min": 0.6764214659997378,
+        "max": 3.3770916409994243,
+        "mean": 1.748244839295997
+      },
+      "face_reports": 70,
+      "face_errors": {
+        "None": 70
+      },
+      "pairs": 54,
+      "pairs_same_evidence": 54,
+      "pair_information_lead": {
+        "n": 54,
+        "median": 1.7644726037979126,
+        "p95": 2.3031837940216064,
+        "min": 0.4160490036010742,
+        "max": 3.21793794631958,
+        "mean": 1.7339978482988145
+      },
+      "pairs_information_first": 54,
+      "clock": {
+        "round_trip_seconds": 0.0069658756256103516,
+        "remote_minus_midpoint_seconds": 0.0005059242248535156
+      },
+      "providers": {
+        "Alibaba": 108
+      },
+      "api_calls": 108,
+      "requested_models": {
+        "qwen/qwen3-vl-8b-instruct:nitro": 108
+      },
+      "actual_request_policy": {
+        "sort": "throughput",
+        "allow_fallbacks": true,
+        "ignore": [
+          "coreweave",
+          "novita"
+        ]
+      },
+      "api_cost": 0.029577405,
+      "clock_after": {
+        "round_trip_seconds": 0.0042150020599365234,
+        "remote_minus_midpoint_seconds": 0.0003771781921386719
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 108,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": true,
+        "pid": 30,
+        "source_samples": 129,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 7,
+        "retained_bytes": 505836,
+        "claimed_requests": 108,
+        "information_last_result": {
+          "frame_sequence": 2747,
+          "state": "completed",
+          "seconds": 1.5703010599972913
+        },
+        "ungrounded_verdicts": 332,
+        "unlocalized_reports": 85,
+        "last_result_at": "2026-09-22T08:45:56.727512+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.515692274995672,
+        "last_success_at": "2026-09-22T08:45:56.727512+00:00",
+        "grounding_last_result": {
+          "frame_sequence": 2747,
+          "state": "completed",
+          "seconds": 3.515692274995672
+        },
+        "incomplete_reports": 2,
+        "admitted_samples": 129,
+        "published_reports": 108,
+        "stream_session_id": "a3436b8f-b4d5-44e1-aba5-faef5dc6e240",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 8.889277221998782,
+        "last_result_age_seconds": 6.061602312001924,
+        "last_success_age_seconds": 6.061602812005731,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "parallel",
+        "paired_admission": true,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "positives": [
+        {
+          "pts": 1.7916666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 3.516666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 5.275,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 10.100000000000001,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 14.383333333333335,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 15.266666666666667,
+          "labels": [
+            "fall"
+          ]
+        }
+      ]
+    },
+    "parallel-2": {
+      "mode": "parallel",
+      "requests": 60,
+      "states": {
+        "completed": 60
+      },
+      "final_analysis_state": "idle",
+      "final_scene_drain": {
+        "state": "completed"
+      },
+      "source_sent": 767,
+      "source_accepted": 767,
+      "general_stream_matches": 60,
+      "report_delay": {
+        "n": 60,
+        "median": 11.763344287872314,
+        "p95": 16.284934282302856,
+        "min": 6.0703935623168945,
+        "max": 16.627248525619507,
+        "mean": 11.468208293120066
+      },
+      "all_report_delay": {
+        "n": 60,
+        "median": 11.763344287872314,
+        "p95": 16.284934282302856,
+        "min": 6.0703935623168945,
+        "max": 16.627248525619507,
+        "mean": 11.468208293120066
+      },
+      "model_seconds": {
+        "n": 60,
+        "median": 1.7380267904991342,
+        "p95": 4.859006902996043,
+        "min": 1.2792817430017749,
+        "max": 5.4583822959975805,
+        "mean": 1.957371064766509
+      },
+      "reorder_wait": {
+        "n": 60,
+        "median": 0.0036874500001431443,
+        "p95": 0.008414506002736744,
+        "min": 0.00019040999904973432,
+        "max": 0.013648596999701113,
+        "mean": 0.004101976350041999
+      },
+      "published_to_received": {
+        "n": 60,
+        "median": 0.05911719799041748,
+        "p95": 0.22352075576782227,
+        "min": 0.012792110443115234,
+        "max": 0.6561799049377441,
+        "mean": 0.08699385325113933
+      },
+      "report_intervals": {
+        "n": 59,
+        "median": 1.0372142791748047,
+        "p95": 2.133867025375366,
+        "min": 0.01963639259338379,
+        "max": 3.58878231048584,
+        "mean": 1.079908516447423
+      },
+      "source_window_gaps": {
+        "n": 59,
+        "median": 0.8666666666666671,
+        "p95": 1.2833333333333332,
+        "min": 0.8333333333333321,
+        "max": 3.049999999999999,
+        "mean": 0.9204519774011299
+      },
+      "episodes": [
+        {
+          "label": "smoking",
+          "start": 0.0,
+          "end": 5.5,
+          "hit": true,
+          "first_source_pts": 1.7916666666666667,
+          "onset_to_receive": 8.609840869903564,
+          "newest_frame_to_receive": 6.81695294380188,
+          "left_censored": true
+        },
+        {
+          "label": "fight",
+          "start": 7.3,
+          "end": 10.5,
+          "hit": true,
+          "first_source_pts": 8.350000000000001,
+          "onset_to_receive": 9.114030075073241,
+          "newest_frame_to_receive": 8.072241067886353,
+          "left_censored": false
+        },
+        {
+          "label": "fall",
+          "start": 12.0,
+          "end": 15.2,
+          "hit": true,
+          "first_source_pts": 12.291666666666668,
+          "onset_to_receive": 7.069233179092407,
+          "newest_frame_to_receive": 6.76754093170166,
+          "left_censored": false
+        }
+      ],
+      "sam_batches": 59,
+      "sam_http": {
+        "n": 30,
+        "median": 1.6143447659997037,
+        "p95": 2.936599558001035,
+        "min": 0.4453019200009294,
+        "max": 3.6311445869941963,
+        "mean": 1.764660083999479
+      },
+      "face_reports": 70,
+      "face_errors": {
+        "None": 70
+      },
+      "pairs": 60,
+      "pairs_same_evidence": 60,
+      "pair_information_lead": {
+        "n": 60,
+        "median": 1.531116008758545,
+        "p95": 2.0773940086364746,
+        "min": 0.6800129413604736,
+        "max": 2.261094808578491,
+        "mean": 1.4781185587247212
+      },
+      "pairs_information_first": 60,
+      "clock": {
+        "round_trip_seconds": 0.007216453552246094,
+        "remote_minus_midpoint_seconds": 0.0008323192596435547
+      },
+      "providers": {
+        "Alibaba": 120
+      },
+      "api_calls": 120,
+      "requested_models": {
+        "qwen/qwen3-vl-8b-instruct:nitro": 120
+      },
+      "actual_request_policy": {
+        "sort": "throughput",
+        "allow_fallbacks": true,
+        "ignore": [
+          "coreweave",
+          "novita"
+        ]
+      },
+      "api_cost": 0.032259188,
+      "clock_after": {
+        "round_trip_seconds": 0.008304595947265625,
+        "remote_minus_midpoint_seconds": -5.030632019042969e-05
+      },
+      "final_vlm": {
+        "state": "stopped",
+        "succeeded_requests": 120,
+        "failed_requests": 0,
+        "last_attempt_state": "completed",
+        "last_attempt_error": null,
+        "analysis_complete": true,
+        "localization_complete": false,
+        "pid": 30,
+        "source_samples": 129,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 7,
+        "retained_bytes": 505836,
+        "claimed_requests": 120,
+        "information_last_result": {
+          "frame_sequence": 2747,
+          "state": "completed",
+          "seconds": 1.5249343180039432
+        },
+        "ungrounded_verdicts": 394,
+        "unlocalized_reports": 102,
+        "last_result_at": "2026-09-22T08:54:14.129773+00:00",
+        "last_attempt_validation_reason": null,
+        "last_source_to_publish_seconds": 3.1084977320060716,
+        "last_success_at": "2026-09-22T08:54:14.129773+00:00",
+        "grounding_last_result": {
+          "frame_sequence": 2747,
+          "state": "completed",
+          "seconds": 3.1084977320060716
+        },
+        "admitted_samples": 129,
+        "published_reports": 120,
+        "stream_session_id": "83618464-be1f-4fc3-aa85-ccc0059908f8",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": 7.647401226000511,
+        "last_result_age_seconds": 5.334497662996,
+        "last_success_age_seconds": 5.334498062999046,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "parallel",
+        "paired_admission": true,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopped"
+      },
+      "positives": [
+        {
+          "pts": 1.7916666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 3.516666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 4.825,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 8.350000000000001,
+          "labels": [
+            "fight"
+          ]
+        },
+        {
+          "pts": 12.291666666666668,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 13.125,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 13.983333333333334,
+          "labels": [
+            "fall"
+          ]
+        },
+        {
+          "pts": 15.266666666666667,
+          "labels": [
+            "fall"
+          ]
+        }
+      ]
+    }
+  },
+  "aggregate": {
+    "full": {
+      "runs": 3,
+      "states": {
+        "completed": 162
+      },
+      "general_stream_matches": 162,
+      "api_calls": 162,
+      "api_cost": 0.056708132,
+      "metrics": {
+        "source_to_receive": {
+          "n": 162,
+          "median": 4.206014156341553,
+          "p95": 7.456802129745483,
+          "min": 2.505557060241699,
+          "max": 9.620168209075928,
+          "mean": 4.474029479203401
+        },
+        "before_branch_ingress": {
+          "n": 162,
+          "median": 0.5700991153717041,
+          "p95": 2.0278661251068115,
+          "min": 0.004971504211425781,
+          "max": 2.7444612979888916,
+          "mean": 0.719273015304848
+        },
+        "branch_ingress_to_receive": {
+          "n": 162,
+          "median": 3.4750373363494873,
+          "p95": 6.759857892990112,
+          "min": 2.486002206802368,
+          "max": 7.685964822769165,
+          "mean": 3.754756463898553
+        },
+        "source_to_request": {
+          "n": 162,
+          "median": 0.00846909199754009,
+          "p95": 0.3100022539947531,
+          "min": 0.0016448880051029846,
+          "max": 1.275303886999609,
+          "mean": 0.06408253101256343
+        },
+        "model_seconds": {
+          "n": 162,
+          "median": 3.3167531175022305,
+          "p95": 6.438397709993296,
+          "min": 2.394117047995678,
+          "max": 7.157132951004314,
+          "mean": 3.5544715215491807
+        },
+        "reorder_wait": {
+          "n": 162,
+          "median": 0.003912474003300304,
+          "p95": 0.040431271998386364,
+          "min": 0.0001777119978214614,
+          "max": 1.4701167289967998,
+          "mean": 0.03185401953714411
+        },
+        "post_model_to_publish": {
+          "n": 162,
+          "median": 0.0121268630027771,
+          "p95": 0.09871971800021129,
+          "min": 0.0005736370003432967,
+          "max": 0.6225130509992596,
+          "mean": 0.032057067901427844
+        },
+        "publish_to_receive": {
+          "n": 162,
+          "median": 0.058553457260131836,
+          "p95": 0.1724557876586914,
+          "min": 0.00945281982421875,
+          "max": 0.5584976673126221,
+          "mean": 0.0725754455283836
+        },
+        "shared_source_to_receive": {
+          "n": 162,
+          "median": 4.226055145263672,
+          "p95": 7.472798585891724,
+          "min": 2.5044634342193604,
+          "max": 9.640734195709229,
+          "mean": 4.485207485563961
+        }
+      },
+      "episodes": {
+        "smoking": {
+          "n": 3,
+          "median": 8.900117874145508,
+          "p95": 10.557201147079468,
+          "min": 7.855670690536499,
+          "max": 10.557201147079468,
+          "mean": 9.104329903920492
+        },
+        "fight": {
+          "n": 3,
+          "median": 7.327840995788574,
+          "p95": 7.564054679870606,
+          "min": 5.971121978759766,
+          "max": 7.564054679870606,
+          "mean": 6.954339218139649
+        },
+        "fall": {
+          "n": 3,
+          "median": 4.689588308334351,
+          "p95": 6.9079976081848145,
+          "min": 4.048314094543457,
+          "max": 6.9079976081848145,
+          "mean": 5.215300003687541
+        }
+      }
+    },
+    "parallel": {
+      "runs": 3,
+      "states": {
+        "completed": 167
+      },
+      "general_stream_matches": 167,
+      "api_calls": 334,
+      "api_cost": 0.090878437,
+      "metrics": {
+        "source_to_receive": {
+          "n": 167,
+          "median": 6.225203990936279,
+          "p95": 15.964675664901733,
+          "min": 2.711049795150757,
+          "max": 16.627248525619507,
+          "mean": 7.561954818085996
+        },
+        "before_branch_ingress": {
+          "n": 167,
+          "median": 4.026514291763306,
+          "p95": 14.344464302062988,
+          "min": 0.16299986839294434,
+          "max": 14.93354082107544,
+          "mean": 5.3197581168420305
+        },
+        "branch_ingress_to_receive": {
+          "n": 167,
+          "median": 1.9189820289611816,
+          "p95": 5.294520854949951,
+          "min": 1.3529672622680664,
+          "max": 5.873793601989746,
+          "mean": 2.242196701243966
+        },
+        "source_to_request": {
+          "n": 167,
+          "median": 0.011889877001522109,
+          "p95": 0.235611684001924,
+          "min": 0.0016309119964716956,
+          "max": 1.3252546599978814,
+          "mean": 0.054184561047663296
+        },
+        "model_seconds": {
+          "n": 167,
+          "median": 1.7476590290025342,
+          "p95": 4.86863789200288,
+          "min": 1.2792817430017749,
+          "max": 5.4583822959975805,
+          "mean": 2.050091186335309
+        },
+        "reorder_wait": {
+          "n": 167,
+          "median": 0.004117663993383758,
+          "p95": 0.009623170000850223,
+          "min": 0.0001585099962539971,
+          "max": 1.02467986800184,
+          "mean": 0.01431040272448131
+        },
+        "post_model_to_publish": {
+          "n": 167,
+          "median": 0.013341028003196698,
+          "p95": 0.2787867750012083,
+          "min": 0.0012779699973179959,
+          "max": 0.896170758001972,
+          "mean": 0.04273326099992445
+        },
+        "publish_to_receive": {
+          "n": 167,
+          "median": 0.05482029914855957,
+          "p95": 0.21359491348266602,
+          "min": 0.012792110443115234,
+          "max": 0.6561799049377441,
+          "mean": 0.08105021608089973
+        },
+        "shared_source_to_receive": {
+          "n": 167,
+          "median": 6.279699325561523,
+          "p95": 15.965775966644287,
+          "min": 2.7583253383636475,
+          "max": 16.668015003204346,
+          "mean": 7.571070960895744
+        }
+      },
+      "episodes": {
+        "smoking": {
+          "n": 3,
+          "median": 7.6245927810668945,
+          "p95": 8.609840869903564,
+          "min": 7.1629414558410645,
+          "max": 8.609840869903564,
+          "mean": 7.799125035603841
+        },
+        "fight": {
+          "n": 3,
+          "median": 8.476561975479125,
+          "p95": 9.114030075073241,
+          "min": 7.715227317810059,
+          "max": 9.114030075073241,
+          "mean": 8.435273122787475
+        },
+        "fall": {
+          "n": 3,
+          "median": 7.069233179092407,
+          "p95": 9.036118507385254,
+          "min": 5.42013955116272,
+          "max": 9.036118507385254,
+          "mean": 7.175163745880127
+        }
+      }
+    }
+  }
+}

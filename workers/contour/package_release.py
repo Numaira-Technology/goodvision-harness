@@ -36,6 +36,9 @@ CONTOUR_FILES = (
     "deploy_contour.ps1",
     "download_model.py",
     "package_release.py",
+    "package_update.py",
+    "update_contour.ps1",
+    "CODE_UPDATE.md",
     "export_images.py",
     "example_client.py",
     "benchmark_gpu.py",
@@ -58,6 +61,7 @@ ENGINE_FILES = (
     "perception_routes.py",
     "sam_live.py",
     "multistream.py",
+    "gpu_memory.py",
 )
 
 

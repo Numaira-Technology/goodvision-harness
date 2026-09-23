@@ -272,3 +272,37 @@ test("metadata geometry changes distinguish new or corrected 人员追踪模块 
   view.send(invalid);assert.equal(last().accepted,true);assert.equal(last().rejected,1);
   assert.equal(last().changed,false);assert.equal(last().geometry_changed,false);
 });
+
+
+test("expired source bitmaps retire without readback or transferring ownership to motion",()=>{
+  const view=worker(),forwarded=[],input=bitmapFrame(3,.2);
+  input.motion_deadline_epoch_ms=1;
+  view.send({type:"preprocess_output",port:{postMessage:message=>forwarded.push(message)}});
+  view.send(input);
+  assert.equal(input.frame.bitmap.closed,true);assert.equal(view.readbacks.length,0);
+  assert.equal(forwarded.length,0);
+  assert.equal(view.replies[0].type,"frame_processed");assert.equal(view.replies[0].sequence,3);
+  assert.equal(view.replies[0].expired,true);assert.equal(view.replies[0].accepted,false);
+});
+
+test("frames that expire after grayscale or WASM startup never enter motion history",async()=>{
+  const view=worker();view.send({type:"reset",config});
+  const expired=frame(0,0);expired.motion_deadline_epoch_ms=1;view.send(expired);
+  view.send({type:"present",id:0,sequence:0,timestamp:0});
+  await settle();view.ready();await settle();
+  const retired=view.replies.find(reply=>reply.type==="frame_processed");
+  assert.equal(retired.expired,true);assert.equal(retired.accepted,false);
+  assert.equal(view.replies.find(reply=>reply.type==="present").result.coverage,"missing_source");
+  view.send(frame(20,20/15));
+  const fresh=metadata();fresh.data.anchors[0].source_sequence=20;fresh.data.anchors[0].media_timestamp=20/15;
+  view.send(fresh);view.send({type:"present",id:20,sequence:20,timestamp:20/15});
+  assert.equal(view.replies.at(-1).result.subjects[0].target_sequence,20);
+});
+
+test("readback failures identify the exact frame admission to retire",()=>{
+  const view=worker({readbackFail:true}),input=bitmapFrame(7,.5);
+  view.send({type:"preprocess_output",port:{postMessage(){assert.fail("must not forward failed readback");}}});
+  view.send(input);
+  assert.equal(input.frame.bitmap.closed,true);
+  assert.equal(view.replies[0].request_type,"frame_bitmap");assert.equal(view.replies[0].sequence,7);
+});

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import math
 import os
 import re
 import subprocess
@@ -23,21 +24,33 @@ else:
     import start_local_gpu as local
 
 ROOT = Path(__file__).resolve().parents[1]
-SETTINGS = local.SETTINGS | {
-    "INFERENCE_EXECUTION_MODE",
-    "TRACKING_EXECUTION_MODE",
-    "INFERENCE_SERVER_URL",
-    "INFERENCE_SERVER_MODEL",
-    "TRACKING_SERVER_URL",
-    "TRACKING_SERVER_CAPACITY",
-    "TRACKING_SERVER_PROTOCOL",
-    "SAM_SERVER_GPU_ID",
-    "SAM_SERVER_BIND_ADDRESS",
-    "SAM_SERVER_PORT",
-    "VLM_SERVER_BIND_ADDRESS",
-    "VLM_SERVER_PORT",
-    "LOCAL_INFERENCE_GPU_ID",
+QUEUE_SETTINGS = {
+    "SAM31_QUEUE_POLICY",
+    "SAM31_REALTIME_APPEND_FRAMES",
+    "SAM31_REALTIME_PENDING_FRAMES",
+    "SAM31_REALTIME_MAX_AGE_SECONDS",
+    "SAM31_RESULT_DEADLINE_SECONDS",
 }
+SETTINGS = (
+    local.SETTINGS
+    | {
+        "INFERENCE_EXECUTION_MODE",
+        "TRACKING_EXECUTION_MODE",
+        "INFERENCE_SERVER_URL",
+        "INFERENCE_SERVER_MODEL",
+        "TRACKING_SERVER_URL",
+        "TRACKING_SERVER_CAPACITY",
+        "TRACKING_SERVER_PROTOCOL",
+        "SAM_SERVER_GPU_ID",
+        "SAM_SERVER_BIND_ADDRESS",
+        "SAM_SERVER_PORT",
+        "VLM_SERVER_BIND_ADDRESS",
+        "VLM_SERVER_PORT",
+        "LOCAL_INFERENCE_GPU_ID",
+        "PERCEPTION_METHOD",
+    }
+    | QUEUE_SETTINGS
+)
 COMPOSE_FILES = {
     "main": "compose.main-server.yaml",
     "sam": "compose.sam-server.yaml",
@@ -207,6 +220,53 @@ def main_environment(settings: Mapping[str, str], args) -> dict[str, str]:
         "TRACKING_SERVER_PROTOCOL": protocol,
     }
     environment.update(listener(settings, "HARNESS", args))
+    environment.update(queue_environment(settings, args))
+    if args.tracking_fps is not None:
+        fps = args.tracking_fps
+        if not math.isfinite(fps) or not 0.5 <= fps <= 30:
+            raise LaunchError("Tracking FPS must be within 0.5..30")
+        environment["LOCAL_TRACKING_FPS"] = str(fps)
+    return environment
+
+
+def queue_environment(settings: Mapping[str, str], args) -> dict[str, str]:
+    """Expose explicit queue settings without changing YAML or sampling defaults."""
+    environment = {
+        key: settings[key]
+        for key in QUEUE_SETTINGS | {"PERCEPTION_METHOD"}
+        if settings.get(key)
+    }
+    if args.sam_queue_policy is not None:
+        environment["SAM31_QUEUE_POLICY"] = args.sam_queue_policy
+    policy = environment.get("SAM31_QUEUE_POLICY")
+    if policy is not None and policy not in {
+        "durable_ordered", "realtime_latest", "latest_only",
+    }:
+        raise LaunchError(
+            "SAM31_QUEUE_POLICY must be latest_only|durable_ordered|realtime_latest"
+        )
+    if policy in {"realtime_latest", "latest_only"}:
+        if environment.get("PERCEPTION_METHOD", "sam_live") != "sam_live":
+            raise LaunchError(f"{policy} requires PERCEPTION_METHOD=sam_live")
+        environment["PERCEPTION_METHOD"] = "sam_live"
+    # Match the runtime's bounded settings; validate even when the policy is off,
+    # because config loading also validates dormant experiment parameters.
+    for key, minimum, maximum, integer in (
+        ("SAM31_REALTIME_APPEND_FRAMES", 1, 4, True),
+        ("SAM31_REALTIME_PENDING_FRAMES", 1, 8, True),
+        ("SAM31_REALTIME_MAX_AGE_SECONDS", 0.01, 30, False),
+        ("SAM31_RESULT_DEADLINE_SECONDS", 0.01, 30, False),
+    ):
+        if key not in environment:
+            continue
+        try:
+            value = int(environment[key]) if integer else float(environment[key])
+        except ValueError as error:
+            raise LaunchError(f"{key} must be within {minimum}..{maximum}") from error
+        if not minimum <= value <= maximum or not math.isfinite(value):
+            raise LaunchError(f"{key} must be within {minimum}..{maximum}")
+        if key == "SAM31_REALTIME_APPEND_FRAMES" and value not in {1, 2, 4}:
+            raise LaunchError("SAM31_REALTIME_APPEND_FRAMES must be 1, 2, or 4")
     return environment
 
 
@@ -373,6 +433,16 @@ def parser() -> argparse.ArgumentParser:
         if module in {"main", "sam"}:
             command.add_argument("--streams", type=int, default=1)
         if module == "main":
+            command.add_argument(
+                "--sam-queue-policy",
+                choices=("latest_only", "durable_ordered", "realtime_latest"),
+                help="Queue override; latest_only keeps two replaceable candidates",
+            )
+            command.add_argument(
+                "--tracking-fps",
+                type=float,
+                help="Initial tracking sample FPS (0.5..30); saved console values win",
+            )
             command.add_argument(
                 "--tracking-server", help="SAM origin, e.g. http://gpu-host:8092"
             )

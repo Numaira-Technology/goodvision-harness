@@ -1,5 +1,9 @@
 # Benchmark V1 runner
 
+This is an evaluation-only branch. Do not merge its question-aware prompts into
+`main`, directly or through another production branch. The current integration
+includes team branch `codex/entity-event-engine` at `182546a`.
+
 ## Full Harness evaluation from video files
 
 Use `--offline` to process each video once through continuous SAM Live tracking,
@@ -7,6 +11,22 @@ rolling-window event analysis, identity updates, and evidence finalization.
 You supply video files without a real-time playback wait. GPU and model processing
 can still take longer than the video duration. Report answer quality separately
 from live latency.
+
+With the current default `scene_independent_vlm=true`, video observations run in
+the same independent VLM process as the live Harness, alongside SAM. The selected
+`scene_vlm_output_mode` (`full`, `compact`, or `parallel`) is retained. In `parallel`
+mode, information and grounding requests each retain their original result format
+inside `result`, with additional `qa_observations`. Their raw responses and lane
+names are recorded separately. Response-local VLM person IDs are not SAM track IDs.
+The independent VLM sees original window images without SAM boxes; the final
+text-only answer still receives both VLM observations and SAM tracking records.
+
+File replay pauses when processing queues fill. SAM temporarily uses its existing
+`durable_ordered` queue, and the VLM retains sampled windows and ordered responses
+instead of discarding them for being late in wall-clock time. Live sessions retain
+their configured queue and deadline behavior. This measures offline answer quality,
+not production drop rates or streaming latency. The legacy inspection route remains
+available when `scene_independent_vlm=false`, and is recorded as such.
 
 Each observation window receives that video's original questions, response
 options, and public context. The four existing safety verdicts are retained;
@@ -72,6 +92,9 @@ Optional `--observation-max-tokens` and `--answer-max-tokens` control the two
 output budgets separately. If omitted, both use `scene_max_tokens`. A too-small
 budget or oversized evidence context is recorded as a failure, not silently
 truncated or followed by an extra summarization call.
+For question-aware `parallel` replay, both lanes use this observation budget and
+the configured scene timeout: the live information lane's 160-token / 5-second
+limits are not applied to the additional question observations.
 
 ### Results and reuse
 
@@ -84,6 +107,8 @@ truncated or followed by an extra summarization call.
 - Session/attempt subdirectories retain previous `result.json` and `records.jsonl`
   files. Records contain accepted person frames (including empty frames), event
   revisions, identity merges, observations, raw model responses, and errors.
+  Independent VLM reports and final pipeline counters are also retained. Questions
+  and raw responses are private capture records, not public live report fields.
   In benchmark mode, a rejected safety-verdict batch is recorded as a
   `stage: verdicts` error without discarding valid question observations from
   the same response. Rejected verdicts never update live safety-event state.

@@ -43,7 +43,7 @@ def runtime_for_ingress():
         stream_session_id="ingress-run", running=True,
         push_camera_frame=lambda jpeg, **stamp: queued.append((jpeg, stamp)) or True,
     )
-    runtime._on_display_frame = lambda *args: displayed.append(args)
+    runtime._on_display_frame = lambda *args, **_kwargs: displayed.append(args)
     return runtime, queued, displayed
 
 
@@ -115,7 +115,7 @@ def test_ingress_timing_attributes_cost_without_logging_content(monkeypatch):
         service, "encode_jpeg", lambda *_, **__: take(.3, (b"private-copy", 20, 10)),
     )
     runtime._session.push_camera_frame = lambda *_, **__: take(.4, True)
-    runtime._on_display_frame = lambda *_: take(.5, None)
+    runtime._on_display_frame = lambda *_, **_kwargs: take(.5, None)
     assert push(runtime, b"private-input")
     row, = logs
     for key, seconds in {

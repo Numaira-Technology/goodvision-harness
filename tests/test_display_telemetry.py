@@ -21,11 +21,26 @@ def test_receive_apply_and_browser_stall_diagnostics_are_accepted():
         "complete_contour_frames": 90, "continuous_contour_frames": 96,
         "approximate_contour_frames": 6, "approximate_subjects": 9,
         "continuous_contour_frame_ratio": 0.96,
+        "display_catchup_expired": 9,
+        "motion_frames_admitted": 2, "motion_frames_skipped": 1300,
+        "motion_frames_expired": 1,
+        "worker_pending_frames": 1, "worker_pending_present_queries": 2,
+        "worker_pending_metadata": 2, "motion_metadata_coalesced": 500,
         "geometry_cache_hits": 10, "geometry_cache_misses": 20,
         "pending_present_queries": 2, "source_width": 640, "source_height": 480,
         "motion_input_width": 138, "motion_input_height": 103, "presentation_prefetch_seconds": 1.5,
     }
     assert validate_display_metrics(report) == report
+
+
+def test_display_instance_is_optional_and_cannot_contain_arbitrary_text():
+    report = {"stream_session_id": "run", "generation": 2, "crop_version": 0}
+    assert validate_display_metrics(report) == report
+    report["display_instance_id"] = "viewer-abc_123"
+    assert validate_display_metrics(report) == report
+    for value in ("https://private.example/path", "x" * 97, "", 3):
+        with pytest.raises(ValueError):
+            validate_display_metrics({**report, "display_instance_id": value})
 
 
 @pytest.mark.parametrize("field,value", [
@@ -35,6 +50,7 @@ def test_receive_apply_and_browser_stall_diagnostics_are_accepted():
     ("latest_applied_anchor_age_seconds", -1),
     ("continuous_contour_frame_ratio", 1.1),
     ("approximate_subjects", 0.5),
+    ("display_catchup_expired", -1),
 ])
 def test_diagnostics_do_not_admit_raw_entries_or_invalid_measurements(field, value):
     with pytest.raises(ValueError):

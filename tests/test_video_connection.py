@@ -32,7 +32,9 @@ class ControlledAdapter:
     def frames(self):
         self.frames_calls += 1
         while not self.stop_requested.is_set():
-            item = self.items.get(timeout=3)
+            # The test controls frame/error/end delivery. Idle preparation must
+            # not manufacture a connection failure; stop() wakes this queue.
+            item = self.items.get()
             if item is _END:
                 return
             if isinstance(item, Exception):
@@ -334,3 +336,15 @@ def test_blocked_native_reader_stays_disconnecting_until_owner_returns(monkeypat
 def test_connection_rejects_invalid_rate_before_creating_adapter(fps):
     with pytest.raises(ValueError, match="output_fps"):
         module.VideoConnection("rtsp://camera.local/live", output_fps=fps)
+
+
+def test_four_second_viewer_can_recover_two_second_gap_without_missing_frames(connections):
+    create, _ = connections
+    connection, _ = create()
+    connection._display_frames.extend((i, i/15, 40, 20, b"jpeg") for i in range(90))
+    # A slow 1.4-second request used to discard almost all of these frames.
+    frames = connection.display_frames(59, max_age_seconds=4.5, limit=64)
+    assert [frame[0] for frame in frames] == list(range(60, 90))
+    expired = connection.display_frames(0, max_age_seconds=4.5, limit=64)
+    assert all(frame[1] >= 89/15-4.5 for frame in expired)
+    assert len(expired) <= 64

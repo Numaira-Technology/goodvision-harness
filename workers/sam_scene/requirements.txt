@@ -5,6 +5,7 @@
 # SAM3.1 uses use_fa3=False and compile=False; no FlashAttention 3 package needed.
 fastapi==0.115.12
 uvicorn==0.34.2
+httpx==0.28.1
 Pillow==11.2.1
 numpy==1.26.4
 opencv-python-headless==4.10.0.84

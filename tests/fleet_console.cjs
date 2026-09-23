@@ -21,14 +21,14 @@ function fixture({count=3,allowed=true,mode=allowed?"local":"legacy",usable=allo
   const data={tracking_mode:mode,capacity:count,usable_capacity:usable,multi_camera_allowed:allowed,reason:allowed?"":"原部署追踪服务仅支持单路",
     analysis_start_url:"/v1/fleet/analysis/start",analysis_stop_url:"/v1/fleet/analysis/stop",analysis:{state:"idle",camera_ids:[],errors:{}},cameras:Array.from({length:count},(_,i)=>{
     const id="camera"+String(i+1).padStart(2,"0"),base="/v1/fleet/cameras/"+id;
-    return {id,label:"摄像头 "+(i+1),own:i===0,enabled:i<usable,status_url:base+"/status",connect_url:base+"/connect",disconnect_url:base+"/disconnect",settings_url:base+"/settings",detail_url:base+"/analysis/settings",results_url:base+"/results/latest",scene_url:base+"/scene",preview_url:base+"/video/annotated/latest.jpg"};
+    return {id,label:"摄像头 "+(i+1),own:i===0,enabled:i<usable,status_url:base+"/status",connect_url:base+"/connect",disconnect_url:base+"/disconnect",settings_url:base+"/settings",detail_url:base+"/analysis/settings",diagnostics_url:base+"/diagnostics",results_url:base+"/results/latest",scene_url:base+"/scene",preview_url:base+"/video/annotated/latest.jpg"};
   })};
   const requests=[],statuses=new Map(data.cameras.map(camera=>[camera.id,{pipeline_state:"idle",connection_state:"disconnected",analysis_state:"idle",configured_stream:false}]));
   const prefs=new Map(data.cameras.map(camera=>[camera.id,{features:["fight","smoking","fall","weapon","stranger"],event_sensitivities:{fight:"standard",smoking:"high",fall:"standard",weapon:"standard"},event_sensitivity_options:{smoking:[{value:"standard",label:"标准敏感度",description:"必须明确识别烟具"},{value:"high",label:"高敏感度",description:"允许结合动作和上下文判断"}]}}]));
   const errors=new Map(),revoked=[],scheduled=[];let blobId=0;
   const fetch=async(url,options={})=>{
     requests.push({url,method:options.method||"GET",body:options.body&&JSON.parse(options.body)});
-    if(errors.has(url))throw new Error(errors.get(url));
+    if(errors.has(url)||errors.has(url.split("?")[0]))throw new Error(errors.get(url)||errors.get(url.split("?")[0]));
     if(url==="/v1/fleet")return {ok:true,json:async()=>data};
     if(url===data.analysis_start_url||url===data.analysis_stop_url){
       const start=url===data.analysis_start_url;
@@ -50,6 +50,63 @@ function fixture({count=3,allowed=true,mode=allowed?"local":"legacy",usable=allo
   return {app,data,document,requests,statuses,prefs,errors,revoked,scheduled};
 }
 
+test("status request failure does not label a still-playing video offline",async()=>{
+  const view=fixture({count:1});await view.app.refresh();
+  const row=view.app.rows.get("camera01");
+  row.status={connection_state:"connected",analysis_state:"running"};row.lastPresentedAt=100;
+  view.errors.set(row.camera.status_url,"timeout");await view.app.pollStatus();
+  assert.equal(row.unreachable,true);assert.match(row.state.textContent,/视频播放中.*状态更新延迟/);
+  row.lastPresentedAt=-5000;view.app.updateRow(row);
+  assert.match(row.state.textContent,/暂时无法确认/);assert.doesNotMatch(row.state.textContent,/离线/);
+  view.errors.delete(row.camera.status_url);await view.app.pollStatus();
+  assert.equal(row.unreachable,false);view.app.close();
+});
+
+test("routine fleet health uses the lightweight status path",async()=>{
+  const view=fixture({count:2});await view.app.refresh();
+  const statuses=view.requests.filter(r=>r.url.includes("/status"));
+  assert.equal(statuses.length,2);assert.ok(statuses.every(r=>r.url.endsWith("?lightweight=true")));
+  view.app.close();
+});
+
+test("independent Face and VLM lanes do not claim a GPU or single-stream limit",async()=>{
+  const view=fixture({count:2,allowed:true,mode:"legacy"});view.data.tracking_enabled=false;
+  await view.app.refresh();
+  assert.match(view.app.ui.mode.textContent,/人脸与 VLM/);
+  assert.doesNotMatch(view.app.ui.capacity.textContent,/仅支持单路/);view.app.close();
+});
+
+test("VLM health distinguishes recent success, incomplete labels and a failed attempt",async()=>{
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  row.status={connection_state:"connected",analysis_state:"running",vlm:{independent:true,running:true,ready:true,last_success_age_seconds:1.2,analysis_complete:false}};
+  view.app.updateRow(row);assert.match(row.vlmNote.textContent,/识别持续返回.*1.2.*部分检测项待确认/);
+  row.status.vlm.last_attempt_state="failed";view.app.updateRow(row);
+  assert.match(row.vlmNote.textContent,/最近一次失败/);assert.doesNotMatch(row.vlmNote.textContent,/离线/);
+  Object.assign(row.status.vlm,{ready:false,last_success_age_seconds:20});view.app.updateRow(row);
+  assert.match(row.vlmNote.textContent,/结果延迟.*20.0/);
+  row.status.vlm.running=false;view.app.updateRow(row);assert.match(row.vlmNote.textContent,/暂不可用.*视频继续/);
+  row.status.analysis_state="error";row.status.vlm.state="stopped";view.app.updateRow(row);
+  assert.match(row.vlmNote.textContent,/本轮识别已停止/);assert.doesNotMatch(row.vlmNote.textContent,/暂不可用/);
+  view.app.close();
+});
+
+test("each lane owns its diagnostic document; closing one leaves the others open",async()=>{
+  const view=fixture({count:37});await view.app.refresh();
+  for(const id of ["camera01","camera02","camera37"]){
+    const row=view.app.rows.get(id);row.diagnostics.onclick();
+    assert.equal(row.diagnosticsFrame.src,"/v1/fleet/cameras/"+id+"/diagnostics");
+    assert.equal(row.diagnosticsPanel.hidden,false);
+    assert.equal(row.diagnostics.attributes["aria-expanded"],"true");
+  }
+  const second=view.app.rows.get("camera02"),first=view.app.rows.get("camera01");
+  const original=first.diagnosticsFrame;second.diagnostics.onclick();
+  assert.equal(second.diagnosticsFrame,null);assert.equal(second.diagnosticsPanel.children.length,0);
+  assert.equal(first.diagnosticsFrame,original);
+  second.camera.diagnostics_url=null;second.diagnostics.onclick();
+  assert.equal(second.diagnosticsFrame,null);assert.match(second.error,/诊断入口/);
+  view.app.close();assert.equal(first.diagnosticsFrame,null);
+});
+
 test("legacy mode permits one camera while local tracking exposes arbitrary provisioned capacity",async()=>{
   const legacy=fixture({count:16,allowed:false});await legacy.app.refresh();
   assert.equal(legacy.app.visible.size,1);assert.equal(legacy.app.ui.add.hidden,false);assert.equal(legacy.app.ui.add.disabled,true);
@@ -65,6 +122,14 @@ test("legacy mode permits one camera while local tracking exposes arbitrary prov
     assert.match(view.app.ui.capacity.textContent,new RegExp("当前可用 "+count+" 路"));
     assert.doesNotMatch(view.app.ui.capacity.textContent,/12 路为/);
   }
+});
+
+test("cloud GPU exposes all provisioned cameras without a local GPU or a one-stream cap",async()=>{
+  const view=fixture({count:37,usable:37,mode:"cloud"});
+  await view.app.refresh();for(let i=1;i<37;i++)view.app.add();
+  assert.equal(view.app.visible.size,37);
+  assert.equal(view.app.ui.mode.textContent,"云 GPU 人物追踪 · 多路模式");
+  assert.doesNotMatch(view.app.ui.capacity.textContent,/仅支持单路/);
 });
 
 test("independent tracking server supports multiple cameras without a local GPU and reports its usable capacity",async()=>{

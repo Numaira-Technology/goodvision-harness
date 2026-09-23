@@ -70,6 +70,36 @@ def test_ready_recovery_resumes_normal_release_with_original_ssh_options(recover
     assert not any("KexAlgorithms" in option for option in options)
 
 
+def test_five_a100_and_n_streams_reach_rental_query_and_remote_pool(recovery, monkeypatch, tmp_path):
+    status = tmp_path / "state.json"
+    monkeypatch.setattr(sys, "argv", ["start_sam.py", "--gpu-name", "A100", "--gpu-count", "5",
+                                     "--streams", "37", "--status-file", str(status)])
+    recovery.search_offers.return_value = [{"id": 10, "machine_id": 100, "dph_total": 5}]
+    recovery.create_instance.return_value = {"success": True, "new_contract": 42}
+    assert launcher.main() == 1
+    assert "num_gpus=5 " in recovery.search_offers.call_args.kwargs["query"]
+    command = launcher.subprocess.Popen.call_args.args[0][-1]
+    assert "SAM_GPU_COUNT=5 " in command and "SAM31_LIVE_CAMERAS=37 " in command
+    assert "uvicorn cloud_pool:app" in command
+    import json
+    assert json.loads(status.read_text())["cleanup_confirmed"] is True
+    recovery.destroy_instance.assert_called_once_with(id=42)
+
+
+def test_unknown_creation_keeps_persisted_cleanup_guard(recovery, monkeypatch, tmp_path):
+    import json
+    status = tmp_path / "state.json"
+    monkeypatch.setattr(sys, "argv", ["start_sam.py", "--status-file", str(status)])
+    recovery.search_offers.return_value = [{"id": 10, "machine_id": 100, "dph_total": 5}]
+    recovery.create_instance.side_effect = TimeoutError("lost creation response")
+    recovery.show_instances.return_value = []
+    assert launcher.main() == 1
+    record = json.loads(status.read_text())
+    assert record["cleanup_confirmed"] is False and record["state"] == "cleanup_required"
+    assert record["label"].startswith("goodvision-sam-")
+    recovery.create_instance.assert_called_once()
+
+
 def test_new_instance_gets_ssh_permissions_before_first_connection(
     recovery, monkeypatch,
 ):

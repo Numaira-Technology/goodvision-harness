@@ -143,6 +143,73 @@ class _AppendTiming:
         )
 
 
+@dataclass
+class _PreparedAppend:
+    """CPU-only input; no native state may be read or mutated by decoding."""
+
+    batch: VideoBatch
+    final: bool
+    digest: str
+    images: list = field(default_factory=list)
+    source_sizes: list = field(default_factory=list)
+
+    def close(self):
+        for image in self.images:
+            image.close()
+        self.images.clear()
+
+
+class _RequestResources:
+    """Keep lane/buffer ownership until an abandoned worker actually exits.
+
+    Cancelling asyncio.to_thread cannot stop an active codec/native call. A
+    pending thread may also start after HTTP cleanup; run() rejects that case.
+    """
+
+    def __init__(self, lane):
+        self.lane = lane
+        self.preparation = None
+        self.prepared = None
+        self._mutex = threading.Lock()
+        self._running = False
+        self._closing = False
+        self._closed = False
+
+    def run(self, fn):
+        with self._mutex:
+            if self._closing:
+                raise TimeoutError("session operation abandoned")
+            self._running = True
+        try:
+            return fn()
+        finally:
+            with self._mutex:
+                self._running = False
+                if self._closing:
+                    self._release()
+
+    def close(self):
+        with self._mutex:
+            self._closing = True
+            if not self._running:
+                self._release()
+
+    def _release(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.prepared is not None:
+                self.prepared.close()
+        finally:
+            try:
+                if self.preparation is not None:
+                    self.preparation.release()
+            finally:
+                if self.lane is not None:
+                    self.lane.release()
+
+
 @dataclass(frozen=True, slots=True)
 class SessionSettings:
     enabled: bool = False
@@ -263,6 +330,11 @@ class SessionRegistry:
     def __init__(self):
         self.engines = []
         self.mutex = threading.RLock()
+        self.on_state_discarded = None
+
+    def note_state_discarded(self):
+        if self.on_state_discarded is not None:
+            self.on_state_discarded()
 
     def add(self, engine):
         with self.mutex:
@@ -665,9 +737,12 @@ class SessionEngine:
                 self.session.last_response = None
 
     def _discard(self, session):
+        had_state = session.status == "active" or session.native_state is not None
         self.backend.discard(session)
         session.sources.clear()
         session.status = "closed"
+        if had_state and self.registry is not None:
+            self.registry.note_state_discarded()
 
     def delete(self, token):
         with self._mutex:
@@ -685,7 +760,112 @@ class SessionEngine:
             self.session = None
         self.backend.close()
 
-    def append(self, token, payload, *, deadline, decode_jpeg, diagnostics=None):
+    def _check_append(self, session, batch, final, digest):
+        """Read-only checks, repeated under GPU admission before committing."""
+        if batch.stream_session_id != session.stream_session_id:
+            raise HTTPException(409, "source_session_mismatch")
+        if session.last_request_id == batch.batch_id:
+            if digest != session.last_payload_hash:
+                raise HTTPException(409, "request_id_conflict")
+            if session.last_response is not None:
+                return session.last_response
+        if session.status != "active" or session.cancel.is_set():
+            raise HTTPException(409, "reset_required")
+        limits = self.limits()
+        if len(batch.frames) > limits["max_append_frames"]:
+            raise HTTPException(413, "append exceeds route frame capacity")
+        if not session.total_frames and (
+            not batch.frames
+            or (not final and len(batch.frames) < limits["startup_frames"])
+        ):
+            raise HTTPException(
+                409, f"startup_requires_{limits['startup_frames']}_frames"
+            )
+        if (
+            batch.frames
+            and session.accepted is not None
+            and (
+                batch.frames[0].frame_sequence <= session.accepted.frame_sequence
+                or batch.frames[0].timestamp_seconds
+                <= session.accepted.timestamp_seconds
+            )
+        ):
+            raise HTTPException(409, "source_frames_must_increase")
+        return None
+
+    def _decode_append(self, prepared, *, decode_jpeg, check):
+        """Bounded CPU decoding/resizing only; caller owns image cleanup."""
+        batch = prepared.batch
+        settings = self.video.settings
+        check()
+        if isinstance(batch, SessionVideoBatch):
+            transport = _h264_transport()
+            try:
+                prepared.images = transport.decode_h264_batch(
+                    batch.video_bytes,
+                    expected_frames=len(batch.frames),
+                    max_image_pixels=settings.max_image_pixels,
+                    max_total_image_pixels=settings.max_total_image_pixels,
+                    max_side=1280,
+                    max_encoded_bytes=min(
+                        MAX_H264_BYTES, settings.max_total_jpeg_bytes
+                    ),
+                    check=check,
+                )
+            except transport.H264TransportError as exc:
+                raise HTTPException(
+                    exc.status_code, "invalid session video bitstream"
+                ) from None
+            if len(prepared.images) != len(batch.frames):
+                raise RuntimeError("video decoder omitted source frames")
+        total_pixels = 0
+        for offset, frame in enumerate(batch.frames):
+            check()
+            if isinstance(batch, SessionVideoBatch):
+                image = prepared.images[offset]
+            else:
+                image = decode_jpeg(frame.jpeg_bytes, settings)
+                prepared.images.append(image)
+            check()
+            total_pixels += image.width * image.height
+            if total_pixels > settings.max_total_image_pixels:
+                raise HTTPException(413, "video source pixel budget exceeded")
+            prepared.source_sizes.append(image.size)
+            image.thumbnail((settings.inference_max_side,) * 2)
+        check()
+
+    def prepare_append(self, token, payload, *, decode_jpeg, check, diagnostics):
+        check()
+        batch, final, digest = parse_append(
+            payload, self.video.settings, h264_enabled=self.settings.h264_enabled,
+            diagnostics=diagnostics,
+        )
+        prepared = _PreparedAppend(batch, final, digest)
+        # Do not expire/discard state here: those operations can access CUDA.
+        with self._mutex:
+            session = self._get(token)
+            replay = self._check_append(session, batch, final, digest)
+            over_quota = (
+                session.total_frames + len(batch.frames)
+                > self.settings.max_session_frames
+            )
+        # Cached output and quota cleanup are handled under GPU admission. Neither
+        # needs new images. The lane gate prevents another append overtaking us.
+        if replay is not None or over_quota:
+            return prepared
+        started = time.perf_counter()
+        try:
+            self._decode_append(prepared, decode_jpeg=decode_jpeg, check=check)
+            return prepared
+        except BaseException:
+            prepared.close()
+            raise
+        finally:
+            diagnostics["preparation_decode_seconds"] = time.perf_counter() - started
+
+    def append(
+        self, token, payload, *, deadline, decode_jpeg, diagnostics=None, prepared=None
+    ):
         timing = _AppendTiming(
             self.profile.route if self.profile else "sam31_session", diagnostics
         )
@@ -693,7 +873,7 @@ class SessionEngine:
         try:
             return self._append(
                 token, payload, deadline=deadline, decode_jpeg=decode_jpeg,
-                timing=timing,
+                timing=timing, prepared=prepared,
             )
         except BaseException as exc:
             outcome = "failed"
@@ -713,11 +893,15 @@ class SessionEngine:
                 pass
             timing.finish(outcome, status_code)
 
-    def _append(self, token, payload, *, deadline, decode_jpeg, timing):
-        batch, final, digest = parse_append(
-            payload, self.video.settings, h264_enabled=self.settings.h264_enabled,
-            diagnostics=timing.fields,
-        )
+    def _append(self, token, payload, *, deadline, decode_jpeg, timing, prepared=None):
+        if prepared is None:
+            batch, final, digest = parse_append(
+                payload, self.video.settings, h264_enabled=self.settings.h264_enabled,
+                diagnostics=timing.fields,
+            )
+        else:
+            batch, final, digest = prepared.batch, prepared.final, prepared.digest
+            timing.fields.update(request_id=batch.batch_id, is_last_batch=final)
         timing.fields.update(
             input_frames=len(batch.frames),
             input_first_frame_sequence=(
@@ -731,42 +915,12 @@ class SessionEngine:
             self.expire()
             session = self._get(token)
             timing.observe_session(session)
-            if batch.stream_session_id != session.stream_session_id:
-                raise HTTPException(409, "source_session_mismatch")
-            if session.last_request_id == batch.batch_id:
-                if digest != session.last_payload_hash:
-                    raise HTTPException(409, "request_id_conflict")
-                if session.last_response is not None:
-                    session.touched = time.monotonic()
-                    timing.mark("response_build")
-                    timing.fields.update(
-                        replayed=True, response_bytes=len(session.last_response)
-                    )
-                    response = json.loads(session.last_response)
-                    # Replays return cached output without advancing inference.
-                    return response
-            if session.status != "active" or session.cancel.is_set():
-                raise HTTPException(409, "reset_required")
-            limits = self.limits()
-            if len(batch.frames) > limits["max_append_frames"]:
-                raise HTTPException(413, "append exceeds route frame capacity")
-            if not session.total_frames and (
-                not batch.frames
-                or (not final and len(batch.frames) < limits["startup_frames"])
-            ):
-                raise HTTPException(
-                    409, f"startup_requires_{limits['startup_frames']}_frames"
-                )
-            if (
-                batch.frames
-                and session.accepted is not None
-                and (
-                    batch.frames[0].frame_sequence <= session.accepted.frame_sequence
-                    or batch.frames[0].timestamp_seconds
-                    <= session.accepted.timestamp_seconds
-                )
-            ):
-                raise HTTPException(409, "source_frames_must_increase")
+            replay = self._check_append(session, batch, final, digest)
+            if replay is not None:
+                session.touched = time.monotonic()
+                timing.mark("response_build")
+                timing.fields.update(replayed=True, response_bytes=len(replay))
+                return json.loads(replay)
             if (
                 session.total_frames + len(batch.frames)
                 > self.settings.max_session_frames
@@ -774,7 +928,9 @@ class SessionEngine:
                 self.invalidate(token)
                 self._discard(session)
                 raise HTTPException(409, "reset_required")
-        images = []
+        owns_prepared = prepared is None
+        if owns_prepared:
+            prepared = _PreparedAppend(batch, final, digest)
         began_native = False
         committed_inputs = False
         try:
@@ -783,45 +939,17 @@ class SessionEngine:
                 if session.cancel.is_set() or time.monotonic() >= deadline:
                     raise TimeoutError("session request deadline exceeded")
 
-            total_pixels = 0
             source_size, output_size = session.source_size, session.output_size
             check()
-            timing.mark("decode")
-            if isinstance(batch, SessionVideoBatch):
-                transport = _h264_transport()
-                try:
-                    images = transport.decode_h264_batch(
-                        batch.video_bytes,
-                        expected_frames=len(batch.frames),
-                        max_image_pixels=self.video.settings.max_image_pixels,
-                        max_total_image_pixels=self.video.settings.max_total_image_pixels,
-                        max_side=1280,
-                        max_encoded_bytes=min(
-                            MAX_H264_BYTES, self.video.settings.max_total_jpeg_bytes
-                        ),
-                        check=check,
-                    )
-                except transport.H264TransportError as exc:
-                    raise HTTPException(
-                        exc.status_code, "invalid session video bitstream"
-                    ) from None
-                if len(images) != len(batch.frames):
-                    raise RuntimeError("video decoder omitted source frames")
-            for offset, frame in enumerate(batch.frames):
+            if owns_prepared:
+                timing.mark("decode")
+                self._decode_append(prepared, decode_jpeg=decode_jpeg, check=check)
+            for image, size in zip(prepared.images, prepared.source_sizes, strict=True):
                 check()
-                if isinstance(batch, SessionVideoBatch):
-                    image = images[offset]
-                else:
-                    image = decode_jpeg(frame.jpeg_bytes, self.video.settings)
-                    images.append(image)
-                total_pixels += image.width * image.height
-                if total_pixels > self.video.settings.max_total_image_pixels:
-                    raise HTTPException(413, "video source pixel budget exceeded")
-                if source_size is not None and source_size != image.size:
+                if source_size is not None and source_size != size:
                     self.invalidate(token)
                     raise HTTPException(409, "reset_required")
-                source_size = image.size
-                image.thumbnail((self.video.settings.inference_max_side,) * 2)
+                source_size = size
                 if output_size is not None and image.size != output_size:
                     raise RuntimeError("session output resolution changed")
                 output_size = image.size
@@ -844,7 +972,7 @@ class SessionEngine:
             check()
             began_native = True
             timing.mark("native_advance")
-            outputs = self.backend.run(session, images, final=final)
+            outputs = self.backend.run(session, prepared.images, final=final)
             try:
                 output_iterator = iter(outputs)
                 while True:
@@ -980,8 +1108,8 @@ class SessionEngine:
             raise
         finally:
             timing.mark("cleanup")
-            for image in images:
-                image.close()
+            if owns_prepared:
+                prepared.close()
             timing.observe_session(session)
 
 
@@ -995,11 +1123,14 @@ def register_session_routes(
     health_path="/health/video/session",
     legacy=True,
     queued_admission=False,
+    preparation_admission=None,
 ):
+    if preparation_admission is not None and not queued_admission:
+        raise ValueError("CPU preparation requires queued camera admission")
     if legacy:
         app.state.session_engine = engine
-    # One bounded upload per camera. A slow uploader must not hold the shared
-    # GPU slot, and concurrent requests on the same lane must not reorder it.
+    # One request per camera, including abandoned work until its thread exits.
+    # Upload/preparation must not hold the GPU or let the same lane overtake.
     upload_admission = threading.Lock() if queued_admission else None
 
     @app.get(health_path)
@@ -1031,6 +1162,7 @@ def register_session_routes(
         received_bytes = 0
         admission_started = admission_finished = None
         body_started = body_finished = dispatch_started = None
+        preparation_wait_started = preparation_started = preparation_finished = None
         worker_started = processing_finished = None
         response_encode_seconds = 0.0
         diagnostics = {
@@ -1057,6 +1189,14 @@ def register_session_routes(
                     "body_read_seconds": (
                         (body_finished or finished) - body_started
                         if body_started is not None else 0.0
+                    ),
+                    "preparation_wait_seconds": (
+                        (preparation_started or finished) - preparation_wait_started
+                        if preparation_wait_started is not None else 0.0
+                    ),
+                    "preparation_seconds": (
+                        (preparation_finished or finished) - preparation_started
+                        if preparation_started is not None else 0.0
                     ),
                     "worker_dispatch_seconds": (
                         worker_started - dispatch_started
@@ -1092,6 +1232,7 @@ def register_session_routes(
         transferred = False
         abandoned = threading.Event()
         task = None
+        resources = _RequestResources(upload_admission)
 
         async def acquire_gpu():
             nonlocal acquired, admission_started, admission_finished, phase
@@ -1126,6 +1267,10 @@ def register_session_routes(
                 finally:
                     admission.release()
 
+        def consume_preparation(done):
+            if not done.cancelled():
+                done.exception()
+
         try:
             if not queued_admission:
                 await acquire_gpu()
@@ -1153,25 +1298,58 @@ def register_session_routes(
             body_finished = time.perf_counter()
             if operation == "delete" and payload:
                 raise HTTPException(400, "session delete body must be empty")
+            if operation == "append" and preparation_admission is not None:
+                phase = "preparation_wait"
+                preparation_wait_started = time.perf_counter()
+                if not await preparation_admission.acquire_async(deadline):
+                    raise HTTPException(
+                        429, "preparation busy", headers={"Retry-After": "1"}
+                    )
+                resources.preparation = preparation_admission
+                preparation_started = time.perf_counter()
+                phase = "preparation"
+
+                def check_preparation():
+                    if abandoned.is_set() or time.monotonic() >= deadline:
+                        raise TimeoutError("session preparation abandoned")
+
+                def prepare():
+                    resources.prepared = engine.prepare_append(
+                        token, payload, decode_jpeg=decode_jpeg,
+                        check=check_preparation, diagnostics=diagnostics,
+                    )
+
+                preparation_task = asyncio.create_task(
+                    asyncio.to_thread(resources.run, prepare)
+                )
+                preparation_task.add_done_callback(consume_preparation)
+                await asyncio.wait_for(
+                    asyncio.shield(preparation_task),
+                    max(0, deadline - time.monotonic()),
+                )
+                preparation_finished = time.perf_counter()
             if queued_admission:
                 await acquire_gpu()
             phase = "processing"
             dispatch_started = time.perf_counter()
 
-            def invoke():
+            def process():
                 nonlocal worker_started
                 worker_started = time.perf_counter()
+                if abandoned.is_set() or time.monotonic() >= deadline:
+                    raise TimeoutError("session operation abandoned")
+                if operation == "create":
+                    return engine.create(payload)
+                if operation == "delete":
+                    return engine.delete(token)
+                return engine.append(
+                    token, payload, deadline=deadline, decode_jpeg=decode_jpeg,
+                    diagnostics=diagnostics, prepared=resources.prepared,
+                )
+
+            def invoke():
                 try:
-                    if abandoned.is_set() or time.monotonic() >= deadline:
-                        raise TimeoutError("session operation abandoned")
-                    if operation == "create":
-                        return engine.create(payload)
-                    if operation == "delete":
-                        return engine.delete(token)
-                    return engine.append(
-                        token, payload, deadline=deadline, decode_jpeg=decode_jpeg,
-                        diagnostics=diagnostics,
-                    )
+                    return resources.run(process)
                 finally:
                     admission.release()
 
@@ -1226,8 +1404,7 @@ def register_session_routes(
                     finally:
                         admission.release()
             finally:
-                if upload_admission is not None:
-                    upload_admission.release()
+                resources.close()
 
     @app.post(api_prefix + "/sessions")
     async def create(request: Request):

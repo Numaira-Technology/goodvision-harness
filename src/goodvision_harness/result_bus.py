@@ -36,15 +36,19 @@ class ResultBus:
         self._cursor = 0
         self.epoch = str(uuid4())
 
-    def publish(self, payload: Mapping[str, Any]) -> ResultRecord:
+    def publish(
+        self, payload: Mapping[str, Any], *, expected_epoch: str | None = None,
+        promote_latest: bool = True,
+    ) -> ResultRecord | None:
+        """Deliver every record; auxiliary projections may skip global promotion."""
+        safe = public_safe_value(copy.deepcopy(dict(payload)))
         with self._condition:
+            if expected_epoch is not None and expected_epoch != self.epoch:
+                return None
             self._cursor += 1
-            record = ResultRecord(
-                cursor=self._cursor,
-                payload=public_safe_value(copy.deepcopy(dict(payload))),
-            )
+            record = ResultRecord(cursor=self._cursor, payload=safe)
             self._history.append(record)
-            if (
+            if promote_latest and (
                 self._latest is None
                 or _frame_order(record) >= _frame_order(self._latest)
             ):
@@ -64,7 +68,7 @@ class ResultBus:
             while len(self._latest_by_feature) > self._feature_limit:
                 self._latest_by_feature.popitem(last=False)
             self._condition.notify_all()
-            return _copy_result(record)
+        return _copy_result(record)
 
     def reset(self) -> None:
         """Clear one session's history while keeping cursors monotonic."""
@@ -81,10 +85,11 @@ class ResultBus:
 
         with self._condition:
             record = (
-                self._latest if feature is None
+                self._latest
+                if feature is None
                 else self._latest_by_feature.get(_feature_label(feature))
             )
-            return _copy_result(record) if record is not None else None
+        return _copy_result(record) if record is not None else None
 
     def records_after(
         self,
@@ -99,15 +104,14 @@ class ResultBus:
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
             while True:
-                records = tuple(
-                    _copy_result(item) for item in self._history if item.cursor > cursor
-                )
+                records = tuple(item for item in self._history if item.cursor > cursor)
                 if records or timeout_seconds == 0:
-                    return records
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return ()
                 self._condition.wait(remaining)
+        return tuple(_copy_result(item) for item in records)
 
 
 def _feature_label(label: str) -> str:

@@ -120,6 +120,22 @@ class BenchmarkCapture:
         with self._lock, self.path.open(encoding="utf-8") as handle:
             return build_answer_evidence([json.loads(line) for line in handle])
 
+    def record_independent(self, report, result):
+        window = {key: result[key] for key in (
+            "request_id", "window_index", "start_seconds", "end_seconds", "lane",
+        )}
+        self.write("vlm_report", {**window, "report": report})
+        if result.get("response") is not None:
+            self.write("model_response", {**window, "stage": "observation",
+                                          "accepted": not result.get("error"),
+                                          "response": result["response"]})
+        for observation in result.get("observations", ()):
+            self.write("observation", {**observation, **window})
+        for stage, error in (("observation", result.get("error")),
+                             ("verdicts", result.get("verdict_error"))):
+            if error:
+                self.write("error", {**window, "stage": stage, "error": error})
+
     def set_answering(self):
         with self._lock:
             self._state = "answering"
@@ -152,6 +168,7 @@ class BenchmarkCapture:
 
 def build_answer_evidence(records):
     frames, events, merges, observations, errors = {}, {}, {}, [], []
+    reports = []
     for row in records:
         kind = row["kind"]
         payload = {key: value for key, value in row.items() if key != "kind"}
@@ -163,6 +180,14 @@ def build_answer_evidence(records):
             merges[row["old"]] = row["new"]
         elif kind == "observation":
             observations.append(payload)
+        elif kind == "vlm_report":
+            report = row["report"]
+            reports.append({"window_index": row["window_index"], "lane": row["lane"],
+                            "start_seconds": row["start_seconds"],
+                            "end_seconds": row["end_seconds"],
+                            "judgments": report["judgments"],
+                            "objects": report["objects"],
+                            "subject_id_scope": "observation"})
         elif kind == "error" and row.get("stage") != "answer":
             errors.append(payload)
 
@@ -185,4 +210,5 @@ def build_answer_evidence(records):
     return {"frames": ordered, "events": list(events.values()),
             "subject_id_merges": merges,
             "observations": sorted(observations, key=lambda row: row["start_seconds"]),
+            "vlm_reports": reports,
             "errors": errors}

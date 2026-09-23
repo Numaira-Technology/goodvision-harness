@@ -923,6 +923,7 @@ class VideoTrackingCoordinator:
             raise ValueError("history_size must be within 2-4096")
         self.max_fps, self.history_size = max_fps, history_size
         self._client, self._on_batch = client, on_batch
+        self.on_native_batch = None
         self._batch_frames, self._batch_seconds = batch_frames, batch_seconds
         self._condition = threading.Condition()
         self._pending: deque[tuple[VideoFrame, float]] = deque()
@@ -1078,8 +1079,10 @@ class VideoTrackingCoordinator:
                             raise RichLabelProtocolError("native batch reused an epoch")
                         else:
                             self._epochs.append(result.predictor_epoch)
-                    if not stale and self._on_batch is not None:
-                        self._on_batch(result)
+                    if not stale:
+                        self._publish_native(result, generation)
+                        if self._on_batch is not None:
+                            self._on_batch(result)
                     with self._condition:
                         if not self._closed and generation == self._generation:
                             self._history.extend(result.frames)
@@ -1105,6 +1108,14 @@ class VideoTrackingCoordinator:
                         self._condition.notify_all()
         finally:
             self._client.close()
+
+    def _publish_native(self, result, generation):
+        if result.frames and self.on_native_batch is not None:
+            try:
+                self.on_native_batch(result, generation)
+            except Exception as exc:
+                log_timing("sam_native_display_failure", generation=generation,
+                           error_type=type(exc).__name__)
 
     def latest(self, stream_session_id: str | None = None) -> RichLabelSnapshot | None:
         with self._condition:

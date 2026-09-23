@@ -29,6 +29,7 @@ from .scene_inspection import (
     _validate_verdicts,
     build_temporal_messages,
     build_benchmark_answer_messages,
+    add_independent_benchmark_context,
 )
 from .scene_runtime import BenchmarkInspection, TemporalInspection, TemporalVerdict
 from .vlm_transport import create_vlm_http_client
@@ -258,7 +259,8 @@ class TemporalVLMInspector:
                 if self._closed:
                     outcome = "closed"
                     return False
-                deadline = min(2.0, self.settings.timeout_seconds)
+                # Real TLS handshakes can exceed two seconds on this route.
+                deadline = min(5.0, self.settings.timeout_seconds)
                 self._ensure_transport()
                 remaining = deadline - (time.monotonic() - started)
                 if remaining <= 0:
@@ -334,6 +336,14 @@ class TemporalVLMInspector:
                 timing["total_seconds"] = time.monotonic() - started
                 log_timing("vlm_inspection_timing", **timing)
 
+    def build_messages(self, job):
+        response_format = self._parameters.get("response_format")
+        return build_temporal_messages(
+            job, max_image_side=self._max_image_side, jpeg_quality=self._jpeg_quality,
+            verdicts_wrapper=(isinstance(response_format, Mapping)
+                              and response_format.get("type") == "json_object"),
+        )
+
     def _inspect_locked(
         self, job: TemporalInspection, *, timing: dict
     ) -> tuple[TemporalVerdict, ...] | BenchmarkInspection:
@@ -341,16 +351,9 @@ class TemporalVLMInspector:
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
-        response_format = self._parameters.get("response_format")
-        messages = build_temporal_messages(
-            job,
-            max_image_side=self._max_image_side,
-            jpeg_quality=self._jpeg_quality,
-            verdicts_wrapper=(
-                isinstance(response_format, Mapping)
-                and response_format.get("type") == "json_object"
-            ),
-        )
+        messages = self.build_messages(job)
+        if job.benchmark_questions and getattr(self, "benchmark_result_wrapper", False):
+            add_independent_benchmark_context(messages, job)
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
             key = environment_api_key(self.settings)
@@ -359,7 +362,7 @@ class TemporalVLMInspector:
         ):
             raise ModelAPIError("temporal model credential is unavailable")
         payload = {**self._parameters, "model": self.model, "messages": messages}
-        if job.benchmark_questions and response_format is not None:
+        if job.benchmark_questions and payload.get("response_format") is not None:
             payload["response_format"] = {"type": "json_object"}
         # These data URLs were just built locally from bounded JPEGs. Count
         # decoded bytes from Base64 length without copying/decoding pixels.
@@ -391,14 +394,18 @@ class TemporalVLMInspector:
             timing["client_initialize_seconds"] = time.monotonic() - client_started
             response = self._loop.run_until_complete(
                 asyncio.wait_for(
-                    self._request(payload, headers, timing=http_timing),
+                    self._request(payload, headers, timing=http_timing,
+                                  capture_response=bool(job.benchmark_questions)),
                     timeout=self.settings.timeout_seconds,
                 )
             )
             self._record_usage(response)
             parse_started = time.monotonic()
             try:
-                verdicts = self._parse(job, response)
+                if job.benchmark_questions and getattr(self, "benchmark_result_wrapper", False):
+                    verdicts = self._parse_benchmark(job, response)
+                else:
+                    verdicts = self._parse(job, response)
             finally:
                 timing["verdict_parse_seconds"] = time.monotonic() - parse_started
         except (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException):
@@ -431,6 +438,8 @@ class TemporalVLMInspector:
                 "temporal model returned an invalid response",
                 code="invalid_response",
             )
+            if job.benchmark_questions and hasattr(failure, "benchmark_response"):
+                error.benchmark_response = failure.benchmark_response
         else:
             self._record_completion(started, verdicts=(
                 verdicts.verdicts if isinstance(verdicts, BenchmarkInspection) else verdicts
@@ -438,6 +447,10 @@ class TemporalVLMInspector:
             return verdicts
         self._record_completion(started, error=error)
         if error.code in {"invalid_response", "empty_response"}:
+            # Preserve the safe closed-vocabulary diagnosis across the process
+            # boundary; never attach the model's response or request content.
+            error.validation_stage = validation_stage or "response"
+            error.validation_reason = validation_reason or "invalid_response_shape"
             log_timing(
                 "vlm_response_validation",
                 stream_session_id=trace_id(job.stream_session_id),
@@ -452,7 +465,8 @@ class TemporalVLMInspector:
         raise error from None
 
     async def _request(
-        self, payload: Mapping[str, Any], headers: httpx.Headers, *, timing: dict
+        self, payload: Mapping[str, Any], headers: httpx.Headers, *, timing: dict,
+        capture_response: bool = False,
     ) -> dict[str, Any]:
         assert self._http is not None
         started = time.monotonic()
@@ -621,16 +635,22 @@ class TemporalVLMInspector:
                 )
                 error.validation_stage = "envelope_body"
                 error.validation_reason = "empty_response_body"
+                if capture_response:
+                    error.benchmark_response = {"raw_body": bytes(body).decode("utf-8", errors="replace")}
                 raise error
             decode_started = time.monotonic()
             try:
                 decoded = _json(bytes(body), stage="envelope_json")
+                if not isinstance(decoded, dict):
+                    raise _ResponseValidationError("envelope_not_object", "envelope_schema")
+            except _ResponseValidationError as error:
+                if capture_response:
+                    error.benchmark_response = {"raw_body": bytes(body).decode("utf-8", errors="replace")}
+                raise
             finally:
                 timing["response_json_decode_seconds"] = (
                     time.monotonic() - decode_started
                 )
-            if not isinstance(decoded, dict):
-                raise _ResponseValidationError("envelope_not_object", "envelope_schema")
             generation_id = decoded.get("id")
             if isinstance(generation_id, str) and re.fullmatch(
                 r"gen-[A-Za-z0-9-]{1,156}", generation_id
@@ -791,7 +811,8 @@ class TemporalVLMInspector:
                 payload["response_format"] = {"type": "json_object"}
             self._ensure_transport()
             response = self._loop.run_until_complete(asyncio.wait_for(
-                self._request(payload, httpx.Headers(model_request_headers(self.settings, key)), timing={}),
+                self._request(payload, httpx.Headers(model_request_headers(self.settings, key)),
+                              timing={}, capture_response=True),
                 timeout=self.settings.timeout_seconds,
             ))
             self._record_usage(response)

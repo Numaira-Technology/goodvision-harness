@@ -31,7 +31,13 @@ def make_bundle(directory, files):
             archive.writestr(name, body)
 
 
-def test_deploy_repeated_extraction_preserves_key_and_detects_changed_source(tmp_path):
+def test_deploy_repeated_extraction_preserves_key_and_detects_changed_source(
+    tmp_path, monkeypatch
+):
+    # This test covers extraction/reuse, not the developer machine's free space.
+    monkeypatch.setattr(
+        deploy.shutil, "disk_usage", lambda _: SimpleNamespace(free=1024**3)
+    )
     make_bundle(tmp_path, {"workers/contour/compose.yaml": b"services: {}\n"})
     root = deploy.unpack(tmp_path, tmp_path / "installed")
     node = root / "workers/contour"
@@ -48,6 +54,24 @@ def test_deploy_repeated_extraction_preserves_key_and_detects_changed_source(tmp
     with pytest.raises(RuntimeError, match="被修改或缺失"):
         deploy.unpack(tmp_path, root)
     assert key.read_text() == original
+
+
+@pytest.mark.parametrize("free_bytes", [0, 512 * 1024**2, 512 * 1024**2 + 13])
+def test_deploy_checks_free_space_before_extracting(tmp_path, monkeypatch, free_bytes):
+    body = b"services: {}\n"
+    assert len(body) == 13
+    make_bundle(tmp_path, {"workers/contour/compose.yaml": body})
+    monkeypatch.setattr(
+        deploy.shutil, "disk_usage", lambda _: SimpleNamespace(free=free_bytes)
+    )
+    destination = tmp_path / "installed"
+    if free_bytes < 512 * 1024**2 + len(body):
+        with pytest.raises(RuntimeError, match="磁盘空间不足"):
+            deploy.unpack(tmp_path, destination)
+        assert not destination.exists()
+    else:
+        assert deploy.unpack(tmp_path, destination) == destination
+        assert (destination / "workers/contour/compose.yaml").read_bytes() == body
 
 
 @pytest.mark.parametrize(

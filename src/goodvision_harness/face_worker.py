@@ -200,7 +200,9 @@ class FaceObservationWorker:
                 timing["identity_commit_seconds"] = time.monotonic() - commit_started
                 # set_result runs registered delivery callbacks before the next
                 # ticket mutates identity state, preserving source order end to end.
+                callback_started = time.monotonic()
                 future.set_result(response)
+                timing["delivery_callback_seconds"] = time.monotonic()-callback_started
             except Exception as exc:
                 error = type(exc).__name__
                 try:
