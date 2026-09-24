@@ -43,11 +43,22 @@ def _get(url: str, timeout: float) -> dict[str, Any]:
 def _post(url, payload, timeout=300):
     request = Request(url, data=json.dumps(payload).encode("utf-8"),
                       headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            return json.load(response)
-    except HTTPError as exc:
-        raise RuntimeError(f"Harness HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}") from exc
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return json.load(response)
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            exc.close()
+            # A completed answer can precede the native session's DELETE.
+            # This specific 409 rejects the start before creating a session.
+            if (url.endswith("/v1/sessions/start") and exc.code == 409
+                    and "stop the active session and wait for cleanup before starting" in body
+                    and time.monotonic() < deadline):
+                time.sleep(0.5)
+                continue
+            raise RuntimeError(f"Harness HTTP {exc.code}: {body}") from exc
 
 
 def capture_offline(

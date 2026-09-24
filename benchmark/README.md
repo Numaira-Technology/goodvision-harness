@@ -20,6 +20,11 @@ inside `result`, with additional `qa_observations`. Their raw responses and lane
 names are recorded separately. Response-local VLM person IDs are not SAM track IDs.
 The independent VLM sees original window images without SAM boxes; the final
 text-only answer still receives both VLM observations and SAM tracking records.
+Question observations require only `qa_id` and `observation`. Optional
+`subject_ids` are retained as response-local references, marked with
+`subject_id_scope: observation`; they are not merged with SAM track IDs.
+Extra fields or malformed optional references do not discard usable observation
+text. The complete model response remains in the private capture records.
 
 File replay pauses when processing queues fill. SAM temporarily uses its existing
 `durable_ordered` queue, and the VLM retains sampled windows and ordered responses
@@ -93,8 +98,12 @@ output budgets separately. If omitted, both use `scene_max_tokens`. A too-small
 budget or oversized evidence context is recorded as a failure, not silently
 truncated or followed by an extra summarization call.
 For question-aware `parallel` replay, both lanes use this observation budget and
-the configured scene timeout: the live information lane's 160-token / 5-second
+the configured API timeout: the live information lane's 160-token / 5-second
 limits are not applied to the additional question observations.
+Offline observations and final text answers use `inference_service.timeout_seconds`
+(60 seconds in `config.yaml`), not the shorter `runtime.scene_timeout_seconds`
+used during live streaming. Both timeout values are recorded in each new
+session's metadata.
 
 ### Results and reuse
 

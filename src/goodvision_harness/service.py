@@ -2540,7 +2540,11 @@ class HarnessRuntime:
             if scene_active and not use_dry_run and scene_labels:
                 model_settings = replace(
                     session_config.model_api,
-                    timeout_seconds=self.config.runtime.scene_timeout_seconds,
+                    timeout_seconds=(
+                        session_config.model_api.timeout_seconds
+                        if benchmark is not None
+                        else self.config.runtime.scene_timeout_seconds
+                    ),
                     max_retries=0,
                     extra_headers=copy.deepcopy(dict(
                         session_config.model_api.extra_headers
@@ -2565,6 +2569,8 @@ class HarnessRuntime:
                 }
 
                 if benchmark is not None:
+                    # Offline observations and answers use the API request timeout.
+                    answer_settings = model_settings
                     answer_options = dict(options)
                     answer_options["max_tokens"] = (
                         benchmark["answer_max_tokens"]
@@ -2573,7 +2579,7 @@ class HarnessRuntime:
                     )
                     self._benchmark_model_factories[session.stream_session_id] = (
                         lambda: TemporalVLMInspector(
-                            model_settings, model=model, api_key=api_key,
+                            answer_settings, model=model, api_key=api_key,
                             request_parameters=parameters, **answer_options,
                         )
                     )
@@ -2595,6 +2601,8 @@ class HarnessRuntime:
                             "jpeg_quality": options["jpeg_quality"],
                             "observation_max_tokens": options["max_tokens"],
                             "answer_max_tokens": answer_options["max_tokens"],
+                            "observation_timeout_seconds": model_settings.timeout_seconds,
+                            "answer_timeout_seconds": answer_settings.timeout_seconds,
                             "scene_independent_vlm": self.config.runtime.scene_independent_vlm,
                             "scene_vlm_output_mode": self.config.runtime.scene_vlm_output_mode,
                             "tracking_queue_policy": "durable_ordered",

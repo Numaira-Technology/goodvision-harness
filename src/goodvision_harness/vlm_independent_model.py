@@ -115,19 +115,32 @@ class IndependentVLMInspector(TemporalVLMInspector):
         content = ModelAPIClient.assistant_text(response).strip()
         fenced = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL)
         raw = _json(fenced.group(1) if fenced else content, stage="benchmark_schema")
-        if not isinstance(raw, dict) or set(raw) != {"result", "qa_observations"}:
+        if not isinstance(raw, dict) or not {"result", "qa_observations"} <= raw.keys():
             raise _ResponseValidationError("benchmark_object_required", "benchmark_schema")
-        observations = raw["qa_observations"]
+        rows = raw["qa_observations"]
         ids = {q["qa_id"] for q in job.benchmark_questions}
-        if not isinstance(observations, list) or any(
+        if not isinstance(rows, list) or any(
             not isinstance(row, dict)
-            or set(row) != {"qa_id", "subject_ids", "observation"}
+            or not isinstance(row.get("qa_id"), str)
             or row["qa_id"] not in ids
-            or row["subject_ids"] != []
-            or not isinstance(row["observation"], str)
-            for row in observations
+            or not isinstance(row.get("observation"), str)
+            for row in rows
         ):
             raise _ResponseValidationError("invalid_observation", "benchmark_schema")
+        observations = []
+        for row in rows:
+            observation = {
+                "qa_id": row["qa_id"], "observation": row["observation"],
+                "subject_id_scope": "observation",
+            }
+            # Optional references belong to this response, never to SAM tracks.
+            # Bad reference metadata must not discard otherwise usable text.
+            subject_ids = row.get("subject_ids")
+            if isinstance(subject_ids, list) and all(
+                isinstance(sid, str) for sid in subject_ids
+            ):
+                observation["subject_ids"] = list(subject_ids)
+            observations.append(observation)
         # Reuse the selected live parser (full, compact or information-only).
         # This is a local envelope unwrap, not another model request.
         unwrapped = {"choices": [{"finish_reason": choice.get("finish_reason"),

@@ -183,6 +183,7 @@ def build_answer_evidence(records):
         elif kind == "vlm_report":
             report = row["report"]
             reports.append({"window_index": row["window_index"], "lane": row["lane"],
+                            "request_id": row["request_id"],
                             "start_seconds": row["start_seconds"],
                             "end_seconds": row["end_seconds"],
                             "judgments": report["judgments"],
@@ -206,7 +207,8 @@ def build_answer_evidence(records):
     for event in events.values():
         event["subject_ids"] = sorted({canonical(subject) for subject in event.get("subject_ids", ())})
     for row in observations:
-        row["subject_ids"] = sorted({canonical(subject) for subject in row.get("subject_ids", ())})
+        if row.get("subject_id_scope") != "observation" and "subject_ids" in row:
+            row["subject_ids"] = sorted({canonical(subject) for subject in row["subject_ids"]})
     return {"frames": ordered, "events": list(events.values()),
             "subject_id_merges": merges,
             "observations": sorted(observations, key=lambda row: row["start_seconds"]),
