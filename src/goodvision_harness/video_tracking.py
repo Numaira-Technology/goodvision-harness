@@ -459,9 +459,10 @@ class VideoTrackingHTTPClient:
                 timing.setdefault(
                     f"{phase}_seconds", time.monotonic() - phase_started,
                 )
-            if method == "POST" and url.endswith("/append"):
-                timing["total_seconds"] = time.monotonic() - started
-                log_timing("sam_client_http_timing", **timing)
+            timing["total_seconds"] = time.monotonic() - started
+            timing["method"] = method
+            timing["operation"] = "append" if url.endswith("/append") else "session"
+            log_timing("sam_client_http_timing", **timing)
 
     async def _exchange_timed(
         self,
@@ -482,7 +483,8 @@ class VideoTrackingHTTPClient:
                 follow_redirects=False,
                 trust_env=self._trust_env,
                 headers={"Accept-Encoding": "identity", **self._request_headers},
-                limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
+                # Remote workers can close idle tunnels between video sessions.
+                limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
             )
         timing["phase"] = "payload_prepare"
         prepare_started = time.monotonic()

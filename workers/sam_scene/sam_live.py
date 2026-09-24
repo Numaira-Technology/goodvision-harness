@@ -21,6 +21,9 @@ class CausalPostprocessing:
     """Specialize only forward delivery, retaining native rejection heuristics."""
 
     def initialize_causal_prompt(self, state):
+        # Upstream classifies a one-frame list as an image. This is the first
+        # frame of a continuing video: keep video tracking and object limits.
+        state["is_image_only"] = False
         # The pinned add_prompt also infers frame 0. Re-running propagation at 0
         # would count the same observation twice towards detector confirmation.
         # Install only its audited text/backbone initialization here; the normal

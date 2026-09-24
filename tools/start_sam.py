@@ -163,6 +163,10 @@ def offer_was_unavailable(payload) -> bool:
     """Only recognize explicit capacity/offer refusals, never generic HTTP 400s."""
     if not isinstance(payload, dict):
         return False
+    if payload.get("error") == "invalid_args" and re.search(
+        r"\bno_such_ask\b", str(payload.get("msg", "")), re.IGNORECASE
+    ):
+        return True
     codes = {
         "no_such_ask", "no_such_offer", "ask_not_found", "offer_not_found",
         "ask_unavailable", "offer_unavailable", "machine_unavailable",
