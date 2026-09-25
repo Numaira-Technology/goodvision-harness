@@ -193,7 +193,12 @@ MOT20=25) — always assemble at the manifest's `assemble_fps`, or every
 location/temporal timestamp shifts.
 
 **Answerability (54/80).** This harness answers from its own detectors/tracks, so
-coverage is bounded by what it perceives, not by the runner:
+coverage is bounded by what it perceives, not by the runner. The 54 it can answer
+are packaged as `bench_v1_sample54/` (regenerate with
+`tools/filter_answerable_54.py`); point the run at that directory for a set where
+every question is answerable. The 26 it cannot are documented in
+[`CAPABILITY_GAP.md`](CAPABILITY_GAP.md) — meva/caviar semantic events outside the
+harness's fight/smoking/fall/weapon taxonomy.
 
 | bucket | n | how |
 | --- | --- | --- |
