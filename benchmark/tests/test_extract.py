@@ -10,7 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench.extract import (  # noqa: E402
     answer_question,
     busiest_horizontal_third,
+    count_exact_time,
+    count_first_reaches_max,
+    count_max_duration,
     event_recognition,
+    parse_count_temporal,
     peak_visible_count,
     temporal_event_end,
 )
@@ -140,3 +144,61 @@ def test_dispatch_event_and_temporal():
             public_context={"event_label": "physical_conflict", "event_ordinal": 1})
     assert answer_question(q1, cap) == "yes"
     assert answer_question(q4, cap) == "18.0"
+
+
+# ----- count-over-time temporal (mot17/mot20) -----
+
+def test_parse_count_temporal_shapes():
+    p = parse_count_temporal("浏览完整视频后，全画面第一次恰好出现15名可见有效行人是在第几秒？")
+    assert p == {"kind": "first_exact", "n": 15, "third": None}
+    p = parse_count_temporal("画面左侧三等分区域最后一次恰好出现3名可见有效行人是在第几秒？")
+    assert p == {"kind": "last_exact", "n": 3, "third": 0}
+    p = parse_count_temporal("画面右侧三等分区域内可见有效行人连续达到或超过4名的最长时段持续多少秒？")
+    assert p == {"kind": "max_duration", "n": 4, "third": 2}
+    p = parse_count_temporal("画面中央三等分区域人数第一次达到单画面最大值是在第几秒？")
+    assert p == {"kind": "first_max", "n": None, "third": 1}
+    # a fight-event temporal must NOT match the count parser
+    assert parse_count_temporal("When does the first physical conflict end?") is None
+
+
+def _f(t, frame, centers):
+    return {"t": t, "frame": frame, "subjects": [_subj(f"s{i}", cx, 0.5) for i, cx in enumerate(centers)]}
+
+
+def test_count_exact_first_and_last():
+    cap = _cap(frames=[
+        _f(1.0, 1, [0.5]),            # 1
+        _f(2.0, 2, [0.2, 0.5]),       # 2  <- first exactly 2
+        _f(3.0, 3, [0.2, 0.5, 0.8]),  # 3
+        _f(4.0, 4, [0.2, 0.5]),       # 2  <- last exactly 2
+    ])
+    assert count_exact_time(cap, 2, None, "first") == 2
+    assert count_exact_time(cap, 2, None, "last") == 4
+
+
+def test_count_exact_respects_region():
+    cap = _cap(frames=[_f(5.0, 1, [0.1, 0.5, 0.9])])  # 1 per third
+    assert count_exact_time(cap, 1, 1, "first") == 5   # 中央 third has exactly 1
+
+
+def test_count_max_duration_longest_run():
+    cap = _cap(frames=[
+        _f(0.0, 1, [0.5, 0.6]),        # >=2
+        _f(1.0, 2, [0.5, 0.6, 0.7]),   # >=2  run 0..1 = 1.0s
+        _f(2.0, 3, [0.5]),             # <2 break
+        _f(3.0, 4, [0.5, 0.6]),        # >=2
+        _f(5.0, 5, [0.5, 0.6]),        # >=2  run 3..5 = 2.0s (longest)
+    ])
+    assert count_max_duration(cap, 2, None) == 2
+
+
+def test_count_first_reaches_max():
+    cap = _cap(frames=[_f(0.0, 1, [0.5]), _f(1.0, 2, [0.5, 0.6]), _f(2.0, 3, [0.5, 0.6])])
+    assert count_first_reaches_max(cap, None) == 1  # peak=2 first seen at t=1
+
+
+def test_dispatch_count_temporal_integer_seconds():
+    cap = _cap(frames=[_f(1.0, 1, [0.5]), _f(2.0, 2, [0.2, 0.5]), _f(3.0, 3, [0.2, 0.5, 0.8])])
+    q = _q(capability="temporal_questions", answer_type="numeric_seconds",
+           question="浏览完整视频后，全画面第一次恰好出现2名可见有效行人是在第几秒？请只回答整数秒。")
+    assert answer_question(q, cap) == "2"

@@ -168,6 +168,75 @@ python -m bench.run_bench \
 {"qa_id": "benchmark800_qa_0001_temporal_questions", "prediction": "18.0"}
 ```
 
+## Batch run — the 80-question diversity set
+
+The 4-question sample above is the wiring proof. The real evaluation set is an
+80-question, 74-video stratified sample (`bench_v1_sample80/`, regenerate with
+`tools/sample_bench_v1_80.py`) that covers all 9 source datasets, all 4
+capabilities, all 4 answer formats, and all 18 feasible (dataset × capability)
+cells. Running it is the same capture → extract core, looped over 74 videos.
+
+**1. What to fetch, and expected coverage.** Generate the media fetch list (with
+per-sequence assembly fps) and the answerability report:
+
+```bash
+cd benchmark
+python -m bench.manifest \
+  --questions ../bench_v1_sample80/questions.jsonl \
+  --media     ../bench_v1_sample80/media.jsonl \
+  --fetch-out fetch_manifest.tsv --report-out answerability.tsv
+```
+
+`fetch_manifest.tsv` lists each media item's `drive_file_id` / path + `sha256` to
+download and verify. **fps varies per sequence** (MOT17-02=30, MOT17-05=14,
+MOT20=25) — always assemble at the manifest's `assemble_fps`, or every
+location/temporal timestamp shifts.
+
+**Answerability (54/80).** This harness answers from its own detectors/tracks, so
+coverage is bounded by what it perceives, not by the runner:
+
+| bucket | n | how |
+| --- | --- | --- |
+| `cli_fight` | 15 | fight event_recognition + fight-end temporal — no GPU, CLI path |
+| `gpu_tracks` | 39 | counting, location, and MOT count-over-time temporal — SAM capture |
+| `no_detector` | 26 | meva/caviar **semantic events** (talks-to-person, opens-door, walking, …) — the scene engine has no such detector, so these are **structurally unanswerable** here and are left unpredicted rather than guessed |
+
+The 6 MOT "count-over-time" temporal questions (e.g. *第一次恰好出现 N 名行人是第几秒*)
+are computed from the SAM per-frame track set by `extract.parse_count_temporal`
++ `count_exact_time` / `count_max_duration` / `count_first_reaches_max` — unit
+tested, no GPU.
+
+**2. Generate the run plan** (one bash script for all 74 videos, in source order,
+reusing one harness session):
+
+```bash
+python -m bench.run_batch \
+  --media      ../bench_v1_sample80/media.jsonl \
+  --questions  ../bench_v1_sample80/questions.jsonl \
+  --media-root /data/benchmark_v1 \
+  --base-url   http://127.0.0.1:7900 \
+  --caps caps --out run_batch.sh
+```
+
+Every line it emits is a command this README already defines (`replay/*.sh`,
+`bench.capture_live`). Start MediaMTX + one harness session
+(`SCENE_ENGINE_MODE=active PERSON_TRACKING_ENABLED=true`, ingesting
+`rtsp://localhost:8554/bench`), review the script, then `bash run_batch.sh` on the
+GPU host. It writes `caps/<video_id>.json` per video.
+
+**3. Predictions** — join captures to questions:
+
+```bash
+python -m bench.run_bench \
+  --questions ../bench_v1_sample80/questions.jsonl \
+  --media     ../bench_v1_sample80/media.jsonl \
+  --captures  caps --output predictions.jsonl
+```
+
+`run_bench` skips (does not fabricate) any question whose capture lacks the needed
+evidence, so the 26 `no_detector` items simply produce no line — tell the eval
+side to score them as unanswered.
+
 ## Tests
 
 ```bash
