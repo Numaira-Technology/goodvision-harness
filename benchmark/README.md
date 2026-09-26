@@ -168,6 +168,19 @@ python -m bench.run_bench \
 {"qa_id": "benchmark800_qa_0001_temporal_questions", "prediction": "18.0"}
 ```
 
+## The recommended set — `bench_v1_core/` (116, optimized)
+
+For scoring the harness, use **`bench_v1_core/`** (regenerate with
+`tools/sample_bench_v1_core.py`), not the sets below. It is sampled **sub-form
+aware** (location is three different tasks — busiest-third, relative-horizontal,
+relative-vertical — each needing its own extractor), balanced for a per-capability
+score (counting 30 / event 30 / location 30 / temporal 26; ~30 each, temporal
+capped by video scarcity), with choice-answer priors balanced against a majority
+baseline (event is exactly 15 yes / 15 no). See `bench_v1_core/SELECTION.md`. The
+80/54 sets below are kept for provenance; the 54 silently mis-answered 11
+relative-position location questions, which `bench_v1_core` fixes via the
+`relative_displacement` extractor.
+
 ## Batch run — the 80-question diversity set
 
 The 4-question sample above is the wiring proof. The real evaluation set is an

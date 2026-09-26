@@ -16,6 +16,7 @@ from bench.extract import (  # noqa: E402
     event_recognition,
     parse_count_temporal,
     peak_visible_count,
+    relative_displacement,
     temporal_event_end,
 )
 from bench.schema import Capture, Question  # noqa: E402
@@ -202,3 +203,55 @@ def test_dispatch_count_temporal_integer_seconds():
     q = _q(capability="temporal_questions", answer_type="numeric_seconds",
            question="浏览完整视频后，全画面第一次恰好出现2名可见有效行人是在第几秒？请只回答整数秒。")
     assert answer_question(q, cap) == "2"
+
+
+# ----- relative-displacement location (relative_horizontal / vertical) -----
+
+def _capwh(frames, w=100.0, h=100.0):
+    return Capture.from_json({"video_id": "v", "fps": 30.0, "duration_seconds": 50.0,
+                              "width": w, "height": h, "frames": frames})
+
+
+def _mv(t, sid, cx, cy):
+    return {"t": t, "frame": int(t * 30), "subjects": [{"id": sid, "bbox": [cx - .05, cy - .05, cx + .05, cy + .05]}]}
+
+
+def test_relative_horizontal_right():
+    cap = _capwh([_mv(0.0, "p", 0.2, 0.4), _mv(40.0, "p", 0.8, 0.4)])
+    ref = (15.0, 35.0, 25.0, 45.0)  # px -> norm center (0.2,0.4), matches p at t=0
+    assert relative_displacement(cap, ref, 0.0, 40.0, "horizontal") == "right"
+
+
+def test_relative_horizontal_same_within_deadband():
+    cap = _capwh([_mv(0.0, "p", 0.50, 0.4), _mv(40.0, "p", 0.51, 0.4)])
+    ref = (45.0, 35.0, 55.0, 45.0)
+    assert relative_displacement(cap, ref, 0.0, 40.0, "horizontal") == \
+        "approximately_same_horizontal_position"
+
+
+def test_relative_vertical_up_is_negative_y():
+    cap = _capwh([_mv(0.0, "p", 0.5, 0.8), _mv(40.0, "p", 0.5, 0.2)])
+    ref = (45.0, 75.0, 55.0, 85.0)
+    assert relative_displacement(cap, ref, 0.0, 40.0, "vertical") == "up"
+
+
+def test_relative_matches_correct_track_of_two():
+    # two people; reference box overlaps the RIGHT one, which then moves left
+    f0 = {"t": 0.0, "frame": 0, "subjects": [
+        {"id": "L", "bbox": [0.05, 0.35, 0.15, 0.45]},
+        {"id": "R", "bbox": [0.75, 0.35, 0.85, 0.45]}]}
+    f1 = {"t": 40.0, "frame": 1200, "subjects": [
+        {"id": "L", "bbox": [0.05, 0.35, 0.15, 0.45]},
+        {"id": "R", "bbox": [0.25, 0.35, 0.35, 0.45]}]}
+    cap = _capwh([f0, f1])
+    ref = (75.0, 35.0, 85.0, 45.0)  # overlaps R
+    assert relative_displacement(cap, ref, 0.0, 40.0, "horizontal") == "left"
+
+
+def test_dispatch_relative_displacement_via_options():
+    cap = _capwh([_mv(0.0, "p", 0.2, 0.4), _mv(40.0, "p", 0.8, 0.4)])
+    q = _q(capability="location_tracking",
+           response_options=["left", "right", "approximately_same_horizontal_position"],
+           public_context={"first_bbox_xyxy": [15.0, 35.0, 25.0, 45.0],
+                           "first_timestamp_sec": 0.0, "last_timestamp_sec": 40.0})
+    assert answer_question(q, cap) == "right"

@@ -44,6 +44,15 @@ def _bbox(box: Any) -> list[float]:
     return [float(v) for v in box]
 
 
+def _opt(src: dict, *keys: str) -> float | None:
+    """First present, non-null numeric value among candidate keys."""
+    for k in keys:
+        v = src.get(k)
+        if v:
+            return float(v)
+    return None
+
+
 def capture(
     base_url: str,
     video_id: str,
@@ -56,6 +65,8 @@ def capture(
     events: dict[str, dict[str, Any]] = {}
     fps = 0.0
     duration: float | None = None
+    width: float | None = None
+    height: float | None = None
     interval = 1.0 / max(poll_hz, 0.1)
     last_change = time.monotonic()
     started = False
@@ -74,6 +85,16 @@ def capture(
             started = True
         scene = payload.get("scene") or {}
         changed = False
+
+        # Source metadata, best-effort across a few known field names. width/height
+        # are needed only to normalize the pixel reference box for relative-
+        # displacement location questions; fps/duration are convenience fields.
+        for src in (status, scene, payload):
+            fps = fps or float(src.get("fps") or src.get("source_fps") or 0.0)
+            width = width or _opt(src, "width", "source_width", "frame_width")
+            height = height or _opt(src, "height", "source_height", "frame_height")
+            d = _opt(src, "duration_seconds", "source_duration_seconds")
+            duration = duration if duration is not None else d
 
         for entity in scene.get("entities", ()):  # per-frame tracked people
             seq = int(entity.get("frame_sequence", -1))
@@ -119,6 +140,8 @@ def capture(
         "video_id": video_id,
         "fps": fps,
         "duration_seconds": duration,
+        "width": width,
+        "height": height,
         "frames": ordered,
         "events": list(events.values()),
     }

@@ -170,6 +170,96 @@ def _third_index(cx: float) -> int:
     return 2
 
 
+# Relative-displacement location: option vocabularies keyed by axis.
+_REL_OPTIONS = {
+    "horizontal": ("left", "right", "approximately_same_horizontal_position"),
+    "vertical": ("up", "down", "approximately_same_vertical_position"),
+}
+# A net center move below this fraction of the frame counts as "approximately
+# the same position". The benchmark's own threshold lives in its private
+# ground-truth generator; this is a documented approximation on the harness side.
+_SAME_TOL_FRAC = 0.03
+
+
+def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _subject_at(capture: Capture, t: float, ref_box: tuple[float, float, float, float]) -> Subject | None:
+    """The subject in the frame nearest time t whose box best matches ref_box."""
+    frames = [f for f in capture.frames if f.subjects]
+    if not frames:
+        return None
+    frame = min(frames, key=lambda f: abs(f.t - t))
+    best, best_score = None, 0.0
+    for s in frame.subjects:
+        score = _iou(s.bbox, ref_box)
+        if score > best_score:
+            best, best_score = s, score
+    if best is not None and best_score > 0.0:
+        return best
+    # No overlap (tracker box drifted): fall back to nearest center.
+    rcx = (ref_box[0] + ref_box[2]) / 2.0
+    rcy = (ref_box[1] + ref_box[3]) / 2.0
+    return min(frame.subjects, key=lambda s: (s.center[0] - rcx) ** 2 + (s.center[1] - rcy) ** 2)
+
+
+def _track_center_at(capture: Capture, subject_id: str, t: float, axis_idx: int) -> float | None:
+    """Center coordinate of a tracked subject in the frame nearest time t."""
+    frames = [f for f in capture.frames if any(s.id == subject_id for s in f.subjects)]
+    if not frames:
+        return None
+    frame = min(frames, key=lambda f: abs(f.t - t))
+    s = next(s for s in frame.subjects if s.id == subject_id)
+    return s.center[axis_idx]
+
+
+def relative_displacement(
+    capture: Capture,
+    ref_box_px: tuple[float, float, float, float],
+    first_t: float,
+    last_t: float,
+    axis: str,
+) -> str:
+    """Net movement of one referenced person along an axis -> option string.
+
+    The reference box is in source pixels; normalize it with the capture frame
+    size, match it to a track at first_t, follow that track to last_t, and report
+    the sign of the net center displacement (with a dead-band for "same").
+    """
+    if capture.width and capture.height:
+        w, h = float(capture.width), float(capture.height)
+        ref = (ref_box_px[0] / w, ref_box_px[1] / h, ref_box_px[2] / w, ref_box_px[3] / h)
+    else:
+        ref = ref_box_px  # assume already normalized
+    axis_idx = 0 if axis == "horizontal" else 1
+    subject = _subject_at(capture, first_t, ref)
+    if subject is None:
+        raise ValueError("no tracked subject to match the reference box")
+    start = _track_center_at(capture, subject.id, first_t, axis_idx)
+    end = _track_center_at(capture, subject.id, last_t, axis_idx)
+    if start is None or end is None:
+        raise ValueError("referenced track not observed at both endpoints")
+    delta = end - start
+    less, more, same = _REL_OPTIONS[axis]
+    if abs(delta) < _SAME_TOL_FRAC:
+        return same
+    # _REL_OPTIONS orders each axis as (negative-dir, positive-dir, same):
+    # horizontal (left, right) with +x = right; vertical (up, down) with +y = down.
+    return more if delta > 0 else less
+
+
 def _last_observed_time(capture: Capture) -> float:
     times = [f.t for f in capture.frames]
     if times:
@@ -207,6 +297,19 @@ def answer_question(question: Question, capture: Capture) -> str:
         return str(peak_visible_count(capture))
 
     if capability == "location_tracking":
+        opts = set(question.response_options or ())
+        # Sub-form 1: relative displacement of one referenced person.
+        if "approximately_same_horizontal_position" in opts:
+            return relative_displacement(
+                capture, tuple(ctx["first_bbox_xyxy"]),
+                float(ctx["first_timestamp_sec"]), float(ctx["last_timestamp_sec"]),
+                "horizontal")
+        if "approximately_same_vertical_position" in opts:
+            return relative_displacement(
+                capture, tuple(ctx["first_bbox_xyxy"]),
+                float(ctx["first_timestamp_sec"]), float(ctx["last_timestamp_sec"]),
+                "vertical")
+        # Sub-form 2: busiest horizontal third over a window.
         params = ctx.get("parameters", {})
         start_s = float(params.get("start_second", ctx.get("clip", {}).get("start_sec", 0.0)))
         end_s = float(params.get("end_second", ctx.get("clip", {}).get("end_sec", 0.0)))

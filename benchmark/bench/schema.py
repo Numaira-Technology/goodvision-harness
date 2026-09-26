@@ -127,6 +127,11 @@ class Capture:
     duration_seconds: float | None
     frames: tuple[Frame, ...] = field(default_factory=tuple)
     events: tuple[SceneEvent, ...] = field(default_factory=tuple)
+    # Source frame size in pixels, when the harness reports it. Needed only to
+    # normalize a pixel-space reference box (relative-displacement location
+    # questions) into the [0,1] track coordinate space.
+    width: float | None = None
+    height: float | None = None
 
     def frames_in_window(self, start_s: float, end_s: float) -> Iterator[Frame]:
         for frame in self.frames:
@@ -144,6 +149,8 @@ class Capture:
             duration_seconds=_opt_float(payload.get("duration_seconds")),
             frames=tuple(Frame.from_json(f) for f in payload.get("frames", ())),
             events=tuple(SceneEvent.from_json(e) for e in payload.get("events", ())),
+            width=_opt_float(payload.get("width")),
+            height=_opt_float(payload.get("height")),
         )
 
     @staticmethod
