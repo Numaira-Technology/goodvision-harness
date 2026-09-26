@@ -82,6 +82,15 @@ def test_full_gpu_delivery_preserves_project_and_persistent_volumes() -> None:
     assert services["rich-label-worker"]["volumes"] == ["rich-models:/models"]
 
 
+def test_tracking_journal_uses_writable_delivery_volume() -> None:
+    service = _load_delivery()["services"]["harness"]
+    assert service["read_only"] is True
+    assert "face-data:/data" in service["volumes"]
+    assert service["environment"]["GOODVISION_TRACKING_SPOOL_DIRECTORY"] == (
+        "/data/tracking-spool"
+    )
+
+
 def test_full_gpu_worker_does_not_publish_host_ports() -> None:
     worker = _load_delivery()["services"]["rich-label-worker"]
     assert "ports" not in worker

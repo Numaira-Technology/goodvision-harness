@@ -11,6 +11,7 @@ services:
     environment:
       HARNESS_CONFIG: /app/config.yaml
       HARNESS_DEPLOYMENT_SETTINGS_PATH: /data/deployment-settings.json
+      GOODVISION_TRACKING_SPOOL_DIRECTORY: /data/tracking-spool
       HARNESS_HOST: 0.0.0.0
       HARNESS_PORT: 8080
       HARNESS_STREAM_URL: "${HARNESS_STREAM_URL:-}"
