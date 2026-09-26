@@ -35,6 +35,7 @@ test selection and coverage rules live in [tests/README.md](../tests/README.md).
 | Document | Scope |
 | --- | --- |
 | [Events and video evidence](architecture/event-evidence.md) | Identity continuity, persistent events, evidence revisions and migration |
+| [通用事件注入方案](architecture/generic-event-injection-20260926.md) | 运行时注入事件定义，取代写死的安全四件套（2026-09-26 设计） |
 
 ## Validation records
 
