@@ -339,6 +339,43 @@ def test_a_request_without_safety_events_never_calls_them_safety_events():
     assert "Requested events. None of these is a safety event" in user_text
 
 
+def _system_text(event_labels, vocabulary=BUILTIN_VOCABULARY):
+    settings = load_config(ROOT / "config.yaml").inference
+    return build_multi_grounding_messages(
+        _WINDOW,
+        system_prompt=settings.system_prompt,
+        prompt=settings.prompt,
+        event_labels=event_labels,
+        append_contract=True,
+        vocabulary=vocabulary,
+    )[0]["content"]
+
+
+def test_the_safety_recall_bias_does_not_reach_everyday_events():
+    """A weapon is worth a false alarm; someone checking a phone is not.
+
+    One shared bias would make everyday events fire constantly and sink
+    benchmark precision, so the trade is stated per group instead.
+    """
+
+    safety_only = _system_text(("fight", "weapon"))
+    mixed = _system_text(("fight", "texts_on_phone"), _injected())
+    everyday_only = _system_text(("texts_on_phone",), _injected())
+
+    # Safety-only requests keep the configured prompt untouched.
+    assert "risk-sensitive multi-label safety-event" in safety_only
+    assert "Treat " not in safety_only
+
+    assert "prefer a false positive over a miss" in mixed
+    assert "Treat fight as safety events" in mixed
+    assert "Treat texts_on_phone as ordinary activity" in mixed
+
+    # Nothing asks for recall when nothing requested is a safety event.
+    assert "prefer false positives" not in everyday_only
+    assert "prefer a false positive over a miss" not in everyday_only
+    assert "Treat texts_on_phone as ordinary activity" in everyday_only
+
+
 def test_a_builtin_only_request_renders_the_unchanged_safety_prompt():
     settings = load_config(ROOT / "config.yaml").inference
     common = {

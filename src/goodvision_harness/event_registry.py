@@ -28,6 +28,11 @@ ANY_TARGET = "any"
 
 SENSITIVITY_LEVELS = ("standard", "high")
 
+# How a miss trades against a false alarm for this event.
+HIGH_RECALL = "high_recall"
+BALANCED_RECALL = "balanced"
+RECALL_POSTURES = (HIGH_RECALL, BALANCED_RECALL)
+
 # The one face-branch event, named here because several modules reference it
 # directly rather than iterating the branch.
 STRANGER_LABEL = "stranger"
@@ -70,6 +75,10 @@ class EventDefinition:
     definition: str = ""
     counter_examples: str = ""
     target_hint: str = ""
+    # Missing a fight is worse than crying wolf; missing someone checking
+    # their phone is not. Everyday events are judged on their merits so one
+    # category's recall preference cannot skew the other's precision.
+    recall: str = BALANCED_RECALL
 
     def __post_init__(self) -> None:
         if not self.label or self.label != self.label.strip().casefold():
@@ -88,6 +97,8 @@ class EventDefinition:
             raise ValueError(
                 "sensitivity options and a default must be supplied together"
             )
+        if self.recall not in RECALL_POSTURES:
+            raise ValueError("event recall must be high_recall or balanced")
         if not self.builtin and not self.definition.strip():
             raise ValueError("an injected event requires a definition")
         if not self.builtin and self.branch != SAFETY_BRANCH:
@@ -116,6 +127,7 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
             "也关注早期冲突和部分遮挡的攻击动作",
         ),
         builtin=True,
+        recall=HIGH_RECALL,
     ),
     EventDefinition(
         label="smoking",
@@ -127,6 +139,7 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
             "允许结合动作和上下文判断，无需认清烟具",  # noqa: RUF001
         ),
         builtin=True,
+        recall=HIGH_RECALL,
     ),
     EventDefinition(
         label="fall",
@@ -138,6 +151,7 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
             "也关注姿态不稳和疑似即将跌倒的迹象",
         ),
         builtin=True,
+        recall=HIGH_RECALL,
     ),
     EventDefinition(
         label="weapon",
@@ -149,6 +163,7 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
             "也关注结合持握或威胁动作的部分遮挡物品",
         ),
         builtin=True,
+        recall=HIGH_RECALL,
     ),
     EventDefinition(
         label=STRANGER_LABEL,
@@ -157,6 +172,7 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
         target=PERSON_TARGET,
         aliases=("unknown_person",),
         builtin=True,
+        recall=HIGH_RECALL,
     ),
 )
 

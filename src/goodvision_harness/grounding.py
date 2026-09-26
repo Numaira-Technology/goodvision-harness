@@ -20,8 +20,10 @@ import numpy as np
 from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
 from .event_registry import (
+    BALANCED_RECALL,
     BUILTIN_EVENTS,
     BUILTIN_VOCABULARY,
+    HIGH_RECALL,
     OBJECT_TARGET,
     PERSON_TARGET,
     SAFETY_BRANCH,
@@ -1083,6 +1085,52 @@ def build_grounding_messages(
     ]
 
 
+_BALANCED_SYSTEM_PROMPT = (
+    "You are a live-camera multi-label event perception module for AI glasses. "
+    "You receive short, chronologically ordered windows of frames sampled from "
+    "a live camera. Use visible objects, human interaction, posture, motion, "
+    "and temporal context, and judge every requested event independently on "
+    "its own evidence. Do not invent motion from a single frame, hidden "
+    "objects, or unseen details. Report uncertainty honestly in confidence and "
+    "description. Answer with a single JSON object - no markdown, no extra "
+    "text."
+)
+
+
+def _recall_posture_rule(definitions: tuple[EventDefinition, ...]) -> str:
+    """Say which events want recall and which want to be judged on evidence.
+
+    The configured prompt asks for a low threshold across the board, which is
+    right for a weapon and wrong for someone checking their phone. Stating the
+    trade per group keeps one category's recall from costing the other's
+    precision.
+    """
+
+    grouped = {
+        posture: ", ".join(
+            definition.label
+            for definition in definitions
+            if definition.recall == posture
+        )
+        for posture in (HIGH_RECALL, BALANCED_RECALL)
+    }
+    parts = []
+    if grouped[HIGH_RECALL]:
+        parts.append(
+            f"Treat {grouped[HIGH_RECALL]} as safety events: use a deliberately "
+            "low detection threshold and prefer a false positive over a miss, "
+            "except where an event states its own minimum evidence requirement."
+        )
+    if grouped[BALANCED_RECALL]:
+        parts.append(
+            f"Treat {grouped[BALANCED_RECALL]} as ordinary activity rather than "
+            "safety risks, so no recall preference applies. Report one only "
+            "when its stated criteria are visibly met, and answer false when "
+            "they are not."
+        )
+    return " ".join(parts)
+
+
 def _injected_box_rule(definition: EventDefinition) -> str:
     # target_hint is a caller-written noun phrase such as "the phone", so it is
     # placed after "of" rather than before a noun that would need an article.
@@ -1144,11 +1192,8 @@ def build_multi_grounding_messages(
     rendered into the request instead.
     """
 
-    injected = tuple(
-        definition
-        for definition in vocabulary.resolve(event_labels)
-        if not definition.builtin
-    )
+    requested = vocabulary.resolve(event_labels)
+    injected = tuple(item for item in requested if not item.builtin)
     rendered_events = ", ".join(event_labels)
     if event_sensitivities is not None:
         event_sensitivities = normalize_event_sensitivities(
@@ -1175,9 +1220,17 @@ def build_multi_grounding_messages(
         f"f{frame.sample_index}={frame.timestamp_seconds:.3f}s"
         for frame in window.frames
     )
+    balanced = any(item.recall == BALANCED_RECALL for item in requested)
     policy_system_prompt = _system_prompt_with_evidence_rules(
-        system_prompt, event_labels, event_sensitivities,
+        # The configured prompt is written for safety events and bakes in a
+        # recall preference that cannot be stated per event. Swap in a neutral
+        # base, as the sensitivity path already does, and state the trade below.
+        _BALANCED_SYSTEM_PROMPT if balanced else system_prompt,
+        event_labels,
+        event_sensitivities,
     )
+    if balanced:
+        policy_system_prompt += f"\n{_recall_posture_rule(requested)}"
     system_text = (
         f"{policy_system_prompt}\n"
         f"{BILINGUAL_DESCRIPTION_RULE}\n"
