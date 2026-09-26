@@ -1,0 +1,9 @@
+# Isolated local benchmark only; do not install into the serving environment.
+rfdetr==1.11.0
+ultralytics==8.4.162
+torch==2.14.0
+torchvision==0.29.0
+numpy==2.5.3
+scipy==1.18.1
+opencv-python==5.0.0.93
+psutil==7.2.2

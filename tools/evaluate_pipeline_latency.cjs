@@ -10,6 +10,7 @@
 "use strict";
 const fs=require("node:fs"),path=require("node:path"),assert=require("node:assert/strict");
 const {chromium}=require("playwright");
+const crypto=require("node:crypto");
 const args={};for(let i=2;i<process.argv.length;i+=2)args[process.argv[i].slice(2)]=process.argv[i+1];
 assert.ok(args.video&&args.output&&args.url&&args["video-url"],"Required: --video --video-url --output --url");
 assert.equal(new URL(args["video-url"]).origin,new URL(args.url).origin,"Video must be served on the service origin");
@@ -18,11 +19,15 @@ assert.ok(fs.statSync(video).isFile(),"Video file must exist");
 assert.ok(!fs.existsSync(path.join(out,"browser-report.json")),"Use a fresh output directory for each trial");
 fs.mkdirSync(out,{recursive:true});
 const log=(name,row)=>fs.appendFileSync(path.join(out,name+".jsonl"),JSON.stringify(row)+"\n");
-const report={kind:"full_video_production_browser_controller_real_models",started_at:new Date().toISOString(),errors:[],snapshots:[]};
+const report={kind:"full_video_production_browser_controller_real_models",started_at:new Date().toISOString(),errors:[],snapshots:[],
+  video_sha256:crypto.createHash("sha256").update(fs.readFileSync(video)).digest("hex")};
 const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.stringify(report,null,2));
 (async()=>{
-  const browser=await chromium.launch({executablePath:args.chrome||"C:/Program Files/Google/Chrome/Application/chrome.exe",headless:true,
-    args:["--autoplay-policy=no-user-gesture-required","--disable-background-timer-throttling","--disable-renderer-backgrounding","--disable-backgrounding-occluded-windows"]});
+  const platformChrome=process.platform==="darwin"?"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome":process.platform==="win32"?"C:/Program Files/Google/Chrome/Application/chrome.exe":undefined;
+  const browser=await chromium.launch({executablePath:args.chrome||(platformChrome&&fs.existsSync(platformChrome)?platformChrome:undefined),headless:args.headful!=="true",
+    args:["--autoplay-policy=no-user-gesture-required","--disable-background-timer-throttling","--disable-renderer-backgrounding","--disable-backgrounding-occluded-windows",
+      ...(args["window-position"]?["--window-position="+args["window-position"]]:[])]});
+  report.browser_version=browser.version();
   let page,active=false,readers=[],abort=new AbortController();
   async function receive(name,route){
     try{
@@ -39,6 +44,30 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
   }
   try{
     page=await browser.newPage({viewport:{width:1440,height:1050}});
+    if(args["record-canvas"]==="true"){
+      await page.exposeFunction("saveRecordingChunk",base64=>{
+        fs.appendFileSync(path.join(out,"canvas-recording.webm"),Buffer.from(base64,"base64"));
+      });
+    }
+    if(args["local-video"]==="true"){
+      // Keep source playback local while all Harness HTTP/WS traffic uses the
+      // forwarded cloud service. Support byte ranges without transcoding.
+      await page.route(args["video-url"],async route=>{
+        const size=fs.statSync(video).size,range=route.request().headers().range;
+        let start=0,end=size-1,status=200;
+        if(range){
+          const match=/^bytes=(\d+)-(\d*)$/.exec(range);
+          if(!match||Number(match[1])>=size){await route.fulfill({status:416,headers:{"Content-Range":`bytes */${size}`}});return;}
+          start=Number(match[1]);end=match[2]?Math.min(Number(match[2]),size-1):end;status=206;
+          if(end<start){await route.fulfill({status:416});return;}
+        }
+        const handle=await fs.promises.open(video,"r"),body=Buffer.alloc(end-start+1);
+        try{let read=0;while(read<body.length){const result=await handle.read(body,read,body.length-read,start+read);assert.ok(result.bytesRead);read+=result.bytesRead;}}
+        finally{await handle.close();}
+        await route.fulfill({status,body,headers:{"Content-Type":"video/mp4","Accept-Ranges":"bytes",
+          "Content-Length":String(body.length),...(status===206?{"Content-Range":`bytes ${start}-${end}/${size}`}:{})}});
+      });
+    }
     await page.context().grantPermissions(["local-network-access"],{origin:args.url});
     page.on("pageerror",e=>report.errors.push({kind:"page",message:e.message}));
     page.on("console",e=>{if(e.type()==="error")report.errors.push({kind:"console",message:e.text()});});
@@ -65,9 +94,11 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
           const push=this.frames.push.bind(this.frames),present=this.frames.notePresented.bind(this.frames);
           this.frames.push=frame=>{window.__experimentRows.push({kind:"capture",at:Date.now(),sequence:frame.sequence,pts:frame.timestamp,
             video_pts:window.__experimentVideo.currentTime});return push(frame);};
-          this.frames.notePresented=(frame,now)=>{const o=this.overlays.get(frame.sequence),subjects=o?.subjects||[];
+          this.frames.notePresented=(frame,now)=>{const o=this.overlays.get(frame.sequence),subjects=(o?.subjects||[]).filter(s=>s.target_sequence===frame.sequence);
             window.__experimentRows.push({kind:"present",at:Date.now(),sequence:frame.sequence,pts:frame.timestamp,
               latency_seconds:(now-frame.capturedAt)/1000,coverage:o?.coverage||"not_ready",all_subjects_present:o?.all_subjects_present===true,
+              counted_complete:subjects.length>0&&o?.coverage==="anchored"&&subjects.every(s=>s.complete!==false),
+              counted_continuous:o?.all_subjects_present===true&&subjects.length===o.subjects.length&&subjects.every(s=>s.polygons?.length&&(s.complete||s.approximate)),
               exact:o?.exact===true,anchor_age_seconds:o?.anchor_age_seconds,subjects:subjects.map(s=>({track_id:s.track_id,
                 complete:s.complete,approximate:s.approximate,method:s.method,alert:s.alert,warning:s.warning,
                 display_name:this.identities.nameAt(s,frame.timestamp),event_labels:s.event_labels,anchor_sequence:s.anchor_sequence}))});
@@ -76,14 +107,53 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
         }
       };
     });
+    // Check the actual server policy before opening a real analysis session.
+    // Playback alone cannot detect a disabled route or a silently changed buffer.
+    const displayConfig=await page.evaluate(async()=>{
+      const response=await fetch('/v1/ui/info');
+      if(!response.ok)throw new Error('Cannot read production browser configuration');
+      const config=(await response.json()).local_camera_display;
+      if(!config?.enabled)throw new Error('Production browser contour path is disabled');
+      if(!GoodvisionCameraDisplay.BrowserController.supported(__experimentVideo))
+        throw new Error('Production browser contour APIs are unavailable');
+      return config;
+    });
+    const benchmarkResponse=await fetch(args.url+"/benchmark/config");
+    if(benchmarkResponse.ok){
+      report.benchmark=await benchmarkResponse.json();
+      const expectedDelay=report.benchmark.delay??report.benchmark.fixed_main?.effective_display_delay_seconds;
+      assert.equal(displayConfig.delay_seconds,expectedDelay,"Browser display delay differs from the benchmark job");
+    }
+    report.display_preflight=displayConfig;
     if(args.preflight==="true"){
+      await page.evaluate(async config=>{
+        const Controller=GoodvisionCameraDisplay.BrowserController;
+        const ready=await Promise.race([Controller.warmupMotion(),new Promise(resolve=>setTimeout(()=>resolve(false),20000))]);
+        if(!ready)throw new Error('Production contour motion worker failed to initialize');
+        // Open the real transport but never send "start" or upload video frames.
+        const socket=new WebSocket(location.origin.replace('http','ws')+'/ws');
+        try{
+          await new Promise((resolve,reject)=>{
+            const timer=setTimeout(()=>reject(new Error('Preflight WebSocket timeout')),10000);
+            socket.onerror=()=>{clearTimeout(timer);reject(new Error('Preflight WebSocket failed'));};
+            socket.onmessage=e=>{if(JSON.parse(e.data).type==='hello'){clearTimeout(timer);resolve();}};
+          });
+          const controller=new Controller({video:__experimentVideo,canvas:document.querySelector('#camera-display'),config,
+            settings:{max_image_side:config.analysis_max_image_side,jpeg_quality:config.analysis_jpeg_quality,sample_fps:config.analysis_sample_fps},socket});
+          controller.stop();
+        }finally{
+          await new Promise(resolve=>{socket.onclose=resolve;socket.close();setTimeout(resolve,2000);});
+          Controller.discardWarmup();
+        }
+      },displayConfig);
       report.camera_preflight=await page.evaluate(()=>({duration:__experimentVideo.duration,currentTime:__experimentVideo.currentTime,
         paused:__experimentVideo.paused,width:__experimentVideo.videoWidth,height:__experimentVideo.videoHeight}));
-      console.log(JSON.stringify(report.camera_preflight));return;
+      report.kind="video_and_contour_startup_preflight_no_analysis";
+      assert.equal(report.errors.length,0,"Browser startup recorded errors; inspect browser-report.json");
+      report.preflight=true;console.log(JSON.stringify({video:report.camera_preflight,display:displayConfig}));return;
     }
     active=true;
-    await page.evaluate(async()=>{
-      const info=await fetch('/v1/ui/info').then(r=>r.json());
+    await page.evaluate(async displayConfig=>{
       const ws=window.__experimentSocket=new WebSocket(location.origin.replace('http','ws')+'/ws');
       await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject;});
       const session=await new Promise((resolve,reject)=>{
@@ -93,20 +163,43 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
         ws.send(JSON.stringify({type:'start',mode:'camera',analysis_mode:'multi',features:['fight','smoking','fall','weapon','stranger'],
           event_sensitivities:{fight:'standard',smoking:'high',fall:'standard',weapon:'standard'},dry_run:false}));
       });
-      const config={...info.local_camera_display,stream_session_id:session.stream_session_id,generation:session.generation,crop_version:0};
-      if(!config.enabled)throw new Error('Production browser contour path is disabled');
+      const config={...displayConfig,stream_session_id:session.stream_session_id,generation:session.generation,crop_version:0};
       const c=new GoodvisionCameraDisplay.BrowserController({video:__experimentVideo,canvas:document.querySelector('#camera-display'),config,
         settings:{max_image_side:config.analysis_max_image_side,jpeg_quality:config.analysis_jpeg_quality,sample_fps:config.analysis_sample_fps},socket:ws,
         onFailure:message=>__experimentRows.push({kind:'failure',at:Date.now(),message})});
       ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='camera_display_metadata')c.receiveMetadata(m,{transport:'websocket'});
         else if(m.type==='camera_frame_ack')c.acknowledgeUpload(m);
         else if(m.type==='error')__experimentRows.push({kind:'failure',at:Date.now(),message:m.message});};
-      c.start();
-    });
+    },displayConfig);
     report.config=await page.evaluate(()=>({config:__experimentController.config,settings:__experimentController.settings,video_duration:__experimentVideo.duration}));
     readers=[receive("vlm","/v1/vlm/results/events"),receive("results","/v1/results/events")];
+    if(args["sync-dir"]){
+      const sync=path.resolve(args["sync-dir"]),lane=args.lane||"1";
+      fs.writeFileSync(path.join(sync,`ready-${lane}.json`),JSON.stringify({duration:report.config.video_duration,at:Date.now()}));
+      const gate=path.join(sync,"start.json"),deadline=Date.now()+180000;
+      while(!fs.existsSync(gate)){assert.ok(Date.now()<deadline,"Playback barrier timed out");await new Promise(r=>setTimeout(r,50));}
+      const {start_at}=JSON.parse(fs.readFileSync(gate,"utf8"));
+      await new Promise(r=>setTimeout(r,Math.max(0,start_at-Date.now())));
+    }
     report.play_started_at=Date.now();
-    await page.evaluate(async()=>{__experimentVideo.currentTime=0;await __experimentVideo.play();});
+    await page.evaluate(async record=>{
+      if(record){
+        const canvas=document.querySelector('#camera-display');
+        canvas.width=__experimentVideo.videoWidth;canvas.height=__experimentVideo.videoHeight;
+        const stream=canvas.captureStream(30);
+        const mime='video/webm;codecs=vp8';
+        if(!MediaRecorder.isTypeSupported(mime))throw new Error('Canvas recording codec unavailable');
+        const recorder=window.__experimentRecorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5000000});
+        window.__recordWrites=Promise.resolve();
+        recorder.ondataavailable=e=>{if(e.data.size)__recordWrites=__recordWrites.then(async()=>{
+          const buffer=new Uint8Array(await e.data.arrayBuffer());let binary='';
+          for(let i=0;i<buffer.length;i+=32768)binary+=String.fromCharCode(...buffer.subarray(i,i+32768));
+          await saveRecordingChunk(btoa(binary));
+        });};
+        recorder.start(2000);
+      }
+      __experimentController.start();__experimentVideo.currentTime=0;await __experimentVideo.play();
+    },args["record-canvas"]==="true");
     let endedAt=null,lastStatus=0,lastShot=-20;
     const deadline=Date.now()+(report.config.video_duration+report.config.config.delay_seconds+45)*1000;
     while(Date.now()<deadline){
@@ -114,7 +207,7 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
       const sample=await page.evaluate(()=>({at:Date.now(),source:__experimentVideo.currentTime,ended:__experimentVideo.ended,
         stats:__experimentController.snapshot(),rows:__experimentRows.splice(0)}));
       for(const row of sample.rows){log("frames",row);if(row.kind==="failure")report.errors.push(row);}delete sample.rows;report.snapshots.push(sample);
-      if(sample.source-lastShot>=15){
+      if(args["screenshots"]!=="false"&&sample.source-lastShot>=15){
         await page.locator("#camera-display").screenshot({path:path.join(out,`display-${Math.floor(sample.source)}s.png`),timeout:8000});lastShot=sample.source;
       }
       if(Date.now()-lastStatus>5000){
@@ -129,7 +222,12 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
     assert.ok(endedAt,"The complete video must reach EOF");
     report.final=await page.evaluate(()=>__experimentController.snapshot());
     assert.equal(report.final.buffered_frames,0,"All buffered video frames must be presented");
-    await page.locator("#camera-display").screenshot({path:path.join(out,"final-display.png"),timeout:10000});
+    if(args["record-canvas"]==="true")await page.evaluate(async()=>{
+      const recorder=__experimentRecorder;
+      await new Promise(resolve=>{recorder.onstop=resolve;recorder.stop();});
+      await __recordWrites;for(const track of recorder.stream.getTracks())track.stop();
+    });
+    if(args["screenshots"]!=="false")await page.locator("#camera-display").screenshot({path:path.join(out,"final-display.png"),timeout:10000});
     await page.evaluate(async()=>{await __experimentController.drain();__experimentSocket.send(JSON.stringify({type:'stop'}));__experimentController.stop();});active=false;
     for(let i=0;i<70;i++){
       const s=await fetch(args.url+"/v1/status?lightweight=true",{signal:AbortSignal.timeout(6000)}).then(r=>r.json());

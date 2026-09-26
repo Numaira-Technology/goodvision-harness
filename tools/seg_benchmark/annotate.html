@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>人物轮廓标注</title>
+<style>
+body{margin:24px;background:#111b27;color:#eef4ff;font:15px system-ui;max-width:1200px}
+button,input,select{font:inherit;padding:8px;margin:4px;border-radius:6px}
+button{cursor:pointer;background:#c6e4ff;color:#102338;border:0}
+canvas{max-width:100%;height:auto;border:1px solid #789;cursor:crosshair}
+.bar{display:flex;align-items:center;flex-wrap:wrap}#status{color:#a9d4ff}
+</style>
+<h1>人物轮廓标注</h1>
+<p>沿人物可见边界逐点点击 →「完成人物」。一个人物被遮挡成多块时，用「追加到上一人物」。
+标全画面所有人物后，点击「审核本帧」。无人帧也需审核。未审核帧不会当成无人。</p>
+<p>页面只在本地处理图片。离开前导出 JSON；刷新不会自动保存。导出的文件可再次导入继续编辑。</p>
+<div class="bar">
+<button id="prev">上一帧</button><select id="frame"></select><button id="next">下一帧</button>
+<button id="undo">撤销点</button><button id="person">完成人物</button>
+<button id="component">追加到上一人物</button><button id="remove">删除最后人物</button>
+<button id="review">审核本帧</button><button id="unreview">取消审核</button>
+</div>
+<p id="status"></p><canvas id="canvas"></canvas>
+<div class="bar"><button id="export">导出 annotations.json</button>
+<label>导入已保存标注 <input type="file" id="import" accept=".json"></label></div>
+<script>
+const data = __DATASET_JSON__;
+const frames=data.manifest.frames;
+let annotations={schema:1,dataset_sha256:data.dataset_sha256,frames:{}},index=0,points=[],dirty=false;
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d'),picture=new Image();
+const select=document.getElementById('frame');
+frames.forEach((f,i)=>{const option=document.createElement('option');option.value=i;
+  option.textContent=`${f.id} · ${f.timestamp.toFixed(2)}s`;select.append(option)});
+function record(){return annotations.frames[frames[index].id]??={reviewed:false,people:[]}}
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(picture,0,0);
+  const current=record();
+  current.people.forEach((person,i)=>person.forEach(poly=>{
+    ctx.strokeStyle=`hsl(${i*89%360} 90% 65%)`;ctx.fillStyle=`hsl(${i*89%360} 90% 65% / .16)`;
+    ctx.lineWidth=2;ctx.beginPath();poly.forEach(([x,y],j)=>j?ctx.lineTo(x,y):ctx.moveTo(x,y));
+    ctx.closePath();ctx.fill();ctx.stroke();ctx.font='20px system-ui';ctx.fillStyle='#fff';
+    ctx.fillText(String(i+1),poly[0][0],poly[0][1]);
+  }));
+  ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.beginPath();
+  points.forEach(([x,y],j)=>j?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.stroke();
+  points.forEach(([x,y])=>{ctx.fillStyle='#fff';ctx.fillRect(x-2,y-2,4,4)});
+  const done=Object.values(annotations.frames).filter(f=>f.reviewed).length;
+  document.getElementById('status').textContent=`${index+1}/${frames.length} · 当前 ${current.people.length} 人 · `+
+    `${current.reviewed?'已审核':'未审核'} · 全部已审核 ${done}/${frames.length} · ${dirty?'有未导出修改':'已导出或尚未修改'}`;
+}
+function load(i){index=Math.max(0,Math.min(frames.length-1,i));select.value=index;points=[];
+  canvas.width=frames[index].width;canvas.height=frames[index].height;picture.src=frames[index].image}
+picture.onload=draw;
+canvas.onclick=e=>{const box=canvas.getBoundingClientRect();
+  points.push([Math.min(canvas.width-1,Math.max(0,Math.round((e.clientX-box.left)*canvas.width/box.width))),
+    Math.min(canvas.height-1,Math.max(0,Math.round((e.clientY-box.top)*canvas.height/box.height)))]);
+  record().reviewed=false;dirty=true;draw()};
+function finish(append){if(points.length<3){alert('至少需要 3 个点');return}
+  const current=record();if(append&&!current.people.length){alert('请先完成人物');return}
+  if(append)current.people.at(-1).push(points);else current.people.push([points]);
+  points=[];current.reviewed=false;dirty=true;draw()}
+function navigate(i){if(points.length&&!confirm('当前未完成轮廓将丢弃，继续？'))return;load(i)}
+document.getElementById('prev').onclick=()=>navigate(index-1);
+document.getElementById('next').onclick=()=>navigate(index+1);
+select.onchange=()=>{const next=Number(select.value);select.value=index;navigate(next)};
+document.getElementById('undo').onclick=()=>{points.pop();draw()};
+document.getElementById('person').onclick=()=>finish(false);
+document.getElementById('component').onclick=()=>finish(true);
+document.getElementById('remove').onclick=()=>{record().people.pop();record().reviewed=false;dirty=true;draw()};
+document.getElementById('review').onclick=()=>{if(points.length){alert('先完成当前轮廓');return}
+  record().reviewed=true;dirty=true;draw()};
+document.getElementById('unreview').onclick=()=>{record().reviewed=false;dirty=true;draw()};
+document.getElementById('export').onclick=()=>{if(points.length){alert('请先完成当前轮廓');return}
+  const url=URL.createObjectURL(new Blob([JSON.stringify(annotations,null,2)],{type:'application/json'}));
+  const a=document.createElement('a');a.href=url;a.download='annotations.json';a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);dirty=false;draw()};
+document.getElementById('import').onchange=async e=>{try{
+  const value=JSON.parse(await e.target.files[0].text());
+  if(value.schema!==1||value.dataset_sha256!==data.dataset_sha256||!value.frames)
+    throw Error('文件不属于当前样本集');
+  if(dirty&&!confirm('导入将覆盖当前未导出的修改，继续？'))return;
+  annotations=value;dirty=false;points=[];draw();
+}catch(error){alert(error.message)}};
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
+load(0);
+</script></html>
