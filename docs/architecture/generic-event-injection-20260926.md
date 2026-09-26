@@ -90,8 +90,10 @@ class EventDefinition:
 ### 3.2 三处注入入口
 
 - **配置注入**：`config.yaml` 新增 `events.definitions:` 列表，字段与 `EventDefinition` 对齐。适合长期固定的自定义事件词表。
-- **会话注入**：`POST /v1/sessions/start` 的 payload 新增 `event_definitions` 数组，与已有的 `features` 配合——`features` 说"这次要测哪些"，`event_definitions` 说"表外的那些是什么意思"。会话创建后定义冻结，与现有的模型路由冻结策略一致。
+- **会话选择**：`POST /v1/sessions/start` 已有的 `features` 数组从词表里挑本次要测哪些，词表外的标签一律 `unsupported feature`。
 - **benchmark 注入**：离线 benchmark 按当前视频涉及的题目，自动带上对应事件定义（见 3.6）。
+
+> 2026-09-26 阶段二实施修正：原计划的第三个入口——`POST /v1/sessions/start` 的 `event_definitions` 数组——没有做。部署级词表 + 会话级 `features` 子集选择已经覆盖了 benchmark 的需求（每个视频只需挑子集，不需要现场造新定义），而请求级定义注入会把一段自由文本从 HTTP 边界直送模型 prompt，风险与收益不成正比。若将来确有需要再加，`vocabulary_from_json` 的校验已经按"不可信输入"写好，接上即可。
 
 ### 3.3 校验改造
 
@@ -141,7 +143,11 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 
 **阶段二：注入入口 + prompt 渲染。** 打通 `config.yaml` 与会话 payload 两个注入口，`build_multi_grounding_messages` 和 `build_temporal_messages` 改为从定义渲染。验收：用 `DryRunMultiGroundingClient` 注入一个自定义事件（如 `texts_on_phone`）跑通端到端，检查 prompt 里出现了该事件的判据与出框指引，响应能被解析进事件时间线并走完 `suspected → confirmed → ended`。
 
-**阶段三：场景级事件。** `requires_subject=False` 路径、事件键退化、结束规则调整。验收：注入一个 `scene` 类事件，确认时间线三个时间戳齐全、不污染 person registry、能正常结束。
+> 阶段二实际交付：`events.definitions` 配置注入、`EventVocabulary` 贯穿 `config → service → grounding`、`build_multi_grounding_messages` 渲染注入事件的判据/反例/出框指引、`_normalize_features` 与能力接口按词表放行。
+>
+> **未交付、且是阶段三第一件事**：生命周期还进不去。`scene_state.py:1240` 的 `_submit_event` 仍然拿 `_EVENT_LABELS`（只有内置五件套）卡 `event_label`，`scene_inspection._validate_job` 同理。也就是说注入事件现在能被提问、能渲进 prompt、能拿到模型判定，但那条判定会被事件状态机拒收，走不到 `confirmed / ended`，temporal 类题目答不了。把 `EventVocabulary` 接进 `SceneState` 与 `scene_inspection`，和场景级事件（`requires_subject=False`）改的是同一条路径，合并到阶段三一起做。`build_temporal_messages` 的定义渲染同理。
+
+**阶段三：打通生命周期 + 场景级事件。** 先把 `EventVocabulary` 接进 `SceneState._submit_event` 与 `scene_inspection._validate_job`，让注入事件进得了状态机；再做 `requires_subject=False` 路径、事件键退化、结束规则调整，以及 `build_temporal_messages` 按定义渲染。验收：注入一个 person 类事件走完 `suspected → confirmed → ended` 且取证归档正常；再注入一个 `scene` 类事件，确认时间线三个时间戳齐全、不污染 person registry、能正常结束。
 
 **阶段四：benchmark 接入。** 事件词表 YAML + runner 侧自动注入 + `EVENT_TARGET_TO_HARNESS_LABEL` 泛化。验收：对之前被剔除的那批题目跑一轮离线 benchmark，与"剔除前 / 剔除后"两个基线对比覆盖率与得分。
 

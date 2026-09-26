@@ -308,3 +308,8 @@ events:
   queue_size: 512
   encoder_timeout_seconds: 10.0
   ffmpeg_path: ffmpeg
+  # Events beyond the built-in fight / smoking / fall / weapon / stranger.
+  # Each entry joins the vocabulary a session selects from through `features`
+  # and runs the same confirm / end / archive lifecycle. Fields and a worked
+  # example: docs/guides/configuration.md, "Injecting custom events".
+  definitions: []

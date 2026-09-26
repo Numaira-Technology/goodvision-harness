@@ -12,7 +12,7 @@ it live near the bottom of the import graph.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 # Which detector branch owns the event. Safety events are judged together by
@@ -64,6 +64,12 @@ class EventDefinition:
     # lookups only. They are not detectable labels in their own right.
     aliases: tuple[str, ...] = ()
     builtin: bool = False
+    # Prompt text. Built-in events leave these empty because their criteria are
+    # already written out in the configured safety prompt and the sensitivity
+    # policies; an injected event has nowhere else to state what it means.
+    definition: str = ""
+    counter_examples: str = ""
+    target_hint: str = ""
 
     def __post_init__(self) -> None:
         if not self.label or self.label != self.label.strip().casefold():
@@ -82,6 +88,10 @@ class EventDefinition:
             raise ValueError(
                 "sensitivity options and a default must be supplied together"
             )
+        if not self.builtin and not self.definition.strip():
+            raise ValueError("an injected event requires a definition")
+        if not self.builtin and self.branch != SAFETY_BRANCH:
+            raise ValueError("an injected event must use the safety branch")
 
 
 _STANDARD = "standard"
@@ -214,4 +224,174 @@ def targets(
         definition.label
         for definition in definitions
         if definition.target == target
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class EventVocabulary:
+    """The events one session may request: the built-ins plus its injections.
+
+    A vocabulary is per-session rather than global so two cameras can run
+    different injected events without one widening the other's validation.
+    """
+
+    definitions: tuple[EventDefinition, ...] = BUILTIN_EVENTS
+
+    def __post_init__(self) -> None:
+        seen: set[str] = set()
+        for definition in self.definitions:
+            if definition.label in seen:
+                raise ValueError("event vocabulary contains a duplicate label")
+            seen.add(definition.label)
+
+    @classmethod
+    def extend(cls, injected: Iterable[EventDefinition]) -> EventVocabulary:
+        """Return the built-ins followed by injected events, in supplied order."""
+
+        added = tuple(injected)
+        builtin = {definition.label for definition in BUILTIN_EVENTS}
+        for definition in added:
+            if definition.builtin or definition.label in builtin:
+                raise ValueError("an injected event cannot replace a built-in event")
+        return cls(BUILTIN_EVENTS + added)
+
+    def __contains__(self, label: object) -> bool:
+        return any(definition.label == label for definition in self.definitions)
+
+    def get(self, label: str) -> EventDefinition | None:
+        for definition in self.definitions:
+            if definition.label == label:
+                return definition
+        return None
+
+    def labels(self) -> tuple[str, ...]:
+        return labels(self.definitions)
+
+    def branch(self, branch: str) -> tuple[EventDefinition, ...]:
+        return branch_events(branch, self.definitions)
+
+    def injected(self) -> tuple[EventDefinition, ...]:
+        return tuple(
+            definition for definition in self.definitions if not definition.builtin
+        )
+
+    def resolve(self, requested: Iterable[str]) -> tuple[EventDefinition, ...]:
+        """Order requested labels as the vocabulary does, rejecting unknown ones.
+
+        Built-ins keep their historical order and injected events follow in the
+        order they were supplied, so one request always renders and parses its
+        events in the same sequence.
+        """
+
+        wanted = tuple(requested)
+        if not wanted:
+            raise ValueError("at least one event must be requested")
+        if len(set(wanted)) != len(wanted):
+            raise ValueError("requested events must not contain duplicates")
+        unknown = [label for label in wanted if label not in self]
+        if unknown:
+            raise ValueError("requested events contain an unsupported label")
+        return tuple(
+            definition
+            for definition in self.definitions
+            if definition.label in set(wanted)
+        )
+
+
+BUILTIN_VOCABULARY = EventVocabulary()
+
+# Injected text is pasted into a model prompt, so it is bounded and restricted
+# to plain descriptive fields. A label must stay a machine identifier because
+# it also keys event state, archives and the response contract.
+MAX_INJECTED_EVENTS = 32
+_MAX_LABEL_LENGTH = 48
+_MAX_NAME_LENGTH = 32
+_MAX_TEXT_LENGTH = 600
+_LABEL_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+_INJECTED_FIELDS = frozenset(
+    {
+        "label",
+        "zh_name",
+        "definition",
+        "counter_examples",
+        "target",
+        "target_hint",
+    }
+)
+
+
+def _injected_text(value: object, name: str, *, limit: int, required: bool) -> str:
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"event definition {name} must be text")
+    text = value.strip()
+    if required and not text:
+        raise ValueError(f"event definition {name} must not be empty")
+    if len(text) > limit:
+        raise ValueError(f"event definition {name} is too long")
+    # The text becomes one bullet in the prompt, so it may not introduce its
+    # own lines and pose as a separate instruction.
+    collapsed = " ".join(text.split())
+    if not collapsed.isprintable():
+        raise ValueError(f"event definition {name} contains control characters")
+    return collapsed
+
+
+def definition_from_json(payload: object) -> EventDefinition:
+    """Validate one untrusted event definition from config or a request."""
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("each event definition must be an object")
+    unexpected = set(payload) - _INJECTED_FIELDS
+    if unexpected:
+        raise ValueError("event definition contains an unsupported field")
+    label = _injected_text(
+        payload.get("label"), "label", limit=_MAX_LABEL_LENGTH, required=True
+    ).casefold()
+    if not set(label) <= _LABEL_CHARACTERS:
+        raise ValueError("event label must use lowercase letters, digits or _")
+    target = payload.get("target", PERSON_TARGET)
+    if target not in {PERSON_TARGET, OBJECT_TARGET, ANY_TARGET}:
+        raise ValueError("event target must be person, object or any")
+    return EventDefinition(
+        label=label,
+        zh_name=_injected_text(
+            payload.get("zh_name"), "zh_name", limit=_MAX_NAME_LENGTH, required=True
+        ),
+        target=target,
+        definition=_injected_text(
+            payload.get("definition"),
+            "definition",
+            limit=_MAX_TEXT_LENGTH,
+            required=True,
+        ),
+        counter_examples=_injected_text(
+            payload.get("counter_examples"),
+            "counter_examples",
+            limit=_MAX_TEXT_LENGTH,
+            required=False,
+        ),
+        target_hint=_injected_text(
+            payload.get("target_hint"),
+            "target_hint",
+            limit=_MAX_NAME_LENGTH * 4,
+            required=False,
+        ),
+    )
+
+
+def vocabulary_from_json(payload: object) -> EventVocabulary:
+    """Build a session vocabulary from untrusted injected definitions."""
+
+    if payload is None:
+        return BUILTIN_VOCABULARY
+    if not isinstance(payload, (list, tuple)):
+        raise ValueError("event_definitions must be an array")
+    if not payload:
+        return BUILTIN_VOCABULARY
+    if len(payload) > MAX_INJECTED_EVENTS:
+        raise ValueError("too many injected event definitions")
+    return EventVocabulary.extend(
+        definition_from_json(row) for row in payload
     )

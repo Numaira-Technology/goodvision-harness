@@ -132,6 +132,42 @@ inference_service:
 配置文件。`inference.request_parameters` 保存各渠道通用参数（如温度和输出长度）；
 选中渠道的 `request_parameters` 覆盖同名通用参数，其余渠道的专用参数不会发送。
 
+## Injecting custom events
+
+内置事件只有 `fight` / `smoking` / `fall` / `weapon` / `stranger`。要检测日常语义事件
+（`opens_door`、`texts_on_phone`、`shop_enter` 之类），在 `events.definitions` 里声明：
+
+```yaml
+events:
+  definitions:
+    - label: texts_on_phone
+      zh_name: 玩手机
+      definition: >-
+        A person looks at a handheld phone and operates its screen with a
+        thumb or finger.
+      counter_examples: Holding a phone at the ear, or a phone lying on a table.
+      target: object
+      target_hint: the phone
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `label` | 是 | 小写字母、数字、下划线。同时是事件状态、取证归档和模型响应契约的键，不能与内置事件重名。 |
+| `zh_name` | 是 | 中文名，用于 prompt 与界面。 |
+| `definition` | 是 | 判据，直接进 prompt。必须人工撰写：模型只按这句话判定，它和评分标准之间的任何偏差都会让分数不可解释。 |
+| `counter_examples` | 否 | 反例，渲染成 “Not this event: …”，用来压掉最常见的误报。 |
+| `target` | 否 | `person`（默认）/ `object` / `any`，决定出框对象。 |
+| `target_hint` | 否 | 名词短语（如 `the phone`），`target: object` 时指明框哪个东西。 |
+
+> 当前进度（2026-09-26）：注入事件已经能进 prompt 并拿到模型判定，但事件状态机
+> （`scene_state.py`）还只认内置五件套，判定会被拒收，走不到 `confirmed / ended`。
+> 打通生命周期是下一步，见
+> [通用事件注入方案](../architecture/generic-event-injection-20260926.md) 阶段三。
+
+注入的是部署级词表；每个会话再用 `POST /v1/sessions/start` 的 `features` 数组从中挑子集，
+词表外的标签一律 `unsupported feature`。上限 32 条，每段文本 600 字符，
+换行会被折叠成空格——定义文本进的是模型 prompt，不能自带指令行。
+
 ## Face and reference memory
 
 The ordered local face pool stores source images until successful identity commit

@@ -71,6 +71,7 @@ from .deployment_settings import (
 )
 from .display_telemetry import validate_display_metrics
 from .event_archive import EventArchive
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from .event_routes import install_event_routes
 from .event_sensitivity import (
     EVENT_SENSITIVITY_DEFAULTS,
@@ -491,14 +492,17 @@ class HarnessRuntime:
         self._video_connection: VideoConnection | None = None
         self._connection_camera_layout: str | None = None
         self._analysis_settings = {
-            "features": list(DETECTION_EVENT_LABELS),
+            "features": list(self._event_vocabulary().labels()),
             "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
         }
         if deployment_store is not None:
             try:
                 saved_analysis = deployment_store.load_analysis_settings()
                 if saved_analysis is not None:
-                    features = _normalize_features(saved_analysis.get("features"))
+                    features = _normalize_features(
+                        saved_analysis.get("features"),
+                        self._event_vocabulary(),
+                    )
                     self._analysis_settings = {
                         "features": list(features),
                         "event_sensitivities": normalize_event_sensitivities(
@@ -565,6 +569,7 @@ class HarnessRuntime:
             except Exception:
                 LOGGER.error("could not load saved route selection")
                 self._route_probe["error"] = "saved_route_unavailable"
+        startup_features = self._event_vocabulary().labels()
         self._state: dict[str, Any] = {
             "service_started_at": _utc_now(),
             "source_id": self.source_id,
@@ -586,10 +591,10 @@ class HarnessRuntime:
             "stream": None,
             "stream_session_id": None,
             "event_label": (
-                ",".join(DETECTION_EVENT_LABELS) if config is not None else None
+                ",".join(startup_features) if config is not None else None
             ),
-            "event_labels": list(DETECTION_EVENT_LABELS),
-            "features": list(DETECTION_EVENT_LABELS),
+            "event_labels": list(startup_features),
+            "features": list(startup_features),
             "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
             "model": PUBLIC_MODEL_NAME if config is not None else None,
             "dry_run": self.dry_run,
@@ -1259,6 +1264,13 @@ class HarnessRuntime:
                 self._update_state(dry_run=self.dry_run)
         return self.deployment_settings()
 
+    def _event_vocabulary(self) -> EventVocabulary:
+        """The built-ins plus whatever events.definitions this config declared."""
+
+        if self.config is None:
+            return BUILTIN_VOCABULARY
+        return self.config.event_vocabulary
+
     def video_display_config(self) -> dict[str, Any]:
         """Shared presentation policy for browser capture and network sources."""
         delay = _env_bounded_float("LOCAL_CAMERA_DISPLAY_DELAY_SECONDS", 6.0, 0.0, 8.0)
@@ -1314,9 +1326,9 @@ class HarnessRuntime:
             },
             "model": PUBLIC_MODEL_NAME,
             "event_label": self.config.inference.event_label,
-            "event_labels": list(DETECTION_EVENT_LABELS),
-            "features": list(DETECTION_EVENT_LABELS),
-            "supported_features": list(DETECTION_EVENT_LABELS),
+            "event_labels": list(self._event_vocabulary().labels()),
+            "features": list(self._event_vocabulary().labels()),
+            "supported_features": list(self._event_vocabulary().labels()),
             **sensitivity_ui_info(),
             "local_camera_display": self.video_display_config(),
             "sample_fps": self.config.video.fps,
@@ -1817,9 +1829,10 @@ class HarnessRuntime:
                 raise RuntimeError("stop the active session before saving settings")
             if self._deployment_store is None:
                 raise RuntimeError("persistent deployment storage is not configured")
-            features = _normalize_features(payload.get(
-                "features", self._analysis_settings["features"],
-            ))
+            features = _normalize_features(
+                payload.get("features", self._analysis_settings["features"]),
+                self._event_vocabulary(),
+            )
             settings = {
                 "features": list(features),
                 "event_sensitivities": normalize_event_sensitivities(payload.get(
@@ -2041,7 +2054,9 @@ class HarnessRuntime:
             raise ValueError("features can only be used with analysis_mode=multi")
 
         if selected_analysis == MULTI_ANALYSIS_MODE:
-            selected_features = _normalize_features(features)
+            selected_features = _normalize_features(
+                features, self._event_vocabulary()
+            )
             label = ",".join(selected_features)
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
         elif selected_analysis == FACE_ANALYSIS_MODE:
@@ -2245,6 +2260,7 @@ class HarnessRuntime:
                         safety_max_image_side=self.config.video.max_image_side,
                         safety_jpeg_quality=self.config.video.jpeg_quality,
                         face_live_scheduler=face_live_scheduler,
+                        vocabulary=self._event_vocabulary(),
                         dry_run=use_dry_run,
                         api_key=self._aiclub_api_key,
                         transport=(
@@ -4397,9 +4413,13 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
     }
 
 
-def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
+def _normalize_features(
+    features: Collection[str] | None,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+) -> tuple[str, ...]:
+    supported = vocabulary.labels()
     if features is None:
-        return DETECTION_EVENT_LABELS
+        return supported
     if not isinstance(features, (list, tuple)):
         raise ValueError("features must be an array")
     raw = tuple(features)
@@ -4411,13 +4431,11 @@ def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
     if len(set(rendered)) != len(rendered):
         raise ValueError("features must not contain duplicates")
     unsupported = tuple(
-        feature for feature in rendered if feature not in DETECTION_EVENT_LABELS
+        feature for feature in rendered if feature not in supported
     )
     if unsupported:
         raise ValueError("unsupported feature")
-    return tuple(
-        feature for feature in DETECTION_EVENT_LABELS if feature in rendered
-    )
+    return tuple(feature for feature in supported if feature in rendered)
 
 
 def _api_reference_html(schema: dict[str, Any]) -> str:
@@ -5345,7 +5363,8 @@ def create_app(
         return endpoint
 
     # Literal paths give downstream consumers five independently addressable
-    # APIs while all of them reuse the same correlated result history.
+    # APIs while all of them reuse the same correlated result history. Injected
+    # events get no dedicated route; they are read through /v1/results.
     for feature in DETECTION_EVENT_LABELS:
         application.add_api_route(
             f"/v1/results/{feature}/latest",

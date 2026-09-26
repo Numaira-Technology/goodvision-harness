@@ -21,8 +21,13 @@ from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
 from .event_registry import (
     BUILTIN_EVENTS,
+    BUILTIN_VOCABULARY,
+    OBJECT_TARGET,
+    PERSON_TARGET,
     SAFETY_BRANCH,
     STRANGER_LABEL,
+    EventDefinition,
+    EventVocabulary,
     branch_events,
     display_names,
 )
@@ -1066,6 +1071,42 @@ def build_grounding_messages(
     ]
 
 
+def _injected_box_rule(definition: EventDefinition) -> str:
+    # target_hint is a caller-written noun phrase such as "the phone", so it is
+    # placed after "of" rather than before a noun that would need an article.
+    target = definition.target_hint or "the object the event is about"
+    if definition.target == PERSON_TARGET:
+        return (
+            f"For {definition.label}, return only the involved person's tight "
+            "body box or boxes."
+        )
+    if definition.target == OBJECT_TARGET:
+        return (
+            f"For {definition.label}, return only the tight box of {target}, "
+            "never the involved person's box."
+        )
+    return (
+        f"For {definition.label}, return the tight box of {target}, "
+        "choosing the entity the evidence is actually about."
+    )
+
+
+def _injected_event_section(definitions: tuple[EventDefinition, ...]) -> str:
+    """State what each injected event means, since no configured prompt does."""
+
+    lines = [
+        "Additional requested events. These are not safety events; judge each "
+        "one only from visible evidence, with the same discipline and honesty "
+        "about uncertainty as the events above:"
+    ]
+    for definition in definitions:
+        rule = f"- {definition.label} ({definition.zh_name}): {definition.definition}"
+        if definition.counter_examples:
+            rule += f" Not this event: {definition.counter_examples}"
+        lines.append(rule)
+    return "\n".join(lines)
+
+
 def build_multi_grounding_messages(
     window: FrameWindow,
     *,
@@ -1074,9 +1115,20 @@ def build_multi_grounding_messages(
     event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
     append_contract: bool = True,
     event_sensitivities: Mapping[str, str] | None = None,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
 ) -> list[dict[str, Any]]:
-    """Build one Qwen request that judges all fixed safety events at once."""
+    """Build one Qwen request that judges every requested event at once.
 
+    Built-in events keep the configured safety prompt verbatim. Injected events
+    have no configured text, so their supplied definitions and box targets are
+    rendered into the request instead.
+    """
+
+    injected = tuple(
+        definition
+        for definition in vocabulary.resolve(event_labels)
+        if not definition.builtin
+    )
     rendered_events = ", ".join(event_labels)
     if event_sensitivities is not None:
         event_sensitivities = normalize_event_sensitivities(
@@ -1114,8 +1166,9 @@ def build_multi_grounding_messages(
         "safety event and allow multiple simultaneous positives."
     )
     contract = (
-        "When at least one event is positive, use this authoritative fixed "
-        "safety-event output contract (this supersedes any "
+        "When at least one event is positive, use this authoritative "
+        + ("requested-event" if injected else "fixed safety-event")
+        + " output contract (this supersedes any "
         "earlier single-event JSON example): return only one JSON object with an "
         "events array. The array must contain exactly one item for each target "
         "event in the stated order and use its exact event_label. Every item must "
@@ -1130,6 +1183,7 @@ def build_multi_grounding_messages(
         + "For weapon, use the selected sensitivity policy and "
         "return only the firearm, knife, machete, club, or other weapon box, "
         "never the holder's person box."
+        + "".join(f" {_injected_box_rule(item)}" for item in injected)
     )
     system_text += (
         "\nA positive response always has a top-level events array, even for "
@@ -1137,9 +1191,17 @@ def build_multi_grounding_messages(
         "inside that event item, never at the response root."
     )
     contract_section = f"\n\n{contract}" if append_contract else ""
+    injected_section = (
+        f"\n\n{_injected_event_section(injected)}" if injected else ""
+    )
+    target_line = (
+        "Target events (exact order)" if injected
+        else "Target safety events (exact order)"
+    )
     text = (
-        f"{rendered_prompt}\n\n"
-        f"Target safety events (exact order): {rendered_events}\n"
+        f"{rendered_prompt}"
+        f"{injected_section}\n\n"
+        f"{target_line}: {rendered_events}\n"
         f"Window: {window.label}\n"
         f"Sample timestamps: {timestamps}"
         f"{contract_section}\n\n"
@@ -1321,7 +1383,7 @@ class DryRunGroundingClient:
 
 
 class AIClubMultiGroundingClient:
-    """Run one Qwen request for all four visual safety event labels."""
+    """Run one Qwen request for every requested visual event label."""
 
     def __init__(
         self,
@@ -1329,12 +1391,15 @@ class AIClubMultiGroundingClient:
         transport: ModelAPIClient,
         event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
         event_sensitivities: Mapping[str, str] | None = None,
+        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
     ) -> None:
         labels = tuple(event_labels)
         if not labels or len(set(labels)) != len(labels):
             raise ValueError("event_labels must be non-empty and unique")
+        vocabulary.resolve(labels)
         self.settings = settings
         self.event_labels = labels
+        self.vocabulary = vocabulary
         self.event_sensitivities = (
             dict(event_sensitivities) if event_sensitivities is not None else None
         )
@@ -1372,6 +1437,7 @@ class AIClubMultiGroundingClient:
                     event_labels=self.event_labels,
                     append_contract=not use_fixed_prompt,
                     event_sensitivities=self.event_sensitivities,
+                    vocabulary=self.vocabulary,
                 ),
                 **request_parameters,
             )
@@ -1583,14 +1649,16 @@ class SelectedFeaturesGroundingClient:
         safety_max_image_side: int = 320,
         safety_jpeg_quality: int = 75,
         face_live_scheduler: str = "single_flight",
+        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
     ) -> None:
         labels = tuple(safety_event_labels)
-        if any(label not in SAFETY_EVENT_LABELS for label in labels):
+        safety_labels = registry_labels(vocabulary.branch(SAFETY_BRANCH))
+        if any(label not in safety_labels for label in labels):
             raise ValueError("safety_event_labels contains an unsupported label")
         if len(set(labels)) != len(labels):
             raise ValueError("safety_event_labels must be unique")
         canonical_labels = tuple(
-            label for label in SAFETY_EVENT_LABELS if label in labels
+            label for label in safety_labels if label in labels
         )
         if labels != canonical_labels:
             raise ValueError("safety_event_labels must use canonical order")
@@ -2064,22 +2132,21 @@ def build_selected_features_grounding_client(
     api_key: str | None = None,
     transport: ModelAPIClient | None = None,
     event_sensitivities: Mapping[str, str] | None = None,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
 ) -> SelectedFeaturesGroundingClient:
     """Build one detector graph for an arbitrary non-empty feature subset."""
 
     selected = tuple(features)
     if not selected or len(set(selected)) != len(selected):
         raise ValueError("features must be non-empty and unique")
-    if any(feature not in DETECTION_EVENT_LABELS for feature in selected):
+    if any(feature not in vocabulary for feature in selected):
         raise ValueError("features contains an unsupported label")
-    canonical = tuple(
-        feature for feature in DETECTION_EVENT_LABELS if feature in selected
-    )
-    if selected != canonical:
+    resolved = vocabulary.resolve(selected)
+    if selected != registry_labels(resolved):
         raise ValueError("features must use canonical order")
 
-    safety_labels = tuple(
-        feature for feature in selected if feature in SAFETY_EVENT_LABELS
+    safety_labels = registry_labels(
+        definition for definition in resolved if definition.branch == SAFETY_BRANCH
     )
     include_stranger = STRANGER_EVENT_LABEL in selected
     safety_client: GroundingClient | None = None
@@ -2093,6 +2160,7 @@ def build_selected_features_grounding_client(
                 transport or ModelAPIClient(aiclub_settings, api_key=api_key),
                 safety_labels,
                 event_sensitivities=event_sensitivities,
+                vocabulary=vocabulary,
             )
     if include_stranger:
         if dry_run:
@@ -2114,6 +2182,7 @@ def build_selected_features_grounding_client(
         safety_max_image_side=safety_max_image_side,
         safety_jpeg_quality=safety_jpeg_quality,
         face_live_scheduler=face_live_scheduler,
+        vocabulary=vocabulary,
     )
 
 
