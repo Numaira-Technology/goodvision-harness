@@ -185,3 +185,7 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 **敏感度 UI。** console 的事件敏感度选择器目前按四件套写死选项。自定义事件默认只给 `standard`，是否需要在 UI 里暴露，取决于 benchmark 是否要做敏感度扫描。
 
 **词表规模。** 题库里被剔除的题目具体覆盖多少个不同事件、各占多少比例，会直接影响阶段三的优先级——如果非人主体事件占比很低，阶段三可以延后，先用阶段二把覆盖率从 4 个拉到二三十个。
+
+**高召回偏置与 benchmark 精度的冲突（阶段二发现，需要拍板）。** 现有 `inference.system_prompt` 是为安全事件写的：“risk-sensitive … 使用刻意偏低的检测阈值，宁可误报不可漏报”。阶段二只改了外层措辞（“requested event”而非“safety event”），这条偏置对注入事件仍然生效。对 `fight` / `weapon` 这是对的，对 `texts_on_phone` / `opens_door` 这类日常事件会系统性抬高误报，直接拉低 benchmark 的 precision。`rendered_prompt` 里那几页 fight / smoking / fall 判据也照样发给了一个根本没请求它们的会话。
+
+三条路：(a) 给注入事件单独一套中性 system prompt，不带高召回偏置；(b) 让 `EventDefinition` 带一个每事件的召回偏好字段，由词表作者决定；(c) 先不动，跑一轮 benchmark 看误报率再定。倾向 (c) 先量化——但这会改动评分结果，属于跨人边界的决定，需要和 Ashley（选题）、PengYu（离线 runner 与打分）对齐后再动，不在本分支单方面改。

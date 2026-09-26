@@ -205,6 +205,37 @@ def test_injected_events_reach_the_prompt_with_their_definition_and_box_rule():
     assert "fixed safety-event" not in text
 
 
+def test_a_request_without_safety_events_never_calls_them_safety_events():
+    """The all-negative shortcut is the rule the model applies most often.
+
+    Telling it to check "every requested safety event" in a request that has
+    none leaves it deciding the shortcut does not apply.
+    """
+
+    settings = load_config(ROOT / "config.yaml").inference
+    messages = build_multi_grounding_messages(
+        _WINDOW,
+        system_prompt=settings.system_prompt,
+        prompt=settings.prompt,
+        event_labels=("opens_door", "texts_on_phone"),
+        append_contract=True,
+        vocabulary=_injected(),
+    )
+    system_text = messages[0]["content"]
+    assert "EVERY requested event, if ALL are negative" in system_text
+    assert "judge every requested event" in system_text
+    assert "safety event" not in system_text.split("Compact negative")[1]
+
+    user_text = next(
+        item["text"]
+        for item in messages[1]["content"]
+        if item.get("type") == "text"
+    )
+    # Nothing to sit "above" the list when every requested event is injected.
+    assert "as the events above" not in user_text
+    assert "Requested events. None of these is a safety event" in user_text
+
+
 def test_a_builtin_only_request_renders_the_unchanged_safety_prompt():
     settings = load_config(ROOT / "config.yaml").inference
     common = {

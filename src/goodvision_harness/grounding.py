@@ -106,18 +106,30 @@ BILINGUAL_DESCRIPTION_RULE = (
     "negative judgments and supersedes earlier monolingual description examples. "
     "Keep JSON keys, event_label values, object labels, and identifiers unchanged."
 )
-COMPACT_NO_EVENTS_RULE = (
-    "Compact negative output exception (overrides all full-event JSON examples, "
-    "description requirements, and actor instructions below): after checking "
-    "EVERY requested safety event, if ALL are negative, return ONLY "
-    '{"no_events":0.95}. Replace 0.95 with your numeric confidence (0..1) in '
-    "the all-negative verdict. Include no other keys, events, descriptions, "
-    "actors, boxes, or prose. This is a completed negative verdict for every "
-    "requested label, never a substitute for an error or an unperformed check. "
-    "If ANY requested event is positive, do NOT use no_events: return the full "
-    "events array for every requested label, with bilingual descriptions and "
-    "grounded target boxes as specified."
-)
+def _compact_no_events_rule(noun: str) -> str:
+    """The all-negative shortcut, named after whatever was actually requested.
+
+    Most windows are negative, so this is the rule the model follows most
+    often. Calling everything a safety event in a request that has none would
+    leave it deciding the rule does not apply.
+    """
+
+    return (
+        "Compact negative output exception (overrides all full-event JSON "
+        "examples, "
+        "description requirements, and actor instructions below): after checking "
+        f"EVERY requested {noun}, if ALL are negative, return ONLY "
+        '{"no_events":0.95}. Replace 0.95 with your numeric confidence (0..1) in '
+        "the all-negative verdict. Include no other keys, events, descriptions, "
+        "actors, boxes, or prose. This is a completed negative verdict for every "
+        "requested label, never a substitute for an error or an unperformed check. "
+        "If ANY requested event is positive, do NOT use no_events: return the full "
+        "events array for every requested label, with bilingual descriptions and "
+        "grounded target boxes as specified."
+    )
+
+
+COMPACT_NO_EVENTS_RULE = _compact_no_events_rule("safety event")
 ACTOR_ASSOCIATION_RULE = (
     "Additional optional tracking metadata, without changing any event verdict "
     "or objects rule: add a top-level actors array with at most 8 clearly visible "
@@ -1091,13 +1103,21 @@ def _injected_box_rule(definition: EventDefinition) -> str:
     )
 
 
-def _injected_event_section(definitions: tuple[EventDefinition, ...]) -> str:
+def _injected_event_section(
+    definitions: tuple[EventDefinition, ...], *, alongside_builtins: bool
+) -> str:
     """State what each injected event means, since no configured prompt does."""
 
     lines = [
-        "Additional requested events. These are not safety events; judge each "
-        "one only from visible evidence, with the same discipline and honesty "
-        "about uncertainty as the events above:"
+        (
+            "Additional requested events. These are not safety events; judge "
+            "each one only from visible evidence, with the same discipline and "
+            "honesty about uncertainty as the events above:"
+            if alongside_builtins
+            else "Requested events. None of these is a safety event; judge each "
+            "one only from visible evidence, and say so plainly when the "
+            "evidence does not settle it:"
+        )
     ]
     for definition in definitions:
         rule = f"- {definition.label} ({definition.zh_name}): {definition.definition}"
@@ -1161,9 +1181,19 @@ def build_multi_grounding_messages(
     system_text = (
         f"{policy_system_prompt}\n"
         f"{BILINGUAL_DESCRIPTION_RULE}\n"
-        f"{COMPACT_NO_EVENTS_RULE}\n"
-        "For this request, independently judge every fixed "
-        "safety event and allow multiple simultaneous positives."
+        + (
+            _compact_no_events_rule("event")
+            if injected
+            else COMPACT_NO_EVENTS_RULE
+        )
+        + "\n"
+        + (
+            "For this request, independently judge every requested "
+            "event and allow multiple simultaneous positives."
+            if injected
+            else "For this request, independently judge every fixed "
+            "safety event and allow multiple simultaneous positives."
+        )
     )
     contract = (
         "When at least one event is positive, use this authoritative "
@@ -1192,7 +1222,11 @@ def build_multi_grounding_messages(
     )
     contract_section = f"\n\n{contract}" if append_contract else ""
     injected_section = (
-        f"\n\n{_injected_event_section(injected)}" if injected else ""
+        "\n\n" + _injected_event_section(
+            injected, alongside_builtins=len(injected) != len(event_labels)
+        )
+        if injected
+        else ""
     )
     target_line = (
         "Target events (exact order)" if injected
