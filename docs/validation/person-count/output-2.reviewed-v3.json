@@ -1,0 +1,741 @@
+{
+  "schema_version": 1,
+  "status": "human_reviewed",
+  "video_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "video_name": "output 2.mp4",
+  "duration_seconds": 55.798021,
+  "sampling": "每个整数秒取时间戳不早于该秒的首个解码帧；保存实际 PTS。仅代表这些采样点，不推断连续区间。",
+  "annotation_method": "AI visual inspection of source frames and enlarged background crops; not derived from candidate-model predictions",
+  "counting_rule": "统计当前画面能辨认的人：局部遮挡、只露头部、进出边界仍可辨认者计入；完全遮挡、已离开画面者不计。画中图片/屏幕人物不计。",
+  "uncertainty_rule": "不确定帧保留候选人数并默认排除评分；所有标注尚未经人工复核。",
+  "samples": [
+    {
+      "frame_index": 0,
+      "image": "frames/001.jpg",
+      "sample_second": 0,
+      "timestamp_seconds": 0,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 50,
+      "image": "frames/002.jpg",
+      "sample_second": 1,
+      "timestamp_seconds": 1.016667,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 99,
+      "image": "frames/003.jpg",
+      "sample_second": 2,
+      "timestamp_seconds": 2,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 148,
+      "image": "frames/004.jpg",
+      "sample_second": 3,
+      "timestamp_seconds": 3,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 197,
+      "image": "frames/005.jpg",
+      "sample_second": 4,
+      "timestamp_seconds": 4,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 245,
+      "image": "frames/006.jpg",
+      "sample_second": 5,
+      "timestamp_seconds": 5,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 298,
+      "image": "frames/007.jpg",
+      "sample_second": 6,
+      "timestamp_seconds": 6.016667,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 351,
+      "image": "frames/008.jpg",
+      "sample_second": 7,
+      "timestamp_seconds": 7.025,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 398,
+      "image": "frames/009.jpg",
+      "sample_second": 8,
+      "timestamp_seconds": 8.025,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 445,
+      "image": "frames/010.jpg",
+      "sample_second": 9,
+      "timestamp_seconds": 9,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 498,
+      "image": "frames/011.jpg",
+      "sample_second": 10,
+      "timestamp_seconds": 10,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 550,
+      "image": "frames/012.jpg",
+      "sample_second": 11,
+      "timestamp_seconds": 11.008333,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 604,
+      "image": "frames/013.jpg",
+      "sample_second": 12,
+      "timestamp_seconds": 12.016667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 656,
+      "image": "frames/014.jpg",
+      "sample_second": 13,
+      "timestamp_seconds": 13.016667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 707,
+      "image": "frames/015.jpg",
+      "sample_second": 14,
+      "timestamp_seconds": 14.016667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 760,
+      "image": "frames/016.jpg",
+      "sample_second": 15,
+      "timestamp_seconds": 15,
+      "person_count": 1,
+      "status": "clear",
+      "possible_counts": [
+        1
+      ],
+      "note": "前景人物遮挡中央后排人物；是否仍有可辨认身体局部需人工确认。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 815,
+      "image": "frames/017.jpg",
+      "sample_second": 16,
+      "timestamp_seconds": 16.008333,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 865,
+      "image": "frames/018.jpg",
+      "sample_second": 17,
+      "timestamp_seconds": 17,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "用户在第二次复核后明确更正：17 秒应为 3 人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 916,
+      "image": "frames/019.jpg",
+      "sample_second": 18,
+      "timestamp_seconds": 18.008333,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 966,
+      "image": "frames/020.jpg",
+      "sample_second": 19,
+      "timestamp_seconds": 19.008333,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1017,
+      "image": "frames/021.jpg",
+      "sample_second": 20,
+      "timestamp_seconds": 20.008333,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1071,
+      "image": "frames/022.jpg",
+      "sample_second": 21,
+      "timestamp_seconds": 21,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1121,
+      "image": "frames/023.jpg",
+      "sample_second": 22,
+      "timestamp_seconds": 22,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1166,
+      "image": "frames/024.jpg",
+      "sample_second": 23,
+      "timestamp_seconds": 23.016667,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1215,
+      "image": "frames/025.jpg",
+      "sample_second": 24,
+      "timestamp_seconds": 24.016667,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1263,
+      "image": "frames/026.jpg",
+      "sample_second": 25,
+      "timestamp_seconds": 25.025,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1310,
+      "image": "frames/027.jpg",
+      "sample_second": 26,
+      "timestamp_seconds": 26.025,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1356,
+      "image": "frames/028.jpg",
+      "sample_second": 27,
+      "timestamp_seconds": 27.016667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1398,
+      "image": "frames/029.jpg",
+      "sample_second": 28,
+      "timestamp_seconds": 28.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1442,
+      "image": "frames/030.jpg",
+      "sample_second": 29,
+      "timestamp_seconds": 29.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1491,
+      "image": "frames/031.jpg",
+      "sample_second": 30,
+      "timestamp_seconds": 30.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1544,
+      "image": "frames/032.jpg",
+      "sample_second": 31,
+      "timestamp_seconds": 31.015,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1593,
+      "image": "frames/033.jpg",
+      "sample_second": 32,
+      "timestamp_seconds": 32.015,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1645,
+      "image": "frames/034.jpg",
+      "sample_second": 33,
+      "timestamp_seconds": 33.015,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1695,
+      "image": "frames/035.jpg",
+      "sample_second": 34,
+      "timestamp_seconds": 34.023333,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1742,
+      "image": "frames/036.jpg",
+      "sample_second": 35,
+      "timestamp_seconds": 35.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1793,
+      "image": "frames/037.jpg",
+      "sample_second": 36,
+      "timestamp_seconds": 36.023333,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1840,
+      "image": "frames/038.jpg",
+      "sample_second": 37,
+      "timestamp_seconds": 37.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1890,
+      "image": "frames/039.jpg",
+      "sample_second": 38,
+      "timestamp_seconds": 38.015,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1940,
+      "image": "frames/040.jpg",
+      "sample_second": 39,
+      "timestamp_seconds": 39.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 1993,
+      "image": "frames/041.jpg",
+      "sample_second": 40,
+      "timestamp_seconds": 40.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2047,
+      "image": "frames/042.jpg",
+      "sample_second": 41,
+      "timestamp_seconds": 41.023333,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2102,
+      "image": "frames/043.jpg",
+      "sample_second": 42,
+      "timestamp_seconds": 42.015,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2152,
+      "image": "frames/044.jpg",
+      "sample_second": 43,
+      "timestamp_seconds": 43.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2201,
+      "image": "frames/045.jpg",
+      "sample_second": 44,
+      "timestamp_seconds": 44.015,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2250,
+      "image": "frames/046.jpg",
+      "sample_second": 45,
+      "timestamp_seconds": 45.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2304,
+      "image": "frames/047.jpg",
+      "sample_second": 46,
+      "timestamp_seconds": 46.006667,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2354,
+      "image": "frames/048.jpg",
+      "sample_second": 47,
+      "timestamp_seconds": 47.015,
+      "person_count": 2,
+      "status": "clear",
+      "possible_counts": [
+        2
+      ],
+      "note": "前景人物已离开；中央和右后排各一人。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2401,
+      "image": "frames/049.jpg",
+      "sample_second": 48,
+      "timestamp_seconds": 48.023333,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2446,
+      "image": "frames/050.jpg",
+      "sample_second": 49,
+      "timestamp_seconds": 49.023333,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2494,
+      "image": "frames/051.jpg",
+      "sample_second": 50,
+      "timestamp_seconds": 50.006667,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2543,
+      "image": "frames/052.jpg",
+      "sample_second": 51,
+      "timestamp_seconds": 51.006667,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2589,
+      "image": "frames/053.jpg",
+      "sample_second": 52,
+      "timestamp_seconds": 52.023333,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2638,
+      "image": "frames/054.jpg",
+      "sample_second": 53,
+      "timestamp_seconds": 53.015,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2683,
+      "image": "frames/055.jpg",
+      "sample_second": 54,
+      "timestamp_seconds": 54.023333,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    },
+    {
+      "frame_index": 2735,
+      "image": "frames/056.jpg",
+      "sample_second": 55,
+      "timestamp_seconds": 55.006667,
+      "person_count": 3,
+      "status": "clear",
+      "possible_counts": [
+        3
+      ],
+      "note": "前景一人，中央后排一人，右后排一人；局部可见者计入。",
+      "human_reviewed": true
+    }
+  ]
+}

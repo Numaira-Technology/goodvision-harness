@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "test_2_dual_stream",
+  "question": "云端 CPU 部署后，两路同时运行能否分别达到 70% 描边率并保持播放流畅？",
+  "delays_seconds": [0.5, 1.0, 1.5, 2.0],
+  "repeats": 2,
+  "conditions": [
+    {"name": "single", "streams": 1, "recording": false},
+    {"name": "dual", "streams": 2, "recording": false}
+  ],
+  "coverage_target": 0.7,
+  "display_fps_retention_min": 0.9,
+  "minimum_overlap_ratio": 0.9,
+  "maximum_start_skew_seconds": 0.25,
+  "note": "两路必须同时播放、使用不同 SAM 会话；逐路判断，不使用平均描边率掩盖失败路。"
+}

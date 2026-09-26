@@ -54,18 +54,22 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
       // forwarded cloud service. Support byte ranges without transcoding.
       await page.route(args["video-url"],async route=>{
         const size=fs.statSync(video).size,range=route.request().headers().range;
-        let start=0,end=size-1,status=200;
+        // A full 160 MB response exceeds Chromium's DevTools pipe limit. Serve
+        // bounded byte ranges so local playback never buffers the whole file in
+        // a single Playwright route fulfillment.
+        const maxChunk=8*1024*1024;
+        let start=0,end=Math.min(size-1,maxChunk-1),status=206;
         if(range){
           const match=/^bytes=(\d+)-(\d*)$/.exec(range);
           if(!match||Number(match[1])>=size){await route.fulfill({status:416,headers:{"Content-Range":`bytes */${size}`}});return;}
-          start=Number(match[1]);end=match[2]?Math.min(Number(match[2]),size-1):end;status=206;
+          start=Number(match[1]);end=Math.min(match[2]?Number(match[2]):size-1,size-1,start+maxChunk-1);
           if(end<start){await route.fulfill({status:416});return;}
         }
         const handle=await fs.promises.open(video,"r"),body=Buffer.alloc(end-start+1);
         try{let read=0;while(read<body.length){const result=await handle.read(body,read,body.length-read,start+read);assert.ok(result.bytesRead);read+=result.bytesRead;}}
         finally{await handle.close();}
         await route.fulfill({status,body,headers:{"Content-Type":"video/mp4","Accept-Ranges":"bytes",
-          "Content-Length":String(body.length),...(status===206?{"Content-Range":`bytes ${start}-${end}/${size}`}:{})}});
+          "Content-Length":String(body.length),"Content-Range":`bytes ${start}-${end}/${size}`}});
       });
     }
     await page.context().grantPermissions(["local-network-access"],{origin:args.url});

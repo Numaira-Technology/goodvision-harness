@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "test_1_recording",
+  "question": "云端 CPU 部署后，本机录屏是否使 SAM 处理或描边显示退化？",
+  "delays_seconds": [0.5, 1.0, 1.5, 2.0],
+  "repeats": 2,
+  "conditions": [
+    {"name": "no_recording", "streams": 1, "recording": false},
+    {"name": "recording", "streams": 1, "recording": true}
+  ],
+  "coverage_target": 0.7,
+  "coverage_drop_tolerance_pp": 3.0,
+  "sam_p95_increase_tolerance_ratio": 0.1,
+  "display_fps_retention_min": 0.9,
+  "note": "容差是可修改的试验判据，不是统计显著性证明。描边通过和录屏无明显退化分别报告。"
+}
