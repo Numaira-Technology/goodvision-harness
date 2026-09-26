@@ -151,7 +151,7 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 
 > 阶段三（上半）已交付：`EventVocabulary` 现在随会话走到 `SceneState`、`SceneRuntime`、`TemporalInspection`，注入事件走完了和内置事件逐字段相同的 `suspected → confirmed → ended`；`build_temporal_messages` 把注入事件的判据放进 JSON context（内置事件不放，共享 prompt 里已有）。原先散在三个模块的模块级白名单（`scene_state._EVENT_LABELS`、`scene_runtime._EVENTS`、`scene_inspection._EVENT_LABELS`）改成按会话取，快照单测改为断言"未注入的会话仍然只认历史标签"。
 >
-> 仍未做：`requires_subject=False` 的场景级事件。meva/caviar 里 `vehicle turns`、`shop enter` 这类无人物主体的题目还答不了，需要事件键退化到 `(label, ())`、放开 `subject_ids` 非空约束，并处理 `scene_state.py` 的 `all_subjects_absent` 结束规则对无主体事件不成立。
+> 仍未做：非人物主体的事件。**注意这里原先写错了范围**——见下面 2026-09-26 晚的题库数据订正。
 
 **阶段四：benchmark 接入。** 事件词表 YAML + runner 侧自动注入 + `EVENT_TARGET_TO_HARNESS_LABEL` 泛化。验收：对之前被剔除的那批题目跑一轮离线 benchmark，与"剔除前 / 剔除后"两个基线对比覆盖率与得分。
 
@@ -188,7 +188,34 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 
 **敏感度 UI。** console 的事件敏感度选择器目前按四件套写死选项。自定义事件默认只给 `standard`，是否需要在 UI 里暴露，取决于 benchmark 是否要做敏感度扫描。
 
-**词表规模。** 题库里被剔除的题目具体覆盖多少个不同事件、各占多少比例，会直接影响阶段三的优先级——如果非人主体事件占比很低，阶段三可以延后，先用阶段二把覆盖率从 4 个拉到二三十个。
+**词表规模。**（2026-09-26 晚已由 Ashley 的题库数据回答，见下节。）
+
+## 7. 题库数据订正（2026-09-26 晚）
+
+拿到实际标签分布后，两处原设计需要订正。
+
+**7.1 覆盖率拆分。** 34 个在用标签、2199 个视频实例（另有 `person_interacts_with_laptop` 3 个已退役、`empty_37` 3 个疑似脏标签）。
+
+| 主体 | 标签数 | 视频数 | 占比 | 现状 |
+| --- | --- | --- | --- | --- |
+| 人物主体 | 26 | 1661 | 75.5% | 阶段一至三已打通，可直接写词表 |
+| 车辆主体 | 8 | 538 | 24.5% | 阻塞 |
+
+另有四个打斗数据源共 50 个视频（25 正 25 负）问 `physical_conflict`，`benchmark/bench/schema.py:43` 的 `EVENT_TARGET_TO_HARNESS_LABEL` 已经把它映射到内置的 `fight`，不需要新增定义。
+
+注意 `person_enters_vehicle` / `person_opens_vehicle_door` / `person_opens_trunk` / `person_loads_vehicle` 这一类共 405 个视频虽然涉及车，但主体是人，`target: person` 就够，属于已打通的 75.5% 之内。
+
+**7.2 阻塞的不是"场景级无主体事件"，是"非人主体"。** 原文把 `vehicle turns` 归为 `requires_subject=False`，这是错的：车辆事件有主体，只是主体不是人。实际阻塞点比原估计深一层：
+
+- `video_tracking.py:163` 对 `item.label != "person"` 直接 `raise ValueError("invalid native observation provenance")`，不是跳过而是判定整帧非法。
+- `scene_runtime.py:45` 的 `_PERSON_LABELS` 过滤掉非人对象，只有人进 `observe_person`。
+- `scene_state` 的主体存储、身份状态、人脸关联都是围绕人建模的。
+
+所以这不是"放开 `subject_ids` 非空约束"能解决的，需要在追踪层引入第二类被追踪主体。范围和风险都远大于原估计，应当单独立项估时，不要塞进阶段三。
+
+**7.3 `MAX_INJECTED_EVENTS` 需要调整。** 当前上限 32，人物主体词表 26 条能进，但 26 + 8 = 34 条的完整词表会被拒。这个常数是我按"够用就好"随手定的，没有技术依据，扩到 64 即可。
+
+**7.4 一处可能的标注缺口，需要问 Ashley。** `person_opens_facility_door` 127 对 `person_closes_facility_door` 9，14:1。而同类的 `opens/closes_vehicle_door` 是 90:89、`opens/closes_trunk` 是 33:32，都接近 1:1。facility door 的"关门"很可能是漏标而不是真实分布，写判据前值得确认——如果是漏标，拿它算召回会得到误导性的低分。
 
 **高召回偏置与 benchmark 精度的冲突（阶段二发现，需要拍板）。** 现有 `inference.system_prompt` 是为安全事件写的：“risk-sensitive … 使用刻意偏低的检测阈值，宁可误报不可漏报”。阶段二只改了外层措辞（“requested event”而非“safety event”），这条偏置对注入事件仍然生效。对 `fight` / `weapon` 这是对的，对 `texts_on_phone` / `opens_door` 这类日常事件会系统性抬高误报，直接拉低 benchmark 的 precision。`rendered_prompt` 里那几页 fight / smoking / fall 判据也照样发给了一个根本没请求它们的会话。
 
