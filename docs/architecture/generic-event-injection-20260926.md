@@ -149,6 +149,10 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 
 **阶段三：打通生命周期 + 场景级事件。** 先把 `EventVocabulary` 接进 `SceneState._submit_event` 与 `scene_inspection._validate_job`，让注入事件进得了状态机；再做 `requires_subject=False` 路径、事件键退化、结束规则调整，以及 `build_temporal_messages` 按定义渲染。验收：注入一个 person 类事件走完 `suspected → confirmed → ended` 且取证归档正常；再注入一个 `scene` 类事件，确认时间线三个时间戳齐全、不污染 person registry、能正常结束。
 
+> 阶段三（上半）已交付：`EventVocabulary` 现在随会话走到 `SceneState`、`SceneRuntime`、`TemporalInspection`，注入事件走完了和内置事件逐字段相同的 `suspected → confirmed → ended`；`build_temporal_messages` 把注入事件的判据放进 JSON context（内置事件不放，共享 prompt 里已有）。原先散在三个模块的模块级白名单（`scene_state._EVENT_LABELS`、`scene_runtime._EVENTS`、`scene_inspection._EVENT_LABELS`）改成按会话取，快照单测改为断言"未注入的会话仍然只认历史标签"。
+>
+> 仍未做：`requires_subject=False` 的场景级事件。meva/caviar 里 `vehicle turns`、`shop enter` 这类无人物主体的题目还答不了，需要事件键退化到 `(label, ())`、放开 `subject_ids` 非空约束，并处理 `scene_state.py` 的 `all_subjects_absent` 结束规则对无主体事件不成立。
+
 **阶段四：benchmark 接入。** 事件词表 YAML + runner 侧自动注入 + `EVENT_TARGET_TO_HARNESS_LABEL` 泛化。验收：对之前被剔除的那批题目跑一轮离线 benchmark，与"剔除前 / 剔除后"两个基线对比覆盖率与得分。
 
 ## 5. 明确不做

@@ -18,6 +18,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from goodvision_harness import (
 )
 from goodvision_harness.config import load_config
 from goodvision_harness.contracts import NormalizedBBox
+from goodvision_harness.event_registry import SAFETY_BRANCH, EventVocabulary
 from goodvision_harness.event_sensitivity import (
     EVENT_SENSITIVITY_DEFAULTS,
     EVENT_SENSITIVITY_OPTIONS,
@@ -47,6 +49,16 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).parent / "fixtures" / "event_registry_parity.json"
 
 _SMOKING_STANDARD_RULE = "Smoking STANDARD: supplied by the caller."
+
+
+def _default_vocabulary(owner: type) -> EventVocabulary:
+    """The vocabulary a caller gets when it injects nothing."""
+
+    if is_dataclass(owner):
+        return next(
+            field for field in fields(owner) if field.name == "vocabulary"
+        ).default
+    return inspect.signature(owner.__init__).parameters["vocabulary"].default
 
 
 def _window() -> FrameWindow:
@@ -145,9 +157,19 @@ def build_snapshot() -> dict[str, Any]:
             "detection": list(grounding.DETECTION_EVENT_LABELS),
             "stranger": grounding.STRANGER_EVENT_LABEL,
             "event_names_zh": dict(grounding._EVENT_NAMES_ZH),
-            "scene_state": sorted(scene_state._EVENT_LABELS),
-            "scene_runtime": sorted(scene_runtime._EVENTS),
-            "scene_inspection": sorted(scene_inspection._EVENT_LABELS),
+            # These whitelists became per-session once events could be
+            # injected. The invariant is unchanged: a session that injected
+            # nothing still admits exactly the historical labels.
+            "scene_state": sorted(_default_vocabulary(scene_state.SceneState).labels()),
+            "scene_runtime": sorted(
+                _default_vocabulary(scene_runtime.SceneRuntime).labels()
+            ),
+            "scene_inspection": sorted(
+                definition.label
+                for definition in _default_vocabulary(
+                    scene_runtime.TemporalInspection
+                ).branch(SAFETY_BRANCH)
+            ),
             "scene_runtime_default": list(
                 inspect.signature(scene_runtime.SceneRuntime.__init__)
                 .parameters["event_labels"]

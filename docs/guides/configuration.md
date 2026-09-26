@@ -159,9 +159,11 @@ events:
 | `target` | 否 | `person`（默认）/ `object` / `any`，决定出框对象。 |
 | `target_hint` | 否 | 名词短语（如 `the phone`），`target: object` 时指明框哪个东西。 |
 
-> 当前进度（2026-09-26）：注入事件已经能进 prompt 并拿到模型判定，但事件状态机
-> （`scene_state.py`）还只认内置五件套，判定会被拒收，走不到 `confirmed / ended`。
-> 打通生命周期是下一步，见
+注入事件与内置事件走**同一条生命周期**：`suspected → confirmed → ended`，
+三个时间戳逐字段一致，所以 temporal 类问题（“他什么时候开始玩手机的”）能照常回答。
+
+> 当前限制（2026-09-26）：只支持有人物主体的事件。`vehicle turns`、`shop enter`
+> 这类无主体的场景级事件还没打通，见
 > [通用事件注入方案](../architecture/generic-event-injection-20260926.md) 阶段三。
 
 注入的是部署级词表；每个会话再用 `POST /v1/sessions/start` 的 `features` 数组从中挑子集，

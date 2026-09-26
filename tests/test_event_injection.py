@@ -8,14 +8,18 @@ normalized features -> rendered prompt.
 
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from PIL import Image
 
 from goodvision_harness import service
 from goodvision_harness.config import load_config
+from goodvision_harness.contracts import NormalizedBBox
 from goodvision_harness.event_registry import (
     BUILTIN_VOCABULARY,
     MAX_INJECTED_EVENTS,
@@ -27,6 +31,10 @@ from goodvision_harness.grounding import (
     build_multi_grounding_messages,
     build_selected_features_grounding_client,
 )
+from goodvision_harness.scene_evidence import EvidenceFrame, InspectionRequest
+from goodvision_harness.scene_inspection import build_temporal_messages
+from goodvision_harness.scene_runtime import TemporalInspection
+from goodvision_harness.scene_state import SceneState
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,7 +60,9 @@ OPENS_DOOR = {
         "A person pushes, pulls or swings a door open and the door visibly "
         "moves from closed to open."
     ),
-    "counter_examples": "Standing beside a closed door, or holding a door already open.",
+    "counter_examples": (
+        "Standing beside a closed door, or holding a door already open."
+    ),
 }
 TEXTS_ON_PHONE = {
     "label": "texts_on_phone",
@@ -64,6 +74,12 @@ TEXTS_ON_PHONE = {
     "target": "object",
     "target_hint": "the phone",
 }
+
+
+def _jpeg() -> bytes:
+    with Image.new("RGB", (64, 48), "red") as image, io.BytesIO() as encoded:
+        image.save(encoded, format="JPEG")
+        return encoded.getvalue()
 
 
 def _injected() -> EventVocabulary:
@@ -159,12 +175,82 @@ def test_config_loads_injected_events_and_reports_the_source_on_error(tmp_path):
     assert config.event_vocabulary.labels()[-1] == "opens_door"
     assert config.event_vocabulary.get("opens_door").zh_name == "开门"
 
-    with pytest.raises(ValueError, match="events.definitions"):
+    with pytest.raises(ValueError, match=r"events\.definitions"):
         _config_with([{**OPENS_DOOR, "label": "fight"}], tmp_path)
 
 
 def test_config_without_definitions_keeps_the_builtin_vocabulary():
     assert load_config(ROOT / "config.yaml").event_vocabulary is BUILTIN_VOCABULARY
+
+
+def _confirm_and_end(scene, label, *, start_sequence=0):
+    """Drive one event through the whole state machine, one source frame each."""
+
+    box = NormalizedBBox(0.1, 0.05, 0.5, 0.95)
+    sequence = start_sequence
+    for detected in (True, True, False, False):
+        scene.observe_person(
+            "p",
+            timestamp_seconds=sequence * 0.5,
+            frame_sequence=sequence,
+            bbox=box,
+            tracking_confirmation="confirmed",
+        )
+        scene.observe_event(
+            label,
+            ("p",),
+            timestamp_seconds=sequence * 0.5,
+            frame_sequence=sequence,
+            detected=detected,
+            evidence_id=f"e{sequence}",
+        )
+        sequence += 1
+    return next(
+        event
+        for event in scene.snapshot()["events"]
+        if event["event_label"] == label
+    )
+
+
+def test_an_injected_event_runs_the_same_lifecycle_as_a_builtin_one():
+    """Temporal questions are only answerable if the timestamps get recorded."""
+
+    vocabulary = _injected()
+    injected_event = _confirm_and_end(
+        SceneState("s", "camera", vocabulary=vocabulary), "opens_door"
+    )
+    builtin_event = _confirm_and_end(SceneState("s", "camera"), "fight")
+
+    assert injected_event["phase"] == builtin_event["phase"] == "ended"
+    assert [item["phase"] for item in injected_event["history"]] == [
+        "suspected", "confirmed", "confirmed", "ended",
+    ]
+    for key in (
+        "first_evidence_timestamp_seconds",
+        "confirmed_since_timestamp_seconds",
+        "ended_since_timestamp_seconds",
+    ):
+        assert injected_event[key] == builtin_event[key], key
+
+
+def test_the_lifecycle_still_refuses_an_event_the_session_never_declared():
+    scene = SceneState("s", "camera")
+    scene.observe_person(
+        "p",
+        timestamp_seconds=0.0,
+        frame_sequence=0,
+        bbox=NormalizedBBox(0.1, 0.05, 0.5, 0.95),
+        tracking_confirmation="confirmed",
+    )
+    with pytest.raises(ValueError, match="unsupported event_label"):
+        scene.observe_event(
+            "opens_door",
+            ("p",),
+            timestamp_seconds=0.0,
+            frame_sequence=0,
+            detected=True,
+            evidence_id="e0",
+        )
 
 
 def test_features_accept_injected_labels_only_when_the_deployment_declared_them():
@@ -247,6 +333,63 @@ def test_a_builtin_only_request_renders_the_unchanged_safety_prompt():
     assert build_multi_grounding_messages(
         _WINDOW, vocabulary=_injected(), **common
     ) == build_multi_grounding_messages(_WINDOW, **common)
+
+
+def test_the_temporal_prompt_carries_the_criteria_for_injected_events_only():
+    """The shared temporal prompt names no events, so the context must."""
+
+    box = NormalizedBBox(0.1, 0.1, 0.4, 0.9)
+
+    def context_of(event_labels, **kwargs):
+        job = TemporalInspection(
+            "session-1",
+            "source-1",
+            InspectionRequest(
+                "request-1", ("person-1",), "new_person", event_labels, 0, 1
+            ),
+            (
+                EvidenceFrame("session-1", 10, 0, _jpeg()),
+                EvidenceFrame("session-1", 11, 1, _jpeg()),
+            ),
+            ((10, "person-1", box), (11, "person-1", box)),
+            **kwargs,
+        )
+        messages = build_temporal_messages(job)
+        return json.loads(messages[1]["content"][0]["text"])
+
+    injected = context_of(("fight", "opens_door"), vocabulary=_injected())
+    assert injected["allowed_event_labels"] == ["fight", "opens_door"]
+    assert injected["event_definitions"] == {
+        "opens_door": {
+            "zh_name": "开门",
+            "definition": OPENS_DOOR["definition"],
+            "not_this_event": OPENS_DOOR["counter_examples"],
+        }
+    }
+
+    # A built-in event is already described by the shared prompt.
+    assert "event_definitions" not in context_of(("fight",))
+    assert "event_definitions" not in context_of(
+        ("fight",), vocabulary=_injected()
+    )
+
+
+def test_the_temporal_path_refuses_a_label_outside_the_job_vocabulary():
+    box = NormalizedBBox(0.1, 0.1, 0.4, 0.9)
+    job = TemporalInspection(
+        "session-1",
+        "source-1",
+        InspectionRequest(
+            "request-1", ("person-1",), "new_person", ("opens_door",), 0, 1
+        ),
+        (
+            EvidenceFrame("session-1", 10, 0, _jpeg()),
+            EvidenceFrame("session-1", 11, 1, _jpeg()),
+        ),
+        ((10, "person-1", box), (11, "person-1", box)),
+    )
+    with pytest.raises(ValueError, match="unsupported temporal event labels"):
+        build_temporal_messages(job)
 
 
 def test_the_client_builder_orders_and_validates_against_the_session_vocabulary():

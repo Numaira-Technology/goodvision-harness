@@ -2416,6 +2416,7 @@ class HarnessRuntime:
                     self.source_id,
                     mode=self._scene_mode,
                     event_labels=scene_labels,
+                    vocabulary=self._event_vocabulary(),
                     stranger_enabled=(
                         selected_analysis == FACE_ANALYSIS_MODE
                         or "stranger" in (selected_features or ())
