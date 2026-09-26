@@ -19,6 +19,14 @@ import numpy as np
 
 from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
+from .event_registry import (
+    BUILTIN_EVENTS,
+    SAFETY_BRANCH,
+    STRANGER_LABEL,
+    branch_events,
+    display_names,
+)
+from .event_registry import labels as registry_labels
 from .event_sensitivity import (
     SENSITIVITY_SYSTEM_PROMPT,
     normalize_event_sensitivities,
@@ -40,9 +48,9 @@ SAFETY_MULTI_ANALYSIS_KIND = "safety_events"
 FIXED_FIVE_ANALYSIS_KIND = "fixed_five_events"
 SELECTED_FEATURES_ANALYSIS_KIND = "selected_features"
 
-SAFETY_EVENT_LABELS = ("fight", "smoking", "fall", "weapon")
-STRANGER_EVENT_LABEL = "stranger"
-DETECTION_EVENT_LABELS = (*SAFETY_EVENT_LABELS, STRANGER_EVENT_LABEL)
+SAFETY_EVENT_LABELS = registry_labels(branch_events(SAFETY_BRANCH))
+STRANGER_EVENT_LABEL = STRANGER_LABEL
+DETECTION_EVENT_LABELS = registry_labels(BUILTIN_EVENTS)
 MIN_MULTI_EVENT_MAX_TOKENS = 1024
 _LOGGER = logging.getLogger(__name__)
 
@@ -162,14 +170,7 @@ def _smoking_box_rule(smoking_high: bool) -> str:
         "For smoking, return only the cigarette, cigar, pipe, or e-cigarette box, "
         "never the smoker's person box. "
     )
-_EVENT_NAMES_ZH = {
-    "fight": "打架",
-    "smoking": "吸烟",
-    "fall": "跌倒",
-    "weapon": "武器",
-    "stranger": "陌生人",
-    "unknown_person": "陌生人",
-}
+_EVENT_NAMES_ZH = display_names()
 
 
 @dataclass(frozen=True, slots=True)

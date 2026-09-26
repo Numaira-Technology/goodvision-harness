@@ -16,9 +16,10 @@ from threading import RLock
 from uuid import uuid4
 
 from .contracts import NormalizedBBox, json_mapping_as_dict
+from .event_registry import BUILTIN_EVENTS, labels
 from .rich_labeling import validate_mask_contours
 
-_EVENT_LABELS = frozenset({"fight", "smoking", "fall", "weapon", "stranger"})
+_EVENT_LABELS = frozenset(labels(BUILTIN_EVENTS))
 _IDENTITY_KEYS = ("status", "person_id", "name", "identity_source", "matched_memory_id")
 _NATIVE_TRACK_KEYS = ("backend", "epoch", "object_id")
 _MAX_CONTOUR_HISTORY_POINTS = 131072

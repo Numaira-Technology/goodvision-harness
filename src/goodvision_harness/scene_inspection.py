@@ -13,10 +13,11 @@ from typing import Any, Protocol
 from PIL import Image, UnidentifiedImageError
 
 from .contracts import NormalizedBBox
+from .event_registry import SAFETY_BRANCH, branch_events, labels
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .scene_runtime import BenchmarkInspection, SceneRuntime, TemporalInspection, TemporalVerdict
 
-_EVENT_LABELS = frozenset(("fight", "smoking", "fall", "weapon"))
+_EVENT_LABELS = frozenset(labels(branch_events(SAFETY_BRANCH)))
 _MAX_BYTES = 16 * 1024 * 1024
 _MAX_PIXELS = 16 * 1024 * 1024
 _PROMPT = """Use every supplied frame in source timestamp order as one continuous

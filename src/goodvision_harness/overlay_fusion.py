@@ -17,6 +17,7 @@ from threading import RLock
 
 from .contracts import GroundedObject, NormalizedBBox
 from .delayed_overlay import DisplayAnalysis, is_face_object
+from .event_registry import OBJECT_TARGET, PERSON_TARGET, targets
 from .grounding import SAFETY_EVENT_LABELS
 from .rich_labeling import RichLabelObject
 
@@ -66,8 +67,8 @@ _FACE_PERSON_LABELS = frozenset(
         "unknownperson",
     }
 )
-_PERSON_TARGET_EVENTS = frozenset({"fight", "fall", "stranger"})
-_OBJECT_TARGET_EVENTS = frozenset({"smoking", "weapon"})
+_PERSON_TARGET_EVENTS = targets(PERSON_TARGET)
+_OBJECT_TARGET_EVENTS = targets(OBJECT_TARGET)
 _MIN_MATCH_SCORE = 0.42
 _AMBIGUITY_MARGIN = 0.08
 

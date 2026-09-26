@@ -11,6 +11,7 @@ from queue import Empty, Queue
 from threading import Event, RLock, Thread, current_thread
 from typing import Any
 
+from .event_registry import SAFETY_BRANCH, branch_events, labels
 from .latency_trace import log_timing, trace_id
 from .model_api import ModelAPIError
 from .scene_inspection import (
@@ -20,6 +21,10 @@ from .scene_inspection import (
     _validate_verdicts,
 )
 from .scene_runtime import BenchmarkInspection, SceneRuntime, TemporalInspection, TemporalVerdict
+
+# Deliberately the built-in safety labels rather than whatever a session
+# requested: the verdict log must stay restricted to fixed public labels.
+_PUBLIC_VERDICT_LABELS = frozenset(labels(branch_events(SAFETY_BRANCH)))
 
 
 @contextmanager
@@ -51,9 +56,9 @@ def _verdict_log_fields(outcome: _InspectionOutcome) -> dict[str, Any]:
     A failed/unavailable response has no measurable verdict coverage, including
     no manufactured unknown/negative verdict. Only fixed public labels enter logs.
     """
-    requested = sorted(set(outcome.job.request.event_labels).intersection(
-        {"fight", "smoking", "fall", "weapon"},
-    ))
+    requested = sorted(
+        set(outcome.job.request.event_labels).intersection(_PUBLIC_VERDICT_LABELS)
+    )
     counts = {
         label: dict.fromkeys(("true", "false", "unknown", "omitted"), None)
         for label in requested

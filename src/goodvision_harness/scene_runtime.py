@@ -19,6 +19,8 @@ from typing import Any
 from uuid import uuid4
 
 from .contracts import AnalysisResult, NormalizedBBox
+from .event_registry import BUILTIN_EVENTS, SAFETY_BRANCH, branch_events
+from .event_registry import labels as registry_labels
 from .event_sensitivity import normalize_event_sensitivities
 from .rich_labeling import RichLabelSnapshot
 from .scene_alerts import apply_alert_policy
@@ -32,7 +34,9 @@ from .scene_state import SceneState
 from .video_tracking import BACKEND as _NATIVE_VIDEO_BACKEND
 from .video_tracking import VideoFrame
 
-_EVENTS = frozenset(("fight", "smoking", "fall", "weapon", "stranger"))
+_SAFETY_EVENT_LABELS = registry_labels(branch_events(SAFETY_BRANCH))
+_EVENTS = frozenset(registry_labels(BUILTIN_EVENTS))
+_SAFETY_EVENTS = frozenset(_SAFETY_EVENT_LABELS)
 _INSPECTION_TIMEOUT_SECONDS = 20.0
 _TEMPORAL_MIN_SPAN_SECONDS = 0.75
 _PERSON_LABELS = frozenset(
@@ -145,7 +149,7 @@ class SceneRuntime:
         source_id: str,
         *,
         mode: str = "active",
-        event_labels: tuple[str, ...] = ("fight", "smoking", "fall", "weapon"),
+        event_labels: tuple[str, ...] = _SAFETY_EVENT_LABELS,
         event_sensitivities: Mapping[str, str] | None = None,
         tracking_mode: str = "immediate",
         tracking_history_seconds: float = 12.0,
@@ -158,7 +162,7 @@ class SceneRuntime:
     ) -> None:
         if mode != "active":
             raise ValueError("scene mode must be active")
-        if not set(event_labels) <= _EVENTS - {"stranger"}:
+        if not set(event_labels) <= _SAFETY_EVENTS:
             raise ValueError("unsupported temporal event label")
         if tracking_mode not in {"immediate", "batch"}:
             raise ValueError("tracking mode must be immediate or batch")
