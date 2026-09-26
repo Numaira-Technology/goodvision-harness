@@ -275,6 +275,23 @@ class EventVocabulary:
             definition for definition in self.definitions if not definition.builtin
         )
 
+    def default_labels(self) -> tuple[str, ...]:
+        """What a session detects when it names no features.
+
+        Declaring an event only makes it selectable. Turning it on is the
+        session's call, so the default stays the built-in set no matter how
+        large a vocabulary the deployment declared.
+        """
+
+        return labels(
+            definition for definition in self.definitions if definition.builtin
+        )
+
+    def display_names(self) -> dict[str, str]:
+        return {
+            definition.label: definition.zh_name for definition in self.definitions
+        }
+
     def resolve(self, requested: Iterable[str]) -> tuple[EventDefinition, ...]:
         """Order requested labels as the vocabulary does, rejecting unknown ones.
 

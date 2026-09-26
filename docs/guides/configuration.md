@@ -166,9 +166,18 @@ events:
 > 这类无主体的场景级事件还没打通，见
 > [通用事件注入方案](../architecture/generic-event-injection-20260926.md) 阶段三。
 
+**声明只是让它可选，不会自动开启。** 和内置五件套一样，事件注册进去之后要在
+`features` 里显式勾中才检测。会话不传 `features` 时，默认仍然只有内置五件套——
+所以往生产配置里加一份 benchmark 词表，不会改变现场摄像头的行为，也不会让
+prompt 变长。能力接口 `supported_features` 列出全部可选项、`features` 是当前选中项、
+`event_display_names` 给出各标签的中文名供界面渲染。
+
 注入的是部署级词表；每个会话再用 `POST /v1/sessions/start` 的 `features` 数组从中挑子集，
 词表外的标签一律 `unsupported feature`。上限 32 条，每段文本 600 字符，
 换行会被折叠成空格——定义文本进的是模型 prompt，不能自带指令行。
+
+注入事件没有灵敏度策略（内置的 `smoking` / `weapon` 才有），界面上不必为它显示
+灵敏度下拉；显式给注入事件传 `event_sensitivities` 会被拒绝。
 
 ## Face and reference memory
 

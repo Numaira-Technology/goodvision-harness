@@ -258,9 +258,26 @@ def test_features_accept_injected_labels_only_when_the_deployment_declared_them(
     assert service._normalize_features(["texts_on_phone", "fight"], vocabulary) == (
         "fight", "texts_on_phone",
     )
-    assert service._normalize_features(None, vocabulary) == vocabulary.labels()
     with pytest.raises(ValueError, match="unsupported feature"):
         service._normalize_features(["texts_on_phone"], BUILTIN_VOCABULARY)
+
+
+def test_declaring_an_event_makes_it_selectable_but_never_selects_it():
+    """A declared event behaves like the built-in five: tick it to use it.
+
+    Otherwise adding a benchmark vocabulary to a deployment would silently
+    change what its live cameras detect, and double the prompt while at it.
+    """
+
+    vocabulary = _injected()
+    assert vocabulary.default_labels() == BUILTIN_VOCABULARY.labels()
+    assert service._normalize_features(None, vocabulary) == (
+        "fight", "smoking", "fall", "weapon", "stranger",
+    )
+    assert service._normalize_features(["opens_door"], vocabulary) == ("opens_door",)
+    # Selectable, and named well enough for a checkbox to render.
+    assert set(vocabulary.labels()) > set(vocabulary.default_labels())
+    assert vocabulary.display_names()["opens_door"] == "开门"
 
 
 def test_injected_events_reach_the_prompt_with_their_definition_and_box_rule():

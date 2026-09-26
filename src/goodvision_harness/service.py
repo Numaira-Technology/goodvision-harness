@@ -492,7 +492,7 @@ class HarnessRuntime:
         self._video_connection: VideoConnection | None = None
         self._connection_camera_layout: str | None = None
         self._analysis_settings = {
-            "features": list(self._event_vocabulary().labels()),
+            "features": list(self._event_vocabulary().default_labels()),
             "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
         }
         if deployment_store is not None:
@@ -569,7 +569,7 @@ class HarnessRuntime:
             except Exception:
                 LOGGER.error("could not load saved route selection")
                 self._route_probe["error"] = "saved_route_unavailable"
-        startup_features = self._event_vocabulary().labels()
+        startup_features = self._event_vocabulary().default_labels()
         self._state: dict[str, Any] = {
             "service_started_at": _utc_now(),
             "source_id": self.source_id,
@@ -1326,9 +1326,13 @@ class HarnessRuntime:
             },
             "model": PUBLIC_MODEL_NAME,
             "event_label": self.config.inference.event_label,
-            "event_labels": list(self._event_vocabulary().labels()),
-            "features": list(self._event_vocabulary().labels()),
+            # supported_features is everything selectable; features is what a
+            # session gets without asking. Injected events are in the first but
+            # never the second, so declaring one cannot change live behaviour.
+            "event_labels": list(self._event_vocabulary().default_labels()),
+            "features": list(self._event_vocabulary().default_labels()),
             "supported_features": list(self._event_vocabulary().labels()),
+            "event_display_names": self._event_vocabulary().display_names(),
             **sensitivity_ui_info(),
             "local_camera_display": self.video_display_config(),
             "sample_fps": self.config.video.fps,
@@ -4420,7 +4424,7 @@ def _normalize_features(
 ) -> tuple[str, ...]:
     supported = vocabulary.labels()
     if features is None:
-        return supported
+        return vocabulary.default_labels()
     if not isinstance(features, (list, tuple)):
         raise ValueError("features must be an array")
     raw = tuple(features)
