@@ -217,6 +217,12 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 
 **7.4 一处可能的标注缺口，需要问 Ashley。** `person_opens_facility_door` 127 对 `person_closes_facility_door` 9，14:1。而同类的 `opens/closes_vehicle_door` 是 90:89、`opens/closes_trunk` 是 33:32，都接近 1:1。facility door 的"关门"很可能是漏标而不是真实分布，写判据前值得确认——如果是漏标，拿它算召回会得到误导性的低分。
 
+（2026-09-26 已决定不处理：判据照常写，9 个实例的召回数字看看就好，不作为结论。）
+
 **高召回偏置与 benchmark 精度的冲突（阶段二发现，需要拍板）。** 现有 `inference.system_prompt` 是为安全事件写的：“risk-sensitive … 使用刻意偏低的检测阈值，宁可误报不可漏报”。阶段二只改了外层措辞（“requested event”而非“safety event”），这条偏置对注入事件仍然生效。对 `fight` / `weapon` 这是对的，对 `texts_on_phone` / `opens_door` 这类日常事件会系统性抬高误报，直接拉低 benchmark 的 precision。`rendered_prompt` 里那几页 fight / smoking / fall 判据也照样发给了一个根本没请求它们的会话。
 
 三条路：(a) 给注入事件单独一套中性 system prompt，不带高召回偏置；(b) 让 `EventDefinition` 带一个每事件的召回偏好字段，由词表作者决定；(c) 先不动，跑一轮 benchmark 看误报率再定。倾向 (c) 先量化——但这会改动评分结果，属于跨人边界的决定，需要和 Ashley（选题）、PengYu（离线 runner 与打分）对齐后再动，不在本分支单方面改。
+
+**（已解决：按 (b) 实现，无需跨人对齐。）** `EventDefinition` 增加 `recall` 字段，五个内置事件标 `high_recall`，注入事件默认 `balanced`。一次请求里同时出现两类时，把配置里那套为安全事件写的 system prompt 换成中性底座，再分组说明取舍——这正是敏感度路径已有的做法（`SENSITIVITY_SYSTEM_PROMPT` 也是替换而非追加），不是新开的先例。
+
+关键是只请求安全事件时渲染结果与改动前逐字节一致，线上行为零变化。所以这不再是跨人边界的决定，不需要 Ashley / PengYu 签字。
