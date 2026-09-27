@@ -134,20 +134,44 @@ def count_exact_time(capture: Capture, n: int, third: int | None, boundary: str)
     return round(hits[0] if boundary == "first" else hits[-1])
 
 
+def _frame_gap_tol(capture: Capture) -> float:
+    """Max time gap between two frames still treated as adjacent (observed) time.
+
+    From the median inter-frame delta of recorded frames (×1.5), so a temporal gap
+    — an unobserved stretch or an explicitly empty frame — breaks contiguity
+    rather than being stitched into a continuous span.
+    """
+    ts = sorted(f.t for f in capture.frames)
+    deltas = sorted(b - a for a, b in zip(ts, ts[1:]) if b > a)
+    if deltas:
+        return deltas[len(deltas) // 2] * 2.0  # median recorded cadence, with slack
+    return 1.0
+
+
 def count_max_duration(capture: Capture, n: int, third: int | None) -> float:
-    """Longest contiguous span (seconds) with region count >= N."""
+    """Longest contiguous span (seconds) with region count >= N.
+
+    A run extends only across frames that both qualify (count >= N) AND are
+    temporally adjacent (gap <= tolerance). A qualifying frame after a gap starts a
+    new run: missing/empty frames are never stitched into continuous evidence.
+    """
+    tol = _frame_gap_tol(capture)
     best = 0.0
     run_start: float | None = None
     prev_t: float | None = None
     for f in capture.frames:  # capture frames are in source order
         if _region_count(f, third) >= n:
             if run_start is None:
-                run_start = f.t
-            prev_t = f.t
+                run_start = prev_t = f.t
+            elif prev_t is not None and (f.t - prev_t) <= tol:
+                prev_t = f.t  # adjacent -> extend
+            else:  # temporal gap between qualifying frames -> break, start anew
+                best = max(best, prev_t - run_start)
+                run_start = prev_t = f.t
         else:
             if run_start is not None and prev_t is not None:
                 best = max(best, prev_t - run_start)
-            run_start = None
+            run_start = prev_t = None
     if run_start is not None and prev_t is not None:
         best = max(best, prev_t - run_start)
     return round(best)
@@ -241,8 +265,15 @@ def relative_displacement(
     if capture.width and capture.height:
         w, h = float(capture.width), float(capture.height)
         ref = (ref_box_px[0] / w, ref_box_px[1] / h, ref_box_px[2] / w, ref_box_px[3] / h)
+    elif all(0.0 <= c <= 1.0 for c in ref_box_px):
+        ref = ref_box_px  # already normalized; safe to use as-is
     else:
-        ref = ref_box_px  # assume already normalized
+        # A pixel-space box with no frame size cannot be matched to [0,1] tracks:
+        # IoU is uniformly zero and the nearest-center fallback would silently
+        # pick the wrong person. Refuse rather than emit a plausible wrong answer.
+        raise ValueError(
+            "relative displacement needs source width/height to normalize the "
+            f"pixel reference box {ref_box_px}; capture has none")
     axis_idx = 0 if axis == "horizontal" else 1
     subject = _subject_at(capture, first_t, ref)
     if subject is None:

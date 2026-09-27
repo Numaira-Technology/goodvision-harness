@@ -61,7 +61,7 @@ def test_plan_video_image_sequence_assembles_then_captures():
     joined = "\n".join(lines)
     assert "assemble_frames.sh '/data/root/mot17/x/img1/'" in joined
     assert "30" in joined
-    assert "--video-id vid1 --out caps/vid1.json" in joined
+    assert "--video-id vid1 " in joined and "--out caps/vid1.json" in joined
 
 
 def test_plan_video_file_feeds_directly():
@@ -71,6 +71,23 @@ def test_plan_video_file_feeds_directly():
     joined = "\n".join(lines)
     assert "assemble_frames" not in joined
     assert "'/data/root/a.mpeg' bench" in joined
+
+
+def test_plan_video_uses_realtime_and_session_gating():
+    # P1-a: single-pass realtime publish (not the fast offline path).
+    # P1-b: snapshot baseline session, then require a fresh one for capture.
+    row = {"video_id": "v3", "source_dataset": "ntu_cctv_fights",
+           "media": {"media_type": "file", "path_or_name": "a.mpeg"}}
+    lines = plan_video(row, None, "/data/root", "http://h:7900", "caps",
+                       session_start_cmd="startsess {stream_url}",
+                       session_stop_cmd="stopsess {path}")
+    joined = "\n".join(lines)
+    assert "publish_rtsp_realtime_once.sh" in joined
+    assert "publish_rtsp_offline.sh" not in joined
+    assert "--print-session" in joined
+    assert '--require-session-change-from "$BASE"' in joined
+    assert "startsess rtsp://localhost:8554/bench" in joined
+    assert "stopsess bench" in joined
 
 
 def test_build_script_has_one_capture_per_video():

@@ -99,27 +99,34 @@ benchmark/replay/publish_rtsp.sh mot17_02.mp4 benchB &
 # harness reads: webrtc+http://localhost:8889/benchA/whep  and  /benchB/whep
 ```
 
-**Scheme B — Offline (file replay), simplest.** Single pass, no `-re`; the
-service reads RTSP directly (MediaMTX WHEP layer unused):
+**Scheme B — Offline single pass, realtime-paced (use this for scoring).** The
+harness timestamps RTSP frames by wall-clock, so the stream MUST be paced at the
+source rate (`-re`) or the capture timeline is compressed and every time-scored
+answer is wrong. Use the realtime single-pass publisher:
 
 ```bash
-benchmark/replay/publish_rtsp_offline.sh fight.mpeg   benchA &
-benchmark/replay/publish_rtsp_offline.sh mot17_02.mp4 benchB &
+benchmark/replay/publish_rtsp_realtime_once.sh fight.mpeg   benchA &
+benchmark/replay/publish_rtsp_realtime_once.sh mot17_02.mp4 benchB &
 # harness reads: rtsp://localhost:8554/benchA  and  rtsp://localhost:8554/benchB
 ```
+
+`publish_rtsp_offline.sh` (no `-re`, pushes faster than realtime) is **only** safe
+for fps-independent answers (counting peak, event yes/no) — never for location
+windows, temporal, or count-duration.
 
 ### Pacing: two independent knobs
 
 `-re` and `-stream_loop` do different things — don't conflate them:
 
-- `-re` paces frames at wall-clock speed → **simulates a live camera** (Scheme A).
+- `-re` paces frames at wall-clock speed → source-time alignment (required for
+  scoring) and a live-camera cadence (Scheme A).
 - `-stream_loop -1` replays the file endlessly → **keeps the stream alive** (a
   camera that never stops), for a live-monitoring / concurrency demo.
 
-For **benchmark scoring, do NOT loop**: a question like "when does the first
-conflict end" needs a single, well-defined timeline. Use Scheme B single-pass, or
-the CLI with `--no-realtime` (faster than real time). Looping is only for the
-live-monitoring demo.
+For **benchmark scoring, use `-re` single pass, do NOT loop**: a question like
+"when does the first conflict end" needs one well-defined, source-aligned
+timeline. The CLI `--no-realtime` path is fine only for video A's fps-independent
+event/temporal-via-episode answers.
 
 ### Local backup media
 

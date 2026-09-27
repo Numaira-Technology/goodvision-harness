@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Offline replay: publish a file to MediaMTX over RTSP, SINGLE PASS.
-# The harness service accepts rtsp:// directly (no WHEP conversion needed), so
-# this needs MediaMTX only as the RTSP hub, not the WebRTC layer.
+# Offline replay: publish a file to MediaMTX over RTSP, SINGLE PASS, no pacing.
 #
-#   Scheme B (offline): --stream-url rtsp://localhost:8554/<path-name>
-#   Scheme A (live)   : use publish_rtsp.sh (adds -re + loop + WHEP via MediaMTX)
+# ⚠️  NOT FOR TIME-SCORED QUESTIONS. Without -re, ffmpeg pushes faster than
+# realtime; StreamVideoSource timestamps RTSP frames by wall-clock and drops
+# excess frames by wall-clock cadence (it does not carry source PTS), so the
+# capture timeline is compressed and tracks subsampled. Any question scored on
+# source seconds — location time windows, temporal event end, count durations /
+# count-at-time — will be WRONG. Use publish_rtsp_realtime_once.sh (-re, single
+# pass) for those; the batch driver (run_batch.py) does.
 #
-# Drop -re so frames are pushed as fast as the pipeline consumes them (faster
-# than real time). No loop: one pass, then the path ends and the run drains.
+# This fast path is only safe for fps-INDEPENDENT answers: counting peak
+# (max simultaneous) and event yes/no. Even then, verify tracks are not so
+# subsampled that the peak is missed.
 #
 # Usage: ./publish_rtsp_offline.sh <video-file> <path-name>
 set -euo pipefail

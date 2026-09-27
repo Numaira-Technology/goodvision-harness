@@ -248,6 +248,45 @@ def test_relative_matches_correct_track_of_two():
     assert relative_displacement(cap, ref, 0.0, 40.0, "horizontal") == "left"
 
 
+def test_relative_displacement_refuses_pixel_box_without_dims():
+    # no width/height + a pixel-space reference box -> must refuse, not guess
+    cap = Capture.from_json({"video_id": "v", "fps": 30.0, "duration_seconds": 50.0,
+                             "frames": [_mv(0.0, "a", 0.2, 0.4), _mv(40.0, "a", 0.8, 0.4)]})
+    import pytest
+    with pytest.raises(ValueError):
+        relative_displacement(cap, (100.0, 100.0, 200.0, 300.0), 0.0, 40.0, "horizontal")
+
+
+def test_relative_displacement_normalized_box_without_dims_ok():
+    cap = Capture.from_json({"video_id": "v", "fps": 30.0, "duration_seconds": 50.0,
+                             "frames": [_mv(0.0, "a", 0.2, 0.4), _mv(40.0, "a", 0.8, 0.4)]})
+    # already-normalized box is fine even without dims
+    assert relative_displacement(cap, (0.15, 0.35, 0.25, 0.45), 0.0, 40.0, "horizontal") == "right"
+
+
+def test_count_max_duration_does_not_stitch_across_empty_frame():
+    # 0.5s cadence; an explicit empty frame at 1.5 splits two 1s runs -> max 1s,
+    # NOT one stitched 3s span across the gap.
+    cap = _cap(frames=[_f(0.0, 0, [0.5]), _f(0.5, 15, [0.5]), _f(1.0, 30, [0.5]),
+                       _f(1.5, 45, []),
+                       _f(2.0, 60, [0.5]), _f(2.5, 75, [0.5]), _f(3.0, 90, [0.5])])
+    assert count_max_duration(cap, 1, None) == 1
+
+
+def test_count_max_duration_breaks_on_large_unobserved_gap():
+    # steady 0.5s cadence then a 5s jump (unobserved) -> the late frame is not
+    # stitched onto the earlier run.
+    cap = _cap(frames=[_f(0.0, 0, [0.5]), _f(0.5, 15, [0.5]), _f(1.0, 30, [0.5]),
+                       _f(6.0, 180, [0.5])])
+    assert count_max_duration(cap, 1, None) == 1
+
+
+def test_count_max_duration_real_contiguous_run():
+    cap = _cap(frames=[_f(0.0, 0, [0.5]), _f(0.5, 15, [0.5]), _f(1.0, 30, [0.5]),
+                       _f(1.5, 45, [0.5]), _f(2.0, 60, [0.5])])
+    assert count_max_duration(cap, 1, None) == 2
+
+
 def test_dispatch_relative_displacement_via_options():
     cap = _capwh([_mv(0.0, "p", 0.2, 0.4), _mv(40.0, "p", 0.8, 0.4)])
     q = _q(capability="location_tracking",
