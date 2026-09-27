@@ -10,7 +10,7 @@
 
 例如主程序放在客户机器，SAM 放在一台独立 L40S 服务器，大模型继续调用云端。以后把大模型迁到另一台 GPU 服务器，只需修改控制台的大模型部署位置、服务地址和模型名称。
 
-本页使用独立的 `compose.main-server.yaml`、`compose.sam-server.yaml`、`compose.vlm-server.yaml`，不调用云端租机。现有 `tools/start_local_gpu.py` 仍用于所有模块在同一台 NVIDIA 机器上的部署；两个入口不要在相同端口同时启动。
+本页使用独立的 `compose.main-server.yaml`、`compose.sam-server.yaml`、`compose.vlm-server.yaml`，不调用云端租机。`tools/start_local_gpu.py` 用于主程序和 SAM 在同一台 NVIDIA 机器上的部署，增加 `--with-local-inference` 可同时部署本地大模型；两个入口不要在相同端口同时启动。
 
 独立模块的 `--gpu-id` 是各自宿主机上的编号。如果两个 worker 实际在同一台双卡机器，应明确选择不同的卡；单卡共用请使用现有同机入口，以采用为 SAM 留出显存的配置。
 

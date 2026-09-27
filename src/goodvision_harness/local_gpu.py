@@ -43,6 +43,8 @@ class LocalGPUDeployment:
     gpu_count: int = 0
     inference_device: int = 0
     tracking_device: int = 0
+    inference_available: bool = True
+    tracking_available: bool = True
 
     @classmethod
     def from_environment(cls) -> LocalGPUDeployment:
@@ -54,19 +56,28 @@ class LocalGPUDeployment:
             raise ValueError("LOCAL_GPU_COUNT must identify available NVIDIA GPUs")
         inference = int(os.environ.get("LOCAL_INFERENCE_GPU_ID", "0"))
         tracking = int(os.environ.get("LOCAL_TRACKING_GPU_ID", str(int(count > 1))))
+        inference_available = _env_flag("LOCAL_INFERENCE_AVAILABLE", available)
+        tracking_available = _env_flag("LOCAL_TRACKING_AVAILABLE", available)
         if inference < 0 or tracking < 0:
             raise ValueError("local GPU device IDs must be non-negative")
-        if available and ((count == 1) != (inference == tracking)):
+        if (available and inference_available and tracking_available
+                and ((count == 1) != (inference == tracking))):
             raise ValueError("single GPU must be shared; two GPUs must be separated")
-        return cls(available, count, inference, tracking)
+        return cls(available, count, inference, tracking,
+                   inference_available, tracking_available)
 
     def public_status(self) -> dict[str, object]:
         return {
             "available": self.available,
             "gpu_count": self.gpu_count if self.available else 0,
-            "inference_device": self.inference_device if self.available else None,
-            "tracking_device": self.tracking_device if self.available else None,
-            "assignment": ("shared" if self.gpu_count == 1 else "split")
+            "inference_available": self.available and self.inference_available,
+            "tracking_available": self.available and self.tracking_available,
+            "inference_device": self.inference_device
+            if self.available and self.inference_available else None,
+            "tracking_device": self.tracking_device
+            if self.available and self.tracking_available else None,
+            "assignment": ("tracking_only" if not self.inference_available
+                           else "shared" if self.gpu_count == 1 else "split")
             if self.available
             else "unavailable",
         }
@@ -76,6 +87,10 @@ class LocalGPUDeployment:
         validate_local_gpu_enabled(tracking, "local_tracking_enabled")
         if (inference or tracking) and not self.available:
             raise ValueError("本地 GPU 服务未配置。请先运行本地 GPU 启动程序。")
+        if inference and not self.inference_available:
+            raise ValueError("本地大模型服务未部署。请选择云端 API 或独立模型服务器。")
+        if tracking and not self.tracking_available:
+            raise ValueError("本地人物追踪服务未部署。请先运行本地 GPU 启动程序。")
 
     def configure(
         self,
