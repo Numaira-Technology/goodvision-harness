@@ -218,6 +218,9 @@ def test_full_local_model_deployment_remains_explicit(launch_rig, capsys):
     assert "local-inference" in plan["command"]
     assert plan["environment"]["LOCAL_TRACKING_GPU_ID"] == "1"
     assert plan["environment"]["LOCAL_INFERENCE_ENABLED"] == "true"
+    assert [cmd[-4] for cmd in plan["preflight_commands"]] == [
+        "local-tracking", "harness",
+    ]
     assert not launch_rig.calls
 
 

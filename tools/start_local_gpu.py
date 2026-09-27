@@ -744,21 +744,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         compose = command[:command.index("up")]
         # Preflight must use the very same image/device as the eventual worker.
-        cuda_command = None
-        checks = []
-        if not args.with_local_inference:
-            cuda_command = [
+        cuda_command = [
+            *compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
+            "local-tracking", "python", "-c", runtime_check("local-tracking"),
+        ]
+        checks = [cuda_command]
+        harness_check = runtime_check("harness")
+        for index in range(1, args.streams + 1):
+            service = "harness" if index == 1 else f"harness-{index:02d}"
+            checks.append([
                 *compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
-                "local-tracking", "python", "-c", runtime_check("local-tracking"),
-            ]
-            checks.append(cuda_command)
-            harness_check = runtime_check("harness")
-            for index in range(1, args.streams + 1):
-                service = "harness" if index == 1 else f"harness-{index:02d}"
-                checks.append([
-                    *compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
-                    service, "python", "-c", harness_check,
-                ])
+                service, "python", "-c", harness_check,
+            ])
         # Print only the local plan, never inherited API keys or full Compose config.
         print(
             json.dumps(
@@ -788,34 +785,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         process_environment = dict(os.environ)
         process_environment.update(environment)
         try:
-            if not args.with_local_inference:
-                if not args.no_build:
-                    result = subprocess.run(
-                        [*compose, "build", "harness", "local-tracking"],
-                        cwd=ROOT, env=process_environment, check=False,
-                    )
-                    if result.returncode:
-                        raise LaunchError(
-                            "Local GPU image build failed; check the build output"
-                        )
-                for check in checks:
-                    result = subprocess.run(
-                        check, cwd=ROOT, env=process_environment, check=False,
-                        timeout=120,
-                    )
-                    if result.returncode:
-                        raise LaunchError(
-                            "Local runtime preflight failed. Check the error above, "
-                            "NVIDIA driver, Docker GPU support and writable mounts. "
-                            "For outdated images, rebuild or import matching images."
-                        )
-                # The build/preflight above determined exactly which images run.
-                command = compose_command(
-                    root=ROOT, env_file=env_file if env_file.is_file() else None,
-                    with_paddle=False, build=False, streams=args.streams,
-                    fleet_file=fleet_file if overlay is not None else None,
-                    with_local_inference=False,
+            if not args.no_build:
+                services = ["harness", "local-tracking"]
+                if args.with_paddle:
+                    services.append("rich-label-worker")
+                result = subprocess.run(
+                    [*compose, "build", *services],
+                    cwd=ROOT, env=process_environment, check=False,
                 )
+                if result.returncode:
+                    raise LaunchError(
+                        "Local GPU image build failed; check the build output"
+                    )
+            for check in checks:
+                result = subprocess.run(
+                    check, cwd=ROOT, env=process_environment, check=False,
+                    timeout=120,
+                )
+                if result.returncode:
+                    raise LaunchError(
+                        "Local runtime preflight failed. Check the error above, "
+                        "NVIDIA driver, Docker GPU support and writable mounts. "
+                        "For outdated images, rebuild or import matching images."
+                    )
+            # The build/preflight above determined exactly which images run.
+            command = compose_command(
+                root=ROOT, env_file=env_file if env_file.is_file() else None,
+                with_paddle=args.with_paddle, build=False, streams=args.streams,
+                fleet_file=fleet_file if overlay is not None else None,
+                with_local_inference=args.with_local_inference,
+            )
             result = subprocess.run(
                 command, cwd=ROOT, env=process_environment, check=False
             )

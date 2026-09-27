@@ -173,7 +173,9 @@ docker run --rm --network goodvision-demo --entrypoint python \
 
 ## 离线与运维
 
-VLM 和 SAM 都以只读方式挂载已有权重，并开启离线加载；脚本不会下载权重，缺少文件或分片会报错。完全离线交付还需导入 `goodvision-harness:demo-face-gpu-cu128`、`goodvision-sam31:experimental`、`vllm/vllm-openai:v0.17.1`，以及需要时的 `goodvision-rich-label-worker:demo-gpu-cu129` 镜像和已准备好的模型卷。
+VLM 和 SAM 都以只读方式挂载已有权重，并开启离线加载；脚本不会下载权重，缺少文件或分片会报错。完全离线交付还需导入 `goodvision-harness:demo-face-gpu-cu128`、`goodvision-contour-runtime:0.1.0`、`vllm/vllm-openai:v0.17.1`，以及需要时的 `goodvision-rich-label-worker:demo-gpu-cu129` 镜像和已准备好的模型卷。
+
+SAM 与默认的本机追踪部署使用同一份 Contour 引擎配置，保留依赖修复、可写缓存和显存回收。启动时同样核对镜像源码、实际检查每路 `/data/sam-spool` 和 GPU 缓存目录可写性，并执行 CUDA 运算；`--no-build` 也不能绕过这些检查。
 
 启动时自动设置 `LOCAL_GPU_AVAILABLE=true`、`LOCAL_GPU_COUNT`、`LOCAL_INFERENCE_GPU_ID` 和 `LOCAL_TRACKING_GPU_ID`。每个视频实例还获得 `HARNESS_FLEET_CAPACITY=N`、自身的 `HARNESS_FLEET_CAMERA_INDEX` 和主入口内网地址 `HARNESS_FLEET_PRIMARY_URL=http://harness:8080`。主控制台统一访问固定的 `harness-02:8080` 等内网实例；这些地址不是需要分别打开的用户入口。
 

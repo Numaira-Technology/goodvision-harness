@@ -381,6 +381,14 @@ class LocalGpuLauncherTests(unittest.TestCase):
                 services = json.loads(result.stdout)["services"]
                 self.assertEqual(len(services), streams + 3)
                 tracking_device = "0" if count == 1 else "1"
+                worker = services["local-tracking"]
+                self.assertEqual(worker["image"], "goodvision-contour-runtime:0.1.0")
+                self.assertEqual(
+                    worker["build"]["dockerfile"], "contour/Dockerfile.engine",
+                )
+                self.assertEqual(
+                    worker["environment"]["SAM31_FIXED_PERSON_TEXT"], "true",
+                )
                 for index in range(1, streams + 1):
                     name = "harness" if index == 1 else f"harness-{index:02d}"
                     service = services[name]
