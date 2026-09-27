@@ -182,6 +182,20 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 
 已知代价：`event_sensitivity.py` 的新版本只在 main 上，本分支上是旧版。阶段一在这个文件上的改动是对着旧版做的，rebase 时需要按 main 的新版重做一遍，不要盲目接受任何一侧。
 
+**（2026-09-27 实测订正，替换上面的估计。）** 在临时 worktree 里真跑了一次 `git merge origin/main`，不是估的。共同祖先 `b6e3f14`（9-20），到 9-27 为止 main 走了 50 个提交，PengYu 分支走了 2 个——落后是从基线分支继承的，不是本方案的 13 个提交造成的。
+
+冲突总量 4 文件 10 处。把 PengYu 分支单独合一次 main 做对照，其中 7 处 221 行（`service.py` 5 处、`scene_runtime.py` 2 处）与本方案无关，他无论如何都要付。
+
+属于本方案的只有 3 处：
+
+- `service.py` 6 行：`vocabulary=` 与 main 新增的 `independent_temporal_inference=` 撞在同一处参数列表，两侧都保留即可。
+- `docs/README.md` 9 行：双方各自新增目录行，两侧都保留。
+- `event_sensitivity.py` 66 行：块大但内容小。逐项比对 main 的硬编码表与 `sensitivity_options()` 的输出，`EVENT_SENSITIVITY_DEFAULTS` 完全一致，选项里只有 `weapon` / `standard` 的 description 被 main 改了措辞。保留注册表版本，把这一句同步进 `event_registry.py` 即可。
+
+结论：rebase 会让 13 个提交逐个撞同一批冲突，merge 只撞一次且解决过程可复查。若 PengYu 分支先进 main，本分支合回他的分支即可，一次 rebase 都不需要。
+
+（2026-09-27 决定：先不合，等跑完分再定。）
+
 原则：改动尽量集中在新增文件（`event_registry.py`、渲染器模块）里，对既有文件只做"删掉 frozenset、改成查注册表"这类小切口，把 rebase 成本压在可控范围内。
 
 **自定义标签入日志的隐私边界。** `scene_worker.py` 注释写明只有固定公共标签进日志。benchmark 注入的标签来自公开题库，应当安全，但需要确认这条约束的来源是隐私审计还是别的合规要求。
