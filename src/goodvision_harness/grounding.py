@@ -159,8 +159,13 @@ POSITIVE_EVENT_ACTOR_RULE = (
     "use actor_ids=[]. Proximity alone is insufficient. Keep smoking/weapon "
     "objects as item boxes and body boxes in actors. Never invent people, "
     "names, stable IDs, hidden body extent, or prose about actors. Omit actors "
-    "before omitting required event fields. When all events are negative, "
-    "return only no_events and omit actors entirely."
+    "before omitting required event fields."
+)
+# Appended only when the compact all-negative shortcut is allowed. Everyday
+# requests forbid no_events, so they must not hear this again at the end.
+POSITIVE_EVENT_ACTOR_NEGATIVE_SHORTCUT = (
+    " When all events are negative, return only no_events and omit actors "
+    "entirely."
 )
 
 
@@ -1231,15 +1236,29 @@ def build_multi_grounding_messages(
     )
     if balanced:
         policy_system_prompt += f"\n{_recall_posture_rule(requested)}"
+    # The compact no_events shortcut is for safety windows that are usually
+    # empty. Everyday events are ordinary activity that is easy to miss in a
+    # short sample, and a pilot run answered every clip with bare no_events
+    # including ones that plainly show people talking. Force a per-label
+    # answer whenever any balanced event is in the request so a miss cannot
+    # hide behind the all-negative form. Safety-only requests keep the
+    # shortcut unchanged.
+    allow_compact_negative = not balanced
+    if allow_compact_negative:
+        compact_rule = (
+            _compact_no_events_rule("event") if injected else COMPACT_NO_EVENTS_RULE
+        ) + "\n"
+    else:
+        compact_rule = (
+            "Do not use a compact no_events answer for this request. Return "
+            "the full events array for every requested label even when every "
+            "verdict is negative, with bilingual descriptions of the visible "
+            "evidence that settles each one.\n"
+        )
     system_text = (
         f"{policy_system_prompt}\n"
         f"{BILINGUAL_DESCRIPTION_RULE}\n"
-        + (
-            _compact_no_events_rule("event")
-            if injected
-            else COMPACT_NO_EVENTS_RULE
-        )
-        + "\n"
+        + compact_rule
         + (
             "For this request, independently judge every requested "
             "event and allow multiple simultaneous positives."
@@ -1285,6 +1304,17 @@ def build_multi_grounding_messages(
         "Target events (exact order)" if injected
         else "Target safety events (exact order)"
     )
+    if allow_compact_negative:
+        negative_instruction = (
+            'If ALL requested events are negative, return only '
+            '{"no_events":0.95} with your confidence; omit all other fields.\n'
+        )
+    else:
+        negative_instruction = (
+            "If every requested event is negative, still return the full "
+            "events array with detected=false for each label; do not use "
+            "no_events.\n"
+        )
     text = (
         f"{rendered_prompt}"
         f"{injected_section}\n\n"
@@ -1292,9 +1322,9 @@ def build_multi_grounding_messages(
         f"Window: {window.label}\n"
         f"Sample timestamps: {timestamps}"
         f"{contract_section}\n\n"
-        f"{_sensitivity_actor_rule(POSITIVE_EVENT_ACTOR_RULE, smoking_high)}\n"
-        'If ALL requested events are negative, return only {"no_events":0.95} '
-        "with your confidence; omit all other fields.\n"
+        f"{_sensitivity_actor_rule(POSITIVE_EVENT_ACTOR_RULE, smoking_high)}"
+        f"{POSITIVE_EVENT_ACTOR_NEGATIVE_SHORTCUT if allow_compact_negative else ''}"
+        f"\n{negative_instruction}"
         "The live JPEG images follow in chronological order."
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
