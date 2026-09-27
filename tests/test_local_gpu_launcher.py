@@ -389,6 +389,12 @@ class LocalGpuLauncherTests(unittest.TestCase):
                 self.assertEqual(
                     worker["environment"]["SAM31_FIXED_PERSON_TEXT"], "true",
                 )
+                self.assertTrue(worker["build"]["context"].replace("\\", "/").endswith(
+                    "/workers",
+                ))
+                self.assertEqual(len(worker["volumes"]), 1)
+                self.assertEqual(worker["volumes"][0]["target"], "/models/contour.pt")
+                self.assertTrue(worker["volumes"][0]["read_only"])
                 for index in range(1, streams + 1):
                     name = "harness" if index == 1 else f"harness-{index:02d}"
                     service = services[name]
@@ -414,6 +420,9 @@ class LocalGpuLauncherTests(unittest.TestCase):
                         f"/cameras/camera-{index:02d}/", env["LOCAL_TRACKING_ENDPOINT"]
                     )
                 for name, service in services.items():
+                    self.assertIn(
+                        "devices", service["deploy"]["resources"]["reservations"], name,
+                    )
                     reservation = service["deploy"]["resources"]["reservations"][
                         "devices"
                     ]

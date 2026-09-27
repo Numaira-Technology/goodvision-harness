@@ -112,10 +112,31 @@ services:
         max-file: "3"
 
   local-tracking:
-    # Both local deployment modes share Contour's dependency and cache fixes.
+    # Extend Contour directly: Compose 2.x can drop !override fields when
+    # inheriting compose.local-tracking.yaml through an extra extends layer.
     extends:
-      file: compose.local-tracking.yaml
-      service: local-tracking
+      file: workers/contour/compose.gpu.yaml
+      service: engine
+    build:
+      context: ./workers
+      dockerfile: contour/Dockerfile.engine
+      args:
+        TORCH_CUDA: "${LOCAL_TRACKING_TORCH_CUDA:-cu128}"
+    environment:
+      SAM31_LIVE_CAMERAS: "${HARNESS_FLEET_CAPACITY:-1}"
+    volumes: !override
+      - type: bind
+        source: "${SAM31_CHECKPOINT_FILE:?Set a SAM checkpoint or prepare Contour models}"
+        target: /models/contour.pt
+        read_only: true
+        bind: {create_host_path: false}
+    deploy:
+      resources:
+        reservations:
+          devices: !override
+            - driver: nvidia
+              device_ids: ["${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"]
+              capabilities: [gpu]
 
   # Optional existing Paddle worker: --with-paddle, also isolated to GPU 1/0.
   rich-label-worker:
