@@ -28,6 +28,7 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,7 @@ def capture_offline(
     observation_max_tokens: int | None = None,
     answer_max_tokens: int | None = None,
     reanswer: bool = False,
+    features: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Run one full, file-backed Harness session and retain its artifacts."""
     base_url = base_url.rstrip("/")
@@ -71,12 +73,15 @@ def capture_offline(
             raise ValueError("re-answer requires the original questions")
         _post(f"{base_url}/v1/benchmark/{started['stream_session_id']}/answer", {})
     else:
-        started = _post(f"{base_url}/v1/sessions/start", {
+        payload = {
             "mode": "file", "video_path": video_path,
             "benchmark": {"video_id": video_id, "questions": questions,
                           "observation_max_tokens": observation_max_tokens,
                           "answer_max_tokens": answer_max_tokens},
-        })
+        }
+        if features is not None:
+            payload["features"] = list(features)
+        started = _post(f"{base_url}/v1/sessions/start", payload)
     session_id = started["stream_session_id"]
     endpoint = f"{base_url}/v1/benchmark/{session_id}"
     (output_dir / "session.json").write_text(json.dumps(

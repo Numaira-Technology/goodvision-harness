@@ -9,7 +9,10 @@ can still take longer than the video duration. Report answer quality separately
 from live latency.
 
 Each observation window receives that video's original questions, response
-options, and public context. The four existing safety verdicts are retained;
+options, and public context. Each session detects the events its own video is
+asked about (see "Everyday events" below); videos with only counting and
+location questions stay on the built-in safety events, as earlier runs did.
+The four existing safety verdicts are retained;
 question-relevant observations are additional output. In this mode only, sampled
 frames with no detected people can also reach the model. Empty detections do not
 establish that no people are visible.
@@ -72,6 +75,34 @@ Optional `--observation-max-tokens` and `--answer-max-tokens` control the two
 output budgets separately. If omitted, both use `scene_max_tokens`. A too-small
 budget or oversized evidence context is recorded as a failure, not silently
 truncated or followed by an extra summarization call.
+
+### Everyday events
+
+Questions about everyday activity — texting on a phone, opening a door, loading
+a vehicle — need events the harness does not ship with. `events/vocabulary.yaml`
+holds their criteria, written by hand so a score can be traced back to what was
+actually asked of the model.
+
+Declaring them is a one-time server-side step, because definitions are read from
+the config when the harness starts. Print the block and paste it into the
+harness config, then restart:
+
+```bash
+python -m bench.vocabulary >> /path/to/harness/config-events.yaml
+```
+
+Declaring an event only makes it selectable; nothing changes about what a live
+camera detects. The runner then ticks the right ones per video, reading each
+question's event label, so a video asked about texting runs a session detecting
+texting and nothing else.
+
+Before the first session the runner checks the harness knows every label the run
+needs, and names the missing ones rather than failing once per video. Pass
+`--no-auto-features` to skip both the check and the per-video selection and
+leave every session on the harness default.
+
+Labels whose subject is a vehicle are not supported: the tracker admits people
+only. Those questions cannot be answered by this path yet.
 
 ### Results and reuse
 

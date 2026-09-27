@@ -25,6 +25,12 @@ from urllib.parse import quote
 from .capture_live import capture_offline
 from .extract import answer_question
 from .schema import Capture, load_media, load_questions
+from .vocabulary import (
+    check_supported,
+    required_labels,
+    session_features,
+    supported_labels,
+)
 
 
 def run(
@@ -84,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
     reuse = parser.add_mutually_exclusive_group()
     reuse.add_argument("--reuse-results", action="store_true", help="reuse complete local results; run missing videos")
     reuse.add_argument("--reanswer", action="store_true", help="make a new text answer from saved server sessions; no replay")
+    parser.add_argument(
+        "--no-auto-features", action="store_true",
+        help="do not derive per-video events from the questions; "
+             "leave every session on the harness default",
+    )
     parser.add_argument("--observation-max-tokens", type=int)
     parser.add_argument("--answer-max-tokens", type=int)
     args = parser.parse_args(argv)
@@ -100,6 +111,11 @@ def run_offline(args) -> int:
     groups = {}
     for question in questions:
         groups.setdefault(question.video_id, []).append(question)
+    if not args.reanswer and not args.no_auto_features:
+        # One call, before the first session: a label the harness has not been
+        # configured with fails every video that needs it, and the per-session
+        # error does not say which label or how to fix it.
+        check_supported(required_labels(questions), supported_labels(args.base_url))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     predictions_path = args.output or args.output_dir / "predictions.jsonl"
     failures = 0
@@ -136,6 +152,11 @@ def run_offline(args) -> int:
                         observation_max_tokens=args.observation_max_tokens,
                         answer_max_tokens=args.answer_max_tokens,
                         reanswer=args.reanswer,
+                        features=(
+                            None
+                            if args.no_auto_features
+                            else session_features(video_questions)
+                        ),
                     )
                 answers = {row["qa_id"]: row["prediction"] for row in result["predictions"]}
                 error = result.get("error")
