@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+
 import pytest
 from bench.schema import Question, question_target_label
 from bench.vocabulary import (
@@ -90,6 +93,55 @@ def test_an_undeclared_label_names_itself_and_the_fix():
     assert "person_sits_down" in message
     assert "fight" not in message.split(":", 1)[1].split(".", 1)[0]
     assert "events.definitions" in message
+
+
+def test_a_fully_cached_rerun_never_contacts_the_harness(tmp_path, monkeypatch):
+    """Answering from saved results starts no session, so an unreachable or
+    unconfigured harness must not abort the command."""
+
+    from bench import run_bench
+
+    questions = tmp_path / "questions.jsonl"
+    questions.write_text(
+        json.dumps({
+            "qa_id": "q1", "capability": "event_recognition", "question": "?",
+            "video_id": "v1", "answer_type": "text",
+            "public_context": {"queried_event_label": "person_sits_down"},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    media = tmp_path / "media.jsonl"
+    media.write_text(json.dumps({"video_id": "v1", "path": "v1.mp4"}) + "\n", "utf-8")
+
+    output = tmp_path / "out"
+    directory = output / "videos" / "video-v1"
+    directory.mkdir(parents=True)
+    public = [{
+        "qa_id": "q1", "question": "?", "capability": "event_recognition",
+        "answer_type": "text",
+        "public_context": {"queried_event_label": "person_sits_down"},
+    }]
+    (directory / "result.json").write_text(json.dumps({
+        "status": "complete", "records_downloaded": True,
+        "metadata": {"questions": public},
+        "predictions": [{"qa_id": "q1", "prediction": "yes"}],
+    }), encoding="utf-8")
+
+    def unreachable(*args, **kwargs):
+        raise AssertionError("a cached rerun must not call the harness")
+
+    monkeypatch.setattr(run_bench, "supported_labels", unreachable)
+    monkeypatch.setattr(run_bench, "capture_offline", unreachable)
+
+    args = argparse.Namespace(
+        questions=questions, media=media, output=None, output_dir=output,
+        base_url="http://unreachable.invalid", media_root=str(tmp_path),
+        reuse_results=True, reanswer=False, no_auto_features=False,
+        observation_max_tokens=None, answer_max_tokens=None,
+    )
+    assert run_bench.run_offline(args) == 0
+    rows = (output / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(rows[0]) == {"qa_id": "q1", "prediction": "yes"}
 
 
 def test_a_fully_declared_run_passes_preflight():

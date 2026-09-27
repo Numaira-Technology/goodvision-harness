@@ -105,20 +105,38 @@ def main(argv: list[str] | None = None) -> int:
     return run(args.questions, args.media, args.captures, args.output)
 
 
+def _reusable_result(result_path: Path, public: list, args) -> dict | None:
+    """A cached result complete enough to answer from, or None to re-run.
+
+    An unreadable or half-written cache means re-run, not fail: the video is
+    still answerable, and the run is cheaper to repeat than to debug.
+    """
+    if not args.reuse_results or not result_path.exists():
+        return None
+    try:
+        cached = json.loads(result_path.read_text(encoding="utf-8"))
+        expected_questions = [
+            {key: value for key, value in row.items() if key != "video_id"}
+            for row in public
+        ]
+        if (cached["status"] == "complete" and cached.get("records_downloaded")
+                and cached["metadata"]["questions"] == expected_questions):
+            return cached
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"[warn] unusable cached result {result_path}: {exc}", file=sys.stderr)
+    return None
+
+
 def run_offline(args) -> int:
     questions = load_questions(args.questions)
     media = load_media(args.media)
     groups = {}
     for question in questions:
         groups.setdefault(question.video_id, []).append(question)
-    if not args.reanswer and not args.no_auto_features:
-        # One call, before the first session: a label the harness has not been
-        # configured with fails every video that needs it, and the per-session
-        # error does not say which label or how to fix it.
-        check_supported(required_labels(questions), supported_labels(args.base_url))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     predictions_path = args.output or args.output_dir / "predictions.jsonl"
     failures = 0
+    preflight_done = False
     with predictions_path.open("w", encoding="utf-8") as predictions, (
         args.output_dir / "details.jsonl"
     ).open("w", encoding="utf-8") as details:
@@ -126,19 +144,22 @@ def run_offline(args) -> int:
             # URL encoding keeps dataset IDs (including ':' and '/') in one directory.
             directory = args.output_dir / "videos" / ("video-" + quote(video_id, safe=""))
             directory.mkdir(parents=True, exist_ok=True)
-            answers, error, result = {}, None, None
+            answers, error = {}, None
             public = [question.public_payload() for question in video_questions]
+            result = _reusable_result(directory / "result.json", public, args)
+            if result is None and not preflight_done:
+                # Once, and only once this run is known to start a session: a
+                # label the harness was not configured with fails every video
+                # that needs it, and the per-session error names neither the
+                # label nor the fix. Fatal on purpose, and outside the
+                # per-video handler that would demote it to one failed video.
+                if not args.reanswer and not args.no_auto_features:
+                    check_supported(
+                        required_labels(questions),
+                        supported_labels(args.base_url),
+                    )
+                preflight_done = True
             try:
-                result_path = directory / "result.json"
-                if args.reuse_results and result_path.exists():
-                    cached = json.loads(result_path.read_text(encoding="utf-8"))
-                    expected_questions = [
-                        {key: value for key, value in row.items() if key != "video_id"}
-                        for row in public
-                    ]
-                    if (cached["status"] == "complete" and cached.get("records_downloaded")
-                            and cached["metadata"]["questions"] == expected_questions):
-                        result = cached
                 if result is None:
                     video_path = ""
                     if not args.reanswer:
