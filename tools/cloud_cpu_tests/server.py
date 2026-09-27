@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 import psutil
 from fastapi import HTTPException
+from fastapi.responses import FileResponse
 
 from goodvision_harness.deployment_settings import DeploymentSettingsStore
 from goodvision_harness.service import HarnessRuntime, create_app
@@ -65,6 +66,13 @@ def gpu_snapshot():
 def build_app(args):
     state = args.output.resolve() / f"lane-{args.lane}"
     state.mkdir(parents=True, exist_ok=True)
+    video = args.video.resolve(strict=True) if args.video is not None else None
+    if video is not None and not video.is_file():
+        raise ValueError(f"Benchmark video is not a file: {video}")
+    video_sha256 = None
+    if video is not None:
+        with video.open("rb") as source:
+            video_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
     endpoint = (
         f"{args.sam_endpoint}/v1/cameras/camera-{args.lane:02d}"
         "/perception/sam_live/sessions"
@@ -99,6 +107,7 @@ def build_app(args):
         "cpu_count": psutil.cpu_count(),
         "ram_bytes": psutil.virtual_memory().total,
         "sam_endpoint": endpoint,
+        "video_sha256": video_sha256,
         "gpu_at_start": gpu_snapshot(),
         "config_sha256": hashlib.sha256(
             (ROOT / "config.yaml").read_bytes()
@@ -198,6 +207,12 @@ def build_app(args):
     def evidence():
         return {**info(), "timings": list(timings.rows), "telemetry": list(telemetry)}
 
+    if video is not None:
+
+        @app.get("/experiment-video/original", include_in_schema=False)
+        def original_video():
+            return FileResponse(video, media_type="video/mp4")
+
     return app
 
 
@@ -212,6 +227,9 @@ def main():
         "--face-model-root", type=Path, default=ROOT / ".models/insightface"
     )
     parser.add_argument("--allow-face-download", action="store_true")
+    parser.add_argument(
+        "--video", type=Path, help="Optional same-origin video for cloud browser decode"
+    )
     parser.add_argument("--lane", type=int, choices=(1, 2), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if platform.system() != "Linux":

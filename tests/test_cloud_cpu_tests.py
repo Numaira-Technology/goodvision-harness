@@ -1,6 +1,7 @@
 """Acceptance logic and cloud configuration; no real GPU/API/screen recording."""
 
 import copy
+import hashlib
 import json
 from argparse import Namespace
 
@@ -105,8 +106,9 @@ def test_both_repeated_dual_lanes_must_pass():
     assert not report.comparisons(value, trials[:2])[0]["repeated_acceptance"]
 
 
+@pytest.mark.parametrize("serve_video", [False, True])
 def test_cloud_service_uses_real_sam_client_and_changes_only_buffer(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, serve_video
 ):
     from goodvision_harness.perception import PerceptionSessionHTTPClient
 
@@ -121,12 +123,16 @@ def test_cloud_service_uses_real_sam_client_and_changes_only_buffer(
     )
     monkeypatch.setattr(server.HarnessRuntime, "start", lambda self: None)
     monkeypatch.setattr(server.HarnessRuntime, "stop", lambda self: None)
+    video = tmp_path / "video.mp4"
+    if serve_video:
+        video.write_bytes(b"example video bytes")
     args = Namespace(
         output=tmp_path,
         lane=2,
         sam_endpoint="http://127.0.0.1:8092",
         face_model_root=tmp_path / "models",
         allow_face_download=False,
+        video=video if serve_video else None,
     )
     app = server.build_app(args)
     with TestClient(app) as client:
@@ -134,6 +140,19 @@ def test_cloud_service_uses_real_sam_client_and_changes_only_buffer(
         changed = client.post("/benchmark/trial", json={"id": "trial-1", "delay": 1.0})
         assert changed.status_code == 200, changed.text
         after = changed.json()
+        if serve_video:
+            assert (
+                after["host"]["video_sha256"]
+                == hashlib.sha256(video.read_bytes()).hexdigest()
+            )
+            response = client.get(
+                "/experiment-video/original", headers={"range": "bytes=0-6"}
+            )
+            assert response.status_code == 206
+            assert response.content == b"example"
+        else:
+            assert after["host"]["video_sha256"] is None
+            assert client.get("/experiment-video/original").status_code == 404
         assert after["fixed_main"]["effective_display_delay_seconds"] == 1.0
         browser = client.get("/v1/ui/info").json()["local_camera_display"]
         assert browser["enabled"] is True

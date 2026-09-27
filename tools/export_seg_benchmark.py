@@ -51,7 +51,7 @@ def source_files(root):
         "tools/seg_benchmark": ["*.py", "*.html", "requirements.txt"],
         "tools/vast_benchmark": ["*.py", "*.sh", "*.txt", "README.md"],
         "tools/seg_pipeline": ["*.py", "*.sh"],
-        "tools/cloud_cpu_tests": ["*.py", "*.sh", "*.json", "README.md"],
+        "tools/cloud_cpu_tests": ["*.py", "*.sh", "*.json", "*.md"],
     }.items():
         for pattern in patterns:
             files.extend((root / directory).glob(pattern))
