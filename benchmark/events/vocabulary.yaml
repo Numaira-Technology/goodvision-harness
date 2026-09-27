@@ -31,21 +31,30 @@
 - label: person_talks_to_person
   zh_name: 交谈
   definition: >-
-    Two or more people face one another within conversational distance and at
-    least one of them is visibly speaking, shown by mouth movement or by a
-    gesture aimed at the other person.
+    Two or more people are within conversational distance and mutually engaged:
+    facing or turned toward one another, or walking together while oriented to
+    each other, with a gesture, head turn, or sustained attention aimed at the
+    other person. On distant or low-resolution footage, mouth movement is often
+    not visible; mutual facing and engagement are enough. Do not require a
+    readable mouth.
   counter_examples: >-
-    People standing or walking near each other without facing one another or
-    speaking. One person speaking into a phone with nobody facing them.
+    People who only pass, stand or walk near each other without turning toward
+    or attending to one another. One person speaking into a phone with nobody
+    facing them. A crowd in which people do not form a facing pair or group.
 
 - label: person_enters_scene_through_structure
   zh_name: 从门内进入
   definition: >-
-    A person becomes visible in the scene by coming through a door, gate,
-    doorway or comparable opening in a structure.
+    A person becomes newly visible by physically passing through a clearly
+    visible door, doorway, gate, revolving door or shop entrance opening. The
+    aperture itself must be seen, and the person must go from outside that
+    opening to inside the scene through it.
   counter_examples: >-
-    A person walking into the frame across open ground at the frame edge. A
-    person already visible who only approaches a door without passing through.
+    Walking into the frame across open ground, a plaza, a pavement or from the
+    frame edge with no door or gate in the path. Appearing from behind a wall,
+    pillar or vehicle without going through a doorway. A person already in the
+    open scene who only walks near a building facade. Approaching a door
+    without passing through it.
 
 - label: person_exits_scene_through_structure
   zh_name: 从门内离开
@@ -120,12 +129,15 @@
 - label: person_puts_down_object
   zh_name: 放下物品
   definition: >-
-    A person lowers an object they were holding onto a surface or the ground
-    and lets go of it.
+    A person who was holding an object — a bag, box, case, parcel or similar —
+    lowers it onto a surface or the ground and releases it so it rests there
+    without being held. The object must change from carried to set down within
+    the window.
   counter_examples: >-
     Moving an object between hands or repositioning it while still holding it.
-    Lifting an object off a surface, which is the reverse and is
-    person_picks_up_object. Handing it to another person, which is
+    Walking while continuously carrying a bag. An object already on the ground
+    when first seen. Lifting an object off a surface, which is the reverse and
+    is person_picks_up_object. Handing it to another person, which is
     person_transfers_object.
 
 - label: person_exits_vehicle
