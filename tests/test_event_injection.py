@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 from PIL import Image
 
 from goodvision_harness import service
@@ -31,6 +33,7 @@ from goodvision_harness.grounding import (
     build_multi_grounding_messages,
     build_selected_features_grounding_client,
 )
+from goodvision_harness.pipeline import StreamingSession
 from goodvision_harness.scene_evidence import EvidenceFrame, InspectionRequest
 from goodvision_harness.scene_inspection import build_temporal_messages
 from goodvision_harness.scene_runtime import TemporalInspection
@@ -472,3 +475,88 @@ def test_the_client_builder_orders_and_validates_against_the_session_vocabulary(
             features=("fight", "opens_door"),
             dry_run=True,
         )
+
+
+@pytest.fixture
+def declared_runtime(tmp_path, monkeypatch):
+    """A scene-active harness whose config declares the two injected events."""
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.setenv("HARNESS_DRY_RUN", "true")
+    monkeypatch.setattr(StreamingSession, "start", lambda self: None)
+    config = _config_with([OPENS_DOOR, TEXTS_ON_PHONE], tmp_path)
+    config = replace(
+        config,
+        stream=replace(config.stream, url="rtsp://unused.local/live"),
+        events=replace(config.events, directory=tmp_path / "events"),
+        runtime=replace(config.runtime, scene_mode="active"),
+    )
+    instance = service.HarnessRuntime(config)
+    yield instance
+    instance.stop()
+
+
+def test_a_benchmark_session_detects_the_events_its_video_is_asked_about(
+    declared_runtime, monkeypatch, tmp_path,
+):
+    """The offline runner picks the events per video; without a pick the
+    session stays on the safety four, as every earlier benchmark run was."""
+
+    recorded: list[Any] = []
+    monkeypatch.setattr(
+        declared_runtime, "_start_session",
+        lambda mode, **kwargs: recorded.append(kwargs) or {},
+    )
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    monkeypatch.setattr(declared_runtime, "_tracking_requested", True, raising=False)
+    declared_runtime.config = replace(
+        declared_runtime.config,
+        rich_labeling=replace(
+            declared_runtime.config.rich_labeling, backend="sam31_stream",
+        ),
+    )
+
+    asked = [{"qa_id": "q1", "question": "Did anyone open a door?"}]
+    declared_runtime.start_benchmark(
+        str(video), video_id="v1", questions=asked, features=["opens_door"],
+    )
+    declared_runtime.start_benchmark(str(video), video_id="v1", questions=asked)
+
+    assert recorded[0]["features"] == ["opens_door"]
+    assert recorded[1]["features"] == ("fall", "fight", "smoking", "weapon")
+
+
+def test_an_injected_feature_reaches_the_scene_engine(declared_runtime, monkeypatch):
+    """Selecting an injected event is pointless if the scene runtime filters
+    it out before the lifecycle can ever record it."""
+
+    recorded: list[Any] = []
+    real = service.SceneRuntime
+
+    def recording(*args, **kwargs):
+        recorded.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(service, "SceneRuntime", recording)
+    with TestClient(service.create_app(lambda: declared_runtime)) as client:
+        response = client.post("/v1/sessions/start", json={
+            "features": ["fight", "opens_door"], "dry_run": True,
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["features"] == ["fight", "opens_door"]
+    assert recorded and recorded[-1]["event_labels"] == ("fight", "opens_door")
+
+
+def test_an_injected_only_session_still_needs_a_model_key(
+    declared_runtime, monkeypatch,
+):
+    """An injected event is answered by the same model call as a built-in one,
+    so it cannot slip past the key check by not being one of the safety five."""
+
+    monkeypatch.setattr(declared_runtime, "_aiclub_api_key", "", raising=False)
+    with TestClient(service.create_app(lambda: declared_runtime)) as client:
+        response = client.post("/v1/sessions/start", json={
+            "features": ["opens_door"], "dry_run": False,
+        })
+    assert response.status_code == 400
+    assert "API" in response.json()["detail"] or "key" in response.json()["detail"]

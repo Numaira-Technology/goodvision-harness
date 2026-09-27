@@ -71,7 +71,12 @@ from .deployment_settings import (
 )
 from .display_telemetry import validate_display_metrics
 from .event_archive import EventArchive
-from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
+from .event_registry import (
+    BUILTIN_VOCABULARY,
+    SAFETY_BRANCH,
+    EventVocabulary,
+)
+from .event_registry import labels as registry_labels
 from .event_routes import install_event_routes
 from .event_sensitivity import (
     EVENT_SENSITIVITY_DEFAULTS,
@@ -1898,8 +1903,11 @@ class HarnessRuntime:
             if self._route_probe["state"] == "running":
                 raise RuntimeError("wait for the route check before starting analysis")
             features = self._analysis_settings["features"]
+            model_backed = frozenset(
+                registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH))
+            )
             if (not self.dry_run
-                    and any(item in SAFETY_EVENT_LABELS for item in features)
+                    and any(item in model_backed for item in features)
                     and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
@@ -1983,6 +1991,7 @@ class HarnessRuntime:
         self, video_path: str, *, video_id: str, questions: list[dict[str, Any]],
         observation_max_tokens: int | None = None,
         answer_max_tokens: int | None = None,
+        features: Collection[str] | None = None,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
             raise RuntimeError("Harness configuration unavailable")
@@ -2002,7 +2011,13 @@ class HarnessRuntime:
                        "observation_max_tokens": observation_max_tokens,
                        "answer_max_tokens": answer_max_tokens},
             analysis_mode=MULTI_ANALYSIS_MODE,
-            features=tuple(sorted(SAFETY_EVENT_LABELS)), dry_run=False,
+            # A benchmark video is questioned about a known set of events, so
+            # the caller names them. Without that it stays on the safety four,
+            # which is what every existing run asked for.
+            features=(
+                tuple(sorted(SAFETY_EVENT_LABELS)) if features is None else features
+            ),
+            dry_run=False,
         )
 
     def _start_session(
@@ -2082,6 +2097,14 @@ class HarnessRuntime:
             label = label[:EVENT_LABEL_MAX_CHARS]
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
 
+        # Events the model judges, as opposed to the face branch. Injected
+        # events sit here too: they are answered by the same request and run
+        # the same lifecycle, so anything keyed off "is this a safety event"
+        # has to read the session vocabulary rather than the built-in five.
+        model_backed = frozenset(
+            registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH))
+        )
+
         sensitivity_labels = selected_features or (label,)
         if selected_analysis == EVENT_ANALYSIS_MODE and self.config.memory is not None:
             sensitivity_labels = ()
@@ -2119,7 +2142,7 @@ class HarnessRuntime:
                 raise RuntimeError("人物处理方式或会话状态已变化。请重新开始检测。")
             needs_model_key = selected_analysis == EVENT_ANALYSIS_MODE or (
                 selected_analysis == MULTI_ANALYSIS_MODE
-                and any(feature in SAFETY_EVENT_LABELS for feature in selected_features)
+                and any(feature in model_backed for feature in selected_features)
             )
             if (needs_model_key and not use_dry_run and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
@@ -2407,11 +2430,11 @@ class HarnessRuntime:
             scene_labels = tuple(
                 item
                 for item in (selected_features or ())
-                if item in SAFETY_EVENT_LABELS
+                if item in model_backed
             )
             if (
                 selected_analysis == EVENT_ANALYSIS_MODE
-                and label in SAFETY_EVENT_LABELS
+                and label in model_backed
             ):
                 scene_labels = (label,)
             next_scene = (
@@ -5032,6 +5055,7 @@ def create_app(
                 video_id=benchmark.get("video_id"), questions=benchmark.get("questions"),
                 observation_max_tokens=benchmark.get("observation_max_tokens"),
                 answer_max_tokens=benchmark.get("answer_max_tokens"),
+                features=payload.get("features"),
             )
         if mode == CAMERA_MODE:
             raise HTTPException(
