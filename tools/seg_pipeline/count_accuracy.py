@@ -64,6 +64,8 @@ def evaluate_trial(directory, reference, tolerance=0.1):
             "matched_video_pts": None,
             "sequence": None,
             "absolute_error": None,
+            "signed_error": None,
+            "scaled_count_score": None,
             "correct": None,
         }
         if nearest is not None and abs(nearest[0] - t) <= tolerance:
@@ -75,6 +77,13 @@ def evaluate_trial(directory, reference, tolerance=0.1):
                 matched_video_pts=source_pts,
                 sequence=frame["sequence"],
                 absolute_error=abs(predicted - label["person_count"]),
+                signed_error=predicted - label["person_count"],
+                scaled_count_score=max(
+                    0.0,
+                    1
+                    - abs(predicted - label["person_count"])
+                    / max(label["person_count"], 1),
+                ),
                 correct=predicted == label["person_count"],
             )
         samples.append(record)
@@ -88,9 +97,17 @@ def evaluate_trial(directory, reference, tolerance=0.1):
         "matched": len(matched),
         "correct": correct,
         "exact_count_accuracy": correct / len(matched) if matched else None,
+        "scaled_count_score": sum(s["scaled_count_score"] for s in matched)
+        / len(matched)
+        if matched
+        else None,
         "mae": sum(s["absolute_error"] for s in matched) / len(matched)
         if matched
         else None,
+        "undercount_frames": sum(s["signed_error"] < 0 for s in matched),
+        "overcount_frames": sum(s["signed_error"] > 0 for s in matched),
+        "undercount_people": sum(max(-s["signed_error"], 0) for s in matched),
+        "overcount_people": sum(max(s["signed_error"], 0) for s in matched),
         "complete_alignment": len(matched) == len(samples) and bool(samples),
         "samples": samples,
     }
@@ -143,7 +160,7 @@ def main():
         and bool(reference["samples"])
         and all(row.get("human_reviewed") is True for row in reference["samples"])
     )
-    title = "人数准确率 · 人工复核版" if reviewed else "人数准确率 · 初步评估"
+    title = "人数计数评估 · 人工复核版" if reviewed else "人数计数评估 · 初步评估"
     notice = (
         "参考答案已由用户逐帧复核；以下结果使用复核后的明确标注计算。"
         if reviewed
@@ -160,6 +177,7 @@ def main():
         "reference_status": reference["status"],
         "video_sha256": reference["video_sha256"],
         "metric": "displayed_person_count_not_raw_model_detection_or_mask_accuracy",
+        "scaled_count_score_formula": "mean(max(0, 1 - abs(displayed-reference)/max(reference,1))) over aligned clear samples",
         "alignment": "Nearest captured video_pts within 0.1s, joined to presentation by sequence; missing matches excluded and reported.",
         "reference_samples": len(reference["samples"]),
         "excluded_uncertain": sum(s["status"] != "clear" for s in reference["samples"]),
@@ -175,22 +193,24 @@ def main():
         writer.writerows({k: t[k] for k in keys} for t in trials)
     rows = []
     for trial in trials:
+        score = trial["scaled_count_score"]
         accuracy = trial["exact_count_accuracy"]
         mae = trial["mae"]
+        score_text = f"{score:.1%}" if score is not None else "—"
         acc_text = f"{accuracy:.1%}" if accuracy is not None else "—"
         mae_text = f"{mae:.2f}" if mae is not None else "—"
         rows.append(
-            f"<tr><td>{html.escape(trial['model'])}</td><td>{trial['delay_seconds']:g}</td><td>{trial['repeat']}</td><td>{trial['matched']}/{trial['eligible']}</td><td>{acc_text}</td><td>{mae_text}</td></tr>"
+            f"<tr><td>{html.escape(trial['model'])}</td><td>{trial['delay_seconds']:g}</td><td>{trial['repeat']}</td><td>{trial['matched']}/{trial['eligible']}</td><td>{score_text}</td><td>{acc_text}</td><td>{mae_text}</td><td>{trial['undercount_frames']} 帧 / {trial['undercount_people']} 人次</td><td>{trial['overcount_frames']} 帧 / {trial['overcount_people']} 人次</td></tr>"
         )
     (
         args.output / "report.html"
     ).write_text(f"""<!doctype html><html lang="zh"><meta charset="utf-8"><title>{title}</title><style>{STYLE}</style>
 <h1>{title}</h1><p class="note">{notice}</p>
 <p>原视频约 55.8 秒，每秒抽取一帧，共 56 帧。默认排除不确定帧，本次排除 {summary["excluded_uncertain"]} 帧。<a href="reference-review.html">查看并复核标准答案</a>。</p>
-<p><b>人数准确率</b> = 显示人数与参考人数完全相同的采样点数 ÷ 成功对齐的明确采样点数。<b>MAE</b> = 平均人数绝对误差（越低越好）。
+<p><b>人数比例得分</b>：每帧得分 = max(0, 1 − |显示人数 − 参考人数| ÷ max(参考人数, 1))，再对成功对齐的明确采样点取平均。例如参考 4 人、显示 3 人或 5 人均得 75%；两者均为 0 人得 100%。<b>完全一致率</b> = 显示人数与参考人数完全相同的采样点数 ÷ 成功对齐的明确采样点数。<b>MAE</b> = 平均人数绝对误差（越低越好）。少报与多报分别列出，其中“人次”是各采样点差额之和，同一人持续漏报会重复计入。
 按 source video PTS 就近对齐，容差 0.1 秒，丢失匹配单独计数，不当成 0 人。启动阶段也计入。</p>
 <p>统计现有浏览器日志中实际显示的 subject 条目数，包含追踪与显示管线的影响；不是原始模型检测准确率，不是轮廓 IoU，也不代表识别到了正确的人。原有 70% 描边率门槛未改变。</p>
-<table><thead><tr><th>模型</th><th>显示缓冲（秒）</th><th>重复</th><th>对齐 / 明确样本</th><th>人数准确率</th><th>MAE（人）</th></tr></thead><tbody>{"".join(rows)}</tbody></table>
+<table><thead><tr><th>模型</th><th>显示缓冲（秒）</th><th>重复</th><th>对齐 / 明确样本</th><th>人数比例得分</th><th>完全一致率</th><th>MAE（人）</th><th>少报</th><th>多报</th></tr></thead><tbody>{"".join(rows)}</tbody></table>
 <p>这些模型的显示缓冲档位可能不同，不宜把混合档位直接当作公平速度排名。参考视频 SHA256：<small>{reference["video_sha256"]}</small></p></html>""")
     write_review(reference, args.frames, args.output / "reference-review.html")
     print(args.output / "report.html")
