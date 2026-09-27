@@ -131,14 +131,16 @@
   definition: >-
     A person who was holding an object — a bag, box, case, parcel or similar —
     lowers it onto a surface or the ground and releases it so it rests there
-    without being held. The object must change from carried to set down within
-    the window.
+    without being held. The carried-to-set-down change must be visible inside
+    this window. If later frames only show the person walking away from the
+    object now left on the ground, that still counts as this event: the
+    aftermath is evidence, not a reason to answer false.
   counter_examples: >-
     Moving an object between hands or repositioning it while still holding it.
     Walking while continuously carrying a bag. An object already on the ground
-    when first seen. Lifting an object off a surface, which is the reverse and
-    is person_picks_up_object. Handing it to another person, which is
-    person_transfers_object.
+    when first seen, with no carry-to-release visible in the window. Lifting an
+    object off a surface, which is the reverse and is person_picks_up_object.
+    Handing it to another person, which is person_transfers_object.
 
 - label: person_exits_vehicle
   zh_name: 下车

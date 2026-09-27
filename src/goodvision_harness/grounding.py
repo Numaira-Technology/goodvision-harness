@@ -1133,6 +1133,14 @@ def _recall_posture_rule(definitions: tuple[EventDefinition, ...]) -> str:
             "when its stated criteria are visibly met, and answer false when "
             "they are not."
         )
+        parts.append(
+            "Verdicts cover the whole chronological window: set detected=true "
+            "if the event occurs in any frame, including when the newest frame "
+            "only shows the aftermath. Do not answer false merely because the "
+            "action has already finished by the last image. Ground target "
+            "boxes on the newest frame when the evidence is still visible "
+            "there."
+        )
     return " ".join(parts)
 
 

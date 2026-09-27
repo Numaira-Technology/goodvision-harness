@@ -410,6 +410,8 @@ def test_the_safety_recall_bias_does_not_reach_everyday_events():
     assert "prefer false positives" not in everyday_only
     assert "prefer a false positive over a miss" not in everyday_only
     assert "Treat texts_on_phone as ordinary activity" in everyday_only
+    assert "whole chronological window" in everyday_only
+    assert "whole chronological window" in mixed
 
 
 def test_a_builtin_only_request_renders_the_unchanged_safety_prompt():
