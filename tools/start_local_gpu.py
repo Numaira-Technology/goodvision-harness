@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -199,6 +200,72 @@ CUDA_CHECK = (
     "x=torch.ones(1, device='cuda'); x.add_(1); torch.cuda.synchronize(); "
     "print('CUDA ready: ' + torch.cuda.get_device_name(0))"
 )
+
+# Image tags are reused by offline Contour updates. A tag alone cannot prove
+# that the image contains the storage, allocator and multistream fixes here.
+RUNTIME_FILES = {
+    "local-tracking": (
+        "app.py", "sam31.py", "continuous.py", "streaming_state.py",
+        "h264_transport.py", "perception_routes.py", "sam_live.py",
+        "multistream.py", "gpu_memory.py",
+    ),
+    "harness": (
+        "service.py", "local_gpu.py", "service_locations.py", "perception.py",
+        "sam_tracking_pipeline.py", "sam_tracking_spool.py",
+        "video_tracking_session.py", "dashboard.html",
+    ),
+}
+
+
+def runtime_check(service: str, *, root: Path = ROOT) -> str:
+    """Verify prebuilt images and real writable mounts without loading models."""
+    source = root / (
+        "workers/sam_scene" if service == "local-tracking"
+        else "src/goodvision_harness"
+    )
+    hashes = {
+        name: hashlib.sha256(
+            (source / name).read_bytes().replace(b"\r\n", b"\n")
+        ).hexdigest()
+        for name in RUNTIME_FILES[service]
+    }
+    location = (
+        "Path('/engine')" if service == "local-tracking"
+        else "Path(importlib.util.find_spec('goodvision_harness').origin).parent"
+    )
+    script = f"""import hashlib, importlib.util, os, tempfile
+from pathlib import Path
+directory = {location}
+expected = {hashes!r}
+for name, digest in expected.items():
+    path = directory / name
+    assert path.is_file(), 'Outdated {service} image: missing ' + name
+    actual = hashlib.sha256(path.read_bytes().replace(b'\\r\\n', b'\\n')).hexdigest()
+    assert actual == digest, 'Outdated {service} image: rebuild or import current image'
+"""
+    if service == "local-tracking":
+        script += """paths = []
+for name in ('HF_HOME', 'TORCH_HOME', 'XDG_CACHE_HOME', 'MPLCONFIGDIR',
+             'TRITON_CACHE_DIR', 'TORCHINDUCTOR_CACHE_DIR',
+             'TORCH_EXTENSIONS_DIR', 'CUDA_CACHE_PATH'):
+    value = os.environ.get(name, '')
+    assert value and Path(value).is_absolute(), 'Missing writable cache: ' + name
+    paths.append(Path(value))
+"""
+    else:
+        script += """settings = os.environ.get('HARNESS_DEPLOYMENT_SETTINGS_PATH', '')
+assert settings, 'Persistent deployment settings path is required'
+spool = (os.environ.get('GOODVISION_TRACKING_SPOOL_DIRECTORY')
+         or os.environ.get('GOODVISION_SAM_SPOOL_DIRECTORY')
+         or str(Path(settings).parent / 'sam-spool'))
+paths = [Path(settings).parent, Path(spool)]
+"""
+    script += """for path in paths:
+    path.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=path) as probe:
+        probe.write(b'local-gpu-preflight')
+"""
+    return script + (CUDA_CHECK if service == "local-tracking" else "")
 
 
 def read_local_settings(
@@ -677,8 +744,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         compose = command[:command.index("up")]
         # Preflight must use the very same image/device as the eventual worker.
-        cuda_command = [*compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
-                        "local-tracking", "python", "-c", CUDA_CHECK]
+        cuda_command = None
+        checks = []
+        if not args.with_local_inference:
+            cuda_command = [
+                *compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
+                "local-tracking", "python", "-c", runtime_check("local-tracking"),
+            ]
+            checks.append(cuda_command)
+            harness_check = runtime_check("harness")
+            for index in range(1, args.streams + 1):
+                service = "harness" if index == 1 else f"harness-{index:02d}"
+                checks.append([
+                    *compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
+                    service, "python", "-c", harness_check,
+                ])
         # Print only the local plan, never inherited API keys or full Compose config.
         print(
             json.dumps(
@@ -691,9 +771,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "console_url": console_url,
                     "fleet_overlay": overlay,
                     "mode": "full" if args.with_local_inference else "tracking",
-                    "cuda_check_command": (
-                        cuda_command if not args.with_local_inference else None
-                    ),
+                    "cuda_check_command": cuda_command,
+                    "preflight_commands": checks,
                 },
                 indent=2,
             )
@@ -719,15 +798,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                         raise LaunchError(
                             "Local GPU image build failed; check the build output"
                         )
-                result = subprocess.run(
-                    cuda_command, cwd=ROOT, env=process_environment, check=False,
-                    timeout=120,
-                )
-                if result.returncode:
-                    raise LaunchError(
-                        "CUDA preflight failed. Check the NVIDIA driver and Docker "
-                        "GPU support (Windows: Docker Desktop WSL2/Linux containers)."
+                for check in checks:
+                    result = subprocess.run(
+                        check, cwd=ROOT, env=process_environment, check=False,
+                        timeout=120,
                     )
+                    if result.returncode:
+                        raise LaunchError(
+                            "Local runtime preflight failed. Check the error above, "
+                            "NVIDIA driver, Docker GPU support and writable mounts. "
+                            "For outdated images, rebuild or import matching images."
+                        )
                 # The build/preflight above determined exactly which images run.
                 command = compose_command(
                     root=ROOT, env_file=env_file if env_file.is_file() else None,

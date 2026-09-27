@@ -1,5 +1,6 @@
 """Exercise the SAM-only launch path without NVIDIA, weights or container writes."""
 
+import importlib.util
 import json
 import os
 import shutil
@@ -99,9 +100,14 @@ def test_default_launch_checks_cuda_before_start_and_forwards_cloud_key(
 ):
     monkeypatch.setenv("INFERENCE_API_KEY", "cloud-key")
     assert launcher.main(["--checkpoint", str(launch_rig.checkpoint)]) == 0
-    build, preflight, start = launch_rig.calls
+    build, preflight, storage, start = launch_rig.calls
     assert build[0][-3:] == ["build", "harness", "local-tracking"]
-    assert preflight[0][-4:] == ["local-tracking", "python", "-c", launcher.CUDA_CHECK]
+    assert preflight[0][-4:] == [
+        "local-tracking", "python", "-c", launcher.runtime_check("local-tracking"),
+    ]
+    assert storage[0][-4:] == [
+        "harness", "python", "-c", launcher.runtime_check("harness"),
+    ]
     assert preflight[1]["timeout"] == 120
     assert start[0][-2:] == ["harness", "local-tracking"]
     assert "--wait" in start[0]
@@ -112,7 +118,7 @@ def test_default_launch_checks_cuda_before_start_and_forwards_cloud_key(
     assert start[1]["env"]["LOCAL_TRACKING_GPU_ID"] == "2"
 
 
-@pytest.mark.parametrize("failure", ["cuda", "timeout", "build"])
+@pytest.mark.parametrize("failure", ["cuda", "timeout", "build", "storage"])
 def test_failed_preparation_does_not_start_application(
     launch_rig, monkeypatch, failure,
 ):
@@ -122,6 +128,8 @@ def test_failed_preparation_does_not_start_application(
         calls.append(command)
         if failure == "timeout":
             raise subprocess.TimeoutExpired(command, 120)
+        if failure == "storage" and len(calls) == 1:
+            return SimpleNamespace(returncode=0)
         return SimpleNamespace(returncode=1)
 
     monkeypatch.setattr(launcher.subprocess, "run", run)
@@ -129,8 +137,8 @@ def test_failed_preparation_does_not_start_application(
     assert launcher.main([
         *args, "--checkpoint", str(launch_rig.checkpoint),
     ]) == 2
-    assert len(calls) == 1
-    assert "up" not in calls[0]
+    assert len(calls) == (2 if failure == "storage" else 1)
+    assert not any("up" in command for command in calls)
 
 
 def test_dry_run_is_credential_free_and_has_no_writes(launch_rig, capsys, monkeypatch):
@@ -146,6 +154,59 @@ def test_dry_run_is_credential_free_and_has_no_writes(launch_rig, capsys, monkey
     assert not launch_rig.calls
     assert not (launch_rig.root / ".goodvision").exists()
     assert "compose.local-tracking.yaml" in plan["fleet_overlay"]
+    assert [cmd[-4] for cmd in plan["preflight_commands"]] == [
+        "local-tracking", "harness", "harness-02", "harness-03",
+    ]
+
+
+@pytest.mark.parametrize("service", ["harness", "local-tracking"])
+def test_preflight_rejects_old_images_and_checks_writable_runtime_paths(
+    tmp_path, monkeypatch, service,
+):
+    source = ROOT / ("workers/sam_scene" if service == "local-tracking"
+                     else "src/goodvision_harness")
+    image = tmp_path / "image"
+    image.mkdir()
+    for name in launcher.RUNTIME_FILES[service]:
+        # Match Linux-built images when the source checkout uses Windows CRLF.
+        (image / name).write_bytes((source / name).read_bytes().replace(b"\r\n", b"\n"))
+    monkeypatch.setattr(launcher, "CUDA_CHECK", "")
+    script = launcher.runtime_check(service)
+    if service == "local-tracking":
+        # Substitute only the container root; execute the complete emitted probe.
+        script = script.replace("Path('/engine')", f"Path({str(image)!r})")
+        for key in (
+            "HF_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "MPLCONFIGDIR",
+            "TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR",
+            "TORCH_EXTENSIONS_DIR", "CUDA_CACHE_PATH",
+        ):
+            monkeypatch.setenv(key, str(tmp_path / "cache" / key))
+        expected = tmp_path / "cache" / "TRITON_CACHE_DIR"
+    else:
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _: SimpleNamespace(
+            origin=str(image / "__init__.py"),
+        ))
+        monkeypatch.setenv(
+            "HARNESS_DEPLOYMENT_SETTINGS_PATH", str(tmp_path / "data/settings.json"),
+        )
+        monkeypatch.setenv(
+            "GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "data/sam-spool"),
+        )
+        monkeypatch.delenv("GOODVISION_TRACKING_SPOOL_DIRECTORY", raising=False)
+        expected = tmp_path / "data/sam-spool"
+    exec(script, {})
+    assert expected.is_dir()
+    assert list(expected.iterdir()) == []  # The write probe cleans up after itself.
+    target = image / launcher.RUNTIME_FILES[service][0]
+    original = target.read_bytes()
+    target.write_bytes(b"# old image with the same tag\n")
+    with pytest.raises(AssertionError, match="Outdated"):
+        exec(script, {})
+    target.write_bytes(original)
+    expected.rmdir()
+    expected.write_text("a file cannot be used as a writable cache directory")
+    with pytest.raises(OSError):
+        exec(script, {})
 
 
 def test_full_local_model_deployment_remains_explicit(launch_rig, capsys):
@@ -194,6 +255,9 @@ def test_compose_reuses_contour_engine_and_keeps_workers_private(tmp_path, strea
     assert worker["environment"]["SAM31_LIVE_CAMERAS"] == str(streams)
     assert "gpu_ready" in worker["healthcheck"]["test"][-1]
     assert not worker.get("ports")
+    assert worker["read_only"] is True
+    assert worker["tmpfs"] == ["/tmp:size=2g"]
+    assert worker["stop_grace_period"] == "1m30s"
     assert worker["deploy"]["resources"]["reservations"]["devices"] == [
         {"driver": "nvidia", "device_ids": ["2"], "capabilities": ["gpu"]},
     ]
@@ -208,6 +272,17 @@ def test_compose_reuses_contour_engine_and_keeps_workers_private(tmp_path, strea
         )
         assert service["depends_on"]["local-tracking"]["condition"] == "service_healthy"
         env = service["environment"]
+        mounts = {volume["target"]: volume for volume in service["volumes"]}
+        assert service["read_only"] is True
+        assert env["GOODVISION_SAM_SPOOL_DIRECTORY"] == "/data/sam-spool"
+        assert env["HARNESS_DEPLOYMENT_SETTINGS_PATH"] == (
+            "/data/deployment-settings.json"
+        )
+        assert mounts["/data"]["type"] == "volume"
+        assert mounts["/data"].get("read_only", False) is False
+        assert mounts["/data"]["source"] == (
+            "face-data" if streams == 1 else f"camera-{index:02d}-data"
+        )
         assert env["LOCAL_INFERENCE_AVAILABLE"] == "false"
         assert env["TRACKING_EXECUTION_MODE"] == "local"
         if streams > 1:
