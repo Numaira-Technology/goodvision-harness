@@ -57,6 +57,10 @@ class PerceptionSessionHTTPClient(VideoSessionTrackingHTTPClient):
     """The route extension is explicit; legacy endpoints never accept it."""
 
     append_metadata_fields = frozenset({"route_metadata"})
+    # Cloud pools add diagnostics alongside the unchanged per-session contract.
+    health_metadata_fields = frozenset({
+        "model_instances", "max_gpu_operations", "max_active_sessions", "gpus",
+    })
     # The causal SAM route replays the last identical request without inference.
     # Legacy session clients retain their fail-closed, non-retrying behavior.
     append_transport_retries = 1
@@ -278,8 +282,8 @@ def create_tracking_coordinator(client, rich, on_batch):
         batch_seconds=rich.video_batch_seconds,
     )
     if rich.processing_method is not None:
-        # Dispatch as soon as HTTP is idle; prepare at most four accumulated
-        # sources ahead. SAM's durable ingress never overwrites pending samples.
+        # The causal route defaults to two recent candidates; explicitly selected
+        # durable/experimental policies keep their own admission semantics.
         options.update(batch_frames=1, batch_seconds=0.1, pending_capacity=4)
     coordinator = (
         PipelinedVideoSessionTrackingCoordinator
@@ -288,6 +292,14 @@ def create_tracking_coordinator(client, rich, on_batch):
         if rich.backend == "sam31_stream"
         else VideoTrackingCoordinator
     )
+    if coordinator is PipelinedVideoSessionTrackingCoordinator:
+        options.update(
+            queue_policy=rich.video_queue_policy,
+            realtime_append_frames=rich.video_realtime_append_frames,
+            realtime_pending_frames=rich.video_realtime_pending_frames,
+            realtime_max_age_seconds=rich.video_realtime_max_age_seconds,
+            result_deadline_seconds=rich.video_result_deadline_seconds,
+        )
     return coordinator(client, **options)
 
 
@@ -320,6 +332,20 @@ def processing_status(coordinator, method):
         "completed_after_capture": stats.get("completed_after_capture", 0),
         "capture_elapsed_seconds": stats.get("capture_elapsed_seconds", 0),
         "queue_frames": stats.get("pending_frames", 0),
+        "candidate_frames": stats.get("candidate_frames", 0),
+        "session_candidate_frames": stats.get("session_candidate_frames", 0),
         "processed_frames": stats.get("processed_frames", 0),
         "dropped_frames": stats.get("dropped_backpressure", 0),
+        "queue_policy": stats.get("queue_policy"),
+        "effective_max_append_frames": stats.get("effective_max_append_frames"),
+        "pending_capacity": stats.get("pending_capacity"),
+        "realtime_max_age_seconds": stats.get("realtime_max_age_seconds"),
+        "session_admitted_frames": stats.get("session_admitted_frames", 0),
+        "skipped_by_reason": stats.get("skipped_by_reason", {}),
+        "latest_result_age_seconds": stats.get("latest_result_age_seconds"),
+        "oldest_pending_seconds": stats.get("oldest_pending_seconds"),
+        "result_deadline_seconds": stats.get("result_deadline_seconds"),
+        "results_within_deadline": stats.get("results_within_deadline", 0),
+        "results_after_deadline": stats.get("results_after_deadline", 0),
+        "admitted_deadline_coverage": stats.get("admitted_deadline_coverage"),
     }

@@ -27,15 +27,18 @@ class NoInference:
         pass
 
 
-@pytest.fixture
-def runtime(tmp_path, monkeypatch):
+@pytest.fixture(params=[False, True])
+def runtime(tmp_path, monkeypatch, request):
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_kwargs: "")
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
     monkeypatch.delenv("RESULT_WEBHOOK_URL", raising=False)
     config = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
     config = replace(
         config,
-        runtime=replace(config.runtime, scene_mode="active"),
+        # Every selected face branch prepares before live frame admission.
+        runtime=replace(
+            config.runtime, scene_mode="active", scene_independent_vlm=request.param
+        ),
         rich_labeling=replace(
             config.rich_labeling, enabled=False, tracking_enabled=False
         ),

@@ -17,6 +17,12 @@ services:
       # Every admitted Face observation remains in the ordered durable queue.
       FACE_SAMPLE_FPS: "${FACE_SAMPLE_FPS:-1.25}"
       RICH_LABEL_ENDPOINT: http://sam-remote:8092/v1/video/sessions
+      TRACKING_EXECUTION_MODE: cloud
+      CLOUD_TRACKING_URL: http://sam-remote:8092
+      CLOUD_GPU_CONTROLLER_URL: http://sam-remote:8093
+      HARNESS_AUTOSTART: "false"
+      HARNESS_FLEET_CAPACITY: "${HARNESS_FLEET_CAPACITY:-1}"
+      LOCAL_TRACKING_FPS: "${LOCAL_TRACKING_FPS:-1.1}"
       # Sampling target; real completion rate and source age require live checks.
       RICH_LABEL_MAX_FPS: "${RICH_LABEL_MAX_FPS:-1.1}"
       SAM31_BATCH_FRAMES: "4"
@@ -34,15 +40,18 @@ services:
       target: sam-remote
     image: goodvision-sam-remote:controller
     init: true
-    # Restarting this service creates a new paid instance.
+    # Starting the controller is free; UI Start explicitly begins a rental.
     restart: "no"
     environment:
       VAST_API_KEY: "${VAST_API_KEY:?Set your Vast team API key in .env}"
       HF_TOKEN: "${HF_TOKEN:?Set your approved SAM Hugging Face token in .env}"
       SAM_SSH_KEY: /run/secrets/sam_ssh_key
       SAM_GPU_NAME: "${SAM_GPU_NAME:-RTX_4090}"
+      SAM_GPU_COUNT: "${SAM_GPU_COUNT:-1}"
+      SAM31_LIVE_CAMERAS: "${HARNESS_FLEET_CAPACITY:-1}"
       SAM_DISK_GB: "${SAM_DISK_GB:-50}"
     volumes:
+      - cloud-gpu-settings:/data/cloud-gpu
       - type: bind
         source: "${SAM_SSH_KEY:?Set the absolute SSH private-key path in .env}"
         target: /run/secrets/sam_ssh_key
@@ -63,6 +72,7 @@ services:
         max-file: "3"
 
 volumes:
+  cloud-gpu-settings: {}
   face-data:
     name: "${HARNESS_DATA_VOLUME:-${COMPOSE_PROJECT_NAME:-goodvision-harness}_face-data}"
   face-models:

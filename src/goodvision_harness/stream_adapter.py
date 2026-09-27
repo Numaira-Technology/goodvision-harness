@@ -1,6 +1,6 @@
 """Network video adapters for RTSP, RTMP, and WebRTC/WHEP sources.
 
-RTSP and RTMP use the OpenCV video backend. WebRTC uses a WHEP endpoint,
+RTSP/RTMP use OpenCV or an explicit FFmpeg color pipeline. WebRTC uses WHEP,
 written as webrtc+https:// (or webrtc+http:// for local development). The
 adapter emits the same LiveFrame objects as VideoFileStream, keeping the rest
 of the sampling, windowing, inference, and display pipeline unchanged.
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import queue
 import threading
 import time
@@ -22,11 +23,12 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import cv2
 
 from .privacy import PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR
+from .stream_decode import DecodeSupportError, FFmpegReceiver
 from .stream_diagnostics import StreamDiagnostics
+from .stream_timing import SourceCadence
 from .video_to_stream import LiveFrame
 
 StreamProtocol = Literal["rtsp", "rtmp", "webrtc"]
-_END = object()
 
 
 class StreamAdapterError(RuntimeError):
@@ -90,34 +92,6 @@ def parse_stream_source(value: str) -> StreamSource:
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _ProducerError:
-    error: BaseException
-
-
-class _FrameCadence:
-    """Sample arrival time into fixed slots without waiting or accumulating lag.
-
-    Slots allow a quarter-period of early arrival so normal network jitter
-    does not turn a 30 FPS source into a 15 FPS output. Skipped slots are
-    discarded; they never trigger catch-up work or a growing frame queue.
-    """
-
-    def __init__(self, fps: float) -> None:
-        self._period = 1.0 / fps
-        self._next_emit: float | None = None
-
-    def accepts(self, now: float) -> bool:
-        if self._next_emit is None:
-            self._next_emit = now + self._period * 0.75
-            return True
-        if now + 1e-9 < self._next_emit:
-            return False
-        elapsed_slots = math.floor((now + 1e-9 - self._next_emit) / self._period)
-        self._next_emit += (elapsed_slots + 1) * self._period
-        return True
-
-
 class NetworkStreamAdapter:
     """Adapt a supported network stream to the VideoFileStream interface."""
 
@@ -132,9 +106,10 @@ class NetworkStreamAdapter:
         reconnect_delay_seconds: float = 1.0,
         whep_headers: Mapping[str, str] | None = None,
         connection_id: str | None = None,
+        decoder_backend: str | None = None,
     ) -> None:
-        if output_fps <= 0:
-            raise ValueError("output_fps must be positive")
+        if not math.isfinite(output_fps) or output_fps <= 0:
+            raise ValueError("output_fps must be positive and finite")
         if reconnect_attempts < 0:
             raise ValueError("reconnect_attempts must be non-negative")
         if reconnect_delay_seconds < 0:
@@ -144,16 +119,21 @@ class NetworkStreamAdapter:
         self.reconnect_attempts = reconnect_attempts
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self.whep_headers = dict(whep_headers or {})
+        self.decoder_backend = decoder_backend or os.getenv(
+            "HARNESS_STREAM_DECODER", "opencv",
+        )
+        if self.decoder_backend not in {"opencv", "ffmpeg"}:
+            raise ValueError("stream decoder must be opencv or ffmpeg")
+        self._receiver: FFmpegReceiver | None = None
+        self._whep_receiver: Any | None = None
+        self._whep_consumed = False
         self.dropped_frames = 0
         self._diagnostics = StreamDiagnostics(connection_id or uuid.uuid4().hex,
                                               self.source.protocol, self.output_fps)
         self._stop = threading.Event()
         self._capture_lock = threading.Lock()
         self._capture: Any | None = None
-        self._producer: threading.Thread | None = None
-        self._queue: queue.Queue[LiveFrame | _ProducerError | object] = queue.Queue(
-            maxsize=2
-        )
+        self._queue: queue.Queue[LiveFrame] = queue.Queue(maxsize=2)
 
     @property
     def protocol(self) -> StreamProtocol:
@@ -165,24 +145,102 @@ class NetworkStreamAdapter:
 
     def stop(self) -> None:
         self._stop.set()
+        with self._capture_lock:
+            receiver = self._receiver
+            whep_receiver = self._whep_receiver
+        if receiver is not None:
+            receiver.stop()
+        if whep_receiver is not None:
+            whep_receiver.stop()
 
     def frames(self) -> Iterator[LiveFrame]:
         try:
             if self.protocol in {"rtsp", "rtmp"}:
-                yield from self._opencv_frames()
+                if self.decoder_backend == "ffmpeg":
+                    yield from self._ffmpeg_frames()
+                else:
+                    yield from self._opencv_frames()
             else:
                 yield from self._whep_frames()
         finally:
-            self._diagnostics.emit(final=True)
+            # WHEP's real receive counters live and are emitted in the child.
+            # A zeroed parent summary would overwrite/misrepresent that result.
+            if self.protocol != "webrtc":
+                self._diagnostics.emit(final=True)
+
+    def _ffmpeg_frames(self) -> Iterator[LiveFrame]:
+        cadence = SourceCadence(self.output_fps)
+        emitted = failures = 0
+        while not self.stopped:
+            receiver = FFmpegReceiver(
+                self.source.transport_url, self.protocol, self.output_fps,
+            )
+            with self._capture_lock:
+                self._receiver = receiver
+            cadence.reconnect()
+            try:
+                wait_started = time.monotonic()
+                for frame in receiver.frames():
+                    if self.stopped:
+                        return
+                    failures = 0
+                    now = time.monotonic()
+                    pts = (
+                        float(frame.pts * frame.time_base)
+                        if frame.pts is not None and frame.time_base is not None
+                        else None
+                    )
+                    timestamp, selected = cadence.select(now, pts)
+                    self._diagnostics.received(frame, now, now-wait_started,
+                                               emitted if selected else None)
+                    self._diagnostics.configure_decoder(
+                        "ffmpeg", receiver.metadata, receiver.decode_errors,
+                        cadence.discontinuities,
+                    )
+                    wait_started = now
+                    if not selected:
+                        self.dropped_frames += 1
+                        self._diagnostics.count("rate_limit_skipped_frames")
+                        continue
+                    started = time.monotonic()
+                    image = frame.to_ndarray(format="bgr24")
+                    self._diagnostics.timing(
+                        "color_conversion", time.monotonic()-started,
+                    )
+                    self._diagnostics.enqueued(emitted)
+                    self._diagnostics.dequeued(emitted)
+                    self._diagnostics.emit()
+                    yield LiveFrame(
+                        index=emitted, timestamp_seconds=timestamp, bgr=image,
+                    )
+                    emitted += 1
+                failures += 1
+            except DecodeSupportError as exc:
+                raise StreamAdapterError("video decoder support unavailable",
+                                         code="missing_support") from exc
+            except Exception as exc:
+                if self.stopped:
+                    return
+                failures += 1
+                self._diagnostics.count("decoder_restarts")
+                if failures > self.reconnect_attempts:
+                    raise StreamAdapterError("video receiver failed") from exc
+            finally:
+                receiver.stop()
+                with self._capture_lock:
+                    self._receiver = None
+            if failures > self.reconnect_attempts:
+                raise StreamAdapterError("video receiver ended")
+            if self._stop.wait(self.reconnect_delay_seconds):
+                return
 
     def _opencv_frames(self) -> Iterator[LiveFrame]:
         failures = 0
         emitted = 0
-        origin: float | None = None
-        last_timestamp = 0.0
-        cadence = _FrameCadence(self.output_fps)
+        cadence = SourceCadence(self.output_fps)
 
         while not self.stopped:
+            cadence.reconnect()
             capture = cv2.VideoCapture(self.source.transport_url)
             with self._capture_lock:
                 self._capture = capture
@@ -202,19 +260,21 @@ class NetworkStreamAdapter:
                             break
                         failures = 0
                         now = time.monotonic()
-                        accepted = cadence.accepts(now)
-                        self._diagnostics.received(
-                            image, now, now-read_started, emitted if accepted else None,
+                        raw_pts = capture.get(cv2.CAP_PROP_POS_MSEC)
+                        pts = (
+                            raw_pts / 1000
+                            if math.isfinite(raw_pts) and raw_pts > 0 else None
                         )
-                        if not accepted:
+                        timestamp, selected = cadence.select(now, pts)
+                        self._diagnostics.received(
+                            image, now, now-read_started,
+                            emitted if selected else None, source_pts_seconds=pts,
+                        )
+                        if not selected:
                             self.dropped_frames += 1
                             self._diagnostics.count('rate_limit_skipped_frames')
                             self._diagnostics.emit()
                             continue
-                        if origin is None:
-                            origin = now
-                        timestamp = max(last_timestamp, now - origin)
-                        last_timestamp = timestamp
                         self._diagnostics.enqueued(emitted)
                         self._diagnostics.dequeued(emitted)
                         self._diagnostics.emit()
@@ -245,42 +305,29 @@ class NetworkStreamAdapter:
                 return
 
     def _whep_frames(self) -> Iterator[LiveFrame]:
-        if self._producer is not None:
-            raise RuntimeError("WebRTC stream has already been consumed")
-        self._producer = threading.Thread(
-            target=self._whep_thread_main,
-            name="whep-video-receiver",
-            daemon=True,
-        )
-        self._producer.start()
-        try:
-            while True:
-                item = self._queue.get()
-                if item is _END:
-                    return
-                if isinstance(item, _ProducerError):
-                    if self.stopped:
-                        return
-                    error = item.error
-                    if isinstance(error, StreamAdapterError):
-                        raise error
-                    raise StreamAdapterError(
-                        f"WebRTC stream from host {self.source.host} failed"
-                    ) from error
-                assert isinstance(item, LiveFrame)
-                self._diagnostics.dequeued(item.index)
-                yield item
-        finally:
-            self.stop()
-            self._producer.join(timeout=2.0)
+        from .whep_process import WhepProcessReceiver
 
-    def _whep_thread_main(self) -> None:
+        if self._whep_consumed:
+            raise RuntimeError("WebRTC stream has already been consumed")
+        self._whep_consumed = True
+        if self.stopped:
+            return
+        receiver = WhepProcessReceiver({
+            "source_url": self.source.source_url,
+            "output_fps": self.output_fps,
+            "whep_headers": self.whep_headers,
+            "connection_id": self._diagnostics.connection_id,
+        })
+        with self._capture_lock:
+            self._whep_receiver = receiver
         try:
-            asyncio.run(self._receive_whep())
-        except BaseException as exc:
-            self._put_control(_ProducerError(exc))
+            if not self.stopped:
+                yield from receiver.frames()
         finally:
-            self._put_control(_END)
+            receiver.close()
+            self.dropped_frames += receiver.dropped_frames
+            with self._capture_lock:
+                self._whep_receiver = None
 
     async def _receive_whep(self) -> None:
         try:
@@ -303,7 +350,7 @@ class NetworkStreamAdapter:
             if track.kind == "video" and not track_ready.done():
                 track_ready.set_result(track)
 
-        pc.addTransceiver("video", direction="recvonly")
+        transceiver = pc.addTransceiver("video", direction="recvonly")
         try:
             timeout = aiohttp.ClientTimeout(total=20.0)
             async with aiohttp.ClientSession(
@@ -349,6 +396,9 @@ class NetworkStreamAdapter:
                     session_url = urljoin(str(response.url), location)
 
                 try:
+                    from .webrtc_jitter import protect_receiver
+
+                    protect_receiver(transceiver.receiver, answer_sdp, self._diagnostics)
                     await pc.setRemoteDescription(
                         RTCSessionDescription(sdp=answer_sdp, type="answer")
                     )
@@ -395,9 +445,7 @@ class NetworkStreamAdapter:
         self, track: Any, pc: Any, media_stream_error: type[BaseException]
     ) -> None:
         emitted = 0
-        origin: float | None = None
-        last_timestamp = 0.0
-        cadence = _FrameCadence(self.output_fps)
+        cadence = SourceCadence(self.output_fps)
         receive_started = time.monotonic()
         receive_task: asyncio.Task[Any] | None = asyncio.create_task(track.recv())
         try:
@@ -407,6 +455,8 @@ class NetworkStreamAdapter:
                     self._diagnostics.count('receive_wait_over_500ms')
                     if pc.connectionState in {"closed", "failed"}:
                         raise StreamAdapterError("WebRTC connection closed")
+                    if time.monotonic() - receive_started >= 15.0:
+                        raise StreamAdapterError("WebRTC video receive timed out")
                     continue
                 try:
                     frame = receive_task.result()
@@ -414,27 +464,33 @@ class NetworkStreamAdapter:
                     self._diagnostics.count('track_ended')
                     return
                 now = time.monotonic()
-                accepted = cadence.accepts(now)
-                self._diagnostics.received(
-                    frame, now, now-receive_started, emitted if accepted else None,
+                pts = (
+                    float(frame.pts * frame.time_base)
+                    if frame.pts is not None and frame.time_base is not None else None
                 )
+                timestamp, selected = cadence.select(now, pts)
+                self._diagnostics.received(frame, now, now-receive_started,
+                                           emitted if selected else None)
                 receive_started = now
                 receive_task = asyncio.create_task(track.recv())
-                if not accepted:
+                if not selected:
                     self.dropped_frames += 1
                     self._diagnostics.count('rate_limit_skipped_frames')
                     continue
-                if origin is None:
-                    origin = now
-                timestamp = max(last_timestamp, now - origin)
-                last_timestamp = timestamp
                 conversion_started = time.monotonic()
                 try:
-                    bgr = frame.to_ndarray(format="bgr24")
+                    # This loop also receives ICE/RTP datagrams. Conversion may
+                    # stall under analysis load, so keep it off the receive loop.
+                    # Await each conversion to preserve order and bound work.
+                    bgr = await asyncio.to_thread(frame.to_ndarray, format="bgr24")
                 except Exception:
                     self._diagnostics.count('color_conversion_errors')
                     raise
-                self._diagnostics.timing('color_conversion', time.monotonic()-conversion_started)
+                self._diagnostics.timing(
+                    'color_conversion', time.monotonic()-conversion_started,
+                )
+                if self.stopped:
+                    return
                 self._put_latest(
                     LiveFrame(
                         index=emitted,
@@ -458,19 +514,6 @@ class NetworkStreamAdapter:
                 try:
                     dropped = self._queue.get_nowait()
                     self.dropped_frames += 1
-                    if isinstance(dropped, LiveFrame):
-                        self._diagnostics.dequeued(dropped.index, dropped=True)
-                except queue.Empty:
-                    continue
-
-    def _put_control(self, item: _ProducerError | object) -> None:
-        while True:
-            try:
-                self._queue.put_nowait(item)
-                return
-            except queue.Full:
-                try:
-                    dropped = self._queue.get_nowait()
                     if isinstance(dropped, LiveFrame):
                         self._diagnostics.dequeued(dropped.index, dropped=True)
                 except queue.Empty:

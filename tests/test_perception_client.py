@@ -8,6 +8,7 @@ from dataclasses import replace
 import httpx
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from test_perception_worker_routes import causal_engine
 from test_sam31_continuous_worker import payload
 from test_video_tracking_session import SessionServer, frames, submit, wait_for
@@ -25,6 +26,7 @@ from goodvision_harness.rich_labeling import RichLabelProtocolError
 from goodvision_harness.video_tracking import VideoFrame
 from goodvision_harness.video_tracking_session import VideoSessionTrackingHTTPClient
 from workers.sam_scene.app import decode_jpeg
+from workers.sam_scene.cloud_pool import create_app as pool_app
 from workers.sam_scene.continuous import register_session_routes
 
 
@@ -126,6 +128,57 @@ def test_new_session_readiness_requires_confirmed_global_idle(route):
     assert client.ready_for_new_session()
 
 
+@pytest.mark.parametrize("mutation,expected", [
+    (lambda body: None, True),
+    (lambda body: body.update(active_session=True), False),
+    (lambda body: body.update(active_session=None), False),
+    (lambda body: body.update(gpu_ready=False), False),
+    (lambda body: body.update(ready=False), False),
+    (lambda body: body.update(backend="unknown"), False),
+    (lambda body: body.update(unknown_field=True), False),
+    (lambda body: body.pop("ready"), False),
+    (lambda body: body["limits"].update(hotstart_delay=5), False),
+])
+def test_causal_client_accepts_cloud_pool_health_without_bypassing_session_checks(
+    mutation, expected,
+):
+    worker = RouteServer("sam_live")
+    pool = pool_app(
+        1, 1, launch_workers=False, transport=httpx.MockTransport(worker),
+    )
+    with TestClient(pool) as gateway:
+        response = gateway.get("/health/perception/sam_live")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["model_instances"] == 1
+        assert body["gpus"] == [{"index": 0, "ready": True}]
+    mutation(body)
+    client = PerceptionSessionHTTPClient(
+        "http://pool.test/v1/video/sessions", method="sam_live",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body)),
+    )
+    try:
+        assert client.ready_for_new_session() is expected
+    finally:
+        client.close()
+
+
+def test_legacy_session_health_still_rejects_cloud_metadata():
+    worker = SessionServer()
+
+    async def augmented_health(request):
+        response = await worker(request)
+        return httpx.Response(200, json={**response.json(), "model_instances": 1})
+
+    client = VideoSessionTrackingHTTPClient(
+        "http://worker.test", transport=httpx.MockTransport(augmented_health),
+    )
+    try:
+        assert not client.gpu_ready()
+    finally:
+        client.close()
+
+
 def test_close_timeout_does_not_claim_background_work_has_finished(route):
     server, client = route
     rich = replace(
@@ -200,6 +253,7 @@ def test_route_dispatches_first_frame_and_preserves_ordered_backlog_without_gpu(
         backend="sam31_stream",
         processing_method=server.method.id,
         max_fps=4,
+        video_queue_policy="durable_ordered",
     )
     received = []
     coordinator = create_tracking_coordinator(client, rich, received.append)

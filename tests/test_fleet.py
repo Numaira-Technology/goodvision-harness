@@ -144,6 +144,24 @@ def make_app(
     return app
 
 
+def test_fleet_refresh_uses_lightweight_peer_health(monkeypatch):
+    app = make_app(monkeypatch)
+    with TestClient(app) as client:
+        assert client.get("/v1/fleet").status_code == 200
+    statuses = [r for r in app.state.peer_requests if r.url.path == "/v1/status"]
+    assert statuses and all(r.url.params.get("lightweight") == "true" for r in statuses)
+
+
+def test_nontracking_description_does_not_claim_a_gpu_limit(monkeypatch):
+    app = make_app(monkeypatch)
+    app.state.runtime._tracking_requested = False
+    with TestClient(app) as client:
+        data = client.get("/v1/fleet").json()
+    assert data["tracking_enabled"] is False
+    assert "VLM" in data["reason"]
+    assert "仅支持一路" not in data["reason"]
+
+
 def test_connect_is_independent_of_model_keys_routes_and_analysis(monkeypatch):
     app = make_app(monkeypatch)
     app.state.runtime.route_probe_status = lambda: {"state": "running"}

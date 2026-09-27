@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException
 
 from . import engine_adapter
-from .contracts import Limits
+from .contracts import GPUMemoryStatus, Limits
 from .settings import MODEL_ID, PRODUCT, ROOT, VERSION, Settings
 
 ERRORS = {
@@ -276,6 +276,31 @@ def create_app(settings: Settings | None = None, *, transport=None):
             "requests": dict(counters),
             "events": list(events),
         }
+
+    @app.get("/api/gpu-memory")
+    async def gpu_memory():
+        try:
+            value = await upstream("GET", "/health/gpu-memory", timeout=3)
+            result = GPUMemoryStatus.model_validate(value).model_dump()
+            if result["available"] and any(
+                result[name] is None
+                for name in (
+                    "allocated_bytes",
+                    "reserved_bytes",
+                    "unused_reserved_bytes",
+                    "peak_allocated_bytes",
+                    "device_free_bytes",
+                    "device_total_bytes",
+                )
+            ):
+                return failure(502)
+            return result
+        except HTTPException as exc:
+            return failure(exc.status_code)
+        except (httpx.HTTPError, TimeoutError):
+            return failure(503)
+        except (ValueError, TypeError):
+            return failure(502)
 
     @app.get("/api/status")
     async def status():

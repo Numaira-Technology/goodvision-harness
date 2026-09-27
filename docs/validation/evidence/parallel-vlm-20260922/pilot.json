@@ -1,0 +1,602 @@
+[
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 3.3000032999552786e-06,
+    "request_sha256": "15daa957e32967d94089d53cc57346ceff7c600b6f94395c3ae7d9e8cb25dd8f",
+    "dispatch_offset_seconds": 0.049152999999932945,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 2148,
+      "completion_tokens": 245,
+      "total_tokens": 2393,
+      "cost": 0.000362791,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000362791,
+        "upstream_inference_prompt_cost": 0.000251316,
+        "upstream_inference_completions_cost": 0.000111475
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": true,
+    "localization_complete": true,
+    "verdict_count": 4,
+    "subject_count": 1,
+    "decisions": {
+      "fight": false,
+      "smoking": true,
+      "fall": false,
+      "weapon": false
+    },
+    "compact_negative": false,
+    "grounded_labels": [
+      "smoking"
+    ],
+    "total_seconds": 6.788392999995267,
+    "completion_offset_seconds": 6.78839760000119,
+    "variant": "balanced",
+    "endpoint": 4
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 1.5999976312741637e-06,
+    "request_sha256": "28e2f4b8648dfbc6c029783a6ae9c78b228e499791061e9faa9e25bf2d668219",
+    "dispatch_offset_seconds": 0.01984420000371756,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 1515,
+      "completion_tokens": 68,
+      "total_tokens": 1583,
+      "cost": 0.000208195,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000208195,
+        "upstream_inference_prompt_cost": 0.000177255,
+        "upstream_inference_completions_cost": 3.094e-05
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": false,
+    "localization_complete": true,
+    "verdict_count": 1,
+    "subject_count": 1,
+    "decisions": {
+      "fight": null,
+      "smoking": true,
+      "fall": null,
+      "weapon": null
+    },
+    "compact_negative": false,
+    "grounded_labels": [
+      "smoking"
+    ],
+    "total_seconds": 1.7879173000037554,
+    "completion_offset_seconds": 1.7879200000024866,
+    "variant": "minimal",
+    "endpoint": 4
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 3.6000055843032897e-06,
+    "request_sha256": "80fe0f81031749b990facaa5efc844dfbaec0ebf7bbdd9223592a96d0ae277bd",
+    "dispatch_offset_seconds": 0.02828579999913927,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 2155,
+      "completion_tokens": 235,
+      "total_tokens": 2390,
+      "cost": 0.00035906,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.00035906,
+        "upstream_inference_prompt_cost": 0.000252135,
+        "upstream_inference_completions_cost": 0.000106925
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": true,
+    "localization_complete": true,
+    "verdict_count": 4,
+    "subject_count": 1,
+    "decisions": {
+      "fight": true,
+      "smoking": false,
+      "fall": false,
+      "weapon": false
+    },
+    "compact_negative": false,
+    "grounded_labels": [
+      "fight"
+    ],
+    "total_seconds": 2.9389622999951825,
+    "completion_offset_seconds": 2.9389663000038126,
+    "variant": "balanced",
+    "endpoint": 9.6
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 8.999995770864189e-07,
+    "request_sha256": "5bd35124e1dc0b967a54720008568cb5af65fcc4f3bb50befd4fea8953587ea8",
+    "dispatch_offset_seconds": 0.0134429999961867,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 1522,
+      "completion_tokens": 67,
+      "total_tokens": 1589,
+      "cost": 0.000208559,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000208559,
+        "upstream_inference_prompt_cost": 0.000178074,
+        "upstream_inference_completions_cost": 3.0485e-05
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": false,
+    "localization_complete": true,
+    "verdict_count": 1,
+    "subject_count": 1,
+    "decisions": {
+      "fight": true,
+      "smoking": null,
+      "fall": null,
+      "weapon": null
+    },
+    "compact_negative": false,
+    "grounded_labels": [
+      "fight"
+    ],
+    "total_seconds": 1.7316887999986648,
+    "completion_offset_seconds": 1.7316901999947731,
+    "variant": "minimal",
+    "endpoint": 9.6
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 3.3999967854470015e-06,
+    "request_sha256": "daa6657fa1c9d78b8c13242a37206b4a9a8027d30b65736c21dc6a74f4b3559b",
+    "dispatch_offset_seconds": 0.026472699995792937,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 2159,
+      "completion_tokens": 239,
+      "total_tokens": 2398,
+      "cost": 0.000361348,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000361348,
+        "upstream_inference_prompt_cost": 0.000252603,
+        "upstream_inference_completions_cost": 0.000108745
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": true,
+    "localization_complete": false,
+    "verdict_count": 4,
+    "subject_count": 1,
+    "decisions": {
+      "fight": null,
+      "smoking": false,
+      "fall": true,
+      "weapon": false
+    },
+    "compact_negative": false,
+    "grounded_labels": [],
+    "total_seconds": 3.8923930000019027,
+    "completion_offset_seconds": 3.892396799994458,
+    "variant": "balanced",
+    "endpoint": 12.8
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 1.0000003385357559e-06,
+    "request_sha256": "a9cf89bc71ee87c672d4888749e34f7f75565d9ce3eb637ba27909afd8474bac",
+    "dispatch_offset_seconds": 0.013412699998298194,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 1526,
+      "completion_tokens": 67,
+      "total_tokens": 1593,
+      "cost": 0.000209027,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000209027,
+        "upstream_inference_prompt_cost": 0.000178542,
+        "upstream_inference_completions_cost": 3.0485e-05
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": false,
+    "localization_complete": true,
+    "verdict_count": 1,
+    "subject_count": 1,
+    "decisions": {
+      "fight": null,
+      "smoking": null,
+      "fall": true,
+      "weapon": null
+    },
+    "compact_negative": false,
+    "grounded_labels": [
+      "fall"
+    ],
+    "total_seconds": 1.7281721999970614,
+    "completion_offset_seconds": 1.7281742999985,
+    "variant": "minimal",
+    "endpoint": 12.8
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 3.2000025385059416e-06,
+    "request_sha256": "c8d4508884bd74c6005696452f3addaecb32f046be9f1afff478fa8bd6828600",
+    "dispatch_offset_seconds": 0.04343979999976,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 2157,
+      "completion_tokens": 222,
+      "total_tokens": 2379,
+      "cost": 0.000353379,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000353379,
+        "upstream_inference_prompt_cost": 0.000252369,
+        "upstream_inference_completions_cost": 0.00010101
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": true,
+    "localization_complete": true,
+    "verdict_count": 4,
+    "subject_count": 1,
+    "decisions": {
+      "fight": false,
+      "smoking": false,
+      "fall": false,
+      "weapon": false
+    },
+    "compact_negative": false,
+    "grounded_labels": [],
+    "total_seconds": 3.006496900001366,
+    "completion_offset_seconds": 3.006500400006189,
+    "variant": "balanced",
+    "endpoint": 20
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 8.999995770864189e-07,
+    "request_sha256": "3dd719e4a728f5ec8329b96282dd5e6ed013fed823ea263f561f6b22d2c3c34d",
+    "dispatch_offset_seconds": 0.013350599998375401,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 1524,
+      "completion_tokens": 135,
+      "total_tokens": 1659,
+      "cost": 0.000239733,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000239733,
+        "upstream_inference_prompt_cost": 0.000178308,
+        "upstream_inference_completions_cost": 6.1425e-05
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": true,
+    "localization_complete": true,
+    "verdict_count": 4,
+    "subject_count": 1,
+    "decisions": {
+      "fight": false,
+      "smoking": false,
+      "fall": false,
+      "weapon": false
+    },
+    "compact_negative": false,
+    "grounded_labels": [],
+    "total_seconds": 2.097206799997366,
+    "completion_offset_seconds": 2.0972079999992275,
+    "variant": "minimal",
+    "endpoint": 20
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 3.7999998312443495e-06,
+    "request_sha256": "144f8c8defa767a4e771812e12ec58ab84f32ce725b1c2e9a2b6772d10c23409",
+    "dispatch_offset_seconds": 0.03286600000137696,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 2157,
+      "completion_tokens": 222,
+      "total_tokens": 2379,
+      "cost": 0.000353379,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000353379,
+        "upstream_inference_prompt_cost": 0.000252369,
+        "upstream_inference_completions_cost": 0.00010101
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": true,
+    "localization_complete": true,
+    "verdict_count": 4,
+    "subject_count": 1,
+    "decisions": {
+      "fight": false,
+      "smoking": false,
+      "fall": false,
+      "weapon": false
+    },
+    "compact_negative": false,
+    "grounded_labels": [],
+    "total_seconds": 2.8704712000035215,
+    "completion_offset_seconds": 2.870475499999884,
+    "variant": "balanced",
+    "endpoint": 24
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 1.0000003385357559e-06,
+    "request_sha256": "a900e6c421539aeed15a717427ab717fe4647330f6a4772ac16a0f69a4ad0fa4",
+    "dispatch_offset_seconds": 0.017012000003887806,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 1524,
+      "completion_tokens": 68,
+      "total_tokens": 1592,
+      "cost": 0.000209248,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000209248,
+        "upstream_inference_prompt_cost": 0.000178308,
+        "upstream_inference_completions_cost": 3.094e-05
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": false,
+    "localization_complete": true,
+    "verdict_count": 1,
+    "subject_count": 1,
+    "decisions": {
+      "fight": null,
+      "smoking": null,
+      "fall": null,
+      "weapon": true
+    },
+    "compact_negative": false,
+    "grounded_labels": [
+      "weapon"
+    ],
+    "total_seconds": 1.7151835000040592,
+    "completion_offset_seconds": 1.715184799999406,
+    "variant": "minimal",
+    "endpoint": 24
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 2.4999972083605826e-06,
+    "request_sha256": "301c42c164d4915792d97da32e3ff5db66edceb3168c490b9f2fa766e0703b10",
+    "dispatch_offset_seconds": 0.02358799999637995,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 2159,
+      "completion_tokens": 243,
+      "total_tokens": 2402,
+      "cost": 0.000363168,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000363168,
+        "upstream_inference_prompt_cost": 0.000252603,
+        "upstream_inference_completions_cost": 0.000110565
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": true,
+    "localization_complete": false,
+    "verdict_count": 4,
+    "subject_count": 0,
+    "decisions": {
+      "fight": false,
+      "smoking": false,
+      "fall": false,
+      "weapon": false
+    },
+    "compact_negative": false,
+    "grounded_labels": [],
+    "total_seconds": 3.851342100002512,
+    "completion_offset_seconds": 3.8513449000020046,
+    "variant": "balanced",
+    "endpoint": 42.4
+  },
+  {
+    "kind": "compact",
+    "ok": true,
+    "start_offset_seconds": 8.00006091594696e-07,
+    "request_sha256": "1d93d384b2b75203ce920a798c0029845ef6e0029486c1e7ae18f4b445d77a4b",
+    "dispatch_offset_seconds": 0.010237100002996158,
+    "http_status": 200,
+    "usage": {
+      "prompt_tokens": 1526,
+      "completion_tokens": 136,
+      "total_tokens": 1662,
+      "cost": 0.000240422,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 0.000240422,
+        "upstream_inference_prompt_cost": 0.000178542,
+        "upstream_inference_completions_cost": 6.188e-05
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    },
+    "provider": "Alibaba",
+    "model": "qwen/qwen3-vl-8b-instruct",
+    "complete_labels": true,
+    "localization_complete": true,
+    "verdict_count": 4,
+    "subject_count": 1,
+    "decisions": {
+      "fight": false,
+      "smoking": false,
+      "fall": false,
+      "weapon": false
+    },
+    "compact_negative": false,
+    "grounded_labels": [],
+    "total_seconds": 2.6097064999994473,
+    "completion_offset_seconds": 2.60970780000207,
+    "variant": "minimal",
+    "endpoint": 42.4
+  }
+]

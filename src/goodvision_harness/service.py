@@ -11,6 +11,7 @@ import os
 import struct
 import time
 import unicodedata
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -52,6 +53,7 @@ from .config import (
     ServiceSettings,
     load_config,
 )
+from .continuous_display import ContinuousTrackedSceneDisplayWorker
 from .contracts import PUBLIC_MODEL_NAME, AnalysisResult
 from .delayed_overlay import (
     DelayedOverlayComposer,
@@ -146,6 +148,7 @@ from .route_probe import (
     probe_sample,
 )
 from .run_postprocess import RunPostprocess
+from .sam_display_fusion import SAMDisplayFusion
 from .scene_archive import SceneArchive
 from .scene_capture import SceneCaptureClient
 from .scene_delivery import SceneDisplayWorker, TrackedSceneDisplayWorker
@@ -174,6 +177,8 @@ from .visual_memory import (
     VisualMemoryRecord,
     VisualMemorySink,
 )
+from .vlm_fusion import VLMFusion
+from .vlm_independent import IndependentVLMBranch, VLMProcessConfig
 from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
 
 LOGGER = logging.getLogger(__name__)
@@ -341,7 +346,8 @@ class HarnessRuntime:
             raise ValueError("runtime.scene_mode must be disabled or active")
         self._scene_enabled = self._scene_mode == "active"
         self._scene: SceneRuntime | None = None
-        self._scene_worker: SceneInspectionWorker | None = None
+        self._scene_worker: SceneInspectionWorker | IndependentVLMBranch | None = None
+        self._vlm_branch: IndependentVLMBranch | None = None
         self._temporal_clients = TemporalClientPool()
         self._identity_worker: IdentityReviewWorker | None = None
         self._pending_archive_subject_merges: dict[str, str] = {}
@@ -475,6 +481,11 @@ class HarnessRuntime:
             ),
         )
         self._state_lock = RLock()
+        # Source admission can persist JPEGs to disk. Its ordering gate must
+        # never be acquired while holding the general service state lock.
+        self._source_commit_lock = RLock()
+        self._display_metrics_lock = RLock()
+        self._display_reports: OrderedDict[tuple, dict] = OrderedDict()
         self._scene_result_publisher = SceneResultPublisher()
         self._camera_display_metadata = CameraDisplayMetadata()
         self._run_postprocess: dict[str, RunPostprocess] = {}
@@ -811,6 +822,11 @@ class HarnessRuntime:
     def tracking_camera_capacity(self) -> int:
         """Bound tracking lanes by both the service and provisioned main workers."""
         provisioned = max(1, int(os.environ.get("HARNESS_FLEET_CAPACITY", "1")))
+        if (self.config is not None and self.config_error is None
+                and not self._tracking_requested):
+            # Face + independent VLM use the provisioned application workers;
+            # they do not reserve any SAM/Contour GPU lanes.
+            return provisioned
         return min(provisioned, self._service_locations.tracking_capacity(
             provisioned, self._local_gpu,
         ))
@@ -1263,7 +1279,7 @@ class HarnessRuntime:
             "enabled": (self._scene_mode == "active" and self.config.rich_labeling.backend == "sam31_stream"
                         and os.environ.get("LOCAL_CAMERA_DISPLAY_ENABLED", "false").lower() in {"1", "true", "yes"}),
             "metadata_url": "/v1/video/display/metadata", "metrics_url": "/v1/video/display/metrics",
-            "target_fps": _env_bounded_int("LOCAL_CAMERA_TARGET_FPS", 20, 15, 30),
+            "target_fps": _env_bounded_int("LOCAL_CAMERA_TARGET_FPS", 15, 15, 30),
             "delay_seconds": delay,
             "motion_width": _env_bounded_int("LOCAL_CAMERA_MOTION_WIDTH", 160, 160, 320),
             "motion_backend": "dense", "anchor_policy": "nearest_arrived",
@@ -1273,6 +1289,14 @@ class HarnessRuntime:
             "analysis_jpeg_quality": _env_bounded_int("LOCAL_CAMERA_ANALYSIS_JPEG_QUALITY", 80, 30, 95),
             "analysis_sample_fps": max(self.config.rich_labeling.max_fps, self.config.face.sample_fps),
         }
+
+    def _video_connection_fps(self) -> float:
+        # Existing deployments may still bind a config with display.fps=5.
+        # The independent browser video must receive its full presentation rate.
+        return max(
+            self.video_display_config()["target_fps"], self.config.display.fps,
+            self.config.video.fps, self.config.face.sample_fps, self.config.events.fps,
+        )
 
     def ui_info(self) -> dict[str, Any]:
         if self.config is None:
@@ -1459,12 +1483,35 @@ class HarnessRuntime:
         )
 
     def _on_processing_batch(self, revision: int, batch: VideoTrackingBatch) -> None:
+        with self._source_commit_lock:
+            self._commit_processing_batch(revision, batch)
+
+    def _commit_processing_batch(
+        self, revision: int, batch: VideoTrackingBatch,
+    ) -> None:
         with self._state_lock:
             if revision != self._rich_config_revision:
                 return
-            self._on_tracking_batch(batch)
+            coordinator = self._rich_labels
+            load_sources = getattr(coordinator, "retained_sources", None)
+        # This read may wait behind a durable SQLite write. Do not freeze every
+        # service callback while fetching immutable, already-admitted evidence.
+        try:
+            sources = load_sources(batch) if load_sources else ()
+        except Exception:
+            with self._state_lock:
+                if (revision != self._rich_config_revision
+                        or coordinator is not self._rich_labels):
+                    return
+            raise
+        with self._state_lock:
+            if (revision != self._rich_config_revision
+                    or coordinator is not self._rich_labels):
+                return
+            self._on_tracking_batch(batch, retained_sources=sources)
 
-    def _on_tracking_batch(self, batch: VideoTrackingBatch) -> None:
+    def _on_tracking_batch(self, batch: VideoTrackingBatch, *,
+                           retained_sources=None) -> None:
         # Bounded in-memory commit. Lifecycle lock excludes source replacement
         # between epoch activation, canonical mapping and scene submission.
         with self._state_lock:
@@ -1498,15 +1545,15 @@ class HarnessRuntime:
 
             scene = getattr(self, "_scene", None)
             if scene is not None:
-                retained_sources = getattr(self._rich_labels, "retained_sources", None)
+                if retained_sources is None:
+                    load_sources = getattr(self._rich_labels, "retained_sources", None)
+                    retained_sources = load_sources(batch) if load_sources else ()
                 if not scene.commit_native_tracking_batch(
                     batch.frames,
                     completed_timestamp_seconds=batch.completed_timestamp_seconds,
                     completed_frame_sequence=batch.completed_frame_sequence,
                     canonicalize=canonicalize,
-                    retained_sources=(
-                        retained_sources(batch) if retained_sources else ()
-                    ),
+                    retained_sources=retained_sources,
                 ):
                     if scene.tracking_last_rejection == "inspection_capacity":
                         raise TrackingCommitBackpressure("inspection capacity")
@@ -1831,10 +1878,7 @@ class HarnessRuntime:
                 camera_layout or self.configured_camera_layout(),
             )
             connection = VideoConnection(
-                url, output_fps=max(
-                    self.config.display.fps, self.config.video.fps,
-                    self.config.face.sample_fps, self.config.events.fps,
-                ),
+                url, output_fps=self._video_connection_fps(),
                 whep_headers=self.config.stream.whep_headers,
                 frame_crop="left_half" if layout == "stereo" else "none",
             )
@@ -2022,9 +2066,21 @@ class HarnessRuntime:
             event_sensitivities, sensitivity_labels,
         )
 
-        processing_ready = self._require_processing_ready()
+        independent_requested = (
+            self._scene_enabled and self.config.runtime.scene_independent_vlm
+            and not use_dry_run and bool(set(sensitivity_labels).intersection(SAFETY_EVENT_LABELS))
+        )
+        if independent_requested:
+            # Availability of an optional tracker cannot gate event reporting.
+            # Preserve the revision/ownership check below; its errors still matter.
+            with self._control_lock:
+                processing_ready = ((self._rich_config_revision, self._rich_labels)
+                                    if self._rich_labels is not None else None)
+        else:
+            processing_ready = self._require_processing_ready()
 
-        with self._control_lock:
+        def validate_start():
+            # Called under the control lock before and after model preparation.
             if self._closed:
                 raise RuntimeError("harness service is stopping")
             if video_connection_id is not None and (
@@ -2057,6 +2113,30 @@ class HarnessRuntime:
                 raise MissingAPIKeyError(
                     "missing model API key; set " + self.config.model_api.api_key_env
                 )
+
+        needs_face = not use_dry_run and (
+            selected_analysis == FACE_ANALYSIS_MODE
+            or (selected_analysis == MULTI_ANALYSIS_MODE
+                and "stranger" in selected_features)
+        )
+        with self._control_lock:
+            validate_start()
+            prepared_face = self._ensure_face_runtime() if needs_face else None
+        if prepared_face is not None:
+            # Load once before admitting frames, without holding the service
+            # lock. The runtime and its warmed models survive session stops.
+            face_prepare_started = time.monotonic()
+            warmup_seconds = prepared_face.warmup()
+            log_timing(
+                "face_analysis_preparation",
+                total_seconds=time.monotonic() - face_prepare_started,
+                model_warmup_seconds=warmup_seconds,
+                reused=warmup_seconds == 0.0,
+            )
+            if warmup_seconds:
+                LOGGER.info("warmed local face analysis in %.3fs", warmup_seconds)
+        with self._control_lock:
+            validate_start()
             self._ensure_delivery()
 
             face_session = None
@@ -2068,6 +2148,7 @@ class HarnessRuntime:
             if (
                 scene_active
                 and not use_dry_run
+                and not self.config.runtime.scene_independent_vlm
                 and (
                     self._rich_labels is None
                     or self.config.rich_labeling.backend == "vlm"
@@ -2082,12 +2163,7 @@ class HarnessRuntime:
                     retention_days=self.config.events.retention_days,
                 )
             if selected_analysis == FACE_ANALYSIS_MODE:
-                face_runtime = self._ensure_face_runtime()
-                warmup_seconds = face_runtime.warmup()
-                if warmup_seconds:
-                    LOGGER.info(
-                        "warmed local face analysis in %.3fs", warmup_seconds
-                    )
+                face_runtime = prepared_face
                 face = self.config.face
                 face_live_scheduler = _resolved_face_live_scheduler(
                     provider=face.provider,
@@ -2134,12 +2210,7 @@ class HarnessRuntime:
                 include_stranger = "stranger" in selected_features
                 face_runtime = None
                 if include_stranger and not use_dry_run:
-                    face_runtime = self._ensure_face_runtime()
-                    warmup_seconds = face_runtime.warmup()
-                    if warmup_seconds:
-                        LOGGER.info(
-                            "warmed local face analysis in %.3fs", warmup_seconds
-                        )
+                    face_runtime = prepared_face
                     if isinstance(face_runtime, FaceRecognitionRuntime):
                         face_session = FaceRecognitionSession(
                             face_runtime,
@@ -2253,12 +2324,11 @@ class HarnessRuntime:
             callbacks = SessionCallbacks(
                 on_display_frame=(
                     (
-                        lambda jpeg, timestamp, sequence: self._guarded_callback(
-                            generation,
-                            self._on_display_frame,
+                        lambda jpeg, timestamp, sequence: self._on_display_frame(
                             jpeg,
                             timestamp,
                             sequence,
+                            generation=generation,
                         )
                     )
                     if mode == STREAM_MODE
@@ -2284,6 +2354,17 @@ class HarnessRuntime:
                 assert stream_url is not None
                 connection = self._video_connection
                 stream_options = {}
+                created_connection = False
+                if (self.config.runtime.scene_independent_vlm and scene_active and not use_dry_run
+                        and (connection is None or not connection.running)):
+                    connection = VideoConnection(
+                        stream_url, output_fps=self._video_connection_fps(),
+                        whep_headers=session_config.stream.whep_headers,
+                        frame_crop=session_config.stream.frame_crop,
+                    )
+                    connection.start()
+                    self._video_connection = connection
+                    created_connection = True
                 if video_connection_id is not None and (
                     connection is None
                     or connection.connection_id != video_connection_id
@@ -2295,7 +2376,7 @@ class HarnessRuntime:
                         raise RuntimeError(
                             "disconnect the current video before changing source",
                         )
-                    if not connection.status()["connected"]:
+                    if not created_connection and not connection.status()["connected"]:
                         raise RuntimeError("video connection is not ready")
                     stream_options["video_stream"] = connection.subscribe()
                 session = StreamingSession.for_stream(
@@ -2341,6 +2422,9 @@ class HarnessRuntime:
                     self.source_id,
                     mode=self._scene_mode,
                     event_labels=scene_labels,
+                    independent_temporal_inference=(
+                        self.config.runtime.scene_independent_vlm and not use_dry_run and bool(scene_labels)
+                    ),
                     stranger_enabled=(
                         selected_analysis == FACE_ANALYSIS_MODE
                         or "stranger" in (selected_features or ())
@@ -2374,6 +2458,18 @@ class HarnessRuntime:
                 if self._scene_enabled
                 else None
             )
+            display_fusion = (
+                SAMDisplayFusion(
+                    session.stream_session_id, self.source_id,
+                    stranger_enabled=next_scene.stranger_enabled,
+                )
+                if (scene_active and not use_dry_run and next_scene is not None
+                    and self.config.runtime.scene_independent_vlm
+                    and self.config.rich_labeling.backend == "sam31_stream")
+                else None
+            )
+            if display_fusion is not None:
+                next_scene.display_metadata = self._camera_display_metadata
             next_worker = None
             if scene_active and not use_dry_run and scene_labels:
                 model_settings = replace(
@@ -2398,47 +2494,72 @@ class HarnessRuntime:
                     "jpeg_quality": self.config.runtime.scene_jpeg_quality,
                 }
 
-                def build_inspector():
-                    return TemporalVLMInspector(
-                        model_settings, model=model, api_key=api_key,
-                        request_parameters=parameters, **options,
+                if self.config.runtime.scene_independent_vlm:
+                    process_config = VLMProcessConfig(
+                        session.stream_session_id, self.source_id, generation, scene_labels,
+                        model_settings, model, api_key, parameters, options,
+                        tuple(selected_sensitivities.items()),
+                        self.config.runtime.scene_observation_fps,
+                        self.config.runtime.scene_max_in_flight,
+                        route_id=PUBLIC_ROUTE_IDS.get(self._selected_route_id),
+                        output_mode=self.config.runtime.scene_vlm_output_mode,
                     )
-
-                parallel = self.config.rich_labeling.backend == "sam31_stream"
-                size = self.config.runtime.scene_max_in_flight if parallel else 1
-                fingerprint = hashlib.sha256(json.dumps({
-                    "settings": asdict(model_settings), "model": model,
-                    "parameters": parameters, "api_key": api_key, **options,
-                    "transport_environment": {
-                        name: os.environ.get(name) for name in (
-                            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-                            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
-                            "SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE",
+                    next_worker = IndependentVLMBranch(
+                        process_config, results=self.results,
+                        connection=self._video_connection if mode == STREAM_MODE else None,
+                        camera_callback=(
+                            lambda jpeg, timestamp, sequence: self._on_display_frame(
+                                jpeg, timestamp, sequence, generation=generation)
+                        ) if mode == CAMERA_MODE else None,
+                        fusion=VLMFusion(
+                            next_scene,
+                            on_update=lambda: self._guarded_callback(generation, self._on_scene_update),
+                        ),
+                        display_fusion=display_fusion,
+                        delivery=self._delivery,
+                    )
+                else:
+                    def build_inspector():
+                        return TemporalVLMInspector(
+                            model_settings, model=model, api_key=api_key,
+                            request_parameters=parameters, **options,
                         )
-                    },
-                }, sort_keys=True, allow_nan=False).encode()).hexdigest()
-                leases = iter(self._temporal_clients.prepare(
-                    fingerprint, build_inspector, size,
-                    accept=lambda job, scene=next_scene: scene.inspection_active(
-                        job.request.request_id
-                    ),
-                ))
-                next_worker = SceneInspectionWorker(
-                    next_scene, next(leases), max_in_flight=size,
-                    inspector_factory=(lambda: next(leases)) if parallel else None,
-                    on_update=lambda: self._guarded_callback(
-                        generation, self._on_scene_update
-                    ),
-                )
+
+                    parallel = self.config.rich_labeling.backend == "sam31_stream"
+                    size = self.config.runtime.scene_max_in_flight if parallel else 1
+                    fingerprint = hashlib.sha256(json.dumps({
+                        "settings": asdict(model_settings), "model": model,
+                        "parameters": parameters, "api_key": api_key, **options,
+                        "transport_environment": {
+                            name: os.environ.get(name) for name in (
+                                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                                "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+                                "SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE",
+                            )
+                        },
+                    }, sort_keys=True, allow_nan=False).encode()).hexdigest()
+                    leases = iter(self._temporal_clients.prepare(
+                        fingerprint, build_inspector, size,
+                        accept=lambda job, scene=next_scene: scene.inspection_active(
+                            job.request.request_id
+                        ),
+                    ))
+                    next_worker = SceneInspectionWorker(
+                        next_scene, next(leases), max_in_flight=size,
+                        inspector_factory=(lambda: next(leases)) if parallel else None,
+                        on_update=lambda: self._guarded_callback(
+                            generation, self._on_scene_update
+                        ),
+                    )
                 next_scene.automatic_temporal_inference = True
             display_class = (
-                TrackedSceneDisplayWorker
+                ContinuousTrackedSceneDisplayWorker
                 if self.config.rich_labeling.backend == "sam31_stream"
                 else SceneDisplayWorker
             )
             display_options = (
                 {"delay_seconds": self._display_settings.delay_seconds}
-                if display_class is TrackedSceneDisplayWorker else {}
+                if issubclass(display_class, TrackedSceneDisplayWorker) else {}
             )
             next_display = (
                 display_class(
@@ -2461,6 +2582,7 @@ class HarnessRuntime:
                     stream_session_id=(session.stream_session_id
                                        if face_session is not None else None),
                     source_id=self.source_id, generation=generation,
+                    display_fusion=display_fusion,
                 )
                 if face_session is not None:
                     face_session.fast_results = self.face_fast_results
@@ -2483,6 +2605,7 @@ class HarnessRuntime:
                 self._session = session
                 self._camera_display_metadata.reset(
                     session.stream_session_id,
+                    fusion=display_fusion,
                     native_token=(self._rich_config_revision, id(self._rich_labels),
                                   self._rich_labels._generation)
                     if hasattr(self._rich_labels, "on_native_batch") else None,
@@ -2494,6 +2617,7 @@ class HarnessRuntime:
                 self._scene = next_scene
                 self._last_scene_snapshot = None
                 self._scene_worker = next_worker
+                self._vlm_branch = next_worker if isinstance(next_worker, IndependentVLMBranch) else None
                 self._identity_worker = IdentityReviewWorker(
                     lambda: self._review_session_identities(generation, session)
                 )
@@ -2529,6 +2653,7 @@ class HarnessRuntime:
                         "last_error": None,
                         "end_reason": None,
                         "scene_drain": None,
+                        "display_drain": None,
                         "local_camera_display": None,
                         "stream": (
                             {
@@ -2668,6 +2793,8 @@ class HarnessRuntime:
                 if self._session_mode == CAMERA_MODE and isinstance(
                     self._rich_labels, VideoSessionTrackingCoordinator
                 ):
+                    # Freeze capture age immediately, before slow face callbacks.
+                    # This does not flush or reject accepted upstream sources.
                     self._rich_labels.mark_capture_finished(
                         stream_session_id=session.stream_session_id,
                         generation=self._rich_labels._generation,
@@ -2913,6 +3040,9 @@ class HarnessRuntime:
                 stream_session_id=trace_id(session.stream_session_id),
                 source_sequence=sequence, source_timestamp_seconds=timestamp,
             )
+            branch = getattr(self, "_vlm_branch", None)
+            if branch is not None and branch.config.stream_session_id == session.stream_session_id:
+                branch.offer(jpeg, timestamp, sequence)
             should_sample = timestamp + 1e-9 >= self._camera_next_sample_at
             timing["sampled"] = should_sample
             if should_sample:
@@ -2930,34 +3060,44 @@ class HarnessRuntime:
                 self._last_camera_receipt = receipt
             self._camera_frame_sequence = sequence + 1
             generation = self._generation
+            if branch is not None and branch.dispatch_camera_source(display_jpeg, timestamp, sequence):
+                phase("display_callback_queued")
+                return True
             phase("display_callback_state_wait")
-            with self._state_lock:
-                phase("display_callback")
-                self._guarded_callback(
-                    generation,
-                    self._on_display_frame,
-                    display_jpeg,
-                    timestamp,
-                    sequence,
-                )
+            phase("display_callback")
+            self._on_display_frame(
+                display_jpeg,
+                timestamp,
+                sequence,
+                generation=generation,
+            )
             return True
 
     def record_display_metrics(self, report: dict) -> dict:
-        with self._state_lock:
+        with self._display_metrics_lock:
             current = self._camera_display_metadata.source_identity()
             if any(report[key] != current[key] for key in (
                 "stream_session_id", "generation", "crop_version",
             )):
                 return {"accepted": False, "reason": "obsolete_source"}
-            previous = self._state.get("local_camera_display") or {}
+            source = tuple(current[key] for key in (
+                "stream_session_id", "generation", "crop_version",
+            ))
+            # Old clients share one legacy slot; new viewers have independent
+            # counters. Bound the table even if clients reconnect repeatedly.
+            key = (*source, report.get("display_instance_id", "legacy"))
+            previous = self._display_reports.get(key, {})
             if report.get("report_sequence", -1) <= previous.get("report_sequence", -1):
                 return {"accepted": False, "reason": "obsolete_report"}
-            self._state["local_camera_display"] = report
+            self._display_reports[key] = dict(report)
+            self._display_reports.move_to_end(key)
+            while len(self._display_reports) > 64:
+                self._display_reports.popitem(last=False)
         network = getattr(self._session, "mode", None) != CAMERA_MODE
         log_timing("network_video_display_timing" if network else "local_camera_display_timing", **report)
         return {"accepted": True}
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, lightweight: bool = False) -> dict[str, Any]:
         with self._state_lock:
             payload = copy.deepcopy(self._state)
             postprocess = tuple(self._run_postprocess.values())
@@ -2970,6 +3110,7 @@ class HarnessRuntime:
             active_rich_session_id = self._active_rich_session_id
             session = self._session
             scene_worker = self._scene_worker
+            vlm_branch = self._vlm_branch
             retiring = self._retiring_rich_labels is not None
             payload["processing_method"] = method
             rich_disabled_reason = self._rich_disabled_reason
@@ -2980,9 +3121,20 @@ class HarnessRuntime:
             selector = getattr(
                 getattr(self, "_session", None), "frame_crop_selector", None,
             )
-            if selector is not None and isinstance(payload.get("stream"), dict):
+            if (not lightweight and selector is not None
+                    and isinstance(payload.get("stream"), dict)):
                 payload["stream"]["crop_selection"] = selector.status()
-        payload["postprocessing_runs"] = [run.status() for run in postprocess]
+        with self._display_metrics_lock:
+            current = self._camera_display_metadata.source_identity()
+            source = tuple(current[key] for key in (
+                "stream_session_id", "generation", "crop_version",
+            ))
+            payload["local_camera_display"] = next((
+                dict(report) for key, report in reversed(self._display_reports.items())
+                if key[:3] == source
+            ), None)
+        vlm_health = self._vlm_health(vlm_branch)
+        payload["vlm"] = vlm_health
         payload["session_start_pending"] = self._session_start_pending
         if self._session_start_pending and payload.get("pipeline_state") not in {
             "running", "draining",
@@ -2992,6 +3144,24 @@ class HarnessRuntime:
             )
         payload["configured_stream"] = bool(self.configured_stream_url())
         payload["camera_layout"] = self.configured_camera_layout()
+        if lightweight:
+            # Status polling must not acquire the tracking spool/archive locks.
+            # Their detailed counters remain available in the full status route.
+            payload["ready"], payload["readiness_reason"] = self.readiness()
+            connection = self._video_connection
+            payload.update(connection.status() if connection is not None else {
+                "connection_state": "disconnected", "connected": False,
+                "connection_id": None,
+            })
+            if connection is not None and connection.running:
+                payload["camera_layout"] = self._connection_camera_layout
+            state = payload.get("pipeline_state")
+            payload["analysis_state"] = (
+                "stopping" if state in {"stopping", "draining"}
+                else state if state in {"starting", "running", "error"} else "idle"
+            )
+            return public_safe_value(payload)
+        payload["postprocessing_runs"] = [run.status() for run in postprocess]
         payload["event_archive"] = (
             self._events.status() if self._events else {"state": "idle"}
         )
@@ -3022,6 +3192,9 @@ class HarnessRuntime:
             tracking["last_error"] = PUBLIC_TRACKING_ERROR
         live_failure = None
         if session is not None:
+            face_admission = getattr(session, "_face_admission", None)
+            if face_admission is not None:
+                payload["live_face_admission"] = face_admission.stats()
             # Report the current run's terminal branch failure on the next
             # status poll. This does not stop producers or discard accepted work.
             if active_rich_session_id == session.stream_session_id and (
@@ -3031,7 +3204,8 @@ class HarnessRuntime:
                 live_failure = (PUBLIC_TRACKING_ERROR, "person_tracking_failed")
             elif (
                 scene_worker is not None
-                and scene_worker.stats().get("state") == "failed"
+                and (vlm_health if scene_worker is vlm_branch
+                     else scene_worker.stats()).get("state") == "failed"
             ):
                 live_failure = (PUBLIC_INSPECTION_ERROR, "event_analysis_failed")
         payload["processing"] = (
@@ -3307,11 +3481,18 @@ class HarnessRuntime:
         with self._state_lock:
             result = self._scene_result_publisher.project(
                 snapshot,
+                # Independent VLM reports contain observations only. Publish
+                # tracking-owned safety confirmations as well as face events.
                 labels=tuple(self._state.get("event_labels", ())),
                 emitted_at=_utc_now(),
             )
             if result is not None:
-                self._publish_analysis_result(result)
+                self._publish_analysis_result(
+                    result, promote_latest=not snapshot.get(
+                        "independent_temporal_inference",
+                        getattr(self._scene, "independent_temporal_inference", False),
+                    ),
+                )
                 log_timing(
                     "scene_result_published",
                     stream_session_id=trace_id(result.stream_session_id),
@@ -3336,6 +3517,30 @@ class HarnessRuntime:
                         "experimental scene observer rejected an observation"
                     )
 
+    def _vlm_health(self, branch) -> dict[str, Any]:
+        if branch is None:
+            return {"independent": False, "state": "disabled", "running": False,
+                    "ready": False, "readiness_reason": "disabled"}
+        health = branch.health()
+        state = health["state"]
+        source_age = health["last_source_age_seconds"]
+        success_age = health["last_success_age_seconds"]
+        reason = "ready"
+        if state == "failed":
+            reason = "event_analysis_failed"
+        elif state != "running":
+            reason = state
+        elif source_age is None:
+            reason = "waiting_for_first_frame"
+        elif source_age > self.settings.ready_max_frame_age_seconds:
+            reason = "frame_stale"
+        elif success_age is None:
+            reason = "waiting_for_first_analysis"
+        elif success_age > self.settings.ready_max_result_age_seconds:
+            reason = "analysis_stale"
+        return {**health, "running": state == "running", "ready": reason == "ready",
+                "readiness_reason": reason}
+
     def readiness(self) -> tuple[bool, str]:
         with self._state_lock:
             state = self._state["pipeline_state"]
@@ -3354,6 +3559,12 @@ class HarnessRuntime:
             return False, str(state)
         if session is None or not session.running:
             return False, "pipeline_not_running"
+        branch = getattr(self, "_vlm_branch", None)
+        if branch is not None and branch.config.stream_session_id == session.stream_session_id:
+            # A healthy VLM result does not need a SAM/scene callback to update
+            # the old service timestamps before it can become ready.
+            health = self._vlm_health(branch)
+            return health["ready"], health["readiness_reason"]
         if last_frame is None:
             return False, "waiting_for_first_frame"
         now = time.monotonic()
@@ -3519,9 +3730,11 @@ class HarnessRuntime:
             return
         self._publish_analysis_result(result)
 
-    def _publish_analysis_result(self, result: AnalysisResult) -> None:
+    def _publish_analysis_result(
+        self, result: AnalysisResult, *, promote_latest: bool = True,
+    ) -> None:
         payload = result.as_dict()
-        self.results.publish(payload)
+        self.results.publish(payload, promote_latest=promote_latest)
         result_count = int(self._state["results_published"]) + 1
         self._last_result_monotonic = time.monotonic()
         self._update_state(
@@ -3588,46 +3801,77 @@ class HarnessRuntime:
         jpeg: bytes,
         media_timestamp: float,
         frame_sequence: int,
+        *,
+        generation: int | None = None,
     ) -> None:
+        with self._source_commit_lock:
+            self._admit_display_frame(jpeg, media_timestamp, frame_sequence, generation)
+
+    def _admit_display_frame(self, jpeg, media_timestamp, frame_sequence, generation):
         observed_at = _utc_now()
         source_jpeg = bytes(jpeg)
-        # Browser frames bypass StreamingSession's source decoder. Preserve all
-        # presentation frames for evidence, not only the model samples.
-        session = self._session
-        if session is not None and getattr(session, "mode", None) != CAMERA_MODE:
-            # Network capture owns the same source identity as its raw display
-            # stream. Do not renumber frames or wait for SAM to bind metadata.
-            self._camera_display_metadata.accept_source({
-                "stream_session_id": session.stream_session_id,
-                "generation": self._generation, "crop_version": 0,
-                "source_sequence": int(frame_sequence),
-                "media_timestamp": float(media_timestamp),
-            })
-        # Retain the exact samples admitted to a continuous model session. A
-        # high-rate preview must not evict its slower, still-pending source JPEGs.
-        # The callback takes this same lock, so it cannot precede source retention.
-        continuous_queued = False
         with self._state_lock:
+            if generation is not None and generation != self._generation:
+                return
+            generation = self._generation
+            session = self._session
+            coordinator = self._rich_labels
+            session_id = self._active_rich_session_id
+            scene = self._scene
+            if session is not None and getattr(session, "mode", None) != CAMERA_MODE:
+                self._camera_display_metadata.accept_source({
+                    "stream_session_id": session.stream_session_id,
+                    "generation": generation, "crop_version": 0,
+                    "source_sequence": int(frame_sequence),
+                    "media_timestamp": float(media_timestamp),
+                })
             if self._scene_is_active() and session is not None:
                 self._scene_result_publisher.observe_frame(
                     session.stream_session_id, source_jpeg, media_timestamp,
                     frame_sequence, observed_at,
                 )
-            coordinator = self._rich_labels
-            if isinstance(coordinator, VideoSessionTrackingCoordinator):
-                continuous_queued = True
-                admitted = False
-                session_id = self._active_rich_session_id
-                if session_id is not None:
-                    try:
-                        admitted = coordinator.submit(
-                            source_jpeg,
-                            stream_session_id=session_id,
-                            frame_sequence=int(frame_sequence),
-                            timestamp_seconds=float(media_timestamp),
-                        )
-                    except Exception:
-                        LOGGER.warning("could not queue continuous tracking frame")
+            packet = FramePacket(
+                jpeg=source_jpeg, media_timestamp=float(media_timestamp),
+                frame_sequence=int(frame_sequence), observed_at=observed_at,
+            )
+            self.preview_frames.publish(packet)
+            self._last_frame_monotonic = time.monotonic()
+            self._update_state(
+                pipeline_state=(
+                    "draining" if self._state.get("pipeline_state") == "draining"
+                    else "running"
+                ),
+                last_frame_at=observed_at,
+                source_frames_received=int(self._state["source_frames_received"]) + 1,
+                last_media_timestamp=round(float(media_timestamp), 3),
+                last_frame_sequence=int(frame_sequence),
+            )
+        # Disk/spool and archive backpressure belong outside the state lock.
+        # The separate source gate keeps native commits behind source retention.
+        continuous_queued = isinstance(coordinator, VideoSessionTrackingCoordinator)
+        admitted = False
+        if coordinator is not None and session_id is not None:
+            try:
+                admitted = coordinator.submit(
+                    source_jpeg, stream_session_id=session_id,
+                    frame_sequence=int(frame_sequence),
+                    timestamp_seconds=float(media_timestamp),
+                )
+            except Exception:
+                LOGGER.warning("could not queue frame for tracking")
+        if (
+            session is not None and getattr(session, "mode", None) == CAMERA_MODE
+            and getattr(session, "archive", None) is not None
+        ):
+            session.archive.submit_frame(
+                source_jpeg, media_timestamp, frame_sequence, session.stream_session_id,
+            )
+        with self._state_lock:
+            if (generation != self._generation or session is not self._session
+                    or coordinator is not self._rich_labels
+                    or scene is not self._scene):
+                return
+            if continuous_queued:
                 self._observe_scene(
                     "observe_frame", source_jpeg, media_timestamp, frame_sequence,
                     retain_source=admitted,
@@ -3636,57 +3880,18 @@ class HarnessRuntime:
                 self._observe_scene(
                     "observe_frame", source_jpeg, media_timestamp, frame_sequence,
                 )
-        if (
-            session is not None and getattr(session, "mode", None) == CAMERA_MODE
-            and getattr(session, "archive", None) is not None
-        ):
-            session.archive.submit_frame(
-                source_jpeg, media_timestamp, frame_sequence, session.stream_session_id,
-            )
-        if self._rich_labels is not None and not continuous_queued:
-            with self._state_lock:
-                session_id = self._active_rich_session_id
-            if session_id is not None:
-                try:
-                    self._rich_labels.submit(
-                        source_jpeg,
-                        stream_session_id=session_id,
-                        frame_sequence=int(frame_sequence),
-                        timestamp_seconds=float(media_timestamp),
-                    )
-                except Exception:
-                    LOGGER.warning("could not queue frame for rich labeling")
-        packet = FramePacket(
-            jpeg=source_jpeg,
-            media_timestamp=float(media_timestamp),
-            frame_sequence=int(frame_sequence),
-            observed_at=observed_at,
-        )
-        self.preview_frames.publish(packet)
-        if self._scene_is_active():
-            display = getattr(self, "_scene_display", None)
-            if isinstance(display, TrackedSceneDisplayWorker):
-                display.submit(packet, retain_source=continuous_queued and admitted)
-            elif display is not None:
-                display.submit(packet)
+            if self._scene_is_active():
+                display = getattr(self, "_scene_display", None)
+                if isinstance(display, TrackedSceneDisplayWorker):
+                    display.submit(packet, retain_source=continuous_queued and admitted)
+                elif display is not None:
+                    display.submit(packet)
+                else:
+                    self.annotated_frames.publish(packet)
+                if time.monotonic() - self._last_scene_publish_monotonic >= 0.5:
+                    self._on_scene_update()
             else:
-                self.annotated_frames.publish(packet)
-            if time.monotonic() - self._last_scene_publish_monotonic >= 0.5:
-                self._on_scene_update()
-        else:
-            self._delayed_overlay.submit_frame(packet)
-        frame_count = int(self._state["source_frames_received"]) + 1
-        self._last_frame_monotonic = time.monotonic()
-        self._update_state(
-            pipeline_state=(
-                "draining" if self._state.get("pipeline_state") == "draining"
-                else "running"
-            ),
-            last_frame_at=observed_at,
-            source_frames_received=frame_count,
-            last_media_timestamp=round(float(media_timestamp), 3),
-            last_frame_sequence=int(frame_sequence),
-        )
+                self._delayed_overlay.submit_frame(packet)
 
     def _render_rich_label_jpeg(
         self,
@@ -3866,6 +4071,36 @@ class HarnessRuntime:
 
         failure_stage = "tracking"
         try:
+            worker = self._scene_worker
+            if isinstance(worker, IndependentVLMBranch):
+                worker.finish_source()
+                # Upload admission is asynchronous. Finish its bounded source
+                # callbacks before declaring the tracking watermark final.
+                while current() and not worker.finish_camera_sources():
+                    time.sleep(.02)
+                # Independent verdicts must finish even when tracking has
+                # already failed. Checking tracking first used to close this
+                # worker with accepted VLM requests still in flight.
+                failure_stage = "inspection"
+                self._update_state(
+                    scene_drain={"state": "running", "stage": "inspection"}
+                )
+                while current() and not worker.wait_until_idle(timeout_seconds=.1):
+                    if worker.health()["state"] in {"failed", "stopped", "stopping"}:
+                        raise RuntimeError("independent inspection drain failed")
+                if not current():
+                    return
+                failure_stage = "tracking"
+                self._update_state(
+                    scene_drain={"state": "running", "stage": "tracking"}
+                )
+            if current() and isinstance(coordinator, VideoSessionTrackingCoordinator):
+                coordinator.mark_capture_finished(
+                    stream_session_id=session.stream_session_id,
+                    generation=coordinator._generation,
+                )
+            elif current() and isinstance(coordinator, VideoTrackingCoordinator):
+                coordinator.flush()
             while current() and coordinator is not None:
                 if coordinator.stats().get("state") in {"failed", "closed", "stopped"}:
                     raise RuntimeError("tracking drain failed")
@@ -3875,23 +4110,38 @@ class HarnessRuntime:
                     break
             if not current():
                 return
+            if scene is not None:
+                scene.finish_tracking_sources()
             failure_stage = "inspection"
             self._update_state(scene_drain={"state": "running", "stage": "inspection"})
             if scene is not None:
                 scene.finish_inspection_sources()
             worker = self._scene_worker
-            if worker is not None:
+            if isinstance(worker, IndependentVLMBranch):
+                if worker.fusion is not None:
+                    worker.fusion.finish()
+                    while current() and worker.fusion.stats()["pending_reports"]:
+                        time.sleep(.05)
+            elif worker is not None:
                 worker.wake()
                 while current() and scene.has_pending_inspections():
                     if worker.stats()["state"] in {"failed", "stopped", "stopping"}:
                         raise RuntimeError("inspection drain failed")
                     time.sleep(0.05)
             failure_stage = "display"
+            self._update_state(scene_drain={"state": "running", "stage": "display"})
             display = self._scene_display
             if isinstance(display, TrackedSceneDisplayWorker):
                 display.notify_tracking()
+                deadline = time.monotonic()+max(5., self._display_settings.delay_seconds+2.)
                 while current() and not display.wait_until_idle(timeout_seconds=0.1):
-                    pass
+                    if time.monotonic() >= deadline:
+                        # Presentation is optional; identity/evidence still finalize.
+                        # Keep the exceptional outcome visible, never fake a frame.
+                        self._update_state(display_drain={**display.stats(), "state": "timed_out"})
+                        LOGGER.warning("presentation drain deadline exceeded")
+                        display.close(timeout_seconds=0.)
+                        break
             failure_stage = "finalization"
             with self._state_lock:
                 if not current():
@@ -4654,8 +4904,8 @@ def create_app(
         )
 
     @application.get("/v1/status")
-    def status(request: Request) -> dict[str, Any]:
-        return _runtime(request).status()
+    def status(request: Request, lightweight: bool = False) -> dict[str, Any]:
+        return _runtime(request).status(lightweight=lightweight)
 
     @application.get("/v1/faces/fast")
     async def fast_faces(request: Request) -> JSONResponse:
@@ -4913,6 +5163,35 @@ def create_app(
         assert isinstance(result, dict)
         return result
 
+    @application.get("/v1/vlm/status")
+    async def independent_vlm_status(request: Request) -> JSONResponse:
+        runtime = _runtime(request)
+        return JSONResponse(runtime._vlm_health(runtime._vlm_branch),
+                            headers={"Cache-Control": "no-store"})
+
+    @application.get("/v1/vlm/results/latest")
+    async def independent_vlm_latest(request: Request) -> JSONResponse:
+        branch = _runtime(request)._vlm_branch
+        record = branch.results.latest() if branch is not None else None
+        if record is None:
+            raise HTTPException(status_code=404, detail="no independent VLM report yet")
+        return JSONResponse(record.payload, headers={"Cache-Control": "no-store",
+                            "X-Result-Cursor": str(record.cursor), "X-Result-Stream": branch.results.epoch})
+
+    @application.get("/v1/vlm/results/events")
+    async def independent_vlm_events(request: Request, after: int = Query(default=0, ge=0)):
+        branch = _runtime(request)._vlm_branch
+        if branch is None:
+            raise HTTPException(status_code=404, detail="no independent VLM session")
+        return _result_events_response(request, _runtime(request), after=after,
+                                       result_bus=branch.results, event_name="vlm_report")
+
+    @application.get("/v1/vlm/associations")
+    async def independent_vlm_associations(request: Request) -> JSONResponse:
+        branch = _runtime(request)._vlm_branch
+        return JSONResponse({"stream_session_id": branch.config.stream_session_id if branch else None,
+                             "associations": list(branch.fusion.links()) if branch and branch.fusion else []})
+
     @application.get("/v1/results/latest")
     async def latest_result(request: Request) -> JSONResponse:
         return _latest_result_response(_runtime(request))
@@ -5125,6 +5404,13 @@ def create_app(
             ), media_type="application/javascript",
         )
 
+    @application.get("/assets/cloud_gpu_console.js")
+    async def cloud_gpu_console_script() -> Response:
+        return Response(
+            Path(__file__).with_name("cloud_gpu_console.js").read_text(encoding="utf-8"),
+            media_type="text/javascript",
+        )
+
     @application.get("/assets/fleet_console.js")
     async def fleet_console_script() -> Response:
         return Response(
@@ -5156,18 +5442,24 @@ def create_app(
         )
 
     @application.get("/v1/video/display/metadata")
-    def camera_display_metadata(request: Request) -> JSONResponse:
-        return JSONResponse(
-            request.app.state.runtime._camera_display_metadata.snapshot(),
-            headers={"Cache-Control": "no-store"},
-        )
+    def camera_display_metadata(request: Request, revision: int = -1,
+                                stream_session_id: str = "") -> Response:
+        metadata = request.app.state.runtime._camera_display_metadata
+        payload = (metadata.delta(revision if revision >= 0 else None,
+                                  stream_session_id=stream_session_id)
+                   if stream_session_id else metadata.snapshot())
+        if payload is None:
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
     @application.get("/v1/video/display/frames")
     def network_display_frames(request: Request, after: int = -1,
                                connection_id: str = "", revision: int = -1,
-                               stream_session_id: str = "") -> Response:
-        from .network_display import display_response
-        return display_response(_runtime(request), after=after,
+                               stream_session_id: str = "",
+                               continuous: bool = False) -> Response:
+        from .network_display import display_response, display_stream_response
+        respond = display_stream_response if continuous else display_response
+        return respond(_runtime(request), after=after,
                                 connection_id=connection_id, revision=revision,
                                 stream_session_id=stream_session_id)
 
@@ -5306,9 +5598,10 @@ def _overall_description_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "frame",
                 "description",
                 "analysis_complete",
-                "missing_event_labels",
             )
         },
+        **({"missing_event_labels": payload["missing_event_labels"]}
+           if "missing_event_labels" in payload else {}),
     }
 
 
@@ -5352,12 +5645,15 @@ def _result_events_response(
     after: int,
     feature: str | None = None,
     overall_only: bool = False,
+    result_bus: ResultBus | None = None,
+    event_name: str | None = None,
 ) -> StreamingResponse:
+    bus = result_bus if result_bus is not None else runtime.results
     header_cursor = request.headers.get("last-event-id")
     cursor = after
     if header_cursor and after == 0:
         epoch, separator, raw_cursor = header_cursor.rpartition(":")
-        if separator and epoch == runtime.results.epoch:
+        if separator and epoch == bus.epoch:
             try:
                 cursor = max(0, int(raw_cursor))
             except ValueError:
@@ -5369,7 +5665,7 @@ def _result_events_response(
         current = cursor
         while not await request.is_disconnected():
             records = await asyncio.to_thread(
-                runtime.results.records_after,
+                bus.records_after,
                 current,
                 timeout_seconds=15.0,
             )
@@ -5393,12 +5689,12 @@ def _result_events_response(
                     separators=(",", ":"),
                 )
                 emitted = True
-                event_name = (
+                name = event_name or (
                     "overall_description" if overall_only else "analysis_result"
                 )
                 yield (
-                    f"id: {runtime.results.epoch}:{record.cursor}\n"
-                    f"event: {event_name}\ndata: {data}\n\n"
+                    f"id: {bus.epoch}:{record.cursor}\n"
+                    f"event: {name}\ndata: {data}\n\n"
                 ).encode()
             if not emitted:
                 yield b": heartbeat\n\n"
@@ -5563,6 +5859,9 @@ def main() -> None:
         port=port,
         timeout_graceful_shutdown=10,
         server_header=False,
+        # Camera payloads already contain JPEG. Deflate adds synchronous work
+        # to the same protocol loop that must deliver ACKs and event reports.
+        ws_per_message_deflate=False,
     )
 
 

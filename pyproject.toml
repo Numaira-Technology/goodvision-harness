@@ -72,6 +72,7 @@ goodvision_harness = [
   "config.yaml",
   "dashboard.html",
   "fleet_console.js",
+  "cloud_gpu_console.js",
   "camera_display.js",
   "camera_display_dense.js",
   "assets/*.js",

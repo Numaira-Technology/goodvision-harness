@@ -12,6 +12,7 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | --- | --- |
 | `start_delivery.py` | Start the recorded `2026.09.10-full.4` customer package. |
 | `start_windows_hybrid_demo.ps1` | Start the native Windows / Docker worker demo. |
+| `start_local_gpu.py` | Detect NVIDIA GPUs and start SAM on this host using the Contour runtime; `--streams N` provisions camera lanes, `--with-local-inference` also starts the local VLM. |
 | `export_full_delivery.py` | Export the recorded full.4 image pair, metadata and checksums. |
 | `run_full_delivery_smoke.ps1` | Run isolated image protocol checks; accepts candidate image tags. |
 | `delivery_smoke.py` | Exercise a disposable main container using synthetic frames. |
@@ -36,12 +37,60 @@ checks describe that delivery, not subsequent source changes.
 | `low_resolution_tracking_eval.py` | Replay saved observations through person tracking. |
 | `low_resolution_evidence_eval.py` | Exercise synthetic event continuity and H.264 evidence offline. |
 | `benchmark_display_cadence.py` | Compare local synthetic display cadence, lag and frame drops. |
+| `evaluate_pipeline_latency.cjs` | Play a complete original video through an isolated real pipeline and production Chrome renderer; record actual presented-frame contour coverage, SSE arrivals and delay. Requires Playwright, Chrome, and an authorized real-model service with a same-origin byte-range video URL; see the script header and [measurement record](../docs/validation/network-and-display.md). |
 | `rich_label_benchmark.py` | Benchmark the JPEG `/v1/labels` worker on local video. |
 | `vlm_speed_matrix.py` | Measure the native rich client with an explicit local `--cases` JSON file. |
+| `vlm_simple_jev_benchmark.py` | Compare Simple Jev direct vision with Qwen event-only and full JSON; see below. |
+| `vlm_delivery_probe.py` | Independently receive real VLM/general/event SSE, poll SAM/face progress, and pull live/annotated MJPEG; preserve arrival times and pending positive observations. |
 
 Model/GPU/service runs need the corresponding environment and authorized inputs.
 Protocol success is not model accuracy. See the
 [validation reports](../docs/README.md#validation-records) for reviewed measurements.
+
+## Simple Jev direct vision comparison
+
+Run only with authorized media and API usage. The default batch sends 20 public
+Simple Jev requests without authentication and 76 OpenRouter requests using
+`OPENROUTER_API_KEY` from the given environment file (or environment). The four
+original images go directly to each service. The public demo accepted images in
+the recorded experiment even though its documentation describes text-only input;
+future deployment behavior may differ.
+
+```powershell
+python tools/vlm_simple_jev_benchmark.py --env-file .env --video path/to/authorized-sample.mp4 --output artifacts/simplejev-comparison --repeats 3
+```
+
+The output directory must not already exist. Defaults use six four-frame windows,
+720-pixel images and three repetitions, plus one warmup per route and one blank
+control. Each request has a 45-second timeout and is not retried. Results include
+failed attempts; summaries exclude controls and warmups. `--cases`, `--endpoints`
+and `--side` can restrict the batch. This is an offline experiment, not a
+production integration. Event-only cases do not supply person boxes.
+
+See [recognition findings](../docs/validation/recognition-quality.md) for the
+recorded configuration, latency scope, observed misses and comparison limits.
+
+### Frozen multi-video datasets
+
+`vlm_simple_jev_dataset_benchmark.py` reuses exactly the same model request and
+decode functions for multiple videos. A dataset JSON contains `samples` with
+neutral `sample_id` values, local `path`, `endpoint`, video `sha256`, four
+`frame_sha256` values, `group`, and separate `expected` labels. References must be
+visually reviewed and marked `annotation_status: verified_before_inference`
+before the runner will accept them. Filenames, groups and reference annotations
+are never inserted into model messages.
+
+```powershell
+python tools/vlm_simple_jev_dataset_benchmark.py --dataset path/to/dataset.json --env-file .env --output artifacts/dataset-preflight --prepare-only
+python tools/vlm_simple_jev_dataset_benchmark.py --dataset path/to/dataset.json --env-file .env --output artifacts/dataset-run --repeats 3 --max-requests 456
+```
+
+With 30 videos, this runs 450 measured requests, five warmups and one blank
+control. It interleaves fall, daily-activity and smoking groups, rotates route
+order, keeps inference serial and never retries. The preflight only verifies
+media/frame fingerprints and writes a manifest. Output directories must be new.
+Unknown predictions and request errors remain separate from negative answers;
+repetitions of a clip are not independent samples.
 
 ## Repository hygiene
 
@@ -51,8 +100,54 @@ run it without arguments locally or in CI.
 Superseded deployment recipes, the old fixed-bundle auditor, and redundant VLM
 probes/fixed comparison cases have been deleted. Their source is available in the
 pre-cleanup main revision `a7e5ec8`; there is no second archive
-copy to maintain in the working tree. Dated measurement reports remain in
-`docs/validation/`.
+copy to maintain in the working tree. Maintained topic summaries and necessary reviewed evidence remain in
+`docs/validation/`; raw runs stay in ignored output directories.
 
 `audit_customer_bundle.py` checks customer bundles or the repository (`--repository`)
-for the anonymization patterns recorded in [the validation report](../docs/validation/anonymization-audit-20260918.md).
+for the anonymization patterns recorded in [交付与升级检查](../docs/validation/delivery-and-updates.md).
+
+
+## Parallel event JSON experiment
+
+`vlm_parallel_benchmark.py` compares one 8B model/provider with full output,
+conditional compact-negative output, event-only JSON, and concurrent event/compact
+requests on identical frozen windows. Thirty clips and three repetitions use 450
+measured requests plus five warmups. Each pair publishes its two replies separately;
+different trials do not overlap. It uses the existing frozen dataset format above.
+
+```powershell
+python tools/vlm_parallel_benchmark.py --dataset path/to/dataset.json --env-file .env --output artifacts/parallel-run --repeats 3 --max-requests 455
+python tools/vlm_parallel_analyze.py artifacts/parallel-run
+```
+
+Real API usage and media transmission require authorized inputs. Output directories
+must be new; there are no retries. Latency excludes initial video decode and SAM.
+The experiment retains failed attempts, missing judgments and unknowns. A short
+negative reply is not useful acceleration if it misses positive events.
+
+The isolated runtime can opt into `SCENE_VLM_OUTPUT_MODE=parallel` or `compact`;
+`full` remains the default. Runtime information publishes through existing VLM
+interfaces. The grounding lane alone supplies display/person-event evidence and
+is retained separately on `branch.grounding_results`. When both lanes admit a window they share `request_id` and
+`window_id`. Each lane admits independently; a full grounding lane does not block
+new information windows. Information completes out of order and discards superseded
+late results, with an HTTP timeout capped at five seconds; grounding remains ordered.
+Each lane allows `SCENE_MAX_IN_FLIGHT` requests (up to eight total in parallel mode).
+When display has pending positives or active person events, subsequent windows
+request full grounded negative/uncertain follow-up; `no_events` cannot clear a person.
+
+## Text observation comparison
+
+`vlm_jev_benchmark.py` compares direct JSON with Qwen descriptions followed by
+TypeSafe Jev text classification. It is an offline experiment; the intermediate
+description lost fall evidence in the recorded comparison and is not a production
+replacement. It reuses `jev_observation.py` and the current strict result parser.
+
+```powershell
+python tools/vlm_jev_benchmark.py --env-file .env --video path/to/authorized-sample.mp4 --output artifacts/jev-new-run --repeats 3 --smoking high --description-style brief
+```
+
+Use a new output directory. `--description-style temporal` tests per-frame prose;
+`--smoking standard` changes that sensitivity. Qwen receives the authorized images,
+TypeSafe receives descriptions only; both services require configured credentials.
+See [recognition findings](../docs/validation/recognition-quality.md).

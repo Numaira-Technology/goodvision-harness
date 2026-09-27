@@ -13,7 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture(autouse=True)
 def _isolate_route_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **kwargs: "")
-    for name in ("INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT"):
+    for name in (
+        "INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT",
+        "RICH_LABEL_MAX_FPS",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -460,3 +463,40 @@ def test_rich_vlm_explicit_fixed_fields_are_not_silently_filtered(
 
     with pytest.raises(ValueError, match="vlm_request_parameters must not override"):
         load_config(_write_route_config(tmp_path, payload))
+
+
+@pytest.mark.parametrize("batch_size", [1, 2, 4])
+def test_realtime_queue_configuration_preserves_display_settings(
+    monkeypatch, batch_size,
+):
+    before = load_config(ROOT / "config.yaml").display
+    monkeypatch.setenv("PERCEPTION_METHOD", "sam_live")
+    monkeypatch.setenv("SAM31_QUEUE_POLICY", "realtime_latest")
+    monkeypatch.setenv("SAM31_REALTIME_APPEND_FRAMES", str(batch_size))
+    monkeypatch.setenv("SAM31_REALTIME_PENDING_FRAMES", "2")
+    monkeypatch.setenv("SAM31_REALTIME_MAX_AGE_SECONDS", "2")
+    result = load_config(ROOT / "config.yaml")
+    assert result.rich_labeling.video_queue_policy == "realtime_latest"
+    assert result.rich_labeling.video_realtime_append_frames == batch_size
+    assert result.rich_labeling.video_realtime_pending_frames == 2
+    assert result.display == before
+
+
+@pytest.mark.parametrize("name,value", [
+    ("SAM31_QUEUE_POLICY", "unknown"),
+    ("SAM31_REALTIME_APPEND_FRAMES", "3"),
+    ("SAM31_REALTIME_PENDING_FRAMES", "0"),
+    ("SAM31_REALTIME_MAX_AGE_SECONDS", "nan"),
+    ("SAM31_RESULT_DEADLINE_SECONDS", "0"),
+])
+def test_realtime_queue_rejects_invalid_configuration(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError):
+        load_config(ROOT / "config.yaml")
+
+
+def test_realtime_queue_rejects_noncausal_route(monkeypatch):
+    monkeypatch.setenv("SAM31_QUEUE_POLICY", "realtime_latest")
+    monkeypatch.delenv("PERCEPTION_METHOD", raising=False)
+    with pytest.raises(ValueError, match="requires sam_live"):
+        load_config(ROOT / "config.yaml")

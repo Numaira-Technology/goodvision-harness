@@ -34,7 +34,8 @@ def test_ordered_pending_frames_and_eof_timing_do_not_inflate_live_fps(monkeypat
     coordinator = create_tracking_coordinator(
         client,
         replace(RichLabelSettings(), backend="sam31_stream",
-                processing_method="sam_live", max_fps=4),
+                processing_method="sam_live", max_fps=4,
+                video_queue_policy="durable_ordered"),
         received.append,
     )
     try:
@@ -102,7 +103,8 @@ def test_durable_queue_preserves_previously_overflowed_source(monkeypatch):
     coordinator = create_tracking_coordinator(
         client,
         replace(RichLabelSettings(), backend="sam31_stream",
-                processing_method="sam_live", max_fps=4),
+                processing_method="sam_live", max_fps=4,
+                video_queue_policy="durable_ordered"),
         None,
     )
     server.release.clear()

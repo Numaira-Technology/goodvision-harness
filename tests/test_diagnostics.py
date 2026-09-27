@@ -12,10 +12,13 @@ from fastapi.testclient import TestClient
 from test_scene_model import _job, _response
 
 from goodvision_harness.diagnostics import SceneDiagnostics, failure_category
+from goodvision_harness.model_api import ModelAPISettings
 from goodvision_harness.rich_labeling import RichLabelObject, RichLabelSnapshot
 from goodvision_harness.scene_inspection import build_temporal_messages
 from goodvision_harness.scene_runtime import SceneRuntime, TemporalVerdict
 from goodvision_harness.service import create_app
+from goodvision_harness.vlm_compact_model import CompactGroundingInspector, EventJSONInspector
+from goodvision_harness.vlm_independent_model import IndependentVLMInspector
 
 
 @pytest.fixture
@@ -71,6 +74,27 @@ def test_actual_all_frame_payload_bytes_dimensions_and_source_times(make_inspect
     assert row["confirmed_event_labels"] == []
     encoded = json.dumps(diagnostics.snapshot(value.request.event_labels))
     assert "SECRET" not in encoded and "rtsp://" not in encoded
+
+
+@pytest.mark.parametrize(
+    "inspector_type",
+    (IndependentVLMInspector, EventJSONInspector, CompactGroundingInspector),
+)
+def test_independent_inspector_prompts_retain_exact_diagnostic_images(inspector_type):
+    inspector = inspector_type(ModelAPISettings(provider="openrouter"), model="test")
+    try:
+        encoded_images = []
+        messages = inspector.build_messages(job(SceneDiagnostics()), encoded_images=encoded_images)
+        sent = [
+            base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
+            for part in messages[1]["content"]
+            if part["type"] == "image_url"
+        ]
+        assert [item[1] for item in encoded_images] == sent
+        assert len(sent) == 2
+        assert "allowed_subject_ids" not in messages[1]["content"][0]["text"]
+    finally:
+        inspector.close()
 
 
 @pytest.mark.parametrize(

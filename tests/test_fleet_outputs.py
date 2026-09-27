@@ -257,7 +257,7 @@ def test_peer_range_and_jpeg_metadata_and_gvd_packet(monkeypatch):
 
 
 @pytest.mark.parametrize("camera", ["camera01", "camera02"])
-@pytest.mark.parametrize("kind", ["sse", "mjpeg"])
+@pytest.mark.parametrize("kind", ["sse", "mjpeg", "display_stream"])
 def test_first_chunk_is_live_disconnect_closes_and_control_still_works(
     monkeypatch, camera, kind
 ):
@@ -280,6 +280,9 @@ def test_first_chunk_is_live_disconnect_closes_and_control_still_works(
                 + "\r\n\r\n"
             ).encode()
             path, media = "/events/stream", "text/event-stream"
+        elif kind == "display_stream":
+            payload = struct.pack(">I", 12) + b"GVD1JPEGbody"
+            path, media = "/video/display/frames", "application/vnd.goodvision.display-stream"
         else:
             payload = (
                 b"--frame\r\nContent-Type: image/jpeg\r\n"
@@ -341,7 +344,7 @@ def test_first_chunk_is_live_disconnect_closes_and_control_still_works(
             ):
                 delivered.set()
             # MJPEG may forward a byte per message: never wait for a complete frame.
-            if kind == "mjpeg" and message.get("body"):
+            if kind in {"mjpeg", "display_stream"} and message.get("body"):
                 delivered.set()
 
         url = PREFIX.format(camera_id=camera) + path

@@ -138,7 +138,7 @@ The ordered local face pool stores source images until successful identity commi
 (failed tasks retain them), plus embeddings and observation facts for later review.
 These files live under the gallery directory's private `private-face` folder and
 are excluded from public results. Storage limits and process-restart recovery
-boundaries are described in the [implementation record](../architecture/parallel-latency-implementation-20260917.md).
+boundaries are described in the [事件、归档与收尾验证](../validation/events-and-lifecycle.md).
 
 The three memory components have separate roles:
 

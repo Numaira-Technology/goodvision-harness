@@ -1,0 +1,312 @@
+{
+  "simple_vision": {
+    "scope": "scene_events_only",
+    "attempts": 90,
+    "successes": 90,
+    "complete_labels": 90,
+    "localization_complete": 0,
+    "median_seconds": 1.4744167999961064,
+    "p95_seconds": 1.8487882299967167,
+    "all_attempt_median_seconds": 1.4744167999961064,
+    "median_output_tokens": 4.0,
+    "reported_cost_usd": null,
+    "providers": {
+      "not_reported": 90
+    },
+    "confusion": {
+      "fight": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 90,
+        "unknown_positive": 0,
+        "unknown_negative": 0,
+        "request_error": 0
+      },
+      "smoking": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 24,
+        "fn": 6,
+        "fp": 0,
+        "tn": 60,
+        "unknown_positive": 0,
+        "unknown_negative": 0,
+        "request_error": 0
+      },
+      "fall": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 21,
+        "fn": 9,
+        "fp": 0,
+        "tn": 60,
+        "unknown_positive": 0,
+        "unknown_negative": 0,
+        "request_error": 0
+      },
+      "weapon": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 3,
+        "tn": 87,
+        "unknown_positive": 0,
+        "unknown_negative": 0,
+        "request_error": 0
+      }
+    },
+    "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+  },
+  "8b_events": {
+    "scope": "scene_events_only",
+    "attempts": 90,
+    "successes": 90,
+    "complete_labels": 90,
+    "localization_complete": 0,
+    "median_seconds": 0.945494300001883,
+    "p95_seconds": 1.2229975850048505,
+    "all_attempt_median_seconds": 0.945494300001883,
+    "median_output_tokens": 22.0,
+    "reported_cost_usd": 0.011779442999999999,
+    "providers": {
+      "Alibaba": 90
+    },
+    "confusion": {
+      "fight": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 83,
+        "unknown_positive": 0,
+        "unknown_negative": 7,
+        "request_error": 0
+      },
+      "smoking": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 30,
+        "fn": 0,
+        "fp": 3,
+        "tn": 50,
+        "unknown_positive": 0,
+        "unknown_negative": 7,
+        "request_error": 0
+      },
+      "fall": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 30,
+        "fn": 0,
+        "fp": 9,
+        "tn": 48,
+        "unknown_positive": 0,
+        "unknown_negative": 3,
+        "request_error": 0
+      },
+      "weapon": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 83,
+        "unknown_positive": 0,
+        "unknown_negative": 7,
+        "request_error": 0
+      }
+    },
+    "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+  },
+  "flash_events": {
+    "scope": "scene_events_only",
+    "attempts": 90,
+    "successes": 90,
+    "complete_labels": 90,
+    "localization_complete": 0,
+    "median_seconds": 2.819246250001015,
+    "p95_seconds": 4.433080629996038,
+    "all_attempt_median_seconds": 2.819246250001015,
+    "median_output_tokens": 32.0,
+    "reported_cost_usd": 0.0207579375,
+    "providers": {
+      "Alibaba": 90
+    },
+    "confusion": {
+      "fight": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 90,
+        "unknown_positive": 0,
+        "unknown_negative": 0,
+        "request_error": 0
+      },
+      "smoking": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 30,
+        "fn": 0,
+        "fp": 2,
+        "tn": 45,
+        "unknown_positive": 0,
+        "unknown_negative": 13,
+        "request_error": 0
+      },
+      "fall": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 30,
+        "fn": 0,
+        "fp": 6,
+        "tn": 54,
+        "unknown_positive": 0,
+        "unknown_negative": 0,
+        "request_error": 0
+      },
+      "weapon": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 87,
+        "unknown_positive": 0,
+        "unknown_negative": 3,
+        "request_error": 0
+      }
+    },
+    "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+  },
+  "8b_full": {
+    "scope": "full",
+    "attempts": 90,
+    "successes": 90,
+    "complete_labels": 87,
+    "localization_complete": 28,
+    "median_seconds": 2.454969850001362,
+    "p95_seconds": 2.9449558550008077,
+    "all_attempt_median_seconds": 2.454969850001362,
+    "median_output_tokens": 230.0,
+    "reported_cost_usd": 0.021179678,
+    "providers": {
+      "Alibaba": 90
+    },
+    "confusion": {
+      "fight": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 63,
+        "unknown_positive": 0,
+        "unknown_negative": 27,
+        "request_error": 0
+      },
+      "smoking": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 30,
+        "fn": 0,
+        "fp": 0,
+        "tn": 30,
+        "unknown_positive": 0,
+        "unknown_negative": 30,
+        "request_error": 0
+      },
+      "fall": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 30,
+        "fn": 0,
+        "fp": 9,
+        "tn": 45,
+        "unknown_positive": 0,
+        "unknown_negative": 6,
+        "request_error": 0
+      },
+      "weapon": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 77,
+        "unknown_positive": 0,
+        "unknown_negative": 13,
+        "request_error": 0
+      }
+    },
+    "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+  },
+  "flash_full": {
+    "scope": "full",
+    "attempts": 90,
+    "successes": 90,
+    "complete_labels": 90,
+    "localization_complete": 78,
+    "median_seconds": 6.705687150002632,
+    "p95_seconds": 7.908141669999531,
+    "all_attempt_median_seconds": 6.705687150002632,
+    "median_output_tokens": 288.0,
+    "reported_cost_usd": 0.0483879375,
+    "providers": {
+      "Alibaba": 90
+    },
+    "confusion": {
+      "fight": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 90,
+        "unknown_positive": 0,
+        "unknown_negative": 0,
+        "request_error": 0
+      },
+      "smoking": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 30,
+        "fn": 0,
+        "fp": 0,
+        "tn": 48,
+        "unknown_positive": 0,
+        "unknown_negative": 12,
+        "request_error": 0
+      },
+      "fall": {
+        "reference_positive": 30,
+        "reference_negative": 60,
+        "tp": 30,
+        "fn": 0,
+        "fp": 6,
+        "tn": 51,
+        "unknown_positive": 0,
+        "unknown_negative": 3,
+        "request_error": 0
+      },
+      "weapon": {
+        "reference_positive": 0,
+        "reference_negative": 90,
+        "tp": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 90,
+        "unknown_positive": 0,
+        "unknown_negative": 0,
+        "request_error": 0
+      }
+    },
+    "null_semantics": "Unknown in confusion/votes includes explicit null and unevaluated omitted labels. Omissions listed separately; neither counts as negative."
+  }
+}

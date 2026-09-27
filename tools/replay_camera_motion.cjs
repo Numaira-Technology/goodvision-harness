@@ -82,7 +82,7 @@ function firstDifference(a,b,at="$",tolerance=0){
   return null;
 }
 function normalizeOutput(message){
-  const keys={frame_processed:["type","sequence","accepted"],metadata_processed:["type","accepted","rejected","changed","latest_anchor_timestamp"],
+  const keys={frame_processed:["type","sequence","accepted","expired"],metadata_processed:["type","accepted","rejected","changed","latest_anchor_timestamp"],
     present:["type","id","sequence","expired","result"],failure:["type","id","sequence","stage"]}[message.type];
   assert.ok(keys,`Unsupported recorded response: ${message.type}`);
   return JSON.parse(JSON.stringify(Object.fromEntries(keys.filter(key=>Object.hasOwn(message,key)).map(key=>[key,message[key]]))));
@@ -133,7 +133,11 @@ function replayTrace(trace,{History,adapter,range={},includeResults=false,tolera
     const expected=trace.outputs.get(input.trace_id);let actual;
     active=input.type==="present"&&selected(input,range)?input:null;
     try{
-      if(input.type==="frame"){
+      if(input.type==="frame"&&expected.expired){
+        // Admission deadlines were evaluated live. Retired pixels must stay
+        // absent from replay history, even though their trace bytes exist.
+        actual={type:"frame_processed",sequence:input.frame.sequence,accepted:false,expired:true};
+      }else if(input.type==="frame"){
         const {gray_offset,gray_length,...recorded}=input.frame;let frame=recorded;
         frame.pixels=new Uint8Array(trace.pixels.buffer,trace.pixels.byteOffset+gray_offset,gray_length);
         if(motionWidth&&motionWidth!==frame.width)frame=resizeGray(frame,motionWidth);

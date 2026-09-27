@@ -258,7 +258,8 @@ class TemporalVLMInspector:
                 if self._closed:
                     outcome = "closed"
                     return False
-                deadline = min(2.0, self.settings.timeout_seconds)
+                # Real TLS handshakes can exceed two seconds on this route.
+                deadline = min(5.0, self.settings.timeout_seconds)
                 self._ensure_transport()
                 remaining = deadline - (time.monotonic() - started)
                 if remaining <= 0:
@@ -338,6 +339,15 @@ class TemporalVLMInspector:
                 timing["total_seconds"] = time.monotonic() - started
                 log_timing("vlm_inspection_timing", **timing)
 
+    def build_messages(self, job, *, encoded_images=None):
+        response_format = self._parameters.get("response_format")
+        return build_temporal_messages(
+            job, max_image_side=self._max_image_side, jpeg_quality=self._jpeg_quality,
+            verdicts_wrapper=(isinstance(response_format, Mapping)
+                              and response_format.get("type") == "json_object"),
+            encoded_images=encoded_images,
+        )
+
     def _inspect_locked(
         self, job: TemporalInspection, *, timing: dict
     ) -> tuple[TemporalVerdict, ...]:
@@ -345,18 +355,8 @@ class TemporalVLMInspector:
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
-        response_format = self._parameters.get("response_format")
         encoded_images = []
-        messages = build_temporal_messages(
-            job,
-            max_image_side=self._max_image_side,
-            jpeg_quality=self._jpeg_quality,
-            verdicts_wrapper=(
-                isinstance(response_format, Mapping)
-                and response_format.get("type") == "json_object"
-            ),
-            encoded_images=encoded_images,
-        )
+        messages = self.build_messages(job, encoded_images=encoded_images)
         note(job, "prepared", encoded_images)
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
@@ -443,6 +443,10 @@ class TemporalVLMInspector:
             return verdicts
         self._record_completion(started, error=error)
         if error.code in {"invalid_response", "empty_response"}:
+            # Preserve the safe closed-vocabulary diagnosis across the process
+            # boundary; never attach the model's response or request content.
+            error.validation_stage = validation_stage or "response"
+            error.validation_reason = validation_reason or "invalid_response_shape"
             log_timing(
                 "vlm_response_validation",
                 stream_session_id=trace_id(job.stream_session_id),

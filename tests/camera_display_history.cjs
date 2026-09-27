@@ -264,3 +264,19 @@ test("retired server anchors are ignored while missing sources inside retained h
   history.acceptMetadata({...config,anchors:[make(99,6.95)],events:[]});
   assert.equal(history.rejected,1);
 });
+
+
+test("skipped motion intervals cannot reuse stale contours and fresh exact anchors restore them",()=>{
+  const history=new ContourHistory(config);
+  append(history,0,0,pixels());anchor(history);
+  append(history,1,1/15,pixels(1));
+  assert.equal(history.select(1,1/15).subjects.length,1);
+  append(history,20,20/15,pixels(2));append(history,21,21/15,pixels(3));
+  assert.equal(history.select(20,20/15).subjects.length,0);
+  assert.equal(history.select(21,21/15).subjects.length,0);
+  history.acceptMetadata({...config,anchors:[{source_sequence:20,media_timestamp:20/15,
+    epoch:"epoch",subjects:[{track_id:"person",polygons:shape}]}],events:[]});
+  assert.equal(history.select(20,20/15).exact,true);
+  assert.equal(history.select(21,21/15).subjects[0].target_sequence,21);
+  assert.equal(history.select(1,1/15).subjects.length,1,"old buffered playback retains its own valid segment");
+});

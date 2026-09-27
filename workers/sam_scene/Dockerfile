@@ -38,6 +38,7 @@ COPY h264_transport.py ./h264_transport.py
 COPY perception_routes.py ./perception_routes.py
 COPY sam_live.py ./sam_live.py
 COPY multistream.py ./multistream.py
+COPY gpu_memory.py ./gpu_memory.py
 COPY smoke.py ./smoke.py
 COPY video_smoke.py ./video_smoke.py
 RUN groupadd --system --gid 10003 samscene \

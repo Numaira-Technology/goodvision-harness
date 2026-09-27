@@ -96,6 +96,38 @@ test("sampling FPS validates, saves and reloads independently of video buffering
   view.state.running=true;view.controls();assert.equal(input.disabled,true);
 });
 
+test("cloud GPU selection saves without a local GPU and shows editable rental controls",async()=>{
+  const view=dashboard({local_gpu:{available:false,gpu_count:0}});
+  view.element("tracking-mode").value="cloud";view.renderLocalGpuSettings();
+  assert.equal(view.element("cloud-gpu-panel").hidden,false);
+  assert.equal(view.element("tracking-server-fields").hidden,true);
+  await view.saveDeploymentSettings();
+  assert.equal(view.requests.at(-1).payload.tracking_mode,"cloud");
+  assert.equal(view.requests.at(-1).payload.local_tracking_enabled,false);
+  assert.match(view.html,/id="cloud-gpu-count"/);
+  assert.match(view.html,/id="cloud-gpu-script"/);
+});
+
+test("SAM-only deployment allows local tracking while disabling the absent local VLM",async()=>{
+  const view=dashboard({local_gpu:{available:true,gpu_count:2,
+    tracking_device:0,tracking_available:true,inference_available:false}});
+  view.controls();
+  assert.equal(view.element("inference-mode-local").disabled,true);
+  assert.equal(view.element("tracking-mode-local").disabled,false);
+  view.element("tracking-mode").value="local";
+  view.renderLocalGpuSettings();
+  assert.match(view.element("local-gpu-status").textContent,/人物追踪 → GPU 0/);
+  assert.match(view.element("local-gpu-status").textContent,/大模型可使用云端 API/);
+  await view.saveDeploymentSettings();
+  assert.equal(view.requests.at(-1).payload.tracking_mode,"local");
+  assert.equal(view.requests.at(-1).payload.inference_mode,"cloud");
+  const count=view.requests.length;
+  view.element("inference-mode").value="local";
+  await view.saveDeploymentSettings();
+  assert.equal(view.requests.length,count);
+  assert.match(view.element("deployment-note").textContent,/服务未部署或不可用/);
+});
+
 test("one GPU is shared and two GPUs reserve the second for tracking and other work",()=>{
   const view=dashboard({local_inference_enabled:true,local_tracking_enabled:true});
   assert.match(view.element("local-gpu-status").textContent,/2 张.*大模型 → GPU 0.*人物追踪及其他本地 GPU 任务 → GPU 1/);

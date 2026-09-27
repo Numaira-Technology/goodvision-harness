@@ -2,8 +2,8 @@
 
 日期：2026-09-12。分支：`codex/entity-event-engine`。
 
-本轮软件回归与真实时序请求结果见 [验证记录](entity-event-validation-20260912.md)；
-原生 SAM 3.1 的部署与真实录像结果见 [GPU 验证](sam31-gpu-validation-20260912.md)，
+后续修复与当前待验收边界见 [事件、归档与收尾验证](../validation/events-and-lifecycle.md)；
+原生 SAM 3.1 的部署与真实录像结果见 [追踪性能与验收边界](../validation/tracking-performance.md)，
 连续模式配置见 [SAM3.1 实现说明](sam31-implementation-20260912.md)。
 
 本版本提供完整的可选运行链路：先发现人物，维护会话内人物状态，再用多个时刻的原始画面
@@ -310,7 +310,7 @@ python -m pytest tests
 ```
 
 已完成的权重加载、CUDA 视频／连续会话预热、真实 HTTP 接入和有界回收等价试验见
-[GPU 验证记录](sam31-gpu-validation-20260912.md)。仍需用固定、有人工标注的录像检查
+[追踪性能与验收边界](../validation/tracking-performance.md)。仍需用固定、有人工标注的录像检查
 新人物发现、多人交叉、遮挡重现、身份串线及源重连；比较逐帧与时序方案的事件召回、
 误报、人物归属、确认／结束延迟、请求量、显存和连续运行稳定性。抽烟的小目标可见性需特别验证，
 当前全景缩放不足以保证烟具辨认。人物高分辨率裁剪、通用物体关系图、动作／姿态模型、跨镜头

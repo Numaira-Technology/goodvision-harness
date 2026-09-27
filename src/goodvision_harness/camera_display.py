@@ -14,6 +14,7 @@ from threading import RLock
 from .latency_trace import log_timing
 from .privacy import public_safe_value
 from .rich_labeling import validate_mask_contours
+from .sam_display_fusion import display_subject_id
 
 
 class CameraSocketChannel:
@@ -222,11 +223,13 @@ class CameraDisplayMetadata:
         self._lock = RLock()
         self.reset(None)
 
-    def reset(self, session_id: str | None, *, native_token=None) -> None:
+    def reset(self, session_id: str | None, *, native_token=None,
+              fusion=None) -> None:
         with self._lock:
             self.metadata_revision = getattr(self, "metadata_revision", -1) + 1
             self._reset_revision = self.metadata_revision
             self._native_token = native_token
+            self._fusion = fusion
             self._native_epoch = None
             self._retired_epochs = set()
             self._anchor_revisions = {}
@@ -283,6 +286,7 @@ class CameraDisplayMetadata:
                         and native_token != self._native_token)
                     or batch.predictor_epoch in self._retired_epochs):
                 return False
+            accepted = []
             for frame in batch.frames:
                 prior = next((item for item in self.anchors
                               if item["source_sequence"] == frame.frame_sequence), None)
@@ -298,7 +302,7 @@ class CameraDisplayMetadata:
                     if self._native_epoch is not None:
                         self._retired_epochs.add(self._native_epoch)
                     self._native_epoch = batch.predictor_epoch
-                subjects = []
+                subjects, boxes = [], {}
                 for item in frame.objects:
                     attrs = item.as_dict()["attributes"]
                     native = attrs.get("native_track", {})
@@ -333,6 +337,8 @@ class CameraDisplayMetadata:
                             ),
                         }
                     )
+                    if getattr(item, "bbox", None) is not None:
+                        boxes[native["object_id"]] = item.bbox.as_dict()
                 self.anchors.append(
                     {
                         "source_sequence": frame.frame_sequence,
@@ -341,6 +347,7 @@ class CameraDisplayMetadata:
                         "subjects": subjects,
                     }
                 )
+                accepted.append({**self.anchors[-1], "boxes": boxes})
                 self.metadata_revision += 1
                 self._anchor_revisions[frame.frame_sequence] = self.metadata_revision
                 retained = {item["source_sequence"] for item in self.anchors}
@@ -348,9 +355,48 @@ class CameraDisplayMetadata:
                     key: value for key, value in self._anchor_revisions.items()
                     if key in retained
                 }
+            if accepted and self._fusion is not None:
+                previous_events = dict(self._event_records)
+                previous_identities = dict(self._identity_records)
+                try:
+                    snapshot = self._fusion.advance(accepted)
+                except Exception as exc:
+                    # A semantic failure must still release this batch's masks.
+                    log_timing("sam_display_association_failure",
+                               error_type=type(exc).__name__)
+                    return True
+                self._apply_scene(snapshot)
+                # Evidence keeps its original source time. Presentation changes
+                # start on this SAM batch, never on an already published frame.
+                boarding = accepted[-1]["media_timestamp"]
+                for records, previous in (
+                    (self._event_records, previous_events),
+                    (self._identity_records, previous_identities),
+                ):
+                    for key, record in tuple(records.items()):
+                        prior = previous.get(key)
+                        same_phase = prior and prior.get("phase") == record.get("phase")
+                        since = (prior["valid_from_timestamp"] if same_phase
+                                 else max(boarding, record["valid_from_timestamp"]))
+                        until = record["valid_until_timestamp"]
+                        if until is not None:
+                            until = (prior["valid_until_timestamp"]
+                                     if same_phase and prior["valid_until_timestamp"]
+                                     is not None else max(boarding, since, until))
+                        records[key] = {**record, "valid_from_timestamp": since,
+                                        "valid_until_timestamp": until}
+                self.events = list(self._event_records.values())
+                self.identities = list(self._identity_records.values())
             return True
 
     def observe_scene(self, snapshot: dict) -> None:
+        with self._lock:
+            if self._fusion is not None:
+                self._fusion.offer_scene(snapshot)
+                return
+        self._apply_scene(snapshot)
+
+    def _apply_scene(self, snapshot: dict) -> None:
         with self._lock:
             scene = snapshot.get("scene") or {}
             if scene.get("stream_session_id") != self.session_id:
@@ -536,6 +582,8 @@ class CameraDisplayMetadata:
     def forget_identity(self, person_id: str) -> None:
         """Gallery removal immediately revokes even buffered historical labels."""
         with self._lock:
+            if self._fusion is not None:
+                self._fusion.forget_identity(person_id)
             self._forgotten_identities.add(person_id)
             for record_key, record in tuple(self._identity_records.items()):
                 if record["person_id"] == person_id:
@@ -549,48 +597,97 @@ class CameraDisplayMetadata:
     def allow_identity(self, person_id: str) -> None:
         """Re-enrollment permits new scene evidence, without restoring old names."""
         with self._lock:
+            if self._fusion is not None:
+                self._fusion.allow_identity(person_id)
             self._forgotten_identities.discard(person_id)
 
-    def delta(
-        self, after_revision: int | None, *, stream_session_id: str,
-    ) -> dict | None:
+    def display_snapshot(self, timestamp: float) -> dict:
+        """Server rendering uses the same boarded semantics as browser contours."""
+        with self._lock:
+            anchor = next((item for item in reversed(self.anchors)
+                           if item["media_timestamp"] <= timestamp), None)
+            identities, events = self.identities, self.events
+            now, session_id = self._scene_timestamp, self.session_id
+        people, alerts = [], []
+        if anchor is not None:
+            for subject in anchor["subjects"]:
+                epoch, track_id = anchor["epoch"], subject["track_id"]
+                sid = display_subject_id(epoch, track_id)
+                confirmed = subject["tracking_confirmation"] == "confirmed"
+                name = next((item for item in reversed(identities)
+                             if confirmed and item["epoch"] == epoch
+                             and item["track_id"] == track_id
+                             and item["valid_from_timestamp"] <= timestamp
+                             and (item["valid_until_timestamp"] is None
+                                  or timestamp < item["valid_until_timestamp"])), {})
+                points = [p for polygon in subject["polygons"] for p in polygon]
+                people.append({
+                    "subject_id": sid, "entity_id": sid, "label": "person",
+                    "bbox": {"x1": min(p[0] for p in points),
+                             "y1": min(p[1] for p in points),
+                             "x2": max(p[0] for p in points),
+                             "y2": max(p[1] for p in points)},
+                    "identity": {"status": "known", "name": name["name"],
+                                 "person_id": name["person_id"]} if name else {},
+                    "tracking_confirmation": subject["tracking_confirmation"],
+                    "observation_state": "observed",
+                    "last_observed_timestamp_seconds": anchor["media_timestamp"],
+                    "frame_sequence": anchor["source_sequence"],
+                    "mask_contours": {
+                        "coordinate_system": "normalized",
+                        "source_frame_sequence": anchor["source_sequence"],
+                        "source_timestamp_seconds": anchor["media_timestamp"],
+                        "polygons": subject["polygons"],
+                    },
+                })
+                alerts.extend({
+                    **event, "subject_ids": [sid],
+                    "last_evidence_timestamp_seconds": event["valid_from_timestamp"],
+                } for event in events if confirmed and event["epoch"] == epoch
+                              and event["track_id"] == track_id
+                              and event["valid_from_timestamp"] <= timestamp
+                              and (event["valid_until_timestamp"] is None
+                                   or timestamp < event["valid_until_timestamp"]))
+        return {"stream_session_id": session_id, "entities": people,
+                "events": alerts, "timestamp_seconds": timestamp,
+                "event_state_timestamp_seconds": now, "state": "running"}
+
+    def _snapshot_payload(self, after_revision=None):
+        # Caller holds the lock. Published entries are immutable: writers append
+        # or replace records/lists, never edit existing nested contour geometry.
+        # Capture cheap references here; sanitize/copy outside the producer lock.
+        newest = max(self.last_source[1],
+                     self.anchors[-1]["media_timestamp"] if self.anchors else -1.0)
+        return {
+            "stream_session_id": self.session_id,
+            "generation": self.generation, "crop_version": self.crop_version,
+            "anchors": [anchor for anchor in self.anchors
+                        if anchor["media_timestamp"] >= newest - 8.0
+                        and (after_revision is None or
+                             self._anchor_revisions.get(anchor["source_sequence"], -1)
+                             > after_revision)],
+            "events": self.events,
+            "event_snapshot_timestamp": self._scene_timestamp,
+            "event_snapshot_revision": self.revision,
+            "identities": self.identities,
+            "identity_snapshot_timestamp": self._scene_timestamp,
+            "identity_snapshot_revision": self.identity_revision,
+        }
+
+    def delta(self, after_revision: int | None, *,
+              stream_session_id: str) -> dict | None:
         with self._lock:
             if (stream_session_id != self.session_id or self.generation is None
                     or after_revision == self.metadata_revision):
                 return None
-            payload = self.snapshot()
-            if after_revision is not None and after_revision >= self._reset_revision:
-                payload["anchors"] = [
-                    anchor for anchor in payload["anchors"]
-                    if self._anchor_revisions.get(anchor["source_sequence"], -1)
-                    > after_revision
-                ]
+            cursor = (after_revision if after_revision is not None
+                      and after_revision >= self._reset_revision else None)
+            payload = self._snapshot_payload(cursor)
             payload["metadata_revision"] = self.metadata_revision
-            return payload
+        # Filter before copying. Repeated polls no longer traverse every old mask.
+        return public_safe_value(payload)
 
     def snapshot(self) -> dict:
         with self._lock:
-            # Bound retransmitted display history to the browser's supported
-            # retention window; older anchors cannot support current geometry.
-            # This only bounds presentation metadata, never analysis evidence.
-            newest = max(
-                self.last_source[1],
-                self.anchors[-1]["media_timestamp"] if self.anchors else -1.0,
-            )
-            return public_safe_value(
-                {
-                    "stream_session_id": self.session_id,
-                    "generation": self.generation,
-                    "crop_version": self.crop_version,
-                    "anchors": [
-                        anchor for anchor in self.anchors
-                        if anchor["media_timestamp"] >= newest - 8.0
-                    ],
-                    "events": self.events,
-                    "event_snapshot_timestamp": self._scene_timestamp,
-                    "event_snapshot_revision": self.revision,
-                    "identities": self.identities,
-                    "identity_snapshot_timestamp": self._scene_timestamp,
-                    "identity_snapshot_revision": self.identity_revision,
-                }
-            )
+            payload = self._snapshot_payload()
+        return public_safe_value(payload)

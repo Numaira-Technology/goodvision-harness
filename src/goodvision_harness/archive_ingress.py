@@ -56,6 +56,7 @@ class ArchiveIngress:
         self._reader = sqlite3.connect(path, check_same_thread=False, timeout=5)
         self._reader.execute("PRAGMA query_only=ON")
         self._inflight = deque()
+        self.last_dequeued: dict | None = None
         self._volatile = {}
         self._failed = set()
         self._prune_positions = {}
@@ -132,7 +133,7 @@ class ArchiveIngress:
         with self._condition:
             while True:
                 row = self._db.execute(
-                    "SELECT current.id,current.kind,current.payload "
+                    "SELECT current.id,current.kind,current.payload,current.created "
                     "FROM ingress current "
                     "WHERE current.state='pending' AND current.id>? "
                     "AND NOT EXISTS (SELECT 1 FROM ingress failed "
@@ -142,7 +143,11 @@ class ArchiveIngress:
                     (self._inflight[-1] if self._inflight else 0,),
                 ).fetchone()
                 if row:
-                    record_id, kind, encoded = row
+                    record_id, kind, encoded, created = row
+                    self.last_dequeued = {
+                        "kind": kind,
+                        "queue_wait_seconds": max(0.0, time.time() - created),
+                    }
                     payload = json.loads(encoded)
                     if kind == "frame":
                         run, seq, stamp = payload
@@ -220,6 +225,23 @@ class ArchiveIngress:
             if successor and rows:
                 rows.append(successor)
         return [EvidenceFrame(*row) for row in rows]
+
+    def source_frames(
+        self, run: str, sequences: tuple[int, ...],
+    ) -> list[EvidenceFrame]:
+        """Read an admitted clip's exact sources on the evidence worker."""
+        frames = []
+        with self._read_lock:
+            for sequence in sequences:
+                row = self._reader.execute(
+                    "SELECT jpeg,timestamp,sequence FROM sources "
+                    "WHERE run=? AND sequence=?",
+                    (run, sequence),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("evidence_source_unavailable")
+                frames.append(EvidenceFrame(*row))
+        return frames
 
     def processed_runs(self, *, pending_only: bool = False) -> dict[str, dict]:
         """Reconstruct only acknowledged progress, never future admitted sources."""

@@ -35,31 +35,39 @@ class _Waiter:
     granted: bool = False
 
 
-class FairGPUAdmission:
-    """FIFO async waiters plus the existing nonblocking legacy lock interface.
+class FairAdmission:
+    """Bounded FIFO slots with a nonblocking legacy lock interface.
 
     Worker threads release ownership only after actual model work finishes.
     Queue cancellation never releases somebody else's GPU operation.
     """
 
-    def __init__(self, max_waiters):
+    def __init__(self, max_waiters, *, capacity=1):
         if type(max_waiters) is not int or max_waiters < 1:
             raise ValueError("max_waiters must be positive")
+        if type(capacity) is not int or capacity < 1:
+            raise ValueError("capacity must be positive")
         self.max_waiters = max_waiters
+        self.capacity = capacity
         self._mutex = threading.RLock()
-        self._active = False
+        self._active = 0
         self._waiters = deque()
 
     def acquire(self, blocking=False):
         if blocking:
-            raise ValueError("GPU admission only supports nonblocking sync callers")
+            raise ValueError("admission only supports nonblocking sync callers")
         with self._mutex:
-            if self._active or self._waiters:
+            if self._active >= self.capacity or self._waiters:
                 return False
-            self._active = True
+            self._active += 1
             return True
 
     def locked(self):
+        with self._mutex:
+            return self._active > 0
+
+    @property
+    def active(self):
         with self._mutex:
             return self._active
 
@@ -70,12 +78,12 @@ class FairGPUAdmission:
 
     async def acquire_async(self, deadline):
         if deadline <= time.monotonic():
-            raise TimeoutError("GPU queue deadline exceeded")
+            raise TimeoutError("admission queue deadline exceeded")
         loop = asyncio.get_running_loop()
         waiter = _Waiter(loop, loop.create_future())
         with self._mutex:
-            if not self._active and not self._waiters:
-                self._active = True
+            if self._active < self.capacity and not self._waiters:
+                self._active += 1
                 return True
             if len(self._waiters) >= self.max_waiters:
                 return False
@@ -98,14 +106,14 @@ class FairGPUAdmission:
     def release(self):
         with self._mutex:
             if not self._active:
-                raise RuntimeError("GPU admission is not owned")
-            self._active = False
+                raise RuntimeError("admission is not owned")
+            self._active -= 1
             while self._waiters:
                 waiter = self._waiters.popleft()
                 if waiter.future.cancelled() or waiter.loop.is_closed():
                     continue
                 waiter.granted = True
-                self._active = True
+                self._active += 1
 
                 def grant(selected=waiter):
                     if not selected.future.done():
@@ -113,6 +121,13 @@ class FairGPUAdmission:
 
                 waiter.loop.call_soon_threadsafe(grant)
                 break
+
+
+class FairGPUAdmission(FairAdmission):
+    """Exactly one native operation; CPU preparation uses a separate gate."""
+
+    def __init__(self, max_waiters):
+        super().__init__(max_waiters)
 
 
 class _SharedBackend:
@@ -156,6 +171,9 @@ class _LaneOwnership:
 
     def expire(self):
         self.fleet.registry.expire()
+
+    def note_state_discarded(self):
+        self.fleet.registry.note_state_discarded()
 
 
 class CameraFleet:
@@ -264,6 +282,9 @@ class CameraFleet:
 
 def register_camera_routes(app, fleet, admission, decode_jpeg):
     app.state.camera_fleet = fleet
+    # Include decoded buffers waiting for/using the GPU in this bound, not just
+    # decoder threads. One slow decoder leaves a second slot for another lane.
+    preparation = FairAdmission(len(fleet.engines), capacity=2)
     for camera_id, engine in fleet.engines.items():
         register_session_routes(
             app,
@@ -274,6 +295,7 @@ def register_camera_routes(app, fleet, admission, decode_jpeg):
             health_path=f"/health/cameras/{camera_id}/perception/sam_live",
             legacy=False,
             queued_admission=True,
+            preparation_admission=preparation,
         )
 
     @app.get("/health/cameras")
@@ -292,6 +314,9 @@ def register_camera_routes(app, fleet, admission, decode_jpeg):
                 "max_gpu_operations": 1,
                 "queued_requests": admission.waiting,
                 "max_queued_requests": admission.max_waiters,
+                "max_prepared_requests": preparation.capacity,
+                "prepared_requests": preparation.active,
+                "preparation_waiting_requests": preparation.waiting,
                 "cameras": [
                     {
                         "id": camera_id,

@@ -44,6 +44,109 @@ def output_sequences(batches):
     return [snapshot.frame_sequence for batch in batches for snapshot in batch.frames]
 
 
+@pytest.mark.parametrize("queue_policy", ["durable_ordered", "realtime_latest"])
+def test_first_frames_use_persistent_data_without_spool_override(
+    tmp_path, monkeypatch, queue_policy,
+):
+    # Reproduce a delivery with only its existing persistent settings path.
+    # No helper-supplied spool_directory may mask the default-path regression.
+    from goodvision_harness.perception import PerceptionSessionHTTPClient
+
+    monkeypatch.delenv("GOODVISION_SAM_SPOOL_DIRECTORY", raising=False)
+    monkeypatch.delenv("GOODVISION_TRACKING_SPOOL_DIRECTORY", raising=False)
+    monkeypatch.setenv(
+        "HARNESS_DEPLOYMENT_SETTINGS_PATH", str(tmp_path / "data/settings.json"),
+    )
+    app = tmp_path / "app"
+    app.mkdir()
+    monkeypatch.chdir(app)
+    received = []
+    client = PerceptionSessionHTTPClient(
+        "http://worker.test", method="sam_live",
+        transport=httpx.MockTransport(RouteServer("sam_live")), timeout_seconds=4,
+    )
+    coordinator = PipelinedVideoSessionTrackingCoordinator(
+        client, max_fps=4, batch_frames=1, batch_seconds=0.1,
+        on_batch=received.append, queue_policy=queue_policy,
+    )
+    try:
+        for index in range(3):
+            submit(coordinator, frames(index, 1))
+            assert coordinator.wait_until_idle(3)
+        coordinator.flush()
+        assert coordinator.wait_until_idle(3)
+        assert output_sequences(received) == [0, 3, 6]
+        assert coordinator._journal().path.parent == tmp_path / "data/sam-spool"
+        assert not (app / ".goodvision").exists()
+    finally:
+        coordinator.close()
+
+
+@pytest.mark.parametrize("selection", ["argument", "neutral", "legacy", "local"])
+def test_spool_location_preserves_explicit_overrides(tmp_path, monkeypatch, selection):
+    from goodvision_harness.perception import PerceptionSessionHTTPClient
+
+    for name in (
+        "GOODVISION_SAM_SPOOL_DIRECTORY", "GOODVISION_TRACKING_SPOOL_DIRECTORY",
+        "HARNESS_DEPLOYMENT_SETTINGS_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    kwargs = {}
+    expected = tmp_path / selection
+    if selection != "local":
+        monkeypatch.setenv(
+            "HARNESS_DEPLOYMENT_SETTINGS_PATH", str(tmp_path / "data/settings.json"),
+        )
+        monkeypatch.setenv("GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "legacy"))
+    if selection in {"argument", "neutral"}:
+        monkeypatch.setenv(
+            "GOODVISION_TRACKING_SPOOL_DIRECTORY", str(tmp_path / "neutral"),
+        )
+    if selection == "argument":
+        kwargs["spool_directory"] = expected
+    if selection == "local":
+        expected = tmp_path / ".goodvision/sam-spool"
+    client = PerceptionSessionHTTPClient("http://worker.test", method="sam_live")
+    coordinator = PipelinedVideoSessionTrackingCoordinator(client, **kwargs)
+    try:
+        assert coordinator._journal().path.resolve().parent == expected
+    finally:
+        coordinator.close()
+
+
+@pytest.mark.parametrize(
+    "queue_policy", ["durable_ordered", "realtime_latest", "latest_only"],
+)
+@pytest.mark.parametrize("reuse_worker", [False, True])
+def test_empty_run_finishes_and_allows_next_run(tmp_path, queue_policy, reuse_worker):
+    received = []
+    server, _, coordinator = setup_pipeline(
+        tmp_path, received.append, queue_policy=queue_policy,
+    )
+    try:
+        if reuse_worker:
+            submit(coordinator, frames(1, 1))
+            coordinator.flush()
+            assert coordinator.wait_until_idle(3)
+        coordinator.reset("empty")
+        requests = len(server.requests)
+        coordinator.flush()
+        assert coordinator.wait_until_idle(1), (
+            "empty run must not wait for a native session"
+        )
+        assert coordinator.stats()["state"] == "finished"
+        assert len(server.requests) == requests
+        coordinator.reset("next")
+        submit(coordinator, frames(1, 1), session="next")
+        coordinator.flush()
+        assert coordinator.wait_until_idle(3)
+        assert received[-1].stream_session_id == "next"
+        assert output_sequences(received)[-1] == 3
+    finally:
+        coordinator.close()
+
+
 @pytest.mark.parametrize("prefix_frames", [1, 2, 3])
 def test_learned_prepare_overlaps_prefix_without_new_arrival(
     tmp_path, monkeypatch, prefix_frames,
@@ -460,11 +563,14 @@ def test_commit_backpressure_retries_same_result_without_duplicate_requests(tmp_
         coordinator.close()
 
 
-def test_commit_failure_retains_original_frames_payload_and_result(tmp_path):
+@pytest.mark.parametrize("queue_policy", ["durable_ordered", "latest_only"])
+def test_commit_failure_retains_original_frames_payload_and_result(
+    tmp_path, queue_policy,
+):
     def reject(_batch):
         raise ValueError("private callback error")
 
-    server, _, coordinator = setup_pipeline(tmp_path, reject)
+    server, _, coordinator = setup_pipeline(tmp_path, reject, queue_policy=queue_policy)
     try:
         submit(coordinator, frames(1, 1))
         wait_for(lambda: coordinator.stats()["state"] == "failed")
@@ -512,13 +618,17 @@ def test_spool_quota_rejects_new_work_without_erasing_admitted_bytes(tmp_path):
     assert reopened.stats()["retained_sources"] == 1
 
 
+@pytest.mark.parametrize("queue_policy", ["durable_ordered", "latest_only"])
 def test_close_waits_for_preparation_to_unwind_and_keeps_uncommitted_sources(
     tmp_path,
     monkeypatch,
+    queue_policy,
 ):
     entered, release = threading.Event(), threading.Event()
     received = []
-    _, client, coordinator = setup_pipeline(tmp_path, received.append)
+    _, client, coordinator = setup_pipeline(
+        tmp_path, received.append, queue_policy=queue_policy,
+    )
     prepare = client.prepare_append
 
     def blocked_prepare(inputs, **kwargs):

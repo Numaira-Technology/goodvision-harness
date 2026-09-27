@@ -107,6 +107,39 @@ def test_remote_routes_and_key_restored_after_local_roundtrip(rig):
     assert runtime._aiclub_api_key == "saved-cloud-secret"
 
 
+def test_tracking_only_deployment_keeps_cloud_vlm_and_rejects_unprovisioned_vlm(
+    rig, monkeypatch,
+):
+    monkeypatch.setenv("LOCAL_INFERENCE_AVAILABLE", "false")
+    monkeypatch.setenv("LOCAL_TRACKING_AVAILABLE", "true")
+    monkeypatch.setenv("LOCAL_TRACKING_GPU_ID", "0")
+    monkeypatch.setenv("TRACKING_EXECUTION_MODE", "local")
+    endpoint = "http://local-tracking:8092/v1/perception/sam_live/sessions"
+    monkeypatch.setenv("LOCAL_TRACKING_ENDPOINT", endpoint)
+    runtime = rig.make()
+    assert runtime.config_error is None
+    assert runtime.config.rich_labeling.endpoint == endpoint
+    assert runtime.config.rich_labeling.processing_method == "sam_live"
+    assert runtime.config.model_api.provider == "openrouter"
+    assert runtime._aiclub_api_key == "saved-cloud-secret"
+    status = runtime.deployment_settings()["local_gpu"]
+    assert status["available"] is True
+    assert status["tracking_available"] is True
+    assert status["inference_available"] is False
+    assert status["tracking_device"] == 0
+    assert status["inference_device"] is None
+    assert status["assignment"] == "tracking_only"
+    before = runtime.config
+    with pytest.raises(ValueError, match="本地大模型服务未部署"):
+        runtime.update_deployment_settings({"inference_mode": "local"})
+    assert runtime.config == before
+    runtime.update_deployment_settings({"tracking_mode": "legacy"})
+    assert runtime.config.rich_labeling.endpoint == rig.config.rich_labeling.endpoint
+    runtime.update_deployment_settings({"tracking_mode": "local"})
+    assert runtime.config.rich_labeling.endpoint == endpoint
+    assert rig.make().config.rich_labeling.endpoint == endpoint
+
+
 @pytest.mark.parametrize("bad", [None, "true", 1, [], {}])
 def test_invalid_switch_is_atomic(rig, bad):
     runtime = rig.make()
@@ -309,7 +342,11 @@ def test_fleet_busy_peer_blocks_global_changes_through_original_api(
 
 def test_fleet_remote_switch_after_idle_disables_extra_routes(rig, monkeypatch):
     monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "16")
-    runtime = rig.make()
+    # This scenario requests tracking in remote mode too. Face/VLM-only
+    # deployments instead use the provisioned application-worker capacity.
+    runtime = HarnessRuntime(replace(
+        rig.config, rich_labeling=replace(rig.config.rich_labeling, tracking_enabled=True),
+    ), deployment_store=rig.store)
     runtime.update_deployment_settings({"local_tracking_enabled": True})
     app = create_app(lambda: runtime)
     app.state.fleet._peer_client = httpx.AsyncClient(
@@ -372,8 +409,8 @@ def test_fleet_start_synchronizes_real_peer_runtime_before_start(
     ))
     monkeypatch.setattr(peer, "prepare_analysis", lambda: {"prepared": True})
     original_status = peer.status
-    monkeypatch.setattr(peer, "status", lambda: {
-        **original_status(), "connected": True, "connection_state": "connected",
+    monkeypatch.setattr(peer, "status", lambda **kwargs: {
+        **original_status(**kwargs), "connected": True, "connection_state": "connected",
     })
     app.state.fleet._peer_client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=peer_app),
@@ -395,6 +432,11 @@ def test_fleet_start_synchronizes_real_peer_runtime_before_start(
 
 def test_slow_start_is_visible_cancellable_and_blocks_configuration(rig, monkeypatch):
     runtime = rig.make()
+    # Readiness gates fused sessions; independent VLM sessions deliberately
+    # bypass this optional tracker gate (covered in test_vlm_independent_service).
+    runtime.config = replace(runtime.config, runtime=replace(
+        runtime.config.runtime, scene_independent_vlm=False,
+    ))
     entered, release = Event(), Event()
 
     def wait_for_readiness():
@@ -550,8 +592,8 @@ def test_server_peer_sync_uses_own_camera_lane_without_main_gpu(rig, monkeypatch
     ))
     monkeypatch.setattr(peer, "prepare_analysis", lambda: {"prepared": True})
     original_status = peer.status
-    monkeypatch.setattr(peer, "status", lambda: {
-        **original_status(), "connected": True, "connection_state": "connected",
+    monkeypatch.setattr(peer, "status", lambda **kwargs: {
+        **original_status(**kwargs), "connected": True, "connection_state": "connected",
     })
     transport = httpx.ASGITransport(app=peer_app)
 

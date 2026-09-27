@@ -34,6 +34,28 @@ function player(){
 }
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
+test("a hidden diagnostic console releases an existing continuous display",()=>{
+  const view=player();let stopped=0;
+  view.context.networkVideoDisplay={stop(){stopped++;}};
+  view.context.GoodvisionFleet={detailHidden:()=>true};
+  view.openFeed();view.openFeed();
+  assert.equal(stopped,1);assert.equal(view.context.networkVideoDisplay,null);
+  assert.equal(view.requests.length,0);assert.equal(view.timers.size,0);
+});
+
+test("embedded diagnostics reuse the parent display without opening another video stream",()=>{
+  const view=player();let started=0,stopped=0,options;
+  view.context.GoodvisionDiagnosticCameraId="camera02";
+  view.context.GoodvisionCameraDisplay={SharedController:class{
+    constructor(value){options=value;}start(){started++;}stop(){stopped++;}
+  }};
+  const row={canvas:{hidden:false},networkDisplay:{controller:{snapshot:()=>({display_instance_id:'parent'})}}};
+  view.context.window={parent:{GoodvisionFleet:{app:{rows:new Map([["camera02",row]])}}}};
+  view.openFeed();view.openFeed();assert.equal(started,1);
+  assert.equal(options.source().media,row.canvas);assert.equal(view.requests.length,0);
+  view.closeFeed();assert.equal(stopped,1);
+});
+
 test("slow delivery keeps one request and resumes from the newest frame",async()=>{
   const view=player();view.openFeed();view.openFeed();
   assert.equal(view.requests.length,1);

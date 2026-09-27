@@ -1,8 +1,9 @@
 """Causal SAM preparation, one ordered HTTP request, and ordered live commit.
 
-The remote protocol remains single-flight. Disk-backed ingress preserves every
-admitted source; bounded preparation/result stages overlap without inventing or
-discarding observations. Recovery facts never enter public status payloads.
+The remote protocol remains single-flight. Durable mode preserves every
+admitted source. Latest-only mode retains two recent in-memory candidates and
+overlaps one preparation slot with HTTP. Unsent work expires; sent requests and
+results retain their original recovery guarantees.
 """
 
 from __future__ import annotations
@@ -61,18 +62,56 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
 
     def __init__(
         self, client, *, spool_directory=None, spool_max_bytes=256 * 1024**2,
-        on_native_batch=None, **kwargs
+        on_native_batch=None, queue_policy="durable_ordered",
+        realtime_pending_frames=2, realtime_max_age_seconds=2.0,
+        realtime_append_frames=1,
+        result_deadline_seconds=4.0, **kwargs
     ):
+        if queue_policy not in {"durable_ordered", "realtime_latest", "latest_only"}:
+            raise ValueError("unsupported SAM queue policy")
+        if (type(realtime_pending_frames) is not int
+                or not 1 <= realtime_pending_frames <= 8):
+            raise ValueError("realtime_pending_frames must be within 1..8")
+        for name, value in (("realtime_max_age_seconds", realtime_max_age_seconds),
+                            ("result_deadline_seconds", result_deadline_seconds)):
+            if (type(value) not in (int, float) or not math.isfinite(value)
+                    or not 0 < value <= 30):
+                raise ValueError(f"{name} must be within (0, 30]")
+        if (type(realtime_append_frames) is not int
+                or realtime_append_frames not in {1, 2, 4}):
+            raise ValueError("realtime_append_frames must be 1, 2, or 4")
+        self._realtime_append_frames = min(
+            realtime_append_frames, client.max_append_frames,
+        )
+        self._queue_policy = queue_policy
+        self._realtime = queue_policy == "realtime_latest"
+        self._latest_only = queue_policy == "latest_only"
+        self._candidate_frames = {}
+        self._realtime_pending_frames = realtime_pending_frames
+        self._realtime_max_age = float(realtime_max_age_seconds)
+        self._result_deadline = float(result_deadline_seconds)
+        self._latest_result_arrived = None
+        self._skip_counts = {"superseded": 0, "expired": 0}
+        if self._realtime:
+            kwargs.update(pending_capacity=realtime_pending_frames)
+        elif self._latest_only:
+            kwargs.update(pending_capacity=2)
         super().__init__(client, **kwargs)
         self.on_native_batch = on_native_batch
         if client.startup_frames != 1 or client.max_append_frames > 4:
             raise ValueError("pipelined tracking requires the causal SAM route")
+        # Container images keep application code read-only. Recovery journals
+        # belong beside persistent deployment settings, never under /app.
+        settings_path = os.environ.get("HARNESS_DEPLOYMENT_SETTINGS_PATH", "").strip()
+        default_spool = (
+            Path(settings_path).parent / "sam-spool"
+            if settings_path else Path(".goodvision/sam-spool")
+        )
         self._spool_directory = Path(
             spool_directory
-            or os.environ.get(
-                "GOODVISION_SAM_SPOOL_DIRECTORY",
-                ".goodvision/sam-spool",
-            )
+            or os.environ.get("GOODVISION_TRACKING_SPOOL_DIRECTORY")
+            or os.environ.get("GOODVISION_SAM_SPOOL_DIRECTORY")
+            or default_spool
         )
         self._spool_max_bytes = spool_max_bytes
         self._spool = None
@@ -90,7 +129,10 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
         self._append_durations = deque(maxlen=16)
         self._stats.update(
             prepared_batches=0,
+            session_candidate_frames=0,
             received_batches=0,
+            results_within_deadline=0,
+            results_after_deadline=0,
             rejected_capacity=0,
             recovery_required=False,
         )
@@ -110,17 +152,23 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                 self._spool.finish(self._generation, "reset")
             super().reset(stream_session_id)
             self._prepared = None
+            self._candidate_frames.clear()
             self._commits.clear()
             self._native_ready = None
             self._next_ordinal = 0
             self._next_sample_at = 0.0
+            self._latest_result_arrived = None
+            self._skip_counts = {"superseded": 0, "expired": 0}
             self._eof_sent = False
             self._prepare_durations.clear()
             self._append_durations.clear()
             self._stats.update(
                 recovery_required=False,
+                session_candidate_frames=0,
                 prepared_batches=0,
                 received_batches=0,
+                results_within_deadline=0,
+                results_after_deadline=0,
                 rejected_capacity=0,
             )
             self._condition.notify_all()
@@ -163,9 +211,35 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                 self._stats["session_sampled_out"] += 1
                 return False
             try:
-                journal = self._journal()
-                journal.begin(self._generation, self._session)
-                journal.admit(self._generation, self._session, frame, arrived)
+                if self._latest_only:
+                    # Candidates are not durable admissions. Replacing one does
+                    # no image preparation or database work on the capture path.
+                    self._skip_pending(
+                        [s for s in self._pending
+                         if arrived - s.arrived >= self._realtime_max_age],
+                        "expired",
+                    )
+                    if len(self._pending) >= self._pending_capacity:
+                        self._skip_pending(
+                            list(self._pending)[:len(self._pending)
+                                                - self._pending_capacity + 1],
+                            "superseded",
+                        )
+                    self._candidate_frames[frame_sequence] = frame
+                else:
+                    journal = self._journal()
+                    journal.begin(self._generation, self._session)
+                    if self._realtime:
+                        self._expire_unsent(arrived)
+                        if len(self._pending) >= self._realtime_pending_frames:
+                            excess = (
+                                len(self._pending) - self._realtime_pending_frames + 1
+                            )
+                            self._skip_pending(
+                                list(self._pending)[:excess],
+                                "superseded",
+                            )
+                    journal.admit(self._generation, self._session, frame, arrived)
             except Exception as exc:
                 self._stats["rejected_capacity"] += 1
                 self._fail(self._generation, "admission", exc)
@@ -181,7 +255,10 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             )
             self._pending_bytes += len(jpeg_bytes)
             self._stats["submitted"] += 1
-            self._stats["session_admitted_frames"] += 1
+            if not self._latest_only:
+                self._stats["session_admitted_frames"] += 1
+            else:
+                self._stats["session_candidate_frames"] += 1
             if self._thread is None:
                 self._thread = threading.Thread(
                     target=self._run, name="sam-ordered-request", daemon=True
@@ -228,12 +305,13 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             tuple(sources),
             final=final,
         )
-        self._journal().batch(
-            work.request_id,
-            work.generation,
-            work.ordinal,
-            [source.sequence for source in work.sources],
-        )
+        if not self._latest_only or final:
+            self._journal().batch(
+                work.request_id,
+                work.generation,
+                work.ordinal,
+                [source.sequence for source in work.sources],
+            )
         return work
 
     def _fail(self, generation, phase, exc, work=None):
@@ -275,6 +353,63 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             recovery_required=True,
         )
 
+    def _record_skip(self, sources, reason):
+        for source in sources:
+            self._source_arrivals.pop(source.sequence, None)
+        self._skip_counts[reason] += len(sources)
+        self._stats["dropped_backpressure"] += len(sources)
+        self._stats["session_dropped_backpressure"] += len(sources)
+        log_timing(
+            "sam_realtime_skip", generation=self._generation,
+            stream_session_id=trace_id(self._session), reason=reason,
+            input_sequences=[source.sequence for source in sources],
+            queue_policy=self._queue_policy,
+        )
+        self._condition.notify_all()
+
+    def _skip_pending(self, sources, reason):
+        if not sources:
+            return
+        if self._latest_only:
+            for source in sources:
+                self._candidate_frames.pop(source.sequence, None)
+        else:
+            self._journal().skip(
+                self._generation, [source.sequence for source in sources], reason,
+            )
+        sequences = {source.sequence for source in sources}
+        self._pending = deque(s for s in self._pending if s.sequence not in sequences)
+        self._pending_bytes -= sum(source.size for source in sources)
+        self._record_skip(sources, reason)
+
+    def _expire_unsent(self, now):
+        """Called under the condition; never touches preparing or sent work."""
+        if not (self._realtime or self._latest_only) or self._failed_session:
+            return
+        self._skip_pending(
+            [s for s in self._pending if now - s.arrived >= self._realtime_max_age],
+            "expired",
+        )
+        work = self._prepared
+        if (work is not None and work.generation == self._generation
+                and now - work.sources[0].arrived >= self._realtime_max_age):
+            self._journal().skip(
+                work.generation, [s.sequence for s in work.sources], "expired",
+                request_id=work.request_id,
+            )
+            self._prepared = None
+            self._record_skip(work.sources, "expired")
+
+    def _expiry_wait(self, now):
+        sources = list(self._pending)
+        if self._prepared is not None:
+            sources.extend(self._prepared.sources)
+        if not sources or self._failed_session:
+            return None
+        return max(
+            0.001, min(s.arrived for s in sources) + self._realtime_max_age - now,
+        )
+
     def _preparation_schedule(self, now):
         """Under the condition: (seconds until preparation, safe timing facts).
 
@@ -289,6 +424,22 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             or not self._pending
         ):
             return None, {}
+        if self._latest_only:
+            # Keep a single preparation slot busy while the ordered append runs.
+            # A slow request cannot grow a prepared FIFO: later candidates stay
+            # replaceable, and the prepared source is rechecked before dispatch.
+            if len(self._commits) + bool(self._committing) >= 2:
+                return None, {}
+            return 0.0, {"prepare_trigger": (
+                "latest_request_overlap" if self._requesting is not None
+                else "latest_request_idle"
+            )}
+        if self._realtime:
+            # Do not freeze an old image while HTTP or commit is blocked.
+            if (self._requesting is not None
+                    or len(self._commits) + bool(self._committing) >= 2):
+                return None, {}
+            return 0.0, {"prepare_trigger": "realtime_request_idle"}
         if self._requesting is None:
             return 0.0, {"prepare_trigger": "request_idle"}
         if len(self._pending) >= self._client.max_append_frames:
@@ -330,14 +481,22 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                 while True:
                     if self._closed:
                         return
-                    wait, preparation_timing = self._preparation_schedule(
-                        time.monotonic()
-                    )
+                    now = time.monotonic()
+                    try:
+                        self._expire_unsent(now)
+                    except Exception as exc:
+                        self._fail(self._generation, "skip", exc)
+                    wait, preparation_timing = self._preparation_schedule(now)
+                    if (self._realtime or self._latest_only) and wait is None:
+                        wait = self._expiry_wait(now)
                     if wait == 0.0:
                         break
                     self._condition.wait(wait)
                 sources, size = [], 0
-                while self._pending and len(sources) < self._client.max_append_frames:
+                limit = (1 if self._latest_only else
+                         self._realtime_append_frames if self._realtime
+                         else self._client.max_append_frames)
+                while self._pending and len(sources) < limit:
                     candidate = self._pending[0]
                     if sources and size + candidate.size > MAX_BATCH_JPEG_BYTES:
                         break
@@ -350,12 +509,36 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                     self._fail(self._generation, "prepare", exc)
                     continue
                 self._preparing = work
+                if self._latest_only:
+                    work.frames = tuple(
+                        self._candidate_frames.pop(source.sequence)
+                        for source in work.sources
+                    )
             started = time.monotonic()
             try:
-                work.frames = self._journal().load(
-                    work.generation,
-                    [source.sequence for source in work.sources],
-                )
+                if self._latest_only:
+                    # Once selected this is executing work, not another waiting
+                    # slot. Persist it on this worker before preparing/sending.
+                    journal = self._journal()
+                    journal.begin(work.generation, work.session)
+                    journal.admit(
+                        work.generation, work.session, work.frames[0],
+                        work.sources[0].arrived,
+                    )
+                    journal.batch(
+                        work.request_id, work.generation, work.ordinal,
+                        [source.sequence for source in work.sources],
+                    )
+                    with self._condition:
+                        if not self._current(work) or self._failed_session:
+                            journal.mark(work.request_id, "interrupted")
+                            continue
+                        self._stats["session_admitted_frames"] += 1
+                else:
+                    work.frames = self._journal().load(
+                        work.generation,
+                        [source.sequence for source in work.sources],
+                    )
                 work.prepared = self._client.prepare_append(
                     work.frames,
                     stream_session_id=work.session,
@@ -401,6 +584,21 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                             self._cleanup_requested = False
                             break
                         if not self._failed_session and not self._finished_session:
+                            try:
+                                self._expire_unsent(time.monotonic())
+                            except Exception as exc:
+                                self._fail(self._generation, "skip", exc)
+                                continue
+                            # Reused workers also need to finish a run that
+                            # never received a frame, regardless of queue mode.
+                            # No native session exists to receive an EOF append.
+                            if (self._flush and not self._pending
+                                    and self._preparing is None
+                                    and self._prepared is None
+                                    and self._stats["received_batches"] == 0):
+                                operation = "finish_empty"
+                                generation = self._generation
+                                break
                             if self._native_ready != self._generation and self._pending:
                                 operation = "open"
                                 generation, session = self._generation, self._session
@@ -432,6 +630,20 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                         self._condition.wait()
                     self._in_flight = True
                     self._condition.notify_all()
+                if operation == "finish_empty":
+                    self._discard()
+                    with self._condition:
+                        try:
+                            if generation == self._generation and not self._closed:
+                                self._journal().finish(generation, "completed")
+                                self._finished_session = True
+                                self._flush = False
+                        except Exception as exc:
+                            self._fail(generation, "eof", exc)
+                        self._native_ready = None
+                        self._in_flight = False
+                        self._condition.notify_all()
+                    continue
                 if operation == "cleanup":
                     self._discard()
                     with self._condition:
@@ -613,6 +825,12 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                                 if arrival is not None:
                                     age = completed - arrival
                                     self._stats["source_to_result_seconds"] = age
+                                    self._latest_result_arrived = arrival
+                                    self._stats[
+                                        "results_within_deadline"
+                                        if age <= self._result_deadline
+                                        else "results_after_deadline"
+                                    ] += 1
                                     work.timing["source_to_result"].append(
                                         {
                                             "sequence": snapshot.frame_sequence,
@@ -684,12 +902,37 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             staged_frames = sum(len(work.sources) for work in staged)
             result.update(
                 pipeline_overlap=True,
-                queue_policy="durable_ordered",
+                queue_policy=self._queue_policy,
+                effective_max_append_frames=(
+                    1 if self._latest_only else
+                    self._realtime_append_frames if self._realtime
+                    else self._client.max_append_frames
+                ),
+                realtime_max_age_seconds=(
+                    self._realtime_max_age
+                    if self._realtime or self._latest_only else None
+                ),
+                skipped_by_reason=dict(self._skip_counts),
+                oldest_pending_seconds=max(
+                    (time.monotonic() - source.arrived for source in self._pending),
+                    default=0.0,
+                ),
+                latest_result_age_seconds=(
+                    time.monotonic() - self._latest_result_arrived
+                    if self._latest_result_arrived is not None else None
+                ),
+                result_deadline_seconds=self._result_deadline,
+                admitted_deadline_coverage=(
+                    self._stats["results_within_deadline"]
+                    / self._stats["session_admitted_frames"]
+                    if self._stats["session_admitted_frames"] else None
+                ),
                 pending=bool(self._pending) or bool(staged_frames),
                 pending_frames=len(self._pending) + staged_frames,
                 pending_bytes=self._pending_bytes
                 + sum(source.size for work in staged for source in work.sources),
-                disk_pending_frames=len(self._pending),
+                candidate_frames=len(self._pending) if self._latest_only else 0,
+                disk_pending_frames=0 if self._latest_only else len(self._pending),
                 journal_capacity_bytes=self._spool_max_bytes,
                 preparing_frames=len(self._preparing.sources) if self._preparing else 0,
                 prepared_frames=len(self._prepared.sources) if self._prepared else 0,
