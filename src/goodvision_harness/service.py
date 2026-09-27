@@ -5667,6 +5667,13 @@ def _result_events_response(
             for record in records:
                 current = record.cursor
                 payload = record.payload
+                # Preliminary results belong only to the unfiltered event stream.
+                # Formal feature and overall projections require AnalysisResult fields.
+                if (
+                    (feature is not None or overall_only)
+                    and payload.get("type") != "analysis_result"
+                ):
+                    continue
                 if feature is not None:
                     selected = _feature_result_payload(payload, feature)
                     if selected is None:
