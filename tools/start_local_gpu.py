@@ -1,6 +1,7 @@
-"""Detect local NVIDIA devices and start the isolated, offline model services.
+"""Run person tracking on this machine's NVIDIA GPU using the Contour runtime.
 
 Python 3.10+ standard library only. --dry-run never writes files or calls Docker.
+Only SAM starts by default; --with-local-inference adds the legacy local VLM.
 Existing .env/cloud settings and saved console choices are not modified.
 """
 
@@ -16,6 +17,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL_DIRECTORY = ".models/qwen3-vl-30b-a3b-instruct-fp8"
@@ -35,6 +37,13 @@ SETTINGS = {
     "LOCAL_INFERENCE_EXECUTION_MODE",
     "LOCAL_INFERENCE_GPU_MEMORY_UTILIZATION",
     "SAM31_CHECKPOINT_FILE",
+}
+TRACKING_SETTINGS = SETTINGS | {
+    "LOCAL_TRACKING_GPU_ID",
+    "LOCAL_TRACKING_TORCH_CUDA",
+    "INFERENCE_EXECUTION_MODE",
+    "INFERENCE_SERVER_URL",
+    "INFERENCE_SERVER_MODEL",
 }
 
 
@@ -89,6 +98,107 @@ def detect_nvidia_devices() -> list[dict]:
             "before enabling local GPU services."
         ) from error
     return parse_nvidia_devices(result.stdout)
+
+
+def plan_tracking_environment(
+    devices: Sequence[Mapping], settings: Mapping[str, str], *, root: Path = ROOT,
+) -> dict[str, str]:
+    """SAM needs one GPU and its checkpoint, independently of the VLM route."""
+    if not devices:
+        raise LaunchError("At least one NVIDIA GPU is required")
+    indices = sorted(int(device["index"]) for device in devices)
+    try:
+        gpu = int(settings.get("LOCAL_TRACKING_GPU_ID", str(indices[0])))
+        fps = float(settings.get("LOCAL_TRACKING_FPS", "2"))
+    except ValueError as error:
+        raise LaunchError("Local tracking GPU ID and FPS must be numeric") from error
+    if gpu not in indices:
+        raise LaunchError("LOCAL_TRACKING_GPU_ID must identify a detected NVIDIA GPU")
+    if not math.isfinite(fps) or not 0.5 <= fps <= 30:
+        raise LaunchError("LOCAL_TRACKING_FPS must be within 0.5..30")
+    cuda = settings.get("LOCAL_TRACKING_TORCH_CUDA", "cu128")
+    if cuda not in {"cu126", "cu128"}:
+        raise LaunchError("LOCAL_TRACKING_TORCH_CUDA must be cu126 or cu128")
+    inference = settings.get("INFERENCE_EXECUTION_MODE", "cloud")
+    if inference not in {"cloud", "server"}:
+        raise LaunchError(
+            "Use --with-local-inference to deploy a local VLM, "
+            "or set INFERENCE_EXECUTION_MODE=cloud|server"
+        )
+    server_url = settings.get("INFERENCE_SERVER_URL", "").strip()
+    # Validate before printing a plan so URL credentials cannot reach stdout.
+    if server_url:
+        try:
+            parsed = urlsplit(server_url)
+            valid = (
+                parsed.scheme in {"http", "https"} and parsed.hostname
+                and parsed.username is None and parsed.password is None
+                and parsed.path in {"", "/"} and not parsed.query
+                and not parsed.fragment and "\\" not in server_url
+                and not any(char.isspace() for char in server_url)
+                and (parsed.port is None or 1 <= parsed.port <= 65535)
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise LaunchError(
+                "INFERENCE_SERVER_URL must be an HTTP(S) origin without credentials"
+            )
+    if inference == "server" and not server_url:
+        raise LaunchError("INFERENCE_SERVER_URL is required for server inference")
+    checkpoint = settings.get("SAM31_CHECKPOINT_FILE")
+    if not checkpoint:
+        candidates = (
+            root / "workers/contour/models/contour.pt",
+            root / ".models/sam3.1/sam3.1_multiplex.pt",
+        )
+        checkpoint = str(next(
+            (path for path in candidates if path.is_file()), candidates[0],
+        ))
+    path = Path(checkpoint).expanduser()
+    path = (root / path).resolve() if not path.is_absolute() else path.resolve()
+    result = {key: settings[key] for key in (
+        "HARNESS_PORT", "HARNESS_BIND_ADDRESS", "INFERENCE_SERVER_URL",
+        "INFERENCE_SERVER_MODEL",
+    ) if settings.get(key)}
+    result.update(
+        LOCAL_GPU_AVAILABLE="true",
+        LOCAL_GPU_COUNT=str(len(indices)),
+        LOCAL_INFERENCE_AVAILABLE="false",
+        LOCAL_TRACKING_AVAILABLE="true",
+        LOCAL_INFERENCE_ENABLED="false",
+        LOCAL_TRACKING_ENABLED="true",
+        INFERENCE_EXECUTION_MODE=inference,
+        TRACKING_EXECUTION_MODE="local",
+        LOCAL_TRACKING_GPU_ID=str(gpu),
+        LOCAL_TRACKING_TORCH_CUDA=cuda,
+        LOCAL_TRACKING_FPS=str(fps),
+        LOCAL_TRACKING_ENDPOINT="http://local-tracking:8092/v1/perception/sam_live/sessions",
+        SAM31_CHECKPOINT_FILE=str(path),
+    )
+    return result
+
+
+def validate_tracking_checkpoint(environment: Mapping[str, str]) -> None:
+    checkpoint = Path(environment["SAM31_CHECKPOINT_FILE"])
+    if not checkpoint.is_file():
+        raise LaunchError(
+            f"Missing SAM checkpoint: {checkpoint}. Prepare the Contour model "
+            "with workers/contour/download_model.py or set SAM31_CHECKPOINT_FILE."
+        )
+    with checkpoint.open("rb") as stream:
+        prefix = stream.read(128)
+    if not prefix or prefix.startswith(b"version https://git-lfs.github.com/"):
+        raise LaunchError("SAM checkpoint is empty or a Git LFS pointer")
+
+
+CUDA_CHECK = (
+    "import torch; "
+    "assert torch.cuda.is_available(), 'NVIDIA CUDA unavailable inside Docker'; "
+    "assert torch.cuda.device_count() == 1, 'Expected one selected NVIDIA GPU'; "
+    "x=torch.ones(1, device='cuda'); x.add_(1); torch.cuda.synchronize(); "
+    "print('CUDA ready: ' + torch.cuda.get_device_name(0))"
+)
 
 
 def read_local_settings(
@@ -225,7 +335,7 @@ def validate_weights(
     if not directory.is_dir() or not (directory / "config.json").is_file():
         raise LaunchError(
             f"Missing complete local vision model at {directory}. "
-            "See docs/guides/local-gpu.md; "
+            "See docs/guides/local-gpu-full.md; "
             "this launcher does not download model weights."
         )
     config = _model_json(directory, "config.json")
@@ -325,13 +435,17 @@ def compose_command(
     build: bool,
     streams: int = 1,
     fleet_file: Path | None = None,
+    with_local_inference: bool = True,
 ) -> list[str]:
     command = ["docker", "compose", "--project-directory", str(root)]
     if env_file is not None:
         command.extend(["--env-file", str(env_file)])
-    command.extend(
-        ["-f", str(root / "compose.yaml"), "-f", str(root / "compose.local-gpu.yaml")]
-    )
+    if with_local_inference:
+        command.extend(["-f", str(root / "compose.yaml")])
+    command.extend(["-f", str(root / (
+        "compose.local-gpu.yaml" if with_local_inference
+        else "compose.local-tracking.yaml"
+    ))])
     if fleet_file is not None:
         command.extend(["-f", str(fleet_file)])
     if with_paddle:
@@ -339,14 +453,22 @@ def compose_command(
     command.extend(["up", "--detach", "--wait", "--wait-timeout", "900"])
     if build:
         command.append("--build")
-    command.extend(["harness", "local-inference", "local-tracking"])
+    elif not with_local_inference:
+        command.extend(["--no-build", "--pull", "never"])
+    command.append("harness")
+    if with_local_inference:
+        command.append("local-inference")
+    command.append("local-tracking")
     command.extend(f"harness-{index:02d}" for index in range(2, streams + 1))
     if with_paddle:
         command.append("rich-label-worker")
     return command
 
 
-def fleet_overlay(streams: int, *, root: Path = ROOT, port: int = 8080) -> str:
+def fleet_overlay(
+    streams: int, *, root: Path = ROOT, port: int = 8080,
+    with_local_inference: bool = True,
+) -> str:
     """Each camera gets isolated runtime/data while VLM and SAM weights are shared.
 
     JSON flow collections are valid YAML. !override avoids inheriting the base
@@ -394,7 +516,10 @@ def fleet_overlay(streams: int, *, root: Path = ROOT, port: int = 8080) -> str:
                 "    extends: "
                 + json.dumps(
                     {
-                        "file": str(root / "compose.local-gpu.yaml"),
+                        "file": str(root / (
+                            "compose.local-gpu.yaml" if with_local_inference
+                            else "compose.local-tracking.yaml"
+                        )),
                         "service": "harness",
                     }
                 )
@@ -460,6 +585,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Also start the optional Paddle GPU worker",
     )
     parser.add_argument(
+        "--with-local-inference", action="store_true",
+        help="Also provision the local VLM and GPU face runtime (legacy deployment)",
+    )
+    parser.add_argument(
+        "--gpu", type=int, help="SAM GPU index (default: first detected NVIDIA GPU)",
+    )
+    parser.add_argument(
+        "--checkpoint", type=Path, help="Existing SAM3.1/Contour model checkpoint",
+    )
+    parser.add_argument(
         "--no-build", action="store_true", help="Use prebuilt local images"
     )
     parser.add_argument(
@@ -477,6 +612,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.streams < 1:
             raise LaunchError("--streams must be a positive integer")
+        if args.with_paddle and not args.with_local_inference:
+            raise LaunchError("--with-paddle requires --with-local-inference")
+        if args.gpu is not None and args.with_local_inference:
+            raise LaunchError("--gpu applies to SAM-only deployment")
         if args.gpu_count is not None:
             if not args.dry_run or not 1 <= args.gpu_count <= 64:
                 raise LaunchError("--gpu-count requires --dry-run and a value in 1..64")
@@ -489,11 +628,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         env_file = args.env_file.resolve() if args.env_file else ROOT / ".env"
         if args.env_file and not env_file.is_file():
             raise LaunchError(f"Environment file does not exist: {env_file}")
-        settings = read_local_settings(env_file)
+        keys = SETTINGS if args.with_local_inference else TRACKING_SETTINGS
+        settings = read_local_settings(env_file, keys=keys)
         settings.update(
-            {key: os.environ[key] for key in SETTINGS if os.environ.get(key)}
+            {key: os.environ[key] for key in keys if os.environ.get(key)}
         )
-        environment = plan_environment(devices, settings)
+        if args.gpu is not None:
+            settings["LOCAL_TRACKING_GPU_ID"] = str(args.gpu)
+        if args.checkpoint is not None:
+            settings["SAM31_CHECKPOINT_FILE"] = str(args.checkpoint)
+        environment = (
+            plan_environment(devices, settings) if args.with_local_inference
+            else plan_tracking_environment(devices, settings)
+        )
         try:
             port = int(
                 args.base_port
@@ -516,7 +663,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             host = f"[{host}]"
         console_url = f"http://{host}:{port}"
         fleet_file = ROOT / ".goodvision" / "local-gpu-compose.yaml"
-        overlay = fleet_overlay(args.streams, port=port) if args.streams > 1 else None
+        overlay = fleet_overlay(
+            args.streams, port=port, with_local_inference=args.with_local_inference,
+        ) if args.streams > 1 else None
         command = compose_command(
             root=ROOT,
             env_file=env_file if env_file.is_file() else None,
@@ -524,7 +673,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             build=not args.no_build,
             streams=args.streams,
             fleet_file=fleet_file if overlay is not None else None,
+            with_local_inference=args.with_local_inference,
         )
+        compose = command[:command.index("up")]
+        # Preflight must use the very same image/device as the eventual worker.
+        cuda_command = [*compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
+                        "local-tracking", "python", "-c", CUDA_CHECK]
         # Print only the local plan, never inherited API keys or full Compose config.
         print(
             json.dumps(
@@ -536,19 +690,51 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "provisioned_lanes": args.streams,
                     "console_url": console_url,
                     "fleet_overlay": overlay,
+                    "mode": "full" if args.with_local_inference else "tracking",
+                    "cuda_check_command": (
+                        cuda_command if not args.with_local_inference else None
+                    ),
                 },
                 indent=2,
             )
         )
         if args.dry_run:
             return 0
-        validate_weights(environment, devices)
+        if args.with_local_inference:
+            validate_weights(environment, devices)
+        validate_tracking_checkpoint(environment)
         if overlay is not None:
             fleet_file.parent.mkdir(parents=True, exist_ok=True)
             fleet_file.write_text(overlay, encoding="utf-8")
         process_environment = dict(os.environ)
         process_environment.update(environment)
         try:
+            if not args.with_local_inference:
+                if not args.no_build:
+                    result = subprocess.run(
+                        [*compose, "build", "harness", "local-tracking"],
+                        cwd=ROOT, env=process_environment, check=False,
+                    )
+                    if result.returncode:
+                        raise LaunchError(
+                            "Local GPU image build failed; check the build output"
+                        )
+                result = subprocess.run(
+                    cuda_command, cwd=ROOT, env=process_environment, check=False,
+                    timeout=120,
+                )
+                if result.returncode:
+                    raise LaunchError(
+                        "CUDA preflight failed. Check the NVIDIA driver and Docker "
+                        "GPU support (Windows: Docker Desktop WSL2/Linux containers)."
+                    )
+                # The build/preflight above determined exactly which images run.
+                command = compose_command(
+                    root=ROOT, env_file=env_file if env_file.is_file() else None,
+                    with_paddle=False, build=False, streams=args.streams,
+                    fleet_file=fleet_file if overlay is not None else None,
+                    with_local_inference=False,
+                )
             result = subprocess.run(
                 command, cwd=ROOT, env=process_environment, check=False
             )
@@ -559,14 +745,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             ) from error
         if result.returncode:
             print(
-                "Local GPU startup did not become healthy. Check local-inference "
-                "and local-tracking logs. A CUDA out-of-memory error requires a "
-                "smaller model/context or more free VRAM; GPU allocation is never "
-                "expanded onto the other card automatically.",
+                "Local GPU startup did not become healthy. Check local-tracking "
+                "logs (and local-inference when enabled). Check the checkpoint, "
+                "CUDA driver and free VRAM; no cloud fallback is started.",
                 file=sys.stderr,
             )
         return result.returncode
-    except (LaunchError, OSError) as error:
+    except (LaunchError, OSError, subprocess.TimeoutExpired) as error:
         print(f"Local GPU setup: {error}", file=sys.stderr)
         return 2
 

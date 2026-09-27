@@ -6,6 +6,7 @@ It publishes structured observations, source-correlated images, continuous
 annotated video, and event video evidence. It has no runtime dependency on the
 original `goodvision` repository.
 
+`python tools/start_local_gpu.py` 自动检测本机 NVIDIA GPU，使用与 Contour 相同的 SAM 引擎运行人物追踪，大模型继续使用云端 API。
 本地 NVIDIA 部署**默认 1 路，使用 `--streams N` 按实际需要启动正整数路数**，
 12 路是容量参考值，不是软件上限。3、6、12、16 路示例见 [本地 GPU 部署说明](docs/guides/local-gpu.md)。
 同一控制台可以分别连接和并排显示已部署的 N 路视频；连接只预览，分析通过“开始全部分析”
@@ -17,7 +18,7 @@ original `goodvision` repository.
 普通旧版外部单会话追踪服务保留兼容入口。
 主程序、人物追踪、大模型可以分别部署在不同机器，主程序无需显卡；控制台分别设置运行位置、
 服务器地址和追踪容量，见 [模块化部署说明](docs/guides/modular-services.md)。
-同机部署仍支持单卡共用、双卡将大模型与追踪及其他 GPU 工作分开。
+增加 `--with-local-inference` 可同时部署本地大模型和 GPU 人脸，支持单卡共用、双卡分配。
 每路大模型分析目标沿用 1.25 次/秒，N 路共 1.25 × N
 请求/秒，默认追踪共 2 × N 帧/秒；12 路参考目标为 15 请求/秒。
 容量验收需要真实 L40S 上的持续压测，部署成功不代表已达到该吞吐。

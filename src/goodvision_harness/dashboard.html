@@ -158,7 +158,7 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
           <input id="local-tracking-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help" tabindex="-1">
         </div>
         <div id="local-gpu-status" class="secret-status" role="status" aria-live="polite">正在读取本地显卡状态…</div>
-        <div id="local-gpu-help" class="secret-status">两项独立选择，停止全部分析后保存，对下次统一分析生效。本机 1 张显卡时共用 GPU 0；2 张或以上时，大模型使用 GPU 0，人物追踪和其他本机 GPU 任务使用 GPU 1。选择独立服务器时不要求控制台有显卡。</div>
+        <div id="local-gpu-help" class="secret-status">两项独立选择，停止全部分析后保存，对下次统一分析生效。本机人物追踪使用已部署的本地 GPU 服务；大模型可继续使用云端 API。选择本机大模型需要另外部署该服务。</div>
         <label class="field">
           <span>Default network stream URL</span>
           <input id="default-stream-url" type="password" autocomplete="new-password" spellcheck="false"
@@ -945,7 +945,8 @@ function controls(){
     ui.inferenceServerUrl,ui.inferenceServerModel,ui.trackingServerUrl,ui.trackingServerCapacity,
     ui.trackingServerProtocol,ui.trackingNodeKey,ui.clearTrackingNodeKey,ui.trackingSampleFps])
     item.disabled=!persistenceReady||deploymentBusy||sharedBusy;
-  ui.inferenceLocalOption.disabled=ui.trackingLocalOption.disabled=localGpuUnavailable();
+  ui.inferenceLocalOption.disabled=localGpuUnavailable("inference");
+  ui.trackingLocalOption.disabled=localGpuUnavailable("tracking");
   for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart,ui.defaultCameraLayout])
     item.disabled=!persistenceReady||deploymentBusy;
   ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||sharedBusy;
@@ -1288,9 +1289,10 @@ function draftExecutionMode(kind){
 function localInferenceEnabled(){
   return savedExecutionMode("inference")!=="cloud"
 }
-function localGpuUnavailable(){
+function localGpuUnavailable(role){
   const gpu=state.deployment?.local_gpu||state.info?.local_gpu||state.info?.deployment?.local_gpu||{};
-  return gpu.available===false||gpu.gpu_count!=null&&Number(gpu.gpu_count)===0
+  return gpu.available===false||gpu.gpu_count!=null&&Number(gpu.gpu_count)===0||
+    role&&gpu[role+"_available"]===false
 }
 function renderLocalGpuSettings(){
   const data=state.deployment||state.info?.deployment||state.info||{};
@@ -1316,11 +1318,12 @@ function renderLocalGpuSettings(){
   const inferenceDevice=device(gpu.inference_device,0),trackingDevice=device(gpu.tracking_device,count>=2?1:0);
   const allocation=[localInference?"大模型 → "+inferenceDevice:
     inference==="server"?"大模型 → 独立模型服务器":"大模型 → 云端 API",
-    localTracking?"人物追踪及其他本地 GPU 任务 → "+trackingDevice:
+    localTracking?(gpu.inference_available===false?"人物追踪 → ":"人物追踪及其他本地 GPU 任务 → ")+trackingDevice:
     tracking==="server"?"人物追踪 → 独立 GPU 服务器":tracking==="cloud"?"人物追踪 → 云 GPU 服务器（多路）":"人物追踪 → 原部署服务（单路）"].join("；");
   ui.localGpuStatus.className="secret-status";
   if(known&&count>0&&gpu.available!==false){
-    ui.localGpuStatus.textContent="检测到 "+count+" 张本地显卡。"+allocation+"。"
+    ui.localGpuStatus.textContent="检测到 "+count+" 张本地显卡。"+allocation+"。";
+    if(gpu.inference_available===false)ui.localGpuStatus.textContent+="本机已部署人物追踪；大模型可使用云端 API 或独立服务器。"
   }else if(gpu.available===false||known&&count===0){
     ui.localGpuStatus.textContent="本机未检测到可用 GPU，云端 API 和独立服务器仍可使用。"+allocation+"。"+
       (localInference||localTracking?"本机显卡运行需要先准备驱动和运行环境。":"");
@@ -1438,8 +1441,8 @@ async function saveDeploymentSettings(){
     camera_layout:ui.defaultCameraLayout.value,
     inference_mode:inference,tracking_mode:tracking,
     local_inference_enabled:inference==="local",local_tracking_enabled:tracking==="local"};
-  if(localGpuUnavailable()&&(inference==="local"||tracking==="local")){
-    deploymentSay("本机显卡不可用。请准备本机运行环境，或选择云端 / 独立服务器。",true);return
+  if(inference==="local"&&localGpuUnavailable("inference")||tracking==="local"&&localGpuUnavailable("tracking")){
+    deploymentSay("所选本机 GPU 服务未部署或不可用。请准备对应运行环境，或选择云端 / 独立服务器。",true);return
   }
   const serverOrigin=(field,label)=>{
     const raw=field.value.trim();let url;
