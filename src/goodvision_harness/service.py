@@ -5668,10 +5668,10 @@ def _result_events_response(
                 current = record.cursor
                 payload = record.payload
                 # Preliminary results belong only to the unfiltered event stream.
-                # Formal feature and overall projections require AnalysisResult fields.
+                # Other result buses can publish their own overall projections.
                 if (
                     (feature is not None or overall_only)
-                    and payload.get("type") != "analysis_result"
+                    and payload.get("type") == "preliminary_vision_result"
                 ):
                     continue
                 if feature is not None:
