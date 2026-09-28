@@ -1,0 +1,297 @@
+# Event definitions for the MEVA / CAVIAR benchmark questions.
+#
+# Paste under `events.definitions` in the harness config, then have each
+# session select the subset its video is questioned about via `features`.
+#
+# Every definition is written by hand on purpose. The model judges only by
+# the text below, so if these criteria drift from what the annotator meant,
+# the resulting score stops being explainable. Do not generate them from the
+# question text.
+#
+# Each entry states what must be VISIBLE, not what must be true. "A person
+# opens a door" is a fact about the world; "the door visibly moves from
+# closed toward open" is something a frame can settle.
+#
+# `counter_examples` carries the most likely false positive for that event,
+# which is where the precision is won or lost. Several of these events form
+# near-miss pairs (opens/closes, picks up/puts down, texts/talks on phone),
+# so each one names its twin.
+#
+# Not included, and why:
+#   - vehicle_* (8 labels, 538 videos): the subject is a vehicle, and the
+#     tracker only admits people. See docs/architecture/
+#     generic-event-injection-20260926.md section 7.2.
+#   - physical_conflict: already mapped to the built-in `fight` event by
+#     EVENT_TARGET_TO_HARNESS_LABEL in bench/schema.py.
+#   - person_interacts_with_laptop: retired, no longer a correct answer.
+#
+# All entries use the default `target: person`, because the ground truth
+# boxes these questions are scored against are the actor's box.
+
+- label: person_talks_to_person
+  zh_name: 交谈
+  definition: >-
+    Two or more people are within conversational distance and mutually engaged:
+    facing or turned toward one another, or walking together while oriented to
+    each other, with a gesture, head turn, or sustained attention aimed at the
+    other person. On distant or low-resolution footage, mouth movement is often
+    not visible; mutual facing and engagement are enough. Do not require a
+    readable mouth.
+  counter_examples: >-
+    People who only pass, stand or walk near each other without turning toward
+    or attending to one another. One person speaking into a phone with nobody
+    facing them. A crowd in which people do not form a facing pair or group.
+
+- label: person_enters_scene_through_structure
+  zh_name: 从门内进入
+  definition: >-
+    A person becomes newly visible by physically passing through a clearly
+    visible door, doorway, gate, revolving door or shop entrance opening. The
+    aperture itself must be seen, and the person must go from outside that
+    opening to inside the scene through it.
+  counter_examples: >-
+    Walking into the frame across open ground, a plaza, a pavement or from the
+    frame edge with no door or gate in the path. Appearing from behind a wall,
+    pillar or vehicle without going through a doorway. A person already in the
+    open scene who only walks near a building facade. Approaching a door
+    without passing through it.
+
+- label: person_exits_scene_through_structure
+  zh_name: 从门内离开
+  definition: >-
+    A person leaves the scene by passing through a door, gate, doorway or
+    comparable opening in a structure, and is no longer visible afterwards.
+  counter_examples: >-
+    A person walking out past the frame edge across open ground. A person
+    standing in a doorway who does not pass through it.
+
+- label: person_opens_facility_door
+  zh_name: 开门
+  definition: >-
+    A person pushes, pulls or slides a building door and the door visibly
+    moves from closed toward open.
+  counter_examples: >-
+    Walking through a door that already stands open. Touching or leaning on a
+    door that does not move. Closing a door, which is person_closes_facility_door.
+
+- label: person_texts_on_phone
+  zh_name: 玩手机
+  definition: >-
+    A person holds a phone in view, directs their gaze at its screen, and
+    operates the screen with a thumb or finger.
+  counter_examples: >-
+    Holding a phone at the ear or in front of the mouth to speak, which is
+    person_talks_on_phone. Holding a phone without looking at or touching
+    the screen.
+
+- label: person_opens_vehicle_door
+  zh_name: 开车门
+  definition: >-
+    A person moves a passenger or driver door of a vehicle from closed toward
+    open, by its handle or edge.
+  counter_examples: >-
+    Standing beside a vehicle door that already stands open. Touching the
+    vehicle body without the door moving. A door moving the other way, from
+    open to shut, which is person_closes_vehicle_door. Opening a rear hatch
+    or tailgate, which is person_opens_trunk.
+
+- label: person_closes_vehicle_door
+  zh_name: 关车门
+  definition: >-
+    A person moves a passenger or driver door of a vehicle from open to shut,
+    ending with the door against the body of the vehicle.
+  counter_examples: >-
+    Pushing a door part way and leaving it open. Leaning against a door that
+    was already shut. A door moving the other way, from closed to open, which
+    is person_opens_vehicle_door. Closing a rear hatch, which is
+    person_closes_trunk.
+
+- label: person_picks_up_object
+  zh_name: 拿起物品
+  definition: >-
+    A person takes hold of an object resting on a surface or on the ground and
+    lifts it clear of that surface.
+  counter_examples: >-
+    Touching, sliding or nudging an object without lifting it. Already holding
+    the object when first seen. Lowering a held object onto a surface, which
+    is the reverse and is person_puts_down_object. Receiving an object from
+    another person's hands, which is person_transfers_object.
+
+- label: person_talks_on_phone
+  zh_name: 打电话
+  definition: >-
+    A person holds a phone at the ear or in front of the mouth while speaking,
+    or speaks into a visible earpiece with nobody facing them.
+  counter_examples: >-
+    Looking at and tapping a phone screen, which is person_texts_on_phone.
+    Holding a phone at waist or chest height without speaking.
+
+- label: person_puts_down_object
+  zh_name: 放下物品
+  definition: >-
+    A person who was holding an object — a bag, box, case, parcel or similar —
+    lowers it onto a surface or the ground and releases it so it rests there
+    without being held. The carried-to-set-down change must be visible inside
+    this window. If later frames only show the person walking away from the
+    object now left on the ground, that still counts as this event: the
+    aftermath is evidence, not a reason to answer false.
+  counter_examples: >-
+    Moving an object between hands or repositioning it while still holding it.
+    Walking while continuously carrying a bag. An object already on the ground
+    when first seen, with no carry-to-release visible in the window. Lifting an
+    object off a surface, which is the reverse and is person_picks_up_object.
+    Handing it to another person, which is person_transfers_object.
+
+- label: person_exits_vehicle
+  zh_name: 下车
+  definition: >-
+    A person moves from inside a vehicle to standing outside it, with body and
+    feet leaving the vehicle interior.
+  counter_examples: >-
+    Leaning out of a window or open door while still seated inside. Opening a
+    door without getting out. Moving the other way, from outside to inside,
+    which is person_enters_vehicle.
+
+- label: person_carries_heavy_object
+  zh_name: 搬重物
+  definition: >-
+    A person moves while carrying an object large or heavy enough to visibly
+    change their posture, such as using both arms, leaning back to counter the
+    weight, or walking with a strained gait.
+  counter_examples: >-
+    Carrying a bag, phone or small item in one hand with an unchanged upright
+    posture. Standing still while holding a heavy object without moving.
+
+- label: person_enters_vehicle
+  zh_name: 上车
+  definition: >-
+    A person moves from outside a vehicle to inside it, with body and feet
+    entering the vehicle interior.
+  counter_examples: >-
+    Leaning into a vehicle to reach something while the feet stay outside.
+    Closing a door from outside the vehicle. Moving the other way, from inside
+    to outside, which is person_exits_vehicle.
+
+- label: person_transfers_object
+  zh_name: 递交物品
+  definition: >-
+    An object passes directly from one person's hands into another person's
+    hands.
+  counter_examples: >-
+    One person setting an object down and another picking it up later. Two
+    people carrying one object together without it changing hands.
+
+- label: person_sits_down
+  zh_name: 坐下
+  definition: >-
+    A person moves from standing to seated, lowering onto a chair, bench, step,
+    vehicle seat or the ground and coming to rest.
+  counter_examples: >-
+    Already seated when first seen. Crouching, squatting or kneeling without
+    coming to rest on a surface. Rising the other way, from seated to
+    standing, which is person_stands_up.
+
+- label: person_stands_up
+  zh_name: 起身
+  definition: >-
+    A person moves from seated to standing, rising off a chair, bench, step,
+    vehicle seat or the ground.
+  counter_examples: >-
+    Already standing when first seen. Shifting position or leaning forward
+    while remaining seated. Lowering the other way, from standing to seated,
+    which is person_sits_down.
+
+- label: hand_interacts_with_person
+  zh_name: 手部接触他人
+  definition: >-
+    One person's hand makes contact with another person's body, such as a
+    touch on the arm, shoulder or back, or a handshake.
+  counter_examples: >-
+    Hands close to another person without contact. A hand contacting an object
+    rather than a person. A striking or grappling contact, which is a fight
+    rather than this event.
+
+- label: person_opens_trunk
+  zh_name: 开后备箱
+  definition: >-
+    A person moves a vehicle trunk lid, tailgate or rear hatch from closed
+    toward open.
+  counter_examples: >-
+    A trunk already standing open. A trunk moving the other way, from open to
+    shut, which is person_closes_trunk. Opening a side door, which is
+    person_opens_vehicle_door.
+
+- label: person_closes_trunk
+  zh_name: 关后备箱
+  definition: >-
+    A person moves a vehicle trunk lid, tailgate or rear hatch from open to
+    shut.
+  counter_examples: >-
+    Leaving the trunk part way open. A trunk moving the other way, from closed
+    to open, which is person_opens_trunk. Closing a side door, which is
+    person_closes_vehicle_door.
+
+- label: person_embraces_person
+  zh_name: 拥抱
+  definition: >-
+    Two people bring their upper bodies together with at least one person's
+    arms around the other, held for a moment rather than brushing past.
+  counter_examples: >-
+    A handshake or a pat on the shoulder, which is hand_interacts_with_person.
+    Two people standing close together without arms around one another.
+
+- label: person_reads_document
+  zh_name: 看文件
+  definition: >-
+    A person holds paper, a document, a book or a clipboard and directs their
+    gaze at it.
+  counter_examples: >-
+    Holding paper while looking elsewhere. Looking at a phone or a laptop
+    screen rather than something printed.
+
+- label: person_unloads_vehicle
+  zh_name: 从车上卸货
+  definition: >-
+    A person takes an object out of a vehicle's interior, trunk or bed and
+    brings it clear of the vehicle.
+  counter_examples: >-
+    Getting out of a vehicle empty-handed. Opening a trunk without taking
+    anything out. Carrying an object the other way, into the vehicle, which
+    is person_loads_vehicle.
+
+- label: person_loads_vehicle
+  zh_name: 往车上装货
+  definition: >-
+    A person places an object into a vehicle's interior, trunk or bed.
+  counter_examples: >-
+    Getting into a vehicle empty-handed. Closing a trunk without having placed
+    anything inside. Carrying an object the other way, out of the vehicle,
+    which is person_unloads_vehicle.
+
+- label: person_closes_facility_door
+  zh_name: 关门
+  definition: >-
+    A person moves a building door from open to shut, ending with the door in
+    its frame.
+  counter_examples: >-
+    Leaving a door standing open after passing through. Pulling a door that
+    does not move. Opening a door, which is person_opens_facility_door.
+
+- label: person_rides_bicycle
+  zh_name: 骑自行车
+  definition: >-
+    A person is seated on a bicycle with feet on the pedals and the bicycle is
+    moving.
+  counter_examples: >-
+    Walking beside a bicycle or pushing it. Sitting on a bicycle that is
+    stationary, for example waiting at a kerb.
+
+- label: person_purchases
+  zh_name: 购买
+  definition: >-
+    A person hands over money or a card to a vendor, cashier or machine, or
+    completes a payment gesture at a counter, kiosk or vending machine.
+  counter_examples: >-
+    Standing in a queue or looking at goods with no exchange taking place.
+    Handing an object to another person with no payment involved, which is
+    person_transfers_object.

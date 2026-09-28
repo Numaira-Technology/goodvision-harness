@@ -22,6 +22,7 @@ from uuid import uuid4
 from PIL import Image
 
 from .contracts import PUBLIC_MODEL_NAME
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from .latency_trace import log_timing
 from .result_bus import ResultBus
 from .scene_evidence import EvidenceFrame, InspectionRequest
@@ -56,6 +57,7 @@ class VLMProcessConfig:
     route_id: str | None = None
     output_mode: str = "full"
     benchmark_questions: tuple[dict, ...] = ()
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
@@ -642,6 +644,7 @@ def run_vlm_process(
                         ),
                         benchmark_questions=config.benchmark_questions,
                         benchmark_window_index=window_index if offline else None,
+                        vocabulary=config.vocabulary,
                     )
                     dispatched = time.monotonic()
                     for lane in lanes:

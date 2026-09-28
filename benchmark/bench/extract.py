@@ -7,7 +7,12 @@ no harness or GPU dependency, so they are fully unit-tested.
 
 from __future__ import annotations
 
-from .schema import EVENT_TARGET_TO_HARNESS_LABEL, Capture, Question
+from .schema import (
+    EVENT_TARGET_TO_HARNESS_LABEL,
+    Capture,
+    Question,
+    question_target_label,
+)
 
 # Column boundaries for horizontal thirds on the source-normalized x axis.
 _LEFT_EDGE = 1.0 / 3.0
@@ -101,11 +106,10 @@ def answer_question(question: Question, capture: Capture) -> str:
     capability = question.capability
 
     if capability == "event_recognition":
-        target = str(ctx.get("queried_event_label") or question.raw.get("target_label"))
-        return event_recognition(capture, target)
+        return event_recognition(capture, question_target_label(question) or "")
 
     if capability == "temporal_questions":
-        target = str(ctx.get("event_label") or question.raw.get("target_label"))
+        target = question_target_label(question) or ""
         ordinal = int(ctx.get("event_ordinal", 1))
         return _fmt_number(temporal_event_end(capture, target, ordinal))
 

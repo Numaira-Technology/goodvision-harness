@@ -15,6 +15,7 @@ from threading import Lock
 
 from .contracts import NormalizedBBox
 from .person_registry import _face_body_score
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from .scene_state import SceneState
 from .vlm_fusion import _unambiguous_matches
 
@@ -28,7 +29,10 @@ def display_subject_id(epoch, track_id):
 
 
 class SAMDisplayFusion:
-    def __init__(self, session_id, source_id, *, stranger_enabled=False):
+    def __init__(
+        self, session_id, source_id, *, stranger_enabled=False,
+        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+    ):
         self.session_id, self.source_id = session_id, source_id
         self.stranger_enabled = stranger_enabled
         self._inbox_lock = Lock()
@@ -44,6 +48,7 @@ class SAMDisplayFusion:
         self._state = SceneState(
             session_id, source_id, person_history_size=1024,
             person_history_seconds=90.0,
+            vocabulary=vocabulary,
         )
 
     def offer_vlm(self, report):

@@ -43,6 +43,8 @@
 [架构索引](architecture/README.md)收录事件引擎、身份与证据、网络显示、VLM 时序和 SAM 方案。
 架构目录保留机制说明和设计文档，仍有用的故障结论、修复边界及测量汇总放到验证目录。
 
+[Generic event injection](architecture/generic-event-injection-20260926.md) describes runtime event definitions and question-driven event selection.
+
 <a id="validation-records"></a>
 ## 验证与排障记录
 

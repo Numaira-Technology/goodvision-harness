@@ -99,12 +99,10 @@ class IndependentVLMInspector(TemporalVLMInspector):
                 metadata = json.loads(part["text"])
                 metadata.pop("subject_boxes", None)
                 part["text"] = json.dumps(metadata, separators=(",", ":"))
-        messages[1]["content"][0]["text"] = json.dumps(
-            {
-                "allowed_event_labels": list(job.request.event_labels),
-                "grounding_frame_sequence": job.frames[-1].frame_sequence,
-            }
-        )
+        context = json.loads(messages[1]["content"][0]["text"])
+        context.pop("allowed_subject_ids", None)
+        context["grounding_frame_sequence"] = job.frames[-1].frame_sequence
+        messages[1]["content"][0]["text"] = json.dumps(context)
         return messages
 
     @classmethod

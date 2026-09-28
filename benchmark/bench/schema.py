@@ -44,6 +44,26 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 }
 
 
+def question_target_label(question: Question) -> str | None:
+    """The harness event label this question is scored against, or None.
+
+    Feature selection and answer extraction must agree on this. If a session
+    enables one label and the extractor reads another, every episode is missed
+    and the question scores zero without anything failing.
+    """
+    ctx = question.public_context
+    if question.capability == "event_recognition":
+        raw = ctx.get("queried_event_label") or question.raw.get("target_label")
+    elif question.capability == "temporal_questions":
+        raw = ctx.get("event_label") or question.raw.get("target_label")
+    else:
+        return None  # counting and location come from tracking, not events
+    if not raw:
+        return None
+    label = str(raw)
+    return EVENT_TARGET_TO_HARNESS_LABEL.get(label, label)
+
+
 @dataclass(frozen=True, slots=True)
 class Subject:
     """One tracked person in a single frame, source-normalized xyxy."""
