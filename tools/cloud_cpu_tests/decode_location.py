@@ -10,13 +10,14 @@ import shutil
 import socket
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 from statistics import mean
 
 import httpx
 import psutil
 
-from .report import distribution, lane_summary
+from .report import distribution, lane_summary, rows
 from .run import stop
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +42,50 @@ def browser_cpu_sample(process):
         }
     except psutil.Error:
         return None
+
+
+def vlm_outcome(path, sessions, expected):
+    reports = [
+        row.get("payload", {})
+        for row in rows(path)
+        if row.get("payload", {}).get("type") == "vlm_report"
+        and row.get("payload", {}).get("stream_session_id") in sessions
+    ]
+    states = Counter(report.get("state", "unknown") for report in reports)
+    problems = []
+    if expected and not reports:
+        problems.append("No VLM reports for the analysis session")
+    if expected and len(reports) != states["completed"]:
+        problems.append("VLM requests did not all complete successfully")
+    if not expected and reports:
+        problems.append("Unexpected VLM reports")
+    return {"states": dict(states), "valid": not problems, "problems": problems}
+
+
+def browser_protocol(browser):
+    config = browser["config"]["config"]
+    return {
+        "analysis_features": sorted(browser["analysis_features"]),
+        "analysis_settings": browser["config"]["settings"],
+        "upload_window": config.get("analysis_upload_window", 1),
+        "ack_timeout_ms": config.get("analysis_ack_timeout_ms", 5000),
+        "drain_timeout_ms": config.get("analysis_drain_timeout_ms", 10000),
+        "target_fps": config["target_fps"],
+        "motion_width": config["motion_width"],
+        "motion_backend": config["motion_backend"],
+        "anchor_policy": config["anchor_policy"],
+        "controller_asset_sha256": browser.get("experimental_camera_display_sha256"),
+    }
+
+
+def test_source_sha256():
+    return {
+        str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (
+            Path(__file__).resolve(),
+            ROOT / "tools/evaluate_pipeline_latency.cjs",
+        )
+    }
 
 
 def run(args):
@@ -108,6 +153,10 @@ def run(args):
             command += ["--camera-display-asset", str(args.camera_display_asset.resolve(strict=True))]
         if args.upload_window != 1:
             command += ["--upload-window", str(args.upload_window)]
+        if args.ack_timeout_ms != 5000:
+            command += ["--ack-timeout-ms", str(args.ack_timeout_ms)]
+        if args.drain_timeout_ms != 10000:
+            command += ["--drain-timeout-ms", str(args.drain_timeout_ms)]
         env = os.environ.copy()
         env["NODE_PATH"] = str(ROOT / ".cache/seg-pipeline/node_modules")
         samples = []
@@ -135,6 +184,11 @@ def run(args):
         raise RuntimeError(f"Browser trial failed; inspect {lane / 'browser.log'}")
     metrics = lane_summary(output, 1, job)
     browser = json.loads((lane / "browser-report.json").read_text())
+    expected_vlm = bool(
+        set(browser["analysis_features"]) & {"fight", "smoking", "fall", "weapon"}
+    )
+    vlm = vlm_outcome(lane / "vlm.jsonl", set(metrics["sessions"]), expected_vlm)
+    problems = [*metrics["problems"], *vlm["problems"]]
     summary = {
         "location": args.location,
         "controller_host": socket.gethostname(),
@@ -142,6 +196,11 @@ def run(args):
         "delay_seconds": args.delay,
         "video_duration_seconds": browser["config"]["video_duration"],
         "browser_version": browser["browser_version"],
+        "browser_protocol": browser_protocol(browser),
+        "test_source_sha256": test_source_sha256(),
+        "vlm": vlm,
+        "valid": not problems,
+        "problems": problems,
         "browser_process_cpu_percent": distribution(
             [row["browser_process_cpu_percent"] for row in samples]
         ),
@@ -152,8 +211,8 @@ def run(args):
     }
     save(output / "summary.json", summary)
     print(output / "summary.json")
-    if not metrics["valid"]:
-        raise RuntimeError(f"Invalid trial: {metrics['problems']}")
+    if problems:
+        raise RuntimeError(f"Invalid trial: {problems}")
 
 
 METRICS = (
@@ -177,7 +236,12 @@ def metric(summary, key):
 def compare(args):
     if len(args.mac) != len(args.cloud):
         raise ValueError("Provide the same number of Mac and cloud trials")
+    if len(args.mac) < 2:
+        raise ValueError("Run at least two trials of each location")
     pairs = []
+    reference_invariant = None
+    reference_protocol = None
+    reference_source = None
     for mac_path, cloud_path in zip(args.mac, args.cloud, strict=True):
         mac = json.loads((mac_path / "summary.json").read_text())
         cloud = json.loads((cloud_path / "summary.json").read_text())
@@ -186,10 +250,23 @@ def compare(args):
         for key in ("video_sha256", "delay_seconds", "video_duration_seconds"):
             if mac[key] != cloud[key]:
                 raise ValueError(f"Different {key} between paired trials")
-        if mac["lane"]["invariant"] != cloud["lane"]["invariant"]:
-            raise ValueError("Cloud model, server or hardware changed between trials")
-        if not mac["lane"]["valid"] or not cloud["lane"]["valid"]:
-            raise ValueError("Invalid browser trial; inspect both summaries")
+        for summary in (mac, cloud):
+            if not (
+                summary.get("valid") is True
+                and summary["lane"]["valid"] is True
+                and summary.get("vlm", {}).get("valid") is True
+            ):
+                raise ValueError("Invalid browser or VLM trial; inspect both summaries")
+            if reference_invariant is None:
+                reference_invariant = summary["lane"]["invariant"]
+                reference_protocol = summary["browser_protocol"]
+                reference_source = summary["test_source_sha256"]
+            if summary["lane"]["invariant"] != reference_invariant:
+                raise ValueError("Cloud model, server or hardware changed between trials")
+            if summary["browser_protocol"] != reference_protocol:
+                raise ValueError("Browser analysis settings changed between trials")
+            if summary["test_source_sha256"] != reference_source:
+                raise ValueError("Test script source changed between trials")
         pairs.append((mac, cloud))
     lines = [
         "# Mac 与云端浏览器解码对照",
@@ -206,10 +283,29 @@ def compare(args):
             "云端条件未将预览画面传回 Mac，因此这是定位解码与上传瓶颈的诊断，"
             "不是最终本机观看延迟。"
         ),
+        "所有轮次的 VLM 请求均已成功完成，且云端模型、视频和分析配置一致。",
         "",
-        "| 指标 | Mac 浏览器 | 云端浏览器 |",
-        "| --- | ---: | ---: |",
+        "| 轮次 | Mac 连续描边率 | Mac 呈现 FPS | Mac 上传积压 | 云端连续描边率 | 云端呈现 FPS | 云端上传积压 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
+    for index, (mac, cloud) in enumerate(pairs, 1):
+        lines.append(
+            f"| {index} | {mac['lane']['coverage']:.1%} | "
+            f"{mac['lane']['presentation_fps']:.2f} | "
+            f"{mac['lane']['analysis_backpressure_warnings']} | "
+            f"{cloud['lane']['coverage']:.1%} | "
+            f"{cloud['lane']['presentation_fps']:.2f} | "
+            f"{cloud['lane']['analysis_backpressure_warnings']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "各轮结果见上表；下表是描述性平均值，不代表每轮都达到该水平。",
+            "",
+            "| 指标 | Mac 浏览器 | 云端浏览器 |",
+            "| --- | ---: | ---: |",
+        ]
+    )
     for label, key, unit in METRICS:
         values = [mean(metric(pair[index], key) for pair in pairs) for index in (0, 1)]
         if unit == "%":
@@ -244,12 +340,18 @@ def main():
     trial.add_argument("--chrome")
     trial.add_argument("--camera-display-asset", type=Path)
     trial.add_argument("--upload-window", type=int, choices=(1, 2, 3, 4), default=1)
+    trial.add_argument("--ack-timeout-ms", type=int, default=5000)
+    trial.add_argument("--drain-timeout-ms", type=int, default=10000)
     comparison = subparsers.add_parser("compare")
     comparison.add_argument("--mac", type=Path, action="append", required=True)
     comparison.add_argument("--cloud", type=Path, action="append", required=True)
     comparison.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.action == "run":
+        if not 5000 <= args.ack_timeout_ms <= 30000:
+            parser.error("--ack-timeout-ms must be 5000..30000")
+        if not 10000 <= args.drain_timeout_ms <= 60000:
+            parser.error("--drain-timeout-ms must be 10000..60000")
         run(args)
     else:
         compare(args)

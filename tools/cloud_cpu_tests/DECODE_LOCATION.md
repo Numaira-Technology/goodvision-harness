@@ -38,6 +38,14 @@ npm install --prefix .cache/seg-pipeline --save-exact playwright@1.62.1
 
 Mac 保持 [README](README.md) 中的 SSH 端口转发。两端必须有哈希相同的视频文件；脚本会核对云端服务报告的 SHA256，错误时拒绝运行。云端需安装 Node.js 18 或更新版本。
 
+新实例准备完成后，可在 Mac 上用参数化脚本运行完整的 Mac → 云端 → 云端 → Mac 对照（先保持 18094 端口隧道可用）：
+
+```bash
+bash tools/cloud_cpu_tests/run_decode_comparison.sh 'INSTANCE_IP' 'SSH_PORT'
+```
+
+可选第 3、4 个参数是 SSH 私钥路径和云端包目录。脚本在两侧固定使用相同的四帧上传窗口、15 秒 ACK 超时和 30 秒片尾排空等待。第一轮若 VLM 请求失败就会停止，避免继续生成无效对照。输出写入新的 `outputs/cloud-decode/<UTC 时间>/` 目录，不会覆盖历史数据。
+
 ## 运行
 
 在 Mac 包根目录运行第一轮：
@@ -65,4 +73,4 @@ Mac 保持 [README](README.md) 中的 SSH 端口转发。两端必须有哈希�
   --output outputs/cloud-decode/comparison.md
 ```
 
-每轮 `summary.json` 保存视频哈希、浏览器版本、描边率、呈现 FPS、云端收帧到结果及采集到呈现 P95，以及两端 CPU 采样。汇总会拒绝视频、缓冲、服务器、模型或 GPU 配置不一致的配对。浏览器版本和主机 CPU 仍可能不同；报告中会明示，不能只凭一次差异判定稳定提速。
+每轮 `summary.json` 保存视频哈希、测试脚本哈希、浏览器版本、描边率、呈现 FPS、VLM 请求状态、上传配置、云端收帧到结果及采集到呈现 P95，以及两端 CPU 采样。只要 VLM 请求没有全部成功，本轮就会标记为无效；汇总还会拒绝视频、缓冲、服务器、模型、GPU、浏览器分析配置或测试脚本版本不一致的轮次，并要求两侧各至少两轮。汇总先展示逐轮结果和上传积压，再展示描述性平均值。浏览器版本和主机 CPU 仍可能不同；报告中会明示，不能只凭一次差异判定稳定提速。

@@ -5,6 +5,7 @@ VLM-on / VLM-off / VLM-off / VLM-on order. VLM-off requests only ``stranger``:
 the SAM and face paths remain active, but no safety-event VLM is requested.
 This is a diagnostic, not the Test 2 acceptance comparison.
 """
+# ruff: noqa: E501
 
 import argparse
 import hashlib
@@ -33,6 +34,15 @@ def vlm_states(path):
     return dict(states)
 
 
+def number(value, spec, suffix=""):
+    return "—" if value is None else format(value, spec) + suffix
+
+
+def require_valid_results(results):
+    if any(not result["valid"] for result in results):
+        raise SystemExit(1)
+
+
 def write_comparison(output, results):
     lines = [
         "# Same-host single-stream VLM diagnostic",
@@ -49,12 +59,19 @@ def write_comparison(output, results):
         lane = result["lanes"][0] if result["lanes"] else None
         states = vlm_states(Path(job["output"]) / "lane-1/vlm.jsonl")
         if lane:
+            coverage = number(lane.get("coverage"), ".1%")
+            append_p95 = number(
+                lane.get("sam_append_seconds", {}).get("p95"), ".3f", " s"
+            )
+            source_p95 = number(
+                lane.get("cloud_source_to_result_seconds", {}).get("p95"),
+                ".3f",
+                " s",
+            )
             lines.append(
                 f"| {job['id']} | {job['name']} | {result['valid']} | "
-                f"{lane['coverage']:.1%} | "
-                f"{lane['sam_append_seconds']['p95']:.3f} s | "
-                f"{lane['cloud_source_to_result_seconds']['p95']:.3f} s | "
-                f"{states} | {lane['analysis_backpressure_warnings']} |"
+                f"{coverage} | {append_p95} | {source_p95} | "
+                f"{states} | {lane.get('analysis_backpressure_warnings', '—')} |"
             )
         else:
             lines.append(
@@ -100,7 +117,9 @@ def main():
         video_hash = hashlib.file_digest(video, "sha256").hexdigest()
     output = (
         args.output
-        or ROOT / "outputs/cloud-cpu-tests" / ("vlm-ab-" + time.strftime("%Y%m%dT%H%M%S"))
+        or ROOT
+        / "outputs/cloud-cpu-tests"
+        / ("vlm-ab-" + time.strftime("%Y%m%dT%H%M%S"))
     ).resolve()
     output.mkdir(parents=True, exist_ok=False)
     manifest = {
@@ -178,12 +197,15 @@ def main():
                 if reference_invariant is None:
                     reference_invariant = invariant
                 elif invariant != reference_invariant:
-                    result["problems"].append("Cloud host or fixed configuration changed")
+                    result["problems"].append(
+                        "Cloud host or fixed configuration changed"
+                    )
             result["valid"] = result["valid"] and not result["problems"]
             results.append(result)
             save(output / "summary.json", results)
             write_comparison(output, results)
     print(output / "comparison.md")
+    require_valid_results(results)
 
 
 if __name__ == "__main__":

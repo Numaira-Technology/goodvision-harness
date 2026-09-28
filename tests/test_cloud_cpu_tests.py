@@ -8,7 +8,7 @@ from argparse import Namespace
 import pytest
 from fastapi.testclient import TestClient
 
-from tools.cloud_cpu_tests import report, server
+from tools.cloud_cpu_tests import report, server, vlm_ab
 from tools.cloud_cpu_tests.run import PLAN_DIR, load_plan, schedule
 
 
@@ -36,6 +36,35 @@ def test_plan_refuses_an_uncontrolled_extra_condition(tmp_path):
     path.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="isolate"):
         load_plan(path)
+
+
+def test_vlm_comparison_preserves_invalid_rounds_with_missing_metrics(tmp_path):
+    result = {
+        "job": {
+            "id": "trial-01",
+            "name": "vlm_on",
+            "output": str(tmp_path / "trial-01"),
+        },
+        "valid": False,
+        "lanes": [
+            {
+                "coverage": None,
+                "sam_append_seconds": {"p95": None},
+                "cloud_source_to_result_seconds": {"p95": None},
+                "analysis_backpressure_warnings": 0,
+            }
+        ],
+    }
+    vlm_ab.write_comparison(tmp_path, [result])
+    comparison = (tmp_path / "comparison.md").read_text()
+    assert "| trial-01 | vlm_on | False | — | — | — |" in comparison
+
+
+def test_vlm_diagnostic_returns_failure_when_any_round_is_invalid():
+    vlm_ab.require_valid_results([{"valid": True}])
+    with pytest.raises(SystemExit) as error:
+        vlm_ab.require_valid_results([{"valid": True}, {"valid": False}])
+    assert error.value.code == 1
 
 
 def test_plan_requires_matching_upload_windows_for_a_valid_comparison(tmp_path):

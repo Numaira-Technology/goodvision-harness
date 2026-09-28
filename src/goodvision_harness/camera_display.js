@@ -1546,7 +1546,8 @@
           if(this.socket.readyState!==1)throw new Error("socket closed");
           if(this.socket.bufferedAmount>1024*1024){await new Promise(resolve=>setTimeout(resolve,20));continue;}
           const acknowledged=new Promise((resolve,reject)=>{this.pendingAck={task,resolve,reject,
-            timer:setTimeout(()=>{this.pendingAck=null;reject(new Error("analysis acknowledgement timed out"));},5000)};});
+            timer:setTimeout(()=>{this.pendingAck=null;reject(new Error("analysis acknowledgement timed out"));},
+              this.config.analysis_ack_timeout_ms||5000)};});
           const sentAt=performance.now();this.socket.send(task.packet);
           this.prepareNextUpload();
           const reply=await acknowledged;
@@ -1602,6 +1603,7 @@
               this.noteTiming("analysis_ack_transport_residual",Math.max(0,ackMs-serverMs));
             }
             if(!reply.accepted){
+              if(this.analysisPause!=="capacity")this.stats.analysis_capture_pauses++;
               this.analysisPause=reply.reason==="capacity"?"capacity":"obsolete";
               // A later packet may already have been accepted. In that case
               // replaying this source would violate server source order.

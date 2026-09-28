@@ -958,6 +958,15 @@ test("one JPEG lookahead overlaps ACK wait without sending a second unacknowledg
   assert.equal(view.controller.snapshot().analysis_sent,1);view.controller.stop();
 });
 
+test("serial upload honors the configured acknowledgement timeout",async()=>{
+  const delays=[];
+  const view=browser({autoAck:false,config:{analysis_ack_timeout_ms:15000},globals:{
+    setTimeout:(callback,delay,...args)=>{delays.push(delay);return setTimeout(callback,delay,...args);},
+  }});
+  view.capture(0);await view.finish();
+  assert.ok(delays.includes(15000));view.controller.stop();
+});
+
 test("optional two-frame upload window sends the next source before the first ACK",async()=>{
   const view=browser({autoAck:false,config:{analysis_upload_window:2}});
   view.capture(0);view.capture(.34);view.capture(.68);
@@ -1000,6 +1009,7 @@ test("two-frame upload window retains every source if an earlier frame is refuse
   view.controller.acknowledgeUpload({...unpack(view.packets[0]),type:"camera_frame_ack",accepted:false,reason:"capacity"});
   await settle();
   assert.equal(view.controller.snapshot().analysis_upload_failures,1);
+  assert.equal(view.controller.snapshot().analysis_capture_pauses,1);
   assert.deepEqual(Array.from(view.controller.uploads,task=>task.metadata.source_sequence),[0,1]);
   assert.equal(view.packets.length,2);view.controller.stop();
 });

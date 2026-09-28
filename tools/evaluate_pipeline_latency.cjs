@@ -223,9 +223,12 @@ const probe=async(name,url)=>{
         else if(m.type==='error')__experimentRows.push({kind:'failure',at:Date.now(),message:m.message});};
     },{displayConfig,analysisFeatures,uploadWindow,ackTimeoutMs,drainTimeoutMs});
     report.config=await page.evaluate(()=>({config:__experimentController.config,settings:__experimentController.settings,video_duration:__experimentVideo.duration}));
-    readers=[receive("results","/v1/results/events")];
-    if(analysisFeatures.some(feature=>['fight','smoking','fall','weapon'].includes(feature)))
-      readers.push(receive("vlm","/v1/vlm/results/events"));
+    // Always observe VLM output so a VLM-off diagnostic can prove that no
+    // reports were emitted, rather than merely omitting the evidence stream.
+    readers=[
+      receive("results","/v1/results/events"),
+      receive("vlm","/v1/vlm/results/events"),
+    ];
     if(args["sync-dir"]){
       const sync=path.resolve(args["sync-dir"]),lane=args.lane||"1";
       fs.writeFileSync(path.join(sync,`ready-${lane}.json`),JSON.stringify({duration:report.config.video_duration,at:Date.now()}));
