@@ -224,7 +224,7 @@ class ServiceLocations:
             return max(1, local_capacity)
         if self.tracking_mode == "server":
             return self.tracking_server_capacity
-        if self.tracking_mode == "local" and gpu.available:
+        if self.tracking_mode == "local" and gpu.available and gpu.tracking_available:
             return max(1, local_capacity)
         return 1
 

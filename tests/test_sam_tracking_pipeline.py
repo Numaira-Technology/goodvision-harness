@@ -44,6 +44,77 @@ def output_sequences(batches):
     return [snapshot.frame_sequence for batch in batches for snapshot in batch.frames]
 
 
+@pytest.mark.parametrize("queue_policy", ["durable_ordered", "realtime_latest"])
+def test_first_frames_use_persistent_data_without_spool_override(
+    tmp_path, monkeypatch, queue_policy,
+):
+    # Reproduce a delivery with only its existing persistent settings path.
+    # No helper-supplied spool_directory may mask the default-path regression.
+    from goodvision_harness.perception import PerceptionSessionHTTPClient
+
+    monkeypatch.delenv("GOODVISION_SAM_SPOOL_DIRECTORY", raising=False)
+    monkeypatch.delenv("GOODVISION_TRACKING_SPOOL_DIRECTORY", raising=False)
+    monkeypatch.setenv(
+        "HARNESS_DEPLOYMENT_SETTINGS_PATH", str(tmp_path / "data/settings.json"),
+    )
+    app = tmp_path / "app"
+    app.mkdir()
+    monkeypatch.chdir(app)
+    received = []
+    client = PerceptionSessionHTTPClient(
+        "http://worker.test", method="sam_live",
+        transport=httpx.MockTransport(RouteServer("sam_live")), timeout_seconds=4,
+    )
+    coordinator = PipelinedVideoSessionTrackingCoordinator(
+        client, max_fps=4, batch_frames=1, batch_seconds=0.1,
+        on_batch=received.append, queue_policy=queue_policy,
+    )
+    try:
+        for index in range(3):
+            submit(coordinator, frames(index, 1))
+            assert coordinator.wait_until_idle(3)
+        coordinator.flush()
+        assert coordinator.wait_until_idle(3)
+        assert output_sequences(received) == [0, 3, 6]
+        assert coordinator._journal().path.parent == tmp_path / "data/sam-spool"
+        assert not (app / ".goodvision").exists()
+    finally:
+        coordinator.close()
+
+
+@pytest.mark.parametrize("selection", ["argument", "neutral", "legacy", "local"])
+def test_spool_location_preserves_explicit_overrides(tmp_path, monkeypatch, selection):
+    from goodvision_harness.perception import PerceptionSessionHTTPClient
+
+    for name in (
+        "GOODVISION_SAM_SPOOL_DIRECTORY", "GOODVISION_TRACKING_SPOOL_DIRECTORY",
+        "HARNESS_DEPLOYMENT_SETTINGS_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    kwargs = {}
+    expected = tmp_path / selection
+    if selection != "local":
+        monkeypatch.setenv(
+            "HARNESS_DEPLOYMENT_SETTINGS_PATH", str(tmp_path / "data/settings.json"),
+        )
+        monkeypatch.setenv("GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "legacy"))
+    if selection in {"argument", "neutral"}:
+        monkeypatch.setenv(
+            "GOODVISION_TRACKING_SPOOL_DIRECTORY", str(tmp_path / "neutral"),
+        )
+    if selection == "argument":
+        kwargs["spool_directory"] = expected
+    if selection == "local":
+        expected = tmp_path / ".goodvision/sam-spool"
+    client = PerceptionSessionHTTPClient("http://worker.test", method="sam_live")
+    coordinator = PipelinedVideoSessionTrackingCoordinator(client, **kwargs)
+    try:
+        assert coordinator._journal().path.resolve().parent == expected
+    finally:
+        coordinator.close()
+
+
 @pytest.mark.parametrize(
     "queue_policy", ["durable_ordered", "realtime_latest", "latest_only"],
 )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import shutil
@@ -12,10 +13,10 @@ import time
 from pathlib import Path
 
 IMAGE_TAGS = (
-    "goodvision-harness:2026.09.10-full.4",
-    "goodvision-rich-label-worker:2026.09.10-full.4",
+    "goodvision-harness:20260923-full1",
+    "goodvision-rich-label-worker:20260923-full1",
 )
-ARCHIVE_NAME = "goodvision-full-2026.09.10.4.tar"
+ARCHIVE_NAME = "goodvision-full-20260923-full1.tar.gz"
 
 
 def export(directory: Path) -> None:
@@ -49,7 +50,12 @@ def export(directory: Path) -> None:
                 )
                 try:
                     assert process.stdout is not None
-                    shutil.copyfileobj(process.stdout, output, 4 * 1024 * 1024)
+                    with gzip.GzipFile(
+                        fileobj=output, mode="wb", compresslevel=1, mtime=0,
+                    ) as compressed:
+                        shutil.copyfileobj(
+                            process.stdout, compressed, 4 * 1024 * 1024,
+                        )
                     process.stdout.close()
                     if process.wait() != 0:
                         raise RuntimeError("Docker image export failed; see export.log")
@@ -60,7 +66,7 @@ def export(directory: Path) -> None:
         print("Verifying the complete archive and both image tags", flush=True)
         manifests = []
         with partial.open("rb") as stream:
-            with tarfile.open(fileobj=stream, mode="r|") as contents:
+            with tarfile.open(fileobj=stream, mode="r|*") as contents:
                 for member in contents:
                     if member.name == "manifest.json":
                         if not member.isfile() or member.size > 1024 * 1024:

@@ -12,6 +12,7 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | --- | --- |
 | `start_delivery.py` | Start the recorded `2026.09.10-full.4` customer package. |
 | `start_windows_hybrid_demo.ps1` | Start the native Windows / Docker worker demo. |
+| `start_local_gpu.py` | Detect NVIDIA GPUs and start SAM on this host using the Contour runtime; `--streams N` provisions camera lanes, `--with-local-inference` also starts the local VLM. |
 | `export_full_delivery.py` | Export the recorded full.4 image pair, metadata and checksums. |
 | `run_full_delivery_smoke.ps1` | Run isolated image protocol checks; accepts candidate image tags. |
 | `delivery_smoke.py` | Exercise a disposable main container using synthetic frames. |

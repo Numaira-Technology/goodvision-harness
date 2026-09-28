@@ -13,7 +13,7 @@ Windows PowerShell 5.1 会逐个检查已知底版镜像，避免多镜像数组
 
 更新使用已安装镜像的依赖和模型，无需下载。包含完整受版本管理的应用代码、浏览器资源和许可证，不含个人数据、访问密钥、测试视频或模型权重。
 
-支持原 Windows 20260919 安装、Lemon 已核对镜像 ID 的 diagnostics2 安装、scene-results 20260919、本机 diagnostics1、single-video1、cloud-health1，以及从已验证底版连续升级的 cloud-health2–7。请保留原底版镜像（更新器自动保留的 goodvision-harness-update-base 镜像），供离线核验和运行检查器。更新前校验镜像来源、发布文件和包内文件，并校验原 Windows 安装的启动器元数据；未知、文件不匹配或混合版本不会修改。名字包含 `-before-` 的历史备份容器不参与更新。多个安装可运行 `update_harness.ps1 -Project 项目名` 指定。
+支持 20260923-full1 完整交付底版、原 Windows 20260919 安装、Lemon 已核对镜像 ID 的 diagnostics2 安装、scene-results 20260919、本机 diagnostics1、single-video1、cloud-health1，以及从已验证底版连续升级的 cloud-health2–7。请保留原底版镜像（更新器自动保留的 goodvision-harness-update-base 镜像），供离线核验和运行检查器。更新前校验镜像来源、发布文件和包内文件，并校验原 Windows 安装的启动器元数据；未知、文件不匹配或混合版本不会修改。名字包含 `-before-` 的历史备份容器不参与更新。多个安装可运行 `update_harness.ps1 -Project 项目名` 指定。
 
 如需精确选择其他已有容器，可使用 `update_harness.ps1 -Containers "主容器名,第二路容器名"`；加 `-CheckOnly` 只检查。所有指定容器都必须存在、属于同一部署且版本相同，否则不会修改任何容器。
 

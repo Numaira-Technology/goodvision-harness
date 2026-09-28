@@ -101,12 +101,18 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
         self.on_native_batch = on_native_batch
         if client.startup_frames != 1 or client.max_append_frames > 4:
             raise ValueError("pipelined tracking requires the causal SAM route")
+        # Container images keep application code read-only. Recovery journals
+        # belong beside persistent deployment settings, never under /app.
+        settings_path = os.environ.get("HARNESS_DEPLOYMENT_SETTINGS_PATH", "").strip()
+        default_spool = (
+            Path(settings_path).parent / "sam-spool"
+            if settings_path else Path(".goodvision/sam-spool")
+        )
         self._spool_directory = Path(
             spool_directory
-            or os.environ.get(
-                "GOODVISION_SAM_SPOOL_DIRECTORY",
-                ".goodvision/sam-spool",
-            )
+            or os.environ.get("GOODVISION_TRACKING_SPOOL_DIRECTORY")
+            or os.environ.get("GOODVISION_SAM_SPOOL_DIRECTORY")
+            or default_spool
         )
         self._spool_max_bytes = spool_max_bytes
         self._spool = None
