@@ -23,6 +23,11 @@ from PIL import Image
 
 from .contracts import PUBLIC_MODEL_NAME
 from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
+from .independent_diagnostics import (
+    DIAGNOSTIC_QUEUE_CAPACITY,
+    IndependentDiagnostics,
+    IndependentRequestDiagnostics,
+)
 from .latency_trace import log_timing
 from .result_bus import ResultBus
 from .scene_evidence import EvidenceFrame, InspectionRequest
@@ -278,6 +283,7 @@ def run_vlm_process(
     inspector_factory=_inspector,
     grounding_required=None,
     startup_ready=None,
+    diagnostic_outgoing=None,
 ):
     """Spawn target: image windows, inference, observation reports, then IPC."""
     state = IndependentEventState(config)
@@ -341,11 +347,20 @@ def run_vlm_process(
             # A failed best-effort transport probe must not disable inference.
             return False
 
-    def evaluate(job, lane):
+    def evaluate(job, lane, sample):
         started, started_at = time.monotonic(), utc_now()
         verdicts, error = (), None
         validation_reason = None
         benchmark = None
+        diagnostic = None
+        failure = None
+        if diagnostic_outgoing is not None:
+            try:
+                diagnostic = IndependentRequestDiagnostics(
+                    job, lane, sample, config.generation)
+                job = replace(job, diagnostics=diagnostic)
+            except Exception:
+                pass  # Optional diagnostics cannot prevent inference.
         try:
             result = worker_inspector(lane).inspect(job)
             if isinstance(result, BenchmarkInspection):
@@ -359,6 +374,7 @@ def run_vlm_process(
             if offline:
                 benchmark = {"response": getattr(exc, "benchmark_response", None),
                              "observations": []}
+            failure = exc
             # Closed vocabulary only: no endpoints, credentials or model text.
             error = getattr(exc, "code", None)
             if error not in {
@@ -397,6 +413,11 @@ def run_vlm_process(
                          "start_seconds": job.request.start_seconds,
                          "end_seconds": job.request.end_seconds,
                          "lane": lane}
+        if diagnostic is not None:
+            try:
+                diagnostic.publish(diagnostic_outgoing, verdicts=verdicts, error=failure)
+            except Exception:
+                pass  # Separate bounded diagnostics never gate normal reports.
         return (
             verdicts,
             error,
@@ -660,7 +681,7 @@ def run_vlm_process(
                         queues[lane][order] = (
                             lane_job,
                             sample,
-                            executors[lane].submit(evaluate, lane_job, lane),
+                            executors[lane].submit(evaluate, lane_job, lane, sample),
                             dispatched,
                         )
                         last_lane_endpoint[lane] = frame.frame_sequence
@@ -704,6 +725,9 @@ def run_vlm_process(
             client.close()
         outgoing.close()
         outgoing.cancel_join_thread()
+        if diagnostic_outgoing is not None:
+            diagnostic_outgoing.close()
+            diagnostic_outgoing.cancel_join_thread()
 
 
 class IndependentVLMBranch:
@@ -733,6 +757,10 @@ class IndependentVLMBranch:
         context = mp.get_context("spawn")
         self._incoming = context.Queue(INPUT_CAPACITY)
         self._outgoing = context.Queue(OUTPUT_CAPACITY)
+        self._diagnostic_outgoing = context.Queue(DIAGNOSTIC_QUEUE_CAPACITY)
+        self.diagnostics = IndependentDiagnostics(
+            config.stream_session_id, config.generation)
+        self._diagnostic_reader = None
         self._process_stop = context.Event()
         self._grounding_required = context.Event()
         self._startup_ready = context.Event()
@@ -748,6 +776,7 @@ class IndependentVLMBranch:
                 inspector_factory,
                 self._grounding_required,
                 self._startup_ready,
+                self._diagnostic_outgoing,
             ),
             name="goodvision-vlm",
             daemon=True,
@@ -785,6 +814,9 @@ class IndependentVLMBranch:
             target=self._read, name="vlm-independent-results", daemon=True
         )
         self._reader.start()
+        self._diagnostic_reader = Thread(
+            target=self._read_diagnostics, name="vlm-diagnostics", daemon=True)
+        self._diagnostic_reader.start()
         if self._camera_dispatch is not None:
             self._camera_dispatch.start()
         if self.fusion is not None:
@@ -880,6 +912,24 @@ class IndependentVLMBranch:
                 self._status.update(
                     source_state="failed", source_error="source_reader_failed"
                 )
+
+    def _read_diagnostics(self):
+        while not self._stop.is_set():
+            try:
+                packet = self._diagnostic_outgoing.get(timeout=0.1)
+            except Empty:
+                if not self._process.is_alive():
+                    return
+                continue
+            except (EOFError, OSError, ValueError):
+                return
+            if self._stop.is_set():
+                return
+            try:
+                self.diagnostics.receive(packet)
+            except Exception:
+                # Malformed optional telemetry cannot kill result delivery.
+                continue
 
     def _read(self):
         while not self._stop.is_set():
@@ -1115,10 +1165,10 @@ class IndependentVLMBranch:
             if self._process.is_alive():
                 self._process.kill()
                 self._process.join(1.0)
-        for thread in (self._reader, self._source):
+        for thread in (self._reader, self._source, self._diagnostic_reader):
             if thread is not None:
                 thread.join(1.0)
-        for queue in (self._incoming, self._outgoing):
+        for queue in (self._incoming, self._outgoing, self._diagnostic_outgoing):
             queue.close()
             queue.cancel_join_thread()
         with self._lock:

@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from .diagnostics import note
 from .latency_trace import log_timing, trace_id
 from .model_api import (
     ModelAPIClient,
@@ -312,6 +313,7 @@ class TemporalVLMInspector:
 
     def inspect(self, job: TemporalInspection) -> tuple[TemporalVerdict, ...] | BenchmarkInspection:
         started = time.monotonic()
+        verdicts, failure = (), None
         timing = {
             "stream_session_id": trace_id(job.stream_session_id),
             "request_id": trace_id(job.request.request_id),
@@ -329,19 +331,26 @@ class TemporalVLMInspector:
                     empty_verdicts=not rows,
                 )
                 return verdicts
-            except ModelAPIError as error:
-                timing["error_code"] = error.code
+            except Exception as error:
+                failure = error
+                if isinstance(error, ModelAPIError):
+                    timing["error_code"] = error.code
                 raise
             finally:
+                note(job, "responded", verdicts=(
+                    verdicts.verdicts if isinstance(verdicts, BenchmarkInspection) else verdicts
+                ), error=failure,
+                     transport=timing.pop("_diagnostic_transport", None))
                 timing["total_seconds"] = time.monotonic() - started
                 log_timing("vlm_inspection_timing", **timing)
 
-    def build_messages(self, job):
+    def build_messages(self, job, *, encoded_images=None):
         response_format = self._parameters.get("response_format")
         return build_temporal_messages(
             job, max_image_side=self._max_image_side, jpeg_quality=self._jpeg_quality,
             verdicts_wrapper=(isinstance(response_format, Mapping)
                               and response_format.get("type") == "json_object"),
+            encoded_images=encoded_images,
         )
 
     def _inspect_locked(
@@ -351,9 +360,11 @@ class TemporalVLMInspector:
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
-        messages = self.build_messages(job)
+        encoded_images = []
+        messages = self.build_messages(job, encoded_images=encoded_images)
         if job.benchmark_questions and getattr(self, "benchmark_result_wrapper", False):
             add_independent_benchmark_context(messages, job)
+        note(job, "prepared", encoded_images)
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
             key = environment_api_key(self.settings)
@@ -381,6 +392,7 @@ class TemporalVLMInspector:
             "max_image_side": self._max_image_side,
             "jpeg_quality": self._jpeg_quality,
         }
+        timing["_diagnostic_transport"] = http_timing
         headers = httpx.Headers(model_request_headers(self.settings, key.strip()))
         timing["request_prepare_seconds"] = time.monotonic() - preparation_started
         started = time.monotonic()
@@ -392,6 +404,7 @@ class TemporalVLMInspector:
             client_started = time.monotonic()
             self._ensure_transport()
             timing["client_initialize_seconds"] = time.monotonic() - client_started
+            note(job, "attempted")
             response = self._loop.run_until_complete(
                 asyncio.wait_for(
                     self._request(payload, headers, timing=http_timing,

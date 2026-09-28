@@ -17,6 +17,7 @@ import pytest
         "dashboard_camera_transport.cjs",
         "dashboard_routes.cjs",
         "dashboard_processing_methods.cjs",
+        "dashboard_diagnostics.cjs",
     ]
 )
 def test_dashboard_handlers(script_name: str) -> None:

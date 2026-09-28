@@ -124,3 +124,30 @@ def test_actor_cost_control_changes_only_optional_text(monkeypatch, include_acto
         evaluation.ACTOR_ASSOCIATION_RULE in sent["messages"][1]["content"][0]["text"]
     ) == include_actors
     assert evaluation.ACTOR_ASSOCIATION_RULE in original[1]["content"][0]["text"]
+
+
+@pytest.mark.parametrize(
+    "override,expected", [(None, "high"), ("standard", "standard")],
+)
+def test_cli_records_service_sensitivity_and_legacy_entrypoint(
+    monkeypatch, tmp_path, override, expected,
+):
+    manifest, output = tmp_path / "manifest.json", tmp_path / "report.json"
+    manifest.write_text(json.dumps({"clips": []}))
+    seen = []
+
+    def client(*args, **kwargs):
+        seen.append(kwargs["event_sensitivities"])
+        return object()  # Empty job list must not call any model service.
+
+    monkeypatch.setattr(evaluation, "AIClubMultiGroundingClient", client)
+    monkeypatch.setattr(evaluation, "MeasuredTransport", lambda *args: object())
+    args = ["evaluation", "--manifest", str(manifest), "--output", str(output)]
+    if override:
+        args += ["--event-sensitivity", "smoking=" + override]
+    monkeypatch.setattr(evaluation.sys, "argv", args)
+    assert evaluation.main() == 0
+    metadata = json.loads(output.with_suffix(".run.json").read_text())
+    assert seen[0]["smoking"] == expected
+    assert metadata["event_sensitivities"] == seen[0]
+    assert metadata["entrypoint"] == "legacy_single_frame"

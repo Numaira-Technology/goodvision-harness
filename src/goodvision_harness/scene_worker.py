@@ -11,6 +11,7 @@ from queue import Empty, Queue
 from threading import Event, RLock, Thread, current_thread
 from typing import Any
 
+from .diagnostics import note
 from .event_registry import SAFETY_BRANCH, branch_events, labels
 from .latency_trace import log_timing, trace_id
 from .model_api import ModelAPIError
@@ -362,9 +363,11 @@ class SceneInspectionWorker:
                     outcome.benchmark = response
                     response = response.verdicts
                 outcome.verdicts = _validate_verdicts(job, response, allowed)
+            note(job, "responded", verdicts=outcome.verdicts)
             outcome.success = True
         except Exception as exc:
             # A missing response never becomes negative event evidence.
+            note(job, "responded", error=exc)
             outcome.verdicts = ()
             if job.benchmark_questions and getattr(exc, "benchmark_response", None) is not None:
                 outcome.benchmark = BenchmarkInspection((), (), exc.benchmark_response)

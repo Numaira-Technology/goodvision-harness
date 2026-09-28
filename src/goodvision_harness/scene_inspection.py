@@ -143,6 +143,7 @@ def build_temporal_messages(
     max_image_side: int = 720,
     jpeg_quality: int = 90,
     verdicts_wrapper: bool = False,
+    encoded_images: list[tuple[Any, bytes, int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build ordinary multimodal chat messages, retaining time and source boxes.
 
@@ -219,7 +220,10 @@ def build_temporal_messages(
             source.thumbnail((max_image_side, max_image_side), Image.Resampling.LANCZOS)
             with io.BytesIO() as encoded:
                 source.save(encoded, format="JPEG", quality=jpeg_quality)
-                data = base64.b64encode(encoded.getvalue()).decode("ascii")
+                jpeg = encoded.getvalue()
+                data = base64.b64encode(jpeg).decode("ascii")
+                if encoded_images is not None:
+                    encoded_images.append((frame, jpeg, source.width, source.height))
         content.append({
             "type": "text", "text": json.dumps(metadata, separators=(",", ":")),
         })

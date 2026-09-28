@@ -30,11 +30,12 @@ class IndependentVLMInspector(TemporalVLMInspector):
 
     benchmark_result_wrapper = True
 
-    def build_messages(self, job):
+    def build_messages(self, job, *, encoded_images=None):
         messages = build_temporal_messages(
             replace(job, benchmark_questions=()),
             max_image_side=self._max_image_side,
             jpeg_quality=self._jpeg_quality,
+            encoded_images=encoded_images,
         )
         policy = sensitivity_policy_text(
             normalize_event_sensitivities(
