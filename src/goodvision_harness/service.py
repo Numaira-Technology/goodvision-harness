@@ -71,6 +71,12 @@ from .deployment_settings import (
 )
 from .display_telemetry import validate_display_metrics
 from .event_archive import EventArchive
+from .event_registry import (
+    BUILTIN_VOCABULARY,
+    SAFETY_BRANCH,
+    EventVocabulary,
+)
+from .event_registry import labels as registry_labels
 from .event_routes import install_event_routes
 from .event_sensitivity import (
     EVENT_SENSITIVITY_DEFAULTS,
@@ -498,14 +504,17 @@ class HarnessRuntime:
         self._video_connection: VideoConnection | None = None
         self._connection_camera_layout: str | None = None
         self._analysis_settings = {
-            "features": list(DETECTION_EVENT_LABELS),
+            "features": list(self._event_vocabulary().default_labels()),
             "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
         }
         if deployment_store is not None:
             try:
                 saved_analysis = deployment_store.load_analysis_settings()
                 if saved_analysis is not None:
-                    features = _normalize_features(saved_analysis.get("features"))
+                    features = _normalize_features(
+                        saved_analysis.get("features"),
+                        self._event_vocabulary(),
+                    )
                     self._analysis_settings = {
                         "features": list(features),
                         "event_sensitivities": normalize_event_sensitivities(
@@ -593,10 +602,11 @@ class HarnessRuntime:
             "stream": None,
             "stream_session_id": None,
             "event_label": (
-                ",".join(DETECTION_EVENT_LABELS) if config is not None else None
+                ",".join(self._event_vocabulary().default_labels())
+                if config is not None else None
             ),
-            "event_labels": list(DETECTION_EVENT_LABELS),
-            "features": list(DETECTION_EVENT_LABELS),
+            "event_labels": list(self._event_vocabulary().default_labels()),
+            "features": list(self._event_vocabulary().default_labels()),
             "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
             "model": PUBLIC_MODEL_NAME if config is not None else None,
             "dry_run": self.dry_run,
@@ -1334,9 +1344,13 @@ class HarnessRuntime:
             },
             "model": PUBLIC_MODEL_NAME,
             "event_label": self.config.inference.event_label,
-            "event_labels": list(DETECTION_EVENT_LABELS),
-            "features": list(DETECTION_EVENT_LABELS),
-            "supported_features": list(DETECTION_EVENT_LABELS),
+            # supported_features is everything selectable; features is what a
+            # session gets without asking. Injected events are in the first but
+            # never the second, so declaring one cannot change live behaviour.
+            "event_labels": list(self._event_vocabulary().default_labels()),
+            "features": list(self._event_vocabulary().default_labels()),
+            "supported_features": list(self._event_vocabulary().labels()),
+            "event_display_names": self._event_vocabulary().display_names(),
             **sensitivity_ui_info(),
             "local_camera_display": self.video_display_config(),
             "sample_fps": self.config.video.fps,
@@ -1835,6 +1849,13 @@ class HarnessRuntime:
                 raise ProcessingMethodUnavailableError()
             return revision, self._rich_labels
 
+    def _event_vocabulary(self) -> EventVocabulary:
+        """The built-ins plus whatever events.definitions this config declared."""
+
+        if self.config is None:
+            return BUILTIN_VOCABULARY
+        return self.config.event_vocabulary
+
     def analysis_settings(self) -> dict[str, Any]:
         return {**copy.deepcopy(self._analysis_settings), **sensitivity_ui_info()}
 
@@ -1846,9 +1867,10 @@ class HarnessRuntime:
                 raise RuntimeError("stop the active session before saving settings")
             if self._deployment_store is None:
                 raise RuntimeError("persistent deployment storage is not configured")
-            features = _normalize_features(payload.get(
-                "features", self._analysis_settings["features"],
-            ))
+            features = _normalize_features(
+                payload.get("features", self._analysis_settings["features"]),
+                self._event_vocabulary(),
+            )
             settings = {
                 "features": list(features),
                 "event_sensitivities": normalize_event_sensitivities(payload.get(
@@ -1907,8 +1929,11 @@ class HarnessRuntime:
             if self._route_probe["state"] == "running":
                 raise RuntimeError("wait for the route check before starting analysis")
             features = self._analysis_settings["features"]
+            model_backed = frozenset(
+                registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH))
+            )
             if (not self.dry_run
-                    and any(item in SAFETY_EVENT_LABELS for item in features)
+                    and any(item in model_backed for item in features)
                     and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
@@ -2037,7 +2062,9 @@ class HarnessRuntime:
             raise ValueError("features can only be used with analysis_mode=multi")
 
         if selected_analysis == MULTI_ANALYSIS_MODE:
-            selected_features = _normalize_features(features)
+            selected_features = _normalize_features(
+                features, self._event_vocabulary()
+            )
             label = ",".join(selected_features)
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
         elif selected_analysis == FACE_ANALYSIS_MODE:
@@ -2066,9 +2093,17 @@ class HarnessRuntime:
             event_sensitivities, sensitivity_labels,
         )
 
+        # Events the model judges, as opposed to the face branch. Injected
+        # events sit here too: they are answered by the same request and run
+        # the same lifecycle, so anything keyed off "is this a safety event"
+        # has to read the session vocabulary rather than the built-in five.
+        model_backed = frozenset(
+            registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH))
+        )
         independent_requested = (
             self._scene_enabled and self.config.runtime.scene_independent_vlm
-            and not use_dry_run and bool(set(sensitivity_labels).intersection(SAFETY_EVENT_LABELS))
+            and not use_dry_run
+            and bool(set(sensitivity_labels).intersection(model_backed))
         )
         if independent_requested:
             # Availability of an optional tracker cannot gate event reporting.
@@ -2106,7 +2141,7 @@ class HarnessRuntime:
                 raise RuntimeError("人物处理方式或会话状态已变化。请重新开始检测。")
             needs_model_key = selected_analysis == EVENT_ANALYSIS_MODE or (
                 selected_analysis == MULTI_ANALYSIS_MODE
-                and any(feature in SAFETY_EVENT_LABELS for feature in selected_features)
+                and any(feature in model_backed for feature in selected_features)
             )
             if (needs_model_key and not use_dry_run and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
@@ -2266,6 +2301,7 @@ class HarnessRuntime:
                         safety_max_image_side=self.config.video.max_image_side,
                         safety_jpeg_quality=self.config.video.jpeg_quality,
                         face_live_scheduler=face_live_scheduler,
+                        vocabulary=self._event_vocabulary(),
                         dry_run=use_dry_run,
                         api_key=self._aiclub_api_key,
                         transport=(
@@ -2409,11 +2445,11 @@ class HarnessRuntime:
             scene_labels = tuple(
                 item
                 for item in (selected_features or ())
-                if item in SAFETY_EVENT_LABELS
+                if item in model_backed
             )
             if (
                 selected_analysis == EVENT_ANALYSIS_MODE
-                and label in SAFETY_EVENT_LABELS
+                and label in model_backed
             ):
                 scene_labels = (label,)
             next_scene = (
@@ -2422,6 +2458,7 @@ class HarnessRuntime:
                     self.source_id,
                     mode=self._scene_mode,
                     event_labels=scene_labels,
+                    vocabulary=self._event_vocabulary(),
                     independent_temporal_inference=(
                         self.config.runtime.scene_independent_vlm and not use_dry_run and bool(scene_labels)
                     ),
@@ -2503,6 +2540,7 @@ class HarnessRuntime:
                         self.config.runtime.scene_max_in_flight,
                         route_id=PUBLIC_ROUTE_IDS.get(self._selected_route_id),
                         output_mode=self.config.runtime.scene_vlm_output_mode,
+                        vocabulary=self._event_vocabulary(),
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
@@ -4413,9 +4451,13 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
     }
 
 
-def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
+def _normalize_features(
+    features: Collection[str] | None,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+) -> tuple[str, ...]:
+    supported = vocabulary.labels()
     if features is None:
-        return DETECTION_EVENT_LABELS
+        return vocabulary.default_labels()
     if not isinstance(features, (list, tuple)):
         raise ValueError("features must be an array")
     raw = tuple(features)
@@ -4427,13 +4469,11 @@ def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
     if len(set(rendered)) != len(rendered):
         raise ValueError("features must not contain duplicates")
     unsupported = tuple(
-        feature for feature in rendered if feature not in DETECTION_EVENT_LABELS
+        feature for feature in rendered if feature not in supported
     )
     if unsupported:
         raise ValueError("unsupported feature")
-    return tuple(
-        feature for feature in DETECTION_EVENT_LABELS if feature in rendered
-    )
+    return tuple(feature for feature in supported if feature in rendered)
 
 
 def _api_reference_html(schema: dict[str, Any]) -> str:

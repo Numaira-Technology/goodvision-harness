@@ -14,6 +14,7 @@ from dotenv import find_dotenv, load_dotenv
 
 from .deployment_settings import validate_processing_method
 from .event_archive import EventArchiveSettings
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary, vocabulary_from_json
 from .model_api import ModelAPISettings
 from .model_routing import CUSTOMER_INFERENCE_PROFILE, resolve_model_route
 from .reference_memory import MemoryContext, load_memory_context
@@ -191,6 +192,8 @@ class HarnessConfig:
     server: ServerSettings
     service: ServiceSettings
     events: EventArchiveSettings = field(default_factory=EventArchiveSettings)
+    # Built-ins plus any events.definitions injected by this deployment.
+    event_vocabulary: EventVocabulary = BUILTIN_VOCABULARY
 
     @property
     def model_api(self) -> ModelAPISettings:
@@ -837,6 +840,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     if event_values["buffer_seconds"] < event_values["clip_seconds"]:
         raise ValueError("events.buffer_seconds must cover clip_seconds")
     events = EventArchiveSettings(**event_values)
+    try:
+        vocabulary = vocabulary_from_json(event_section.get("definitions"))
+    except ValueError as error:
+        raise ValueError(f"events.definitions: {error}") from error
 
     return HarnessConfig(
         path=config_path,
@@ -854,6 +861,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         server=server,
         service=service,
         events=events,
+        event_vocabulary=vocabulary,
     )
 
 
