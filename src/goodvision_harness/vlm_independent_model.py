@@ -96,10 +96,16 @@ class IndependentVLMInspector(TemporalVLMInspector):
                 metadata = json.loads(part["text"])
                 metadata.pop("subject_boxes", None)
                 part["text"] = json.dumps(metadata, separators=(",", ":"))
+        # Injected events are described only here; the system prompt above
+        # covers the built-in policies and nothing else.
+        definitions = json.loads(messages[1]["content"][0]["text"]).get(
+            "event_definitions"
+        )
         messages[1]["content"][0]["text"] = json.dumps(
             {
                 "allowed_event_labels": list(job.request.event_labels),
                 "grounding_frame_sequence": job.frames[-1].frame_sequence,
+                **({"event_definitions": definitions} if definitions else {}),
             }
         )
         return messages

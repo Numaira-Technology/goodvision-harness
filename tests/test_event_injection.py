@@ -39,6 +39,11 @@ from goodvision_harness.scene_inspection import build_temporal_messages
 from goodvision_harness.scene_runtime import TemporalInspection
 from goodvision_harness.scene_state import SceneState
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
+from goodvision_harness.vlm_compact_model import (
+    CompactGroundingInspector,
+    EventJSONInspector,
+)
+from goodvision_harness.vlm_independent_model import IndependentVLMInspector
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -464,6 +469,43 @@ def test_the_temporal_prompt_carries_the_criteria_for_injected_events_only():
     assert "event_definitions" not in context_of(
         ("fight",), vocabulary=_injected()
     )
+
+
+@pytest.mark.parametrize(
+    "inspector_class",
+    [IndependentVLMInspector, EventJSONInspector, CompactGroundingInspector],
+)
+def test_the_independent_vlm_keeps_the_criteria_for_injected_events(
+    inspector_class,
+):
+    """The live path grounds people itself and rewrites the context, so the
+    injected criteria must survive that rewrite or the model sees a bare label."""
+
+    settings = load_config(ROOT / "config.yaml")
+    inspector = inspector_class(settings.model_api, model="test")
+
+    def context_of(event_labels, **kwargs):
+        job = TemporalInspection(
+            "session-1",
+            "source-1",
+            InspectionRequest(
+                "request-1", (), "independent_source", event_labels, 0, 1
+            ),
+            (
+                EvidenceFrame("session-1", 10, 0, _jpeg()),
+                EvidenceFrame("session-1", 11, 1, _jpeg()),
+            ),
+            **kwargs,
+        )
+        messages = inspector.build_messages(job)
+        return json.loads(messages[1]["content"][0]["text"])
+
+    injected = context_of(("fight", "opens_door"), vocabulary=_injected())
+    assert injected["allowed_event_labels"] == ["fight", "opens_door"]
+    assert injected["event_definitions"]["opens_door"]["definition"] == (
+        OPENS_DOOR["definition"]
+    )
+    assert "event_definitions" not in context_of(("fight",))
 
 
 def test_the_temporal_path_refuses_a_label_outside_the_job_vocabulary():
