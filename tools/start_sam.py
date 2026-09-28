@@ -428,7 +428,8 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
         *ssh, f"HF_HUB_OFFLINE=0 {REMOTE}/env/bin/python -c {shlex.quote(download)}",
     ], input=hf_token, timeout=30 * 60)
     environment = dict(WORKER_ENV, SAM_GPU_COUNT=str(settings.gpu_count),
-                       SAM31_LIVE_CAMERAS=str(settings.streams))
+                       SAM31_LIVE_CAMERAS=str(settings.streams),
+                       SAM31_MAX_OBJECTS=os.environ.get("SAM31_MAX_OBJECTS", "16"))
     worker_environment = " ".join(
         f"{name}={shlex.quote(value)}" for name, value in environment.items()
     )

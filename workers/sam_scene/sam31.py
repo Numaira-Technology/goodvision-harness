@@ -66,7 +66,7 @@ class VideoSettings:
             "max_image_pixels": 3840 * 2160,
             "max_total_image_pixels": 64 * 1024 * 1024,
             "inference_max_side": 1280,
-            "max_objects": 16,
+            "max_objects": 128,
         }
         for name, ceiling in ceilings.items():
             value = getattr(self, name)

@@ -49,6 +49,7 @@ services:
       SAM_GPU_NAME: "${SAM_GPU_NAME:-RTX_4090}"
       SAM_GPU_COUNT: "${SAM_GPU_COUNT:-1}"
       SAM31_LIVE_CAMERAS: "${HARNESS_FLEET_CAPACITY:-1}"
+      SAM31_MAX_OBJECTS: "${SAM31_MAX_OBJECTS:-16}"
       SAM_DISK_GB: "${SAM_DISK_GB:-50}"
     volumes:
       - cloud-gpu-settings:/data/cloud-gpu
