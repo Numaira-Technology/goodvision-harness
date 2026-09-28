@@ -1,6 +1,6 @@
 # 通用事件注入（Generic Event Injection）设计方案
 
-设计基线：2026-09-26，基于 `pengyu/harness-offline-benchmark`（`7a83ce4`）。选这条分支而不是 `origin/main`，是因为离线 benchmark 通路只存在于此；代价见第 6 节。本文只描述设计与拆解，不代表已验收。相关：[持续人物与事件引擎](entity-event-engine.md)。
+设计基线：2026-09-28，基于 `origin/main`（`9256d99`）。最初写在 `pengyu/harness-offline-benchmark` 上，因为离线 benchmark 只在那条分支。该分支不准备合入 main，所以注册表、prompt 和生命周期按当前 main 重做。`benchmark/` 不在 main 上，按题目自动勾选事件的 runner 不在这次实现里。本文只描述设计与拆解，不代表已验收。相关：[持续人物与事件引擎](entity-event-engine.md)。
 
 ## 1. 问题
 
@@ -155,6 +155,8 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 
 **阶段四：benchmark 接入。** 事件词表 YAML + runner 侧自动注入 + `EVENT_TARGET_TO_HARNESS_LABEL` 泛化。验收：对之前被剔除的那批题目跑一轮离线 benchmark，与"剔除前 / 剔除后"两个基线对比覆盖率与得分。
 
+> 2026-09-28：`pengyu/harness-offline-benchmark` 不准备合入 main，`benchmark/` 不在 main 上，阶段四这次不做。会话侧用 `features` 勾选已声明的事件。
+
 ## 5. 明确不做
 
 - 不新增第二套事件状态机、第二条模型路由、第二套证据归档。自定义事件复用现有全部下游。
@@ -164,7 +166,7 @@ EVENT_TARGET_TO_HARNESS_LABEL = {
 
 ## 6. 风险与待确认
 
-**分支基线（已决策）。** 四个阶段全部在 `pengyu/harness-offline-benchmark` 上做，完成后一次性 rebase 回 main。选它是因为阶段四需要 `benchmark/` 目录，且阶段二要改的 `build_temporal_messages` 的 benchmark 分支也只在这条分支上存在——在 main 上无法验证"自定义事件定义是否真的进入了观察 prompt"。
+**分支基线（2026-09-28 修订）。** `pengyu/harness-offline-benchmark` 不准备合入 main。检测侧（注册表、prompt、生命周期、会话 `features`）按当前 main 重做。阶段四依赖的 `benchmark/` 与 `start_benchmark` 不在 main 上，本次不带过来。main 上的独立 VLM 进程是另一条观察路径，会话词表要随 `VLMProcessConfig` 进子进程，否则注入事件进不了观察 prompt。下面是改基线之前量过的 rebase 代价，留作记录。
 
 以共同祖先 `b6e3f14` 为基准，两侧的改动分布如下（只列本方案要碰的文件）：
 
