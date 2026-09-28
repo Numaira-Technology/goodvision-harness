@@ -71,3 +71,5 @@
 
 <a id="continuous-scenes-and-multi-camera-services"></a>
 持续场景和多路部署入口已归入上方“使用与运维”和“安装与接口集成”。
+
+Additional event rules: [PPE violations and ground litter](guides/safety-events.md).

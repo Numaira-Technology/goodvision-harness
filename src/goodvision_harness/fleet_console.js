@@ -3,8 +3,8 @@
 (function(root){
   "use strict";
   const ACTIVE=new Set(["starting","running","stopping","draining"]);
-  const FEATURES=["fight","smoking","fall","weapon","stranger"];
-  const LABELS={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人"};
+  const FEATURES=["fight","smoking","fall","weapon","ppe_violation","ground_litter","stranger"];
+  const LABELS={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",ppe_violation:"防护装备缺失",ground_litter:"地面垃圾",stranger:"陌生人"};
   const CONNECTION={connecting:"正在连接视频",connected:"视频已连接",disconnecting:"正在断开视频",disconnected:"视频未连接",error:"视频连接异常"};
   const ANALYSIS={idle:"未分析",starting:"正在开始分析",running:"分析中",stopping:"正在停止分析",draining:"正在完成剩余分析",error:"分析异常",unknown:"正在确认分析状态"};
   function connectionState(status){return status?.connection_state||(status?.connected===true?"connected":"disconnected");}

@@ -402,7 +402,8 @@ test("compact view retains per-camera detail access and the global analysis tool
   await view.app.refresh();assert.equal(view.app.compact,true);
   assert.equal(view.app.ui["analysis-start"].hidden,false);assert.equal(view.app.ui["analysis-start"].disabled,false);
   const row=view.app.rows.get("camera04");assert.equal(row.detail.hidden,false);await view.app.toggleDetail(row);assert.equal(row.detailPanel.hidden,false);
-  assert.equal(row.features.size,5);
+  assert.equal(row.features.size,7);
+  assert.ok(row.features.has("ppe_violation"));assert.ok(row.features.has("ground_litter"));
   const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
   assert.doesNotMatch(html,/\.fleet-grid\.compact \.fleet-card-fields\{display:none\}/);
 });

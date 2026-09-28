@@ -81,7 +81,7 @@ def _verdict_rejection_reason(job, verdicts, allowed) -> str:
         if verdict.event_label not in job.request.event_labels:
             return "unrequested_event_label"
         ids = verdict.subject_ids
-        if not ids:
+        if not ids and verdict.event_label != "ground_litter":
             return "empty_subject_ids"
         if any(not isinstance(value, str) or not value for value in ids):
             return "invalid_subject_id_type"

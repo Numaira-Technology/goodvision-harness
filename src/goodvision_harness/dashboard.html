@@ -318,6 +318,8 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
               <label class="switch"><input type="checkbox" data-feature="smoking" checked> smoking</label>
               <label class="switch"><input type="checkbox" data-feature="fall" checked> fall</label>
               <label class="switch"><input type="checkbox" data-feature="weapon" checked> weapon</label>
+              <label class="switch"><input type="checkbox" data-feature="ppe_violation" checked> 防护装备缺失</label>
+              <label class="switch"><input type="checkbox" data-feature="ground_litter" checked> 地面垃圾</label>
               <label class="switch"><input type="checkbox" data-feature="stranger" checked> stranger</label>
             </div>
           </div>
@@ -486,7 +488,7 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
       <button id="refresh-events" class="btn" type="button">刷新记录</button></div>
     <p class="note">连续事件与视频证据。实时识别状态仍以当前画面结果为准。</p>
     <div class="control-source-row" style="margin-top:12px">
-      <div class="field"><label for="archive-feature">事件</label><select id="archive-feature"><option value="">全部</option><option value="smoking">吸烟 · Smoking</option><option value="fight">打架 · Fight</option><option value="fall">跌倒 · Fall</option><option value="weapon">持械 · Weapon</option><option value="stranger">陌生人 · Stranger</option></select></div>
+      <div class="field"><label for="archive-feature">事件</label><select id="archive-feature"><option value="">全部</option><option value="smoking">吸烟 · Smoking</option><option value="fight">打架 · Fight</option><option value="fall">跌倒 · Fall</option><option value="weapon">持械 · Weapon</option><option value="ppe_violation">防护装备缺失 · PPE</option><option value="ground_litter">地面垃圾 · Litter</option><option value="stranger">陌生人 · Stranger</option></select></div>
       <div class="field"><label for="archive-subject">人物 ID</label><input id="archive-subject" type="text" placeholder="subject_id"></div>
     </div>
     <p id="archive-note" class="note" role="status">正在读取事件记录…</p>
@@ -575,7 +577,7 @@ const sceneUi={panel:$("scene-panel"),mode:$("scene-mode"),status:$("scene-statu
 const featureInputs=[...document.querySelectorAll("[data-feature]")];
 const saveApiKeyButton=$("save-api-key-button");
 const localHosts=new Set(["localhost","127.0.0.1","::1","[::1]"]);
-const detectionEvents=["fight","smoking","fall","weapon","stranger"];
+const detectionEvents=["fight","smoking","fall","weapon","ppe_violation","ground_litter","stranger"];
 const safetyEvents=detectionEvents.filter(key=>key!=="stranger");
 const sensitivityInputs=new Map();
 const clearAfterNegatives=2;
@@ -597,7 +599,7 @@ const state={
 const sceneView={enabled:false,mode:"disabled",snapshot:null,error:false,timer:null,
   controller:null,generation:0,polling:false,closed:false,sourceKey:null,sourceTimestamp:null,
   advancedAt:null,receivedAt:null,aliases:new Map(),nextAlias:1};
-const sceneEventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人"};
+const sceneEventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",ppe_violation:"防护装备缺失",ground_litter:"地面垃圾",stranger:"陌生人"};
 function sceneActive(){return sceneView.enabled&&sceneView.mode==="active"}
 function sceneMoment(value){return typeof value==="number"&&Number.isFinite(value)?value.toFixed(1)+" 秒":"待补充"}
 function sceneName(value){return sceneEventNames[canonicalEventLabel(value)]||"事件"}
@@ -741,7 +743,7 @@ function renderScene(){
       ["stopped","finalizing"].includes(condition)&&event.phase==="confirmed"?"已确认":
       ({suspected:"发现疑似事件，正在复核",confirmed:"已确认，持续中",ended:"已结束",retracted:"判断已修订"})[event.phase]||"等待更多证据";
     const uncertain=event.observation_state==="uncertain"||condition!=="observing";
-    const subjects=Array.isArray(event.subject_ids)?event.subject_ids.map(eventSubject).join("、"):"相关人物待确认";
+    const subjects=event.event_label==="ground_litter"?"当前场景":Array.isArray(event.subject_ids)?event.subject_ids.map(eventSubject).join("、"):"相关人物待确认";
     sceneItem(sceneUi.events,sceneName(event.event_label)+" · "+subjects,
       phase+(condition==="stopped"?" · 历史记录":condition==="finalizing"?" · 后台整理中":uncertain?" · 当前状态待核实":"")+
       " · 首次证据："+sceneMoment(event.first_evidence_timestamp_seconds)+
@@ -881,7 +883,7 @@ function selectedSensitivities(){
 function renderSensitivities(){
   const options=state.info&&state.info.event_sensitivity_options||{};
   const defaults=state.info&&state.info.event_sensitivity_defaults||{};
-  const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械"};
+  const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",ppe_violation:"防护装备缺失",ground_litter:"地面垃圾"};
   const previous=Object.fromEntries([...sensitivityInputs].map(([key,input])=>[key,input.value]));
   const fields=$("event-sensitivity-fields");fields.replaceChildren();sensitivityInputs.clear();
   for(const key of safetyEvents){

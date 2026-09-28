@@ -76,7 +76,7 @@ def completion():
     return {"choices": [{"message": {"content": json.dumps({"events": [
         {"event_label": label, "detected": False, "confidence": 0.9,
          "description": "未发现异常事件。 / No visible event.", "objects": []}
-        for label in ("fight", "smoking", "fall", "weapon")
+        for label in ("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter")
     ]})}}]}
 
 
@@ -156,7 +156,7 @@ def test_console_selection_is_private_persisted_and_used_by_live_requests(
             assert route.provider.split("/")[0] not in json.dumps(public).lower()
         assert runtime._route_transport.settings == runtime.config.model_api
         assert runtime._deployment_store.load_model_route() == "C"
-        runtime.start_camera(features=("fight", "smoking", "fall", "weapon"))
+        runtime.start_camera(features=("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter"))
         frame = probe_window().frames[0]
         assert runtime.push_camera_frame(frame.jpeg_bytes, width=320, height=180)
         assert runtime.results.records_after(0, timeout_seconds=5)
@@ -249,7 +249,7 @@ def test_manual_selection_uses_public_id_and_survives_restart(runtime):
         assert data["selection_persisted"]
         assert runtime._deployment_store.load_model_route() == "C"
         assert not contains_private_implementation_detail(data)
-        runtime.start_camera(features=("fight", "smoking", "fall", "weapon"))
+        runtime.start_camera(features=("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter"))
         frame = probe_window().newest_frame
         assert runtime.push_camera_frame(frame.jpeg_bytes, width=320, height=180)
         assert runtime.results.records_after(0, timeout_seconds=5)

@@ -103,10 +103,10 @@ def test_evidence_rules_reach_model_in_each_detection_path(
     prompt = content[0]["text"]
     expected = (
         settings.multi_event_prompt
-        if not legacy_single and event_labels == SAFETY_EVENT_LABELS
+        if not legacy_single and event_labels == ("fight", "smoking", "fall", "weapon")
         else settings.prompt
     )
-    if not legacy_single and event_labels != SAFETY_EVENT_LABELS:
+    if not legacy_single and event_labels != ("fight", "smoking", "fall", "weapon"):
         expected = expected.split("Respond with only this JSON object:")[0].rstrip()
         assert "extend that same JSON object" not in prompt
     assert prompt.startswith(expected)

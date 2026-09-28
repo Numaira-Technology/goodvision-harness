@@ -36,7 +36,7 @@ OUTPUT_PATHS = (
     "/results/overall/events",
     *(
         f"/results/{feature}/{kind}"
-        for feature in ("fight", "smoking", "fall", "weapon", "stranger")
+        for feature in ("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter", "stranger")
         for kind in ("latest", "events")
     ),
     "/rich-labels/latest",

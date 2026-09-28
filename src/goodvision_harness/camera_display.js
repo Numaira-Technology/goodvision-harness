@@ -1102,7 +1102,7 @@
   }
 
   let warmMotionWorker=null;
-  const eventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人",identity_pending:"身份待确认"};
+  const eventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",ppe_violation:"防护装备缺失",ground_litter:"地面垃圾",stranger:"陌生人",identity_pending:"身份待确认"};
   function drawSubjectLabel(context,subject,width,height,displayWidth=width){
     if(subject.track_id===undefined||subject.track_id===null)return;
     const points=[...(subject.polygons||[]),...(subject.open_segments||[])].flat()
@@ -2037,7 +2037,7 @@
 
   function eventObservationSummary(report){
     if(!report||report.state!=="completed")return "等待本次事件判断";
-    const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械"};
+    const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",ppe_violation:"防护装备缺失",ground_litter:"地面垃圾"};
     const judgments=new Map((report.judgments||[]).map(value=>[value.event_label,value]));
     const parts=Object.entries(labels).filter(([key])=>judgments.has(key)).map(([key,label])=>{
       const value=judgments.get(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;

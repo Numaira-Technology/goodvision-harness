@@ -51,7 +51,7 @@ def _verdict_log_fields(outcome: _InspectionOutcome) -> dict[str, Any]:
     no manufactured unknown/negative verdict. Only fixed public labels enter logs.
     """
     requested = sorted(set(outcome.job.request.event_labels).intersection(
-        {"fight", "smoking", "fall", "weapon"},
+        {"fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter"},
     ))
     counts = {
         label: dict.fromkeys(("true", "false", "unknown", "omitted"), None)

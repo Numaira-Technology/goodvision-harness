@@ -95,8 +95,8 @@ class IndependentEventState:
             ids = tuple(
                 sorted(mapping[sid] for sid in verdict.subject_ids if sid in mapping)
             )
-            grounded = bool(verdict.subject_ids) and len(ids) == len(
-                verdict.subject_ids
+            grounded = verdict.event_label == "ground_litter" or (
+                bool(verdict.subject_ids) and len(ids) == len(verdict.subject_ids)
             )
             evidence_id = f"vlm:{job.request.request_id}:{index}"
             # Acceptance only admits this observation to background association.
