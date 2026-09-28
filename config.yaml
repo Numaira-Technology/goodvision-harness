@@ -293,6 +293,9 @@ service:
 
 # Background archive only: never delays current-frame analysis.
 events:
+  # Declaring an event makes it selectable. A session still has to name it
+  # in features before it is detected. See docs/guides/configuration.md.
+  definitions: []
   # Default directory: event-evidence beside face.gallery_path.
   clip_seconds: 3.0
   pre_roll_seconds: 1.0
