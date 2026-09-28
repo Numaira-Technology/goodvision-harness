@@ -50,6 +50,41 @@ SceneRuntime, not sensor exposure; `claim_to_response` includes pool/adapter
 waiting and is not pure model compute time. Existing HTTP and worker timing logs
 remain the detailed stage breakdown.
 
+## Independent VLM diagnostics
+
+With `scene_independent_vlm=true`, the same scene diagnostics routes select the
+active independent branch's run-scoped cache. The child process attaches a
+collector to each real inference job in full, compact, events and parallel
+modes. Exact encoded JPEGs, request-attempt status, validated/failed responses,
+missing/null labels and transport metadata cross a separate bounded diagnostic
+queue. HTTP reads and diagnostic consumption do not acquire the scene/SAM lock
+or use the normal report queue. Camera diagnostic pages scope both metadata and
+JPEG requests to their selected camera.
+
+Independent records cover **completed model requests only**, including failures,
+and are best-effort: a stalled reader, full queue or shutdown can lose diagnostic
+records without delaying normal results. `delivery=best_effort_completed_requests`
+and `scope=independent_model_response` distinguish this from scene lifecycle
+diagnostics. Counts/latencies describe received records, not total inference
+traffic. Consult `/v1/vlm/status` for branch request totals and pending work.
+
+Each in-flight collector retains at most 2 MiB of JPEGs (up to eight calls across
+two lanes). Oversized sets retain metadata only. IPC holds at most two packets;
+the parent retains 256 metadata records and at most eight image sets / 16 MiB.
+Evicted images return 404. No prompts, response text or credentials are included.
+Parallel lanes use distinct diagnostic `request_id` values while `window_id`
+retains the shared original request ID and `output_mode` identifies the lane.
+Session ID and generation checks prevent retired runs from filling a new cache.
+
+The independent collector observes the model boundary, **not downstream tracking
+acceptance or event confirmation**: `evidence_outcome=not_observed`,
+`accepted_verdicts=null`, `confirmed_event_labels=null`, and `unanalyzed_gaps={}`.
+The panel labels confirmation as unobserved, rather than claiming there were no
+confirmed events. Use the existing scene/event APIs for those facts. Latencies
+are claim-to-response and independent-source-arrival-to-response; neither is
+sensor exposure latency or time to a confirmed alarm. Offline replay below still
+uses SceneRuntime/SceneInspectionWorker, not the independent process scheduler.
+
 ## Replay inputs and scope
 
 `tools/replay_stress.py` now uses the production `SceneRuntime`,

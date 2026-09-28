@@ -79,3 +79,41 @@ and untracked edits are saved in stash `76690af`, named
 separate recovery branch based on the old head, not on the migrated tree.
 
 See [usage and interpretation](../guides/diagnostics-replay.md).
+
+
+## Independent-process follow-up — 2026-09-28
+
+Connected the live independent VLM process to the existing diagnostic HTTP and
+JPEG endpoints. The same real model adapter captures the final encoded inputs;
+a dedicated bounded queue and reader transport them separately from reports.
+Full, compact, events and parallel modes are covered, including distinct lane
+records for one shared source window. The camera diagnostic page now scopes its
+external script's metadata and JPEG fetches to the selected camera.
+
+Re-review checked process/run isolation, parallel lane identity, bounded image
+retention, diagnostic backpressure, failed requests and the distinction between
+model observations and confirmed scene events. No remaining blocking finding was
+identified in this scope. Independent diagnostics deliberately report completed
+model requests only; downstream evidence acceptance, event confirmation and
+coverage gaps are not inferred. Saturation/shutdown may drop diagnostics; normal
+report delivery remains independent. See the guide for bounds and field meanings.
+
+Validation on Windows with Python 3.12.14, using an isolated checkout and a new
+workspace-local pytest temporary directory:
+
+- 267 related Python tests passed: diagnostics, independent process/service,
+  parallel lanes, reorder capacity, scene model/worker, fleet endpoints, replay,
+  low-resolution evaluation and dashboard classification.
+- An additional oversized-diagnostic-image test passed (metadata survives while
+  JPEG retention is refused).
+- Five Node diagnostic-panel tests passed, including scoped fetch/image URLs and
+  unobserved event-confirmation display.
+- New Python files pass Ruff; repository hygiene and diff whitespace checks pass.
+
+The spawned-process integration tests exercise the production message builder,
+model adapter, IPC, cache and HTTP/JPEG routes with synthetic model responses.
+They assert exact equality between retained JPEGs and the multimodal payload at
+the child process's request boundary. They make no paid inference calls and do
+not establish model accuracy, real GPU performance or production latency. The
+full repository suite was not rerun for this follow-up; CI remains the full-suite
+gate. Two installed-library deprecation warnings occurred in focused tests.

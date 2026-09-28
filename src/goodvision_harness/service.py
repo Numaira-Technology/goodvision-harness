@@ -5218,15 +5218,23 @@ def create_app(
     ) -> StreamingResponse:
         return _result_events_response(request, _runtime(request), after=after)
 
-    @application.get("/v1/scene/diagnostics")
-    def scene_diagnostics(request: Request) -> JSONResponse:
-        runtime = _runtime(request)
+    def active_diagnostics(runtime):
+        # The independent branch owns its immutable per-run cache. Reading it
+        # must not wait for the scene/SAM state lock.
+        branch = runtime._vlm_branch
+        if branch is not None:
+            return branch.diagnostics, branch.config.labels
         with runtime._state_lock:
             scene = runtime._scene
-        if scene is None:
+        return (scene.diagnostics, scene.event_labels) if scene else (None, ())
+
+    @application.get("/v1/scene/diagnostics")
+    def scene_diagnostics(request: Request) -> JSONResponse:
+        diagnostics, labels = active_diagnostics(_runtime(request))
+        if diagnostics is None:
             raise HTTPException(status_code=404, detail="no active scene diagnostics")
         return JSONResponse(
-            scene.diagnostics.snapshot(scene.event_labels),
+            diagnostics.snapshot(labels),
             headers={"Cache-Control": "no-store"},
         )
 
@@ -5234,10 +5242,8 @@ def create_app(
     def scene_model_input(
         request: Request, request_id: str, frame_sequence: int,
     ) -> Response:
-        runtime = _runtime(request)
-        with runtime._state_lock:
-            scene = runtime._scene
-        jpeg = scene.diagnostics.jpeg(request_id, frame_sequence) if scene else None
+        diagnostics, _ = active_diagnostics(_runtime(request))
+        jpeg = diagnostics.jpeg(request_id, frame_sequence) if diagnostics else None
         if jpeg is None:
             raise HTTPException(
                 status_code=404, detail="model input expired or unavailable",
