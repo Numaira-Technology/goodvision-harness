@@ -13,10 +13,10 @@ from typing import Any, Protocol
 from PIL import Image, UnidentifiedImageError
 
 from .contracts import NormalizedBBox
+from .event_registry import SAFETY_BRANCH, labels
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .scene_runtime import SceneRuntime, TemporalInspection, TemporalVerdict
 
-_EVENT_LABELS = frozenset(("fight", "smoking", "fall", "weapon"))
 _MAX_BYTES = 16 * 1024 * 1024
 _MAX_PIXELS = 16 * 1024 * 1024
 _PROMPT = """Use every supplied frame in source timestamp order as one continuous
@@ -78,7 +78,8 @@ def _validate_job(job: TemporalInspection) -> set[str]:
         or request.start_seconds > request.end_seconds
     ):
         raise ValueError("invalid temporal inspection interval")
-    if not request.event_labels or not set(request.event_labels) <= _EVENT_LABELS:
+    allowed_labels = frozenset(labels(job.vocabulary.branch(SAFETY_BRANCH)))
+    if not request.event_labels or not set(request.event_labels) <= allowed_labels:
         raise ValueError("unsupported temporal event labels")
     sequences: set[int] = set()
     previous_time = -math.inf
@@ -172,6 +173,22 @@ def build_temporal_messages(
         "allowed_event_labels": list(job.request.event_labels),
         "allowed_subject_ids": sorted(allowed_ids),
     }
+    # The shared prompt spells out the safety events; an injected event has
+    # nowhere else to say what it means, so carry its criteria in the context.
+    injected = {
+        definition.label: {
+            "zh_name": definition.zh_name,
+            "definition": definition.definition,
+            **(
+                {"not_this_event": definition.counter_examples}
+                if definition.counter_examples else {}
+            ),
+        }
+        for definition in job.vocabulary.injected()
+        if definition.label in set(job.request.event_labels)
+    }
+    if injected:
+        context["event_definitions"] = injected
     content: list[dict[str, Any]] = [
         {"type": "text", "text": json.dumps(context, separators=(",", ":"))}
     ]
