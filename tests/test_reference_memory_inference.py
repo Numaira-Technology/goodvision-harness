@@ -11,10 +11,10 @@ import pytest
 from goodvision_harness.config import load_config
 from goodvision_harness.contracts import PUBLIC_MODEL_NAME
 from goodvision_harness.grounding import (
-    AIClubGroundingClient,
-    DryRunGroundingClient,
     FACE_REFERENCE_ANALYSIS_KIND,
     REFERENCE_MEMORY_ANALYSIS_KIND,
+    AIClubGroundingClient,
+    DryRunGroundingClient,
     GroundingResponse,
     build_grounding_messages,
     parse_grounded_classification,
@@ -33,7 +33,6 @@ from goodvision_harness.prompt import (
 )
 from goodvision_harness.reference_memory import MemoryContext, MemoryReference
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -219,7 +218,9 @@ def test_binary_memory_result_keeps_detection_independent_from_known_matches(
     assert classification.matched_memory_ids == tuple(matched_memory_ids)
 
 
-def test_qwen_client_applies_the_memory_allowlist() -> None:
+def test_qwen_client_applies_the_memory_allowlist(monkeypatch) -> None:
+    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    monkeypatch.setenv("INFERENCE_MODEL", "")
     config = load_config(ROOT / "config.yaml")
     transport = _Transport(
         '{"detected":true,"confidence":0.9,"description":"match",'

@@ -365,6 +365,11 @@ class ModularLauncherTests(unittest.TestCase):
                     launcher.application_fleet(count), encoding="utf-8"
                 )
                 environment = dict(os.environ)
+                # The explicit Compose env file owns these values in this test.
+                # Other config tests may have loaded the repository .env into
+                # this process, which must not override the isolated fixture.
+                environment.pop("INFERENCE_API_KEY", None)
+                environment.pop("INFERENCE_PROVIDER", None)
                 environment.update(launcher.main_environment({}, args))
                 environment["DOCKER_CONFIG"] = isolated_docker_config(Path(temporary))
                 environment["HARNESS_STREAM_URL"] = "rtsp://example/first"

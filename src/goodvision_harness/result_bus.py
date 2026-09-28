@@ -28,6 +28,7 @@ class ResultBus:
             raise ValueError("history_size must be positive")
         self._condition = threading.Condition()
         self._history: deque[ResultRecord] = deque(maxlen=history_size)
+        self._transient_history: deque[ResultRecord] = deque(maxlen=history_size)
         self._latest: ResultRecord | None = None
         self._latest_by_feature: OrderedDict[str, ResultRecord] = OrderedDict()
         # Public features must survive history eviction by a faster branch.
@@ -37,7 +38,11 @@ class ResultBus:
         self.epoch = str(uuid4())
 
     def publish(
-        self, payload: Mapping[str, Any], *, expected_epoch: str | None = None,
+        self,
+        payload: Mapping[str, Any],
+        *,
+        expected_epoch: str | None = None,
+        update_snapshots: bool = True,
         promote_latest: bool = True,
     ) -> ResultRecord | None:
         """Deliver every record; auxiliary projections may skip global promotion."""
@@ -47,14 +52,19 @@ class ResultBus:
                 return None
             self._cursor += 1
             record = ResultRecord(cursor=self._cursor, payload=safe)
-            self._history.append(record)
-            if promote_latest and (
+            history = self._history if update_snapshots else self._transient_history
+            history.append(record)
+            if update_snapshots and promote_latest and (
                 self._latest is None
                 or _frame_order(record) >= _frame_order(self._latest)
             ):
                 self._latest = record
             judgments = record.payload.get("judgments", ())
-            for judgment in judgments if isinstance(judgments, (list, tuple)) else ():
+            for judgment in (
+                judgments
+                if update_snapshots and isinstance(judgments, (list, tuple))
+                else ()
+            ):
                 if not isinstance(judgment, Mapping):
                     continue
                 label = judgment.get("event_label")
@@ -75,6 +85,7 @@ class ResultBus:
 
         with self._condition:
             self._history.clear()
+            self._transient_history.clear()
             self._latest = None
             self._latest_by_feature.clear()
             self.epoch = str(uuid4())
@@ -104,7 +115,15 @@ class ResultBus:
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
             while True:
-                records = tuple(item for item in self._history if item.cursor > cursor)
+                records = tuple(sorted(
+                    (
+                        item
+                        for history in (self._history, self._transient_history)
+                        for item in history
+                        if item.cursor > cursor
+                    ),
+                    key=lambda item: item.cursor,
+                ))
                 if records or timeout_seconds == 0:
                     break
                 remaining = deadline - time.monotonic()

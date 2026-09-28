@@ -92,6 +92,16 @@ class FakePool:
         self.calls.append(payload)
         return completion()
 
+    def chat_completion_stream(self, **payload):
+        self.calls.append(payload)
+        decisions = [
+            {"event_label": label, "detected": False, "confidence": 0.9}
+            for label in ("fight", "smoking", "fall", "weapon")
+        ]
+        prefix = json.dumps({"decisions": decisions})[:-1] + ","
+        payload["on_content"](prefix, 0.1)
+        return completion()
+
     def close(self):
         self.closed = True
 
@@ -175,6 +185,23 @@ def test_console_selection_is_private_persisted_and_used_by_live_requests(
         assert restored._route_pool_enabled is True
     finally:
         restored.stop()
+
+
+def test_default_live_request_uses_pool_and_streams_without_route_selection(runtime):
+    assert runtime.route_probe_status()["selected_id"] is None
+    assert runtime._route_transport is None
+
+    runtime.start_camera(features=("fight", "smoking", "fall", "weapon"))
+    frame = probe_window().newest_frame
+    assert runtime.push_camera_frame(frame.jpeg_bytes, width=320, height=180)
+    records = runtime.results.records_after(0, timeout_seconds=5)
+
+    assert runtime._route_transport is not None
+    assert runtime._route_transport.calls
+    assert any(
+        record.payload["type"] == "preliminary_vision_result"
+        for record in records
+    )
 
 
 def test_check_blocks_duplicate_start_and_credential_change(runtime, monkeypatch):

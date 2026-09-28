@@ -58,6 +58,7 @@ LIMITATION = (
     "storage, and playable video. These results do not measure model accuracy, "
     "face recognition, or smoking recognition at these resolutions."
 )
+_SYNTHETIC_REPLAY_TIMEOUT = 45
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,11 +362,11 @@ def evaluate_variant(
     started = time.monotonic()
     try:
         session.start()
-        session.join(20)
+        session.join(_SYNTHETIC_REPLAY_TIMEOUT)
         if session.running:
             session.stop()
             raise TimeoutError("synthetic replay did not finish")
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + _SYNTHETIC_REPLAY_TIMEOUT
         while True:
             if not archive.flush(5):
                 raise TimeoutError("archive did not drain")

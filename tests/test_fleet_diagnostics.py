@@ -32,6 +32,20 @@ def test_diagnostic_document_is_scoped_and_has_no_global_controls(
         assert "globalThis.GoodvisionFleet={detailHidden:()=>false" in page.text
 
 
+def test_local_camera_document_restores_direct_browser_camera_controls(monkeypatch):
+    app = make_app(monkeypatch, capacity=1)
+    with TestClient(app) as client:
+        page = client.get("/local-camera")
+        assert page.status_code == 200
+        assert page.headers["cache-control"] == "no-store"
+        assert '<div id="fleet-detail-console">' in page.text
+        assert 'src="/assets/fleet_console.js"' not in page.text
+        assert 'mode("camera");' in page.text
+        assert 'ui.streamMode.onclick=()=>mode("stream")' in page.text
+        assert "globalThis.GoodvisionFleet=" not in page.text
+        assert "Mac 本机摄像头检测" in page.text
+
+
 def test_peer_buffer_updates_while_analysis_runs_without_affecting_primary(monkeypatch):
     app = make_app(monkeypatch)
     app.state.statuses[1]["analysis_state"] = "running"

@@ -45,6 +45,7 @@ from .grounding import (
 )
 from .inference import WindowClient, WindowResponse
 from .latency_trace import log_timing, trace_id
+from .model_api import OPENROUTER_EXCLUDED_PROVIDERS, PooledModelAPIClient
 from .organizer import ResultOrganizer
 from .person_registry import PersonRegistry
 from .privacy import (
@@ -69,6 +70,35 @@ FILE_MODE = "file"
 CAMERA_MODE = "camera"
 STREAM_MODE = "stream"
 LOGGER = logging.getLogger(__name__)
+OPENROUTER_SORT_CHOICES = ("configured", "latency", "throughput")
+
+
+def _with_openrouter_sort(
+    config: HarnessConfig,
+    route_sort: str,
+) -> HarnessConfig:
+    """Apply one explicit OpenRouter sort without conflicting model suffixes."""
+
+    if route_sort == "configured":
+        return config
+    if route_sort not in OPENROUTER_SORT_CHOICES:
+        raise ValueError("unknown OpenRouter sort")
+    if config.model_api.provider != "openrouter":
+        raise ValueError("--openrouter-sort requires the openrouter provider")
+    parameters = dict(config.inference.request_parameters)
+    parameters["provider"] = {
+        "sort": route_sort,
+        "allow_fallbacks": True,
+        "ignore": sorted(OPENROUTER_EXCLUDED_PROVIDERS),
+    }
+    return replace(
+        config,
+        inference=replace(
+            config.inference,
+            model=config.inference.model.removesuffix(":nitro"),
+            request_parameters=parameters,
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -1112,12 +1142,34 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="write event JSONL here instead of standard output",
     )
+    parser.add_argument(
+        "--openrouter-sort",
+        choices=OPENROUTER_SORT_CHOICES,
+        default="configured",
+        help=(
+            "override OpenRouter routing for an A/B run; latency and throughput "
+            "remove a conflicting :nitro suffix"
+        ),
+    )
+    parser.add_argument(
+        "--stream-decisions",
+        action="store_true",
+        help=(
+            "stream model output and emit a preliminary verdict before the "
+            "complete grounded result"
+        ),
+    )
+    parser.add_argument(
+        "--transport-timing",
+        action="store_true",
+        help="emit per-request model transport timing records",
+    )
     return parser.parse_args(argv)
 
 
 def _main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    config = load_config(args.config)
+    config = _with_openrouter_sort(load_config(args.config), args.openrouter_sort)
     stream_url: str | None = None
     whep_headers: Mapping[str, str] = {}
     if args.video is not None:
@@ -1176,47 +1228,70 @@ def _main(argv: list[str] | None = None) -> int:
             ),
         )
 
-    client = build_grounding_client(
-        config.inference,
-        config.model_api,
-        memory_context=config.memory,
-        dry_run=args.dry_run,
-    )
-    callbacks = SessionCallbacks(
-        on_event=emit,
-        on_end=on_end,
-        on_vision_result=lambda result: emit(result.as_dict()),
-    )
-    archive = EventArchive(config.events)
-    if stream_url is not None:
-        session = StreamingSession.for_stream(
-            config,
-            client,
-            callbacks,
-            stream_url=stream_url,
-            whep_headers=whep_headers,
-            archive=archive,
-        )
-    else:
-        assert video is not None
-        session = StreamingSession.for_file(
-            config,
-            client,
-            callbacks,
-            video_path=video,
-            start_seconds=args.start_seconds,
-            realtime=False if args.no_realtime else None,
-            archive=archive,
-        )
+    transport: PooledModelAPIClient | None = None
+    archive: EventArchive | None = None
     try:
+        if not args.dry_run:
+            transport = PooledModelAPIClient(
+                config.model_api,
+                timing_sink=emit if args.transport_timing else None,
+                trace_transport=args.transport_timing,
+            )
+        client = build_grounding_client(
+            config.inference,
+            config.model_api,
+            memory_context=config.memory,
+            dry_run=args.dry_run,
+            transport=transport,
+            stream_decisions=args.stream_decisions,
+            preliminary_callback=lambda result: emit(result.as_dict()),
+        )
+        callbacks = SessionCallbacks(
+            on_event=emit,
+            on_end=on_end,
+            on_vision_result=lambda result: emit(result.as_dict()),
+        )
+        archive = EventArchive(config.events)
+        if stream_url is not None:
+            session = StreamingSession.for_stream(
+                config,
+                client,
+                callbacks,
+                stream_url=stream_url,
+                whep_headers=whep_headers,
+                archive=archive,
+            )
+        else:
+            assert video is not None
+            session = StreamingSession.for_file(
+                config,
+                client,
+                callbacks,
+                video_path=video,
+                start_seconds=args.start_seconds,
+                realtime=False if args.no_realtime else None,
+                archive=archive,
+            )
+        if args.transport_timing:
+            emit({
+                "type": "model_transport_config",
+                "connection_pool": transport is not None,
+                "transport_trace": transport is not None,
+                "route_sort": args.openrouter_sort,
+                "stream_decisions": args.stream_decisions and transport is not None,
+            })
         session.start()
         while not done.wait(0.2):
             pass
     except KeyboardInterrupt:
-        session.stop()
-        done.wait(5.0)
+        if session is not None:
+            session.stop()
+            done.wait(5.0)
     finally:
-        archive.close(timeout=15.0)
+        if archive is not None:
+            archive.close(timeout=15.0)
+        if transport is not None:
+            transport.close()
         if close_output:
             output.close()
     return 0

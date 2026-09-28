@@ -16,7 +16,7 @@ function dashboard(){
     openFeed=()=>surfaces();
     state.running=true;state.sessionId="session-1";state.sessionFeatures=detectionEvents;
     state.gallery={ready:true};state.galleryLoading=false;
-    globalThis.app={analysis,message,status,reset,renderClassification,state,
+    globalThis.app={analysis,preliminary,message,status,reset,renderClassification,state,
       renderSensitivities,selectedSensitivities,sensitivityInputs,controls,start};
   `);
   return {app:context.app,context,element,
@@ -34,6 +34,50 @@ function result(timestamp,values,{session="session-1",frame=Math.round(timestamp
     }))};
 }
 const clear={fight:false,smoking:false,fall:false,weapon:false};
+
+test("a streamed preliminary verdict is visible and replaced by its final frame",()=>{
+  const view=dashboard();view.app.state.sessionFeatures=["smoking"];
+  view.app.preliminary({type:"preliminary_vision_result",stream_session_id:"session-1",
+    message_id:"preliminary-1",event_label:"smoking",detected:true,confidence:0.87,
+    window_index:2,latency_seconds:0.24,
+    frame:{timestamp_seconds:0.8,source_frame_index:8}});
+  assert.equal(view.element("verdict").textContent,"SMOKING");
+  assert.match(view.element("decision-meta").textContent,/model 0\.24s.*preliminary/);
+  view.app.analysis(result(0.8,{smoking:false},{frame:8}));
+  assert.equal(view.status("smoking"),"CLEAR 90.0%");
+  assert.doesNotMatch(view.element("decision-meta").textContent,/preliminary/);
+});
+
+test("preliminary negatives cannot clear a confirmed alert",()=>{
+  const view=dashboard();view.app.state.sessionFeatures=["smoking"];
+  view.app.analysis(result(0,{smoking:true}));
+  for(const [window_index,timestamp] of [[1,0.4],[2,0.8]]){
+    view.app.preliminary({type:"preliminary_vision_result",stream_session_id:"session-1",
+      message_id:`preliminary-${window_index}`,event_label:"smoking",detected:false,
+      confidence:0.92,window_index,latency_seconds:0.2,
+      frame:{timestamp_seconds:timestamp,source_frame_index:window_index}})
+  }
+  assert.equal(view.element("verdict").textContent,"SMOKING");
+  assert.equal(view.status("smoking"),"ALERT 90.0%");
+  assert.equal(view.app.state.classificationHistory.get("smoking").entries.length,1);
+});
+
+test("a branch failure retracts an unvalidated preliminary verdict",async()=>{
+  const view=dashboard();view.app.state.sessionFeatures=["smoking"];
+  view.app.analysis(result(0,{smoking:false}));
+  view.app.preliminary({type:"preliminary_vision_result",stream_session_id:"session-1",
+    message_id:"preliminary-positive",event_label:"smoking",detected:true,confidence:0.87,
+    window_index:1,latency_seconds:0.24,
+    frame:{timestamp_seconds:0.4,source_frame_index:4}});
+  assert.equal(view.element("verdict").textContent,"SMOKING");
+  view.context.statusData={pipeline_state:"running",stream_session_id:"session-1",
+    input_mode:"stream",features:["smoking"],annotated_output:{},
+    pipeline:{branch_errors:{safety:"invalid_response"}}};
+  await view.app.status();
+  assert.equal(view.element("verdict").textContent,"CLEAR");
+  assert.equal(view.app.state.preliminaryJudgments.size,0);
+  assert.doesNotMatch(view.element("decision-meta").textContent,/preliminary/);
+});
 
 test("behavior alerts clear only after two distinct negative frames and raw evidence stays negative",()=>{
   const view=dashboard();view.app.state.sessionFeatures=["smoking"];

@@ -436,7 +436,7 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
     </div>
     <div class="deployment-actions">
       <label class="field">
-        <span>网络视频缓存（秒）</span>
+        <span>实时画面缓存（秒）</span>
         <input id="buffer-delay-seconds" type="number" min="0" max="30" step="any" disabled
                aria-describedby="buffer-delay-note" placeholder="0">
       </label>
@@ -444,7 +444,7 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
       <span id="buffer-delay-current" class="note">正在读取缓存时间…</span>
     </div>
     <div id="local-camera-buffer-note" class="note" hidden></div>
-    <div class="note">此设置仅适用于网络视频，额外显示缓存可设为 0–30 秒，运行中可调整，重启后保留。调小后会跳过旧画面、追上最新结果。本机摄像头使用独立的描边缓冲，由部署配置设置。</div>
+    <div class="note">当前服务输出的额外显示缓存可设为 0–30 秒，运行中可调整，重启后保留。调小后会跳过旧画面、追上最新结果。实验性的浏览器本地描边启用时使用其独立缓冲。</div>
     <div id="buffer-delay-note" class="status deployment-note" role="status" aria-live="polite"></div>
     <div class="metrics">
       <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
@@ -592,6 +592,7 @@ const state={
   ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,cameraGeneration:0,count:0,
   activeAnnotationId:null,annotationTimer:null,overlayCollapsed:false,overallResult:null,
   classificationJudgments:new Map(),classificationResult:null,classificationHistory:new Map(),
+  preliminaryJudgments:new Map(),
   notifiedResults:new Set(),runtimeErrorMessage:""
 };
 const sceneView={enabled:false,mode:"disabled",snapshot:null,error:false,timer:null,
@@ -1062,7 +1063,7 @@ function updateAnnotatedOutput(output){
   const value=output&&typeof output==="object"?output:{},mode=String(value.annotation_mode||"none");
   const delay=value.buffer_delay_seconds;
   if(typeof delay==="number"&&Number.isFinite(delay)){
-    ui.bufferDelayCurrent.textContent="当前网络视频缓存："+delay+" 秒";
+    ui.bufferDelayCurrent.textContent="当前实时画面缓存："+delay+" 秒";
     if(!state.bufferDelayDirty)ui.bufferDelay.value=String(delay)
   }
   const stateLabel=value.state==="running"?mode.toUpperCase():"BUFFERING";
@@ -1245,7 +1246,13 @@ function openFeed(){
     }
   }
   const Network=globalThis.GoodvisionCameraDisplay?.NetworkController;
-  if(state.running&&state.sessionMode!=="camera"&&Network?.supported()){
+  // A browser camera may remain active while a delayed status response is
+  // reconciling the session mode. Its stable fallback is the latest JPEG,
+  // never the transport reserved for server-owned network video.
+  const browserCamera=state.sessionMode==="camera"||
+    (!!state.cameraStream&&state.mode==="camera");
+  if(browserCamera&&networkVideoDisplay){networkVideoDisplay.stop();networkVideoDisplay=null;}
+  if(state.running&&!browserCamera&&Network?.supported()){
     if(!networkVideoDisplay){
       stopLatestFeed();networkVideoDisplay=new Network({canvas:ui.localCameraCanvas,
         url:"/v1/video/display/frames",metricsUrl:"/v1/video/display/metrics",
@@ -1523,7 +1530,7 @@ async function saveBufferDelay(){
       updateAnalysisUi()
     }
     ui.bufferDelay.value=String(saved);
-    ui.bufferDelayCurrent.textContent="当前网络视频缓存："+saved+" 秒";
+    ui.bufferDelayCurrent.textContent="当前实时画面缓存："+saved+" 秒";
     ui.bufferDelayNote.textContent="已应用并保存为 "+saved+" 秒，重启后继续使用。";
     await status()
   }catch(error){
@@ -2072,6 +2079,7 @@ function updateRuntimeSummary(data){
   ui.lastResultNote.textContent=data.last_result_at?"Last result · "+timeLabel(data.last_result_at):"No result yet";
   setChannel(ui.lastUpdate,"Status · "+new Date().toLocaleTimeString(),data.ready===true?"good":"warn");
   const error=runtimeErrorText(data);
+  if(error)clearPreliminaryResults();
   ui.runtimeError.hidden=!error;ui.runtimeError.textContent=error?"Runtime error · "+error:"";
   if(error||pipeline==="error"||pipeline==="configuration_error"){
     setConnection("Attention required",error||("Runtime state: "+pipeline),"bad")
@@ -2176,16 +2184,50 @@ function analysis(result){
   }
   const judgments=Array.isArray(result.judgments)?result.judgments:[];if(!judgments.length)return;
   notifyEvent(result,judgments);
+  discardPreliminaryResults(result,judgments);
   mergeClassification(result);renderClassification();clearAnnotation();
   const ids=new Set(judgments.filter(judgment=>judgment&&judgment.detected===true)
     .flatMap(judgment=>Array.isArray(judgment.object_ids)?judgment.object_ids:[]));
   // Evidence and the log remain the original per-frame result, never the held display state.
   log(result,judgments,ids.size)
 }
+function preliminary(result){
+  if(!result||result.type!=="preliminary_vision_result")return;
+  if(!state.running||!state.sessionId||result.stream_session_id!==state.sessionId)return;
+  const key=canonicalEventLabel(result.event_label);
+  if(!visibleFeatures().includes(key)||!safetyEvents.includes(key)||typeof result.detected!=="boolean")return;
+  const frame=result.frame||{};
+  const provisional={
+    type:"analysis_result",stream_session_id:result.stream_session_id,
+    message_id:result.message_id,sequence:Number(result.window_index)+1,
+    frame,analysis_kind:"preliminary_event",analysis_complete:false,
+    missing_event_labels:visibleFeatures().filter(item=>item!==key),
+    model:{latency_seconds:result.latency_seconds},
+    judgments:[{event_label:key,detected:result.detected,confidence:result.confidence,
+      description:"Preliminary streaming decision.",object_ids:[]}]
+  };
+  const entry={judgment:provisional.judgments[0],result:provisional,preliminary:true};
+  const confirmed=state.classificationJudgments.get(key),previous=state.preliminaryJudgments.get(key);
+  if((confirmed&&compareClassificationFrames(provisional,confirmed.result)<=0)||
+      (previous&&compareClassificationFrames(provisional,previous.result)<=0))return;
+  state.preliminaryJudgments.set(key,entry);renderClassification()
+}
 function resetClassification(){
   state.classificationJudgments.clear();state.classificationResult=null;
-  state.classificationHistory.clear();state.notifiedResults.clear();
+  state.classificationHistory.clear();state.preliminaryJudgments.clear();state.notifiedResults.clear();
   $("event-notice").hidden=true;$("event-notice").textContent=""
+}
+function discardPreliminaryResults(result,judgments){
+  for(const judgment of judgments){
+    const key=canonicalEventLabel(judgment&&judgment.event_label);
+    const provisional=state.preliminaryJudgments.get(key);
+    if(provisional&&compareClassificationFrames(result,provisional.result)>=0)
+      state.preliminaryJudgments.delete(key)
+  }
+}
+function clearPreliminaryResults(){
+  if(!state.preliminaryJudgments.size)return;
+  state.preliminaryJudgments.clear();renderClassification()
 }
 function notifyEvent(result,judgments){
   if(sceneActive())return;
@@ -2242,26 +2284,46 @@ function mergeClassification(result){
       state.classificationJudgments.set(key,{judgment:{...judgment,event_label:key},result})
   }
 }
+function displayedClassificationEntry(key){
+  const confirmed=state.classificationJudgments.get(key);
+  const provisional=state.preliminaryJudgments.get(key);
+  if(!provisional)return confirmed;
+  if(confirmed&&compareClassificationFrames(provisional.result,confirmed.result)<=0)return confirmed;
+  // An advisory negative must never advance or visually bypass the confirmed
+  // two-frame clearing policy for an active safety alert.
+  if(confirmed&&confirmed.judgment.detected&&!provisional.judgment.detected)return confirmed;
+  return provisional
+}
 function renderClassification(){
   if(sceneActive()){
     renderEventStatuses([...state.classificationJudgments.values()].map(entry=>entry.judgment));
     renderSceneDecision();return
   }
-  const result=state.classificationResult;if(!result)return;
-  const features=visibleFeatures(),latestTimestamp=Number((result.frame||{}).timestamp_seconds)||0;
-  const entries=features.map(key=>state.classificationJudgments.get(key)).filter(entry=>{
+  const features=visibleFeatures();
+  const entries=features.map(displayedClassificationEntry).filter(Boolean);
+  const result=entries.reduce((latest,entry)=>
+    !latest||compareClassificationFrames(entry.result,latest)>=0?entry.result:latest,
+    state.classificationResult);
+  if(!result){
+    ui.decision.className="decision warming";ui.verdict.textContent="WARMING";
+    ui.confidence.textContent="";ui.description.textContent="Waiting for selected-feature analysis.";
+    ui.meta.textContent="";renderEventStatuses([]);return
+  }
+  const latestTimestamp=Number((result.frame||{}).timestamp_seconds)||0;
+  const visibleEntries=entries.filter(entry=>{
     if(!entry)return false;
     // The face branch may skip CPU samples. Match the video's three-second carry
     // across newer keyframes, while keeping the current keyframe during an inference stall.
     return entry.judgment.event_label!=="stranger"||
       latestTimestamp-(Number((entry.result.frame||{}).timestamp_seconds)||0)<=3
   });
-  const judgments=entries.map(entry=>entry.judgment),pending=features.length-judgments.length;
+  const judgments=visibleEntries.map(entry=>entry.judgment),pending=features.length-judgments.length;
+  const hasPreliminary=visibleEntries.some(entry=>entry.preliminary===true);
   const active=judgments.filter(judgment=>judgment&&judgment.detected===true),yes=active.length>0;
   // Independent branch observations remain partial in the original JSON.
   // The capability overview is ready once every selected feature has a result.
   const incomplete=result.analysis_complete===false&&pending>0;
-  const ids=new Set(entries.filter(entry=>entry.judgment.detected===true).flatMap(entry=>
+  const ids=new Set(visibleEntries.filter(entry=>entry.judgment.detected===true).flatMap(entry=>
     (Array.isArray(entry.judgment.object_ids)?entry.judgment.object_ids:[])
       .map(id=>String(entry.result.message_id||entry.result.sequence)+":"+id)));
   const memoryIds=[...new Set(active.flatMap(judgment=>
@@ -2283,7 +2345,7 @@ function renderClassification(){
   ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
     " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.size+" bbox"+(ids.size===1?"":"es")+
     (memoryIds.length?" | "+memoryIds.length+" known reference"+(memoryIds.length===1?"":"s"):"")+
-    " | model "+number(model.latency_seconds,2)+"s";
+    " | model "+number(model.latency_seconds,2)+"s"+(hasPreliminary?" | preliminary":"");
   ui.analysisChipLabel.textContent="events";ui.event.textContent=features.length+" selected";ui.eventStatuses.hidden=false;
   renderEventStatuses(judgments)
 }
@@ -2568,6 +2630,9 @@ async function connectResultEvents(){
   events.onerror=()=>setChannel(ui.sseChannel,"Result SSE · reconnecting","warn");
   events.addEventListener("analysis_result",event=>{
     try{analysis(JSON.parse(event.data))}catch(_){say("Invalid AnalysisResult JSON.",true)}
+  })
+  events.addEventListener("preliminary_vision_result",event=>{
+    try{preliminary(JSON.parse(event.data))}catch(_){say("Invalid preliminary result JSON.",true)}
   })
 }
 window.addEventListener("beforeunload",()=>{

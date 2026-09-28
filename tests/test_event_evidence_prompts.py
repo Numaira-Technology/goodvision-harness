@@ -13,9 +13,14 @@ from goodvision_harness.config import load_config
 from goodvision_harness.grounding import (
     BILINGUAL_DESCRIPTION_RULE,
     SAFETY_EVENT_LABELS,
+    STREAMING_DECISION_PREFIX_RULE,
+    STREAMING_MULTI_DECISION_PREFIX_RULE,
     AIClubGroundingClient,
     AIClubMultiGroundingClient,
     build_grounding_messages,
+    parse_multi_grounded_classification,
+    parse_streaming_decision_prefix,
+    parse_streaming_multi_decision_prefix,
 )
 from goodvision_harness.model_api import ModelAPIClient
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
@@ -228,3 +233,226 @@ def test_smoking_evidence_rule_does_not_change_other_event_requests() -> None:
         f"Existing fall policy\n\n{BILINGUAL_DESCRIPTION_RULE}"
     )
     assert "Mandatory smoking evidence rule" not in messages[0]["content"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('{"detected":true,"confidence":0.85,', (True, 0.85)),
+        (' { "detected" : false, "confidence" : 1 }', (False, 1.0)),
+        ('{"confidence":0.9,"detected":true,', None),
+        ('{"detected":true,"confidence":', None),
+        ('{"detected":true,"confidence":1.1,', None),
+        ('prefix {"detected":true,"confidence":0.9,', None),
+    ],
+)
+def test_streaming_decision_prefix_requires_complete_ordered_values(
+    text: str,
+    expected: tuple[bool, float] | None,
+) -> None:
+    assert parse_streaming_decision_prefix(text) == expected
+
+
+def test_streaming_grounder_emits_early_verdict_and_keeps_final_validation() -> None:
+    settings = replace(load_config(ROOT / "config.yaml").inference, event_label="fall")
+    full = json.dumps({
+        "detected": True,
+        "confidence": 0.91,
+        "description": "一人正在跌倒。 / A person is falling.",
+        "objects": [{
+            "label": "person",
+            "confidence": 0.92,
+            "bbox_2d": [100, 100, 700, 950],
+        }],
+    }, ensure_ascii=False)
+
+    class StreamTransport:
+        assistant_text = staticmethod(ModelAPIClient.assistant_text)
+
+        def chat_completion_stream(self, **kwargs):
+            assert kwargs["on_content"](
+                '{"detected":true,"confidence":0.91,', 0.2,
+            )
+            assert STREAMING_DECISION_PREFIX_RULE in (
+                kwargs["messages"][0]["content"]
+            )
+            return {"choices": [{"message": {"content": full}}]}
+
+    preliminary = []
+    client = AIClubGroundingClient(
+        settings,
+        StreamTransport(),
+        stream_decisions=True,
+        preliminary_callback=preliminary.append,
+    )
+    window = FrameWindow(index=7, frames=(SampledFrame(
+        sample_index=7,
+        source_frame_index=21,
+        timestamp_seconds=2.8,
+        jpeg_bytes=b"test-frame",
+        width=320,
+        height=180,
+    ),))
+
+    response = client.classify_window(window)
+
+    assert response.error is None
+    assert response.classification is not None
+    assert response.classification.detected is True
+    assert len(preliminary) == 1
+    assert preliminary[0].detected is True
+    assert preliminary[0].confidence == 0.91
+    assert preliminary[0].window_index == 7
+    assert preliminary[0].as_dict()["type"] == "preliminary_vision_result"
+
+
+def test_streaming_grounder_does_not_confirm_failed_preliminary_delivery() -> None:
+    settings = replace(load_config(ROOT / "config.yaml").inference, event_label="fall")
+    callback_results = []
+
+    class StreamTransport:
+        assistant_text = staticmethod(ModelAPIClient.assistant_text)
+
+        def chat_completion_stream(self, **kwargs):
+            callback_results.append(kwargs["on_content"](
+                '{"detected":true,"confidence":0.91,', 0.2,
+            ))
+            return {"choices": [{"message": {"content": json.dumps({
+                "detected": False,
+                "confidence": 0.8,
+                "description": "未检测到跌倒。 / No fall was detected.",
+                "objects": [],
+            }, ensure_ascii=False)}}]}
+
+    def fail_delivery(_result) -> None:
+        raise OSError("output is unavailable")
+
+    client = AIClubGroundingClient(
+        settings,
+        StreamTransport(),
+        stream_decisions=True,
+        preliminary_callback=fail_delivery,
+    )
+    window = FrameWindow(index=8, frames=(SampledFrame(
+        sample_index=8,
+        source_frame_index=24,
+        timestamp_seconds=3.2,
+        jpeg_bytes=b"test-frame",
+        width=320,
+        height=180,
+    ),))
+
+    response = client.classify_window(window)
+
+    assert callback_results == [False]
+    assert response.error is None
+    assert response.classification is not None
+    assert response.classification.detected is False
+
+
+def test_streaming_multi_grounder_emits_each_decision_before_final_details() -> None:
+    settings = load_config(ROOT / "config.yaml").inference
+    labels = ("smoking", "fall")
+    decisions = [
+        {"event_label": "smoking", "detected": False, "confidence": 0.93},
+        {"event_label": "fall", "detected": True, "confidence": 0.88},
+    ]
+    full = json.dumps({
+        "decisions": decisions,
+        "events": [
+            {
+                "event_label": "smoking", "detected": False, "confidence": 0.93,
+                "description": "未检测到吸烟。 / No smoking detected.", "objects": [],
+            },
+            {
+                "event_label": "fall", "detected": True, "confidence": 0.88,
+                "description": "一人正在跌倒。 / A person is falling.",
+                "objects": [{
+                    "label": "person", "confidence": 0.9,
+                    "bbox_2d": [100, 100, 700, 950],
+                }],
+            },
+        ],
+    }, ensure_ascii=False)
+    prefix = json.dumps({"decisions": decisions}, ensure_ascii=False)[:-1] + ","
+
+    class StreamTransport:
+        assistant_text = staticmethod(ModelAPIClient.assistant_text)
+
+        def chat_completion_stream(self, **kwargs):
+            assert kwargs["on_content"](prefix, 0.2)
+            assert STREAMING_MULTI_DECISION_PREFIX_RULE in (
+                kwargs["messages"][0]["content"]
+            )
+            return {"choices": [{"message": {"content": full}}]}
+
+    preliminary = []
+    client = AIClubMultiGroundingClient(
+        settings, StreamTransport(), labels,
+        stream_decisions=True, preliminary_callback=preliminary.append,
+    )
+    window = FrameWindow(index=7, frames=(SampledFrame(
+        sample_index=7, source_frame_index=21, timestamp_seconds=2.8,
+        jpeg_bytes=b"test-frame", width=320, height=180,
+    ),))
+
+    response = client.classify_window(window)
+
+    assert response.ok
+    assert [(item.event_label, item.detected) for item in preliminary] == [
+        ("smoking", False), ("fall", True),
+    ]
+    assert {item.source_frame_index for item in preliminary} == {21}
+    assert parse_streaming_multi_decision_prefix(prefix, event_labels=labels) == (
+        ("smoking", False, 0.93), ("fall", True, 0.88),
+    )
+
+
+def test_streaming_multi_parser_expands_only_omitted_negative_details() -> None:
+    labels = ("smoking", "fall", "weapon")
+    decisions = [
+        {"event_label": "smoking", "detected": False, "confidence": 0.93},
+        {"event_label": "fall", "detected": True, "confidence": 0.88},
+        {"event_label": "weapon", "detected": False, "confidence": 0.91},
+    ]
+    payload = {
+        "decisions": decisions,
+        "events": [{
+            "event_label": "fall",
+            "detected": True,
+            "confidence": 0.88,
+            "description": "一人正在跌倒。 / A person is falling.",
+            "objects": [{
+                "label": "person",
+                "confidence": 0.9,
+                "bbox_2d": [100, 100, 700, 950],
+            }],
+        }],
+    }
+
+    result = parse_multi_grounded_classification(
+        json.dumps(payload, ensure_ascii=False),
+        event_labels=labels,
+        require_bilingual=True,
+    )
+
+    assert [(item.event_label, item.detected) for item in result.judgments] == [
+        ("smoking", False), ("fall", True), ("weapon", False),
+    ]
+    assert result.judgments[0].confidence == 0.93
+    assert result.judgments[2].objects == ()
+
+
+def test_streaming_multi_parser_never_invents_missing_positive_evidence() -> None:
+    payload = {
+        "decisions": [
+            {"event_label": "smoking", "detected": False, "confidence": 0.93},
+            {"event_label": "fall", "detected": True, "confidence": 0.88},
+        ],
+        "events": [],
+    }
+
+    with pytest.raises(ValueError, match="missing event labels: fall"):
+        parse_multi_grounded_classification(
+            json.dumps(payload), event_labels=("smoking", "fall"),
+        )
