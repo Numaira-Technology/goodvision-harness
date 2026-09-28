@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "test_2_dual_stream",
+  "question": "四帧并行上传能否消除单路和双路的上传积压？",
+  "delays_seconds": [1.0],
+  "repeats": 1,
+  "conditions": [
+    {"name": "single", "streams": 1, "recording": false, "upload_window": 4, "ack_timeout_ms": 15000, "drain_timeout_ms": 30000},
+    {"name": "dual", "streams": 2, "recording": false, "upload_window": 4, "ack_timeout_ms": 15000, "drain_timeout_ms": 30000}
+  ],
+  "coverage_target": 0.7,
+  "display_fps_retention_min": 0.9,
+  "minimum_overlap_ratio": 0.9,
+  "maximum_start_skew_seconds": 0.25,
+  "note": "仅作传输链路预检；允许较慢 ACK 与 EOF 排空，以便完整记录积压。显示时效与 70% 描边率判据不变。使用真实 SAM 和 VLM，不代替四档两次重复的正式测试。"
+}

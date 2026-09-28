@@ -3,6 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from test_camera_display_protocol import RUN, batch, bus, event, header, scene, source
@@ -115,6 +116,24 @@ def test_single_writer_prioritizes_ack_and_publishes_tail_without_upload():
         finally:
             await channel.close()
         assert channel.writer.done() and channel.producer.done()
+
+    asyncio.run(run())
+
+
+def test_frame_ack_does_not_wait_for_shared_thread_pool():
+    async def run():
+        socket = Socket()
+        channel = CameraSocketChannel(socket, bus())
+        channel.start()
+        try:
+            with patch("goodvision_harness.camera_display.asyncio.to_thread",
+                       side_effect=AssertionError("ACK used shared executor")):
+                await channel.send({"type": "camera_frame_ack", "accepted": True})
+            assert socket.messages == [
+                {"type": "camera_frame_ack", "accepted": True}
+            ]
+        finally:
+            await channel.close()
 
     asyncio.run(run())
 

@@ -91,7 +91,12 @@ class CameraSocketChannel:
                 await self.wake.wait()
                 if self.controls:
                     payload, delivered = self.controls.popleft()
-                    encoded = await asyncio.to_thread(self._encode, payload)
+                    # A frame ACK is tiny and gates the browser's next upload.
+                    # Sending it through the shared thread pool can stall it
+                    # behind unrelated model work even after frame admission.
+                    encoded = (self._encode(payload)
+                               if payload.get("type") == "camera_frame_ack"
+                               else await asyncio.to_thread(self._encode, payload))
                     await asyncio.wait_for(self.websocket.send_text(encoded), timeout=5)
                     if (payload.get("type") == "camera_display_metadata"
                             and payload["stream_session_id"] == self.session_id):

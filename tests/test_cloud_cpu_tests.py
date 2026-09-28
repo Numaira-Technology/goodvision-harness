@@ -38,6 +38,15 @@ def test_plan_refuses_an_uncontrolled_extra_condition(tmp_path):
         load_plan(path)
 
 
+def test_plan_requires_matching_upload_windows_for_a_valid_comparison(tmp_path):
+    value = plan(2)
+    value["conditions"][0]["upload_window"] = 4
+    path = tmp_path / "mismatched-upload-windows.json"
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="same upload window"):
+        load_plan(path)
+
+
 def paired_trials(number):
     value = plan(number)
     value["delays_seconds"] = [0.5]

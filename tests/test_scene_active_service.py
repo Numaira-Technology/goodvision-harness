@@ -840,6 +840,9 @@ def test_camera_websocket_sends_geometry_without_waiting_for_another_upload(
                 message = socket.receive_json()
                 if message["type"] == "camera_frame_ack":
                     assert message["accepted"] and message["source_sequence"] == 42
+                    assert message["server_receive_to_ack_ready_seconds"] >= 0
+                    assert message["server_executor_wait_seconds"] >= 0
+                    assert message["server_admission_seconds"] >= 0
                     break
             runtime._camera_display_metadata.observe_batch(SimpleNamespace(
                 stream_session_id=sid, predictor_epoch="test-epoch", frames=(

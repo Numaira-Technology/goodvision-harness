@@ -4842,6 +4842,7 @@ def create_app(
                 data = message.get("bytes")
                 if data is None:
                     continue
+                received_at = time.monotonic()
                 if len(data) <= CAMERA_FRAME_HEADER.size:
                     await channel.send(
                         {"type": "error", "message": "camera frame is truncated"}
@@ -4849,8 +4850,17 @@ def create_app(
                     continue
                 try:
                     jpeg, header = decode_camera_packet(data)
-                    accepted = await asyncio.to_thread(
-                        runtime.push_camera_frame, jpeg, owner=owner, **header,
+                    executor_queued_at = time.monotonic()
+
+                    def admit_frame():
+                        started = time.monotonic()
+                        accepted_frame = runtime.push_camera_frame(
+                            jpeg, owner=owner, **header,
+                        )
+                        return accepted_frame, started, time.monotonic()
+
+                    accepted, admission_started, admission_finished = (
+                        await asyncio.to_thread(admit_frame)
                     )
                     if "source_sequence" in header:
                         current = (None if accepted else await asyncio.to_thread(
@@ -4863,6 +4873,7 @@ def create_app(
                                 header["generation"], header["crop_version"]
                             ) != (current["generation"], current["crop_version"])))
                         )
+                        ack_ready_at = time.monotonic()
                         await channel.send({
                             "type": "camera_frame_ack",
                             **{key: header[key] for key in (
@@ -4873,7 +4884,31 @@ def create_app(
                             "reason": None if accepted else (
                                 "obsolete_source" if obsolete else "capacity"
                             ),
+                            "server_receive_to_ack_ready_seconds": (
+                                ack_ready_at - received_at
+                            ),
+                            "server_executor_wait_seconds": (
+                                admission_started - executor_queued_at
+                            ),
+                            "server_admission_seconds": (
+                                admission_finished - admission_started
+                            ),
                         })
+                        log_timing(
+                            "camera_frame_ack_timing",
+                            stream_session_id=trace_id(header["stream_session_id"]),
+                            source_sequence=header["source_sequence"],
+                            packet_bytes=len(data),
+                            accepted=accepted,
+                            receive_to_ack_ready_seconds=ack_ready_at - received_at,
+                            executor_wait_seconds=(
+                                admission_started - executor_queued_at
+                            ),
+                            admission_seconds=(
+                                admission_finished - admission_started
+                            ),
+                            ack_send_wait_seconds=time.monotonic() - ack_ready_at,
+                        )
                 except ValueError as exc:
                     await channel.send(
                         {"type": "error", "message": redact_public_text(exc)}

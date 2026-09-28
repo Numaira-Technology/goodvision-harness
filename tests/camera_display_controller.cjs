@@ -958,6 +958,52 @@ test("one JPEG lookahead overlaps ACK wait without sending a second unacknowledg
   assert.equal(view.controller.snapshot().analysis_sent,1);view.controller.stop();
 });
 
+test("optional two-frame upload window sends the next source before the first ACK",async()=>{
+  const view=browser({autoAck:false,config:{analysis_upload_window:2}});
+  view.capture(0);view.capture(.34);view.capture(.68);
+  await view.finish();await view.finish();
+  assert.deepEqual(view.packets.map(packet=>unpack(packet).source_sequence),[0,1]);
+  assert.equal(view.controller.snapshot().analysis_sent,0);
+  view.controller.acknowledgeUpload({...unpack(view.packets[0]),type:"camera_frame_ack",accepted:true});
+  await settle();assert.equal(view.controller.snapshot().analysis_sent,1);
+  await view.finish();
+  assert.deepEqual(view.packets.map(packet=>unpack(packet).source_sequence),[0,1,2]);
+  view.controller.acknowledgeUpload({...unpack(view.packets[1]),type:"camera_frame_ack",accepted:true});
+  view.controller.acknowledgeUpload({...unpack(view.packets[2]),type:"camera_frame_ack",accepted:true});
+  await settle();assert.equal(view.controller.snapshot().analysis_sent,3);
+  assert.equal(view.controller.snapshot().analysis_pending,0);view.controller.stop();
+});
+
+test("four-frame upload window bounds unacknowledged frames and retains FIFO after out-of-order ACKs",async t=>{
+  const view=browser({autoAck:false,config:{analysis_upload_window:4}});
+  t.after(()=>view.controller.stop());
+  for(let i=0;i<5;i++)view.capture(i*.34);
+  for(let i=0;i<4;i++)await view.finish();
+  assert.deepEqual(view.packets.map(packet=>unpack(packet).source_sequence),[0,1,2,3]);
+  assert.equal(view.controller.snapshot().analysis_sent,0);
+  view.controller.acknowledgeUpload({...unpack(view.packets[1]),type:"camera_frame_ack",accepted:true});
+  await settle();
+  await view.finish();
+  assert.deepEqual(view.packets.map(packet=>unpack(packet).source_sequence),[0,1,2,3,4]);
+  assert.equal(view.controller.snapshot().analysis_sent,0);
+  for(const index of [0,2,3,4])
+    view.controller.acknowledgeUpload({...unpack(view.packets[index]),type:"camera_frame_ack",accepted:true});
+  await settle();
+  assert.equal(view.controller.snapshot().analysis_sent,5);
+  assert.equal(view.controller.snapshot().analysis_pending,0);
+});
+
+test("two-frame upload window retains every source if an earlier frame is refused",async()=>{
+  const view=browser({autoAck:false,config:{analysis_upload_window:2}});
+  view.capture(0);view.capture(.34);
+  await view.finish();await view.finish();
+  view.controller.acknowledgeUpload({...unpack(view.packets[0]),type:"camera_frame_ack",accepted:false,reason:"capacity"});
+  await settle();
+  assert.equal(view.controller.snapshot().analysis_upload_failures,1);
+  assert.deepEqual(Array.from(view.controller.uploads,task=>task.metadata.source_sequence),[0,1]);
+  assert.equal(view.packets.length,2);view.controller.stop();
+});
+
 test("a frame admitted during ACK wait enters the single preparation slot immediately",async()=>{
   const view=browser({autoAck:false});view.capture(0);await view.finish();
   assert.equal(view.encodings.length,0);view.capture(.34);assert.equal(view.encodings.length,1);

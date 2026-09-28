@@ -13,15 +13,39 @@ const {chromium}=require("playwright");
 const crypto=require("node:crypto");
 const args={};for(let i=2;i<process.argv.length;i+=2)args[process.argv[i].slice(2)]=process.argv[i+1];
 assert.ok(args.video&&args.output&&args.url&&args["video-url"],"Required: --video --video-url --output --url");
+const analysisFeatures=args["analysis-features"]?args["analysis-features"].split(","):['fight','smoking','fall','weapon','stranger'];
+const uploadWindow=Number(args["upload-window"]||1);
+assert.ok([1,2,3,4].includes(uploadWindow),"--upload-window must be between 1 and 4");
+const ackTimeoutMs=Number(args["ack-timeout-ms"]||5000);
+const drainTimeoutMs=Number(args["drain-timeout-ms"]||10000);
+assert.ok(Number.isInteger(ackTimeoutMs)&&ackTimeoutMs>=5000&&ackTimeoutMs<=30000,"--ack-timeout-ms must be 5000..30000");
+assert.ok(Number.isInteger(drainTimeoutMs)&&drainTimeoutMs>=10000&&drainTimeoutMs<=60000,"--drain-timeout-ms must be 10000..60000");
+assert.ok(analysisFeatures.length&&analysisFeatures.every(feature=>['fight','smoking','fall','weapon','stranger'].includes(feature))&&new Set(analysisFeatures).size===analysisFeatures.length,
+  "--analysis-features must list unique supported features");
 assert.equal(new URL(args["video-url"]).origin,new URL(args.url).origin,"Video must be served on the service origin");
 const video=path.resolve(args.video),out=path.resolve(args.output);
 assert.ok(fs.statSync(video).isFile(),"Video file must exist");
 assert.ok(!fs.existsSync(path.join(out,"browser-report.json")),"Use a fresh output directory for each trial");
 fs.mkdirSync(out,{recursive:true});
 const log=(name,row)=>fs.appendFileSync(path.join(out,name+".jsonl"),JSON.stringify(row)+"\n");
-const report={kind:"full_video_production_browser_controller_real_models",started_at:new Date().toISOString(),errors:[],snapshots:[],
-  video_sha256:crypto.createHash("sha256").update(fs.readFileSync(video)).digest("hex")};
+const report={kind:args["camera-display-asset"]?"full_video_experimental_browser_controller_real_models":"full_video_production_browser_controller_real_models",started_at:new Date().toISOString(),errors:[],snapshots:[],
+  video_sha256:crypto.createHash("sha256").update(fs.readFileSync(video)).digest("hex"),analysis_features:analysisFeatures};
+if(args["camera-display-asset"]){
+  const asset=fs.readFileSync(path.resolve(args["camera-display-asset"]));
+  report.experimental_camera_display_sha256=crypto.createHash("sha256").update(asset).digest("hex");
+}
 const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.stringify(report,null,2));
+const probe=async(name,url)=>{
+  try{
+    const response=await fetch(url,{signal:AbortSignal.timeout(6000)});
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    const payload=await response.json();log(name,{at:Date.now(),payload});return payload;
+  }catch(error){
+    const warning={at:Date.now(),probe:name,error_type:error.name||"Error"};
+    (report.probe_warnings||(report.probe_warnings=[])).push(warning);
+    log("probe_warnings",warning);return null;
+  }
+};
 (async()=>{
   const platformChrome=process.platform==="darwin"?"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome":process.platform==="win32"?"C:/Program Files/Google/Chrome/Application/chrome.exe":undefined;
   const browser=await chromium.launch({executablePath:args.chrome||(platformChrome&&fs.existsSync(platformChrome)?platformChrome:undefined),headless:args.headful!=="true",
@@ -80,6 +104,10 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
       if(typeof payload!=="string")return;
       try{const m=JSON.parse(payload);if(["camera_display_metadata","session","error","ended"].includes(m.type))log("ws",{at:Date.now(),payload:m});}catch{}
     }));
+    if(args["camera-display-asset"]){
+      const asset=fs.readFileSync(path.resolve(args["camera-display-asset"]));
+      await page.route("**/assets/camera_display.js",route=>route.fulfill({contentType:"text/javascript",body:asset}));
+    }
     await page.route("**/pipeline-latency-test",route=>route.fulfill({contentType:"text/html",body:
       '<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#101827;color:white"><h2>Full pipeline latency test</h2><video id="source" muted playsinline crossorigin="anonymous" style="position:fixed;width:2px;height:2px"></video><canvas id="camera-display" style="width:1280px;max-width:100%"></canvas><script src="/assets/camera_display.js"></script></body></html>'}));
     // Keep the diagnostic video same-origin, including modern loopback access rules.
@@ -94,6 +122,13 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
     await page.evaluate(()=>{
       const Original=GoodvisionCameraDisplay.BrowserController;window.__experimentRows=[];
       GoodvisionCameraDisplay.BrowserController=class extends Original{
+        noteTiming(name,milliseconds){
+          super.noteTiming(name,milliseconds);
+          if(name.startsWith('analysis_ack')||name.startsWith('analysis_server_')){
+            const samples=window.__experimentTransportTimings||(window.__experimentTransportTimings=[]);
+            if(samples.length<5000)samples.push({name,milliseconds,at:Date.now()});
+          }
+        }
         constructor(options){super(options);window.__experimentController=this;
           const push=this.frames.push.bind(this.frames),present=this.frames.notePresented.bind(this.frames);
           this.frames.push=frame=>{window.__experimentRows.push({kind:"capture",at:Date.now(),sequence:frame.sequence,pts:frame.timestamp,
@@ -129,6 +164,15 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
       assert.equal(displayConfig.delay_seconds,expectedDelay,"Browser display delay differs from the benchmark job");
     }
     report.display_preflight=displayConfig;
+    if(args["warmup-motion"]==="true"){
+      const started=Date.now();
+      const ready=await page.evaluate(()=>Promise.race([
+        GoodvisionCameraDisplay.BrowserController.warmupMotion(),
+        new Promise(resolve=>setTimeout(()=>resolve(false),60000))
+      ]));
+      assert.ok(ready,"Browser contour motion worker did not warm up before playback");
+      report.motion_pre_warm_seconds=(Date.now()-started)/1000;
+    }
     if(args.preflight==="true"){
       await page.evaluate(async config=>{
         const Controller=GoodvisionCameraDisplay.BrowserController;
@@ -157,26 +201,31 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
       report.preflight=true;console.log(JSON.stringify({video:report.camera_preflight,display:displayConfig}));return;
     }
     active=true;
-    await page.evaluate(async displayConfig=>{
+    await page.evaluate(async ({displayConfig,analysisFeatures,uploadWindow,ackTimeoutMs,drainTimeoutMs})=>{
       const ws=window.__experimentSocket=new WebSocket(location.origin.replace('http','ws')+'/ws');
       await new Promise((resolve,reject)=>{ws.onopen=resolve;ws.onerror=reject;});
       const session=await new Promise((resolve,reject)=>{
         const timer=setTimeout(()=>reject(new Error('Session start timeout')),120000);
         ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='session'){clearTimeout(timer);resolve(m);}
           else if(m.type==='error'){clearTimeout(timer);reject(new Error(m.message));}};
-        ws.send(JSON.stringify({type:'start',mode:'camera',analysis_mode:'multi',features:['fight','smoking','fall','weapon','stranger'],
-          event_sensitivities:{fight:'standard',smoking:'high',fall:'standard',weapon:'standard'},dry_run:false}));
+        const sensitivities={fight:'standard',smoking:'high',fall:'standard',weapon:'standard'};
+        ws.send(JSON.stringify({type:'start',mode:'camera',analysis_mode:'multi',features:analysisFeatures,
+          event_sensitivities:Object.fromEntries(Object.entries(sensitivities).filter(([feature])=>analysisFeatures.includes(feature))),dry_run:false}));
       });
-      const config={...displayConfig,stream_session_id:session.stream_session_id,generation:session.generation,crop_version:0};
+      const config={...displayConfig,stream_session_id:session.stream_session_id,generation:session.generation,
+        crop_version:0,analysis_upload_window:uploadWindow,
+        analysis_ack_timeout_ms:ackTimeoutMs,analysis_drain_timeout_ms:drainTimeoutMs};
       const c=new GoodvisionCameraDisplay.BrowserController({video:__experimentVideo,canvas:document.querySelector('#camera-display'),config,
         settings:{max_image_side:config.analysis_max_image_side,jpeg_quality:config.analysis_jpeg_quality,sample_fps:config.analysis_sample_fps},socket:ws,
         onFailure:message=>__experimentRows.push({kind:'failure',at:Date.now(),message})});
       ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='camera_display_metadata')c.receiveMetadata(m,{transport:'websocket'});
         else if(m.type==='camera_frame_ack')c.acknowledgeUpload(m);
         else if(m.type==='error')__experimentRows.push({kind:'failure',at:Date.now(),message:m.message});};
-    },displayConfig);
+    },{displayConfig,analysisFeatures,uploadWindow,ackTimeoutMs,drainTimeoutMs});
     report.config=await page.evaluate(()=>({config:__experimentController.config,settings:__experimentController.settings,video_duration:__experimentVideo.duration}));
-    readers=[receive("vlm","/v1/vlm/results/events"),receive("results","/v1/results/events")];
+    readers=[receive("results","/v1/results/events")];
+    if(analysisFeatures.some(feature=>['fight','smoking','fall','weapon'].includes(feature)))
+      readers.push(receive("vlm","/v1/vlm/results/events"));
     if(args["sync-dir"]){
       const sync=path.resolve(args["sync-dir"]),lane=args.lane||"1";
       fs.writeFileSync(path.join(sync,`ready-${lane}.json`),JSON.stringify({duration:report.config.video_duration,at:Date.now()}));
@@ -215,8 +264,8 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
         await page.locator("#camera-display").screenshot({path:path.join(out,`display-${Math.floor(sample.source)}s.png`),timeout:8000});lastShot=sample.source;
       }
       if(Date.now()-lastStatus>5000){
-        const s=await fetch(args.url+"/v1/status?lightweight=true",{signal:AbortSignal.timeout(6000)}).then(r=>r.json());log("status",{at:Date.now(),payload:s});
-        const f=await fetch(args.url+"/v1/faces/fast",{signal:AbortSignal.timeout(6000)}).then(r=>r.json());log("faces",{at:Date.now(),payload:f});
+        await probe("status",args.url+"/v1/status?lightweight=true");
+        await probe("faces",args.url+"/v1/faces/fast");
         console.log(JSON.stringify({source:sample.source,ended:sample.ended,presented:sample.stats.distinct_presented_frames,
           complete:sample.stats.complete_contour_frames,continuous:sample.stats.continuous_contour_frames,metadata:sample.stats.metadata_received}));lastStatus=Date.now();save();
       }
@@ -232,10 +281,32 @@ const save=()=>fs.writeFileSync(path.join(out,"browser-report.json"),JSON.string
       await __recordWrites;for(const track of recorder.stream.getTracks())track.stop();
     });
     if(args["screenshots"]!=="false")await page.locator("#camera-display").screenshot({path:path.join(out,"final-display.png"),timeout:10000});
-    await page.evaluate(async()=>{await __experimentController.drain();__experimentSocket.send(JSON.stringify({type:'stop'}));__experimentController.stop();});active=false;
+    const drainStarted=Date.now();
+    try{
+      await page.evaluate(()=>__experimentController.drain());
+      report.upload_drain={completed:true,elapsed_seconds:(Date.now()-drainStarted)/1000};
+    }catch(error){
+      report.upload_drain={completed:false,elapsed_seconds:(Date.now()-drainStarted)/1000,error:error.message};
+      throw error;
+    }finally{
+      // A failed drain is itself important benchmark evidence. Preserve both
+      // the outstanding queue and ACK timings before the browser is closed.
+      const diagnostics=await page.evaluate(()=>({
+        post_drain:window.__experimentController?.snapshot()||null,
+        transport_timings:window.__experimentTransportTimings||[],
+      })).catch(error=>({diagnostic_error:error.message}));
+      report.post_drain=diagnostics.post_drain||null;
+      report.transport_timings=diagnostics.transport_timings||[];
+      if(diagnostics.diagnostic_error)report.upload_drain.diagnostic_error=diagnostics.diagnostic_error;
+      save();
+    }
+    await page.evaluate(()=>{__experimentSocket.send(JSON.stringify({type:'stop'}));__experimentController.stop();});active=false;
+    let drainProbeFailures=0;
     for(let i=0;i<70;i++){
-      const s=await fetch(args.url+"/v1/status?lightweight=true",{signal:AbortSignal.timeout(6000)}).then(r=>r.json());
-      log("status",{at:Date.now(),payload:s});
+      const s=await probe("status",args.url+"/v1/status?lightweight=true");
+      if(!s){if(++drainProbeFailures>=3)throw new Error("Cloud status unavailable during drain");
+        await new Promise(r=>setTimeout(r,2000));continue;}
+      drainProbeFailures=0;
       if(["idle","stopped"].includes(s.analysis_state||s.pipeline_state)&&!["running","pending"].includes(s.scene_drain?.state)){report.drained=true;break;}
       await new Promise(r=>setTimeout(r,2000));
     }

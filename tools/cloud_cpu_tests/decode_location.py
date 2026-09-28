@@ -104,6 +104,10 @@ def run(args):
             command += ["--local-video", "true"]
         if args.chrome:
             command += ["--chrome", args.chrome]
+        if args.camera_display_asset:
+            command += ["--camera-display-asset", str(args.camera_display_asset.resolve(strict=True))]
+        if args.upload_window != 1:
+            command += ["--upload-window", str(args.upload_window)]
         env = os.environ.copy()
         env["NODE_PATH"] = str(ROOT / ".cache/seg-pipeline/node_modules")
         samples = []
@@ -238,6 +242,8 @@ def main():
     trial.add_argument("--delay", type=float, default=1.0)
     trial.add_argument("--node", default=shutil.which("node") or "node")
     trial.add_argument("--chrome")
+    trial.add_argument("--camera-display-asset", type=Path)
+    trial.add_argument("--upload-window", type=int, choices=(1, 2, 3, 4), default=1)
     comparison = subparsers.add_parser("compare")
     comparison.add_argument("--mac", type=Path, action="append", required=True)
     comparison.add_argument("--cloud", type=Path, action="append", required=True)

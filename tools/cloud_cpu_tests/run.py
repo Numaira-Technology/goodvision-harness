@@ -52,6 +52,17 @@ def load_plan(path):
         (c["name"], c["streams"], c["recording"]) for c in plan["conditions"]
     ] != expected:
         raise ValueError("Conditions must isolate recording or stream count")
+    upload_windows = [condition.get("upload_window", 1) for condition in plan["conditions"]]
+    if any(type(window) is not int or not 1 <= window <= 4 for window in upload_windows):
+        raise ValueError("Upload window must be an integer in 1..4")
+    if len(set(upload_windows)) != 1:
+        raise ValueError("Both conditions must use the same upload window")
+    for key, minimum, maximum in (("ack_timeout_ms", 5000, 30000), ("drain_timeout_ms", 10000, 60000)):
+        values = [condition.get(key, minimum) for condition in plan["conditions"]]
+        if any(type(value) is not int or not minimum <= value <= maximum for value in values):
+            raise ValueError(f"{key} must be an integer in {minimum}..{maximum}")
+        if len(set(values)) != 1:
+            raise ValueError(f"Both conditions must use the same {key}")
     if plan["coverage_target"] != 0.7:
         raise ValueError("This acceptance test requires the agreed 70% coverage target")
     for key in (
@@ -228,6 +239,18 @@ def execute(job, args, client):
             ]
             if args.chrome:
                 command += ["--chrome", args.chrome]
+            if job.get("analysis_features"):
+                command += [
+                    "--analysis-features", ",".join(job["analysis_features"])
+                ]
+            if job.get("warmup_motion"):
+                command += ["--warmup-motion", "true"]
+            if job.get("upload_window"):
+                command += ["--upload-window", str(job["upload_window"])]
+            if job.get("ack_timeout_ms"):
+                command += ["--ack-timeout-ms", str(job["ack_timeout_ms"])]
+            if job.get("drain_timeout_ms"):
+                command += ["--drain-timeout-ms", str(job["drain_timeout_ms"])]
             if job["recording"] and args.recording_method == "canvas":
                 command += ["--record-canvas", "true"]
             children.append(
