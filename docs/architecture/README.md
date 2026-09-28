@@ -26,4 +26,3 @@
 | [SAM 3.1 实现说明](sam31-implementation-20260912.md) | 连续跟踪路径与验收边界 |
 | [三层架构与并行优化](parallel-latency-design-20260916.md) | 显示、判断与后台整理的职责划分 |
 | [SAM 实时队列方案](sam-realtime-speed-plan-20260920.md) | 有界队列实验及其限制 |
-| [通用事件注入](generic-event-injection-20260926.md) | 可配置事件词表、prompt 与生命周期 |
