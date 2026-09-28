@@ -19,21 +19,6 @@ import numpy as np
 
 from .config import InferenceSettings
 from .contracts import PUBLIC_MODEL_NAME, NormalizedBBox, readonly_json_mapping
-from .event_registry import (
-    BALANCED_RECALL,
-    BUILTIN_EVENTS,
-    BUILTIN_VOCABULARY,
-    HIGH_RECALL,
-    OBJECT_TARGET,
-    PERSON_TARGET,
-    SAFETY_BRANCH,
-    STRANGER_LABEL,
-    EventDefinition,
-    EventVocabulary,
-    branch_events,
-    display_names,
-)
-from .event_registry import labels as registry_labels
 from .event_sensitivity import (
     SENSITIVITY_SYSTEM_PROMPT,
     normalize_event_sensitivities,
@@ -55,9 +40,9 @@ SAFETY_MULTI_ANALYSIS_KIND = "safety_events"
 FIXED_FIVE_ANALYSIS_KIND = "fixed_five_events"
 SELECTED_FEATURES_ANALYSIS_KIND = "selected_features"
 
-SAFETY_EVENT_LABELS = registry_labels(branch_events(SAFETY_BRANCH))
-STRANGER_EVENT_LABEL = STRANGER_LABEL
-DETECTION_EVENT_LABELS = registry_labels(BUILTIN_EVENTS)
+SAFETY_EVENT_LABELS = ("fight", "smoking", "fall", "weapon")
+STRANGER_EVENT_LABEL = "stranger"
+DETECTION_EVENT_LABELS = (*SAFETY_EVENT_LABELS, STRANGER_EVENT_LABEL)
 MIN_MULTI_EVENT_MAX_TOKENS = 1024
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,30 +93,18 @@ BILINGUAL_DESCRIPTION_RULE = (
     "negative judgments and supersedes earlier monolingual description examples. "
     "Keep JSON keys, event_label values, object labels, and identifiers unchanged."
 )
-def _compact_no_events_rule(noun: str) -> str:
-    """The all-negative shortcut, named after whatever was actually requested.
-
-    Most windows are negative, so this is the rule the model follows most
-    often. Calling everything a safety event in a request that has none would
-    leave it deciding the rule does not apply.
-    """
-
-    return (
-        "Compact negative output exception (overrides all full-event JSON "
-        "examples, "
-        "description requirements, and actor instructions below): after checking "
-        f"EVERY requested {noun}, if ALL are negative, return ONLY "
-        '{"no_events":0.95}. Replace 0.95 with your numeric confidence (0..1) in '
-        "the all-negative verdict. Include no other keys, events, descriptions, "
-        "actors, boxes, or prose. This is a completed negative verdict for every "
-        "requested label, never a substitute for an error or an unperformed check. "
-        "If ANY requested event is positive, do NOT use no_events: return the full "
-        "events array for every requested label, with bilingual descriptions and "
-        "grounded target boxes as specified."
-    )
-
-
-COMPACT_NO_EVENTS_RULE = _compact_no_events_rule("safety event")
+COMPACT_NO_EVENTS_RULE = (
+    "Compact negative output exception (overrides all full-event JSON examples, "
+    "description requirements, and actor instructions below): after checking "
+    "EVERY requested safety event, if ALL are negative, return ONLY "
+    '{"no_events":0.95}. Replace 0.95 with your numeric confidence (0..1) in '
+    "the all-negative verdict. Include no other keys, events, descriptions, "
+    "actors, boxes, or prose. This is a completed negative verdict for every "
+    "requested label, never a substitute for an error or an unperformed check. "
+    "If ANY requested event is positive, do NOT use no_events: return the full "
+    "events array for every requested label, with bilingual descriptions and "
+    "grounded target boxes as specified."
+)
 ACTOR_ASSOCIATION_RULE = (
     "Additional optional tracking metadata, without changing any event verdict "
     "or objects rule: add a top-level actors array with at most 8 clearly visible "
@@ -159,13 +132,8 @@ POSITIVE_EVENT_ACTOR_RULE = (
     "use actor_ids=[]. Proximity alone is insufficient. Keep smoking/weapon "
     "objects as item boxes and body boxes in actors. Never invent people, "
     "names, stable IDs, hidden body extent, or prose about actors. Omit actors "
-    "before omitting required event fields."
-)
-# Appended only when the compact all-negative shortcut is allowed. Everyday
-# requests forbid no_events, so they must not hear this again at the end.
-POSITIVE_EVENT_ACTOR_NEGATIVE_SHORTCUT = (
-    " When all events are negative, return only no_events and omit actors "
-    "entirely."
+    "before omitting required event fields. When all events are negative, "
+    "return only no_events and omit actors entirely."
 )
 
 
@@ -194,7 +162,14 @@ def _smoking_box_rule(smoking_high: bool) -> str:
         "For smoking, return only the cigarette, cigar, pipe, or e-cigarette box, "
         "never the smoker's person box. "
     )
-_EVENT_NAMES_ZH = display_names()
+_EVENT_NAMES_ZH = {
+    "fight": "打架",
+    "smoking": "吸烟",
+    "fall": "跌倒",
+    "weapon": "武器",
+    "stranger": "陌生人",
+    "unknown_person": "陌生人",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1090,104 +1065,6 @@ def build_grounding_messages(
     ]
 
 
-_BALANCED_SYSTEM_PROMPT = (
-    "You are a live-camera multi-label event perception module for AI glasses. "
-    "You receive short, chronologically ordered windows of frames sampled from "
-    "a live camera. Use visible objects, human interaction, posture, motion, "
-    "and temporal context, and judge every requested event independently on "
-    "its own evidence. Do not invent motion from a single frame, hidden "
-    "objects, or unseen details. Report uncertainty honestly in confidence and "
-    "description. Answer with a single JSON object - no markdown, no extra "
-    "text."
-)
-
-
-def _recall_posture_rule(definitions: tuple[EventDefinition, ...]) -> str:
-    """Say which events want recall and which want to be judged on evidence.
-
-    The configured prompt asks for a low threshold across the board, which is
-    right for a weapon and wrong for someone checking their phone. Stating the
-    trade per group keeps one category's recall from costing the other's
-    precision.
-    """
-
-    grouped = {
-        posture: ", ".join(
-            definition.label
-            for definition in definitions
-            if definition.recall == posture
-        )
-        for posture in (HIGH_RECALL, BALANCED_RECALL)
-    }
-    parts = []
-    if grouped[HIGH_RECALL]:
-        parts.append(
-            f"Treat {grouped[HIGH_RECALL]} as safety events: use a deliberately "
-            "low detection threshold and prefer a false positive over a miss, "
-            "except where an event states its own minimum evidence requirement."
-        )
-    if grouped[BALANCED_RECALL]:
-        parts.append(
-            f"Treat {grouped[BALANCED_RECALL]} as ordinary activity rather than "
-            "safety risks, so no recall preference applies. Report one only "
-            "when its stated criteria are visibly met, and answer false when "
-            "they are not."
-        )
-        parts.append(
-            "Verdicts cover the whole chronological window: set detected=true "
-            "if the event occurs in any frame, including when the newest frame "
-            "only shows the aftermath. Do not answer false merely because the "
-            "action has already finished by the last image. Ground target "
-            "boxes on the newest frame when the evidence is still visible "
-            "there."
-        )
-    return " ".join(parts)
-
-
-def _injected_box_rule(definition: EventDefinition) -> str:
-    # target_hint is a caller-written noun phrase such as "the phone", so it is
-    # placed after "of" rather than before a noun that would need an article.
-    target = definition.target_hint or "the object the event is about"
-    if definition.target == PERSON_TARGET:
-        return (
-            f"For {definition.label}, return only the involved person's tight "
-            "body box or boxes."
-        )
-    if definition.target == OBJECT_TARGET:
-        return (
-            f"For {definition.label}, return only the tight box of {target}, "
-            "never the involved person's box."
-        )
-    return (
-        f"For {definition.label}, return the tight box of {target}, "
-        "choosing the entity the evidence is actually about."
-    )
-
-
-def _injected_event_section(
-    definitions: tuple[EventDefinition, ...], *, alongside_builtins: bool
-) -> str:
-    """State what each injected event means, since no configured prompt does."""
-
-    lines = [
-        (
-            "Additional requested events. These are not safety events; judge "
-            "each one only from visible evidence, with the same discipline and "
-            "honesty about uncertainty as the events above:"
-            if alongside_builtins
-            else "Requested events. None of these is a safety event; judge each "
-            "one only from visible evidence, and say so plainly when the "
-            "evidence does not settle it:"
-        )
-    ]
-    for definition in definitions:
-        rule = f"- {definition.label} ({definition.zh_name}): {definition.definition}"
-        if definition.counter_examples:
-            rule += f" Not this event: {definition.counter_examples}"
-        lines.append(rule)
-    return "\n".join(lines)
-
-
 def build_multi_grounding_messages(
     window: FrameWindow,
     *,
@@ -1196,17 +1073,9 @@ def build_multi_grounding_messages(
     event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
     append_contract: bool = True,
     event_sensitivities: Mapping[str, str] | None = None,
-    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
 ) -> list[dict[str, Any]]:
-    """Build one Qwen request that judges every requested event at once.
+    """Build one Qwen request that judges all fixed safety events at once."""
 
-    Built-in events keep the configured safety prompt verbatim. Injected events
-    have no configured text, so their supplied definitions and box targets are
-    rendered into the request instead.
-    """
-
-    requested = vocabulary.resolve(event_labels)
-    injected = tuple(item for item in requested if not item.builtin)
     rendered_events = ", ".join(event_labels)
     if event_sensitivities is not None:
         event_sensitivities = normalize_event_sensitivities(
@@ -1233,52 +1102,19 @@ def build_multi_grounding_messages(
         f"f{frame.sample_index}={frame.timestamp_seconds:.3f}s"
         for frame in window.frames
     )
-    balanced = any(item.recall == BALANCED_RECALL for item in requested)
     policy_system_prompt = _system_prompt_with_evidence_rules(
-        # The configured prompt is written for safety events and bakes in a
-        # recall preference that cannot be stated per event. Swap in a neutral
-        # base, as the sensitivity path already does, and state the trade below.
-        _BALANCED_SYSTEM_PROMPT if balanced else system_prompt,
-        event_labels,
-        event_sensitivities,
+        system_prompt, event_labels, event_sensitivities,
     )
-    if balanced:
-        policy_system_prompt += f"\n{_recall_posture_rule(requested)}"
-    # The compact no_events shortcut is for safety windows that are usually
-    # empty. Everyday events are ordinary activity that is easy to miss in a
-    # short sample, and a pilot run answered every clip with bare no_events
-    # including ones that plainly show people talking. Force a per-label
-    # answer whenever any balanced event is in the request so a miss cannot
-    # hide behind the all-negative form. Safety-only requests keep the
-    # shortcut unchanged.
-    allow_compact_negative = not balanced
-    if allow_compact_negative:
-        compact_rule = (
-            _compact_no_events_rule("event") if injected else COMPACT_NO_EVENTS_RULE
-        ) + "\n"
-    else:
-        compact_rule = (
-            "Do not use a compact no_events answer for this request. Return "
-            "the full events array for every requested label even when every "
-            "verdict is negative, with bilingual descriptions of the visible "
-            "evidence that settles each one.\n"
-        )
     system_text = (
         f"{policy_system_prompt}\n"
         f"{BILINGUAL_DESCRIPTION_RULE}\n"
-        + compact_rule
-        + (
-            "For this request, independently judge every requested "
-            "event and allow multiple simultaneous positives."
-            if injected
-            else "For this request, independently judge every fixed "
-            "safety event and allow multiple simultaneous positives."
-        )
+        f"{COMPACT_NO_EVENTS_RULE}\n"
+        "For this request, independently judge every fixed "
+        "safety event and allow multiple simultaneous positives."
     )
     contract = (
-        "When at least one event is positive, use this authoritative "
-        + ("requested-event" if injected else "fixed safety-event")
-        + " output contract (this supersedes any "
+        "When at least one event is positive, use this authoritative fixed "
+        "safety-event output contract (this supersedes any "
         "earlier single-event JSON example): return only one JSON object with an "
         "events array. The array must contain exactly one item for each target "
         "event in the stated order and use its exact event_label. Every item must "
@@ -1293,7 +1129,6 @@ def build_multi_grounding_messages(
         + "For weapon, use the selected sensitivity policy and "
         "return only the firearm, knife, machete, club, or other weapon box, "
         "never the holder's person box."
-        + "".join(f" {_injected_box_rule(item)}" for item in injected)
     )
     system_text += (
         "\nA positive response always has a top-level events array, even for "
@@ -1301,38 +1136,15 @@ def build_multi_grounding_messages(
         "inside that event item, never at the response root."
     )
     contract_section = f"\n\n{contract}" if append_contract else ""
-    injected_section = (
-        "\n\n" + _injected_event_section(
-            injected, alongside_builtins=len(injected) != len(event_labels)
-        )
-        if injected
-        else ""
-    )
-    target_line = (
-        "Target events (exact order)" if injected
-        else "Target safety events (exact order)"
-    )
-    if allow_compact_negative:
-        negative_instruction = (
-            'If ALL requested events are negative, return only '
-            '{"no_events":0.95} with your confidence; omit all other fields.\n'
-        )
-    else:
-        negative_instruction = (
-            "If every requested event is negative, still return the full "
-            "events array with detected=false for each label; do not use "
-            "no_events.\n"
-        )
     text = (
-        f"{rendered_prompt}"
-        f"{injected_section}\n\n"
-        f"{target_line}: {rendered_events}\n"
+        f"{rendered_prompt}\n\n"
+        f"Target safety events (exact order): {rendered_events}\n"
         f"Window: {window.label}\n"
         f"Sample timestamps: {timestamps}"
         f"{contract_section}\n\n"
-        f"{_sensitivity_actor_rule(POSITIVE_EVENT_ACTOR_RULE, smoking_high)}"
-        f"{POSITIVE_EVENT_ACTOR_NEGATIVE_SHORTCUT if allow_compact_negative else ''}"
-        f"\n{negative_instruction}"
+        f"{_sensitivity_actor_rule(POSITIVE_EVENT_ACTOR_RULE, smoking_high)}\n"
+        'If ALL requested events are negative, return only {"no_events":0.95} '
+        "with your confidence; omit all other fields.\n"
         "The live JPEG images follow in chronological order."
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
@@ -1508,7 +1320,7 @@ class DryRunGroundingClient:
 
 
 class AIClubMultiGroundingClient:
-    """Run one Qwen request for every requested visual event label."""
+    """Run one Qwen request for all four visual safety event labels."""
 
     def __init__(
         self,
@@ -1516,15 +1328,12 @@ class AIClubMultiGroundingClient:
         transport: ModelAPIClient,
         event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
         event_sensitivities: Mapping[str, str] | None = None,
-        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
     ) -> None:
         labels = tuple(event_labels)
         if not labels or len(set(labels)) != len(labels):
             raise ValueError("event_labels must be non-empty and unique")
-        vocabulary.resolve(labels)
         self.settings = settings
         self.event_labels = labels
-        self.vocabulary = vocabulary
         self.event_sensitivities = (
             dict(event_sensitivities) if event_sensitivities is not None else None
         )
@@ -1562,7 +1371,6 @@ class AIClubMultiGroundingClient:
                     event_labels=self.event_labels,
                     append_contract=not use_fixed_prompt,
                     event_sensitivities=self.event_sensitivities,
-                    vocabulary=self.vocabulary,
                 ),
                 **request_parameters,
             )
@@ -1774,16 +1582,14 @@ class SelectedFeaturesGroundingClient:
         safety_max_image_side: int = 320,
         safety_jpeg_quality: int = 75,
         face_live_scheduler: str = "single_flight",
-        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
     ) -> None:
         labels = tuple(safety_event_labels)
-        safety_labels = registry_labels(vocabulary.branch(SAFETY_BRANCH))
-        if any(label not in safety_labels for label in labels):
+        if any(label not in SAFETY_EVENT_LABELS for label in labels):
             raise ValueError("safety_event_labels contains an unsupported label")
         if len(set(labels)) != len(labels):
             raise ValueError("safety_event_labels must be unique")
         canonical_labels = tuple(
-            label for label in safety_labels if label in labels
+            label for label in SAFETY_EVENT_LABELS if label in labels
         )
         if labels != canonical_labels:
             raise ValueError("safety_event_labels must use canonical order")
@@ -2257,21 +2063,22 @@ def build_selected_features_grounding_client(
     api_key: str | None = None,
     transport: ModelAPIClient | None = None,
     event_sensitivities: Mapping[str, str] | None = None,
-    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
 ) -> SelectedFeaturesGroundingClient:
     """Build one detector graph for an arbitrary non-empty feature subset."""
 
     selected = tuple(features)
     if not selected or len(set(selected)) != len(selected):
         raise ValueError("features must be non-empty and unique")
-    if any(feature not in vocabulary for feature in selected):
+    if any(feature not in DETECTION_EVENT_LABELS for feature in selected):
         raise ValueError("features contains an unsupported label")
-    resolved = vocabulary.resolve(selected)
-    if selected != registry_labels(resolved):
+    canonical = tuple(
+        feature for feature in DETECTION_EVENT_LABELS if feature in selected
+    )
+    if selected != canonical:
         raise ValueError("features must use canonical order")
 
-    safety_labels = registry_labels(
-        definition for definition in resolved if definition.branch == SAFETY_BRANCH
+    safety_labels = tuple(
+        feature for feature in selected if feature in SAFETY_EVENT_LABELS
     )
     include_stranger = STRANGER_EVENT_LABEL in selected
     safety_client: GroundingClient | None = None
@@ -2285,7 +2092,6 @@ def build_selected_features_grounding_client(
                 transport or ModelAPIClient(aiclub_settings, api_key=api_key),
                 safety_labels,
                 event_sensitivities=event_sensitivities,
-                vocabulary=vocabulary,
             )
     if include_stranger:
         if dry_run:
@@ -2307,7 +2113,6 @@ def build_selected_features_grounding_client(
         safety_max_image_side=safety_max_image_side,
         safety_jpeg_quality=safety_jpeg_quality,
         face_live_scheduler=face_live_scheduler,
-        vocabulary=vocabulary,
     )
 
 

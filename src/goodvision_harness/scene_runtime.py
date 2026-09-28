@@ -19,13 +19,6 @@ from typing import Any
 from uuid import uuid4
 
 from .contracts import AnalysisResult, NormalizedBBox
-from .event_registry import (
-    BUILTIN_VOCABULARY,
-    SAFETY_BRANCH,
-    EventVocabulary,
-    branch_events,
-)
-from .event_registry import labels as registry_labels
 from .event_sensitivity import normalize_event_sensitivities
 from .rich_labeling import RichLabelSnapshot
 from .scene_alerts import apply_alert_policy
@@ -39,7 +32,7 @@ from .scene_state import SceneState
 from .video_tracking import BACKEND as _NATIVE_VIDEO_BACKEND
 from .video_tracking import VideoFrame
 
-_SAFETY_EVENT_LABELS = registry_labels(branch_events(SAFETY_BRANCH))
+_EVENTS = frozenset(("fight", "smoking", "fall", "weapon", "stranger"))
 _INSPECTION_TIMEOUT_SECONDS = 20.0
 _TEMPORAL_MIN_SPAN_SECONDS = 0.75
 _PERSON_LABELS = frozenset(
@@ -72,9 +65,6 @@ class TemporalInspection:
     event_sensitivities: tuple[tuple[str, str], ...] = ()
     evidence_after_frame_sequence: int | None = None
     grounding_required: bool = False
-    # Carried on the job so a worker can validate and describe the requested
-    # events without reaching back into the runtime that queued them.
-    vocabulary: EventVocabulary = BUILTIN_VOCABULARY
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -146,7 +136,7 @@ class SceneRuntime:
         source_id: str,
         *,
         mode: str = "active",
-        event_labels: tuple[str, ...] = _SAFETY_EVENT_LABELS,
+        event_labels: tuple[str, ...] = ("fight", "smoking", "fall", "weapon"),
         event_sensitivities: Mapping[str, str] | None = None,
         tracking_mode: str = "immediate",
         tracking_history_seconds: float = 12.0,
@@ -156,14 +146,10 @@ class SceneRuntime:
         inspection_image_budget_bytes: int = 16 * 1024 * 1024,
         stranger_enabled: bool = False,
         independent_temporal_inference: bool = False,
-        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
     ) -> None:
         if mode != "active":
             raise ValueError("scene mode must be active")
-        # Injected events are safety-branch, so this widens with the session
-        # vocabulary while the face branch stays out of temporal inspection.
-        allowed_labels = frozenset(registry_labels(vocabulary.branch(SAFETY_BRANCH)))
-        if not set(event_labels) <= allowed_labels:
+        if not set(event_labels) <= _EVENTS - {"stranger"}:
             raise ValueError("unsupported temporal event label")
         if tracking_mode not in {"immediate", "batch"}:
             raise ValueError("tracking mode must be immediate or batch")
@@ -207,8 +193,6 @@ class SceneRuntime:
         self.max_pending_inspections = max_pending_inspections
         self.inspection_image_budget_bytes = inspection_image_budget_bytes
         self.event_labels = tuple(dict.fromkeys(event_labels))
-        self.vocabulary = vocabulary
-        self._known_labels = frozenset(vocabulary.labels())
         self.stranger_enabled = stranger_enabled
         self._identity_reviews: dict[str, tuple[str, float]] = {}
         self.event_sensitivities = tuple(
@@ -227,7 +211,6 @@ class SceneRuntime:
                 64 if temporal_observation_fps is not None else max_pending_inspections
             ),
             retain_pinned_sources=temporal_observation_fps is not None,
-            vocabulary=vocabulary,
         )
         self.evidence = (
             SceneEvidenceBuffer(
@@ -1179,7 +1162,6 @@ class SceneRuntime:
             self._jobs[request.request_id] = TemporalInspection(
                 self.stream_session_id, self.source_id, request, frames, boxes,
                 self.event_sensitivities, self._temporal_last_endpoint_sequence,
-                vocabulary=self.vocabulary,
             )
             self._stats["queued_tracking_intervals"] += 1
             self._stats["prepared_inspections"] += 1
@@ -1260,7 +1242,6 @@ class SceneRuntime:
                 frames,
                 interval.subject_boxes,
                 self.event_sensitivities,
-                vocabulary=self.vocabulary,
             )
             self._inspection_deadlines[request_id] = (
                 monotonic() + _INSPECTION_TIMEOUT_SECONDS
@@ -1353,7 +1334,7 @@ class SceneRuntime:
                 for event in snapshot["events"]
                 if event["event_label"] == label and event["phase"] != "retracted"
             }
-            for label in self._known_labels
+            for label in _EVENTS
         }
         for result in ordered:
             if self._now - result.frame.timestamp_seconds > 90.0:
@@ -1371,7 +1352,7 @@ class SceneRuntime:
             judgments = {
                 judgment.event_label: judgment
                 for judgment in result.judgments
-                if judgment.event_label in self._known_labels
+                if judgment.event_label in _EVENTS
             }
             labels = set(judgments) | {
                 label
@@ -1624,7 +1605,6 @@ class SceneRuntime:
                     if frame.frame_sequence == sequence
                 ),
                 self.event_sensitivities,
-                vocabulary=self.vocabulary,
             )
             frame_times = {
                 frame.frame_sequence: frame.timestamp_seconds for frame in frames

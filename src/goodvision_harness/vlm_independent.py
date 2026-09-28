@@ -22,7 +22,6 @@ from uuid import uuid4
 from PIL import Image
 
 from .contracts import PUBLIC_MODEL_NAME
-from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from .latency_trace import log_timing
 from .result_bus import ResultBus
 from .scene_evidence import EvidenceFrame, InspectionRequest
@@ -56,7 +55,6 @@ class VLMProcessConfig:
     max_in_flight: int = 4
     route_id: str | None = None
     output_mode: str = "full"
-    vocabulary: EventVocabulary = BUILTIN_VOCABULARY
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
@@ -603,7 +601,6 @@ def run_vlm_process(
                         grounding_required=bool(
                             grounding_required and grounding_required.is_set()
                         ),
-                        vocabulary=config.vocabulary,
                     )
                     dispatched = time.monotonic()
                     for lane in lanes:

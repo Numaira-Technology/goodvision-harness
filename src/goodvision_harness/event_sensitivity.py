@@ -5,14 +5,62 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from typing import Any
 
-from .event_registry import (
-    SENSITIVITY_LEVELS,
-    sensitivity_defaults,
-    sensitivity_options,
-)
-
-EVENT_SENSITIVITY_DEFAULTS = sensitivity_defaults()
-EVENT_SENSITIVITY_OPTIONS = sensitivity_options()
+EVENT_SENSITIVITY_DEFAULTS = {
+    "fight": "standard",
+    "smoking": "high",
+    "fall": "standard",
+    "weapon": "standard",
+}
+EVENT_SENSITIVITY_OPTIONS = {
+    "fight": [
+        {
+            "value": "standard",
+            "label": "标准敏感度",
+            "description": "明确攻击动作或即将发生的攻击",
+        },
+        {
+            "value": "high",
+            "label": "高敏感度",
+            "description": "也关注早期冲突和部分遮挡的攻击动作",
+        },
+    ],
+    "smoking": [
+        {
+            "value": "standard",
+            "label": "标准敏感度",
+            "description": "必须明确识别烟具",
+        },
+        {
+            "value": "high",
+            "label": "高敏感度",
+            "description": "允许结合动作和上下文判断，无需认清烟具",  # noqa: RUF001
+        },
+    ],
+    "fall": [
+        {
+            "value": "standard",
+            "label": "标准敏感度",
+            "description": "需要可见的失衡、失去支撑或倒下证据",
+        },
+        {
+            "value": "high",
+            "label": "高敏感度",
+            "description": "也关注姿态不稳和疑似即将跌倒的迹象",
+        },
+    ],
+    "weapon": [
+        {
+            "value": "standard",
+            "label": "标准敏感度",
+            "description": "有可辨认武器特征，或明确被用于攻击的物品",  # noqa: RUF001
+        },
+        {
+            "value": "high",
+            "label": "高敏感度",
+            "description": "也关注结合持握或威胁动作的部分遮挡物品",
+        },
+    ],
+}
 
 
 def normalize_event_sensitivities(
@@ -27,7 +75,7 @@ def normalize_event_sensitivities(
     for label, level in supplied.items():
         if label not in EVENT_SENSITIVITY_DEFAULTS:
             raise ValueError("event_sensitivities contains an unsupported event")
-        if not isinstance(level, str) or level not in SENSITIVITY_LEVELS:
+        if not isinstance(level, str) or level not in {"standard", "high"}:
             raise ValueError("event sensitivity must be standard or high")
     return {
         label: supplied.get(label, default)
