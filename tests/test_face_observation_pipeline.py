@@ -47,14 +47,14 @@ def window(index):
     )
 
 
-def wait_for(predicate):
-    deadline = time.monotonic() + 8
+def wait_for(predicate, timeout=8):
+    deadline = time.monotonic() + timeout
     while not predicate():
         assert time.monotonic() < deadline, "test watchdog expired"
         threading.Event().wait(0.005)
 
 
-def runtime(tmp_path, monkeypatch, *, gate=None):
+def runtime(tmp_path, monkeypatch, *, gate=None, holding=None):
     loaded, calls, finished = [], [], []
 
     class Model:
@@ -69,7 +69,9 @@ def runtime(tmp_path, monkeypatch, *, gate=None):
             calls.append(index)
             try:
                 if gate is not None and index == 0:
-                    assert gate.wait(8), "test must release first observation"
+                    if holding is not None:
+                        holding.set()
+                    assert gate.wait(30), "test must release first observation"
                 finished.append(index)
                 return [
                     SimpleNamespace(
@@ -98,7 +100,10 @@ def test_parallel_inference_commits_identity_and_facts_in_order(
     monkeypatch,
 ):
     gate = threading.Event()
-    engine, loaded, calls, finished = runtime(tmp_path, monkeypatch, gate=gate)
+    holding = threading.Event()
+    engine, loaded, calls, finished = runtime(
+        tmp_path, monkeypatch, gate=gate, holding=holding,
+    )
     face = FaceRecognitionSession(
         engine, observation_store_path=tmp_path / "facts.db.sqlite"
     )
@@ -113,8 +118,13 @@ def test_parallel_inference_commits_identity_and_facts_in_order(
             )
             for index in range(16)
         ]
-        wait_for(lambda: 1 in finished)
-        assert not futures[0].done() and not futures[1].done()
+        # Window 0 must be inside its model before a later finish can prove a
+        # second instance. On a slow disk, window 1 can otherwise reuse slot 0
+        # before window 0 has taken it.
+        assert holding.wait(30)
+        finished_while_held = len(finished)
+        wait_for(lambda: len(finished) > finished_while_held, timeout=30)
+        assert not futures[0].done()
         assert not futures[0].cancel()
         assert len(loaded) == 2
         assert face._worker.store._connection is not None
