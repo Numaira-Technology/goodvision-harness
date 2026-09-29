@@ -25,7 +25,7 @@ def setup_pipeline(tmp_path, callback=None, **kwargs):
         "http://worker.test",
         method="sam_live",
         transport=httpx.MockTransport(server),
-        timeout_seconds=4,
+        timeout_seconds=kwargs.pop("timeout_seconds", 4),
     )
     coordinator = PipelinedVideoSessionTrackingCoordinator(
         client,
@@ -478,7 +478,11 @@ def test_slow_prepare_does_not_block_previous_request_or_commit(tmp_path, monkey
 
 def test_ordered_spool_survives_burst_without_replacing_waiting_sources(tmp_path):
     received = []
-    server, _, coordinator = setup_pipeline(tmp_path, received.append)
+    # The first append stays blocked for every durable admit. Its deadline has
+    # to outlast synchronous spool writes on a slow Windows runner.
+    server, _, coordinator = setup_pipeline(
+        tmp_path, received.append, timeout_seconds=30,
+    )
     server.release.clear()
     try:
         submit(coordinator, frames(1, 1))
@@ -489,7 +493,7 @@ def test_ordered_spool_survives_burst_without_replacing_waiting_sources(tmp_path
         assert coordinator._spool.stats()["retained_sources"] == 41
         coordinator.flush()
         server.release.set()
-        assert coordinator.wait_until_idle(8)
+        assert coordinator.wait_until_idle(30)
         assert output_sequences(received) == [3 * index for index in range(1, 42)]
         assert coordinator._spool.stats()["retained_sources"] == 0
         assert all(row["state"] == "committed" for row in coordinator._spool.records())
