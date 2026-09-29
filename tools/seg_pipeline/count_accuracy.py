@@ -89,9 +89,12 @@ def evaluate_trial(directory, reference, tolerance=0.1):
         samples.append(record)
     matched = [s for s in samples if s["predicted"] is not None]
     correct = sum(s["correct"] for s in matched)
+    delay_seconds = job.get("display_delay_seconds")
+    if delay_seconds is None:
+        delay_seconds = job["delay"]
     return {
         "model": job["model"],
-        "delay_seconds": job.get("display_delay_seconds", job.get("delay")),
+        "delay_seconds": delay_seconds,
         "repeat": directory.name,
         "eligible": len(samples),
         "matched": len(matched),

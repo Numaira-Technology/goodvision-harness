@@ -49,6 +49,11 @@ def discover_trials(combined_report, sweep):
         for trial in summary["trials"]:
             if not trial["valid"]:
                 raise ValueError(f"Cannot score invalid trial: {run}/repeat-{trial['repeat']}")
+            if source == "0-second batch" and trial["configured_delay_seconds"] != 0:
+                raise ValueError(
+                    f"Combined report contains a nonzero-delay trial: "
+                    f"{run}/repeat-{trial['repeat']}"
+                )
             directory = run / f"repeat-{trial['repeat']}"
             yield source, directory, trial
 
@@ -110,7 +115,7 @@ def score_trial(directory, reference, trial, source):
             )
     counts = count_f1(clear["samples"])
     if counts["matched"] != clear["eligible"]:
-        counts["f1"] = None
+        raise ValueError(f"Clear samples failed alignment: {directory}")
     if len(uncertain) != len(uncertain_labels) or any(row["displayed_count"] is None for row in uncertain):
         raise ValueError(f"Uncertain samples failed alignment: {directory}")
     return {
