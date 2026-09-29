@@ -91,7 +91,7 @@ def evaluate_trial(directory, reference, tolerance=0.1):
     correct = sum(s["correct"] for s in matched)
     return {
         "model": job["model"],
-        "delay_seconds": job["display_delay_seconds"],
+        "delay_seconds": job.get("display_delay_seconds", job.get("delay")),
         "repeat": directory.name,
         "eligible": len(samples),
         "matched": len(matched),
