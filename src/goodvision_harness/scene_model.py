@@ -355,9 +355,12 @@ class TemporalVLMInspector:
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
-        encoded_images = []
-        messages = self.build_messages(job, encoded_images=encoded_images)
-        note(job, "prepared", encoded_images)
+        if job.diagnostics is None:
+            messages = self.build_messages(job)
+        else:
+            encoded_images = []
+            messages = self.build_messages(job, encoded_images=encoded_images)
+            note(job, "prepared", encoded_images)
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
             key = environment_api_key(self.settings)
@@ -383,7 +386,8 @@ class TemporalVLMInspector:
             "max_image_side": self._max_image_side,
             "jpeg_quality": self._jpeg_quality,
         }
-        timing["_diagnostic_transport"] = http_timing
+        if job.diagnostics is not None:
+            timing["_diagnostic_transport"] = http_timing
         headers = httpx.Headers(model_request_headers(self.settings, key.strip()))
         timing["request_prepare_seconds"] = time.monotonic() - preparation_started
         started = time.monotonic()

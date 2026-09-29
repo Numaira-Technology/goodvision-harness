@@ -144,6 +144,7 @@ class RuntimeSettings:
     scene_max_in_flight: int = 4
     scene_observation_fps: float = 1.25
     scene_independent_vlm: bool = True
+    scene_diagnostics_enabled: bool = False
     # Experiment only: full, compact, or paired information/grounding.
     scene_vlm_output_mode: str = "full"
 
@@ -691,6 +692,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         scene_independent_vlm=_environment_bool(
             "SCENE_INDEPENDENT_VLM", _bool(runtime_section.get("scene_independent_vlm", True),
                                           "runtime.scene_independent_vlm"),
+        ),
+        scene_diagnostics_enabled=_environment_bool(
+            "SCENE_DIAGNOSTICS_ENABLED",
+            _bool(runtime_section.get("scene_diagnostics_enabled", False),
+                  "runtime.scene_diagnostics_enabled"),
         ),
         scene_vlm_output_mode=(
             os.environ.get("SCENE_VLM_OUTPUT_MODE")

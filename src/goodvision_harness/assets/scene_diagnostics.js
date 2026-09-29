@@ -27,6 +27,7 @@
   function stop() { generation++; clearTimeout(timer); controller?.abort(); }
   async function refresh(version) {
     if (!panel.open || document.hidden || version !== generation) return;
+    let poll = true;
     const requestController = new AbortController();
     controller = requestController;
     const timeout = setTimeout(() => requestController.abort(), 3000);
@@ -36,6 +37,11 @@
       const data = await response.json();
       if (version !== generation) return;
       content.replaceChildren();
+      if (data.enabled === false) {
+        poll = false;
+        content.textContent = "诊断未启用。";
+        return;
+      }
       const stats = document.createElement("pre");
       stats.textContent = JSON.stringify({scope:data.scope, delivery:data.delivery, counts:data.counts, failures:data.failures,
         unanalyzed_gaps:data.unanalyzed_gaps, latency_seconds:data.latency_seconds}, null, 2);
@@ -63,7 +69,7 @@
       if (version === generation) content.textContent = "诊断暂不可用；需要 active 连续场景会话。";
     } finally {
       clearTimeout(timeout);
-      if (version === generation && panel.open && !document.hidden)
+      if (poll && version === generation && panel.open && !document.hidden)
         timer = setTimeout(() => refresh(version), 2000);
     }
   }

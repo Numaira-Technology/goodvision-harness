@@ -8,16 +8,21 @@ import httpx
 import pytest
 import test_scene_model as model_tests
 import test_scene_service as service_tests
+import yaml
 from fastapi.testclient import TestClient
 from test_scene_model import _job, _response
 
+from goodvision_harness.config import RuntimeSettings, load_config
 from goodvision_harness.diagnostics import SceneDiagnostics, failure_category
 from goodvision_harness.model_api import ModelAPISettings
 from goodvision_harness.rich_labeling import RichLabelObject, RichLabelSnapshot
 from goodvision_harness.scene_inspection import build_temporal_messages
 from goodvision_harness.scene_runtime import SceneRuntime, TemporalVerdict
 from goodvision_harness.service import create_app
-from goodvision_harness.vlm_compact_model import CompactGroundingInspector, EventJSONInspector
+from goodvision_harness.vlm_compact_model import (
+    CompactGroundingInspector,
+    EventJSONInspector,
+)
 from goodvision_harness.vlm_independent_model import IndependentVLMInspector
 
 
@@ -29,6 +34,7 @@ def make_inspector(monkeypatch):
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch):
     service_tests._isolate_environment.__wrapped__(monkeypatch)
+    monkeypatch.delenv("SCENE_DIAGNOSTICS_ENABLED", raising=False)
 
 
 @pytest.fixture
@@ -84,7 +90,9 @@ def test_independent_inspector_prompts_retain_exact_diagnostic_images(inspector_
     inspector = inspector_type(ModelAPISettings(provider="openrouter"), model="test")
     try:
         encoded_images = []
-        messages = inspector.build_messages(job(SceneDiagnostics()), encoded_images=encoded_images)
+        messages = inspector.build_messages(
+            job(SceneDiagnostics()), encoded_images=encoded_images
+        )
         sent = [
             base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
             for part in messages[1]["content"]
@@ -193,6 +201,7 @@ def test_runtime_acceptance_confirmation_and_per_label_gaps():
         native_memory_scope="session",
         temporal_observation_fps=1.25,
         event_labels=("smoking", "weapon"),
+        diagnostics=SceneDiagnostics(),
     )
     original = _job()
     box = original.subject_boxes[0][2]
@@ -225,7 +234,11 @@ def test_runtime_acceptance_confirmation_and_per_label_gaps():
 
 def test_exact_input_api_and_eviction(runtime_factory):
     runtime = runtime_factory()
-    scene = SceneRuntime("run", "source")
+    runtime.config = replace(
+        runtime.config,
+        runtime=replace(runtime.config.runtime, scene_diagnostics_enabled=True),
+    )
+    scene = SceneRuntime("run", "source", diagnostics=SceneDiagnostics())
     runtime._scene = scene
     value = job(scene.diagnostics)
     encoded_images = []
@@ -262,3 +275,157 @@ def test_exact_input_api_and_eviction(runtime_factory):
 )
 def test_failure_categories(code, status, expected):
     assert failure_category({"code": code, "http_status": status}) == expected
+
+
+@pytest.mark.parametrize(
+    "configured,override,expected",
+    [
+        (None, None, False),
+        (False, None, False),
+        (True, None, True),
+        (True, "", True),
+        (False, "true", True),
+        (True, "false", False),
+    ],
+)
+def test_diagnostics_config_defaults_and_environment_override(
+    tmp_path,
+    monkeypatch,
+    configured,
+    override,
+    expected,
+):
+    raw = yaml.safe_load((service_tests.ROOT / "config.yaml").read_text("utf-8"))
+    raw["runtime"].pop("scene_diagnostics_enabled", None)
+    if configured is not None:
+        raw["runtime"]["scene_diagnostics_enabled"] = configured
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    if override is not None:
+        monkeypatch.setenv("SCENE_DIAGNOSTICS_ENABLED", override)
+    assert RuntimeSettings().scene_diagnostics_enabled is False
+    assert load_config(path).runtime.scene_diagnostics_enabled is expected
+
+
+def test_invalid_diagnostic_environment_value_is_rejected(monkeypatch):
+    monkeypatch.setenv("SCENE_DIAGNOSTICS_ENABLED", "sometimes")
+    with pytest.raises(ValueError, match="SCENE_DIAGNOSTICS_ENABLED"):
+        load_config(service_tests.ROOT / "config.yaml")
+
+
+def test_opt_in_preserves_request_payload_and_verdicts(make_inspector, monkeypatch):
+    inspector, seen, _ = make_inspector()
+    build = inspector.build_messages
+    retained = []
+
+    def capture(value, *, encoded_images=None):
+        retained.append(encoded_images)
+        return build(value, encoded_images=encoded_images)
+
+    monkeypatch.setattr(inspector, "build_messages", capture)
+    baseline = inspector.inspect(job(None))
+    enabled = inspector.inspect(job(SceneDiagnostics()))
+    assert baseline == enabled
+    assert seen[0].content == seen[1].content
+    assert retained[0] is None
+    assert len(retained[1]) == 2
+
+
+@pytest.mark.parametrize("mode", ["disabled", "broken_callbacks", "broken_snapshot"])
+def test_scene_acceptance_survives_disabled_or_broken_diagnostics(monkeypatch, mode):
+    calls = []
+
+    class BrokenDiagnostics:
+        def __getattr__(self, method):
+            def fail(*args, **kwargs):
+                calls.append(method)
+                raise RuntimeError("diagnostic failure")
+
+            return fail
+
+    scene = SceneRuntime(
+        "run",
+        "source",
+        tracking_mode="batch",
+        native_memory_scope="session",
+        temporal_observation_fps=1.25,
+        event_labels=("smoking",),
+        diagnostics=(
+            BrokenDiagnostics()
+            if mode == "broken_callbacks"
+            else SceneDiagnostics()
+            if mode == "broken_snapshot"
+            else None
+        ),
+    )
+    original = _job()
+    jobs = []
+    try:
+        for sequence in range(7):
+            at = sequence / 2
+            scene.observe_frame(original.frames[0].jpeg_bytes, at, sequence)
+            assert scene.observe_tracking_batch(
+                (
+                    RichLabelSnapshot(
+                        "run",
+                        sequence,
+                        at,
+                        (
+                            RichLabelObject(
+                                "person-1", "person", original.subject_boxes[0][2]
+                            ),
+                        ),
+                    ),
+                ),
+                completed_timestamp_seconds=at,
+                completed_frame_sequence=sequence,
+            )
+            before = dict(scene._jobs)
+            for value in scene.take_inspections():
+                if mode == "disabled":
+                    assert value is before[value.request.request_id]
+                    assert value.diagnostics is None
+                with monkeypatch.context() as patch:
+
+                    def forbidden_snapshot(**kwargs):
+                        if mode == "broken_snapshot":
+                            calls.append("snapshot")
+                            raise RuntimeError("diagnostic snapshot failure")
+                        pytest.fail("diagnostic snapshot ran on the functional path")
+
+                    patch.setattr(scene.scene, "snapshot", forbidden_snapshot)
+                    assert scene.complete_inspection(
+                        value.request.request_id,
+                        (TemporalVerdict("smoking", ("person-1",), True, 0.9),),
+                    )
+                jobs.append(value)
+        assert len(jobs) >= 2
+        assert any(
+            event["phase"] == "confirmed"
+            for event in scene.scene.snapshot(include_history=False)["events"]
+        )
+        assert bool(calls) is (mode != "disabled")
+    finally:
+        scene.close()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_service_wires_scene_collector_at_startup(runtime_factory, enabled):
+    runtime = runtime_factory()
+    runtime.config = replace(
+        runtime.config,
+        runtime=replace(
+            runtime.config.runtime,
+            scene_independent_vlm=False,
+            scene_diagnostics_enabled=enabled,
+        ),
+    )
+    with TestClient(create_app(runtime_factory=lambda: runtime)) as client:
+        runtime.start_camera(dry_run=True, features=["smoking"])
+        assert (runtime._scene.diagnostics is not None) is enabled
+        response = client.get("/v1/scene/diagnostics")
+        assert response.status_code == 200
+        assert response.json()["enabled"] is enabled
+        if not enabled:
+            assert response.json()["records"] == []
+            assert client.get("/v1/scene/diagnostics/request/0.jpg").status_code == 404

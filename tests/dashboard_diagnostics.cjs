@@ -57,3 +57,34 @@ test("scoped panel fetches its camera and never claims unobserved confirmation",
   assert.equal(item.children[1].children[0].src,
     "/v1/fleet/cameras/camera02/scene/diagnostics/window%3Afull/12.jpg");
 });
+
+
+test("disabled diagnostics explain state and stop polling until reopened", async () => {
+  const vm = require("node:vm");
+  const fs = require("node:fs");
+  let toggle;
+  const calls = [], delays = [];
+  const panel = {open:true, addEventListener(_name, fn){toggle=fn}};
+  const content = {replaceChildren(){}, textContent:""};
+  const context = {
+    AbortController, addEventListener:()=>{}, clearTimeout:()=>{},
+    setTimeout:(_fn, delay)=>{delays.push(delay); return delays.length},
+    document:{hidden:false, addEventListener:()=>{},
+      createElement:()=>{throw new Error("disabled panel must not create image elements")},
+      getElementById:id=>id==="scene-diagnostics"?panel:content},
+    fetch:async url=>{
+      calls.push(url);
+      return {ok:true,json:async()=>({enabled:false,reason:"disabled",records:[]})};
+    }
+  };
+  vm.runInNewContext(fs.readFileSync(require.resolve(
+    "../src/goodvision_harness/assets/scene_diagnostics.js"),"utf8"),context);
+  toggle();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(content.textContent,/诊断未启用/);
+  assert.deepEqual(calls,["/v1/scene/diagnostics"]);
+  assert.deepEqual(delays,[3000]); // Only the request timeout, no poll timer.
+  toggle();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.length,2);
+});

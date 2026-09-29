@@ -6,6 +6,29 @@ onto main `2f7bdaa`. It does not migrate the legacy branch scheduler, fixed
 changes, or a second live-output/event-log implementation. Current scene image
 size, parallelism, sensitivity defaults and event lifecycle remain unchanged.
 
+## Enabling diagnostics
+
+Live request diagnostics are **off by default**. Set
+`runtime.scene_diagnostics_enabled: true` in your service YAML, or set
+`SCENE_DIAGNOSTICS_ENABLED=true`, then restart the service. An explicit environment
+value overrides YAML; an unset/empty value keeps the YAML setting. Both the
+base and full-delivery Compose services forward this override. Set it to `false`
+and restart to disable.
+
+While disabled, neither live inference path creates a diagnostic collector,
+retains diagnostic JPEGs, or builds diagnostic event snapshots. The independent
+branch creates no diagnostic IPC queue or reader thread. Existing operational
+logs, inference images, evidence retention and event delivery keep their normal
+behavior. This setting does not change model prompts, image encoding, scheduling
+or event rules. It is a startup setting, not a runtime panel toggle.
+
+The metadata endpoint returns `enabled: false` without accessing scene state;
+diagnostic JPEG endpoints return 404. The panel shows diagnostics are disabled
+and stops polling until reopened or the page is reloaded. When enabled, the
+existing bounded, best-effort behavior below applies and has resource overhead.
+Offline replay explicitly supplies its own collector regardless of the live
+service setting, so its reports retain diagnostic fields.
+
 ## Live diagnostics
 
 Expand **连续场景诊断** in the detailed console during an active scene session.

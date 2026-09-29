@@ -69,6 +69,7 @@ from .deployment_settings import (
     validate_camera_layout,
     validate_processing_method,
 )
+from .diagnostics import create_diagnostics
 from .display_telemetry import validate_display_metrics
 from .event_archive import EventArchive
 from .event_routes import install_event_routes
@@ -2421,6 +2422,10 @@ class HarnessRuntime:
                     session.stream_session_id,
                     self.source_id,
                     mode=self._scene_mode,
+                    diagnostics=create_diagnostics(
+                        self.config.runtime.scene_diagnostics_enabled
+                        and not self.config.runtime.scene_independent_vlm
+                    ),
                     event_labels=scene_labels,
                     independent_temporal_inference=(
                         self.config.runtime.scene_independent_vlm and not use_dry_run and bool(scene_labels)
@@ -2503,6 +2508,9 @@ class HarnessRuntime:
                         self.config.runtime.scene_max_in_flight,
                         route_id=PUBLIC_ROUTE_IDS.get(self._selected_route_id),
                         output_mode=self.config.runtime.scene_vlm_output_mode,
+                        diagnostics_enabled=(
+                            self.config.runtime.scene_diagnostics_enabled
+                        ),
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
@@ -5230,11 +5238,17 @@ def create_app(
 
     @application.get("/v1/scene/diagnostics")
     def scene_diagnostics(request: Request) -> JSONResponse:
-        diagnostics, labels = active_diagnostics(_runtime(request))
+        runtime = _runtime(request)
+        if not runtime.config.runtime.scene_diagnostics_enabled:
+            return JSONResponse(
+                {"enabled": False, "reason": "disabled", "records": []},
+                headers={"Cache-Control": "no-store"},
+            )
+        diagnostics, labels = active_diagnostics(runtime)
         if diagnostics is None:
             raise HTTPException(status_code=404, detail="no active scene diagnostics")
         return JSONResponse(
-            diagnostics.snapshot(labels),
+            {"enabled": True, **diagnostics.snapshot(labels)},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -5242,7 +5256,10 @@ def create_app(
     def scene_model_input(
         request: Request, request_id: str, frame_sequence: int,
     ) -> Response:
-        diagnostics, _ = active_diagnostics(_runtime(request))
+        runtime = _runtime(request)
+        if not runtime.config.runtime.scene_diagnostics_enabled:
+            raise HTTPException(status_code=404, detail="scene diagnostics disabled")
+        diagnostics, _ = active_diagnostics(runtime)
         jpeg = diagnostics.jpeg(request_id, frame_sequence) if diagnostics else None
         if jpeg is None:
             raise HTTPException(

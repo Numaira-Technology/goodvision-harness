@@ -60,6 +60,7 @@ class VLMProcessConfig:
     max_in_flight: int = 4
     route_id: str | None = None
     output_mode: str = "full"
+    diagnostics_enabled: bool = False
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
@@ -348,7 +349,7 @@ def run_vlm_process(
         validation_reason = None
         diagnostic = None
         failure = None
-        if diagnostic_outgoing is not None:
+        if config.diagnostics_enabled and diagnostic_outgoing is not None:
             try:
                 diagnostic = IndependentRequestDiagnostics(
                     job, lane, sample, config.generation)
@@ -711,9 +712,15 @@ class IndependentVLMBranch:
         context = mp.get_context("spawn")
         self._incoming = context.Queue(INPUT_CAPACITY)
         self._outgoing = context.Queue(OUTPUT_CAPACITY)
-        self._diagnostic_outgoing = context.Queue(DIAGNOSTIC_QUEUE_CAPACITY)
-        self.diagnostics = IndependentDiagnostics(
-            config.stream_session_id, config.generation)
+        self._diagnostic_outgoing = None
+        self.diagnostics = None
+        if config.diagnostics_enabled:
+            try:
+                self.diagnostics = IndependentDiagnostics(
+                    config.stream_session_id, config.generation)
+                self._diagnostic_outgoing = context.Queue(DIAGNOSTIC_QUEUE_CAPACITY)
+            except Exception:
+                self.diagnostics = None  # Optional telemetry cannot prevent startup.
         self._diagnostic_reader = None
         self._process_stop = context.Event()
         self._grounding_required = context.Event()
@@ -768,9 +775,13 @@ class IndependentVLMBranch:
             target=self._read, name="vlm-independent-results", daemon=True
         )
         self._reader.start()
-        self._diagnostic_reader = Thread(
-            target=self._read_diagnostics, name="vlm-diagnostics", daemon=True)
-        self._diagnostic_reader.start()
+        if self._diagnostic_outgoing is not None:
+            try:
+                self._diagnostic_reader = Thread(
+                    target=self._read_diagnostics, name="vlm-diagnostics", daemon=True)
+                self._diagnostic_reader.start()
+            except Exception:
+                self._diagnostic_reader = None  # Full telemetry queues drop records.
         if self._camera_dispatch is not None:
             self._camera_dispatch.start()
         if self.fusion is not None:
@@ -1100,9 +1111,15 @@ class IndependentVLMBranch:
         for thread in (self._reader, self._source, self._diagnostic_reader):
             if thread is not None:
                 thread.join(1.0)
-        for queue in (self._incoming, self._outgoing, self._diagnostic_outgoing):
+        for queue in (self._incoming, self._outgoing):
             queue.close()
             queue.cancel_join_thread()
+        if self._diagnostic_outgoing is not None:
+            try:
+                self._diagnostic_outgoing.close()
+                self._diagnostic_outgoing.cancel_join_thread()
+            except Exception:
+                pass  # Telemetry cleanup must not prevent the stopped state.
         with self._lock:
             self._evidence.clear()
             self._evidence_bytes = 0

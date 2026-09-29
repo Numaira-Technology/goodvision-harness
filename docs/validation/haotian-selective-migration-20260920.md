@@ -117,3 +117,47 @@ the child process's request boundary. They make no paid inference calls and do
 not establish model accuracy, real GPU performance or production latency. The
 full repository suite was not rerun for this follow-up; CI remains the full-suite
 gate. Two installed-library deprecation warnings occurred in focused tests.
+
+
+## Default-off diagnostics follow-up — 2026-09-29
+
+Live diagnostics now require `runtime.scene_diagnostics_enabled: true` or
+`SCENE_DIAGNOSTICS_ENABLED=true` and a service restart. The default is false in
+the settings model, checkout/package YAML and delivery YAML. Both Compose
+entrypoints forward the optional environment override without masking YAML.
+
+SceneRuntime accepts an optional collector supplied at service composition time.
+With no collector, it does not retain diagnostic source history, clone inspection
+jobs, build accepted-observation lists, or generate diagnostic scene snapshots.
+The model adapter uses its ordinary message-builder call without collecting JPEG
+bytes. Independent VLM creates no diagnostic cache, queue or reader thread when
+disabled. Enabled scene observation/snapshot failures are isolated inside the
+diagnostic module; optional independent cache/thread startup failures do not
+prevent ordinary inference. The independent path does not allocate a duplicate
+scene collector. Offline replay explicitly supplies its own collector.
+
+Disabled metadata routes report `enabled: false` before accessing scene state;
+diagnostic JPEG routes return 404. The panel explains the disabled state and
+does not schedule further polls until reopened or reloaded.
+
+Validation on Windows / Python 3.12:
+
+- Initial related regression: **235 passed**.
+- Full offline regression: **4678 passed, 15 skipped, 1 failed**. The failure was
+  the delivery/source configuration equality check: delivery YAML lacked the
+  new explicit default. The delivery YAML was corrected. The final affected
+  diagnostics/configuration/deployment/dashboard run passed **118 tests**, and
+  the full-suite failed-case rerun passed **1 test**. The entire suite was not
+  repeated after this configuration-only correction.
+- Skips cover missing PyAV/aiortc, unavailable Windows symlink privileges and
+  Linux-specific process/SSH/root behavior. Those paths remain unverified locally.
+- Diagnostics helpers and their Python tests pass Ruff. Repository hygiene and
+  diff whitespace checks pass.
+
+New regressions cover default/YAML/environment precedence, byte-identical model
+payloads and unchanged verdicts with diagnostics on/off, all four spawned output
+modes without diagnostic resources, ordinary output despite optional collector
+startup failure, event confirmation despite diagnostic callback/snapshot failure,
+camera-scoped disabled routes, and the panel stopping its disabled-state polling.
+The checks use synthetic/mocked inference; no real-model accuracy, GPU throughput
+or live production-latency claim is made. PR #19 remains unmerged.

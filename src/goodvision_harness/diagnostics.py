@@ -19,10 +19,25 @@ def note(job, method, *args, **kwargs):
     """Observability must not change inference or evidence acceptance."""
     diagnostics = getattr(job, "diagnostics", None)
     if diagnostics is not None:
+        record(diagnostics, method, job, *args, **kwargs)
+
+
+def record(diagnostics, method, *args, **kwargs):
+    """Keep optional collector failures outside the functional pipeline."""
+    if diagnostics is not None:
         try:
-            getattr(diagnostics, method)(job, *args, **kwargs)
+            getattr(diagnostics, method)(*args, **kwargs)
         except Exception:
             pass
+
+
+def create_diagnostics(enabled):
+    if enabled:
+        try:
+            return SceneDiagnostics()
+        except Exception:
+            pass
+    return None
 
 
 def failure_category(failure) -> str:
@@ -235,6 +250,21 @@ class SceneDiagnostics:
                     **verdict_summary(job.request.event_labels, verdicts),
                 )
                 self._counts["response_validated"] += 1
+
+    def complete_scene(self, job, *, scene, success, accepted):
+        # Snapshot generation is diagnostic work too: defer it until enabled and
+        # keep it inside note()'s failure boundary, outside event acceptance.
+        labels = {item[0] for item in accepted}
+        confirmed = (
+            [
+                event["event_label"]
+                for event in scene.snapshot(include_history=False)["events"]
+                if event["phase"] == "confirmed" and event["event_label"] in labels
+            ]
+            if labels
+            else ()
+        )
+        self.completed(job, success=success, accepted=accepted, confirmed=confirmed)
 
     def completed(self, job, *, success, accepted=(), confirmed=(), expired=False):
         with self._lock:

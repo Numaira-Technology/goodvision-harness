@@ -15,11 +15,13 @@ from test_vlm_independent import (
     ROOT,
     SourceSample,
     await_condition,
-    config,
     job,
     jpeg,
     utc_now,
     verdict,
+)
+from test_vlm_independent import (
+    config as base_config,
 )
 from test_vlm_parallel import OutputQueue
 
@@ -36,6 +38,10 @@ from goodvision_harness.vlm_compact_model import (
 )
 from goodvision_harness.vlm_independent import IndependentVLMBranch, run_vlm_process
 from goodvision_harness.vlm_independent_model import IndependentVLMInspector
+
+
+def config():
+    return replace(base_config(), diagnostics_enabled=True)
 
 
 class MockHTTP:
@@ -58,9 +64,13 @@ class MockHTTP:
             if p["type"] == "image_url"
         ]
         j = self.current_job
-        assert sent == [
-            j.diagnostics.jpeg(j.request.request_id, f.frame_sequence) for f in j.frames
-        ]
+        if j.diagnostics is not None:
+            assert sent == [
+                j.diagnostics.jpeg(j.request.request_id, f.frame_sequence)
+                for f in j.frames
+            ]
+        else:
+            assert payload["messages"] == self.build_messages(j)
         timing["http_status"] = 401 if self.model == "failure" else 200
         timing["request_body_completed"] = True
         if self.model == "failure":
@@ -241,8 +251,9 @@ def test_full_diagnostic_queue_does_not_block_reports():
         assert not thread.is_alive()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
 def test_service_routes_use_live_independent_cache_without_scene_lock(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, enabled
 ):
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **kwargs: "")
@@ -250,7 +261,12 @@ def test_service_routes_use_live_independent_cache_without_scene_lock(
     base = load_config(ROOT / "config.yaml")
     cfg = replace(
         base,
-        runtime=replace(base.runtime, scene_mode="active", scene_independent_vlm=True),
+        runtime=replace(
+            base.runtime,
+            scene_mode="active",
+            scene_independent_vlm=True,
+            scene_diagnostics_enabled=enabled,
+        ),
         rich_labeling=replace(
             base.rich_labeling, enabled=False, tracking_enabled=False, backend="paddle"
         ),
@@ -265,8 +281,18 @@ def test_service_routes_use_live_independent_cache_without_scene_lock(
         with TestClient(service.create_app(runtime_factory=lambda: runtime)) as client:
             runtime.start_camera(dry_run=False, features=["smoking", "fall"])
             branch = runtime._vlm_branch
+            assert runtime._scene.diagnostics is None  # No duplicate scene collector.
+            assert branch.config.diagnostics_enabled is enabled
             send_window(branch)
-            await_condition(lambda: bool(branch.diagnostics.snapshot(())["records"]))
+            await_condition(lambda: branch.health().get("published_reports", 0) == 1)
+            if enabled:
+                await_condition(
+                    lambda: bool(branch.diagnostics.snapshot(())["records"])
+                )
+            else:
+                assert branch.diagnostics is None
+                assert branch._diagnostic_outgoing is None
+                assert branch._diagnostic_reader is None
 
             def hold_scene():
                 with runtime._state_lock:
@@ -281,6 +307,26 @@ def test_service_routes_use_live_independent_cache_without_scene_lock(
             assert time.monotonic() - started < 2
             assert response.status_code == 200
             assert response.headers["cache-control"] == "no-store"
+            if not enabled:
+                assert response.json() == {
+                    "enabled": False,
+                    "reason": "disabled",
+                    "records": [],
+                }
+                assert (
+                    client.get("/v1/scene/diagnostics/request/0.jpg").status_code == 404
+                )
+                release.set()
+                blocker.join(2)
+                scoped = client.get("/v1/fleet/cameras/camera01/scene/diagnostics")
+                assert scoped.json()["enabled"] is False
+                assert (
+                    client.get(
+                        "/v1/fleet/cameras/camera01/scene/diagnostics/request/0.jpg"
+                    ).status_code
+                    == 404
+                )
+                return
             row = response.json()["records"][0]
             image_path = "/v1/scene/diagnostics/" + row["request_id"] + "/0.jpg"
             image = client.get(image_path)
@@ -317,3 +363,57 @@ def test_oversized_request_keeps_metadata_without_jpegs(monkeypatch):
     cache = IndependentDiagnostics(cfg.stream_session_id, cfg.generation)
     cache.receive(value)
     assert cache.snapshot(())["image_bytes"] == 0
+
+
+@pytest.mark.parametrize("mode", ["full", "compact", "events", "parallel"])
+def test_default_off_creates_no_diagnostic_resources_and_still_publishes(
+    mode, monkeypatch
+):
+    from goodvision_harness import vlm_independent
+
+    context = vlm_independent.mp.get_context("spawn")
+    original_queue = context.Queue
+    sizes = []
+
+    def queue(size):
+        sizes.append(size)
+        return original_queue(size)
+
+    monkeypatch.setattr(context, "Queue", queue)
+    monkeypatch.setattr(vlm_independent.mp, "get_context", lambda _: context)
+    branch = DiagnosticBranch(replace(base_config(), output_mode=mode))
+    try:
+        assert sizes == [
+            vlm_independent.INPUT_CAPACITY,
+            vlm_independent.OUTPUT_CAPACITY,
+        ]
+        assert branch.diagnostics is None
+        assert branch._diagnostic_outgoing is None
+        branch.start()
+        assert branch._diagnostic_reader is None
+        send_window(branch)
+        count = 2 if mode == "parallel" else 1
+        await_condition(lambda: branch.health().get("published_reports", 0) == count)
+        assert branch.results.latest().payload["state"] == "completed"
+    finally:
+        branch.close(timeout_seconds=6)
+    assert branch.health()["state"] == "stopped"
+
+
+def test_optional_cache_initialization_failure_does_not_prevent_inference(monkeypatch):
+    from goodvision_harness import vlm_independent
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("diagnostic allocation failed")
+
+    monkeypatch.setattr(vlm_independent, "IndependentDiagnostics", fail)
+    branch = DiagnosticBranch(config())
+    try:
+        branch.start()
+        assert branch.diagnostics is None
+        assert branch._diagnostic_outgoing is None
+        send_window(branch)
+        await_condition(lambda: branch.health().get("published_reports", 0) == 1)
+        assert branch.results.latest().payload["state"] == "completed"
+    finally:
+        branch.close(timeout_seconds=6)

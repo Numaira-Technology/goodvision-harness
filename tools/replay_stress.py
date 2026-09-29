@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from goodvision_harness.config import load_config  # noqa: E402
 from goodvision_harness.contracts import NormalizedBBox  # noqa: E402
+from goodvision_harness.diagnostics import SceneDiagnostics  # noqa: E402
 from goodvision_harness.event_sensitivity import (  # noqa: E402
     normalize_event_sensitivities,
 )
@@ -404,6 +405,7 @@ def replay_clip(
         uuid4().hex,
         "local-replay",
         event_labels=LABELS,
+        diagnostics=SceneDiagnostics(),
         event_sensitivities=sensitivities,
         tracking_mode="batch",
         native_memory_scope="session",
