@@ -316,7 +316,8 @@ def test_restart_drains_more_persisted_plans_than_encoder_queue_capacity(tmp_pat
         assert reopened.flush()
         assert len(reopened._jobs) == 34
         release.set()
-        assert reopened.wait_until_idle(10)
+        # Thirty-four serial commits. Windows CI still had work after 10s.
+        assert reopened.wait_until_idle(60)
         assert len(reopened.list_events()["events"]) == 34
         assert all(
             e["evidence"]["status"] == "ready" for e in reopened.list_events()["events"]
