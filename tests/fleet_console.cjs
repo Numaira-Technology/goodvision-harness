@@ -2,6 +2,7 @@ const assert=require("node:assert/strict");
 const {test}=require("node:test");
 const fs=require("node:fs");
 const path=require("node:path");
+const {payload}=require("./helpers/event_catalog.cjs");
 const {FleetConsole,normalizeFleet}=require("../src/goodvision_harness/fleet_console.js");
 
 class Element{
@@ -26,6 +27,7 @@ function fixture({count=3,allowed=true,mode=allowed?"local":"legacy",usable=allo
   const requests=[],statuses=new Map(data.cameras.map(camera=>[camera.id,{pipeline_state:"idle",connection_state:"disconnected",analysis_state:"idle",configured_stream:false}]));
   const prefs=new Map(data.cameras.map(camera=>[camera.id,{features:["fight","smoking","fall","weapon","stranger"],event_sensitivities:{fight:"standard",smoking:"high",fall:"standard",weapon:"standard"},event_sensitivity_options:{smoking:[{value:"standard",label:"标准敏感度",description:"必须明确识别烟具"},{value:"high",label:"高敏感度",description:"允许结合动作和上下文判断"}]}}]));
   const errors=new Map(),revoked=[],scheduled=[];let blobId=0;
+  for(const values of prefs.values())Object.assign(values,payload());
   const fetch=async(url,options={})=>{
     requests.push({url,method:options.method||"GET",body:options.body&&JSON.parse(options.body)});
     if(errors.has(url)||errors.has(url.split("?")[0]))throw new Error(errors.get(url)||errors.get(url.split("?")[0]));
@@ -72,7 +74,7 @@ test("routine fleet health uses the lightweight status path",async()=>{
 test("independent Face and VLM lanes do not claim a GPU or single-stream limit",async()=>{
   const view=fixture({count:2,allowed:true,mode:"legacy"});view.data.tracking_enabled=false;
   await view.app.refresh();
-  assert.match(view.app.ui.mode.textContent,/人脸与 VLM/);
+  assert.match(view.app.ui.mode.textContent,/人脸与事件识别/);
   assert.doesNotMatch(view.app.ui.capacity.textContent,/仅支持单路/);view.app.close();
 });
 
@@ -431,4 +433,47 @@ test("prepare failure with known idle previews permits key and preference correc
   row.features.get("fight").checked=false;row.features.get("fight").onchange();assert.equal(await view.app.savePreferences(row),true);
   view.data.analysis.camera_ids=["camera01"];await view.app.refresh();assert.equal(view.app.analysisLocked(),true);
   assert.equal(row.features.get("fight").disabled,true);assert.equal(view.app.ui["analysis-stop"].disabled,false);
+});
+test("per-camera catalog supports future events, custom options and selected-only payloads",async()=>{
+  const view=fixture({count:2});
+  view.prefs.set("camera02",{features:["spill"],event_sensitivities:{spill:"relaxed"},event_catalog:{version:1,events:[
+    {id:"spill",labels:{zh:"地面积水",en:"Floor spill"},scope:"scene",kind:"detection",default_enabled:true,
+      sensitivity:{default:"strict",options:[{value:"strict",label:"严格"},{value:"relaxed",label:"宽松"}]}},
+    {id:"door_open",labels:{zh:"门未关",en:"Open door"},default_enabled:false}
+  ]}});
+  await view.app.refresh();const row=view.app.rows.get("camera02");await view.app.toggleDetail(row);
+  assert.deepEqual([...row.features.keys()],["spill","door_open"]);
+  assert.equal(row.sensitivities.get("spill").select.value,"relaxed");
+  assert.equal(row.sensitivities.has("door_open"),false);
+  row.features.get("spill").checked=false;row.features.get("door_open").checked=true;
+  assert.equal(await view.app.savePreferences(row),true);
+  assert.deepEqual(view.requests.at(-1).body,{features:["door_open"],event_sensitivities:{}});
+  view.app.close();
+});
+
+test("catalog refresh preserves dirty drafts; failed reload locks stale controls until recovery",async()=>{
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  await view.app.toggleDetail(row);row.features.get("fight").checked=false;row.features.get("fight").onchange();
+  const input=row.features.get("fight");await view.app.loadPreferences(row);
+  assert.equal(row.features.get("fight"),input);assert.equal(input.checked,false);
+  view.prefs.get("camera01").event_catalog={version:9,events:[]};await view.app.loadPreferences(row,true);
+  assert.equal(row.prefsLoaded,false);assert.equal(row.prefsSave.disabled,true);assert.equal(input.disabled,true);
+  assert.equal(await view.app.savePreferences(row),false);
+  Object.assign(view.prefs.get("camera01"),payload(["smoking"]));
+  await view.app.loadPreferences(row,true);assert.deepEqual([...row.features.keys()],["smoking"]);
+  assert.equal(row.prefsLoaded,true);view.app.close();
+});
+
+test("refreshing presets updates clean open channels without replacing another channel's draft",async()=>{
+  const view=fixture({count:2});await view.app.refresh();
+  const first=view.app.rows.get("camera01"),second=view.app.rows.get("camera02");
+  await view.app.toggleDetail(first);await view.app.toggleDetail(second);
+  first.features.get("fight").checked=false;first.features.get("fight").onchange();
+  const draft=first.features.get("fight");
+  Object.assign(view.prefs.get("camera01"),payload(["smoking"]));
+  Object.assign(view.prefs.get("camera02"),payload(["smoking"]));
+  await view.app.refreshPresets();
+  assert.equal(first.features.get("fight"),draft);assert.equal(draft.checked,false);
+  assert.deepEqual([...second.features.keys()],["smoking"]);
+  view.app.close();
 });

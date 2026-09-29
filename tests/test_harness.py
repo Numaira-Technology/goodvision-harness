@@ -1241,7 +1241,9 @@ def test_http_delivery_surface_and_degraded_liveness() -> None:
         assert dashboard.status_code == 200
         assert "qwen/qwen3-vl-8b-instruct" not in dashboard.text
         assert "qwen3.5-plus" not in dashboard.text
-        assert "Persistent deployment defaults" in dashboard.text
+        # The localized console keeps the same deployment controls.
+        assert 'id="save-deployment-button"' in dashboard.text
+        assert 'class="panel deployment-panel"' in dashboard.text
         assert "/v1/video/annotated/stream.mjpeg" in dashboard.text
         assert "实时画面与 人员追踪模块 描边" in dashboard.text
         assert "Math.max(displayFps,analysisFps)" in dashboard.text

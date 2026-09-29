@@ -49,3 +49,4 @@ test('diagnostic mirror waits safely for the parent canvas after reconnect',()=>
   source={media:{width:10,height:10,dataset:{frameSequence:'1'}}};callback();assert.equal(draws,1);
   source=null;callback();assert.equal(draws,1);mirror.stop();
 });
+require('../src/goodvision_harness/assets/event_catalog.js').accept(require('./helpers/event_catalog.cjs').payload());

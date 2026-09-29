@@ -3,19 +3,14 @@ const fs=require("node:fs");
 const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
+const {createDocument,runDashboard}=require("./helpers/dashboard.cjs");
+const {payload:catalogPayload}=require("./helpers/event_catalog.cjs");
 
 function dashboard(settings={}){
-  const elements=new Map(),requests=[],messages=[];
-  function element(id){
-    if(!elements.has(id))elements.set(id,{
-      value:"",textContent:"",className:"",style:{},checked:false,
-      querySelectorAll:()=>[],classList:{toggle(){}},replaceChildren(){},
-      scrollIntoView(){},focus(){this.focused=true},
-    });
-    return elements.get(id)
-  }
+  const requests=[],messages=[];
+  const {document,element}=createDocument(["smoking"]);
   const context=vm.createContext({
-    document:{getElementById:element,querySelectorAll:()=>[{checked:true,dataset:{feature:"smoking"}}]},
+    document,
     window:{isSecureContext:true},location:{hostname:"localhost"},URL,
     initial:{persistence_available:true,configured_stream:true,dry_run:false,
       local_inference_enabled:false,local_tracking_enabled:false,
@@ -30,12 +25,12 @@ function dashboard(settings={}){
         if(tracking_api_key)context.saved.tracking_key_present=true;
         if(clear_tracking_api_key)context.saved.tracking_key_present=false
       }
-      return {ok:true,json:async()=>({...context.saved})}
+      return {ok:true,json:async()=>({...context.saved,...catalogPayload()})}
     },
   });
   const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
   const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+  runDashboard(context,`
     state.info={api_key_present:false};state.gallery={ready:true};state.deployment={...initial};
     state.routes={can_probe:true,can_select:true,state:"idle"};globalThis.saved={...initial};
     reset=()=>{};connect=async()=>({send:capture});

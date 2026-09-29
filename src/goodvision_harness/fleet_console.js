@@ -3,8 +3,7 @@
 (function(root){
   "use strict";
   const ACTIVE=new Set(["starting","running","stopping","draining"]);
-  const FEATURES=["fight","smoking","fall","weapon","ppe_violation","ground_litter","stranger"];
-  const LABELS={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",ppe_violation:"防护装备缺失",ground_litter:"地面垃圾",stranger:"陌生人"};
+  const catalog=root.GoodvisionEvents||(typeof require==="function"?require("./assets/event_catalog.js"):null);
   const CONNECTION={connecting:"正在连接视频",connected:"视频已连接",disconnecting:"正在断开视频",disconnected:"视频未连接",error:"视频连接异常"};
   const ANALYSIS={idle:"未分析",starting:"正在开始分析",running:"分析中",stopping:"正在停止分析",draining:"正在完成剩余分析",error:"分析异常",unknown:"正在确认分析状态"};
   function connectionState(status){return status?.connection_state||(status?.connected===true?"connected":"disconnected");}
@@ -110,7 +109,7 @@
       const canvas=this.element("canvas");canvas.hidden=true;
       const placeholder=this.element("div","fleet-preview-note","连接后在此显示实时画面");viewport.append(image,canvas,placeholder);
       const displayNote=this.element("div","fleet-card-detail","播放目标 15 帧/秒 · 画面与分析独立更新");
-      const vlmNote=this.element("div","fleet-card-detail","VLM · 等待开始分析");vlmNote.setAttribute("role","status");
+      const vlmNote=this.element("div","fleet-card-detail","事件分析 · 等待开始分析");vlmNote.setAttribute("role","status");
       const vlmEvents=this.element("div","fleet-card-detail","本次事件观察 · 等待开始分析");vlmEvents.setAttribute("role","status");
       const fields=this.element("div","fleet-card-fields"),source=this.element("label","field");
       source.append(this.element("span","","网络视频地址"));
@@ -185,34 +184,48 @@
       row.detail.setAttribute("aria-controls",panel.id);row.detail.setAttribute("aria-expanded","false");
       const heading=this.element("h4","","该路检测设置"),features=this.element("div","feature-select");
       const sensitivities=this.element("div","fleet-sensitivities");row.features=new Map();row.sensitivities=new Map();
-      for(const key of FEATURES){
-        const label=this.element("label","switch"),input=this.element("input");input.type="checkbox";input.checked=true;
-        input.setAttribute("aria-label",row.camera.label+" 检测"+LABELS[key]);
-        label.append(input,this.element("span","",LABELS[key]));features.append(label);row.features.set(key,input);
-        input.onchange=()=>{row.prefsDirty=true;this.updateRow(row);this.update();};
-        if(key==="stranger")continue;
-        const field=this.element("label","field"),select=this.element("select"),note=this.element("span","note");
-        select.setAttribute("aria-label",row.camera.label+" "+LABELS[key]+"敏感度");
-        for(const [value,title] of [["standard","标准"],["high","高敏感度"]]){
-          const option=this.element("option","",title);option.value=value;select.append(option);
-        }
-        select.value="standard";select.onchange=()=>{row.prefsDirty=true;this.sensitivityNote(row,key);this.updateRow(row);this.update();};
-        field.append(this.element("span","",LABELS[key]+"敏感度"),select,note);sensitivities.append(field);
-        row.sensitivities.set(key,{select,note});
-      }
+      row.featureFields=features;row.sensitivityFields=sensitivities;
       const save=this.element("button","btn","保存该路检测设置"),reload=this.element("button","btn","放弃未保存修改");
       save.type="button";reload.type="button";save.onclick=()=>this.savePreferences(row);reload.onclick=()=>this.loadPreferences(row,true);
       const actions=this.element("div","fleet-card-buttons");actions.append(save,reload);
       const note=this.element("div","fleet-card-detail","正在读取该路已保存设置…");note.setAttribute("role","status");
       const summary=this.element("div","fleet-detail-summary"),result=this.element("pre","fleet-detail-json","暂无分析结果"),scene=this.element("pre","fleet-detail-json","暂无连续观察结果");
+      result.dataset.interfaceCopy="true";scene.dataset.interfaceCopy="true";
       const resultDetails=this.element("details","fleet-result-details"),sceneDetails=this.element("details","fleet-result-details");
       resultDetails.append(this.element("summary","","本路最新分析结果"),result);sceneDetails.append(this.element("summary","","本路连续观察状态"),scene);
       panel.append(heading,features,sensitivities,this.element("p","note","高敏感度更容易触发警报，也可能增加误报。陌生人识别使用独立人脸设置。分析期间检测设置和视频连接保持不变。"),actions,note,summary,resultDetails,sceneDetails);
       row.card.append(panel);Object.assign(row,{detailPanel:panel,prefsSave:save,prefsReload:reload,prefsNote:note,detailSummary:summary,resultJson:result,sceneJson:scene});
     }
+    renderFeatureControls(row,values){
+      const events=catalog.parse(values);
+      catalog.registerTranslations(events);
+      const selected=Array.isArray(values.features)?values.features:events.filter(item=>item.default_enabled).map(item=>item.id);
+      row.featureFields.replaceChildren();row.sensitivityFields.replaceChildren();
+      row.featureFields.textContent=events.length?"":"暂无可用检测项目";
+      row.features.clear();row.sensitivities.clear();row.prefOptions={};
+      for(const event of events){
+        const key=event.id,name=event.labels.zh;
+        const label=this.element("label","switch"),input=this.element("input");input.type="checkbox";input.checked=selected.includes(key);
+        input.setAttribute("aria-label",row.camera.label+" 检测"+name);
+        label.append(input,this.element("span","",name));row.featureFields.append(label);row.features.set(key,input);
+        input.onchange=()=>{row.prefsDirty=true;this.updateRow(row);this.update();};
+        if(!event.sensitivity)continue;
+        const field=this.element("label","field"),select=this.element("select"),note=this.element("span","note");
+        select.setAttribute("aria-label",row.camera.label+" "+name+"敏感度");
+        row.prefOptions[key]=event.sensitivity.options;
+        for(const option of event.sensitivity.options){
+          const item=this.element("option","",option.labels?.zh||option.label||option.value);item.value=option.value;select.append(item);
+        }
+        const saved=values.event_sensitivities?.[key];
+        select.value=event.sensitivity.options.some(item=>item.value===saved)?saved:event.sensitivity.default;
+        select.onchange=()=>{row.prefsDirty=true;this.sensitivityNote(row,key);this.updateRow(row);this.update();};
+        field.append(this.element("span","",name+"敏感度"),select,note);row.sensitivityFields.append(field);
+        row.sensitivities.set(key,{select,note});this.sensitivityNote(row,key);
+      }
+    }
     sensitivityNote(row,key){
       const control=row.sensitivities.get(key),option=row.prefOptions?.[key]?.find(item=>item.value===control.select.value);
-      control.note.textContent=option?.description||(control.select.value==="high"?"更容易触发警报，可能增加误报。":"使用标准事件判定规则。");
+      control.note.textContent=option?.descriptions?.zh||option?.description||"";
     }
     async toggleDetail(row){
       row.detailOpen=!row.detailOpen;row.detailPanel.hidden=!row.detailOpen;
@@ -220,32 +233,25 @@
       if(row.detailOpen){await this.loadPreferences(row);await this.pollDetail(row);}
     }
     async loadPreferences(row,discard=false){
-      if(row.prefsLoading||row.prefsSaving||row.prefsDirty&&!discard||row.prefsLoaded&&!discard)return;
+      if(row.prefsLoading||row.prefsSaving||row.prefsDirty&&!discard)return;
       row.prefsLoading=true;row.prefsNote.textContent="正在读取该路已保存设置…";this.updateRow(row);
       try{
         const values=await this.request(row.camera.detail_url);
-        row.prefOptions=values.event_sensitivity_options||{};
-        const selected=Array.isArray(values.features)?values.features:FEATURES;
-        for(const [key,input] of row.features)input.checked=selected.includes(key);
-        for(const [key,{select}] of row.sensitivities){
-          if(Array.isArray(row.prefOptions[key])&&row.prefOptions[key].length){
-            select.replaceChildren();for(const option of row.prefOptions[key]){
-              const item=this.element("option","",option.label||option.value);item.value=option.value;select.append(item);
-            }
-          }
-          select.value=values.event_sensitivities?.[key]||values.event_sensitivity_defaults?.[key]||"standard";
-          this.sensitivityNote(row,key);
-        }
+        this.renderFeatureControls(row,values);
         row.prefsLoaded=true;row.prefsDirty=false;row.prefsError="";
-      }catch(error){row.prefsError="无法读取检测设置："+error.message;}
+      }catch(error){row.prefsLoaded=false;row.prefsError="无法读取检测设置："+error.message;}
       finally{row.prefsLoading=false;this.updateRow(row);this.update();}
+    }
+    async refreshPresets(){
+      await pooled([...this.rows.values()].filter(row=>row.prefsLoaded||row.detailOpen),2,
+        row=>this.loadPreferences(row));
     }
     async savePreferences(row,forStart=false){
       if(!row.prefsLoaded||row.prefsLoading||row.prefsSaving||!forStart&&this.analysisLocked())return false;
       const features=[...row.features].filter(([,input])=>input.checked).map(([key])=>key);
       if(!features.length){row.prefsError="请为该路至少选择一个检测项目。";this.updateRow(row);return false;}
       row.prefsSaving=true;row.prefsError="";this.updateRow(row);this.update();
-      const event_sensitivities=Object.fromEntries([...row.sensitivities].map(([key,{select}])=>[key,select.value]));
+      const event_sensitivities=Object.fromEntries([...row.sensitivities].filter(([key])=>features.includes(key)).map(([key,{select}])=>[key,select.value]));
       try{
         await this.request(row.camera.detail_url,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({features,event_sensitivities})});
         row.prefsDirty=false;return true;
@@ -258,8 +264,9 @@
       try{
         for(const [url,output,label] of [[row.camera.results_url,row.resultJson,"暂无分析结果"],[row.camera.scene_url,row.sceneJson,"暂无连续观察结果"]]){
           if(!url)continue;
-          try{const data=await this.request(url);output.textContent=data&&Object.keys(data).length?JSON.stringify(data,null,2):label;}
-          catch(error){output.textContent="暂时无法读取："+error.message;}
+          try{const data=await this.request(url);output.dataset.interfaceCopy=String(!(data&&Object.keys(data).length));output.textContent=data&&Object.keys(data).length?
+            (root.GoodvisionConsole?.formatJson(data)||JSON.stringify(data,null,2)):label;}
+          catch(error){output.dataset.interfaceCopy="true";output.textContent="暂时无法读取："+error.message;}
         }
       }finally{row.detailPolling=false;}
     }
@@ -271,7 +278,7 @@
       const displayed=[...this.rows.values()].filter(row=>this.visible.has(row.camera.id));
       const available=this.fleet.cameras.filter(camera=>camera.enabled).length;
       const spare=this.fleet.cameras.some(camera=>camera.enabled&&!this.visible.has(camera.id));
-      this.ui.mode.textContent=!this.fleet.trackingEnabled?"视频播放 · 人脸与 VLM 识别":this.fleet.allowed?MODES[this.fleet.trackingMode]:
+      this.ui.mode.textContent=!this.fleet.trackingEnabled?"视频播放 · 人脸与事件识别":this.fleet.allowed?MODES[this.fleet.trackingMode]:
         MODES[this.fleet.trackingMode].replace("多路模式","当前可用 "+this.fleet.usableCapacity+" 路");
       const capacityNote=!this.fleet.trackingEnabled?"可使用已部署的视频通道；人物描边未启用。":this.fleet.trackingMode==="server"
         ?"可用路数由追踪服务器容量与已部署通道共同决定。"
@@ -321,18 +328,18 @@
       row.state.textContent=row.busy?"正在处理":row.unreachable?(videoFresh?"视频播放中 · 状态更新延迟":"暂时无法确认服务状态"):(CONNECTION[connectionState(status)]||"正在检查")+" · "+(ANALYSIS[status.analysis_state||status.pipeline_state]||"未分析");
       row.state.className="fleet-camera-state"+(row.unreachable||row.error||status.last_error?" error":active?" good":"");
       const vlm=status.vlm,age=vlm?.last_success_age_seconds;
-      if(row.unreachable)row.vlmNote.textContent="VLM · 状态更新延迟，正在重新确认";
+      if(row.unreachable)row.vlmNote.textContent="事件分析 · 状态更新延迟，正在重新确认";
       else if(vlm?.independent&&["stopping","stopped","drained"].includes(vlm.state))
-        row.vlmNote.textContent=vlm.state==="stopping"?"VLM · 正在停止":"VLM · 本轮识别已停止";
-      else if(!analyzing(status))row.vlmNote.textContent="VLM · 等待开始分析";
-      else if(!vlm?.independent)row.vlmNote.textContent="VLM · 正在读取识别状态";
+        row.vlmNote.textContent=vlm.state==="stopping"?"事件分析 · 正在停止":"事件分析 · 本轮识别已停止";
+      else if(!analyzing(status))row.vlmNote.textContent="事件分析 · 等待开始分析";
+      else if(!vlm?.independent)row.vlmNote.textContent="事件分析 · 正在读取识别状态";
       else if(vlm.ready){
-        row.vlmNote.textContent="VLM · 识别持续返回"+(Number.isFinite(age)?" · 最近成功 "+age.toFixed(1)+" 秒前":"")+
+        row.vlmNote.textContent="事件分析 · 识别持续返回"+(Number.isFinite(age)?" · 最近成功 "+age.toFixed(1)+" 秒前":"")+
           (vlm.last_attempt_state==="failed"?" · 最近一次失败，继续识别":vlm.analysis_complete===false?" · 部分检测项待确认":"");
       }else if(vlm.running){
-        row.vlmNote.textContent="VLM · "+(Number.isFinite(age)?"结果延迟 · 最近成功 "+age.toFixed(1)+" 秒前":"等待首次有效结果")+
+        row.vlmNote.textContent="事件分析 · "+(Number.isFinite(age)?"结果延迟 · 最近成功 "+age.toFixed(1)+" 秒前":"等待首次有效结果")+
           (vlm.last_attempt_state==="failed"?" · 最近一次失败，继续识别":"");
-      }else row.vlmNote.textContent="VLM · 识别暂不可用，视频继续播放";
+      }else row.vlmNote.textContent="事件分析 · 识别暂不可用，视频继续播放";
       row.input.disabled=active||row.busy||locked;row.layout.disabled=active||row.busy||locked;
       row.start.disabled=!enabled||row.busy||active||locked||!row.status||row.unreachable||!row.camera.connect_url;
       row.stop.disabled=row.busy||!active||locked||connectionState(status)==="disconnecting"||!row.camera.disconnect_url;
@@ -534,7 +541,7 @@
     const app=new FleetConsole({document:root.document,fetch:root.fetch.bind(root),setTimeout:root.setTimeout.bind(root),
       clearTimeout:root.clearTimeout.bind(root),AbortController:root.AbortController,URL:root.URL,
       onDetail:show=>{if(show){if(typeof openFeed==="function")openFeed();}else if(typeof closeFeed==="function")closeFeed();},
-      onState:()=>{if(typeof controls==="function")controls();}});
+      onState:()=>{if(typeof controls==="function")controls();root.GoodvisionConsole?.sync(root.GoodvisionFleet?.app);}});
     root.GoodvisionFleet={refresh:()=>app.refresh(),detailHidden:()=>app.ui["detail-console"].hidden,extraBusy:()=>app.extraBusy(),
       startAnalysis:()=>app.analysis("start"),stopAnalysis:()=>app.analysis("stop"),app};
     root.addEventListener("beforeunload",()=>app.close());app.startPolling();

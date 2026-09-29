@@ -98,7 +98,7 @@ test("per-event sensitivity is selectable before start, sent with the request, a
       {value:"standard",label:"标准",description:"Clear visual evidence"},
       {value:"high",label:"高",description:"Contextual evidence"}]]))};
   view.app.renderSensitivities();view.app.controls();
-  assert.equal(view.app.sensitivityInputs.size,4);
+  assert.equal(view.app.sensitivityInputs.size,6);
   assert.equal(view.app.sensitivityInputs.get("smoking").value,"high");
   assert.equal(view.app.sensitivityInputs.get("smoking").disabled,false);
   view.app.sensitivityInputs.get("smoking").value="standard";
