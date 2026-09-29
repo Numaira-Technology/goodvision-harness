@@ -11,6 +11,7 @@ from queue import Empty, Queue
 from threading import Event, RLock, Thread, current_thread
 from typing import Any
 
+from .diagnostics import note
 from .latency_trace import log_timing, trace_id
 from .model_api import ModelAPIError
 from .scene_inspection import (
@@ -346,9 +347,11 @@ class SceneInspectionWorker:
                 response = inspector.inspect(job)
             with _timed_phase(timing, "verdict_validation_seconds"):
                 outcome.verdicts = _validate_verdicts(job, response, allowed)
+            note(job, "responded", verdicts=outcome.verdicts)
             outcome.success = True
         except Exception as exc:
             # A missing response never becomes negative event evidence.
+            note(job, "responded", error=exc)
             outcome.verdicts = ()
             timing["error_type"] = type(exc).__name__
             if isinstance(exc, ModelAPIError):

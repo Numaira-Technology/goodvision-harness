@@ -239,6 +239,11 @@ html:lang(en) .nav-item>span{min-width:0;line-height:1.5}html:lang(en) .module-t
     </div>
   </section>
 
+  <details id="scene-diagnostics" class="panel">
+    <summary>连续场景诊断 · 实际请求图片、失败分类与未分析间隔</summary>
+    <p class="note">模型返回、证据接纳与事件确认分别统计。图片为请求中实际编码的 JPEG；准备完成不等于上传成功。展开时刷新，最近图片仅在内存中保留。</p>
+    <div id="scene-diagnostics-content">展开后读取诊断。</div>
+  </details>
   <div class="data">
     <section class="panel">
       <div class="head"><h2>Service status</h2><a class="muted-link" href="/v1/status" target="_blank" rel="noreferrer">GET /v1/status ↗</a></div>
@@ -2682,6 +2687,7 @@ setInterval(()=>{
 },5000);
 </script>
 <script src="/assets/fleet_console.js"></script>
+<script src="/assets/scene_diagnostics.js"></script>
 <script src="/assets/cloud_gpu_console.js"></script>
 <script id="modular-console-script">
 (function(root){

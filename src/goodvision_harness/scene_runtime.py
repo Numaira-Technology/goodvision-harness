@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from threading import RLock
 from time import monotonic
@@ -19,6 +19,7 @@ from typing import Any
 from uuid import uuid4
 
 from .contracts import AnalysisResult, NormalizedBBox
+from .diagnostics import SceneDiagnostics, note, record
 from .event_sensitivity import normalize_event_sensitivities
 from .rich_labeling import RichLabelSnapshot
 from .scene_alerts import apply_alert_policy
@@ -66,6 +67,9 @@ class TemporalInspection:
     subject_boxes: tuple[tuple[int, str, NormalizedBBox], ...] = ()
     event_sensitivities: tuple[tuple[str, str], ...] = ()
     evidence_after_frame_sequence: int | None = None
+    diagnostics: SceneDiagnostics | None = field(
+        default=None, repr=False, compare=False,
+    )
     grounding_required: bool = False
 
     def as_dict(self) -> dict[str, Any]:
@@ -150,6 +154,7 @@ class SceneRuntime:
         inspection_image_budget_bytes: int = 16 * 1024 * 1024,
         stranger_enabled: bool = False,
         independent_temporal_inference: bool = False,
+        diagnostics: SceneDiagnostics | None = None,
     ) -> None:
         if mode != "active":
             raise ValueError("scene mode must be active")
@@ -203,6 +208,7 @@ class SceneRuntime:
             normalize_event_sensitivities(event_sensitivities, event_labels).items()
         )
         self.automatic_temporal_inference = False
+        self.diagnostics = diagnostics
         self.independent_temporal_inference = independent_temporal_inference
         self.scene = SceneState(
             stream_session_id,
@@ -422,6 +428,9 @@ class SceneRuntime:
             if self._closed:
                 return
             self.scene.advance(timestamp_seconds)
+            if self.diagnostics is not None:
+                record(self.diagnostics, "observe_source",
+                       frame_sequence, timestamp_seconds)
             self._now = max(self._now, timestamp_seconds)
             self.evidence.advance(self._now)
             # Keep several seconds of source evidence even on a 15+ FPS feed.
@@ -1481,6 +1490,7 @@ class SceneRuntime:
                 else self._now - job.request.end_seconds >= _INSPECTION_TIMEOUT_SECONDS
             )
             if expired:
+                note(job, "completed", success=False, expired=True)
                 self._jobs.pop(request_id)
                 self._claimed.discard(request_id)
                 self._inspection_deadlines.pop(request_id, None)
@@ -1650,6 +1660,11 @@ class SceneRuntime:
             jobs = tuple(
                 job for key, job in self._jobs.items() if key not in self._claimed
             )[:limit]
+            if self.diagnostics is not None:
+                jobs = tuple(replace(job, diagnostics=self.diagnostics) for job in jobs)
+                for job in jobs:
+                    self._jobs[job.request.request_id] = job
+                    note(job, "claimed")
             self._claimed.update(job.request.request_id for job in jobs)
             if self.tracking_mode == "batch":
                 # Arrived source age includes native hotstart/network delay.
@@ -1716,6 +1731,7 @@ class SceneRuntime:
             self._claimed.discard(request_id)
             self._inspection_deadlines.pop(request_id, None)
             accepted_count = 0
+            accepted_observations = [] if job.diagnostics is not None else None
             try:
                 if success:
                     # The pinned real source frames remain grounded even when
@@ -1783,7 +1799,7 @@ class SceneRuntime:
                         confidence = verdict.confidence
                         if any(other.detected is not detected for other in matching):
                             detected, confidence = None, None
-                        accepted_count += self.scene.observe_event(
+                        accepted = self.scene.observe_event(
                             verdict.event_label,
                             participants,
                             timestamp_seconds=newest.timestamp_seconds,
@@ -1793,6 +1809,11 @@ class SceneRuntime:
                             evidence_id=f"inspection:{request_id}:{index}",
                             allow_historical=True,
                         )
+                        accepted_count += accepted
+                        if accepted and accepted_observations is not None:
+                            accepted_observations.append((
+                                verdict.event_label, newest.timestamp_seconds, detected,
+                            ))
             finally:
                 self.scene.unpin_source_observations(request_id)
             if success:
@@ -1808,6 +1829,9 @@ class SceneRuntime:
             rejected_count = len(verdicts) - accepted_count if success else 0
             self._stats["accepted_temporal_verdicts"] += accepted_count
             self._stats["rejected_temporal_verdicts"] += rejected_count
+            if accepted_observations is not None:
+                note(job, "complete_scene", scene=self.scene, success=success,
+                     accepted=accepted_observations)
             if completion_counts is not None:
                 completion_counts.update(
                     accepted_verdicts=accepted_count,

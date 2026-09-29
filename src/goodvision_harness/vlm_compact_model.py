@@ -23,8 +23,8 @@ def raw_reply(response):
 
 
 class EventJSONInspector(IndependentVLMInspector):
-    def build_messages(self, job):
-        messages = super().build_messages(job)
+    def build_messages(self, job, *, encoded_images=None):
+        messages = super().build_messages(job, encoded_images=encoded_images)
         # Preserve the same sensitivity definitions as the full inspector.
         policy = messages[0]["content"].split("\n\nUse all supplied original frames", 1)[0]
         labels = list(job.request.event_labels)
@@ -64,8 +64,8 @@ class EventJSONInspector(IndependentVLMInspector):
 
 
 class CompactGroundingInspector(IndependentVLMInspector):
-    def build_messages(self, job):
-        messages = super().build_messages(job)
+    def build_messages(self, job, *, encoded_images=None):
+        messages = super().build_messages(job, encoded_images=encoded_images)
         if job.grounding_required:
             messages[0]["content"] += (
                 "\nAn earlier event still needs person-specific follow-up. "
