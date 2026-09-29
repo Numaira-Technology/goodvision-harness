@@ -69,6 +69,7 @@ from .deployment_settings import (
     validate_camera_layout,
     validate_processing_method,
 )
+from .diagnostics import create_diagnostics
 from .display_telemetry import validate_display_metrics
 from .event_archive import EventArchive
 from .event_routes import install_event_routes
@@ -2421,6 +2422,10 @@ class HarnessRuntime:
                     session.stream_session_id,
                     self.source_id,
                     mode=self._scene_mode,
+                    diagnostics=create_diagnostics(
+                        self.config.runtime.scene_diagnostics_enabled
+                        and not self.config.runtime.scene_independent_vlm
+                    ),
                     event_labels=scene_labels,
                     independent_temporal_inference=(
                         self.config.runtime.scene_independent_vlm and not use_dry_run and bool(scene_labels)
@@ -2503,6 +2508,9 @@ class HarnessRuntime:
                         self.config.runtime.scene_max_in_flight,
                         route_id=PUBLIC_ROUTE_IDS.get(self._selected_route_id),
                         output_mode=self.config.runtime.scene_vlm_output_mode,
+                        diagnostics_enabled=(
+                            self.config.runtime.scene_diagnostics_enabled
+                        ),
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
@@ -5218,6 +5226,48 @@ def create_app(
     ) -> StreamingResponse:
         return _result_events_response(request, _runtime(request), after=after)
 
+    def active_diagnostics(runtime):
+        # The independent branch owns its immutable per-run cache. Reading it
+        # must not wait for the scene/SAM state lock.
+        branch = runtime._vlm_branch
+        if branch is not None:
+            return branch.diagnostics, branch.config.labels
+        with runtime._state_lock:
+            scene = runtime._scene
+        return (scene.diagnostics, scene.event_labels) if scene else (None, ())
+
+    @application.get("/v1/scene/diagnostics")
+    def scene_diagnostics(request: Request) -> JSONResponse:
+        runtime = _runtime(request)
+        if not runtime.config.runtime.scene_diagnostics_enabled:
+            return JSONResponse(
+                {"enabled": False, "reason": "disabled", "records": []},
+                headers={"Cache-Control": "no-store"},
+            )
+        diagnostics, labels = active_diagnostics(runtime)
+        if diagnostics is None:
+            raise HTTPException(status_code=404, detail="no active scene diagnostics")
+        return JSONResponse(
+            {"enabled": True, **diagnostics.snapshot(labels)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/v1/scene/diagnostics/{request_id}/{frame_sequence}.jpg")
+    def scene_model_input(
+        request: Request, request_id: str, frame_sequence: int,
+    ) -> Response:
+        runtime = _runtime(request)
+        if not runtime.config.runtime.scene_diagnostics_enabled:
+            raise HTTPException(status_code=404, detail="scene diagnostics disabled")
+        diagnostics, _ = active_diagnostics(runtime)
+        jpeg = diagnostics.jpeg(request_id, frame_sequence) if diagnostics else None
+        if jpeg is None:
+            raise HTTPException(
+                status_code=404, detail="model input expired or unavailable",
+            )
+        return Response(jpeg, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
     @application.get("/v1/scene/evidence")
     def scene_evidence(request: Request) -> JSONResponse:
         runtime = _runtime(request)
@@ -5367,6 +5417,14 @@ def create_app(
             feature_events_endpoint(feature),
             methods=["GET"],
             name=f"{feature}_result_events",
+        )
+
+    @application.get("/assets/scene_diagnostics.js")
+    def scene_diagnostics_script() -> Response:
+        return Response(
+            (Path(__file__).parent / "assets" / "scene_diagnostics.js").read_text(
+                encoding="utf-8"
+            ), media_type="application/javascript",
         )
 
     @application.get("/assets/cloud_gpu_console.js")

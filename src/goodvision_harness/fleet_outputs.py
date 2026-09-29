@@ -54,6 +54,8 @@ OUTPUT_PATHS = (
     "/scene/history",
     "/scene/evidence",
     "/scene/evidence/{request_id}/{frame_sequence}.jpg",
+    "/scene/diagnostics",
+    "/scene/diagnostics/{request_id}/{frame_sequence}.jpg",
     "/events",
     "/events/stream",
     "/events/{event_id}/video",

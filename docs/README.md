@@ -31,6 +31,7 @@
 | 使用受管云 GPU 运行多路追踪 | [云 GPU 部署](guides/cloud-gpu.md) |
 | 将主程序、追踪与大模型部署到不同机器 | [分机部署](guides/modular-services.md) |
 | 使用持续场景分析 | [持续场景指南](guides/continuous-scene.md) |
+| 检查时序请求和运行回放 | [时序诊断与回放](guides/diagnostics-replay.md) |
 | 配置与验收 Contour 实时队列 | [Contour 验收指南](guides/contour-realtime-validation.md) |
 | 构建和检查发布包 | [发布构建指南](guides/release.md) |
 
