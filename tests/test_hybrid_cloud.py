@@ -134,3 +134,22 @@ def test_failed_child_stops_siblings_and_removes_secret_file(tmp_path, monkeypat
     assert killed == [2, 3]
     assert all(item["stdout"].closed for item in launched[1:])
     assert all(item["env"]["CUDA_VISIBLE_DEVICES"] == "" for item in launched[1:])
+
+
+@pytest.mark.parametrize("hybrid_port,bind", [(8280, "127.0.0.1"), (None, "0.0.0.0")])
+def test_sam_forward_is_private_for_direct_hybrid_mode(monkeypatch, hybrid_port, bind):
+    from tools import start_sam
+
+    monkeypatch.setattr(start_sam, "wait_for_ssh", lambda *args: ("test-host", 22))
+    monkeypatch.setattr(start_sam, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hybrid, "deploy", lambda *args: None)
+    launch = Mock()
+    monkeypatch.setattr(start_sam.subprocess, "Popen", launch)
+    start_sam.start_worker(
+        Mock(), 1, [], hf_token="test-token", sam_port=8092, hybrid_port=hybrid_port
+    )
+    command = launch.call_args.args[0]
+    assert f"{bind}:8092:127.0.0.1:8092" in command
+    if hybrid_port is not None:
+        assert "127.0.0.1:8280:127.0.0.1:8200" in command
+        assert not any("0.0.0.0:" in argument for argument in command)

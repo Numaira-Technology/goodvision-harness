@@ -455,10 +455,11 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
         worker_command = hybrid_cloud.launch_command(worker_command, settings.streams)
         extra_forwards = hybrid_cloud.forwards(settings.streams, hybrid_port)
     print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
+    sam_bind = "127.0.0.1" if hybrid_port is not None else "0.0.0.0"
     return subprocess.Popen([
         *ssh[:-1], "-o", "ExitOnForwardFailure=yes",
-        # Compose keeps this port inside its network; it is not published.
-        "-L", f"0.0.0.0:{sam_port}:127.0.0.1:8092",
+        # Direct hybrid mode stays private; Compose needs its internal bind.
+        "-L", f"{sam_bind}:{sam_port}:127.0.0.1:8092",
         *extra_forwards, ssh[-1], worker_command,
     ], stdin=subprocess.DEVNULL, start_new_session=True)
 
