@@ -5,14 +5,77 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from goodvision_harness.event_archive import EventArchive, EventArchiveSettings
 from goodvision_harness.video_evidence import EvidenceFrame, FrameRing, atomic_json
+from tools import low_resolution_evidence_eval as replay_eval
 from tools.low_resolution_evidence_eval import SIZES, Variant, evaluate_variant
 
 HAS_ENCODER = shutil.which("ffmpeg") is not None
+
+
+@pytest.fixture
+def replay_clock(monkeypatch):
+    class Clock:
+        elapsed = 0.0
+
+        def monotonic(self):
+            return self.elapsed
+
+        def sleep(self, seconds):
+            self.elapsed += seconds
+
+    clock = Clock()
+    monkeypatch.setattr(replay_eval, "time", clock)
+    return clock
+
+
+def test_replay_allows_slow_archive_drain_within_completion_budget(replay_clock):
+    calls = 0
+    ready = [{"evidence": {"status": "ready"}}]
+
+    def flush(timeout):
+        nonlocal calls
+        calls += 1
+        replay_clock.sleep(min(6.0, timeout))
+        return timeout >= 6.0
+
+    def list_events(*, limit, stream_session_id):
+        assert stream_session_id == "replay-session"
+        events = ready if calls > 1 else [{"evidence": {"status": "encoding"}}]
+        return {"events": events}
+
+    archive = SimpleNamespace(flush=flush, list_events=list_events)
+    assert replay_eval._wait_for_evidence(archive, "replay-session") == ready
+    assert 12 <= replay_clock.elapsed < replay_eval._SYNTHETIC_REPLAY_TIMEOUT
+
+
+def test_replay_rejects_archive_that_never_drains(replay_clock):
+    def flush(timeout):
+        replay_clock.sleep(timeout)
+        return False
+
+    with pytest.raises(TimeoutError, match="archive did not drain"):
+        replay_eval._wait_for_evidence(SimpleNamespace(flush=flush), "session")
+    assert replay_clock.elapsed == replay_eval._SYNTHETIC_REPLAY_TIMEOUT
+
+
+@pytest.mark.parametrize("status", (None, "collecting", "queued", "encoding"))
+def test_replay_pending_evidence_does_not_reset_completion_budget(replay_clock, status):
+    def flush(timeout):
+        replay_clock.sleep(min(6.0, timeout))
+        return True
+
+    events = [] if status is None else [{"evidence": {"status": status}}]
+    archive = SimpleNamespace(
+        flush=flush, list_events=lambda **_: {"events": events}
+    )
+    with pytest.raises(TimeoutError, match="evidence did not finish"):
+        replay_eval._wait_for_evidence(archive, "session")
+    assert replay_clock.elapsed == replay_eval._SYNTHETIC_REPLAY_TIMEOUT
 
 
 @pytest.mark.skipif(not HAS_ENCODER, reason="real local video encoder required")
