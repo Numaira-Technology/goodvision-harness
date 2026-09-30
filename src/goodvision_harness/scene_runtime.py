@@ -33,7 +33,9 @@ from .scene_state import SceneState
 from .video_tracking import BACKEND as _NATIVE_VIDEO_BACKEND
 from .video_tracking import VideoFrame
 
-_EVENTS = frozenset(("fight", "smoking", "fall", "weapon", "stranger"))
+_EVENTS = frozenset((
+    "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter", "stranger",
+))
 _INSPECTION_TIMEOUT_SECONDS = 20.0
 _TEMPORAL_MIN_SPAN_SECONDS = 0.75
 _PERSON_LABELS = frozenset(
@@ -140,7 +142,9 @@ class SceneRuntime:
         source_id: str,
         *,
         mode: str = "active",
-        event_labels: tuple[str, ...] = ("fight", "smoking", "fall", "weapon"),
+        event_labels: tuple[str, ...] = (
+            "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter",
+        ),
         event_sensitivities: Mapping[str, str] | None = None,
         tracking_mode: str = "immediate",
         tracking_history_seconds: float = 12.0,
@@ -1584,7 +1588,10 @@ class SceneRuntime:
                 start_seconds=request.start_seconds,
                 end_seconds=request.end_seconds,
                 limit=4,
-                frame_sequences=sequences,
+                frame_sequences=(
+                    None if not request.subject_ids
+                    and "ground_litter" in request.event_labels else sequences
+                ),
             )
             retained = sum(
                 len(frame.jpeg_bytes)
@@ -1695,7 +1702,10 @@ class SceneRuntime:
                 if (
                     not isinstance(verdict, TemporalVerdict)
                     or not isinstance(verdict.subject_ids, (tuple, list))
-                    or not verdict.subject_ids
+                    or (not verdict.subject_ids
+                        and verdict.event_label != "ground_litter")
+                    or (verdict.event_label == "ground_litter"
+                        and bool(verdict.subject_ids))
                     or len(verdict.subject_ids) > 128
                     or any(
                         not isinstance(sid, str) or not sid or len(sid) > 256

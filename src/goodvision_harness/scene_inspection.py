@@ -16,7 +16,9 @@ from .contracts import NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .scene_runtime import SceneRuntime, TemporalInspection, TemporalVerdict
 
-_EVENT_LABELS = frozenset(("fight", "smoking", "fall", "weapon"))
+_EVENT_LABELS = frozenset((
+    "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter",
+))
 _MAX_BYTES = 16 * 1024 * 1024
 _MAX_PIXELS = 16 * 1024 * 1024
 _PROMPT = """Use every supplied frame in source timestamp order as one continuous
@@ -35,10 +37,13 @@ proof; absence in one frame does not establish that an ongoing event ended.
 
 {output_instruction} Each verdict object must contain exactly these four fields:
 event_label (an allowed label), subject_ids (a nonempty list of grounded allowed
-IDs), detected (true, false, or null), confidence (0 through 1, or null).
-Every verdict, including false/null, must name its supported people; a negative
-event verdict does not mean no people are present. No duplicate event/subject
-groups. Return {empty_output} if no subject assignment is supported. Do not output new
+IDs; for ground_litter only, use []), detected (true, false, or null),
+confidence (0 through 1, or null).
+Ground litter is scene-scoped and must be assessed even without people.
+Every person-event verdict, including false/null, must name its supported people;
+a negative event verdict does not mean no people are present. No duplicate event/subject
+groups. Return {empty_output} if no subject assignment is supported and
+ground_litter is not requested. Do not output new
 bounding boxes, descriptions, commentary, credentials, or unrelated information.
 """
 
@@ -242,7 +247,8 @@ def _validate_verdicts(
             or any(
                 not isinstance(value, str) or not value for value in verdict.subject_ids
             )
-            or not verdict.subject_ids
+            or (not verdict.subject_ids and verdict.event_label != "ground_litter")
+            or (verdict.event_label == "ground_litter" and bool(verdict.subject_ids))
             or not set(verdict.subject_ids) <= allowed
             or len(set(verdict.subject_ids)) != len(verdict.subject_ids)
             or type(verdict.detected) not in (bool, type(None))

@@ -25,6 +25,9 @@ original `goodvision` repository.
 
 ## Start here
 
+控制台按「实时工作台、能力与规则、事件与回放、输出与集成、部署与设置」组织，
+现有功能位置与操作流程见 [控制台使用说明](docs/guides/console.md)。
+
 | Task | Read |
 | --- | --- |
 | Install a customer delivery | [Deployment guide](DEPLOY.md) and [release record](RELEASE.md) |

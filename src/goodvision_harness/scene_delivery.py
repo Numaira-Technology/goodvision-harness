@@ -127,9 +127,9 @@ def _display_events(snapshot: Mapping[str, Any], timestamp: float) -> list[Mappi
         subjects = event.get("subject_ids")
         if (
             event.get("event_label")
-            not in ("fight", "smoking", "fall", "weapon", "stranger")
+            not in ("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter", "stranger")
             or not isinstance(subjects, (list, tuple))
-            or not subjects
+            or (not subjects and event.get("event_label") != "ground_litter")
             or len(subjects) > _MAX_PEOPLE
             or not all(isinstance(subject, str) and subject for subject in subjects)
         ):
@@ -162,7 +162,7 @@ def _event_lines(
         phase = event["phase"]
         at = event["last_evidence_timestamp_seconds"]
         label = event.get("event_label")
-        if label not in ("fight", "smoking", "fall", "weapon", "stranger"):
+        if label not in ("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter", "stranger"):
             continue
         subjects = event.get("subject_ids")
         if not isinstance(subjects, (list, tuple)) or not all(

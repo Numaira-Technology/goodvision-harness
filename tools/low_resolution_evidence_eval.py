@@ -320,6 +320,30 @@ def decode_evidence(
     }
 
 
+def _wait_for_evidence(
+    archive: EventArchive, stream_session_id: str
+) -> list[dict[str, Any]]:
+    # Durable archive I/O and encoding share the replay's completion budget.
+    # A separate five-second flush limit can fail valid runs on slow CI disks.
+    deadline = time.monotonic() + _SYNTHETIC_REPLAY_TIMEOUT
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("evidence did not finish")
+        if not archive.flush(remaining):
+            raise TimeoutError("archive did not drain")
+        events = archive.list_events(
+            limit=500,
+            stream_session_id=stream_session_id,
+        )["events"]
+        if events and all(
+            event["evidence"]["status"] not in {"collecting", "queued", "encoding"}
+            for event in events
+        ):
+            return events
+        time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+
+
 def evaluate_variant(
     output: Path,
     variant: Variant,
@@ -368,22 +392,7 @@ def evaluate_variant(
         if session.running:
             session.stop()
             raise TimeoutError("synthetic replay did not finish")
-        deadline = time.monotonic() + _SYNTHETIC_REPLAY_TIMEOUT
-        while True:
-            if not archive.flush(5):
-                raise TimeoutError("archive did not drain")
-            events = archive.list_events(
-                limit=500,
-                stream_session_id=session.stream_session_id,
-            )["events"]
-            if events and all(
-                event["evidence"]["status"] not in {"collecting", "queued", "encoding"}
-                for event in events
-            ):
-                break
-            if time.monotonic() >= deadline:
-                raise TimeoutError("evidence did not finish")
-            time.sleep(0.01)
+        events = _wait_for_evidence(archive, session.stream_session_id)
         memory_samples.append(archive.status())
         clips = []
         for event in events:

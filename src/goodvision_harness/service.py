@@ -72,6 +72,7 @@ from .deployment_settings import (
 from .diagnostics import create_diagnostics
 from .display_telemetry import validate_display_metrics
 from .event_archive import EventArchive
+from .event_catalog import event_catalog
 from .event_routes import install_event_routes
 from .event_sensitivity import (
     EVENT_SENSITIVITY_DEFAULTS,
@@ -1304,6 +1305,7 @@ class HarnessRuntime:
             result = {
                 "configured": False,
                 "error": "configuration unavailable",
+                "event_catalog": event_catalog(),
             }
             safe = public_safe_value(result)
             assert isinstance(safe, dict)
@@ -1338,6 +1340,7 @@ class HarnessRuntime:
             "event_labels": list(DETECTION_EVENT_LABELS),
             "features": list(DETECTION_EVENT_LABELS),
             "supported_features": list(DETECTION_EVENT_LABELS),
+            "event_catalog": event_catalog(),
             **sensitivity_ui_info(),
             "local_camera_display": self.video_display_config(),
             "sample_fps": self.config.video.fps,
@@ -1837,7 +1840,11 @@ class HarnessRuntime:
             return revision, self._rich_labels
 
     def analysis_settings(self) -> dict[str, Any]:
-        return {**copy.deepcopy(self._analysis_settings), **sensitivity_ui_info()}
+        return {
+            **copy.deepcopy(self._analysis_settings),
+            **sensitivity_ui_info(),
+            "event_catalog": event_catalog(),
+        }
 
     def update_analysis_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         if set(payload) - {"features", "event_sensitivities"}:
@@ -5417,6 +5424,24 @@ def create_app(
             feature_events_endpoint(feature),
             methods=["GET"],
             name=f"{feature}_result_events",
+        )
+
+    @application.get("/assets/console_i18n.js", include_in_schema=False)
+    async def console_i18n_script() -> Response:
+        return Response(
+            (Path(__file__).parent / "assets" / "console_i18n.js").read_text(
+                encoding="utf-8"
+            ),
+            media_type="application/javascript",
+        )
+
+    @application.get("/assets/event_catalog.js", include_in_schema=False)
+    async def event_catalog_script() -> Response:
+        return Response(
+            (Path(__file__).parent / "assets" / "event_catalog.js").read_text(
+                encoding="utf-8"
+            ),
+            media_type="application/javascript",
         )
 
     @application.get("/assets/scene_diagnostics.js")

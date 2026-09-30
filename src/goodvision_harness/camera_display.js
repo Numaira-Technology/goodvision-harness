@@ -1102,7 +1102,7 @@
   }
 
   let warmMotionWorker=null;
-  const eventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人",identity_pending:"身份待确认"};
+  const eventName=value=>value==="identity_pending"?"身份待确认":globalThis.GoodvisionEvents?.label(value)||value;
   function drawSubjectLabel(context,subject,width,height,displayWidth=width){
     if(subject.track_id===undefined||subject.track_id===null)return;
     const points=[...(subject.polygons||[]),...(subject.open_segments||[])].flat()
@@ -1115,7 +1115,9 @@
     context.save();context.font=`600 ${fontSize}px sans-serif`;context.textBaseline="top";
     const lines=[displayName(subject.display_name)||`ID ${subject.track_id}`];
     if(subject.tracking_confirmation==="confirmed"&&(subject.alert||subject.warning)&&subject.event_labels?.length)
-      lines.push([...new Set(subject.event_labels.map(label=>eventNames[label]||label))].join(" · "));
+      lines.push([...new Set(subject.event_labels.map(label=>{
+        const name=eventName(label);return globalThis.GoodvisionI18n?.text(name)||name;
+      }))].join(" · "));
     const fitted=lines.map(line=>{
       if(context.measureText(line).width<=available)return line;
       const chars=Array.from(line);
@@ -2037,10 +2039,10 @@
 
   function eventObservationSummary(report){
     if(!report||report.state!=="completed")return "等待本次事件判断";
-    const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械"};
     const judgments=new Map((report.judgments||[]).map(value=>[value.event_label,value]));
-    const parts=Object.entries(labels).filter(([key])=>judgments.has(key)).map(([key,label])=>{
-      const value=judgments.get(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;
+    const order=new Map((globalThis.GoodvisionEvents?.list()||[]).map((event,index)=>[event.id,index]));
+    const parts=[...judgments].sort(([a],[b])=>(order.get(a)??Infinity)-(order.get(b)??Infinity)).map(([key,value])=>{
+      const label=eventName(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;
       let result=observed===true?(report.type==="vlm_report"?"发现":value.confirmation_state==="confirmed"?"已确认":"发现，待确认"):observed===false?"未发现":"待判断";
       if(observed===true&&["unavailable","partial"].includes(value.localization_state))result+="，定位待确认";
       return label+"："+result;

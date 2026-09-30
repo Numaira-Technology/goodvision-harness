@@ -26,7 +26,7 @@ class EventJSONInspector(IndependentVLMInspector):
     def build_messages(self, job, *, encoded_images=None):
         messages = super().build_messages(job, encoded_images=encoded_images)
         # Preserve the same sensitivity definitions as the full inspector.
-        policy = messages[0]["content"].split("\n\n", 1)[0]
+        policy = messages[0]["content"].split("\n\nUse all supplied original frames", 1)[0]
         labels = list(job.request.event_labels)
         messages[0]["content"] = policy + (
             "\n\nInspect all original images in source-time order "

@@ -88,6 +88,9 @@ class IndependentVLMInspector(TemporalVLMInspector):
             "picking objects up remains negative. A single-frame absence does not "
             "prove an event ended. Omission is unevaluated, never false. An empty "
             "subjects list is allowed, but EVERY event label still needs a verdict. "
+            "For ground_litter always use subject_ids=[]: this is a scene condition, "
+            "not a person's action; assess it even when subjects is empty. "
+            "For ppe_violation reference only the affected people. "
             "No names, descriptions, commentary or additional fields."
         )
         # Empty SAM boxes in the legacy message builder are not evidence that
@@ -206,7 +209,10 @@ class IndependentVLMInspector(TemporalVLMInspector):
             for sid in ids:
                 if sid not in boxes:
                     grounding_issues.add(issues.get(sid, "missing_subject"))
-            if not ids:
+            if label == "ground_litter":
+                ids = []  # Never associate ground waste with nearby people.
+                grounding_issues.clear()
+            elif not ids:
                 grounding_issues.add("unlocalized_event")
             key = (label, tuple(sorted(ids)))
             if key in seen:

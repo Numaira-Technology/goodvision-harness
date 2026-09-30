@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
+const {runDashboard}=require("./helpers/dashboard.cjs");
 
 class Element {
   constructor() {
@@ -36,7 +37,7 @@ function dashboard() {
   const document = {
     hidden: false,
     getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
-    querySelectorAll: () => inputs,
+    testFeatures: features, querySelectorAll: () => [],
     createElement: () => new Element(),
   };
   class Clock extends Date { static now() { return now; } }
@@ -58,7 +59,7 @@ function dashboard() {
   const html = fs.readFileSync(path.join(__dirname, "../src/goodvision_harness/dashboard.html"), "utf8");
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   new vm.Script(script);
-  vm.runInContext(script.slice(0, script.indexOf("ui.defaultStreamUrl.oninput=")) + `
+  runDashboard(context, `
     state.running=true;state.sessionId="session-a";state.sessionFeatures=detectionEvents;
     state.gallery={ready:true};state.galleryLoading=false;
     globalThis.app={state,sceneView,sceneUi,acceptSceneSnapshot,renderScene,renderSceneDecision,

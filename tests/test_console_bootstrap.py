@@ -34,6 +34,11 @@ def test_no_env_console_key_save_and_restart(tmp_path, monkeypatch):
     with TestClient(create_app(lambda: runtime)) as client:
         assert client.get("/").status_code == 200
         assert "save-api-key-button" in client.get("/").text
+        assert 'src="/assets/console_i18n.js"' in client.get("/").text
+        language_script = client.get("/assets/console_i18n.js")
+        assert language_script.status_code == 200
+        assert "application/javascript" in language_script.headers["content-type"]
+        assert "goodvision.console.language" in language_script.text
         info = client.get("/v1/ui/info").json()
         assert info["api_key_present"] is False
         assert info["deployment"]["persistence_available"] is True

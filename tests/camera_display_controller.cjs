@@ -86,6 +86,8 @@ function browser({autoAck=true,metadataResponse,config={},globals={},settings:pr
     cancelAnimationFrame:id=>raf.delete(id),setTimeout,clearTimeout,structuredClone,AbortController,
     fetch:async(url,options)=>{reports.push({url,options});
       return metadataResponse&&url.endsWith("/metadata")?metadataResponse(options):{ok:true};},...globals});
+  context.GoodvisionEvents=require("../src/goodvision_harness/assets/event_catalog.js");
+  context.GoodvisionEvents.accept(require("./helpers/event_catalog.cjs").payload());
   vm.runInContext(code,context);
   const canvas=new Canvas(1,1);
   const settings=providedSettings||{sample_fps:2.5,max_image_side:640,jpeg_quality:85};

@@ -18,7 +18,9 @@ from uuid import uuid4
 from .contracts import NormalizedBBox, json_mapping_as_dict
 from .rich_labeling import validate_mask_contours
 
-_EVENT_LABELS = frozenset({"fight", "smoking", "fall", "weapon", "stranger"})
+_EVENT_LABELS = frozenset({
+    "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter", "stranger",
+})
 _IDENTITY_KEYS = ("status", "person_id", "name", "identity_source", "matched_memory_id")
 _NATIVE_TRACK_KEYS = ("backend", "epoch", "object_id")
 _MAX_CONTOUR_HISTORY_POINTS = 131072
@@ -171,7 +173,8 @@ class SceneState:
         self.absence_observations = _integer(
             absence_observations, "absence_observations", 1,
         )
-        self.max_events = min(self.max_entities * len(_EVENT_LABELS), 2048)
+        # Preserve the existing memory budget as new labels are added.
+        self.max_events = min(self.max_entities * 5, 2048)
         self._people: dict[str, _Person] = {}
         # Masks are presentation-only: keep at most 128 maximum-size outlines,
         # or thousands of usual small outlines, independently of bbox history.
@@ -540,7 +543,7 @@ class SceneState:
             return True
 
     def _fold_presence(self, event, at, sequence, present) -> None:
-        if (event.event_label == "stranger" or event.event_id is None
+        if (event.event_label in {"stranger", "ground_litter"} or event.event_id is None
                 or event.phase in {"ended", "retracted"}
                 or sequence < event.frame_sequence):
             return
@@ -574,7 +577,7 @@ class SceneState:
             return
         floor = prefix[-1]
         for key, ledger in self._ledgers.items():
-            if key[0] == "stranger" or ledger.floor[1] >= floor[1]:
+            if key[0] in {"stranger", "ground_litter"} or ledger.floor[1] >= floor[1]:
                 continue
             seed, _ = self._replay(key, through_sequence=floor[1])
             ledger.seed = replace(seed, history=deque(maxlen=0))
@@ -1240,9 +1243,10 @@ class SceneState:
             raise ValueError("unsupported event_label")
         revision = _integer(revision, "revision", 0)
         withdrawal = revisable and revision > 0 and detected is None
+        minimum_subjects = 0 if withdrawal or event_label == "ground_litter" else 1
         if (
             not isinstance(subject_ids, (tuple, list))
-            or not (0 if withdrawal else 1) <= len(subject_ids) <= self.max_entities
+            or not minimum_subjects <= len(subject_ids) <= self.max_entities
         ):
             raise ValueError(
                 "subject_ids must be bounded and nonempty except withdrawals"
@@ -1250,6 +1254,8 @@ class SceneState:
         participants = tuple(
             sorted({_text(item, "subject_id") for item in subject_ids})
         )
+        if event_label == "ground_litter" and participants:
+            raise ValueError("ground_litter is scene-scoped and has no participants")
         timestamp = _time(timestamp_seconds)
         sequence = _integer(frame_sequence, "frame_sequence", 0)
         evidence_id = _text(evidence_id, "evidence_id")
@@ -1284,11 +1290,12 @@ class SceneState:
                         return self._reject("retimed_revision_ignored")
             if self._timestamp - timestamp > self.retention_seconds:
                 return self._reject("stale_evidence_ignored")
-            if event_label != "stranger" and sequence <= self._presence_floor[1]:
+            if (event_label not in {"stranger", "ground_litter"}
+                    and sequence <= self._presence_floor[1]):
                 return self._reject("pruned_source_revision_ignored")
             if any(subject not in self._people for subject in participants):
                 return self._reject("unknown_participants_ignored")
-            if not participants:
+            if not participants and event_label != "ground_litter":
                 assert old_key is not None  # An initial withdrawal is invalid above.
                 key = old_key
             event = self._events.get(key)
@@ -1332,7 +1339,7 @@ class SceneState:
                 seed = _Event(event_label, key[1], deque(maxlen=self.history_size))
                 ledger = _Ledger(
                     seed, floor=self._presence_floor
-                    if event_label != "stranger" else (-1.0, -1),
+                    if event_label not in {"stranger", "ground_litter"} else (-1.0, -1),
                 )
                 self._ledgers[key] = ledger
             if old_ledger is not None:
@@ -1625,6 +1632,8 @@ class SceneState:
                     ),
                     "observation_state": "uncertain"
                     if event.uncertain
+                    or (event.event_label == "ground_litter"
+                        and self._timestamp - event.last_seen > self.occlusion_seconds)
                     or any(subject not in visible for subject in event.subject_ids)
                     else "observed",
                     "first_evidence_timestamp_seconds": event.first_seen,
@@ -1734,6 +1743,9 @@ class SceneState:
                 event["observation_state"] = (
                     "uncertain"
                     if self._events[key].uncertain
+                    or (event["event_label"] == "ground_litter"
+                        and timestamp - event["last_evidence_timestamp_seconds"]
+                        > self.occlusion_seconds)
                     or any(subject not in visible for subject in event["subject_ids"])
                     else "observed"
                 )
