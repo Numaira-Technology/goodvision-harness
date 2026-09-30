@@ -167,7 +167,7 @@ def test_slow_preparation_is_retired_before_send_and_empty_session_can_finish(
         coordinator.close()
 
 
-def test_latest_only_expires_prepared_and_memory_candidates_without_cancelling_http(
+def test_latest_only_expires_memory_candidates_without_cancelling_http(
     tmp_path, advance_age,
 ):
     received = []
@@ -180,26 +180,24 @@ def test_latest_only_expires_prepared_and_memory_candidates_without_cancelling_h
         submit(coordinator, frames(1, 1))
         assert server.entered.wait(2)
         submit(coordinator, frames(2, 1))
-        wait_for(lambda: coordinator.stats()["prepared_frames"] == 1)
+        assert coordinator.stats()["prepared_frames"] == 0
         submit(coordinator, frames(3, 2))
         assert coordinator.stats()["candidate_frames"] == 2
         advance_age(coordinator)
-        wait_for(lambda: coordinator.stats()["skipped_by_reason"]["expired"] == 3)
+        wait_for(lambda: coordinator.stats()["skipped_by_reason"]["expired"] == 2)
         assert coordinator.stats()["pending_frames"] == 0
         assert not coordinator._candidate_frames
         assert list(coordinator._source_arrivals) == [3]
         assert len(server.requests) == 1
         assert coordinator._requesting is not None
         assert coordinator._spool.stats()["retained_sources"] == 1
-        skipped = coordinator._spool.skipped_records()
-        assert [row["sequence"] for row in skipped] == [6]
-        assert skipped[0]["reason"] == "expired"
-        abandoned = coordinator._spool.records()[1]
-        assert abandoned["state"] == "abandoned"
-        assert abandoned["payload"] is None and abandoned["payload_hash"]
-        # The preparation slot is reusable before the original request returns.
+        # Superseded/expired memory candidates never become durable work.
+        assert coordinator.stats()["skipped_by_reason"]["superseded"] == 1
+        assert coordinator._spool.skipped_records() == []
+        assert len(coordinator._spool.records()) == 1
+        # A fresh candidate can replace expired ones while HTTP remains owned.
         submit(coordinator, frames(5, 1))
-        wait_for(lambda: coordinator.stats()["prepared_frames"] == 1)
+        assert coordinator.stats()["prepared_frames"] == 0
         assert len(server.requests) == 1
         server.release.set()
         coordinator.flush()

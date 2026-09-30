@@ -425,15 +425,13 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
         ):
             return None, {}
         if self._latest_only:
-            # Keep a single preparation slot busy while the ordered append runs.
-            # A slow request cannot grow a prepared FIFO: later candidates stay
-            # replaceable, and the prepared source is rechecked before dispatch.
-            if len(self._commits) + bool(self._committing) >= 2:
+            # A prepared source cannot be replaced safely after durable
+            # admission. Keep candidates replaceable throughout a slow HTTP
+            # request, then select the freshest source when dispatch is free.
+            if (self._requesting is not None
+                    or len(self._commits) + bool(self._committing) >= 2):
                 return None, {}
-            return 0.0, {"prepare_trigger": (
-                "latest_request_overlap" if self._requesting is not None
-                else "latest_request_idle"
-            )}
+            return 0.0, {"prepare_trigger": "latest_request_idle"}
         if self._realtime:
             # Do not freeze an old image while HTTP or commit is blocked.
             if (self._requesting is not None
@@ -493,6 +491,8 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                         break
                     self._condition.wait(wait)
                 sources, size = [], 0
+                if self._latest_only:
+                    self._skip_pending(list(self._pending)[:-1], "superseded")
                 limit = (1 if self._latest_only else
                          self._realtime_append_frames if self._realtime
                          else self._client.max_append_frames)

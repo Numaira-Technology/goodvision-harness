@@ -945,28 +945,111 @@ test("a new buffering run clears the preceding run's canvas and displayed-frame 
   assert.equal(view.canvas.dataset.mediaTimestamp,undefined);assert.equal(next.snapshot().distinct_presented_frames,0);next.stop();
 });
 
-test("one JPEG lookahead overlaps ACK wait without sending a second unacknowledged frame or encoding a third",async()=>{
-  const view=browser({autoAck:false});view.capture(0);view.capture(.34);view.capture(.68);
+test("three packets overlap ACK latency but a fourth cannot encode or send until a slot frees",async t=>{
+  const view=browser({autoAck:false});t.after(()=>view.controller.stop());
+  for(let i=0;i<5;i++)view.capture(i*.34);
   const sources=Array.from(view.controller.uploads,task=>task.image);
-  await view.finish();assert.equal(view.packets.length,1);assert.equal(view.encodings.length,1);
-  await view.finish();assert.equal(view.packets.length,1);assert.equal(view.encodings.length,0);
-  assert.equal(sources[0].closed,true);assert.equal(sources[1].closed,true);assert.equal(sources[2].closed,undefined);
-  assert.equal(view.controller.snapshot().analysis_prepared_pending,1);
-  assert.equal(view.controller.snapshot().analysis_pending,3);
-  view.controller.sendUploads();assert.equal(view.encodings.length,0);
-  view.controller.acknowledgeUpload({...unpack(view.packets[0]),type:"camera_frame_ack",accepted:true});
-  await settle();assert.equal(view.packets.length,2);assert.equal(view.encodings.length,1);
-  assert.deepEqual(view.packets.map(packet=>unpack(packet).source_sequence),[0,1]);
-  assert.equal(view.controller.snapshot().analysis_sent,1);view.controller.stop();
+  await view.finish();await view.finish();await view.finish();
+  assert.equal(view.packets.length,3);assert.equal(view.encodings.length,0);
+  assert.equal(view.controller.snapshot().analysis_in_flight,3);
+  assert.equal(view.controller.snapshot().analysis_pending,5);
+  assert.equal(sources[2].closed,true);assert.equal(sources[3].closed,undefined);
+  // Out-of-order receipts remove only the exact source, never the FIFO head.
+  view.controller.acknowledgeUpload({...unpack(view.packets[1]),type:"camera_frame_ack",accepted:true});
+  await settle();await view.finish();
+  assert.deepEqual(view.packets.map(packet=>unpack(packet).source_sequence),[0,1,2,3]);
+  assert.deepEqual(Array.from(view.controller.uploads,task=>task.metadata.source_sequence),[0,2,3,4]);
+  assert.equal(view.controller.snapshot().analysis_sent,1);
+  assert.equal(view.controller.snapshot().analysis_in_flight_peak,3);
 });
 
-test("a frame admitted during ACK wait enters the single preparation slot immediately",async()=>{
-  const view=browser({autoAck:false});view.capture(0);await view.finish();
+test("a frame admitted during ACK wait sends immediately into the bounded window",async t=>{
+  const view=browser({autoAck:false});t.after(()=>view.controller.stop());view.capture(0);await view.finish();
   assert.equal(view.encodings.length,0);view.capture(.34);assert.equal(view.encodings.length,1);
-  await view.finish();assert.equal(view.packets.length,1);
+  await view.finish();assert.equal(view.packets.length,2);
   view.controller.acknowledgeUpload({...unpack(view.packets[0]),type:"camera_frame_ack",accepted:true});
-  await settle();assert.equal(view.packets.length,2);assert.equal(view.encodings.length,0);
-  view.controller.stop();
+  await settle();assert.equal(view.controller.snapshot().analysis_in_flight,1);
+});
+
+function uploadClock(){
+  let next=0;const timers=new Map();
+  return {timers,globals:{setTimeout:(callback,ms)=>{const id=++next;timers.set(id,{callback,ms});return id;},
+    clearTimeout:id=>timers.delete(id)},
+    fire:async ms=>{const entry=[...timers].find(([,value])=>value.ms===ms);assert.ok(entry,`missing ${ms}ms timer`);
+      timers.delete(entry[0]);entry[1].callback();await settle();}};
+}
+function ack(view,index,accepted=true,reason=null){return view.controller.acknowledgeUpload({
+  ...unpack(view.packets[index]),type:"camera_frame_ack",accepted,reason});}
+
+test("a lost early ACK recovers automatically after later receipts without re-encoding or duplicate accounting",async t=>{
+  const clock=uploadClock(),view=browser({autoAck:false,globals:clock.globals});t.after(()=>view.controller.stop());
+  view.capture(0);view.capture(.34);await view.finish();await view.finish();
+  ack(view,1);await clock.fire(5000);
+  assert.equal(view.controller.snapshot().analysis_ack_timeouts,1);
+  view.capture(1);assert.equal(view.controller.snapshot().analysis_admitted,2);
+  await clock.fire(250);
+  assert.equal(view.packets[2],view.packets[0]);assert.equal(view.encodings.length,0);
+  assert.equal(ack(view,0),true);assert.equal(ack(view,2),false);
+  assert.equal(view.controller.snapshot().analysis_sent,2);
+  assert.equal(view.controller.snapshot().analysis_pending,0);
+  assert.equal(view.controller.snapshot().analysis_upload_retries,1);
+  assert.equal(view.controller.snapshot().analysis_upload_failures,0);
+  view.capture(1.4);assert.equal(view.controller.snapshot().analysis_admitted,3);
+});
+
+test("a positive ACK between timeout and retry cancels the scheduled retransmission",async t=>{
+  const clock=uploadClock(),view=browser({autoAck:false,globals:clock.globals});t.after(()=>view.controller.stop());
+  view.capture(0);await view.finish();await clock.fire(5000);
+  assert.equal(ack(view,0),true);await settle();
+  assert.equal(clock.timers.size,0);assert.equal(view.packets.length,1);
+  assert.equal(view.controller.snapshot().analysis_pending,0);
+});
+
+test("capacity refusals serialize retries across the whole window and resume admission only after recovery",async t=>{
+  const clock=uploadClock(),view=browser({autoAck:false,globals:clock.globals});t.after(()=>view.controller.stop());
+  for(let i=0;i<4;i++)view.capture(i*.34);
+  await view.finish();await view.finish();await view.finish();
+  for(let i=0;i<3;i++)ack(view,i,false,"capacity");
+  for(let i=0;i<3;i++)await clock.fire(250);
+  assert.equal(view.packets.length,4);assert.equal(view.packets[3],view.packets[0]);
+  assert.equal(view.encodings.length,0);
+  ack(view,3);await settle();assert.equal(view.packets[4],view.packets[1]);
+  ack(view,4);await settle();assert.equal(view.packets[5],view.packets[2]);
+  assert.equal(view.controller.analysisPause,"recovering");
+  ack(view,5);await settle();await view.finish();
+  assert.equal(unpack(view.packets[6]).source_sequence,3);ack(view,6);
+  assert.equal(view.controller.snapshot().analysis_sent,4);assert.equal(view.controller.analysisPause,null);
+});
+
+test("permanent ACK loss stops bounded retries, retains evidence and clears owned timers on stop",async()=>{
+  const clock=uploadClock(),view=browser({autoAck:false,globals:clock.globals});
+  try{
+    view.capture(0);await view.finish();
+    await clock.fire(5000);await clock.fire(250);await clock.fire(5000);await clock.fire(500);await clock.fire(5000);
+    assert.equal(view.packets.length,3);assert.equal(view.controller.snapshot().analysis_pending,1);
+    assert.equal(view.controller.snapshot().analysis_sent,0);assert.equal(view.controller.snapshot().analysis_upload_failures,1);
+    await assert.rejects(view.controller.drain(),/recovery stopped/);
+    assert.equal(clock.timers.size,0);
+  }finally{view.controller.stop();}
+});
+
+test("600ms receipts sustain 2.5 FPS without queue growth or playback capture pauses",async t=>{
+  let now=0,next=0;const timers=new Map(),globals={
+    setTimeout:(callback,ms)=>{const id=++next;timers.set(id,{callback,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)};
+  const view=browser({autoAck:false,globals,config:{analysis_sample_fps:2.5}});t.after(()=>view.controller.stop());
+  view.socket.send=packet=>{view.packets.push(packet);globals.setTimeout(()=>ack(view,view.packets.indexOf(packet)),600);};
+  let peak=0;
+  for(now=0;now<=17000;now+=20){
+    view.setClock(now/1000);
+    for(const [id,timer] of [...timers])if(timer.at<=now){timers.delete(id);timer.callback();}
+    if(now<16000&&now%400===0)view.capture(now/1000);
+    await settle();while(view.encodings.length)await view.finish();
+    peak=Math.max(peak,view.controller.snapshot().analysis_pending);
+  }
+  assert.equal(view.controller.snapshot().analysis_admitted,40);
+  assert.equal(view.controller.snapshot().analysis_sent,40);assert.equal(peak,2);
+  assert.equal(view.controller.snapshot().analysis_capture_pauses,0);
+  assert.equal(view.controller.snapshot().analysis_upload_failures,0);
 });
 
 test("lookahead encoding failure cannot resend the acknowledged packet or discard the failing source",async()=>{
