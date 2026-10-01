@@ -6,7 +6,7 @@ import json
 import math
 
 from .model_api import ModelAPIClient
-from .scene_model import _json, _ResponseValidationError
+from .scene_model import _json, _ResponseValidationError, _strip_json_fence
 from .vlm_independent_model import IndependentVerdict, IndependentVLMInspector
 
 
@@ -19,14 +19,19 @@ def raw_reply(response):
         or choices[0].get("finish_reason") != "stop"
     ):
         raise _ResponseValidationError("completion_not_finished", "envelope_schema")
-    return _json(ModelAPIClient.assistant_text(response).strip(), stage="verdict_json")
+    return _json(
+        _strip_json_fence(ModelAPIClient.assistant_text(response)),
+        stage="verdict_json",
+    )
 
 
 class EventJSONInspector(IndependentVLMInspector):
     def build_messages(self, job, *, encoded_images=None):
         messages = super().build_messages(job, encoded_images=encoded_images)
         # Preserve the same sensitivity definitions as the full inspector.
-        policy = messages[0]["content"].split("\n\nUse all supplied original frames", 1)[0]
+        policy = messages[0]["content"].split(
+            "\n\nUse all supplied original frames", 1
+        )[0]
         labels = list(job.request.event_labels)
         messages[0]["content"] = policy + (
             "\n\nInspect all original images in source-time order "

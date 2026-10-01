@@ -54,6 +54,7 @@ def config(session="vlm-run", generation=1):
         "test",
         observation_fps=1.25,
         max_in_flight=2,
+        output_mode="full",  # These tests exercise the legacy single-lane contract.
     )
 
 

@@ -1024,3 +1024,23 @@ def test_http_trace_records_body_headers_and_incomplete_upload_safely(
         assert record["http_status"] == 200
     assert record["outcome"] == ("error" if failure else "completed")
     assert "SECRET" not in repr(logs)
+
+
+@pytest.mark.parametrize("content,wrapper,reason", [
+    ('```json\n{"PRIVATE_SECRET":false,}\n```',
+     "complete_fence", "invalid_json_syntax"),
+    ('```json\n{"PRIVATE_SECRET":false}', "unrecognized_fence", "invalid_json_syntax"),
+    ('{"PRIVATE_SECRET":false,"PRIVATE_SECRET":true}', "none", "duplicate_json_field"),
+])
+def test_reply_diagnostics_are_bounded_and_do_not_expose_content(
+    content, wrapper, reason,
+):
+    result = scene_model._reply_diagnostics(content)
+    assert result["json_wrapper"] == wrapper
+    assert result["diagnostic_json_reason"] == reason
+    assert "PRIVATE_SECRET" not in str(result)
+    assert len(result["content_sha256"]) == 64
+    assert len(result["json_token_kinds_prefix"]) <= 80
+    if reason == "invalid_json_syntax":
+        assert result["json_error_line"] >= 1
+        assert result["json_error_column"] >= 1

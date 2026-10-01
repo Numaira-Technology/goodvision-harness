@@ -27,7 +27,7 @@ from .independent_diagnostics import (
     IndependentDiagnostics,
     IndependentRequestDiagnostics,
 )
-from .latency_trace import log_timing
+from .latency_trace import configure_worker_timing, log_timing
 from .result_bus import ResultBus
 from .scene_evidence import EvidenceFrame, InspectionRequest
 from .scene_runtime import TemporalInspection
@@ -59,7 +59,7 @@ class VLMProcessConfig:
     observation_fps: float = 1.25
     max_in_flight: int = 4
     route_id: str | None = None
-    output_mode: str = "full"
+    output_mode: str = "parallel"
     diagnostics_enabled: bool = False
 
     def __post_init__(self):
@@ -284,6 +284,8 @@ def run_vlm_process(
     diagnostic_outgoing=None,
 ):
     """Spawn target: image windows, inference, observation reports, then IPC."""
+    if mp.current_process().name != "MainProcess":
+        configure_worker_timing()
     state = IndependentEventState(config)
     stats = Counter()
     history = deque(maxlen=12)
@@ -393,7 +395,9 @@ def run_vlm_process(
                 validation_reason = "invalid_response_shape"
         if diagnostic is not None:
             try:
-                diagnostic.publish(diagnostic_outgoing, verdicts=verdicts, error=failure)
+                diagnostic.publish(
+                    diagnostic_outgoing, verdicts=verdicts, error=failure
+                )
             except Exception:
                 pass  # Separate bounded diagnostics never gate normal reports.
         return (

@@ -75,6 +75,63 @@ def _json(value: str | bytes, *, stage: str) -> Any:
         raise _ResponseValidationError("json_nesting_limit", stage) from None
 
 
+def _strip_json_fence(content: str) -> str:
+    """Unwrap only a complete JSON/untagged fence, never extract from prose."""
+    content = content.strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL
+    )
+    return fenced.group(1) if fenced else content
+
+
+def _reply_diagnostics(content: str) -> dict[str, object]:
+    """Bounded format evidence with no arbitrary model text, keys or values."""
+    stripped = content.strip()
+    body = _strip_json_fence(content)
+    result: dict[str, object] = {
+        "content_sha256": hashlib.sha256(
+            content.encode("utf-8", errors="replace")
+        ).hexdigest(),
+        "json_wrapper": (
+            "complete_fence" if body != stripped else
+            "unrecognized_fence" if stripped.startswith("```") else "none"
+        ),
+    }
+    # Preserve token kinds and punctuation only, never free-form reply content.
+    tokens = []
+    pattern = (
+        r'"(?:[^"\\]|\\.)*"|[{}\[\],:]|true\b|false\b|null\b|'
+        r'-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[^\s{}\[\],:"]+|"'
+    )
+    for match in re.finditer(pattern, body):
+        token = match.group()
+        tokens.append(
+            token if token in {"{", "}", "[", "]", ",", ":", "true", "false", "null"}
+            else "string" if token.startswith('"') and len(token) > 1
+            else "number" if re.fullmatch(r'-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?', token)
+            else "other"
+        )
+        if len(tokens) >= 80:
+            break
+    result["json_token_kinds_prefix"] = tokens
+    try:
+        raw = _json(body, stage="verdict_json")
+    except _ResponseValidationError as error:
+        result["diagnostic_json_reason"] = error.reason
+        if error.reason == "invalid_json_syntax":
+            try:
+                json.loads(body)
+            except json.JSONDecodeError as syntax:
+                result.update(json_error_offset=syntax.pos,
+                              json_error_line=syntax.lineno,
+                              json_error_column=syntax.colno)
+    else:
+        result["json_root_kind"] = type(raw).__name__
+        if isinstance(raw, (dict, list)):
+            result["json_root_size"] = len(raw)
+    return result
+
+
 def _verdict_rejection_reason(job, verdicts, allowed) -> str:
     """Explain an already rejected batch without relaxing the shared validator."""
     seen = set()
@@ -148,6 +205,7 @@ def _response_shape(response: object) -> dict[str, object]:
         )
         if isinstance(content, str):
             result["content_characters"] = len(content)
+            result.update(_reply_diagnostics(content))
         elif isinstance(content, list):
             result["content_parts"] = len(content)
     return result
@@ -458,6 +516,12 @@ class TemporalVLMInspector:
                 error_code=error.code,
                 validation_stage=validation_stage or "response",
                 validation_reason=validation_reason or "invalid_response_shape",
+                parser_kind={
+                    "EventJSONInspector": "events",
+                    "CompactGroundingInspector": "compact",
+                    "IndependentVLMInspector": "full",
+                    "TemporalVLMInspector": "temporal",
+                }.get(type(self).__name__, "other"),
                 **_response_shape(response),
             )
         raise error from None
@@ -710,10 +774,7 @@ class TemporalVLMInspector:
         # Some vision routes wrap otherwise valid JSON in one Markdown fence.
         # Remove only a whole-message wrapper; prose, partial JSON, nested fences,
         # extra fields and type coercions remain invalid.
-        fenced = re.fullmatch(
-            r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL
-        )
-        raw = _json(fenced.group(1) if fenced else content, stage="verdict_json")
+        raw = _json(_strip_json_fence(content), stage="verdict_json")
         if isinstance(raw, dict) and set(raw) == {"verdicts"}:
             raw = raw["verdicts"]
         if not isinstance(raw, list) or len(raw) > 64:

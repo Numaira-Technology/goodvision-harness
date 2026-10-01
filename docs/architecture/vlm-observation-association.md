@@ -149,12 +149,19 @@ scene-result delivery. They do not establish SAM identity accuracy or model
 latency on real video.
 
 
-## Opt-in parallel event JSON experiment
+## Default parallel event information and grounding
 
-The runtime supports `SCENE_VLM_OUTPUT_MODE=parallel`; `full` remains the
-default. `compact` runs only the conditional grounding adapter for a single-lane
+The runtime defaults to `SCENE_VLM_OUTPUT_MODE=parallel`, including when older
+configuration files omit the setting. `full` is an explicit single-lane override.
+`compact` runs only the conditional grounding adapter for a single-lane
 control. Both adapters use original temporal images and the same selected route,
 sensitivity policies, image budget and source window. No Jev service is involved.
+
+Before recording a parallel-mode validation run, check `/v1/vlm/status` after
+session startup: `output_mode` must be `parallel`, `state` must be `running`, and
+`lanes` must contain both `events` and `compact`. Abort a mismatched run before
+playing the source. Retain the effective status with the results; configuration
+intent alone does not establish that both lanes actually started.
 
 In parallel mode, a window admitted by both lanes starts two requests: `events` returns only
 the requested event-to-boolean/null mapping; `compact` supplies subjects/verdicts

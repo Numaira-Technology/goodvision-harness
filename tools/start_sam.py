@@ -282,6 +282,15 @@ def create_from_offers(
 
 def prepare_ssh_key(source: Path, directory: Path) -> Path:
     """Copy a host-mounted key with private permissions and validate before renting."""
+    if os.name == "nt":
+        result = subprocess.run(
+            ["ssh-keygen", "-y", "-P", "", "-f", str(source)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=10,
+        )
+        if result.returncode:
+            raise RuntimeError("SSH key validation failed before renting a GPU.")
+        return source
     key = directory / "identity"
     # Windows Docker bind mounts may report 0777. Create a 0600 copy in the
     # controller's private temporary directory without changing the host file.
@@ -322,10 +331,10 @@ def stop_process(process: subprocess.Popen | None) -> None:
 def run(command: list[str], *, input: str | None = None, timeout: int = 120) -> None:
     process = subprocess.Popen(
         command, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
-        text=True, start_new_session=True,
+        start_new_session=True,
     )
     try:
-        process.communicate(input=input, timeout=timeout)
+        process.communicate(input=input.encode("utf-8") if input is not None else None, timeout=timeout)
         if process.returncode:
             raise RuntimeError(f"{Path(command[0]).name} exited with status {process.returncode}.")
     finally:
@@ -400,7 +409,8 @@ def release_instance(vast, instance_id: int) -> None:
 
 
 def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
-                 sam_port: int, settings: CloudGPUSettings | None = None):
+                 sam_port: int, settings: CloudGPUSettings | None = None,
+                 hybrid_port: int | None = None):
     settings = settings or CloudGPUSettings()
     print("Waiting for SSH...", flush=True)
     host, ssh_port = wait_for_ssh(vast, instance_id, options)
@@ -433,12 +443,24 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
         f"{worker_environment} "
         f"{REMOTE}/env/bin/python -m uvicorn cloud_pool:app --host 127.0.0.1 --port 8092 --workers 1"
     )
+    extra_forwards = []
+    if hybrid_port is not None:
+        if __package__:
+            from . import hybrid_cloud
+        else:
+            import hybrid_cloud
+        hybrid_cloud.validate_ports(settings.streams, hybrid_port, sam_port)
+        print("Deploying cloud CPU analysis; presentation remains in the local browser...", flush=True)
+        hybrid_cloud.deploy(ROOT, ssh, run, os.environ)
+        worker_command = hybrid_cloud.launch_command(worker_command, settings.streams)
+        extra_forwards = hybrid_cloud.forwards(settings.streams, hybrid_port)
     print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
+    sam_bind = "127.0.0.1" if hybrid_port is not None else "0.0.0.0"
     return subprocess.Popen([
         *ssh[:-1], "-o", "ExitOnForwardFailure=yes",
-        # Compose keeps this port inside its network; it is not published.
-        "-L", f"0.0.0.0:{sam_port}:127.0.0.1:8092",
-        ssh[-1], worker_command,
+        # Direct hybrid mode stays private; Compose needs its internal bind.
+        "-L", f"{sam_bind}:{sam_port}:127.0.0.1:8092",
+        *extra_forwards, ssh[-1], worker_command,
     ], stdin=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -456,6 +478,10 @@ def main() -> int:
         help="Recover an existing GoodVision instance without renting another. "
         "Failure or normal shutdown releases it, as with a new rental.",
     )
+    parser.add_argument("--hybrid-analysis", action="store_true",
+                        help="Run CPU analysis beside SAM; browser capture/display stay local.")
+    parser.add_argument("--analysis-port", type=int, default=8280,
+                        help="First localhost console port for hybrid analysis; one port per lane.")
     args = parser.parse_args()
 
     vast = None
@@ -508,6 +534,12 @@ def main() -> int:
             raise RuntimeError(f"SSH private key does not exist: {ssh_key}")
         if args.disk_gb <= 0 or not 1 <= args.sam_port <= 65535:
             raise RuntimeError("Disk size must be positive and the forwarding port must be within 1..65535.")
+        if args.hybrid_analysis:
+            if __package__:
+                from . import hybrid_cloud
+            else:
+                import hybrid_cloud
+            hybrid_cloud.validate_ports(settings.streams, args.analysis_port, args.sam_port)
         for filename in WORKER_FILES:
             if not (ROOT / "workers" / "sam_scene" / filename).is_file():
                 raise RuntimeError(f"Missing SAM worker source: {filename}")
@@ -570,8 +602,11 @@ def main() -> int:
                 worker = start_worker(
                     vast, instance_id, options, hf_token=hf_token, sam_port=args.sam_port,
                     settings=settings,
+                    **({"hybrid_port": args.analysis_port} if args.hybrid_analysis else {}),
                 )
                 wait_for_worker(worker, args.sam_port)
+                if args.hybrid_analysis:
+                    hybrid_cloud.wait_ready(worker, settings.streams, args.analysis_port)
             except Exception as error:
                 # Explicit resume never creates a rental; signals also bypass
                 # this handler. Once ready, a live session is not replaced.
@@ -598,6 +633,9 @@ def main() -> int:
             "Stop the Compose application to release this GPU. Closing the browser does not release it.",
             flush=True,
         )
+        if args.hybrid_analysis:
+            for lane in range(settings.streams):
+                print(f"Camera {lane + 1}: http://127.0.0.1:{args.analysis_port + lane}", flush=True)
         worker.wait()
         raise RuntimeError(f"SAM/SSH exited with status {worker.returncode}; releasing the instance.")
     except KeyboardInterrupt:

@@ -492,7 +492,8 @@ class HarnessRuntime:
         self._camera_display_metadata = CameraDisplayMetadata()
         self._run_postprocess: dict[str, RunPostprocess] = {}
         self._identity_control_lock = RLock()
-        self._last_camera_receipt = None
+        self._camera_receipts = OrderedDict()
+        self._camera_blocked_receipt = None
         self._postprocess_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="run-postprocess",
         )
@@ -2625,7 +2626,8 @@ class HarnessRuntime:
                                   self._rich_labels._generation)
                     if hasattr(self._rich_labels, "on_native_batch") else None,
                 )
-                self._last_camera_receipt = None
+                self._camera_receipts.clear()
+                self._camera_blocked_receipt = None
                 if self._scene is not None:
                     self._scene.close()
                 self._close_scene_workers()
@@ -3037,14 +3039,25 @@ class HarnessRuntime:
                     stream_session_id, generation, crop_version, source_sequence,
                     media_timestamp, hashlib.sha256(jpeg).digest(),
                 )
-                # A lost ACK may resend the same immutable source. Do not admit
-                # it to either analysis branch a second time.
-                if self._last_camera_receipt == receipt:
+                # Positive receipts outlive later admissions: pipelined ACK loss
+                # must not offer an earlier source to either branch twice.
+                current = self._camera_display_metadata.source_identity()
+                if (stream_session_id != current["stream_session_id"] or
+                        (current["generation"] is not None and
+                         (generation, crop_version) !=
+                         (current["generation"], current["crop_version"]))):
+                    return False
+                if receipt in self._camera_receipts:
                     timing["outcome"] = "duplicate"
                     return True
                 if not self._camera_display_metadata.accept_source(
                     source_header, commit=False,
                 ):
+                    return False
+                # Hold later sources behind a capacity refusal. Otherwise a
+                # retry can become obsolete when a later packet takes the slot.
+                if (self._camera_blocked_receipt is not None
+                        and receipt != self._camera_blocked_receipt):
                     return False
                 sequence, timestamp = source_sequence, media_timestamp
             else:
@@ -3056,8 +3069,6 @@ class HarnessRuntime:
                 source_sequence=sequence, source_timestamp_seconds=timestamp,
             )
             branch = getattr(self, "_vlm_branch", None)
-            if branch is not None and branch.config.stream_session_id == session.stream_session_id:
-                branch.offer(jpeg, timestamp, sequence)
             should_sample = timestamp + 1e-9 >= self._camera_next_sample_at
             timing["sampled"] = should_sample
             if should_sample:
@@ -3066,13 +3077,19 @@ class HarnessRuntime:
                     jpeg, width=width, height=height,
                     timestamp_seconds=timestamp, source_frame_index=sequence,
                 ):
+                    self._camera_blocked_receipt = receipt
                     return False
                 phase("source_metadata")
                 while self._camera_next_sample_at <= timestamp + 1e-9:
                     self._camera_next_sample_at += self._camera_sample_period
             if source_header is not None:
                 self._camera_display_metadata.accept_source(source_header)
-                self._last_camera_receipt = receipt
+                self._camera_receipts[receipt] = None
+                while len(self._camera_receipts) > 64:
+                    self._camera_receipts.popitem(last=False)
+                self._camera_blocked_receipt = None
+            if branch is not None and branch.config.stream_session_id == session.stream_session_id:
+                branch.offer(jpeg, timestamp, sequence)
             self._camera_frame_sequence = sequence + 1
             generation = self._generation
             if branch is not None and branch.dispatch_camera_source(display_jpeg, timestamp, sequence):

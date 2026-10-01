@@ -11,6 +11,8 @@ COUNTERS = frozenset({
     "rejected_source_frames", "buffered_frames", "analysis_admitted", "analysis_sent",
     "analysis_pending", "analysis_upload_failures", "analysis_capture_pauses",
     "analysis_prepared", "analysis_prepared_pending",
+    "analysis_in_flight", "analysis_in_flight_peak", "analysis_upload_retries",
+    "analysis_ack_timeouts",
     "motion_failures", "metadata_failures", "frames_without_contours",
     "dense_motion_ready", "motion_initialization_failures", "motion_warmup_reused",
     "relocalized_contour_frames", "partial_contour_frames", "complete_contour_frames",
