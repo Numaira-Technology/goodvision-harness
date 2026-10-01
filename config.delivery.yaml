@@ -251,6 +251,8 @@ face:
   gallery_path: .goodvision/face-gallery.json
 
 runtime:
+  # Fast event information runs independently of slower person grounding.
+  scene_vlm_output_mode: parallel
   # Opt-in request diagnostics; restart the service after changing this.
   scene_diagnostics_enabled: false
   # Independent windows are sent concurrently, up to this limit. Windows that

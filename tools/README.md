@@ -125,14 +125,17 @@ must be new; there are no retries. Latency excludes initial video decode and SAM
 The experiment retains failed attempts, missing judgments and unknowns. A short
 negative reply is not useful acceleration if it misses positive events.
 
-The isolated runtime can opt into `SCENE_VLM_OUTPUT_MODE=parallel` or `compact`;
-`full` remains the default. Runtime information publishes through existing VLM
+The isolated runtime defaults to `SCENE_VLM_OUTPUT_MODE=parallel`; `full` and
+`compact` require an explicit override. Runtime information publishes through existing VLM
 interfaces. The grounding lane alone supplies display/person-event evidence and
 is retained separately on `branch.grounding_results`. When both lanes admit a window they share `request_id` and
 `window_id`. Each lane admits independently; a full grounding lane does not block
 new information windows. Information completes out of order and discards superseded
 late results, with an HTTP timeout capped at five seconds; grounding remains ordered.
 Each lane allows `SCENE_MAX_IN_FLIGHT` requests (up to eight total in parallel mode).
+Before replay, verify `/v1/vlm/status` reports `output_mode=parallel`,
+`state=running`, and both `events` and `compact` lanes. Stop a mismatched run
+before playback and save the effective status with its evidence.
 When display has pending positives or active person events, subsequent windows
 request full grounded negative/uncertain follow-up; `no_events` cannot clear a person.
 

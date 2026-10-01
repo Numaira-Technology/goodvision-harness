@@ -13,7 +13,7 @@ from goodvision_harness.vlm_compact_model import (
     CompactGroundingInspector,
     EventJSONInspector,
 )
-from goodvision_harness.vlm_independent import run_vlm_process
+from goodvision_harness.vlm_independent import VLMProcessConfig, run_vlm_process
 
 
 def envelope(raw):
@@ -85,8 +85,12 @@ class OutputQueue(Queue):
         pass
 
 
-def test_slow_grounding_does_not_block_information_and_windows_match():
-    cfg = replace(config(), output_mode="parallel")
+def test_default_mode_publishes_information_while_grounding_is_blocked():
+    base = config()
+    cfg = VLMProcessConfig(
+        base.stream_session_id, base.source_id, base.generation, base.labels,
+        base.model_settings, base.model, max_in_flight=base.max_in_flight,
+    )
     incoming, outgoing = Queue(), OutputQueue()
     stop, release, started = Event(), Event(), Event()
     records = []

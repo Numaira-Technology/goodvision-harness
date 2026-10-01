@@ -24,10 +24,12 @@ def test_cloud_account_and_model_tokens_do_not_reach_cpu_settings():
         "HF_TOKEN": "model-token",
         "SAM_SSH_KEY": "private-key",
         "INFERENCE_PROVIDER": "aiclub",
+        "SCENE_VLM_OUTPUT_MODE": "parallel",
     }
     assert hybrid.inference_environment(environment) == {
         "AICLUB_API_KEY": "event-token",
         "INFERENCE_PROVIDER": "aiclub",
+        "SCENE_VLM_OUTPUT_MODE": "parallel",
     }
 
 

@@ -59,7 +59,7 @@ class VLMProcessConfig:
     observation_fps: float = 1.25
     max_in_flight: int = 4
     route_id: str | None = None
-    output_mode: str = "full"
+    output_mode: str = "parallel"
     diagnostics_enabled: bool = False
 
     def __post_init__(self):
@@ -393,7 +393,9 @@ def run_vlm_process(
                 validation_reason = "invalid_response_shape"
         if diagnostic is not None:
             try:
-                diagnostic.publish(diagnostic_outgoing, verdicts=verdicts, error=failure)
+                diagnostic.publish(
+                    diagnostic_outgoing, verdicts=verdicts, error=failure
+                )
             except Exception:
                 pass  # Separate bounded diagnostics never gate normal reports.
         return (
