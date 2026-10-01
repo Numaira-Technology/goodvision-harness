@@ -516,6 +516,12 @@ class TemporalVLMInspector:
                 error_code=error.code,
                 validation_stage=validation_stage or "response",
                 validation_reason=validation_reason or "invalid_response_shape",
+                parser_kind={
+                    "EventJSONInspector": "events",
+                    "CompactGroundingInspector": "compact",
+                    "IndependentVLMInspector": "full",
+                    "TemporalVLMInspector": "temporal",
+                }.get(type(self).__name__, "other"),
                 **_response_shape(response),
             )
         raise error from None
