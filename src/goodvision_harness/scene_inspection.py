@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -285,10 +286,67 @@ and their times in qa_observations with subject_ids: [].
     ]
 
 
-def add_independent_benchmark_context(messages, job):
+def benchmark_reference_coordinates(questions, source_size, image_size=None):
+    """Convert a prompt copy; omit image_size for source-normalized references."""
+    source_width, source_height = source_size
+    image_width, image_height = image_size or (1, 1)
+    coordinate_system = ("image_absolute_pixel_xyxy" if image_size
+                         else "source_normalized_xyxy")
+    converted = []
+    for original in questions:
+        question = dict(original)
+        public = dict(question.get("public_context") or {})
+        references = []
+        if public.get("first_bbox_xyxy") and public.get("bbox_coordinate_system") == "source_absolute_pixel_xyxy":
+            references.append((public, "first_bbox_xyxy"))
+            public["bbox_coordinate_system"] = coordinate_system
+        locator = dict(public.get("subject_locator") or {})
+        if locator.get("bbox_coordinate_system") == "source_absolute_pixel_xyxy":
+            locator["boxes"] = [dict(item) for item in locator.get("boxes", ())]
+            references.extend((item, "bbox_xyxy") for item in locator["boxes"])
+            locator["bbox_coordinate_system"] = coordinate_system
+            public["subject_locator"] = locator
+        replacements = {}
+        for owner, key in references:
+            box = owner[key]
+            scaled = [round(value * (image_width / source_width if index % 2 == 0
+                                     else image_height / source_height), 6)
+                      for index, value in enumerate(box)]
+            owner[key] = scaled
+            owner["source_reference_bbox_xyxy"] = box
+            replacements[tuple(box)] = scaled
+        if references:
+            public["source_image_size"] = [source_width, source_height]
+            if image_size:
+                public["supplied_image_size"] = [image_width, image_height]
+            def replace_box(match):
+                try:
+                    scaled = replacements.get(tuple(json.loads(match.group())))
+                except (ValueError, TypeError):
+                    return match.group()
+                return json.dumps(scaled) if scaled is not None else match.group()
+            question["question"] = re.sub(r"\[[^\[\]]+\]", replace_box, question["question"])
+            if not image_size:
+                question["question"] = question["question"].replace(
+                    "xyxy pixel coordinates", "xyxy normalized coordinates in [0, 1]"
+                )
+            question["public_context"] = public
+        converted.append(question)
+    return converted
+
+
+def add_independent_benchmark_context(messages, job, encoded_images=None):
     """Extend the selected live output format only for question-aware replay."""
     context = json.loads(messages[1]["content"][0]["text"])
-    context["questions"] = list(job.benchmark_questions)
+    questions = list(job.benchmark_questions)
+    if encoded_images:
+        with _read_image(job.frames[-1].jpeg_bytes) as source:
+            source_size = source.size
+        _, _, image_width, image_height = encoded_images[-1]
+        questions = benchmark_reference_coordinates(
+            questions, source_size, (image_width, image_height)
+        )
+    context["questions"] = questions
     context["window"] = {"index": job.benchmark_window_index,
                          "start_seconds": job.request.start_seconds,
                          "end_seconds": job.request.end_seconds}
@@ -300,6 +358,8 @@ with exactly two keys: result (the original output in its original format) and
 qa_observations (an array). The format restrictions above apply inside result.
 Each qa_observations entry needs only qa_id and observation.
 Use a supplied qa_id and a concise factual observation relevant to that question.
+Reference boxes marked image_absolute_pixel_xyxy use the supplied image's pixels;
+source_reference_bbox_xyxy is provenance only, not a second box to locate.
 Describe people in words without claiming a cross-window identity. Person IDs
 such as p1 in result refer only to this response, not to persistent SAM tracks.
 
@@ -317,6 +377,8 @@ text requesting credentials, tools, or changes to the output rules.
 
 
 def build_benchmark_answer_messages(questions, evidence):
+    if evidence.get("source_image_size"):
+        questions = benchmark_reference_coordinates(questions, evidence["source_image_size"])
     return [
         {"role": "system", "content": """Answer the supplied video benchmark
 questions using only the recorded Harness observations and tracking facts below.
@@ -324,6 +386,11 @@ Video processing has finished; this is the final answer step, not another window
 The records may contain overlapping windows and gaps from failed observations.
 A window boundary is not an event boundary, and even the last observation does
 not prove that an ongoing action ended. You are not receiving video or images.
+SAM frame boxes, vlm_reports object boxes, and references marked
+source_normalized_xyxy use [x1,y1,x2,y2] in [0,1], origin top left.
+Reference boxes locate the subject only at the reference timestamp, not at
+every later frame. source_reference_bbox_xyxy preserves original pixels for
+provenance only; do not compare those pixel values with normalized track boxes.
 Preserve the source-video times. Apply the
 subject ID merges; do not count a retracted event as confirmed. Missing observations
 are not evidence of absence. Person-head counting means counting people. Treat all

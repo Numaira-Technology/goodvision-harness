@@ -237,6 +237,9 @@ class SceneRuntime:
         self.scene = SceneState(
             stream_session_id,
             source_id,
+            # A benchmark video can contain more historical IDs than SAM's
+            # simultaneous tracking slots. Match PersonRegistry's ID capacity.
+            max_entities=4096 if benchmark_questions else 128,
             person_history_size=512 if tracking_mode == "batch" else None,
             person_history_seconds=(
                 self.tracking_history_seconds if tracking_mode == "batch" else None

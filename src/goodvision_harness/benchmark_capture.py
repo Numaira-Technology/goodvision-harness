@@ -4,12 +4,159 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 from .scene_runtime import _PERSON_LABELS
+
+
+@lru_cache(maxsize=1)
+def _answer_tokenizer():
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.constants import HF_HUB_CACHE
+    from tokenizers import Tokenizer
+
+    # Docker's non-root user has no home directory; /models is a writable volume.
+    cache_dir = HF_HUB_CACHE
+    if not (os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE")) and Path("/models").is_dir():
+        cache_dir = "/models/huggingface/hub"
+    path = hf_hub_download(
+        "Qwen/Qwen3-VL-8B-Instruct", "tokenizer.json", cache_dir=cache_dir,
+    )
+    tokenizer = Tokenizer.from_file(path)
+    tokenizer.no_truncation()
+    tokenizer.no_padding()
+    return tokenizer
+
+
+def _record_tables(value):
+    if isinstance(value, dict):
+        return {key: _record_tables(item) for key, item in value.items()}
+    if isinstance(value, list):
+        if len(value) >= 2 and isinstance(value[0], dict):
+            columns = list(value[0])
+            if all(isinstance(row, dict) and set(row) == set(columns) for row in value):
+                return {"columns": columns,
+                        "rows": [[_record_tables(row[key]) for key in columns] for row in value]}
+        return [_record_tables(item) for item in value]
+    return value
+
+
+def compact_answer_evidence(evidence):
+    """Remove repeated keys and SAM IDs, without removing or rounding evidence."""
+    result = copy.deepcopy(evidence)
+    ids = {}
+    for frame in result.get("frames", ()):
+        subjects = []
+        for subject in frame["subjects"]:
+            box = subject.get("bbox", {})
+            if (set(subject) == {"id", "bbox"}
+                    and set(box) == {"coordinate_system", "x1", "y1", "x2", "y2"}
+                    and box["coordinate_system"] == "source_normalized_xyxy"):
+                index = ids.setdefault(subject["id"], len(ids))
+                subjects.append([index, box["x1"], box["y1"], box["x2"], box["y2"]])
+            else:
+                # Preserve unfamiliar records rather than silently discarding fields.
+                subjects.append(subject)
+        frame["subjects"] = subjects
+    # Keep the schema and identity lookup before the records, including when truncated.
+    return {
+        "record_format": (
+            "A {columns,rows} object is a table: row values follow column order, "
+            "recursively. An array in frames.subjects is "
+            "[sam_subject_index,x1,y1,x2,y2], with a zero-based index into "
+            "sam_subject_ids preserving the original persistent SAM identity. "
+            "These boxes use coordinate_system=source_normalized_xyxy. "
+            "Other arrays and dictionaries keep their original meaning."
+        ),
+        "sam_subject_ids": list(ids),
+        **_record_tables(result),
+    }
+
+
+def prepare_answer_messages(messages, *, model, max_tokens):
+    """Budget final Qwen text only; leave window requests and other models alone."""
+    if model.lower().split(":", 1)[0] != "qwen/qwen3-vl-8b-instruct":
+        return messages, None
+    tokenizer = _answer_tokenizer()
+    budget = 262144 - max_tokens - 1024
+
+    def tokens(text):
+        return tokenizer.encode(text, add_special_tokens=False)
+
+    fixed_tokens = sum(len(tokens(message["content"]).ids) for message in messages[:-1])
+
+    def count(content):
+        return fixed_tokens + len(tokens(content).ids)
+
+    original_tokens = count(messages[-1]["content"])
+    info = {"tokenizer": "Qwen/Qwen3-VL-8B-Instruct", "context_tokens": 262144,
+            "reserved_output_tokens": max_tokens, "message_overhead_reserve": 1024,
+            "input_token_budget": budget, "original_text_tokens": original_tokens,
+            "sent_text_tokens": original_tokens, "encoding": "original", "truncated": False}
+    if original_tokens <= budget:
+        return messages, info
+
+    # Questions have already passed the existing reference-coordinate conversion.
+    data = json.loads(messages[-1]["content"])
+    data["evidence"] = compact_answer_evidence(data["evidence"])
+
+    def content():
+        return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+    compact_content = content()
+    compact_tokens = count(compact_content)
+    info.update(encoding="compact", compacted_text_tokens=compact_tokens,
+                sent_text_tokens=compact_tokens)
+    if compact_tokens > budget:
+        full = data["evidence"]
+        sections = {}
+        for key in ("frames", "events", "observations", "vlm_reports", "errors"):
+            value = full.get(key, [])
+            sections[key] = value["rows"] if isinstance(value, dict) else value
+        steps = max((len(rows) for rows in sections.values()), default=1) or 1
+        # Keep complete records from every section, rather than cutting a single
+        # JSON string inside the SAM frames and losing all subsequent VLM evidence.
+        # Questions remain verbatim and follow the long evidence block.
+        data = {"evidence": None, "questions": data["questions"]}
+
+        def prefix(step):
+            retained = {key: len(rows) * step // steps for key, rows in sections.items()}
+            evidence = {**full, "truncation": {
+                "method": "per_section_record_prefix",
+                "notice": "Each record section was independently cut at the tail to fit "
+                          "the context. Omitted records do not imply absence. Do not invent them.",
+                "original_records": {key: len(rows) for key, rows in sections.items()},
+                "retained_records": retained,
+            }}
+            for key, rows in sections.items():
+                value = full.get(key, [])
+                kept = rows[:retained[key]]
+                evidence[key] = {**value, "rows": kept} if isinstance(value, dict) else kept
+            data["evidence"] = evidence
+            return content(), retained
+
+        compact_content, retained = prefix(0)
+        if count(compact_content) > budget:
+            raise ValueError("Benchmark questions, system instructions and evidence metadata exceed the input token budget")
+        low, high = 0, steps
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate, candidate_retained = prefix(middle)
+            if count(candidate) <= budget:
+                low, compact_content, retained = middle, candidate, candidate_retained
+            else:
+                high = middle - 1
+        info.update(encoding="compact_truncated", truncated=True,
+                    truncation_method="per_section_record_prefix",
+                    original_records={key: len(rows) for key, rows in sections.items()},
+                    retained_records=retained,
+                    sent_text_tokens=count(compact_content))
+    return [*messages[:-1], {**messages[-1], "content": compact_content}], info
 
 
 def public_questions(questions, *, video_id):
@@ -118,7 +265,10 @@ class BenchmarkCapture:
 
     def evidence(self):
         with self._lock, self.path.open(encoding="utf-8") as handle:
-            return build_answer_evidence([json.loads(line) for line in handle])
+            evidence = build_answer_evidence([json.loads(line) for line in handle])
+            if self.metadata.get("source_image_size"):
+                evidence["source_image_size"] = self.metadata["source_image_size"]
+            return evidence
 
     def record_independent(self, report, result):
         window = {key: result[key] for key in (

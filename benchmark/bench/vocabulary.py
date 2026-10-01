@@ -9,10 +9,10 @@ So the runner reads the labels straight off the questions. A video asked about
 keeps the prompt short and stops the other twenty-five definitions from
 competing for the model's attention on a video that no one asked about them.
 
-The definitions themselves are deployment state, loaded from the config when
-the harness starts. The runner cannot push them over HTTP, so instead it
-checks up front that the server already knows every label this run needs, and
-says which ones are missing rather than letting each session fail in turn.
+The definitions are loaded from deployment config. Question-aware replay
+selects registered labels from the public questions and options; other actions
+remain in qa_observations. Legacy extraction callers can require an exact
+vocabulary match with check_supported.
 """
 
 from __future__ import annotations
@@ -38,19 +38,40 @@ def load_definitions(path: str | Path | None = None) -> list[dict[str, Any]]:
     return yaml.safe_load(source.read_text(encoding="utf-8")) or []
 
 
-def session_features(questions: Iterable[Question]) -> tuple[str, ...] | None:
+def session_features(
+    questions: Iterable[Question], *, supported: Iterable[str] | None = None,
+) -> tuple[str, ...] | None:
     """Which events to enable for one video, or None to leave the default.
 
-    None means no question about this video is about an event, so counting and
-    location are all that is being scored. Those come from tracking rather
-    than from the model, and leaving the harness on its default keeps such
-    videos identical to how earlier runs captured them.
+    With a supported vocabulary, select only registered labels from the public
+    event names/options. The complete questions still reach qa_observations.
+    None leaves the session on its default events, including when no queried
+    action has a registered definition. Without supported, retain legacy label
+    selection for capture/extraction callers.
     """
-    labels = {
-        label
-        for question in questions
-        if (label := question_target_label(question)) is not None
-    }
+    if supported is not None:
+        # Question-aware replay also observes actions with no scene-event
+        # definition. Keep those questions intact in qa_observations; do not
+        # register event_selection, answer combinations, or private GT as events.
+        available = set(supported)
+        labels = set()
+        for question in questions:
+            context = question.public_context
+            if question.capability == "event_recognition" and question.answer_type == "single_choice":
+                candidates = context.get("event_labels") or question.response_options or ()
+            else:
+                label = question_target_label(question)
+                candidates = (label,) if label else ()
+            for candidate in candidates:
+                label = "_".join(str(candidate).split(":")[-1].lower().split())
+                if label in available:
+                    labels.add(label)
+    else:
+        labels = {
+            label
+            for question in questions
+            if (label := question_target_label(question)) is not None
+        }
     return tuple(sorted(labels)) or None
 
 

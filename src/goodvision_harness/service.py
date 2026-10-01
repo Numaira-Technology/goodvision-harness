@@ -2259,6 +2259,7 @@ class HarnessRuntime:
                 self._scene_archive = SceneArchive(
                     self.config.events.directory / "scene",
                     retention_days=self.config.events.retention_days,
+                    event_labels=self._event_vocabulary().labels(),
                 )
             if selected_analysis == FACE_ANALYSIS_MODE:
                 face_runtime = prepared_face
@@ -2640,6 +2641,8 @@ class HarnessRuntime:
                             "route_host": urlsplit(model_settings.endpoint).hostname,
                             "provider_order": (parameters.get("provider") or {}).get("order", []),
                             "source_fps": session.video_stream.info.source_fps,
+                            "source_image_size": [session.video_stream.info.width,
+                                                  session.video_stream.info.height],
                             "tracking_fps": self.config.rich_labeling.max_fps,
                             "scene_observation_fps": self.config.runtime.scene_observation_fps,
                             "max_image_side": options["max_image_side"],

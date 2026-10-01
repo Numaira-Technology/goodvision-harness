@@ -6,6 +6,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import math
 import re
 import time
@@ -16,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from .benchmark_capture import prepare_answer_messages
 from .diagnostics import note
 from .latency_trace import log_timing, trace_id
 from .model_api import (
@@ -363,7 +365,7 @@ class TemporalVLMInspector:
         encoded_images = []
         messages = self.build_messages(job, encoded_images=encoded_images)
         if job.benchmark_questions and getattr(self, "benchmark_result_wrapper", False):
-            add_independent_benchmark_context(messages, job)
+            add_independent_benchmark_context(messages, job, encoded_images)
         note(job, "prepared", encoded_images)
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
@@ -818,8 +820,16 @@ class TemporalVLMInspector:
                 key = environment_api_key(self.settings)
             if not key and self.settings.provider != "local":
                 raise ModelAPIError("benchmark model credential is unavailable")
-            payload = {**self._parameters, "model": self.model,
-                       "messages": build_benchmark_answer_messages(questions, evidence)}
+            messages, input_info = prepare_answer_messages(
+                build_benchmark_answer_messages(questions, evidence),
+                model=self.model, max_tokens=self._parameters["max_tokens"],
+            )
+            if input_info is not None:
+                logger = logging.getLogger(__name__)
+                log = logger.warning if input_info["encoding"] != "original" else logger.info
+                log("Benchmark answer input for %s: %s",
+                    [question["qa_id"] for question in questions], json.dumps(input_info))
+            payload = {**self._parameters, "model": self.model, "messages": messages}
             if payload.get("response_format") is not None:
                 payload["response_format"] = {"type": "json_object"}
             self._ensure_transport()
@@ -828,6 +838,8 @@ class TemporalVLMInspector:
                               timing={}, capture_response=True),
                 timeout=self.settings.timeout_seconds,
             ))
+            if input_info is not None:
+                response["evaluation_answer_input"] = input_info
             self._record_usage(response)
             try:
                 choice = response["choices"][0]
@@ -836,13 +848,16 @@ class TemporalVLMInspector:
                 content = ModelAPIClient.assistant_text(response).strip()
                 fenced = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL)
                 parsed = _json(fenced.group(1) if fenced else content, stage="benchmark_answer")
-                rows = parsed["predictions"]
+                # The wrapper is optional; exact IDs, values and completeness are not.
+                rows = parsed if isinstance(parsed, list) else parsed["predictions"]
                 expected = {question["qa_id"] for question in questions}
                 if not isinstance(rows, list) or any(
                     not isinstance(row, dict) or set(row) != {"qa_id", "prediction"}
                     or not isinstance(row["prediction"], str) for row in rows
                 ) or len(rows) != len(expected) or {row["qa_id"] for row in rows} != expected:
                     raise ValueError("benchmark predictions must include each qa_id once")
+                if isinstance(parsed, list):
+                    response["evaluation_answer_format"] = "bare_predictions_array"
             except (KeyError, IndexError, TypeError, ValueError, ModelAPIError) as exc:
                 error = ModelAPIError("benchmark model returned an incomplete or invalid answer", code="invalid_response")
                 error.benchmark_response = response

@@ -25,12 +25,7 @@ from urllib.parse import quote
 from .capture_live import capture_offline
 from .extract import answer_question
 from .schema import Capture, load_media, load_questions
-from .vocabulary import (
-    check_supported,
-    required_labels,
-    session_features,
-    supported_labels,
-)
+from .vocabulary import session_features, supported_labels
 
 
 def run(
@@ -137,6 +132,7 @@ def run_offline(args) -> int:
     predictions_path = args.output or args.output_dir / "predictions.jsonl"
     failures = 0
     preflight_done = False
+    available_features = None
     with predictions_path.open("w", encoding="utf-8") as predictions, (
         args.output_dir / "details.jsonl"
     ).open("w", encoding="utf-8") as details:
@@ -148,16 +144,10 @@ def run_offline(args) -> int:
             public = [question.public_payload() for question in video_questions]
             result = _reusable_result(directory / "result.json", public, args)
             if result is None and not preflight_done:
-                # Once, and only once this run is known to start a session: a
-                # label the harness was not configured with fails every video
-                # that needs it, and the per-session error names neither the
-                # label nor the fix. Fatal on purpose, and outside the
-                # per-video handler that would demote it to one failed video.
+                # Read the installed vocabulary once. Questions outside it
+                # still reach the VLM through question-aware observations.
                 if not args.reanswer and not args.no_auto_features:
-                    check_supported(
-                        required_labels(questions),
-                        supported_labels(args.base_url),
-                    )
+                    available_features = supported_labels(args.base_url)
                 preflight_done = True
             try:
                 if result is None:
@@ -176,7 +166,7 @@ def run_offline(args) -> int:
                         features=(
                             None
                             if args.no_auto_features
-                            else session_features(video_questions)
+                            else session_features(video_questions, supported=available_features)
                         ),
                     )
                 answers = {row["qa_id"]: row["prediction"] for row in result["predictions"]}

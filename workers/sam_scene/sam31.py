@@ -29,6 +29,8 @@ from fastapi.responses import JSONResponse
 LOGGER = logging.getLogger("goodvision.sam31")
 SAM3_COMMIT = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
 BACKEND = "sam3.1_video"
+# The pinned SAM source retains removed IDs with this score (not a probability).
+REMOVED_OBJECT_SCORE = -1e4
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,7 +343,7 @@ def native_snapshot(
         or scores.shape != (len(ids),)
         or scores.dtype.kind not in "fiu"
         or not np.isfinite(scores).all()
-        or (scores < 0).any()
+        or ((scores < 0) & (scores != REMOVED_OBJECT_SCORE)).any()
         or (scores > 1).any()
         or masks.dtype != np.bool_
         or masks.shape != (len(ids), height, width)
@@ -350,13 +352,16 @@ def native_snapshot(
             "native video masks or identifiers violate contract: "
             f"image_size={image_size}, max_objects={max_objects}, "
             f"ids={ids.shape}/{ids.dtype}, scores={scores.shape}/{scores.dtype}, "
-            f"masks={masks.shape}/{masks.dtype}"
+            f"masks={masks.shape}/{masks.dtype}, "
+            f"id_values={ids.tolist()}, score_values={scores.tolist()}"
         )
     source = batch.frames[index]
     objects = []
     for object_id, score, mask in zip(
         ids.tolist(), scores.tolist(), masks, strict=True
     ):
+        if score == REMOVED_OBJECT_SCORE:
+            continue
         bbox, polygons, ignored_count, ignored_pixels = native_mask_geometry(mask)
         if bbox is None:
             continue

@@ -97,9 +97,32 @@ Timestamps follow the existing file reader and its source FPS; incorrect media
 timing metadata must be fixed during media preparation.
 
 Optional `--observation-max-tokens` and `--answer-max-tokens` control the two
-output budgets separately. If omitted, both use `scene_max_tokens`. A too-small
-budget or oversized evidence context is recorded as a failure, not silently
-truncated or followed by an extra summarization call.
+output budgets separately. If omitted, both use `scene_max_tokens`. Incomplete
+model output is still recorded as a failure.
+
+For Qwen3-VL-8B final text answers, the official tokenizer counts the message text
+before sending. The input budget is 262,144 minus the answer output budget and
+a 1,024-token allowance for message framing. Requests within that budget are
+unchanged. Oversized evidence is first compacted without losing values: repeated
+keys become tables and repeated SAM IDs become indexed coordinate rows. If it
+still exceeds the budget, each record section is independently shortened at
+its tail by the same fraction, keeping complete records and valid JSON. This
+prevents a large SAM section from crowding out all VLM observations. Questions
+and options follow the shortened evidence unchanged; system instructions stay
+intact. Omitted records must not be interpreted as evidence of absence.
+
+The full on-disk records are never changed. Logs and the saved response's
+`evaluation_answer_input` report original/compacted/sent text token counts and
+whether truncation occurred; truncated requests also record original and retained
+record counts per section. These local text counts exclude provider-specific message framing;
+API usage remains the source for billed tokens. No extra model summarization
+call is made. This policy does not change other models or live window requests.
+Install the existing `vlm` extra (included in the Docker image); the first Qwen
+final answer downloads only the official tokenizer file, not model weights.
+It uses the standard Hugging Face cache, or `/models/huggingface/hub` in Docker
+when `HF_HOME` / `HF_HUB_CACHE` are unset. Rebuild the evaluation image after
+updating dependencies.
+
 For question-aware `parallel` replay, both lanes use this observation budget and
 the configured API timeout: the live information lane's 160-token / 5-second
 limits are not applied to the additional question observations.

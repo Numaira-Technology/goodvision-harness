@@ -733,7 +733,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         raise ValueError("scene image/output budget exceeds supported limits")
     if runtime.scene_vlm_output_mode not in {"full", "compact", "parallel"}:
         raise ValueError("scene_vlm_output_mode must be full, compact or parallel")
-    if runtime.scene_max_in_flight > 4 or runtime.scene_observation_fps > 3:
+    if runtime.scene_max_in_flight > 32 or runtime.scene_observation_fps > 3:
         raise ValueError("scene concurrency/cadence exceeds validated tuning range")
     server = ServerSettings(
         host=str(server_section.get("host", "127.0.0.1")),

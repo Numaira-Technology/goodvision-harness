@@ -137,11 +137,12 @@ class SceneResultPublisher:
                 if subject in active_subjects:
                     object_ids.append(subject)
             detected = bool(confirmed)
+            display_name = _NAMES.get(label, label)
             if detected:
-                description = f"已确认{_NAMES[label]}事件。 / Confirmed {label} event."
+                description = f"已确认{display_name}事件。 / Confirmed {label} event."
             else:
                 description = (
-                    f"{_NAMES[label]}事件未确认、已结束或已撤回。 / "
+                    f"{display_name}事件未确认、已结束或已撤回。 / "
                     f"{label} event is suspected, ended or retracted."
                 )
             judgments.append(EventJudgment(

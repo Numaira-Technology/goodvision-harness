@@ -71,8 +71,8 @@ class VLMProcessConfig:
             raise ValueError("VLM process requires a scoped source and event labels")
         if not 0 < self.observation_fps <= 3 or not math.isfinite(self.observation_fps):
             raise ValueError("VLM cadence must be in (0, 3]")
-        if type(self.max_in_flight) is not int or not 1 <= self.max_in_flight <= 4:
-            raise ValueError("VLM concurrency must be within 1..4")
+        if type(self.max_in_flight) is not int or not 1 <= self.max_in_flight <= 32:
+            raise ValueError("VLM concurrency must be within 1..32")
 
 
 @dataclass(frozen=True)
