@@ -155,3 +155,64 @@ def test_sam_forward_is_private_for_direct_hybrid_mode(monkeypatch, hybrid_port,
     if hybrid_port is not None:
         assert "127.0.0.1:8280:127.0.0.1:8200" in command
         assert not any("0.0.0.0:" in argument for argument in command)
+
+
+def test_deploy_provisions_cpu_face_dependencies_for_default_features(
+    tmp_path, monkeypatch
+):
+    from goodvision_harness.event_catalog import event_catalog
+
+    assert any(
+        event["id"] == "stranger" and event["default_enabled"]
+        for event in event_catalog()["events"]
+    )
+    monkeypatch.setattr(
+        hybrid, "build_bundle", lambda root, bundle: bundle.write_bytes(b"test bundle")
+    )
+    monkeypatch.setattr(hybrid.subprocess, "run", Mock())
+    remote = Mock()
+    hybrid.deploy(tmp_path, ["ssh", "test-host"], remote, {})
+    install = next(
+        call.kwargs["input"]
+        for call in remote.call_args_list
+        if call.args[0][-1] == "bash -s"
+    )
+    assert "source[video,vlm,face]" in install
+    assert "face-gpu" not in install
+
+
+def test_hybrid_lanes_preserve_effective_scene_tuning_and_force_cpu_face(monkeypatch):
+    from pathlib import Path
+
+    from goodvision_harness.config import load_config
+
+    root = Path(__file__).resolve().parents[1]
+    settings = {
+        "SCENE_VLM_OUTPUT_MODE": "parallel",
+        "SCENE_INDEPENDENT_VLM": "true",
+        "SCENE_DIAGNOSTICS_ENABLED": "true",
+        "SCENE_OBSERVATION_FPS": "2.5",
+        "SCENE_MAX_IN_FLIGHT": "2",
+        "SCENE_MAX_IMAGE_SIDE": "512",
+        "SCENE_MAX_TOKENS": "2048",
+        "SCENE_JPEG_QUALITY": "75",
+        "SCENE_TIMEOUT_SECONDS": "12",
+    }
+    env = hybrid.lane_environment(
+        {"FACE_ACCELERATOR": "gpu"},
+        hybrid.inference_environment(settings), root, root / "test-data", 1, 1,
+    )
+    monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **kwargs: "")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    config = load_config(root / "config.yaml")
+    assert config.face.provider == "CPUExecutionProvider"
+    assert config.runtime.scene_vlm_output_mode == "parallel"
+    assert config.runtime.scene_independent_vlm is True
+    assert config.runtime.scene_diagnostics_enabled is True
+    assert config.runtime.scene_observation_fps == 2.5
+    assert config.runtime.scene_max_in_flight == 2
+    assert config.runtime.scene_max_image_side == 512
+    assert config.runtime.scene_max_tokens == 2048
+    assert config.runtime.scene_jpeg_quality == 75
+    assert config.runtime.scene_timeout_seconds == 12

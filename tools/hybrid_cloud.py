@@ -32,6 +32,14 @@ ENVIRONMENT_KEYS = frozenset(
         "INFERENCE_ENDPOINT",
         "INFERENCE_API_KEY",
         "SCENE_VLM_OUTPUT_MODE",
+        "SCENE_INDEPENDENT_VLM",
+        "SCENE_DIAGNOSTICS_ENABLED",
+        "SCENE_OBSERVATION_FPS",
+        "SCENE_MAX_IN_FLIGHT",
+        "SCENE_MAX_IMAGE_SIDE",
+        "SCENE_MAX_TOKENS",
+        "SCENE_JPEG_QUALITY",
+        "SCENE_TIMEOUT_SECONDS",
         "LOCAL_TRACKING_FPS",
         "FACE_SAMPLE_FPS",
         "LOCAL_CAMERA_TARGET_FPS",
@@ -102,7 +110,7 @@ def deploy(root: Path, ssh: list[str], run, environment) -> None:
     install = (
         f"{REMOTE}/env/bin/python -m pip install"
         " --disable-pip-version-check --no-cache-dir "
-        f"'{REMOTE}/source[video,vlm]'"
+        f"'{REMOTE}/source[video,vlm,face]'"
     )
     setup = f"""set -euo pipefail
 if [ ! -x {REMOTE}/env/bin/python ]; then
@@ -163,6 +171,7 @@ def lane_environment(base, settings, root: Path, data: Path, lane: int, streams:
             "LOCAL_INFERENCE_ENABLED": "false",
             "LOCAL_TRACKING_ENABLED": "false",
             "CUDA_VISIBLE_DEVICES": "",
+            "FACE_ACCELERATOR": "cpu",
             "PERSON_TRACKING_ENABLED": "true",
             "RICH_LABEL_ENABLED": "true",
             "RICH_LABEL_BACKEND": "sam31_stream",

@@ -283,11 +283,12 @@ def test_service_routes_use_live_independent_cache_without_scene_lock(
             branch = runtime._vlm_branch
             assert runtime._scene.diagnostics is None  # No duplicate scene collector.
             assert branch.config.diagnostics_enabled is enabled
+            assert branch.config.output_mode == "parallel"
             send_window(branch)
-            await_condition(lambda: branch.health().get("published_reports", 0) == 1)
+            await_condition(lambda: branch.health().get("published_reports", 0) == 2)
             if enabled:
                 await_condition(
-                    lambda: bool(branch.diagnostics.snapshot(())["records"])
+                    lambda: len(branch.diagnostics.snapshot(())["records"]) == 2
                 )
             else:
                 assert branch.diagnostics is None
