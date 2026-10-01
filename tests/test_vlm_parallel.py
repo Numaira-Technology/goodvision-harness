@@ -588,3 +588,48 @@ def test_grounding_output_backpressure_keeps_both_lanes_progressing_and_retries_
         stop.set()
         worker.join(8)
         assert not worker.is_alive()
+
+
+@pytest.mark.parametrize("wrapper", [
+    "{}", " \n{}\r\n ", "```json\n{}\n```",
+    "```\n{}\n```", " \r\n```json \t\r\n\n{}\n\r\n``` \n",
+])
+@pytest.mark.parametrize("inspector,raw,expected", [
+    (EventJSONInspector, {"smoking": True, "fall": None}, [True, None]),
+    (CompactGroundingInspector, {"no_events": 0.9}, [False, False]),
+    (CompactGroundingInspector, {"subjects": [], "verdicts": [
+        {"event_label": "smoking", "detected": True},
+        {"event_label": "fall", "detected": None},
+    ]}, [True, None]),
+])
+def test_complete_reply_fence_keeps_event_semantics(wrapper, inspector, raw, expected):
+    response = envelope(raw)
+    response["choices"][0]["message"]["content"] = wrapper.format(json.dumps(raw))
+    votes = inspector._parse(job(config(), 1.2, 18), response)
+    assert [v.detected for v in votes] == expected
+
+
+@pytest.mark.parametrize("content", [
+    '```json\n{"smoking":false,"fall":false}\n``` extra',
+    'prefix ```json\n{"smoking":false,"fall":false}\n```',
+    '```json\n{"smoking":false,"fall":false}',
+    '```python\n{"smoking":false,"fall":false}\n```',
+    '```json\n{"smoking":false,"fall":false,}\n```',
+    '```json\n{"smoking":"false","fall":false}\n```',
+    '```json\n{"smoking":false}\n```',
+    '```json\n{"smoking":false,"fall":false,"fall":true}\n```',
+    '```json\n[]\n```',
+])
+def test_invalid_fenced_events_never_become_negative(content):
+    response = envelope(None)
+    response["choices"][0]["message"]["content"] = content
+    with pytest.raises(_ResponseValidationError):
+        EventJSONInspector._parse(job(config(), 1.2, 18), response)
+
+
+@pytest.mark.parametrize("finish", [None, "length", "content_filter"])
+def test_fence_does_not_hide_unfinished_completion(finish):
+    response = envelope({"smoking": False, "fall": False})
+    response["choices"][0]["finish_reason"] = finish
+    with pytest.raises(_ResponseValidationError, match="completion_not_finished"):
+        EventJSONInspector._parse(job(config(), 1.2, 18), response)

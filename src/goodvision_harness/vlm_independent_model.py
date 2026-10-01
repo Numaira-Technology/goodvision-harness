@@ -11,7 +11,12 @@ from .contracts import NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .model_api import ModelAPIClient
 from .scene_inspection import build_temporal_messages
-from .scene_model import TemporalVLMInspector, _json, _ResponseValidationError
+from .scene_model import (
+    TemporalVLMInspector,
+    _json,
+    _ResponseValidationError,
+    _strip_json_fence,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,10 +124,7 @@ class IndependentVLMInspector(TemporalVLMInspector):
         ):
             raise _ResponseValidationError("completion_not_finished", "envelope_schema")
         content = ModelAPIClient.assistant_text(response).strip()
-        fenced = re.fullmatch(
-            r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL
-        )
-        raw = _json(fenced.group(1) if fenced else content, stage="verdict_json")
+        raw = _json(_strip_json_fence(content), stage="verdict_json")
         if not isinstance(raw, dict) or "verdicts" not in raw:
             raise _ResponseValidationError(
                 "independent_object_required", "verdict_schema"
