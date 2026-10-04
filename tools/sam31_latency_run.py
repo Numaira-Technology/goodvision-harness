@@ -376,7 +376,6 @@ def _replay(args, frames, mapping, fps, client, output):
     lock = threading.RLock()
     rows, tracks, commits = [], [], []
     stop_monitor = threading.Event()
-    started = time.perf_counter()
     capture_complete = False
     measurement_complete = False
     source_by_sequence = {frame.frame_sequence: frame for frame in frames}
@@ -464,6 +463,9 @@ def _replay(args, frames, mapping, fps, client, output):
         client, replay_settings(args, fps), on_batch
     )
     coordinator.reset(runtime.stream_session_id)
+    # Spool/coordinator initialization is preparation, not replay time. Starting
+    # earlier makes slow hosts submit the first frames as an overdue burst.
+    started = time.perf_counter()
 
     def monitor():
         while not stop_monitor.wait(0.1):

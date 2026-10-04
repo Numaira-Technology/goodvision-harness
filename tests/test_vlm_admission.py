@@ -3,9 +3,10 @@
 import multiprocessing as mp
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from itertools import pairwise
-from threading import Event, Thread
+from threading import Event, Thread, current_thread
 
 import pytest
 
@@ -23,12 +24,16 @@ def settings(tmp_path, **kwargs):
 def participant(config, stream, start, ready, results):
     gate = SharedAdmission(config)
     ready.put(stream)
-    start.wait(10)
-    for _ in range(3):
-        with gate.slot(stream, stop=Event(), source_deadline=time.monotonic() + 3):
-            begin = time.monotonic()
-            time.sleep(0.08)
-            results.put((stream, begin, time.monotonic()))
+    try:
+        assert start.wait(30), "parent did not release the startup barrier"
+        for _ in range(3):
+            with gate.slot(stream, stop=Event(), source_deadline=time.monotonic() + 3):
+                begin = time.monotonic()
+                time.sleep(0.08)
+                results.put((stream, begin, time.monotonic()))
+    except Exception as exc:
+        results.put((stream, None, f"{type(exc).__name__}: {exc}"))
+        raise
 
 
 def test_twelve_processes_share_concurrency_rate_and_all_make_progress(tmp_path):
@@ -51,7 +56,11 @@ def test_twelve_processes_share_concurrency_rate_and_all_make_progress(tmp_path)
             process.start()
         assert len({ready.get(timeout=20) for _ in workers}) == 12
         start.set()
-        rows = [results.get(timeout=10) for _ in range(36)]
+        rows = []
+        for _ in range(36):
+            row = results.get(timeout=10)
+            assert row[1] is not None, f"participant {row[0]} failed: {row[2]}"
+            rows.append(row)
         for process in workers:
             process.join(5)
             assert process.exitcode == 0
@@ -92,6 +101,51 @@ def test_shared_rate_and_release_on_error(tmp_path):
                 raise RuntimeError("model failed")
     assert starts[-1] - starts[0] >= 0.29
     assert gate.snapshot()["active"] == 0
+
+
+def test_blocked_waiter_does_not_repeatedly_take_the_writer_lock(tmp_path, monkeypatch):
+    gate = SharedAdmission(settings(tmp_path, global_limit=1, per_stream_limit=1))
+    original = gate._transaction
+    repeated_write = Event()
+    calls = []
+    errors = []
+
+    @contextmanager
+    def transaction(*args, **kwargs):
+        if current_thread() is worker:
+            calls.append(1)
+            if len(calls) >= 3:
+                repeated_write.set()
+        with original(*args, **kwargs) as db:
+            yield db
+
+    def wait():
+        try:
+            with gate.slot(
+                "waiting", stop=Event(), source_deadline=time.monotonic() + 3
+            ):
+                pass
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = Thread(target=wait)
+    monkeypatch.setattr(gate, "_transaction", transaction)
+    try:
+        with gate.slot("holder", stop=Event(), source_deadline=time.monotonic() + 3):
+            worker.start()
+            deadline = time.monotonic() + 1
+            while not gate.snapshot()["waiting"]:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            # Register once, then poll without contending with grants/releases.
+            assert not repeated_write.wait(0.15)
+        worker.join(3)
+        assert not worker.is_alive()
+        assert not errors
+        assert gate.snapshot()["grants"] == 2
+    finally:
+        if worker.ident is not None:
+            worker.join(3)
 
 
 def test_new_waiting_evidence_supersedes_old_without_exceeding_queue(tmp_path):
@@ -174,6 +228,54 @@ def test_crash_lease_is_conservative_and_expiry_reclaims_capacity(tmp_path):
         if process.is_alive():
             process.terminate()
         process.join(5)
+
+
+def test_already_waiting_process_notices_expired_crash_lease(tmp_path, monkeypatch):
+    config = settings(tmp_path, global_limit=1, per_stream_limit=1)
+    gate = SharedAdmission(config)
+    with sqlite3.connect(config.database) as db:
+        db.execute(
+            "INSERT INTO tickets VALUES('crashed','crashed',1,?,?)",
+            (time.monotonic(), time.monotonic() + 60),
+        )
+    read_waiting, admitted, stop = Event(), Event(), Event()
+    original = gate._may_acquire
+    errors = []
+
+    def peek(token):
+        possible = original(token)
+        if not possible:
+            read_waiting.set()
+        return possible
+
+    def wait():
+        try:
+            with gate.slot("waiting", stop=stop, source_deadline=time.monotonic() + 3):
+                admitted.set()
+        except Exception as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(gate, "_may_acquire", peek)
+    worker = Thread(target=wait)
+    worker.start()
+    try:
+        assert read_waiting.wait(1)
+        assert not admitted.is_set()
+        # No new registration or snapshot/reaper is needed to notice expiry.
+        with sqlite3.connect(config.database) as db:
+            db.execute(
+                "UPDATE tickets SET expires=? WHERE id='crashed'",
+                (time.monotonic() - 1,),
+            )
+        assert admitted.wait(2)
+        worker.join(2)
+        assert not worker.is_alive()
+        assert not errors
+        assert gate.snapshot()["active"] == 0
+        assert gate.snapshot()["waiting"] == 0
+    finally:
+        stop.set()
+        worker.join(3)
 
 
 def test_policy_mismatch_fails_closed(tmp_path):

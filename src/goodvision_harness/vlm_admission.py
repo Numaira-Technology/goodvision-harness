@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
@@ -61,6 +61,11 @@ class SharedAdmission:
         self.settings = settings
         path = Path(settings.database)
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Waiting readers must not prevent another process from releasing a
+        # slot. Keep SQLite's default synchronous durability; WAL only changes
+        # the journal/locking strategy on this shared local filesystem.
+        with closing(sqlite3.connect(settings.database, timeout=5.0)) as db:
+            db.execute("PRAGMA journal_mode=WAL")
         with self._transaction(timeout=5.0) as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS policy (id INTEGER PRIMARY KEY, "
@@ -161,6 +166,39 @@ class SharedAdmission:
             except sqlite3.OperationalError:
                 time.sleep(0.01)
 
+    def _candidate(self, db, now):
+        return db.execute(
+            "SELECT t.id FROM tickets t "
+            "JOIN streams s ON s.id=t.stream "
+            "WHERE t.active=0 AND t.expires>? AND (SELECT COUNT(*) FROM tickets a "
+            "WHERE a.active=1 AND a.stream=t.stream AND a.expires>?) < ? "
+            "ORDER BY s.last_grant,t.created,t.id LIMIT 1",
+            (now, now, self.settings.per_stream_limit),
+        ).fetchone()
+
+    def _may_acquire(self, token):
+        # This is only a read-only hint. Capacity, fairness, cancellation and
+        # deadlines are checked again inside BEGIN IMMEDIATE before any grant.
+        # Previously every waiter took the writer lock every 10 ms, competing
+        # with the very grants/releases it needed to make progress.
+        with closing(sqlite3.connect(self.settings.database, timeout=0.1)) as db:
+            now = time.monotonic()
+            if (
+                db.execute("SELECT 1 FROM tickets WHERE id=?", (token,)).fetchone()
+                is None
+            ):
+                return True  # Let the write path report superseded work.
+            active = db.execute(
+                "SELECT COUNT(*) FROM tickets WHERE active=1 AND expires>?", (now,)
+            ).fetchone()[0]
+            next_grant = db.execute(
+                "SELECT next_grant FROM policy WHERE id=1"
+            ).fetchone()[0]
+            if active >= self.settings.global_limit or now < next_grant:
+                return False
+            candidate = self._candidate(db, now)
+            return candidate is not None and candidate[0] == token
+
     @contextmanager
     def slot(self, stream, *, stop, source_deadline):
         token = uuid4().hex
@@ -178,6 +216,9 @@ class SharedAdmission:
                 if now >= deadline:
                     raise AdmissionError("admission_timeout")
                 try:
+                    if registered and not self._may_acquire(token):
+                        stop.wait(0.01)
+                        continue
                     with self._transaction() as db:
                         now = time.monotonic()
                         if now >= deadline:
@@ -215,14 +256,7 @@ class SharedAdmission:
                         next_grant = db.execute(
                             "SELECT next_grant FROM policy WHERE id=1"
                         ).fetchone()[0]
-                        candidate = db.execute(
-                            "SELECT t.id FROM tickets t "
-                            "JOIN streams s ON s.id=t.stream "
-                            "WHERE t.active=0 AND (SELECT COUNT(*) FROM tickets a "
-                            "WHERE a.active=1 AND a.stream=t.stream) < ? "
-                            "ORDER BY s.last_grant,t.created,t.id LIMIT 1",
-                            (self.settings.per_stream_limit,),
-                        ).fetchone()
+                        candidate = self._candidate(db, now)
                         acquired = (
                             active < self.settings.global_limit
                             and now >= next_grant
