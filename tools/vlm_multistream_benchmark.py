@@ -26,6 +26,7 @@ from goodvision_harness.config import load_config  # noqa: E402
 from goodvision_harness.event_sensitivity import (  # noqa: E402
     EVENT_SENSITIVITY_DEFAULTS,
 )
+from goodvision_harness.grounding import SAFETY_EVENT_LABELS  # noqa: E402
 from goodvision_harness.model_api import environment_api_key  # noqa: E402
 from goodvision_harness.vlm_admission import (  # noqa: E402
     AdmissionSettings,
@@ -38,7 +39,8 @@ from goodvision_harness.vlm_independent import (  # noqa: E402
 )
 from goodvision_harness.vlm_independent_model import IndependentVerdict  # noqa: E402
 
-LABELS = ("fight", "smoking", "fall", "weapon")
+# Follow the production safety catalog; stranger uses a separate identity lane.
+LABELS = SAFETY_EVENT_LABELS
 
 
 class SimulatedInspector:
@@ -331,6 +333,7 @@ def run_stage(args, base, count, framesets, output, repetition):
         stats = [b.stats() for b in branches]
         result = {
             "streams": count,
+            "event_labels": list(LABELS),
             "repeat": repetition,
             "measurement_kind": "real_model_capacity"
             if args.real
@@ -441,6 +444,7 @@ def main():
     ).strftime("%Y%m%dT%H%M%S%fZ")
     output.mkdir(parents=True, exist_ok=False)
     manifest = {
+        "event_labels": list(LABELS),
         "model": base.inference.model if args.real else "SIMULATED",
         "provider": base.model_api.provider if args.real else None,
         "settings": {

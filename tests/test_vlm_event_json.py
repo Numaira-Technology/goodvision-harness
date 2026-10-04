@@ -9,6 +9,8 @@ from test_vlm_independent import config, job
 
 from goodvision_harness import scene_model
 from goodvision_harness.config import load_config
+from goodvision_harness.event_sensitivity import LITTER_RULE, PPE_RULE
+from goodvision_harness.grounding import SAFETY_EVENT_LABELS
 from goodvision_harness.model_api import ModelAPIError
 from goodvision_harness.scene_model import _ResponseValidationError
 from goodvision_harness.vlm_compact_model import (
@@ -110,7 +112,7 @@ def test_schema_requires_all_events_and_preserves_route_without_mutating_base(ba
     unsupported = replace(base, aiclub=replace(base.model_api, provider="aiclub"))
     with pytest.raises(ValueError, match="unsupported"):
         configure_event_json(unsupported, "schema")
-    for labels in ((), ("fall", "fall"), ("arbitrary",)):
+    for labels in ((), ("fall", "fall"), ("arbitrary",), ("stranger",)):
         with pytest.raises(ValueError):
             event_response_format(labels)
 
@@ -143,7 +145,7 @@ def test_schema_reaches_http_and_diagnostics_reset_on_failure(base, monkeypatch)
     request = job(replace(config(), labels=LABELS), 1.2, 18)
     try:
         votes = inspector.inspect(request)
-        assert len(votes) == 4
+        assert tuple(v.event_label for v in votes) == SAFETY_EVENT_LABELS
         assert next(v for v in votes if v.event_label == "fall").detected is None
         assert inspector.last_response_diagnostics["content_wrapper"] == "code_fence"
         assert inspector.last_http_timing["request_bytes"] > 0
@@ -152,6 +154,9 @@ def test_schema_reaches_http_and_diagnostics_reset_on_failure(base, monkeypatch)
         assert seen[0]["response_format"] == event_response_format(LABELS)
         assert seen[0]["provider"]["require_parameters"] is True
         assert seen[0]["max_tokens"] == 160
+        prompt = seen[0]["messages"][0]["content"]
+        assert PPE_RULE in prompt
+        assert LITTER_RULE in prompt
         assert seen[0]["reasoning"] == base.inference.request_parameters["reasoning"]
         assert (
             len(
@@ -172,6 +177,16 @@ def test_schema_reaches_http_and_diagnostics_reset_on_failure(base, monkeypatch)
         assert "verdict_parse_seconds" not in inspector.last_inspection_timing
     finally:
         inspector.close()
+
+
+def test_six_event_request_rejects_legacy_four_event_completion():
+    request = job(replace(config(), labels=SAFETY_EVENT_LABELS), 1.2, 18)
+    legacy = dict.fromkeys(("fight", "smoking", "fall", "weapon"), False)
+    with pytest.raises(_ResponseValidationError, match="invalid_verdict"):
+        EventJSONInspector._parse(request, reply(json.dumps(legacy)))
+    complete = {**legacy, "ppe_violation": True, "ground_litter": None}
+    votes = EventJSONInspector._parse(request, reply(json.dumps(complete)))
+    assert {v.event_label: v.detected for v in votes} == complete
 
 
 def test_response_diagnostics_preserve_only_public_provider_categories():

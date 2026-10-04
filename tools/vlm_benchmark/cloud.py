@@ -272,10 +272,12 @@ def run(root, plan, directory, secret_path=None):
         base = configure_provider_sort(base, plan.get("provider_sort", ""))
         base = configure_provider_only(base, plan.get("provider_only", ""))
         document["model"] = "SIMULATED" if plan["simulate"] else base.inference.model
+        document["event_labels"] = list(bench.LABELS)
         manifest["effective_inference"] = {
             "model": document["model"],
             "provider": plan["provider"],
             "output_mode": "events",
+            "event_labels": list(bench.LABELS),
             "request_parameters": dict(base.inference.request_parameters),
             "max_output_tokens": base.runtime.scene_max_tokens,
             "http_timeout_seconds": base.runtime.scene_timeout_seconds,

@@ -59,7 +59,11 @@ bash tools/vlm_benchmark/run_remote.sh \
 
 默认每路每秒 1.25 个观察窗口，每个请求包含同一路最近 2–4 帧；
 总并发 16、每路并发 2、请求发起上限 20 次/秒、等待名额上限 1 秒。
-每路使用独立生产 VLM 分支进程，输出 fight、smoking、fall、weapon 四项判断。
+每路使用独立生产 VLM 分支进程，事件列表直接沿用 main 的 `SAFETY_EVENT_LABELS`：
+fight、smoking、fall、weapon、ppe_violation、ground_litter 六项判断。
+陌生人识别走独立身份分支，不计入纯 VLM 压测。请求 schema、提示规则与结果校验
+覆盖同一组事件，报告与 manifest 保存实际事件列表。此前四事件测试的数字仍仅代表
+四事件配置，不能直接作为六事件容量结果。
 
 请求预算是上限估计，不是美元报价：探测 1 次、短测最多约 1,900 次，
 条件触发的持续测试最多约 13,500 次，合计 **15,401 次**。跳过持续测试时不发生那部分请求。
@@ -107,7 +111,7 @@ env -u INFERENCE_API_KEY -u OPENROUTER_API_KEY \
 
 `--event-json-mode schema` 通过 OpenRouter 的
 [结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)
-声明四个必需字段及 boolean/null 类型，并使用 `provider.require_parameters=true`
+声明本轮全部事件的必需字段及 boolean/null 类型，并使用 `provider.require_parameters=true`
 筛选支持相应参数的路由。保留原模型、关闭推理和按吞吐排序等路由设置。
 如果没有可用的支持路由或接口拒绝请求，测试失败；不会静默取消约束。
 

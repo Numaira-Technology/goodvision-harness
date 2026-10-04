@@ -79,6 +79,8 @@ def render(directory, document):
             f"<p>{e('; '.join(job['gate']['reasons']))}</p></details>"
         )
     p = document["plan"]
+    event_labels = ", ".join(document.get("event_labels", []))
+    event_scope = event_labels or "本轮未记录，请核查对应代码"
     arrival_note = ""
     if p.get("compare_routing"):
         arrival_note = (
@@ -162,7 +164,8 @@ details{{margin:18px 0}}code,pre{{white-space:pre-wrap;word-break:break-word}}
 每路 {p["observation_fps"]} 个观察窗口/秒。
 一个请求含同一路最近 2–4 帧，保留动作上下文。</p>
 <p>输出约束：{e(p.get("event_json_mode", "prompt"))}。
-schema 表示请求四个事件字段的 JSON Schema 约束；仍进行本地严格校验。
+事件范围：{e(event_scope)}。
+schema 对本轮所选的全部事件字段施加 JSON Schema 约束；仍进行本地严格校验。
 仅允许剥离完整的外层 JSON 代码块，不补字段、不修补截断文本，也不把 null 改成 false。</p>
 <p>预先固定的实验门槛：每路 {p["deadline"]} 秒内完整结果比例 ≥ {p["min_coverage"]:.0%}，
 请求错误比例 ≤ {p["max_error_fraction"]:.0%}，

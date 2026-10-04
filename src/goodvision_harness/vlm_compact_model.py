@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 
+from .grounding import SAFETY_EVENT_LABELS
 from .model_api import ModelAPIClient
 from .scene_model import _json, _ResponseValidationError, _strip_json_fence
 from .vlm_independent_model import IndependentVerdict, IndependentVLMInspector
@@ -16,7 +17,7 @@ def event_response_format(labels):
     if (
         not labels
         or len(labels) != len(set(labels))
-        or any(label not in {"fight", "smoking", "fall", "weapon"} for label in labels)
+        or any(label not in SAFETY_EVENT_LABELS for label in labels)
     ):
         raise ValueError("invalid event schema labels")
     return {
