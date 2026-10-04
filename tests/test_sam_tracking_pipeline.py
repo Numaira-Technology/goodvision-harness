@@ -398,12 +398,18 @@ def test_phase_sampling_keeps_configured_rate_and_resets_its_clock(
         coordinator.close()
 
 
+def _park_prepare(coordinator, monkeypatch):
+    """Stop the prepare loop from draining _pending, so a backlog would grow."""
+    monkeypatch.setattr(
+        coordinator, "_preparation_schedule", lambda now: (None, {})
+    )
+
+
 def test_latest_only_drops_oldest_pending_when_behind(tmp_path, monkeypatch):
     """With latest_only, a stalled pipeline keeps only the newest ~capacity frames."""
     _, _, coordinator = setup_pipeline(tmp_path, max_fps=30, latest_only=True)
     try:
-        # Park the prepare loop so nothing drains _pending -> backlog would grow.
-        monkeypatch.setattr(coordinator, "_preparation_schedule", lambda now: (None, {}))
+        _park_prepare(coordinator, monkeypatch)
         for seq in range(20):
             assert coordinator.submit(
                 b"jpeg", stream_session_id="camera", frame_sequence=seq,
@@ -423,7 +429,7 @@ def test_without_latest_only_backlog_is_retained(tmp_path, monkeypatch):
     """Default (durable) behaviour keeps every sample even when stalled."""
     _, _, coordinator = setup_pipeline(tmp_path, max_fps=30)  # latest_only off
     try:
-        monkeypatch.setattr(coordinator, "_preparation_schedule", lambda now: (None, {}))
+        _park_prepare(coordinator, monkeypatch)
         for seq in range(20):
             coordinator.submit(
                 b"jpeg", stream_session_id="camera", frame_sequence=seq,
@@ -432,6 +438,31 @@ def test_without_latest_only_backlog_is_retained(tmp_path, monkeypatch):
         stats = coordinator.stats()
         assert stats["dropped_backpressure"] == 0
         assert stats["disk_pending_frames"] == 20  # whole backlog retained
+    finally:
+        coordinator.close()
+
+
+def test_latest_only_releases_spool_under_overload(tmp_path, monkeypatch):
+    """Dropped samples must free their spooled JPEGs, so sustained overload keeps
+    admitting new frames instead of eventually raising TrackingSpoolFull."""
+    # Budget fits a few bounded pending frames but not an unbounded backlog.
+    _, _, coordinator = setup_pipeline(
+        tmp_path, max_fps=30, latest_only=True, spool_max_bytes=16384,
+    )
+    try:
+        _park_prepare(coordinator, monkeypatch)
+        for seq in range(40):  # far more than the spool could hold un-dropped
+            assert coordinator.submit(
+                b"x" * 1000, stream_session_id="camera", frame_sequence=seq,
+                timestamp_seconds=seq * 0.1,
+            )
+        stats = coordinator.stats()
+        assert stats["submitted"] == 40
+        assert stats["disk_pending_frames"] <= 4      # backlog stayed bounded
+        assert stats["dropped_backpressure"] == 36
+        assert not stats.get("recovery_required")     # session never failed
+        # The journal only retains the small bounded prefix, not all 40 frames.
+        assert coordinator._journal().stats()["retained_sources"] <= 4
     finally:
         coordinator.close()
 

@@ -155,3 +155,70 @@ def test_percentile_edges():
     assert pipeline._percentile([], 95) == 0.0
     assert pipeline._percentile([0.1], 95) == 0.1
     assert pipeline._percentile([1, 2, 3, 4], 50) in (2, 3)
+
+
+def _cumulative_window(cum_bytes, *, conn="c1", qdrop=0, gaps=0, win=5.0):
+    """A receive window carrying CUMULATIVE transport/totals counters."""
+    return {
+        "recorded_at": "2026-10-03T00:00:00+00:00",
+        "connection_id": conn,
+        "protocol": "webrtc",
+        "window_decoded_fps": 29.0,
+        "window_seconds": win,
+        "totals": {
+            "decoded_gaps_over_200ms": gaps,
+            "handoff_queue_dropped_frames": qdrop,
+        },
+        "inbound_rtp": [{"packets_lost_delta": 0}],
+        "transport": [{"bytes_received": cum_bytes}],
+    }
+
+
+def _summary_from(records):
+    s = pipeline.StreamSummary("mem")
+    for rec in records:
+        s.add(pipeline.RECEIVE, rec)
+    return s
+
+
+def test_ingest_bandwidth_uses_deltas_not_running_sum():
+    # Constant 5 MB/5 s = 8 Mbps; cumulative counter climbs 5->10->15->20 MB.
+    mb = 1_000_000
+    recs = [_cumulative_window(n * 5 * mb) for n in range(1, 5)]
+    m = _summary_from(recs).metrics()
+    # Must stay ~8 Mbps regardless of how many windows elapsed (old code grew it).
+    assert abs(m["bw_ingest_mbps"] - 8.0) < 0.01
+
+
+def test_ingest_idle_windows_do_not_dilute():
+    # One 5 MB burst then idle (cumulative stays 5 MB): rate reflects the burst
+    # window only; trailing idle windows add neither bytes nor time.
+    mb = 1_000_000
+    recs = [_cumulative_window(5 * mb)] + [_cumulative_window(5 * mb) for _ in range(3)]
+    s = _summary_from(recs)
+    assert s.ingest_window_seconds == 5.0  # only the window with new bytes counts
+    assert abs(s._bw_ingest() * 8 / 1e6 - 8.0) < 0.01
+
+
+def test_ingest_handles_reconnect_counter_reset():
+    mb = 1_000_000
+    recs = [
+        _cumulative_window(10 * mb, conn="c1"),            # +10 MB over 5 s
+        _cumulative_window(3 * mb, conn="c2"),             # new conn: +3 MB over 5 s
+    ]
+    s = _summary_from(recs)
+    # 13 MB over 10 s = 10.4 Mbps; no negative delta from the reset.
+    assert abs(s._bw_ingest() * 8 / 1e6 - 10.4) < 0.01
+
+
+def test_cumulative_qdrop_and_gaps_counted_once_not_summed():
+    recs = [
+        _cumulative_window(0, qdrop=0, gaps=0),
+        _cumulative_window(0, qdrop=1, gaps=2),
+        _cumulative_window(0, qdrop=1, gaps=2),  # unchanged
+        _cumulative_window(0, qdrop=3, gaps=5),
+    ]
+    s = _summary_from(recs)
+    # Final cumulative is 3 drops / 5 gaps -- not 0+1+1+3=5 / 0+2+2+5=9.
+    assert s.qdrop == 3
+    assert s.gaps200 == 5

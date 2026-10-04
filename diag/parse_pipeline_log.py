@@ -134,13 +134,19 @@ class StreamSummary:
             "render_encode": [],
             "publish": [],
         }
-        # bandwidth: cumulative byte counters -> take last - first over elapsed
-        self.ingest_bytes = []  # (elapsed_hint, bytes) from receive windows
-        self.upload_bytes_total = 0.0  # summed transport_bytes per request
+        # WebRTC transport bytes_received and the `totals` counters are CUMULATIVE
+        # per connection. Convert them to per-window deltas (prev starts at 0; a
+        # value below prev means a reconnect/reset, so the new value is itself the
+        # delta) rather than summing the running totals, which would grow with
+        # sampling duration and double-count. packets_lost_delta and the delivery
+        # `bytes` field are already per-window, so those are summed directly.
+        self._conn_prev = {}  # connection_id -> {"bytes","qdrop","gaps"}
+        self.ingest_bytes_delta = 0.0
+        self.ingest_window_seconds = 0.0
+        self.upload_bytes_total = 0.0  # per-request transport_bytes (not cumulative)
         self.upload_requests = 0
-        self.output_bytes_window = []  # per delivery window
-        self.window_seconds = []
-        # health
+        self.output_bytes_window = []  # per delivery window (window bytes)
+        # health (accumulated per-window deltas)
         self.lost_delta = 0
         self.qdrop = 0
         self.gaps200 = 0
@@ -172,20 +178,34 @@ class StreamSummary:
         )
         self.lat["loop_lag_p95"].append(_num(_find(loop, "sampled_p95_seconds")))
         totals = rec.get("totals") or {}
-        self.gaps200 += int(totals.get("decoded_gaps_over_200ms") or 0)
-        self.qdrop += int(totals.get("handoff_queue_dropped_frames") or 0)
         rtp = rec.get("inbound_rtp") or []
         if isinstance(rtp, dict):
             rtp = [rtp]
+        # packets_lost_delta is already a per-window delta from the harness.
         for s in rtp:
             self.lost_delta += int(s.get("packets_lost_delta") or 0)
         transport = rec.get("transport") or []
         if isinstance(transport, dict):
             transport = [transport]
+        conn = rec.get("connection_id") or "default"
+        cur_bytes = sum(_num(s.get("bytes_received")) for s in transport)
+        cur_qdrop = int(totals.get("handoff_queue_dropped_frames") or 0)
+        cur_gaps = int(totals.get("decoded_gaps_over_200ms") or 0)
+        prev = self._conn_prev.get(conn, {"bytes": 0.0, "qdrop": 0, "gaps": 0})
+        self._conn_prev[conn] = {
+            "bytes": cur_bytes, "qdrop": cur_qdrop, "gaps": cur_gaps,
+        }
         win = _num(rec.get("window_seconds")) or _num(rec.get("elapsed_seconds"))
-        rx = sum(_num(s.get("bytes_received")) for s in transport)
-        if win > 0 and rx > 0:
-            self.ingest_bytes.append((win, rx))
+        d_bytes = cur_bytes - prev["bytes"] if cur_bytes >= prev["bytes"] else cur_bytes
+        if win > 0 and d_bytes > 0:
+            self.ingest_bytes_delta += d_bytes
+            self.ingest_window_seconds += win
+        self.qdrop += (
+            cur_qdrop - prev["qdrop"] if cur_qdrop >= prev["qdrop"] else cur_qdrop
+        )
+        self.gaps200 += (
+            cur_gaps - prev["gaps"] if cur_gaps >= prev["gaps"] else cur_gaps
+        )
 
     def _resource(self, rec):
         if self.camera_index is None:
@@ -238,9 +258,10 @@ class StreamSummary:
 
     # ---------------------------------------------------------------- derived
     def _bw_ingest(self):
-        tot_w = sum(w for w, _ in self.ingest_bytes)
-        tot_b = sum(b for _, b in self.ingest_bytes)
-        return tot_b / tot_w if tot_w > 0 else 0.0
+        return (
+            self.ingest_bytes_delta / self.ingest_window_seconds
+            if self.ingest_window_seconds > 0 else 0.0
+        )
 
     def _bw_output(self):
         tot_w = sum(w for w, _ in self.output_bytes_window)

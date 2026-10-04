@@ -97,8 +97,14 @@ sam_env() {
   fi
 }
 
+# SAM=off is a FREE local dry-run: isolate decode/transport/CPU with NO model
+# calls. It must run dry (HARNESS_DRY_RUN=true AND dry_run locked in the start
+# payload), or it silently hits real OpenRouter inference -> model-call costs with
+# credentials, or a failed start without. SAM=on runs real annotation (dry off).
+if [ "$SAM" = "on" ]; then DRY_RUN=false; else DRY_RUN=true; fi
+
 # --- launch N harness processes, one per stream ---
-echo ">> launching $STREAMS harness process(es) (SAM=$SAM)..."
+echo ">> launching $STREAMS harness process(es) (SAM=$SAM, dry_run=$DRY_RUN)..."
 declare -a HARNESS_PIDS=()
 declare -a HARNESS_PORTS=()
 declare -a HARNESS_LOGS=()
@@ -116,7 +122,7 @@ for i in $(seq 1 "$STREAMS"); do
     "HARNESS_AUTOSTART=true" \
     "HARNESS_STREAM_URL=rtsp://127.0.0.1:8554/stream$i" \
     "RESOURCE_SAMPLE_SECONDS=${RESOURCE_SAMPLE_SECONDS:-3}" \
-    $( [ "$SAM" = off ] && echo "HARNESS_DRY_RUN=false" ) \
+    "HARNESS_DRY_RUN=$DRY_RUN" \
     "${endpoint_env[@]}" \
     $(sam_env | tr '\n' ' ') \
     "$PY" -m goodvision_harness.service > "$log" 2>&1 &
@@ -134,10 +140,22 @@ for idx in "${!HARNESS_PORTS[@]}"; do
     curl -s -m 3 "http://127.0.0.1:${port}/v1/status" | grep -q '"connected": *true' && break
     sleep 1
   done
+  # Lock dry_run in the payload so a persisted deployment setting cannot override
+  # the intended mode for this run.
   resp=$(curl -s -m 10 -X POST "http://127.0.0.1:${port}/v1/sessions/start" \
     -H "Content-Type: application/json" \
-    -d '{"mode":"stream","analysis_mode":"multi","features":["fight","smoking","fall","weapon"]}' 2>&1)
-  echo "   cam$((idx+1)) (port $port) analysis start -> $(echo "$resp" | head -c 160)"
+    -d "{\"mode\":\"stream\",\"analysis_mode\":\"multi\",\"dry_run\":$DRY_RUN,\"features\":[\"fight\",\"smoking\",\"fall\",\"weapon\"]}" 2>&1)
+  echo "   cam$((idx+1)) (port $port) analysis start -> $(echo "$resp" | head -c 180)"
+  # Fail loudly if the session did not start (e.g. missing creds / wrong endpoint)
+  # rather than timing an idle or errored harness.
+  if ! echo "$resp" | grep -q '"type":"session"'; then
+    echo "   !! cam$((idx+1)) did not start a session (see $(basename "${HARNESS_LOGS[$idx]}")); aborting." >&2
+    exit 1
+  fi
+  # Confirm the harness is actually in the intended dry_run mode before timing.
+  mode=$(curl -s -m 5 "http://127.0.0.1:${port}/v1/status" \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('dry_run'))" 2>/dev/null || echo "?")
+  echo "      running dry_run=$mode (expected $DRY_RUN)"
 done
 
 echo ">> running ${STREAMS} stream(s) for ${SECS}s ..."
