@@ -140,7 +140,10 @@ class StreamSummary:
         # delta) rather than summing the running totals, which would grow with
         # sampling duration and double-count. packets_lost_delta and the delivery
         # `bytes` field are already per-window, so those are summed directly.
-        self._conn_prev = {}  # connection_id -> {"bytes","qdrop","gaps"}
+        self._conn_prev = {}  # connection_id -> cumulative health counters
+        self._transport_prev = {}  # (connection_id, transport_id) -> (bytes, time)
+        self._receive_elapsed = {}  # fallback clock for older logs
+        self._receive_covered = {}  # end of the union of valid observed intervals
         self.ingest_bytes_delta = 0.0
         self.ingest_window_seconds = 0.0
         self.upload_bytes_total = 0.0  # per-request transport_bytes (not cumulative)
@@ -188,24 +191,47 @@ class StreamSummary:
         if isinstance(transport, dict):
             transport = [transport]
         conn = rec.get("connection_id") or "default"
-        cur_bytes = sum(_num(s.get("bytes_received")) for s in transport)
-        cur_qdrop = int(totals.get("handoff_queue_dropped_frames") or 0)
-        cur_gaps = int(totals.get("decoded_gaps_over_200ms") or 0)
-        prev = self._conn_prev.get(conn, {"bytes": 0.0, "qdrop": 0, "gaps": 0})
-        self._conn_prev[conn] = {
-            "bytes": cur_bytes, "qdrop": cur_qdrop, "gaps": cur_gaps,
-        }
-        win = _num(rec.get("window_seconds")) or _num(rec.get("elapsed_seconds"))
-        d_bytes = cur_bytes - prev["bytes"] if cur_bytes >= prev["bytes"] else cur_bytes
-        if win > 0 and d_bytes > 0:
-            self.ingest_bytes_delta += d_bytes
-            self.ingest_window_seconds += win
-        self.qdrop += (
-            cur_qdrop - prev["qdrop"] if cur_qdrop >= prev["qdrop"] else cur_qdrop
-        )
-        self.gaps200 += (
-            cur_gaps - prev["gaps"] if cur_gaps >= prev["gaps"] else cur_gaps
-        )
+        previous_elapsed = self._receive_elapsed.get(conn, 0.0)
+        sample_time = rec.get("stats_observed_elapsed_seconds")
+        if sample_time is None:
+            sample_time = rec.get("elapsed_seconds")
+        if sample_time is None:
+            sample_time = previous_elapsed + _num(rec.get("window_seconds"))
+        sample_time = _num(sample_time)
+        self._receive_elapsed[conn] = sample_time
+        window_bytes, valid_sample = 0.0, False
+        for index, stat in enumerate(transport):
+            value = stat.get("bytes_received")
+            if not isinstance(value, (int, float)) or value < 0:
+                continue  # A missing sample must not reset a valid counter.
+            key = (conn, stat.get("transport_id") or stat.get("id") or index)
+            previous_bytes, previous_time = self._transport_prev.get(key, (0.0, 0.0))
+            duration = sample_time - previous_time
+            if duration <= 0:
+                continue  # Repeated cached stats are not a new measurement.
+            delta = value - previous_bytes if value >= previous_bytes else value
+            self._transport_prev[key] = value, sample_time
+            window_bytes += delta
+            valid_sample = True
+        # Include valid zero-increment intervals: this is bandwidth over the
+        # observed run, rather than a rate conditioned on non-idle windows.
+        self.ingest_bytes_delta += window_bytes
+        if valid_sample:
+            covered = self._receive_covered.get(conn, 0.0)
+            self.ingest_window_seconds += max(0.0, sample_time - covered)
+            self._receive_covered[conn] = max(covered, sample_time)
+        prev = self._conn_prev.setdefault(conn, {})
+        for name, attribute in (
+            ("handoff_queue_dropped_frames", "qdrop"),
+            ("decoded_gaps_over_200ms", "gaps200"),
+        ):
+            value = totals.get(name)
+            if not isinstance(value, (int, float)) or value < 0:
+                continue
+            previous = prev.get(name, 0)
+            delta = value - previous if value >= previous else value
+            prev[name] = value
+            setattr(self, attribute, getattr(self, attribute) + int(delta))
 
     def _resource(self, rec):
         if self.camera_index is None:

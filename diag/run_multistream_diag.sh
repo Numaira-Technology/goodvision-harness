@@ -30,6 +30,7 @@ STREAMS="${STREAMS:-2}"
 VIDEO="${VIDEO:?set VIDEO=<path to a local video file to loop>}"
 SECS="${SECS:-60}"
 SAM="${SAM:-off}"
+case "$SAM" in off|on) ;; *) echo "!! SAM must be off or on" >&2; exit 1 ;; esac
 BASE_PORT="${BASE_PORT:-8080}"
 PROVIDER="${PROVIDER:-openrouter}"
 PY="${PY:-$ROOT/.venv/bin/python}"
@@ -94,6 +95,11 @@ sam_env() {
       "SAM31_CLIENT_TIMEOUT_SECONDS=75" "SAM31_TRANSPORT_CODEC=h264" \
       "SAM31_TRANSPORT_MAX_SIDE=${SAM31_TRANSPORT_MAX_SIDE:-512}" \
       "SAM31_TRANSPORT_CRF=${SAM31_TRANSPORT_CRF:-23}"
+  else
+    printf '%s\n' \
+      "SCENE_ENGINE_MODE=disabled" "SCENE_ENGINE_ENABLED=false" \
+      "SCENE_INDEPENDENT_VLM=false" "PERSON_TRACKING_ENABLED=false" \
+      "RICH_LABEL_ENABLED=false" "PERCEPTION_METHOD="
   fi
 }
 
@@ -112,17 +118,19 @@ for i in $(seq 1 "$STREAMS"); do
   port=$(( BASE_PORT + i - 1 ))
   log="$LOG_DIR/multistream-n${STREAMS}-cam${i}-${STAMP}.log"
   cam=$(printf 'camera-%02d' "$i")
-  endpoint_env=()
+  endpoint_env=( "RICH_LABEL_ENDPOINT=" )
   if [ "$SAM" = "on" ]; then
     endpoint_env=( "RICH_LABEL_ENDPOINT=${SAM_BASE}/v1/cameras/${cam}/perception/sam_live/sessions" )
   fi
   env \
     "INFERENCE_PROVIDER=$PROVIDER" "PYTHONPATH=$ROOT/src" \
+    "HARNESS_CONFIG=$ROOT/config.yaml" \
     "HARNESS_HOST=127.0.0.1" "HARNESS_PORT=$port" \
     "HARNESS_AUTOSTART=true" \
     "HARNESS_STREAM_URL=rtsp://127.0.0.1:8554/stream$i" \
     "RESOURCE_SAMPLE_SECONDS=${RESOURCE_SAMPLE_SECONDS:-3}" \
     "HARNESS_DRY_RUN=$DRY_RUN" \
+    "HARNESS_DEPLOYMENT_SETTINGS_PATH=$LOG_DIR/settings-cam${i}-${STAMP}-$$.json" \
     "${endpoint_env[@]}" \
     $(sam_env | tr '\n' ' ') \
     "$PY" -m goodvision_harness.service > "$log" 2>&1 &
@@ -136,26 +144,54 @@ done
 echo ">> waiting for previews to connect, then starting analysis..."
 for idx in "${!HARNESS_PORTS[@]}"; do
   port="${HARNESS_PORTS[$idx]}"
+  connected=false
   for _ in $(seq 1 25); do
-    curl -s -m 3 "http://127.0.0.1:${port}/v1/status" | grep -q '"connected": *true' && break
+    curl -fsS -m 3 "http://127.0.0.1:${port}/v1/status" | grep -q '"connected": *true' && { connected=true; break; }
     sleep 1
   done
+  if [ "$connected" != true ]; then
+    echo "   !! cam$((idx+1)) preview did not connect; aborting." >&2
+    exit 1
+  fi
   # Lock dry_run in the payload so a persisted deployment setting cannot override
   # the intended mode for this run.
-  resp=$(curl -s -m 10 -X POST "http://127.0.0.1:${port}/v1/sessions/start" \
+  resp=$(curl -fsS -m 10 -X POST "http://127.0.0.1:${port}/v1/sessions/start" \
     -H "Content-Type: application/json" \
     -d "{\"mode\":\"stream\",\"analysis_mode\":\"multi\",\"dry_run\":$DRY_RUN,\"features\":[\"fight\",\"smoking\",\"fall\",\"weapon\"]}" 2>&1)
   echo "   cam$((idx+1)) (port $port) analysis start -> $(echo "$resp" | head -c 180)"
   # Fail loudly if the session did not start (e.g. missing creds / wrong endpoint)
   # rather than timing an idle or errored harness.
-  if ! echo "$resp" | grep -q '"type":"session"'; then
-    echo "   !! cam$((idx+1)) did not start a session (see $(basename "${HARNESS_LOGS[$idx]}")); aborting." >&2
+  if ! printf '%s' "$resp" | "$PY" -c '
+import json, sys
+response = json.load(sys.stdin)
+expected = sys.argv[1] == "true"
+if response.get("type") != "session" or response.get("dry_run") is not expected:
+    raise SystemExit("session did not start in the requested dry_run mode")
+' "$DRY_RUN"; then
+    echo "   !! cam$((idx+1)) did not start in the requested mode; aborting." >&2
     exit 1
   fi
-  # Confirm the harness is actually in the intended dry_run mode before timing.
-  mode=$(curl -s -m 5 "http://127.0.0.1:${port}/v1/status" \
-    | python3 -c "import sys,json;print(json.load(sys.stdin).get('dry_run'))" 2>/dev/null || echo "?")
-  echo "      running dry_run=$mode (expected $DRY_RUN)"
+  # Check the effective running mode before timing, not just the start request.
+  verified=false
+  for _ in $(seq 1 25); do
+    if curl -fsS -m 5 "http://127.0.0.1:${port}/v1/status" | "$PY" -c '
+import json, sys
+status = json.load(sys.stdin)
+expected = sys.argv[1] == "true"
+if status.get("dry_run") is not expected or status.get("pipeline_state") != "running":
+    raise SystemExit(1)
+' "$DRY_RUN"; then
+      verified=true
+      break
+    fi
+    sleep 1
+  done
+  if [ "$verified" != true ]; then
+    echo "   !! cam$((idx+1)) running mode check failed; aborting." >&2
+    exit 1
+  fi
+  echo "      running dry_run=$DRY_RUN (verified)"
+
 done
 
 echo ">> running ${STREAMS} stream(s) for ${SECS}s ..."
@@ -170,7 +206,7 @@ echo ""
 echo "=== per-stream pressure summary (N=$STREAMS, SAM=$SAM) ==="
 GPU_ARGS=()
 [ -n "${GPU_CSV:-}" ] && [ -f "${GPU_CSV}" ] && GPU_ARGS=(--gpu-csv "$GPU_CSV")
-"$PY" "$ROOT/diag/parse_pipeline_log.py" "${HARNESS_LOGS[@]}" "${GPU_ARGS[@]}" || true
+"$PY" "$ROOT/diag/parse_pipeline_log.py" "${HARNESS_LOGS[@]}" ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} || true
 
 echo ""
 echo "Logs: ${HARNESS_LOGS[*]}"

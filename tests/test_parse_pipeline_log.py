@@ -190,14 +190,13 @@ def test_ingest_bandwidth_uses_deltas_not_running_sum():
     assert abs(m["bw_ingest_mbps"] - 8.0) < 0.01
 
 
-def test_ingest_idle_windows_do_not_dilute():
-    # One 5 MB burst then idle (cumulative stays 5 MB): rate reflects the burst
-    # window only; trailing idle windows add neither bytes nor time.
+def test_ingest_idle_windows_include_observed_time():
+    # One 5 MB burst then three idle windows: 5 MB over 20 seconds = 2 Mbps.
     mb = 1_000_000
     recs = [_cumulative_window(5 * mb)] + [_cumulative_window(5 * mb) for _ in range(3)]
     s = _summary_from(recs)
-    assert s.ingest_window_seconds == 5.0  # only the window with new bytes counts
-    assert abs(s._bw_ingest() * 8 / 1e6 - 8.0) < 0.01
+    assert s.ingest_window_seconds == 20.0
+    assert abs(s._bw_ingest() * 8 / 1e6 - 2.0) < 0.01
 
 
 def test_ingest_handles_reconnect_counter_reset():
@@ -222,3 +221,57 @@ def test_cumulative_qdrop_and_gaps_counted_once_not_summed():
     # Final cumulative is 3 drops / 5 gaps -- not 0+1+1+3=5 / 0+2+2+5=9.
     assert s.qdrop == 3
     assert s.gaps200 == 5
+
+
+def test_transport_resets_are_independent_and_order_does_not_matter():
+    first, second = _cumulative_window(0), _cumulative_window(0)
+    first["transport"] = [
+        {"transport_id": "a", "bytes_received": 10_000_000},
+        {"transport_id": "b", "bytes_received": 10_000_000},
+    ]
+    second["transport"] = [
+        {"transport_id": "b", "bytes_received": 20_000_000},
+        {"transport_id": "a", "bytes_received": 2_000_000},
+    ]
+    s = _summary_from([first, second])
+    assert s.ingest_bytes_delta == 32_000_000
+    assert s.ingest_window_seconds == 10
+
+
+def test_missing_and_cached_transport_samples_preserve_counter_baseline():
+    records = [
+        _cumulative_window(value)
+        for value in (5_000_000, None, 5_000_000, 10_000_000)
+    ]
+    for record, observed in zip(records, [5, 10, 5, 15], strict=True):
+        record["stats_observed_elapsed_seconds"] = observed
+    s = _summary_from(records)
+    assert s.ingest_bytes_delta == 10_000_000
+    assert s.ingest_window_seconds == 15
+    assert abs(s._bw_ingest() * 8 / 1e6 - 16 / 3) < 0.01
+
+
+def test_counter_reset_on_same_connection_and_elapsed_time_fallback():
+    records = [_cumulative_window(value) for value in (10_000_000, 3_000_000)]
+    for record, elapsed in zip(records, [10, 15], strict=True):
+        record.pop("window_seconds")
+        record["elapsed_seconds"] = elapsed
+    s = _summary_from(records)
+    assert s.ingest_bytes_delta == 13_000_000
+    assert s.ingest_window_seconds == 15
+
+
+def test_missing_transport_does_not_double_count_overlapping_intervals():
+    records = [_cumulative_window(0) for _ in range(3)]
+    for record, elapsed in zip(records, [5, 10, 15], strict=True):
+        record["stats_observed_elapsed_seconds"] = elapsed
+        record["transport"] = [
+            {"transport_id": "a", "bytes_received": (
+                None if elapsed == 10 else elapsed * 1_000_000
+            )},
+            {"transport_id": "b", "bytes_received": elapsed * 1_000_000},
+        ]
+    summary = _summary_from(records)
+    assert summary.ingest_bytes_delta == 30_000_000
+    assert summary.ingest_window_seconds == 15
+    assert summary.metrics()["bw_ingest_mbps"] == 16

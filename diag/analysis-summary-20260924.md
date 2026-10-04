@@ -73,8 +73,8 @@
 `parse_pipeline_log.py diag/logs/harness-SAM-full-20260924.log`:
 - **环节4 远程 SAM 往返 = 绝对大头**:p50 ≈ 2.47s,p95 ≈ 3.18s(与会上 ~2.6s 吻合)。这是 **GPU + 网络** 成本,不是本机 CPU。
 - 环节6 commit ≈ 13ms(可忽略)。
-- **带宽**:接收(ingest)≈ **98 Mbps**,上行到 SAM 仅 **0.23 Mbps**(帧缩到 512px)——**接收带宽远大于上行**。
-- 推断"每多一路"的边际成本:**主机 CPU(解码/编码/绘制)+ 接收带宽 线性叠加;GPU 走共享入场队列是真正的天花板**。要坐实多路 GPU 曲线,需在有 GPU 的机器用上面三件一起跑 1/2/4 路(本轮工具已就绪,未端到端跑)。
+- **带宽更正**:旧版 ingest≈ **98 Mbps** 使用了累计接收字节逐窗相加，已撤回；该原始日志未随仓库提交，无法在本次 rebase 中重算。新版按连接/transport 的相邻有效计数与采样时间求差，并计入零增量窗口。上行到 SAM 的 **0.23 Mbps** 来自每请求字节，未受该累计计数错误影响。接收/上行对比需用新版重新采样验证。
+- 推断"每多一路"的边际成本:**主机 CPU(解码/编码/绘制)+ 接收带宽可能叠加（接收带宽归因待重测）;GPU 走共享入场队列是真正的天花板**。要坐实多路 GPU 曲线,需在有 GPU 的机器用上面三件一起跑 1/2/4 路(本轮工具已就绪,未端到端跑)。
 
 ### 怎么跑
 ```bash
@@ -126,7 +126,7 @@ STREAMS=4 VIDEO=<file> SAM=on SECS=90 GPU_CSV=diag/logs/gpu-*.csv diag/run_multi
 
 **诊断**:4 路时环节4 p50=2708ms、p95~9s,但 GPU 只有 39% util——瓶颈不是算力,是 harness **把帧喂得比 SAM 排得快**,`_pending` 积压到 ~36s(`queue_oldest_seconds:36`),结果越算越旧;单飞往返被积压拖长,GPU 在 op 之间空转。
 
-**修复**(纯 harness 侧,免费):给流水线协调器加 `latest_only` 背压——落后时**丢最旧的未处理帧**,只留最新 ~`pending_capacity` 帧。每个 SAM batch 独立(fresh predictor epoch),丢旧帧不破坏时序。开关 `RICH_LABEL_LATEST_ONLY`(默认关=保留离线基准的"全量不丢";开=直播/多路要新鲜)。改动:`config.py`(字段+env)、`perception.py`(透传)、`sam_tracking_pipeline.py`(`submit` 丢最旧);单测覆盖丢弃/保留/env,流水线全套 22 项绿。
+**集成后的修复**:当前 `main` 已提供 `video_queue_policy=latest_only`（默认），只在内存保留两个最新候选帧，选中执行后才写入持久 journal。`RICH_LABEL_LATEST_ONLY=true` 复用这一路径，丢弃候选不会泄漏 JPEG，也不会覆盖已准备/请求中的数据；`false` 不改变现有 queue policy。离线基准全量处理需显式设置 `SAM31_QUEUE_POLICY=durable_ordered`。本 PR 的压测工具和历史测量保留，历史性能数字不代表本次 rebase 后重新做过 GPU 实测。
 
 **GPU 实测 A/B(N=4,同机 RTX 4090)**:
 

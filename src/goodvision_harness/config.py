@@ -93,11 +93,9 @@ class RichLabelSettings:
     video_realtime_max_age_seconds: float = 2.0
     video_result_deadline_seconds: float = 4.0
     processing_method: str | None = None
-    # Live freshness vs. durable completeness for the pipelined SAM path. When
-    # True and the pipeline falls behind, the oldest pending sample is dropped so
-    # annotation tracks the newest frame instead of a growing backlog (the fix for
-    # multi-stream staleness). Leave False for offline/benchmark capture, which
-    # must process every sampled frame.
+    # Compatibility toggle for the diagnostic rig. True selects the current
+    # latest_only candidate path; False leaves video_queue_policy in control.
+    # Offline capture explicitly selects video_queue_policy=durable_ordered.
     video_latest_only: bool = False
 
 

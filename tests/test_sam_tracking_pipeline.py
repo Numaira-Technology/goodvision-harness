@@ -417,10 +417,11 @@ def test_latest_only_drops_oldest_pending_when_behind(tmp_path, monkeypatch):
             )
         stats = coordinator.stats()
         assert stats["submitted"] == 20
-        # Freshness backpressure caps the backlog at pending_capacity (4)...
-        assert stats["disk_pending_frames"] <= 4
-        # ...and the dropped remainder is counted.
-        assert stats["dropped_backpressure"] == 16
+        # The main candidate path retains two frames without spooling them.
+        assert stats["candidate_frames"] == 2
+        assert stats["disk_pending_frames"] == 0
+        assert stats["dropped_backpressure"] == 18
+        assert set(coordinator._candidate_frames) == {18, 19}
     finally:
         coordinator.close()
 
@@ -443,26 +444,35 @@ def test_without_latest_only_backlog_is_retained(tmp_path, monkeypatch):
 
 
 def test_latest_only_releases_spool_under_overload(tmp_path, monkeypatch):
-    """Dropped samples must free their spooled JPEGs, so sustained overload keeps
-    admitting new frames instead of eventually raising TrackingSpoolFull."""
-    # Budget fits a few bounded pending frames but not an unbounded backlog.
+    """Dropped candidates never consume journal quota; the retained pair can
+    still finish through the normal durable request and commit path."""
+    received = []
     _, _, coordinator = setup_pipeline(
-        tmp_path, max_fps=30, latest_only=True, spool_max_bytes=16384,
+        tmp_path, received.append, max_fps=30, latest_only=True,
+        spool_max_bytes=16384,
     )
     try:
-        _park_prepare(coordinator, monkeypatch)
-        for seq in range(40):  # far more than the spool could hold un-dropped
-            assert coordinator.submit(
-                b"x" * 1000, stream_session_id="camera", frame_sequence=seq,
-                timestamp_seconds=seq * 0.1,
-            )
-        stats = coordinator.stats()
-        assert stats["submitted"] == 40
-        assert stats["disk_pending_frames"] <= 4      # backlog stayed bounded
-        assert stats["dropped_backpressure"] == 36
-        assert not stats.get("recovery_required")     # session never failed
-        # The journal only retains the small bounded prefix, not all 40 frames.
-        assert coordinator._journal().stats()["retained_sources"] <= 4
+        with monkeypatch.context() as parked:
+            _park_prepare(coordinator, parked)
+            for seq in range(40):
+                assert coordinator.submit(
+                    b"x" * 1000, stream_session_id="camera", frame_sequence=seq,
+                    timestamp_seconds=seq * 0.1,
+                )
+            stats = coordinator.stats()
+            assert stats["submitted"] == 40
+            assert stats["candidate_frames"] == 2
+            assert stats["disk_pending_frames"] == 0
+            assert stats["dropped_backpressure"] == 38
+            assert not stats["recovery_required"]
+            assert coordinator._journal().stats()["retained_sources"] == 0
+        coordinator.flush()
+        assert coordinator.wait_until_idle(5)
+        assert coordinator.stats()["state"] == "finished"
+        assert output_sequences(received)[-1] == 39
+        assert coordinator._journal().stats()["retained_sources"] == 0
+        assert all(row["state"] == "committed"
+                   for row in coordinator._journal().records())
     finally:
         coordinator.close()
 
