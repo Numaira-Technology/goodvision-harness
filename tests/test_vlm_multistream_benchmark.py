@@ -1,8 +1,11 @@
 from itertools import pairwise
+from types import SimpleNamespace
 
 import pytest
+from test_vlm_independent import ROOT, jpeg
 
-from tools.vlm_multistream_benchmark import release_schedule, summarize
+from goodvision_harness.config import load_config
+from tools.vlm_multistream_benchmark import release_schedule, run_stage, summarize
 
 
 def report(*, seconds=1, complete=True, error=None, uncertain=False):
@@ -82,6 +85,41 @@ def test_aligned_sources_keep_previous_rotating_send_order():
     for tick, (at, actions) in enumerate(releases):
         assert at == pytest.approx(tick / 2.5)
         assert actions == [((tick + offset) % 8, tick) for offset in range(8)]
+
+
+@pytest.mark.parametrize(
+    ("observation_fps", "expected"), [(1.25, 3), (2, 5), (2.5, 6), (3, 7)]
+)
+def test_simulated_cadence_delivers_every_expected_window(
+    tmp_path, observation_fps, expected
+):
+    args = SimpleNamespace(
+        real=False,
+        duration=3,
+        simulated_latency=0,
+        observation_fps=observation_fps,
+        output_mode="events",
+        local_concurrency=4,
+        global_limit=16,
+        per_stream_limit=2,
+        request_rate=20,
+        queue_timeout=1,
+        deadline=3,
+    )
+    result = run_stage(
+        args, load_config(ROOT / "config.yaml"), 1, [[jpeg()]], tmp_path, 1
+    )
+    assert result["input_timing_valid"]
+    assert result["all_drained"]
+    assert result["offer_rejected_by_stream"] == [0]
+    assert result["result_records_missing"] == 0
+    assert result["shared_admission"]["grants"] == expected
+    stream = result["per_stream"][0]
+    assert stream["expected_observations"] == expected
+    assert stream["scheduled_observations"] == expected
+    assert stream["complete_valid_results"] == expected
+    assert stream["on_time_coverage"] == 1
+    assert stream["errors"] == {}
 
 
 def test_phase_statistics_include_observed_failures_and_do_not_invent_zeros():

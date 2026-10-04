@@ -83,6 +83,23 @@ class SourceSample:
     received_monotonic: float
 
 
+def _observation_window(history):
+    """Keep at most four originals while retaining enough temporal context."""
+    samples = tuple(history)
+    window = tuple(sample.frame for sample in samples[-4:])
+    if (
+        len(window) == 4
+        and window[-1].timestamp_seconds - window[0].timestamp_seconds < 0.75
+    ):
+        # Dense sampling can put all four recent frames inside 0.75 seconds.
+        # Replace only the oldest image, preserving the latest endpoint and
+        # image budget without changing windows at the default sampling rate.
+        for sample in reversed(samples[:-4]):
+            if window[-1].timestamp_seconds - sample.frame.timestamp_seconds >= 0.75:
+                return (sample.frame, *window[-3:])
+    return window
+
+
 class IndependentEventState:
     """Publish current observations; the tracked scene owns person-event lifecycles.
 
@@ -713,7 +730,7 @@ def run_vlm_process(
             if history:
                 sample = history[-1]
                 frame = sample.frame
-                window = tuple(x.frame for x in list(history)[-4:])
+                window = _observation_window(history)
                 if (
                     len(window) >= 2
                     and window[-1].timestamp_seconds - window[0].timestamp_seconds
