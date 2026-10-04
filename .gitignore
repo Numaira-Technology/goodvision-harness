@@ -102,3 +102,14 @@ memory/
 .ssh/
 *.pem
 *.key
+
+# Diagnostic rig: tooling is committed; runtime artifacts are not.
+diag/logs/
+diag/certs/
+diag/__pycache__/
+
+# Local test media / scratch artifacts (not for commit).
+/auto.crt
+/testABvideos/
+/testABvideos.zip
+/bench_v1_sample/

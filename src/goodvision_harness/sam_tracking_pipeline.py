@@ -62,11 +62,14 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
 
     def __init__(
         self, client, *, spool_directory=None, spool_max_bytes=256 * 1024**2,
-        on_native_batch=None, queue_policy="durable_ordered",
+        on_native_batch=None, latest_only=False, queue_policy="durable_ordered",
         realtime_pending_frames=2, realtime_max_age_seconds=2.0,
         realtime_append_frames=1,
         result_deadline_seconds=4.0, **kwargs
     ):
+        # Legacy freshness toggle selects the current bounded candidate path.
+        if latest_only:
+            queue_policy = "latest_only"
         if queue_policy not in {"durable_ordered", "realtime_latest", "latest_only"}:
             raise ValueError("unsupported SAM queue policy")
         if (type(realtime_pending_frames) is not int

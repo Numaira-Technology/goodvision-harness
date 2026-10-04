@@ -57,6 +57,9 @@ webrtc = [
   "aiohttp>=3.10,<4",
   "aiortc>=1.15,<2",
 ]
+diag = [
+  "psutil>=5.9,<8",
+]
 
 [project.scripts]
 goodvision-harness = "goodvision_harness.service:main"

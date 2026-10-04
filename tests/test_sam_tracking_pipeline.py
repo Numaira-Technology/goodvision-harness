@@ -398,6 +398,44 @@ def test_phase_sampling_keeps_configured_rate_and_resets_its_clock(
         coordinator.close()
 
 
+def test_latest_only_drops_oldest_pending_when_behind(tmp_path, monkeypatch):
+    """With latest_only, a stalled pipeline keeps only the newest ~capacity frames."""
+    _, _, coordinator = setup_pipeline(tmp_path, max_fps=30, latest_only=True)
+    try:
+        # Park the prepare loop so nothing drains _pending -> backlog would grow.
+        monkeypatch.setattr(coordinator, "_preparation_schedule", lambda now: (None, {}))
+        for seq in range(20):
+            assert coordinator.submit(
+                b"jpeg", stream_session_id="camera", frame_sequence=seq,
+                timestamp_seconds=seq * 0.1,
+            )
+        stats = coordinator.stats()
+        assert stats["submitted"] == 20
+        # Freshness backpressure caps the backlog at pending_capacity (4)...
+        assert stats["disk_pending_frames"] <= 4
+        # ...and the dropped remainder is counted.
+        assert stats["dropped_backpressure"] == 16
+    finally:
+        coordinator.close()
+
+
+def test_without_latest_only_backlog_is_retained(tmp_path, monkeypatch):
+    """Default (durable) behaviour keeps every sample even when stalled."""
+    _, _, coordinator = setup_pipeline(tmp_path, max_fps=30)  # latest_only off
+    try:
+        monkeypatch.setattr(coordinator, "_preparation_schedule", lambda now: (None, {}))
+        for seq in range(20):
+            coordinator.submit(
+                b"jpeg", stream_session_id="camera", frame_sequence=seq,
+                timestamp_seconds=seq * 0.1,
+            )
+        stats = coordinator.stats()
+        assert stats["dropped_backpressure"] == 0
+        assert stats["disk_pending_frames"] == 20  # whole backlog retained
+    finally:
+        coordinator.close()
+
+
 def test_prepare_and_http_progress_while_previous_commit_waits(tmp_path, monkeypatch):
     commit_entered, commit_release = threading.Event(), threading.Event()
     prepared_while_http_busy = threading.Event()

@@ -93,6 +93,12 @@ class RichLabelSettings:
     video_realtime_max_age_seconds: float = 2.0
     video_result_deadline_seconds: float = 4.0
     processing_method: str | None = None
+    # Live freshness vs. durable completeness for the pipelined SAM path. When
+    # True and the pipeline falls behind, the oldest pending sample is dropped so
+    # annotation tracks the newest frame instead of a growing backlog (the fix for
+    # multi-stream staleness). Leave False for offline/benchmark capture, which
+    # must process every sampled frame.
+    video_latest_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +444,13 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             ),
         ),
         backend=rich_label_backend,
+        video_latest_only=_environment_bool(
+            "RICH_LABEL_LATEST_ONLY",
+            _bool(
+                rich_label_section.get("video_latest_only", False),
+                "rich_labeling.video_latest_only",
+            ),
+        ),
         video_batch_frames=_bounded_int(
             int(os.environ["SAM31_BATCH_FRAMES"])
             if os.environ.get("SAM31_BATCH_FRAMES")
