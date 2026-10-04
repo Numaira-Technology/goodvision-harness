@@ -131,6 +131,7 @@ from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
     UNKNOWN_FACE_EVENT_LABEL,
 )
+from .resource_trace import start_resource_sampling, stop_resource_sampling
 from .result_bus import FrameBus, FramePacket, ResultBus
 from .rich_labeling import (
     DeferredRichLabelHistory,
@@ -4537,9 +4538,11 @@ def create_app(
         runtime = factory()
         application.state.runtime = runtime
         runtime.start()
+        start_resource_sampling()
         try:
             yield
         finally:
+            stop_resource_sampling()
             runtime.stop()
             await application.state.fleet.aclose()
 

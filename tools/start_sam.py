@@ -48,6 +48,10 @@ WORKER_ENV = {
     "SAM31_ENABLED": "true",
     "SAM31_SESSION_ENABLED": "false",
     "SAM31_LIVE_ENABLED": "true",
+    # Number of concurrent camera lanes the worker serves from one shared model.
+    # Set SAM31_LIVE_CAMERAS=N when renting to run an N-stream GPU-contention test
+    # (diag/run_multistream_diag.sh). Default 1 keeps the single-lane behaviour.
+    "SAM31_LIVE_CAMERAS": os.environ.get("SAM31_LIVE_CAMERAS", "1"),
     "SAM_SCENE_IMAGE_ENABLED": "false",
     "SAM31_SESSION_H264_ENABLED": "true",
     "SAM31_SESSION_HOTSTART_DELAY": "5",
@@ -168,6 +172,13 @@ def offer_was_unavailable(payload) -> bool:
         "ask_unavailable", "offer_unavailable", "machine_unavailable",
         "offer_already_rented", "ask_already_rented", "offer_taken",
     }
+    # Vast sometimes wraps an unavailable-offer refusal in a generic
+    # error=invalid_args while naming the real cause (e.g. no_such_ask) only in
+    # the message. An explicit capacity code anywhere in the provider's message
+    # is unambiguous, so treat it as unavailable and skip to the next offer.
+    diagnostic = creation_diagnostic(payload).lower()
+    if any(code in diagnostic for code in codes):
+        return True
     for name in ("code", "error_code"):
         value = payload.get(name)
         if isinstance(value, str) and value.lower() not in codes:
