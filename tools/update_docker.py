@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -37,6 +37,7 @@ class Docker:
                 text=True,
                 check=True,
                 timeout=timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except (OSError, subprocess.SubprocessError) as error:
             # Compose output and exec failures may contain environment/keys.
@@ -51,7 +52,7 @@ class Docker:
         except ValueError as error:
             raise UpdateError("Docker returned invalid JSON.") from error
 
-    def api(self, identity: str, component: str, path: str, body=None):
+    def api(self, identity: str, component: str, path: str, body=None, *, method=None):
         # Authentication stays inside the container, never in command arguments.
         code = (
             "import json,os,pathlib,urllib.request;"
@@ -67,7 +68,7 @@ class Docker:
         code += (
             f"body={body!r};data=None if body is None else json.dumps(body).encode();"
             f"request=urllib.request.Request('http://127.0.0.1:{port}{path}',"
-            "data=data,headers=headers);"
+            f"data=data,headers=headers,method={method!r});"
             "print(urllib.request.urlopen(request,timeout=10).read().decode())"
         )
         return self.json("exec", identity, "python", "-c", code, timeout=20)
@@ -430,8 +431,48 @@ def image_id(docker, reference):
     return docker.json("image", "inspect", reference)[0]["Id"]
 
 
+def launcher_references(docker, deployment, candidates):
+    config = docker.json(
+        *deployment.compose("config", "--format", "json", active=False),
+        cwd=deployment.directory,
+    )
+    references = {}
+    for service in deployment.services:
+        reference = config["services"][service].get("image")
+        if not reference or reference.startswith("sha256:") or "@" in reference:
+            raise UpdateError("The installed launcher needs a supported image tag.")
+        if (
+            reference in references
+            and candidates[service] != candidates[references[reference]]
+        ):
+            raise UpdateError("Selected services require conflicting launcher images.")
+        references[reference] = service
+    ids = docker.run("ps", "-aq").split()
+    selected_ids = {c["Id"] for c in deployment.containers.values()}
+    for container in docker.json("inspect", *ids) if ids else []:
+        if (
+            container["Id"] not in selected_ids
+            and container["Config"].get("Image") in references
+        ):
+            raise UpdateError("Another installation shares these launcher image tags.")
+    return {service: reference for reference, service in references.items()}
+
+
+def tag_launcher_images(docker, references, images):
+    for service, reference in references.items():
+        docker.run("image", "tag", images[service], reference)
+
+
 def update(
-    docker, deployment, *, images=None, check_only=False, rollback=False, timeout=900
+    docker,
+    deployment,
+    *,
+    images=None,
+    check_only=False,
+    rollback=False,
+    timeout=900,
+    persist_references=False,
+    lock_held=False,
 ):
     images = images or {}
     if images and rollback:
@@ -479,6 +520,9 @@ def update(
                     "and pass --image for every service."
                 )
             candidates = {}
+    references = previous.get("references", {}) if rollback else {}
+    if persist_references:
+        references = launcher_references(docker, deployment, candidates)
     accepting = assert_idle(docker, deployment, recovery=rollback)
     if rollback and accepting is None:
         accepting = previous.get("accepting_sessions")
@@ -489,7 +533,7 @@ def update(
     if check_only:
         print("Checks passed. No images or services were changed.", flush=True)
         return
-    with update_lock(deployment):
+    with nullcontext() if lock_held else update_lock(deployment):
         if not rollback and not images:
             print(
                 "Building services while the installed version stays running...",
@@ -527,6 +571,13 @@ def update(
             accepting = accepting_now
         before = {s: c["Image"] for s, c in deployment.containers.items()}
         if not rollback and candidates == before:
+            if persist_references:
+                tag_launcher_images(docker, references, candidates)
+                if deployment.record.is_file():
+                    saved = json.loads(deployment.record.read_text(encoding="utf-8"))
+                    if saved.get("after") == candidates:
+                        saved["references"] = references
+                        write_json(deployment.record, saved)
             print("Selected services already use these images.", flush=True)
             return
         record = {
@@ -538,6 +589,7 @@ def update(
             "after": candidates,
             "accepting_sessions": accepting,
             "status": "prepared",
+            "references": references,
         }
         # Keep every previous image reachable even when a build replaces its tag.
         transaction = uuid.uuid4().hex[:12]
@@ -568,10 +620,12 @@ def update(
                     "Replacing selected services and checking readiness...", flush=True
                 )
                 replace_services(docker, deployment, candidates, timeout)
+                tag_launcher_images(docker, references, candidates)
             except (Exception, KeyboardInterrupt) as error:
                 print("Startup failed. Restoring the previous images...", flush=True)
                 try:
                     replace_services(docker, deployment, before, timeout)
+                    tag_launcher_images(docker, references, before)
                 except (Exception, KeyboardInterrupt) as recovery_error:
                     raise UpdateError(
                         "Recovery did not become ready. Keep the saved state and "

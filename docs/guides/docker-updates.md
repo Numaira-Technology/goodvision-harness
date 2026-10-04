@@ -2,10 +2,63 @@
 
 [Repository overview](../../README.md) · [Tools](../../tools/README.md)
 
+## Customer updates on Windows
+
+Keep Docker Desktop running, extract the supplied Windows update ZIP completely,
+and double-click **`Update.exe`**; no Git, Python or terminal commands are needed.
+The window finds the installed component (asks you to choose if several
+installations exist), stops local harness analysis, installs the update and shows
+progress and the result; it restores your saved autostart setting afterward.
+Your models, data and configuration are retained, and you can continue opening
+GoodVision as usual. For Contour on another
+computer, stop analysis in the main console first and run the Contour update
+package on that computer.
+
+## Maintainer and source-deployment tools
+
+The commands below are for maintainers and source deployments. Customers use
+the packaged Windows updater above.
+
+### Package a Windows customer update
+
+Prepare and validate the candidate **Linux/amd64** images locally before
+packaging. On a Windows build machine with Python 3.10 or later, install
+PyInstaller in the maintainer environment and package the selected component:
+
+```powershell
+python -m pip install pyinstaller
+python tools/package_customer_docker_update.py --output dist/goodvision-harness-update-next.zip --release next --component harness --image harness=goodvision-harness:next
+python tools/package_customer_docker_update.py --output dist/goodvision-contour-update-next.zip --release next --component contour --image contour=goodvision-contour:next --image engine=goodvision-contour-runtime:next
+```
+
+Replace `next` with a new release label and use the corresponding validated
+image tags. The packager builds a standalone Windows `Update.exe`, exports the
+selected images, and creates a ZIP containing the executable, `images.tar.gz`,
+`update-package.json` and short customer instructions. It also writes a ZIP
+checksum alongside the output. It never overwrites an existing output ZIP.
+Packaging does not build product images or include customer models, data or keys.
+
+The harness package contains one `harness` image that the window applies to every
+installed harness lane. The Contour package requires both `contour` and `engine`
+images. Deliver the matching package to each host; customers extract it and
+double-click the executable. Neither Python nor PyInstaller is required on the
+customer machine. To reuse a previously built Windows updater, pass
+`--executable /path/to/Update.exe`; this also permits packaging on another build
+host without rebuilding the executable.
+
+The customer updater preserves the original launcher image tags so launchers
+reopen the updated version automatically. It refuses tags shared by another
+installation. For legacy harness installations with `RELEASE.json`, the candidate
+must retain every file in the original source inventory; launcher metadata is
+verified and refreshed from the actual candidate source hashes. Packages for an
+incompatible edition or with missing inventory files are refused.
+
+### Source-deployment updater
+
 `tools/update_docker.py` updates an existing Docker Compose deployment of the
 main harness or GoodVision Contour. It uses Python 3.10 or later with the standard
-library, Docker Compose v2 or later and local Linux containers. Run it on the host where
-the selected component is installed; for separate main and GPU hosts, run the
+library, Docker Compose v2 or later and local Linux containers. Run it on the
+host where the selected component is installed; for separate main and GPU hosts, run the
 matching component on each host.
 
 The script discovers the installed Compose project, working directory and exact
@@ -15,13 +68,13 @@ lanes together, or the GPU Contour `contour` and `engine` pair together. Scaled
 replicas of one Compose service are unsupported; use separate `harness-N` lanes.
 It does not update other workers or install a new deployment.
 
-## Before an update
+### Before a command-line update
 
 Stop every analysis using the selected deployment and wait for cleanup to finish.
 For the harness, also disable automatic analysis startup in its saved deployment
 settings through the console. The saved `autostart` setting must be false; the
-original `.env` can retain its startup default. Selected containers must still be running so the
-updater can inspect their status. Stop analysis on any other harness host using a
+original `.env` can retain its startup default. Selected containers must still be
+running so the updater can inspect their status. Stop analysis on any other harness host using a
 Contour node before updating that node; no Contour sessions or requests may remain.
 
 Keep the installed Compose files, `.env` and any explicitly selected environment
@@ -35,7 +88,7 @@ Use the same custom environment files as the original deployment, with repeated
 cannot recover them. Without overrides, the updater uses recorded environment
 file paths from Compose labels when available, or the normal project `.env`.
 
-## Build from updated source
+### Build from updated source
 
 Update the source in the **installed build context**, which may differ from the
 directory containing the updater. For a deployment checkout already on `main`,
@@ -82,9 +135,9 @@ python3 tools/update_docker.py contour --project goodvision-contour --timeout 18
 time for Contour model loading on the target host. The build has a separate
 two-hour limit. See `--help` for all options.
 
-## Use prepared images, including offline installations
+### Use prepared images for a command-line update
 
-For customer deployments with images and no buildable source, prepare images on
+For image-only deployments managed from the command line, prepare images on
 a suitable build host, transfer them, and load them on the deployment host first:
 
 ```sh
@@ -120,7 +173,7 @@ architecture, GPU runtime and application expectations. This mode does not build
 or pull them. Reusing a tag is supported because the updater records immutable
 image IDs; distinct release tags make operations easier to audit.
 
-## What happens during an update
+### What happens during a command-line update
 
 The script validates the installation and prepares all candidate images before
 recreating services. For Contour it then pauses new-session admission, confirms
@@ -148,9 +201,12 @@ directories, mounted configuration and persistent data are not rewritten.
 Repeated updates are supported; only the most recent update **per Compose
 project** is retained for rollback.
 
-## Keep the active image selection on later restarts
+### Keep the command-line image selection on later restarts
 
-After either an update or rollback, append `active.compose.json` **last** whenever
+This section applies to command-line updates. The customer executable keeps
+original launchers working automatically.
+
+After either a command-line update or rollback, append `active.compose.json` **last** whenever
 using Compose to recreate services. Use the original project, working directory,
 Compose files and environment files, followed by that overlay. For example, from
 the installed Contour working directory:
@@ -171,12 +227,12 @@ docker compose -p goodvision-harness -f compose.yaml \
 ```
 
 Adapt those examples to the discovered project and original configuration files.
-Existing deployment launchers do not automatically append this overlay. Omitting
+After command-line updates, deployment launchers do not automatically append this overlay. Omitting
 it can recreate services with older tags from the original Compose files. The
 updater itself includes the active overlay when replacing services; subsequent
 source builds use the original build definitions.
 
-## Roll back the last update
+### Roll back the last update
 
 Stop analysis and turn off harness autostart before rollback too. Keep the
 deployment's Compose files and environment files exactly as they were during the

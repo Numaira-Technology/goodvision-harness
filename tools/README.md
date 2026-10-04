@@ -21,6 +21,9 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | `customer_check.py` | Installed check dispatcher; mode comes from its installed filename. |
 | `runtime_gateway.py` | Runtime process supervisor and customer diagnostic filtering. |
 | `update_docker.py` | Update an installed Compose harness or Contour deployment from source or loaded images, with readiness checks and image rollback. [Usage](../docs/guides/docker-updates.md). |
+| `customer_update.py` | Verify a customer package, stop local analysis, and restore startup settings for the update window. |
+| `customer_update_gui.py` | Windows customer update window; distributed as `Update.exe` with prepared images so customers can update by double-clicking. [Customer steps](../docs/guides/docker-updates.md#customer-updates-on-windows). |
+| `package_customer_docker_update.py` | Package validated images and a standalone Windows updater in a customer ZIP. [Maintainer steps](../docs/guides/docker-updates.md#package-a-windows-customer-update). |
 
 See [release development](../docs/guides/release.md) and the
 [customer deployment guide](../DEPLOY.md). Recorded image tags and release
