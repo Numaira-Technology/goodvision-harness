@@ -10,6 +10,7 @@
 | [事件、归档与收尾](events-and-lifecycle.md) | 独立发布、身份纠正及收尾修复；归档现场持续消费与恢复边界待验收 |
 | [追踪性能](tracking-performance.md) | L40S 正式权重容量、缓存收益及可选队列取舍；长期容量和质量未证明 |
 | [识别质量](recognition-quality.md) | 30 段分层复测：8B 精简 JSON 最快但有日常误报；Simple Jev 漏检更多，定位与一般质量待验收 |
+| [纯 VLM 十二路](vlm-12-streams.md) | 场景事件输出、跨进程公平限流和固定速度压测；模拟调度不代表真实模型容量或识别质量 |
 | [交付与升级](delivery-and-updates.md) | 连续升级、PowerShell 5.1 和对客审计；本地检查不能代替客户现场升级 |
 
 ## 维护规则

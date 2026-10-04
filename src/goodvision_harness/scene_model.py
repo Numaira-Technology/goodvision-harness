@@ -172,6 +172,13 @@ def _response_shape(response: object) -> dict[str, object]:
     if not isinstance(choices, list):
         return {"choices_count": None}
     result: dict[str, object] = {"choices_count": len(choices)}
+    # Known public routing labels only; never preserve arbitrary response text.
+    provider = response.get("provider")
+    if isinstance(provider, str):
+        result["provider_category"] = provider if provider in {
+            "Darkbloom", "DeepInfra", "Parasail", "Alibaba", "Alibaba Cloud Int.",
+            "AtlasCloud", "SiliconFlow", "Venice",
+        } else "other"
     if not choices or not isinstance(choices[0], Mapping):
         return result
     choice = choices[0]
@@ -206,6 +213,10 @@ def _response_shape(response: object) -> dict[str, object]:
         if isinstance(content, str):
             result["content_characters"] = len(content)
             result.update(_reply_diagnostics(content))
+            stripped = content.strip()
+            result["content_wrapper"] = (
+                "code_fence" if stripped.startswith("```") else "none"
+            )
         elif isinstance(content, list):
             result["content_parts"] = len(content)
     return result
@@ -376,6 +387,8 @@ class TemporalVLMInspector:
             "outcome": "error",
         }
         with self._call_lock:
+            self.last_http_timing = {}
+            self.last_inspection_timing = {}
             timing["inspector_lock_wait_seconds"] = time.monotonic() - started
             try:
                 verdicts = self._inspect_locked(job, timing=timing)
@@ -395,6 +408,7 @@ class TemporalVLMInspector:
                 note(job, "responded", verdicts=verdicts, error=failure,
                      transport=timing.pop("_diagnostic_transport", None))
                 timing["total_seconds"] = time.monotonic() - started
+                self.last_inspection_timing = dict(timing)
                 log_timing("vlm_inspection_timing", **timing)
 
     def build_messages(self, job, *, encoded_images=None):
@@ -410,6 +424,7 @@ class TemporalVLMInspector:
         self, job: TemporalInspection, *, timing: dict
     ) -> tuple[TemporalVerdict, ...]:
         # Called with the inspector lock held, including preparation and parsing.
+        self.last_response_diagnostics = {}
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
@@ -465,6 +480,7 @@ class TemporalVLMInspector:
                 )
             )
             self._record_usage(response)
+            self.last_response_diagnostics = _response_shape(response)
             parse_started = time.monotonic()
             try:
                 verdicts = self._parse(job, response)
@@ -509,6 +525,7 @@ class TemporalVLMInspector:
             # boundary; never attach the model's response or request content.
             error.validation_stage = validation_stage or "response"
             error.validation_reason = validation_reason or "invalid_response_shape"
+            error.response_diagnostics = _response_shape(response)
             log_timing(
                 "vlm_response_validation",
                 stream_session_id=trace_id(job.stream_session_id),
@@ -747,6 +764,7 @@ class TemporalVLMInspector:
             finally:
                 timing["response_close_seconds"] = time.monotonic() - close_started
                 timing["total_seconds"] = time.monotonic() - started
+                self.last_http_timing = dict(timing)
                 log_timing("vlm_http_timing", **timing)
 
     @staticmethod

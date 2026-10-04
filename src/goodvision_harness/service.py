@@ -180,6 +180,7 @@ from .visual_memory import (
     VisualMemoryRecord,
     VisualMemorySink,
 )
+from .vlm_admission import AdmissionSettings
 from .vlm_fusion import VLMFusion
 from .vlm_independent import IndependentVLMBranch, VLMProcessConfig
 from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
@@ -2520,6 +2521,13 @@ class HarnessRuntime:
                         diagnostics_enabled=(
                             self.config.runtime.scene_diagnostics_enabled
                         ),
+                        admission=(AdmissionSettings(
+                            self.config.runtime.scene_admission_database,
+                            self.config.runtime.scene_global_max_in_flight,
+                            self.config.runtime.scene_per_stream_max_in_flight,
+                            self.config.runtime.scene_requests_per_second,
+                            self.config.runtime.scene_queue_timeout_seconds,
+                        ) if self.config.runtime.scene_admission_database else None),
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
@@ -2528,11 +2536,11 @@ class HarnessRuntime:
                             lambda jpeg, timestamp, sequence: self._on_display_frame(
                                 jpeg, timestamp, sequence, generation=generation)
                         ) if mode == CAMERA_MODE else None,
-                        fusion=VLMFusion(
+                        fusion=(VLMFusion(
                             next_scene,
                             on_update=lambda: self._guarded_callback(generation, self._on_scene_update),
-                        ),
-                        display_fusion=display_fusion,
+                        ) if process_config.output_mode != "events" else None),
+                        display_fusion=(display_fusion if process_config.output_mode != "events" else None),
                         delivery=self._delivery,
                     )
                 else:

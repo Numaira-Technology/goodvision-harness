@@ -97,6 +97,15 @@ or clear a person-event episode.
 
 ## Output semantics
 
+The opt-in `scene_vlm_output_mode: events` variant uses scene-level judgments:
+`event_scope: scene`, `confirmation_state: scene_observation`, and
+`localization_state: not_requested`. Its `detected` copies the model's boolean
+or null observation without waiting for tracking. It creates neither subject
+identities nor confirmed event episodes. Late reports carry `historical_only`
+and remain in history/delivery without replacing the source-ordered latest
+state. See [pure VLM capacity testing](../validation/vlm-12-streams.md).
+The participant-grounded modes retain the following semantics:
+
 - `vlm_report.subject_id_scope` is `observation`. Its object/subject IDs are valid
   only within that report, even if consecutive boxes or model-local IDs match.
   `objects` contains only participants localized in this observation.

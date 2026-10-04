@@ -487,6 +487,12 @@ def test_envelope_failures_have_safe_diagnostics_and_preserve_error_code(
     with pytest.raises(ModelAPIError) as error:
         inspector.inspect(_job())
     assert error.value.code == code
+    try:
+        decoded_response = response.json()
+    except ValueError:
+        decoded_response = None
+    assert error.value.response_diagnostics == scene_model._response_shape(decoded_response)
+    assert "SECRET" not in str(error.value.response_diagnostics)
     assert logs[0]["validation_stage"] == stage
     assert logs[0]["validation_reason"] == reason
     assert "SECRET" not in str(logs)

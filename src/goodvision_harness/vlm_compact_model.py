@@ -5,9 +5,36 @@ from __future__ import annotations
 import json
 import math
 
+from .grounding import SAFETY_EVENT_LABELS
 from .model_api import ModelAPIClient
 from .scene_model import _json, _ResponseValidationError, _strip_json_fence
 from .vlm_independent_model import IndependentVerdict, IndependentVLMInspector
+
+
+def event_response_format(labels):
+    """Exact booleans/null only; caller must select a schema-capable endpoint."""
+    labels = tuple(labels)
+    if (
+        not labels
+        or len(labels) != len(set(labels))
+        or any(label not in SAFETY_EVENT_LABELS for label in labels)
+    ):
+        raise ValueError("invalid event schema labels")
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "scene_events",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    label: {"type": ["boolean", "null"]} for label in labels
+                },
+                "required": list(labels),
+                "additionalProperties": False,
+            },
+        },
+    }
 
 
 def raw_reply(response):
@@ -49,7 +76,9 @@ class EventJSONInspector(IndependentVLMInspector):
             "(evaluated absent), or null (insufficient evidence): "
             + json.dumps(labels)
             + ". No boxes, person references, confidence, explanations "
-            "or additional fields."
+            "or additional fields. Use lowercase JSON true/false/null, double-quoted "
+            "keys, no trailing commas, and no Markdown code fences. "
+            "Do not copy sample answers; evaluate the images independently."
         )
         return messages
 
