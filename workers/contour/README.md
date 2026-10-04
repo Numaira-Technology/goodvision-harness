@@ -55,6 +55,20 @@ sudo python3 /data/contour/deploy_contour.py --package-dir /data/contour --bind 
 更新源码部署包时请使用新的 `--install-dir`，不会自动覆盖已有安装。
 本脚本不适用于 Jetson；该设备必须使用下述单独的适配与内存保护流程。
 
+## 更新已有 Docker 部署
+
+频繁更新已有节点可使用仓库中的 `tools/update_docker.py contour`，支持按已安装
+Compose 配置重建，或用 `--image contour=镜像 --image engine=镜像` 安装已导入的镜像。
+先停止所有使用本节点的分析并等待会话收尾；脚本在镜像准备完成后暂停接收新会话，
+同时更新控制台与引擎，检查模型就绪后恢复原接收状态。模型、密钥、`.env` 和数据保留。
+主程序在另一台主机时，在那台主机执行对应的 `harness` 更新。
+
+更新后再次用 Compose 创建容器时，必须将安装目录下的
+`.goodvision/docker-updates/项目名/active.compose.json` 放在原配置文件之后。
+支持 `--check-only` 无写入检查和 `--rollback` 回退最近一次镜像更新；回退不会还原数据或配置。
+源码更新、离线镜像、多路选择、环境文件和重启命令见
+[Docker 更新指南](../../docs/guides/docker-updates.md)。原部署脚本继续用于初次安装。
+
 ## 先运行控制台
 
 下面的命令在本目录执行，需要 Python 3.12 和 Docker Compose。

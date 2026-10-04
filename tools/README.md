@@ -20,6 +20,7 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | `face_gpu_smoke.py` | Check runtime packages or run real accelerated face warmup. |
 | `customer_check.py` | Installed check dispatcher; mode comes from its installed filename. |
 | `runtime_gateway.py` | Runtime process supervisor and customer diagnostic filtering. |
+| `update_docker.py` | Update an installed Compose harness or Contour deployment from source or loaded images, with readiness checks and image rollback. [Usage](../docs/guides/docker-updates.md). |
 
 See [release development](../docs/guides/release.md) and the
 [customer deployment guide](../DEPLOY.md). Recorded image tags and release
