@@ -93,6 +93,10 @@ class RichLabelSettings:
     video_realtime_max_age_seconds: float = 2.0
     video_result_deadline_seconds: float = 4.0
     processing_method: str | None = None
+    # Compatibility toggle for the diagnostic rig. True selects the current
+    # latest_only candidate path; False leaves video_queue_policy in control.
+    # Offline capture explicitly selects video_queue_policy=durable_ordered.
+    video_latest_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +442,13 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             ),
         ),
         backend=rich_label_backend,
+        video_latest_only=_environment_bool(
+            "RICH_LABEL_LATEST_ONLY",
+            _bool(
+                rich_label_section.get("video_latest_only", False),
+                "rich_labeling.video_latest_only",
+            ),
+        ),
         video_batch_frames=_bounded_int(
             int(os.environ["SAM31_BATCH_FRAMES"])
             if os.environ.get("SAM31_BATCH_FRAMES")

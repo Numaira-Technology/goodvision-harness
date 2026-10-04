@@ -179,13 +179,17 @@ def test_legacy_session_health_still_rejects_cloud_metadata():
         client.close()
 
 
-def test_close_timeout_does_not_claim_background_work_has_finished(route):
+@pytest.mark.parametrize("video_latest_only", [False, True])
+def test_close_timeout_does_not_claim_background_work_has_finished(
+    route, video_latest_only,
+):
     server, client = route
     rich = replace(
         RichLabelSettings(),
         backend="sam31_stream",
         processing_method=server.method.id,
         max_fps=4,
+        video_latest_only=video_latest_only,
     )
     coordinator = create_tracking_coordinator(client, rich, lambda _: None)
     server.release.clear()

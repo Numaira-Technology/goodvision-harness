@@ -1,0 +1,12 @@
+# Publish the remote-SAM tunnel to the host so the venv harness (run_diag_test.sh
+# SAM=on) can reach it at http://127.0.0.1:8092.
+#
+# Bring up ONLY the SAM controller (rents a Vast GPU, opens the tunnel):
+#   docker compose -f compose.yaml -f compose.sam31-remote.yaml \
+#       -f diag/compose.sam-tunnel.yaml up --build sam-remote
+# Wait for "SAM is ready", then run:  SAM=on diag/run_diag_test.sh
+# Stop with Ctrl+C and confirm "Released instance: <id>" (or destroy it in Vast).
+services:
+  sam-remote:
+    ports:
+      - "127.0.0.1:8092:8092"
