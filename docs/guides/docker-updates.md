@@ -9,6 +9,15 @@ and double-click **`Update.exe`**; no Git, Python or terminal commands are neede
 The window finds the installed component (asks you to choose if several
 installations exist), stops local harness analysis, installs the update and shows
 progress and the result; it restores your saved autostart setting afterward.
+
+If automatic detection finds nothing, paste the exact container or image name
+shown in Docker Desktop into **Container or image name**, then select
+**Find installation**. The updater checks that the matching container is running
+GoodVision before offering it. If an image matches several installations, choose
+the installation to update from the list. A match in a recognized installation
+updates all its main lanes. Otherwise, choosing a main container updates only
+that container. **Retry** checks the name again before trying another update.
+
 Your models, data and configuration are retained, and you can continue opening
 GoodVision as usual. For Contour on another
 computer, stop analysis in the main console first and run the Contour update
@@ -39,19 +48,68 @@ checksum alongside the output. It never overwrites an existing output ZIP.
 Packaging does not build product images or include customer models, data or keys.
 
 The harness package contains one `harness` image that the window applies to every
-installed harness lane. The Contour package requires both `contour` and `engine`
+lane in a recognized project, whether discovered automatically or selected by
+name. A main container without recognized workload labels is updated individually.
+The Contour package requires both `contour` and `engine`
 images. Deliver the matching package to each host; customers extract it and
 double-click the executable. Neither Python nor PyInstaller is required on the
 customer machine. To reuse a previously built Windows updater, pass
 `--executable /path/to/Update.exe`; this also permits packaging on another build
 host without rebuilding the executable.
 
-The customer updater preserves the original launcher image tags so launchers
-reopen the updated version automatically. It refuses tags shared by another
-installation. For legacy harness installations with `RELEASE.json`, the candidate
+Customer updates use inspected runtime snapshots, preserving `Config`,
+`HostConfig`, networks, custom container names and original image tags. This keeps
+existing environment values, port bindings, mounts and network aliases when an
+older updater changed the running container without changing its Compose files.
+Project/service-labeled historical Docker runs are supported even when their
+original Compose files are unavailable. The source CLI below still uses Compose.
+
+Original launchers reopen the updated version automatically. The customer updater
+refuses image tags shared by another installation. For legacy harness
+installations with `RELEASE.json`, the candidate
 must retain every file in the original source inventory; launcher metadata is
 verified and refreshed from the actual candidate source hashes. Packages for an
 incompatible edition or with missing inventory files are refused.
+
+### Historical compatibility evidence and limits
+
+| Recorded release or workflow | Git evidence | Compatibility requirement |
+| --- | --- | --- |
+| `20260920-diagnostics2` source update | `f396940` introduced `apply_update.py` and its inspected-runtime replacement. | Preserve installed container configuration and Windows launcher metadata. |
+| `20260921-realtime1` and subsequent source-update chains | `eb4cb92` added `continuous_playback_vlm`; `d68b654` added verified chain handling. | Preserve the injected `LOCAL_CAMERA_TARGET_FPS=15`, `SCENE_ENGINE_MODE=active` and `SCENE_INDEPENDENT_VLM=true` values even when the original Compose hash remains unchanged. |
+| `20260923-image1` / `20260923-full1` image update | `ccff052` added `package_image_update.py`, using the same runtime replacement and realtime flag. | Image updates must retain the installed runtime rather than recreate it from an older Compose definition. |
+| Full.1 / Full.2 / Full.3 console APIs | `fa145ce`, `c805c3b` and `098fd84` have deployment settings and `/v1/sessions/stop`; `6e80baf` later adds `/v1/analysis/stop`. | Preserve saved autostart and use the retained legacy stop endpoint when the newer endpoint returns 404. |
+| Standalone GPU Contour | `f5b651f` introduced the `contour` / `engine` service pair. | Update both services using their workload labels and preserve their model mounts and node key. |
+| `20260920-memory1` Contour update ZIP | Available `dist` package and archived deployment records. | Discover project `goodvision-contour` and retain `goodvision-contour:0.1.0` / `goodvision-contour-runtime:0.1.0` launcher tags. |
+| `Contour-20260926.zip` | Archived Compose and installation scripts. | Discover project `contour`, with `goodvision-contour:20260926` / `goodvision-contour-engine:20260926`; no fixed project or engine-image name. |
+| `20261001-update1` validation | Archived `validate_update.py` / release records. | Support custom main-container names, multiple lanes, and Docker runs carrying project/service labels without Compose paths. |
+
+Automatic discovery uses workload project and service labels. When they are
+missing, the manual field accepts an exact container name or an existing image
+name and verifies candidates through their application APIs. Image matches with
+multiple verified installations require an explicit choice. A match with
+recognized project/service labels selects the complete installation, including
+every main lane; an unlabeled or unrecognized main role selects only that verified
+container. Contour must resolve a verified gateway and engine pair. A publisher
+or helper is not accepted just because it uses the
+application image. Static container IPs and legacy Docker links are refused by
+the existing replacement policy. Edition and filesystem-integrity checks remain
+in force; missing inventory entries require a separately reviewed migration.
+Known Windows base images require their original verified launcher metadata.
+Label-only installations share a project lock in the user's local application
+data across extracted update folders.
+
+The archived `20260930-legacy-gpuhost1` source inventory includes
+`analysis_gateway.html`, `analysis_gateway.py`, `gateway_video.py` and
+`video_relay.py`, which are absent from the current tracked main source. Where
+the original launcher inventory lists them, an update image must retain those
+files or supply an approved edition migration. A current-source-only image is
+refused for that inventory; the updater never removes entries to pass checks.
+
+This audit inspected tracked source and release records. It did not run upgrades
+against real historical images; those require a working Docker daemon and the
+corresponding archives. Tracked records do not map each accepted `20260919` image
+ID to an exact source commit.
 
 ### Source-deployment updater
 

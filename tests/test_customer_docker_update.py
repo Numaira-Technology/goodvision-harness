@@ -30,8 +30,47 @@ class CustomerDocker(FakeDocker):
         self.load_count = 0
         self.load_has_lock = False
         self.source_hashes = {}
+        self.staged = {}
+        self.backups = {}
         for service, container in self.containers.items():
             container["Config"]["Image"] = self.config["services"][service]["image"]
+            container["HostConfig"] = {"Binds": ["private-data:/data"]}
+            container["NetworkSettings"] = {"Ports": {}, "Networks": {}}
+            container["Mounts"] = []
+
+    def all_containers(self):
+        return [
+            *self.containers.values(),
+            *self.staged.values(),
+            *self.backups.values(),
+        ]
+
+    def create_container(self, config, name, helper_image):
+        self.calls.append(("create", (name, helper_image)))
+        self.generation += 1
+        identity = f"created-{self.generation}"
+        self.staged[identity] = {
+            "Id": identity,
+            "Name": "/" + name,
+            "Image": config["Image"],
+            "Config": copy.deepcopy(
+                {
+                    key: value
+                    for key, value in config.items()
+                    if key not in {"HostConfig", "NetworkingConfig"}
+                }
+            ),
+            "HostConfig": copy.deepcopy(config["HostConfig"]),
+            "NetworkSettings": {
+                "Ports": {},
+                "Networks": copy.deepcopy(
+                    config["NetworkingConfig"]["EndpointsConfig"]
+                ),
+            },
+            "Mounts": [],
+            "State": {"Running": False, "Paused": False},
+        }
+        return identity
 
     def run(self, *args, **kwargs):
         if args[0] == "load" or args[:2] == ("image", "load"):
@@ -40,17 +79,58 @@ class CustomerDocker(FakeDocker):
             self.load_count += 1
             self.load_has_lock = (self.deployment().state_dir / "update.lock").is_file()
             return "Loaded image fixture"
+        if args[0] == "ps":
+            self.calls.append(("run", args))
+            project = args[-1].partition("project=")[2]
+            return " ".join(
+                c["Id"]
+                for c in self.all_containers()
+                if not project
+                or c["Config"]["Labels"].get(updater.LABEL + "project") == project
+            )
+        if args[0] in {"stop", "start", "rename", "rm"}:
+            self.calls.append(("run", args))
+            if args[0] == "start" and self.fail_up:
+                self.fail_up = False
+                raise updater.UpdateError("Replacement startup failed")
+            identities = args[3:] if args[0] == "stop" else args[1:]
+            if args[0] == "rm":
+                identities = [identity for identity in identities if identity != "-f"]
+                for identity in identities:
+                    for values in (self.containers, self.staged, self.backups):
+                        for key, container in list(values.items()):
+                            if container["Id"] == identity:
+                                del values[key]
+            elif args[0] == "rename":
+                identity, name = args[1:]
+                container = next(
+                    c for c in self.all_containers() if c["Id"] == identity
+                )
+                for values in (self.containers, self.staged, self.backups):
+                    for key, value in list(values.items()):
+                        if value is container:
+                            del values[key]
+                container["Name"] = "/" + name
+                if "-before-" in name:
+                    self.backups[identity] = container
+                else:
+                    service = container["Config"]["Labels"][updater.LABEL + "service"]
+                    self.containers[service] = container
+            else:
+                for identity in identities:
+                    container = next(
+                        c for c in self.all_containers() if c["Id"] == identity
+                    )
+                    container["State"]["Running"] = args[0] == "start"
+            return ""
         return super().run(*args, **kwargs)
 
     def api(self, identity, component, path, body=None, method=None):
         if component != "harness":
             return super().api(identity, component, path, body)
         self.calls.append(("api", (identity, component, path, body, method)))
-        service = next(
-            service
-            for service, container in self.containers.items()
-            if container["Id"] == identity
-        )
+        container = next(c for c in self.all_containers() if c["Id"] == identity)
+        service = container["Config"]["Labels"][updater.LABEL + "service"]
         if path == "/v1/deployment/settings":
             if body is not None:
                 assert method == "PUT"
@@ -74,6 +154,15 @@ class CustomerDocker(FakeDocker):
         return {"version": "fixture"}
 
     def json(self, *args, **kwargs):
+        if args[0] == "inspect":
+            self.calls.append(("json", args))
+            return copy.deepcopy(
+                [
+                    c
+                    for c in self.all_containers()
+                    if c["Id"] in args[1:] or c["Name"].lstrip("/") in args[1:]
+                ]
+            )
         if args[0] == "run":
             self.calls.append(("json", args))
             assert args[1:5] == ("--rm", "--network", "none", "--entrypoint")
@@ -712,7 +801,7 @@ def test_metadata_write_failure_restores_images_launcher_tags_and_exact_bytes(
         raise RuntimeError("Metadata disk write failed")
 
     monkeypatch.setattr(customer, "update_metadata", fail_metadata)
-    with pytest.raises(customer.CustomerError, match="previous version was restored"):
+    with pytest.raises(updater.UpdateError, match="previous images were restored"):
         customer.install(directory, docker=docker)
     assert all(
         docker.containers[service]["Image"] == identity for service in docker.services
@@ -737,6 +826,196 @@ def test_already_installed_image_still_promotes_original_launcher_tags(tmp_path)
         docker.images[docker.config["services"][service]["image"]] == identity
         for service in docker.services
     )
+
+
+@pytest.mark.parametrize("status", [404, 401, 500])
+def test_legacy_stop_fallback_only_for_missing_endpoint(tmp_path, status):
+    directory, _manifest, docker = installed_package(tmp_path)
+    original_api = docker.api
+    legacy_stops = []
+
+    def api(identity, component, path, body=None, method=None):
+        if path == "/v1/analysis/stop":
+            raise updater.ApiError(status)
+        if path == "/v1/sessions/stop":
+            legacy_stops.append(identity)
+            assert body == {}
+            return {"stopped": True}
+        return original_api(identity, component, path, body, method)
+
+    docker.api = api
+    if status == 404:
+        customer.install(directory, docker=docker)
+        assert len(legacy_stops) == len(docker.services)
+    else:
+        with pytest.raises(updater.ApiError):
+            customer.install(directory, docker=docker)
+        assert not legacy_stops
+        assert not any(kind == "create" for kind, _args in docker.calls)
+
+
+def test_runtime_helper_passes_private_configuration_only_through_stdin(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(stdout='{"Id":"created-id"}')
+
+    monkeypatch.setattr(updater.subprocess, "run", run)
+    config = {"Env": ["PRIVATE_KEY=never-show-this-key"], "Image": "sha256:verified"}
+    assert (
+        updater.Docker().create_container(config, "custom-name", "sha256:verified")
+        == "created-id"
+    )
+    args, options = calls[0]
+    assert "never-show-this-key" not in " ".join(args)
+    assert json.loads(options["input"]) == {"name": "custom-name", "config": config}
+    assert "--network" in args and "none" in args
+    assert "goodvision.update.helper=true" in args
+    assert "/var/run/docker.sock:/var/run/docker.sock" in args
+    compile(args[-1], "<runtime-helper>", "exec")
+
+
+def test_http_error_transport_keeps_endpoint_status_without_response_body():
+    class HttpErrorDocker(updater.Docker):
+        def json(self, *args, **kwargs):
+            compile(args[-1], "<application-api>", "exec")
+            return {"goodvision_update_http_error": 404}
+
+    with pytest.raises(updater.ApiError) as failure:
+        HttpErrorDocker().api("installed", "harness", "/v1/analysis/stop", {})
+    assert failure.value.status == 404
+    assert "404" in str(failure.value)
+
+
+def test_autostart_restore_attempts_every_lane_after_one_lane_fails(tmp_path):
+    directory, _manifest, docker = installed_package(tmp_path)
+    docker.autostarts = {"harness": True, "harness-2": True}
+    original_api = docker.api
+    restore_attempts = []
+
+    def api(identity, component, path, body=None, method=None):
+        if path == "/v1/deployment/settings" and body == {"autostart": True}:
+            restore_attempts.append(identity)
+            service = next(
+                c["Config"]["Labels"][updater.LABEL + "service"]
+                for c in docker.all_containers()
+                if c["Id"] == identity
+            )
+            if service == "harness":
+                raise updater.UpdateError("The first lane is temporarily unavailable")
+        return original_api(identity, component, path, body, method)
+
+    docker.api = api
+    with pytest.raises(customer.CustomerError, match="Automatic-start settings"):
+        customer.install(directory, docker=docker)
+    assert len(restore_attempts) == 2
+    assert docker.autostarts["harness-2"] is True
+
+
+def test_interrupted_launcher_metadata_write_restores_exact_original_bytes(
+    tmp_path, monkeypatch
+):
+    directory, _manifest, docker = installed_package(tmp_path)
+    originals, identity = write_legacy_metadata(docker)
+
+    def interrupted_metadata(root, *args):
+        (root / "SOURCE_HASHES.json").write_bytes(b"interrupted partial write")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(customer, "update_metadata", interrupted_metadata)
+    with pytest.raises(updater.UpdateError, match="previous images were restored"):
+        customer.install(directory, docker=docker)
+    assert all(docker.containers[s]["Image"] == identity for s in docker.services)
+    assert {
+        name: (docker.directory / name).read_bytes() for name in originals
+    } == originals
+
+
+def test_known_windows_release_requires_original_launcher_metadata(tmp_path):
+    directory, _manifest, docker = installed_package(tmp_path)
+    for service in docker.services:
+        docker.containers[service]["Image"] = customer.WINDOWS_BASE_IDS[0]
+    with pytest.raises(customer.CustomerError, match="original installation folder"):
+        customer.install(directory, docker=docker)
+    assert not any(kind == "create" for kind, _args in docker.calls)
+    assert not any(
+        kind == "api" and args[2] == "/v1/analysis/stop" for kind, args in docker.calls
+    )
+
+
+def test_label_only_installation_uses_stable_lock_across_extracted_packages(
+    tmp_path, monkeypatch
+):
+    directory, manifest, docker = installed_package(tmp_path)
+    second = tmp_path / "second update folder"
+    make_package(second)
+    state = tmp_path / "local app data"
+    monkeypatch.setenv("LOCALAPPDATA", str(state))
+    for service in docker.services:
+        labels = docker.containers[service]["Config"]["Labels"]
+        for suffix in (
+            "project.working_dir",
+            "project.config_files",
+            "project.environment_file",
+        ):
+            labels.pop(updater.LABEL + suffix)
+    # The installed labels carry no folder; both package locations must resolve
+    # to one host-level project lock, including while another update is loading.
+    root = customer.runtime_state_directory()
+    deployment = updater.discover(docker, "harness", runtime=True, state_directory=root)
+    deployment.state_dir.mkdir(parents=True)
+    (deployment.state_dir / "update.lock").write_text("another update")
+    for package in (directory, second):
+        with pytest.raises(updater.UpdateError, match="update lock exists"):
+            customer.install(package, docker=docker)
+    assert docker.load_count == 0
+    assert manifest["component"] == "harness"
+
+
+def test_updated_other_installation_launcher_label_prevents_shared_tag_update(tmp_path):
+    directory, _manifest, docker = installed_package(tmp_path)
+    worker = docker.containers["unrelated-worker"]
+    worker["Config"]["Image"] = "sha256:another-updated-installation"
+    worker["Config"]["Labels"]["goodvision.update.launcher_image"] = docker.config[
+        "services"
+    ]["harness"]["image"]
+    with pytest.raises(updater.UpdateError, match="shares these launcher image tags"):
+        customer.install(directory, docker=docker)
+    assert not any(kind == "create" for kind, _args in docker.calls)
+
+
+def test_same_image_retry_restores_launcher_tags_after_partial_promotion_failure(
+    tmp_path,
+):
+    directory, manifest, docker = installed_package(tmp_path)
+    candidate = manifest["images"]["harness"]["id"]
+    before = {
+        docker.config["services"][s]["image"]: docker.images[
+            docker.config["services"][s]["image"]
+        ]
+        for s in docker.services
+    }
+    for service in docker.services:
+        docker.containers[service]["Image"] = candidate
+    run = docker.run
+    promotions = []
+
+    def failing_tag(*args, **kwargs):
+        if args[:3] == ("image", "tag", candidate):
+            promotions.append(args[3])
+            if len(promotions) == 2:
+                raise updater.UpdateError("The second tag promotion failed")
+        return run(*args, **kwargs)
+
+    docker.run = failing_tag
+    with pytest.raises(updater.UpdateError, match="previous images were restored"):
+        customer.install(directory, docker=docker)
+    assert all(docker.images[reference] == old for reference, old in before.items())
+    assert all(docker.containers[s]["Image"] == candidate for s in docker.services)
+    assert not any(kind == "create" for kind, _args in docker.calls)
 
 
 @pytest.mark.parametrize(

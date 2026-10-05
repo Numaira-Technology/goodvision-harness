@@ -5,13 +5,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
-import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 if __package__:
+    from .customer_discovery import NameLookupError, lookup_named, named_deployment
+    from .customer_runtime import runtime_update
+    from .harness_update.package_update import WINDOWS_BASE_IDS
     from .harness_update.release_metadata import (
         atomic_write,
         read_metadata,
@@ -19,19 +22,20 @@ if __package__:
     )
     from .update_docker import (
         LABEL,
+        ApiError,
         Docker,
         UpdateError,
         assert_idle,
-        check_config,
-        current_containers,
         discover,
         image_id,
         launcher_references,
         selected_service,
-        update,
         update_lock,
     )
 else:
+    from customer_discovery import NameLookupError, lookup_named, named_deployment
+    from customer_runtime import runtime_update
+    from harness_update.package_update import WINDOWS_BASE_IDS
     from harness_update.release_metadata import (
         atomic_write,
         read_metadata,
@@ -39,16 +43,14 @@ else:
     )
     from update_docker import (
         LABEL,
+        ApiError,
         Docker,
         UpdateError,
         assert_idle,
-        check_config,
-        current_containers,
         discover,
         image_id,
         launcher_references,
         selected_service,
-        update,
         update_lock,
     )
 
@@ -57,6 +59,15 @@ PRODUCT = "GoodVision Desktop Update"
 
 class CustomerError(UpdateError):
     """A short message suitable for the update window."""
+
+
+def runtime_state_directory():
+    # Label-only installs have no original folder. Use one stable host location
+    # so different extracted packages still share the same installation lock.
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_STATE_HOME")
+    return (
+        Path(base or Path.home() / ".local" / "state") / "GoodVision" / "DockerUpdates"
+    )
 
 
 def load_package(directory: Path) -> dict:
@@ -114,7 +125,7 @@ def find_projects(component, *, docker=None):
     docker = docker or Docker()
     ids = docker.run("ps", "-aq", "--filter", "label=" + LABEL + "project").split()
     containers = docker.json("inspect", *ids) if ids else []
-    projects = set()
+    projects = {}
     for container in containers:
         labels = container["Config"].get("Labels") or {}
         if (
@@ -123,14 +134,34 @@ def find_projects(component, *, docker=None):
             and labels.get("goodvision.update.helper") != "true"
             and "-before-" not in container["Name"]
         ):
-            projects.add(labels[LABEL + "project"])
-    return sorted(projects)
+            projects.setdefault(labels[LABEL + "project"], set()).add(
+                labels[LABEL + "service"]
+            )
+    return sorted(
+        project
+        for project, services in projects.items()
+        if component == "harness" or services == {"contour", "engine"}
+    )
+
+
+def find_named_installations(component, name, *, docker=None):
+    try:
+        return lookup_named(
+            docker or Docker(),
+            component,
+            name,
+            state_directory=runtime_state_directory(),
+        )
+    except NameLookupError as error:
+        raise CustomerError(str(error)) from error
 
 
 @contextmanager
 def stopped_harness(docker, deployment, progress, timeout=150):
     """Only the autostart boolean is changed, never connection/key settings."""
     saved = {}
+    selected = {s: c["Id"] for s, c in deployment.containers.items()}
+    names = {s: c["Name"].lstrip("/") for s, c in deployment.containers.items()}
     try:
         progress("Pausing analysis safely...")
         # Stop every lane before changing settings, since settings may be locked
@@ -144,7 +175,13 @@ def stopped_harness(docker, deployment, progress, timeout=150):
                     "GoodVision did not respond. Open it and try again."
                 )
             saved[service] = settings["autostart"]
-            docker.api(container["Id"], "harness", "/v1/analysis/stop", {})
+            try:
+                docker.api(container["Id"], "harness", "/v1/analysis/stop", {})
+            except ApiError as error:
+                if error.status != 404:
+                    raise
+                # Full.1/.2/.3 expose the older session stop endpoint.
+                docker.api(container["Id"], "harness", "/v1/sessions/stop", {})
         deadline = time.monotonic() + timeout
         while True:
             finished = True
@@ -176,32 +213,60 @@ def stopped_harness(docker, deployment, progress, timeout=150):
         yield
     finally:
         if saved:
-            failure_pending = sys.exc_info()[0] is not None
+            errors = []
+            record = {}
             try:
-                containers = current_containers(docker, deployment)
-                for service, autostart in saved.items():
+                path = deployment.state_dir / "runtime-latest.json"
+                if path.is_file():
+                    record = json.loads(path.read_text("utf-8"))
+            except (OSError, ValueError):
+                pass
+            for service, autostart in saved.items():
+                try:
+                    container = docker.json("inspect", names[service])[0]
+                    if container["Id"] != selected[service]:
+                        item = record.get("containers", {}).get(service, {})
+                        labels = container["Config"].get("Labels") or {}
+                        if not (
+                            record.get("project") == deployment.project
+                            and record.get("component") == "harness"
+                            and record.get("transaction")
+                            == labels.get("goodvision.update.transaction")
+                            and item.get("old_id") == selected[service]
+                            and item.get("new_id") == container["Id"]
+                            and labels.get("goodvision.update.original_id")
+                            == selected[service]
+                        ):
+                            raise UpdateError(
+                                "Selected container changed during update."
+                            )
                     docker.api(
-                        containers[service]["Id"],
+                        container["Id"],
                         "harness",
                         "/v1/deployment/settings",
                         {"autostart": autostart},
                         method="PUT",
                     )
-            except UpdateError as error:
-                if not failure_pending:
-                    raise CustomerError(
-                        "The update finished, but automatic-start settings could "
-                        "not be restored. Contact support."
-                    ) from error
+                except (UpdateError, IndexError) as error:
+                    errors.append(error)
+            if errors:
+                raise CustomerError(
+                    "GoodVision needs attention before you start analysis. "
+                    "Automatic-start settings could not be restored. Contact support."
+                ) from errors[0]
 
 
 def verified_launcher_metadata(docker, deployment, manifest):
-    if (
-        deployment.component != "harness"
-        or not (deployment.directory / "RELEASE.json").is_file()
-    ):
+    if deployment.component != "harness":
         return {}, None
     bases = {c["Image"] for c in deployment.containers.values()}
+    if not (deployment.directory / "RELEASE.json").is_file():
+        if bases.intersection(WINDOWS_BASE_IDS):
+            raise CustomerError(
+                "Your original installation folder could not be verified. "
+                "Contact support."
+            )
+        return {}, None
     if len(bases) != 1:
         raise CustomerError(
             "This installation needs a different update package. Contact support."
@@ -228,7 +293,9 @@ def verified_launcher_metadata(docker, deployment, manifest):
         "for p in root.rglob('*') if p.is_file() and not p.is_symlink() "
         "and '__pycache__' not in p.parts and p.suffix not in ('.pyc','.pyo')}))",
     )
-    original = json.loads(base64.b64decode(backup["SOURCE_HASHES.json"]))["files"]
+    original = json.loads(
+        base64.b64decode(backup["SOURCE_HASHES.json"]).decode("utf-8-sig")
+    )["files"]
     # Keep every verified inventory entry. A package that removes an expected
     # file needs a separate release migration; never erase integrity checks.
     if (
@@ -250,14 +317,39 @@ def verified_launcher_metadata(docker, deployment, manifest):
     return backup, source_manifest
 
 
-def install(directory, project=None, progress=lambda _message: None, *, docker=None):
+def install(
+    directory,
+    project=None,
+    progress=lambda _message: None,
+    *,
+    docker=None,
+    selection=None,
+):
     docker = docker or Docker()
     directory = Path(directory).resolve()
     manifest = load_package(directory)
     verify_archive(directory, manifest, progress)
     progress("Finding your GoodVision installation...")
-    deployment = discover(docker, manifest["component"], project)
-    check_config(docker, deployment)
+    if selection is not None:
+        if project is not None:
+            raise CustomerError("Choose one GoodVision installation and try again.")
+        try:
+            deployment = named_deployment(
+                docker,
+                manifest["component"],
+                selection,
+                state_directory=runtime_state_directory(),
+            )
+        except NameLookupError as error:
+            raise CustomerError(str(error)) from error
+    else:
+        deployment = discover(
+            docker,
+            manifest["component"],
+            project,
+            runtime=True,
+            state_directory=runtime_state_directory(),
+        )
     if manifest["component"] == "contour":
         # Other computers may own Contour sessions. Never delete their sessions
         # or force-stop analysis without contacting the owning main console.
@@ -265,7 +357,7 @@ def install(directory, project=None, progress=lambda _message: None, *, docker=N
             assert_idle(docker, deployment)
         except UpdateError as error:
             raise CustomerError(
-                "Stop analysis in the main GoodVision console, then click Try again."
+                "Stop analysis in the main GoodVision console, then select Retry."
             ) from error
     with update_lock(deployment):
         progress("Preparing the new version. Please keep this window open...")
@@ -288,43 +380,29 @@ def install(directory, project=None, progress=lambda _message: None, *, docker=N
             docker, deployment, manifest
         )
 
-        def apply():
-            progress(
-                "Installing the update. Your saved settings and models are kept..."
-            )
-            update(
-                docker,
-                deployment,
-                images=images,
-                persist_references=True,
-                lock_held=True,
-            )
+        def finish():
             if metadata:
                 try:
                     update_metadata(
                         deployment.directory,
                         metadata,
                         source_manifest,
-                        images["harness"],
+                        manifest["images"]["harness"]["id"],
                     )
-                except (OSError, RuntimeError, ValueError) as error:
-                    restored = discover(
-                        docker,
-                        deployment.component,
-                        deployment.project,
-                        deployment.env_files,
-                    )
-                    try:
-                        update(docker, restored, rollback=True, lock_held=True)
-                    finally:
-                        for name, contents in metadata.items():
-                            atomic_write(
-                                deployment.directory / name, base64.b64decode(contents)
-                            )
+                except (Exception, KeyboardInterrupt) as error:
+                    for name, contents in metadata.items():
+                        atomic_write(
+                            deployment.directory / name, base64.b64decode(contents)
+                        )
                     raise CustomerError(
-                        "The update could not finish. Your previous version "
-                        "was restored. Contact support."
+                        "The update could not finish. Contact support."
                     ) from error
+
+        def apply():
+            progress(
+                "Installing the update. Your saved settings and models are kept..."
+            )
+            runtime_update(docker, deployment, images, finish=finish)
 
         if deployment.component == "harness":
             with stopped_harness(docker, deployment, progress):

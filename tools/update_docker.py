@@ -27,8 +27,14 @@ class UpdateError(RuntimeError):
     """An actionable error without Docker output containing credentials."""
 
 
+class ApiError(UpdateError):
+    def __init__(self, status):
+        self.status = status
+        super().__init__(f"Application check returned HTTP {status}.")
+
+
 class Docker:
-    def run(self, *args: str, cwd: Path | None = None, timeout=60) -> str:
+    def run(self, *args: str, cwd: Path | None = None, timeout=60, input=None) -> str:
         try:
             result = subprocess.run(
                 ["docker", *args],
@@ -37,6 +43,7 @@ class Docker:
                 text=True,
                 check=True,
                 timeout=timeout,
+                input=input,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except (OSError, subprocess.SubprocessError) as error:
@@ -55,7 +62,7 @@ class Docker:
     def api(self, identity: str, component: str, path: str, body=None, *, method=None):
         # Authentication stays inside the container, never in command arguments.
         code = (
-            "import json,os,pathlib,urllib.request;"
+            "import json,os,pathlib,urllib.request,urllib.error;"
             "headers={'Content-Type':'application/json','X-Fleet-Coordinator':'1'};"
         )
         if component == "contour":
@@ -64,14 +71,62 @@ class Docker:
                 "os.environ.get('CONTOUR_API_KEY_FILE','/run/secrets/node_key'))"
                 ".read_text().strip();headers['Authorization']='Bearer '+key;"
             )
-        port = 8093 if component == "contour" else 8080
+        port = {"contour": 8093, "engine": 8092}.get(component, 8080)
+        port_expression = (
+            "int(os.environ.get('HARNESS_PORT','8080'))"
+            if component == "harness"
+            else str(port)
+        )
         code += (
             f"body={body!r};data=None if body is None else json.dumps(body).encode();"
-            f"request=urllib.request.Request('http://127.0.0.1:{port}{path}',"
+            f"port={port_expression};"
+            f"request=urllib.request.Request('http://127.0.0.1:'+str(port)+{path!r},"
             f"data=data,headers=headers,method={method!r});"
-            "print(urllib.request.urlopen(request,timeout=10).read().decode())"
+            "\ntry: print(urllib.request.urlopen(request,timeout=10).read().decode())"
+            "\nexcept urllib.error.HTTPError as error: "
+            "print(json.dumps({'goodvision_update_http_error':error.code}))"
         )
-        return self.json("exec", identity, "python", "-c", code, timeout=20)
+        result = self.json("exec", identity, "python", "-c", code, timeout=20)
+        if "goodvision_update_http_error" in result:
+            raise ApiError(result["goodvision_update_http_error"])
+        return result
+
+    def create_container(self, config, name, helper_image):
+        # Docker Desktop exposes its Linux socket inside Linux containers. Send
+        # settings through stdin, never command arguments or files on the host.
+        code = (
+            "import http.client,json,socket,sys,urllib.parse;"
+            "request=json.load(sys.stdin);"
+            "connection=http.client.HTTPConnection('localhost',timeout=150);"
+            "connection.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);"
+            "connection.sock.settimeout(150);"
+            "connection.sock.connect('/var/run/docker.sock');"
+            "connection.request('POST','/v1.45/containers/create?name='+"
+            "urllib.parse.quote(request['name'],safe=''),"
+            "json.dumps(request['config']),{'Content-Type':'application/json'});"
+            "response=connection.getresponse();data=response.read();"
+            "sys.exit(1) if response.status>=300 else print(data.decode())"
+        )
+        return self.json(
+            "run",
+            "--rm",
+            "-i",
+            "--network",
+            "none",
+            "--user",
+            "0:0",
+            "--label",
+            "goodvision.update.helper=true",
+            "--entrypoint",
+            "python",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            helper_image,
+            "-c",
+            code,
+            input=json.dumps({"name": name, "config": config}),
+            timeout=180,
+        )["Id"]
 
 
 @dataclass
@@ -83,6 +138,7 @@ class Deployment:
     env_files: tuple[Path, ...]
     containers: dict[str, dict]
     config: dict = field(default_factory=dict)
+    manual_names: dict[str, str] = field(default_factory=dict)
 
     @property
     def services(self):
@@ -135,7 +191,7 @@ def selected_service(component, service):
     )
 
 
-def discover(docker, component, project=None, env_files=()):
+def check_host(docker):
     context = docker.json("context", "inspect")[0]
     endpoint = context["Endpoints"]["docker"]["Host"]
     if os.environ.get("DOCKER_HOST") and not os.environ.get("DOCKER_CONTEXT"):
@@ -144,7 +200,20 @@ def discover(docker, component, project=None, env_files=()):
         raise UpdateError("Run the updater on the Docker host using a local context.")
     if docker.run("info", "--format", "{{.OSType}}") != "linux":
         raise UpdateError("Linux Docker containers are required.")
-    docker.run("compose", "version")
+
+
+def discover(
+    docker,
+    component,
+    project=None,
+    env_files=(),
+    *,
+    runtime=False,
+    state_directory=None,
+):
+    check_host(docker)
+    if not runtime:
+        docker.run("compose", "version")
     ids = docker.run("ps", "-aq", "--filter", "label=" + LABEL + "project").split()
     installed = docker.json("inspect", *ids) if ids else []
     candidates = []
@@ -167,6 +236,69 @@ def discover(docker, component, project=None, env_files=()):
     project = projects.pop()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
         raise UpdateError("Unsupported Compose project name.")
+    if runtime:
+        containers = {c["Config"]["Labels"][LABEL + "service"]: c for c in candidates}
+        if len(containers) != len(candidates):
+            raise UpdateError(
+                "Scaled replicas are unsupported; use separate harness-N lanes."
+            )
+        if component == "contour" and set(containers) != {"contour", "engine"}:
+            raise UpdateError(
+                "A GPU Contour installation needs both contour and engine."
+            )
+        locations = {
+            c["Config"]["Labels"].get(LABEL + "project.working_dir") for c in candidates
+        }
+        if len(locations) != 1:
+            raise UpdateError(
+                "Selected containers have different installation folders."
+            )
+        location = locations.pop()
+        if location and Path(location).is_dir():
+            directory = Path(location).resolve()
+        else:
+            if state_directory is None:
+                raise UpdateError(
+                    "An update state folder is required for this installation."
+                )
+            directory = Path(state_directory).resolve()
+        configurations = {
+            c["Config"]["Labels"].get(LABEL + "project.config_files", "")
+            for c in candidates
+        }
+        if len(configurations) != 1:
+            raise UpdateError(
+                "Selected containers have different Compose configurations."
+            )
+        files = tuple(Path(p).resolve() for p in configurations.pop().split(",") if p)
+        files = tuple(
+            p
+            for p in files
+            if p
+            != directory
+            / ".goodvision"
+            / "docker-updates"
+            / project
+            / "active.compose.json"
+        )
+        if not all(p.is_file() for p in files):
+            files = ()
+        recorded = {
+            c["Config"]["Labels"].get(LABEL + "project.environment_file", "")
+            for c in candidates
+        }
+        if len(recorded) != 1:
+            raise UpdateError("Selected containers have different environment files.")
+        env_files = tuple(Path(p).resolve() for p in recorded.pop().split(",") if p)
+        if not env_files and (directory / ".env").is_file():
+            env_files = (directory / ".env",)
+        if not all(p.is_file() for p in env_files):
+            # The live runtime can still be updated, but an incomplete launcher
+            # cannot be reconstructed safely to determine its image reference.
+            files, env_files = (), ()
+        # Customer image updates clone the inspected Docker configuration. They
+        # also support older docker-run installs carrying only workload labels.
+        return Deployment(component, project, directory, files, env_files, containers)
     locations = {
         (
             c["Config"]["Labels"].get(LABEL + "project.working_dir"),
@@ -291,6 +423,12 @@ def assert_idle(docker, deployment, *, recovery=False):
 
 
 def current_containers(docker, deployment):
+    if deployment.manual_names:
+        values = docker.json("inspect", *deployment.manual_names.values())
+        by_name = {c["Name"].lstrip("/"): c for c in values}
+        if set(by_name) != set(deployment.manual_names.values()):
+            raise UpdateError("Selected containers disappeared during update.")
+        return {s: by_name[name] for s, name in deployment.manual_names.items()}
     ids = docker.run(
         "ps", "-aq", "--filter", "label=" + LABEL + "project=" + deployment.project
     ).split()
@@ -431,12 +569,27 @@ def image_id(docker, reference):
     return docker.json("image", "inspect", reference)[0]["Id"]
 
 
-def launcher_references(docker, deployment, candidates):
-    config = docker.json(
-        *deployment.compose("config", "--format", "json", active=False),
-        cwd=deployment.directory,
+def launcher_references(docker, deployment, candidates, *, deduplicate=True):
+    config = (
+        docker.json(
+            *deployment.compose("config", "--format", "json", active=False),
+            cwd=deployment.directory,
+        )
+        if deployment.files
+        else {
+            "services": {
+                service: {
+                    "image": (container["Config"].get("Labels") or {}).get(
+                        "goodvision.update.launcher_image",
+                        container["Config"].get("Image"),
+                    )
+                }
+                for service, container in deployment.containers.items()
+            }
+        }
     )
     references = {}
+    service_references = {}
     for service in deployment.services:
         reference = config["services"][service].get("image")
         if not reference or reference.startswith("sha256:") or "@" in reference:
@@ -447,15 +600,52 @@ def launcher_references(docker, deployment, candidates):
         ):
             raise UpdateError("Selected services require conflicting launcher images.")
         references[reference] = service
+        service_references[service] = reference
     ids = docker.run("ps", "-aq").split()
     selected_ids = {c["Id"] for c in deployment.containers.values()}
+    backup_ids = set()
+    runtime_record = deployment.state_dir / "runtime-latest.json"
+    if runtime_record.is_file():
+        record = json.loads(runtime_record.read_text("utf-8"))
+        if record.get("project") == deployment.project:
+            backup_ids = {
+                item["old_id"] for item in record.get("containers", {}).values()
+            }
+            backup_ids.update(record.get("retained_backups", []))
     for container in docker.json("inspect", *ids) if ids else []:
+        labels = container["Config"].get("Labels") or {}
+        own_backup = (
+            container["Id"] in backup_ids
+            and (
+                (
+                    labels.get(LABEL + "project") == deployment.project
+                    and labels.get(LABEL + "service") in deployment.services
+                )
+                or (
+                    deployment.manual_names
+                    and any(
+                        container["Name"].lstrip("/").startswith(name + "-before-")
+                        for name in deployment.manual_names.values()
+                    )
+                )
+            )
+            and "-before-" in container["Name"]
+            and not container["State"].get("Running")
+        )
         if (
             container["Id"] not in selected_ids
-            and container["Config"].get("Image") in references
+            and not own_backup
+            and (
+                container["Config"].get("Image") in references
+                or labels.get("goodvision.update.launcher_image") in references
+            )
         ):
             raise UpdateError("Another installation shares these launcher image tags.")
-    return {service: reference for reference, service in references.items()}
+    return (
+        {service: reference for reference, service in references.items()}
+        if deduplicate
+        else service_references
+    )
 
 
 def tag_launcher_images(docker, references, images):
