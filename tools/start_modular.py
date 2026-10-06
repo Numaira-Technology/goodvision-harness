@@ -38,6 +38,7 @@ SETTINGS = (
         "TRACKING_EXECUTION_MODE",
         "INFERENCE_SERVER_URL",
         "INFERENCE_SERVER_MODEL",
+        "INFERENCE_SERVER_PROTOCOL",
         "TRACKING_SERVER_URL",
         "TRACKING_SERVER_CAPACITY",
         "TRACKING_SERVER_PROTOCOL",
@@ -203,6 +204,11 @@ def main_environment(settings: Mapping[str, str], args) -> dict[str, str]:
     protocol = settings.get("TRACKING_SERVER_PROTOCOL", "legacy")
     if protocol not in {"legacy", "contour"}:
         raise LaunchError("TRACKING_SERVER_PROTOCOL must be legacy or contour")
+    inference_protocol = args.inference_protocol or settings.get(
+        "INFERENCE_SERVER_PROTOCOL", "compatible"
+    )
+    if inference_protocol not in {"compatible", "goodvision"}:
+        raise LaunchError("INFERENCE_SERVER_PROTOCOL must be compatible or goodvision")
     environment = {
         "HARNESS_FLEET_CAPACITY": str(streams),
         "HARNESS_FLEET_CAMERA_INDEX": "1",
@@ -215,6 +221,7 @@ def main_environment(settings: Mapping[str, str], args) -> dict[str, str]:
         "TRACKING_EXECUTION_MODE": tracking_mode,
         "INFERENCE_SERVER_URL": inference_url,
         "INFERENCE_SERVER_MODEL": model.strip(),
+        "INFERENCE_SERVER_PROTOCOL": inference_protocol,
         "TRACKING_SERVER_URL": tracking_url,
         "TRACKING_SERVER_CAPACITY": str(capacity),
         "TRACKING_SERVER_PROTOCOL": protocol,
@@ -410,12 +417,15 @@ def compose_command(
     if fleet_file is not None:
         command.extend(["-f", str(fleet_file)])
     command.extend(["up", "--detach", "--wait", "--wait-timeout", "900"])
-    if build and module != "vlm":
+    if build:
         command.append("--build")
+    else:
+        command.append("--no-build")
     command.extend(
         ["harness", *(f"harness-{index:02d}" for index in range(2, streams + 1))]
         if module == "main"
-        else [f"{module}-server"]
+        else ["vlm-server", "vlm-processing"] if module == "vlm"
+        else ["sam-server"]
     )
     return command
 
@@ -456,6 +466,10 @@ def parser() -> argparse.ArgumentParser:
             )
             command.add_argument(
                 "--inference-model", help="Served model alias, default local-vision"
+            )
+            command.add_argument(
+                "--inference-protocol", choices=("compatible", "goodvision"),
+                help="compatible: direct API; goodvision: delegate VLM CPU processing",
             )
         else:
             command.add_argument(
@@ -509,6 +523,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             fleet_file=fleet_file,
             build=not args.no_build,
         )
+        checks = []
+        if args.module == "vlm" and args.no_build:
+            compose = command[:command.index("up")]
+            checks.append([
+                *compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
+                "vlm-processing", "python", "-c",
+                local.runtime_check("local-vlm-processing", root=ROOT),
+            ])
         # Cloud and worker keys go directly from the existing environment to Compose.
         # They are never included in this plan or written to the generated overlay.
         print(
@@ -519,6 +541,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "environment": environment,
                     "command": command,
                     "fleet_overlay": overlay,
+                    "preflight_commands": checks,
                 },
                 indent=2,
             )
@@ -535,6 +558,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         process_environment = dict(os.environ)
         process_environment.update(environment)
         try:
+            for check in checks:
+                checked = subprocess.run(
+                    check, cwd=ROOT, env=process_environment, check=False,
+                    timeout=120,
+                )
+                if checked.returncode:
+                    raise LaunchError(
+                        "VLM CPU companion preflight failed; rebuild or import "
+                        "the image matching this source."
+                    )
             result = subprocess.run(
                 command, cwd=ROOT, env=process_environment, check=False
             )

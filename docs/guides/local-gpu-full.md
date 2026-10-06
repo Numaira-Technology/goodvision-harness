@@ -2,6 +2,8 @@
 
 本文适用于 `python tools/start_local_gpu.py --with-local-inference`。仅需要本机 SAM 人物追踪时，使用[默认本机 GPU 部署](local-gpu.md)，无需下载或启动本地大模型。
 
+完整部署自动启动 `local-vlm-processing` CPU 服务，将本地大模型的图像解码、缩放、JPEG/base64 编码、提示词构建和结果校验移到模型端；它不占用 GPU，也不发布主机端口。主程序仍负责视频采集、窗口调度、人物/事件状态合并和展示。已有本机或局域网 OpenAI 兼容视觉模型也可接入，无需使用这里的 Qwen 部署；直接连接和伴随 CPU 服务的设置见[模块化部署说明](modular-services.md#已有本机或局域网大模型)。
+
 两张 L40S 的分配固定为 GPU 0 跑视觉大模型，GPU 1 跑 SAM3.1 人物追踪、人脸识别，以及启用时的 Paddle 工作进程。只有一张 NVIDIA 卡时，全部共享第一张卡。超过两张时仍使用前两张。每个容器只暴露指定的一张卡，容器内部编号均为 0；大模型 tensor parallel 固定为 1。
 
 所有摄像头在**同一个控制台页面**配置、预览、启动和停止。默认预置 1 路容量；`--streams N` 接受正整数，为主控制台预置 N 个独立视频运行实例，共享一个 vLLM 服务与一个 SAM 模型，各路保留独立状态和数据。**12 路是容量参考值，并非软件上限**；可预置少于或多于 12 路，实际可运行数量取决于硬件与实测。
@@ -173,12 +175,14 @@ docker run --rm --network goodvision-demo --entrypoint python \
 
 ## 离线与运维
 
-VLM 和 SAM 都以只读方式挂载已有权重，并开启离线加载；脚本不会下载权重，缺少文件或分片会报错。完全离线交付还需导入 `goodvision-harness:demo-face-gpu-cu128`、`goodvision-contour-runtime:0.1.0`、`vllm/vllm-openai:v0.17.1`，以及需要时的 `goodvision-rich-label-worker:demo-gpu-cu129` 镜像和已准备好的模型卷。
+VLM 和 SAM 都以只读方式挂载已有权重，并开启离线加载；脚本不会下载权重，缺少文件或分片会报错。完全离线交付还需导入 `goodvision-harness:demo-face-gpu-cu128`、`goodvision-contour-runtime:0.1.0`、`goodvision-vlm-processing:local`、`vllm/vllm-openai:v0.17.1`，以及需要时的 `goodvision-rich-label-worker:demo-gpu-cu129` 镜像和已准备好的模型卷。
 
 SAM 与默认的本机追踪部署使用同一份 Contour 引擎配置，保留依赖修复、可写缓存和显存回收。启动时同样核对镜像源码、实际检查每路 `/data/sam-spool` 和 GPU 缓存目录可写性，并执行 CUDA 运算；`--no-build` 也不能绕过这些检查。
 
+CPU 服务的源码同样在启动时核对，旧镜像需重新构建或导入匹配版本。它的健康检查会读取上游模型列表并验证模型别名，默认最多同时接受 8 个请求、2 个图像准备任务；并发可用 `VLM_SERVER_MAX_CONCURRENCY` 和 `VLM_SERVER_PREPARATION_CONCURRENCY` 调整。超出容量返回 429，模型失败和超时沿用失败处理，不切换云端；仍需实测 CPU、网络带宽和模型吞吐。可在 `.env` 设置独立的 `LOCAL_INFERENCE_API_KEY`，主程序、CPU 服务和 vLLM 使用同一密钥，云端密钥不用于本地请求。
+
 启动时自动设置 `LOCAL_GPU_AVAILABLE=true`、`LOCAL_GPU_COUNT`、`LOCAL_INFERENCE_GPU_ID` 和 `LOCAL_TRACKING_GPU_ID`。每个视频实例还获得 `HARNESS_FLEET_CAPACITY=N`、自身的 `HARNESS_FLEET_CAMERA_INDEX` 和主入口内网地址 `HARNESS_FLEET_PRIMARY_URL=http://harness:8080`。主控制台统一访问固定的 `harness-02:8080` 等内网实例；这些地址不是需要分别打开的用户入口。
 
-VLM 地址为 `http://local-inference:8000/v1/chat/completions`；单路追踪配置地址为 `http://local-tracking:8092/v1/video/sessions`，由主程序选择现有 `sam_live` 接口。多路分别使用 `http://local-tracking:8092/v1/cameras/camera-01/perception/sam_live/sessions` 等独立路径，健康检查对应 `/health/cameras/camera-01/perception/sam_live`。
+VLM 后端地址为 `http://local-inference:8000/v1/chat/completions`，主程序自动把分析窗口发到 `http://local-vlm-processing:8080/v1/inspections`；单路追踪配置地址为 `http://local-tracking:8092/v1/video/sessions`，由主程序选择现有 `sam_live` 接口。多路分别使用 `http://local-tracking:8092/v1/cameras/camera-01/perception/sam_live/sessions` 等独立路径，健康检查对应 `/health/cameras/camera-01/perception/sam_live`。
 
 两个本地模型服务预先启动，控制台开关只切换请求路由，不需要主程序访问 Docker socket。因此关闭开关不会卸载模型或立即释放显存；释放显存需部署人员停止相应 worker，再次开启该功能前先启动 worker。权重目录、模型参数或路数变更后重新执行启动脚本；控制台运行位置开关不需要重建镜像。

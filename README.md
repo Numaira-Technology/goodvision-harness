@@ -19,6 +19,9 @@ original `goodvision` repository.
 主程序、人物追踪、大模型可以分别部署在不同机器，主程序无需显卡；控制台分别设置运行位置、
 服务器地址和追踪容量，见 [模块化部署说明](docs/guides/modular-services.md)。
 增加 `--with-local-inference` 可同时部署本地大模型和 GPU 人脸，支持单卡共用、双卡分配。
+本地大模型部署同时启动 CPU 处理服务，把图片解码、缩放、提示词构建和回复校验放到模型机器。
+已有 OpenAI 兼容端点继续支持；自备 GoodVision 模型服务器可在控制台选择对应协议，
+或使用 `--inference-protocol goodvision` 启用 CPU 委派，见[分机部署说明](docs/guides/modular-services.md)。
 每路大模型分析目标沿用 1.25 次/秒，N 路共 1.25 × N
 请求/秒，默认追踪共 2 × N 帧/秒；12 路参考目标为 15 请求/秒。
 容量验收需要真实 L40S 上的持续压测，部署成功不代表已达到该吞吐。

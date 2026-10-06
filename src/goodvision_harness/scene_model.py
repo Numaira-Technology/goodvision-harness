@@ -293,6 +293,7 @@ class TemporalVLMInspector:
         self._closed = False
         self._stats: dict[str, Any] = {
             "provider": settings.provider,
+            "cpu_offload": bool(settings.inspection_endpoint),
             "requests": 0,
             "succeeded_requests": 0,
             "failed_requests": 0,
@@ -359,7 +360,9 @@ class TemporalVLMInspector:
         # Do not copy client headers/cookies/params/auth or endpoint credentials.
         # HEAD uses the configured route without sending evidence or generating
         # output; even an unsupported-method response can warm the connection.
-        endpoint = httpx.URL(self.settings.endpoint).copy_with(
+        endpoint = httpx.URL(
+            self.settings.inspection_endpoint or self.settings.endpoint
+        ).copy_with(
             username="", password="", query=None, fragment=None,
         )
         request = httpx.Request(
@@ -428,12 +431,47 @@ class TemporalVLMInspector:
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
-        if job.diagnostics is None:
-            messages = self.build_messages(job)
+        offload = bool(self.settings.inspection_endpoint)
+        if offload:
+            from .vlm_offload import encode_inspection
+
+            kind = {
+                "TemporalVLMInspector": "temporal",
+                "IndependentVLMInspector": "full",
+                "EventJSONInspector": "events",
+                "CompactGroundingInspector": "compact",
+            }.get(type(self).__name__)
+            if kind is None:
+                raise ValueError("unsupported delegated inspector")
+            # Send original evidence. Image decoding, metadata stripping,
+            # resizing, prompt assembly and first response validation happen
+            # beside the model; application evidence remains source-aligned.
+            payload = encode_inspection(
+                job, kind=kind, model=self.model, parameters=self._parameters,
+                options={
+                    "max_tokens": self._parameters["max_tokens"],
+                    "max_image_side": self._max_image_side,
+                    "jpeg_quality": self._jpeg_quality,
+                },
+                deadline_seconds=self.settings.timeout_seconds,
+            )
+            encoded_image_bytes = sum(len(frame.jpeg_bytes) for frame in job.frames)
         else:
-            encoded_images = []
-            messages = self.build_messages(job, encoded_images=encoded_images)
-            note(job, "prepared", encoded_images)
+            if job.diagnostics is None:
+                messages = self.build_messages(job)
+            else:
+                encoded_images = []
+                messages = self.build_messages(job, encoded_images=encoded_images)
+                note(job, "prepared", encoded_images)
+            payload = {**self._parameters, "model": self.model, "messages": messages}
+            # Count bounded data URLs without copying or decoding their pixels.
+            encoded_image_bytes = 0
+            for part in messages[1]["content"]:
+                if part["type"] == "image_url":
+                    data = part["image_url"]["url"].split(",", 1)[1]
+                    encoded_image_bytes += len(data) // 4 * 3 - (
+                        len(data) - len(data.rstrip("="))
+                    )
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
             key = environment_api_key(self.settings)
@@ -441,16 +479,6 @@ class TemporalVLMInspector:
             not key.strip() and self.settings.provider != "local"
         ):
             raise ModelAPIError("temporal model credential is unavailable")
-        payload = {**self._parameters, "model": self.model, "messages": messages}
-        # These data URLs were just built locally from bounded JPEGs. Count
-        # decoded bytes from Base64 length without copying/decoding pixels.
-        encoded_image_bytes = 0
-        for part in messages[1]["content"]:
-            if part["type"] == "image_url":
-                data = part["image_url"]["url"].split(",", 1)[1]
-                encoded_image_bytes += len(data) // 4 * 3 - (
-                    len(data) - len(data.rstrip("="))
-                )
         http_timing = {
             "stream_session_id": trace_id(job.stream_session_id),
             "request_id": trace_id(job.request.request_id),
@@ -458,6 +486,7 @@ class TemporalVLMInspector:
             "encoded_image_bytes": encoded_image_bytes,
             "max_image_side": self._max_image_side,
             "jpeg_quality": self._jpeg_quality,
+            "cpu_offload": offload,
         }
         if job.diagnostics is not None:
             timing["_diagnostic_transport"] = http_timing
@@ -479,6 +508,28 @@ class TemporalVLMInspector:
                     timeout=self.settings.timeout_seconds,
                 )
             )
+            if offload:
+                if (
+                    type(response.get("version")) is not int
+                    or response["version"] != 1
+                    or response.get("request_id") != job.request.request_id
+                    or not isinstance(response.get("completion"), dict)
+                ):
+                    raise _ResponseValidationError(
+                        "invalid_offload_envelope", "envelope_schema"
+                    )
+                server_timing = response.get("timing")
+                if isinstance(server_timing, dict):
+                    for name in ("request_prepare_seconds", "verdict_parse_seconds"):
+                        value = server_timing.get(name)
+                        if (
+                            type(value) in (int, float)
+                            and math.isfinite(value) and 0 <= value <= 300
+                        ):
+                            timing["server_" + name] = value
+                response = response["completion"]
+                # Recheck the small result against this exact source job. No
+                # remote completion may change requested labels or grounding.
             self._record_usage(response)
             self.last_response_diagnostics = _response_shape(response)
             parse_started = time.monotonic()
@@ -619,7 +670,8 @@ class TemporalVLMInspector:
                 # Do not inherit credentials, cookies, query parameters or
                 # private headers from a previously configured cloud pool.
                 request = httpx.Request(
-                    "POST", self.settings.endpoint, json=payload, headers=headers,
+                    "POST", self.settings.inspection_endpoint or self.settings.endpoint,
+                    json=payload, headers=headers,
                     extensions={
                         "trace": transport_trace,
                         "timeout": httpx.Timeout(

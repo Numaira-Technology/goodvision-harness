@@ -498,6 +498,7 @@ def run_vlm_process(
         for name in (
             "request_prepare_seconds", "verdict_parse_seconds",
             "client_initialize_seconds",
+            "server_request_prepare_seconds", "server_verdict_parse_seconds",
         ):
             value = measurements.get(name) if isinstance(measurements, dict) else None
             if (

@@ -44,6 +44,7 @@ class DeploymentSettings:
     tracking_server_capacity: int | None = None
     tracking_server_protocol: str | None = None
     tracking_sample_fps: float | None = None
+    inference_server_protocol: str | None = None
 
 
 def validate_local_gpu_enabled(value: object, name: str) -> bool:
