@@ -2595,6 +2595,9 @@ class HarnessRuntime:
                     ))
                     next_worker = SceneInspectionWorker(
                         next_scene, next(leases), max_in_flight=size,
+                        validate_source_images=not bool(
+                            model_settings.inspection_endpoint
+                        ),
                         inspector_factory=(lambda: next(leases)) if parallel else None,
                         on_update=lambda: self._guarded_callback(
                             generation, self._on_scene_update

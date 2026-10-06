@@ -281,6 +281,9 @@ def run_pending_inspections(
     text is never surfaced because it may contain credentials or private inputs.
     """
     jobs = runtime.take_inspections()
+    validate_source_images = not bool(getattr(
+        getattr(inspector, "settings", None), "inspection_endpoint", "",
+    ))
     succeeded = failed = discarded = submitted = 0
     accepted = rejected = 0
     for index, job in enumerate(jobs):
@@ -288,9 +291,10 @@ def run_pending_inspections(
             if index >= 4:
                 raise ValueError("inspection execution capacity exceeded")
             allowed = _validate_job(job)
-            for frame in job.frames:
-                with _read_image(frame.jpeg_bytes):
-                    pass
+            if validate_source_images:
+                for frame in job.frames:
+                    with _read_image(frame.jpeg_bytes):
+                        pass
             verdicts = _validate_verdicts(job, inspector.inspect(job), allowed)
             counts: dict[str, int] = {}
             if runtime.complete_inspection(

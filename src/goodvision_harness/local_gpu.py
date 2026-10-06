@@ -113,6 +113,11 @@ class LocalGPUDeployment:
             max_tokens = int(os.environ.get("LOCAL_INFERENCE_MAX_TOKENS", "1600"))
             if not 1 <= max_tokens <= 16384:
                 raise ValueError("LOCAL_INFERENCE_MAX_TOKENS must be within 1..16384")
+            inspection_endpoint = (
+                _endpoint("LOCAL_INFERENCE_INSPECTION_ENDPOINT", "")
+                if os.environ.get("LOCAL_INFERENCE_INSPECTION_ENDPOINT", "").strip()
+                else ""
+            )
             # Start a fresh route so cloud-specific options, models, credentials
             # and extra headers cannot follow the local selection.
             config = replace(
@@ -123,6 +128,7 @@ class LocalGPUDeployment:
                     timeout_seconds=base.model_api.timeout_seconds,
                     max_retries=base.model_api.max_retries,
                     retry_backoff_seconds=base.model_api.retry_backoff_seconds,
+                    inspection_endpoint=inspection_endpoint,
                 ),
                 inference=replace(
                     base.inference,
@@ -132,7 +138,12 @@ class LocalGPUDeployment:
                         "max_tokens": max_tokens,
                     },
                 ),
-                runtime=replace(config.runtime, scene_max_tokens=max_tokens),
+                runtime=replace(
+                    config.runtime, scene_max_tokens=max_tokens,
+                    scene_mode=(
+                        "active" if inspection_endpoint else config.runtime.scene_mode
+                    ),
+                ),
             )
             if base.rich_labeling.backend == "vlm":
                 config = replace(

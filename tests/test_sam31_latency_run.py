@@ -149,18 +149,30 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     # Slow coordinator/spool setup must not consume the source replay clock.
     # Advance only this runner's clock, without making the suite sleep for setup.
     offset = [0.0]
+    clock = [time.perf_counter()]
+    coordinators = []
+
+    def capture_sleep(seconds):
+        # This checks route wiring and exact evidence, not host throughput.
+        # The real latest-only policy may correctly supersede a frame when a
+        # busy Windows runner schedules its worker after the next source tick.
+        # Finish each mock operation before advancing the fixture source clock.
+        assert coordinators[0].wait_until_idle(timeout_seconds=5)
+        clock[0] += seconds
+
     monkeypatch.setattr(
         runner,
         "time",
         SimpleNamespace(
-            perf_counter=lambda: time.perf_counter() + offset[0],
-            sleep=time.sleep,
+            perf_counter=lambda: clock[0] + offset[0],
+            sleep=capture_sleep,
         ),
     )
     create_coordinator = runner.create_tracking_coordinator
 
     def initialize(*args, **kwargs):
         coordinator = create_coordinator(*args, **kwargs)
+        coordinators.append(coordinator)
         offset[0] += startup_delay
         return coordinator
 

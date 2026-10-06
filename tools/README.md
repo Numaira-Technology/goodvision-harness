@@ -12,7 +12,8 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | --- | --- |
 | `start_delivery.py` | Start the recorded `2026.09.10-full.4` customer package. |
 | `start_windows_hybrid_demo.ps1` | Start the native Windows / Docker worker demo. |
-| `start_local_gpu.py` | Detect NVIDIA GPUs and start SAM on this host using the Contour runtime; `--streams N` provisions camera lanes, `--with-local-inference` also starts the local VLM. |
+| `start_local_gpu.py` | Detect NVIDIA GPUs and start SAM on this host using the Contour runtime; `--streams N` provisions camera lanes, `--with-local-inference` also starts the local VLM and CPU processing companion. |
+| `start_modular.py` | Deploy application, SAM or VLM separately; `main --inference-server ... --inference-protocol goodvision` delegates VLM image preparation to the model host. See [modular services](../docs/guides/modular-services.md). |
 | `export_full_delivery.py` | Export the recorded full.4 image pair, metadata and checksums. |
 | `run_full_delivery_smoke.ps1` | Run isolated image protocol checks; accepts candidate image tags. |
 | `delivery_smoke.py` | Exercise a disposable main container using synthetic frames. |
@@ -20,6 +21,10 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | `face_gpu_smoke.py` | Check runtime packages or run real accelerated face warmup. |
 | `customer_check.py` | Installed check dispatcher; mode comes from its installed filename. |
 | `runtime_gateway.py` | Runtime process supervisor and customer diagnostic filtering. |
+| `update_docker.py` | Update an installed Compose harness or Contour deployment from source or loaded images, with readiness checks and image rollback. [Usage](../docs/guides/docker-updates.md). |
+| `customer_update.py` | Verify a customer package, stop local analysis, and restore startup settings for the update window. |
+| `customer_update_gui.py` | Windows customer update window; distributed as `Update.exe` with prepared images so customers can update by double-clicking. [Customer steps](../docs/guides/docker-updates.md#customer-updates-on-windows). |
+| `package_customer_docker_update.py` | Package validated images and a standalone Windows updater in a customer ZIP. [Maintainer steps](../docs/guides/docker-updates.md#package-a-windows-customer-update). |
 
 See [release development](../docs/guides/release.md) and the
 [customer deployment guide](../DEPLOY.md). Recorded image tags and release

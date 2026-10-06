@@ -114,6 +114,7 @@ class SceneInspectionWorker:
         poll_seconds: float = 0.1,
         max_in_flight: int = 1,
         inspector_factory: Callable[[], TemporalInspector] | None = None,
+        validate_source_images: bool = True,
     ) -> None:
         if (
             type(poll_seconds) not in (int, float)
@@ -125,12 +126,15 @@ class SceneInspectionWorker:
             raise ValueError("max_in_flight must be within 1..4")
         if max_in_flight > 1 and not callable(inspector_factory):
             raise ValueError("parallel inspection requires independent client factory")
+        if type(validate_source_images) is not bool:
+            raise ValueError("validate_source_images must be boolean")
         self.runtime = runtime
         self.inspector = inspector
         self._on_update = on_update
         self._poll_seconds = poll_seconds
         self._max_in_flight = max_in_flight
         self._inspector_factory = inspector_factory
+        self._validate_source_images = validate_source_images
         self._slots = [_InspectionSlot(inspector)]
         self._completed: Queue = Queue()
         self._pending: dict[
@@ -339,9 +343,10 @@ class SceneInspectionWorker:
                 if capacity_exceeded:
                     raise ValueError("temporal execution capacity exceeded")
                 allowed = _validate_job(job)
-                for frame in job.frames:
-                    with _read_image(frame.jpeg_bytes):
-                        pass
+                if self._validate_source_images:
+                    for frame in job.frames:
+                        with _read_image(frame.jpeg_bytes):
+                            pass
             timing["model_attempts"] = 1
             with _timed_phase(timing, "model_seconds"):
                 response = inspector.inspect(job)
