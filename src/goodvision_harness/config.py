@@ -637,8 +637,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         or runtime_section.get("scene_timeout_seconds", 15),
         "runtime.scene_timeout_seconds",
     )
-    if scene_timeout > 20:
-        raise ValueError("runtime.scene_timeout_seconds must not exceed 20 seconds")
+    if scene_timeout > 300:
+        raise ValueError("runtime.scene_timeout_seconds must not exceed 300 seconds")
     runtime = RuntimeSettings(
         max_concurrent_requests=_positive_int(
             runtime_section.get("max_concurrent_requests", 4),

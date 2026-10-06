@@ -448,7 +448,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                 "delayed result is not the next accepted source frame",
             )
             _require(
-                len(snapshot.objects) <= min(64, session.limits["max_objects"]),
+                len(snapshot.objects) <= min(256, session.limits["max_objects"]),
                 "too many native objects",
             )
             seen = set()

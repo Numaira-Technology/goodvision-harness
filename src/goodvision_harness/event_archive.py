@@ -6,6 +6,8 @@ observations by source time and owns SQLite; a separate worker encodes clips.
 
 from __future__ import annotations
 
+from .event_session import SAFETY_LABELS
+
 import copy
 import json
 import math
@@ -298,7 +300,7 @@ class EventArchive:
         )
         records = []
         for event in scene.get("events", ()):
-            if event.get("event_label") not in {"smoking", "fall", "fight", "weapon"}:
+            if event.get("event_label") not in SAFETY_LABELS:
                 continue
             record = {key: copy.deepcopy(event[key]) for key in keys if key in event}
             positives = [
@@ -331,7 +333,7 @@ class EventArchive:
             }
             for item in latest_transitions.values()
             if (item.get("type") in {"end", "retract"} or item.get("phase") == "ended")
-            and item.get("event_label") in {"smoking", "fall", "fight", "weapon"}
+            and item.get("event_label") in SAFETY_LABELS
         ]
         if not records and not transitions:
             return True

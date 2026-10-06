@@ -112,7 +112,7 @@ from .perception import (
     processing_methods,
     processing_status,
 )
-from .pipeline import CAMERA_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
+from .pipeline import CAMERA_MODE, FILE_MODE, STREAM_MODE, SessionCallbacks, StreamingSession
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
     PUBLIC_FACE_ERROR,
@@ -150,6 +150,7 @@ from .scene_archive import SceneArchive
 from .scene_capture import SceneCaptureClient
 from .scene_delivery import SceneDisplayWorker, TrackedSceneDisplayWorker
 from .scene_model import TemporalVLMInspector
+from .event_session import BUILTIN_DETECTION_LABELS, VOCABULARY
 from .scene_results import SceneResultPublisher
 from .scene_runtime import SceneRuntime
 from .scene_worker import SceneInspectionWorker
@@ -1924,6 +1925,13 @@ class HarnessRuntime:
             video_connection_id=_connection_id,
         )
 
+    def start_file(self, video_path: str, **kwargs: Any) -> dict[str, Any]:
+        # 仅本轮隔离评测开放已只读挂载的媒体，不接受任意宿主路径。
+        path = Path(video_path).resolve()
+        if path.parent != Path('/offline-media') or not path.is_file():
+            raise ValueError('offline file must be a mounted benchmark video')
+        return self._start_session(FILE_MODE, video_path=str(path), **kwargs)
+
     def start_camera(
         self,
         *,
@@ -1969,6 +1977,7 @@ class HarnessRuntime:
         stream_url: str | None = None,
         stream_protocol: str | None = None,
         stream_host: str | None = None,
+        video_path: str | None = None,
         dry_run: bool | None = None,
         event_label: str | None = None,
         analysis_mode: str = MULTI_ANALYSIS_MODE,
@@ -1983,7 +1992,7 @@ class HarnessRuntime:
         if self._fleet_camera_index > self.tracking_camera_capacity():
             raise RuntimeError("该视频通道超出人员追踪模块的配置容量。")
         self._ensure_rich_readiness_probe()
-        if mode not in {CAMERA_MODE, STREAM_MODE}:
+        if mode not in {CAMERA_MODE, STREAM_MODE, FILE_MODE}:
             raise ValueError("unsupported input mode")
 
         selected_analysis = str(analysis_mode).strip().lower()
@@ -2061,6 +2070,9 @@ class HarnessRuntime:
 
             face_session = None
             scene_active = self._scene_mode == "active"
+            injected_selected = any(not VOCABULARY.get(item).builtin for item in (selected_features or ()))
+            if injected_selected and (not scene_active or self.config.rich_labeling.backend != "sam31_stream"):
+                raise ValueError("Ashley event extension requires native active scene and sam31_stream")
             if scene_active and selected_analysis == EVENT_ANALYSIS_MODE:
                 raise ValueError(
                     "continuous scene mode requires multi-feature or face analysis"
@@ -2261,7 +2273,7 @@ class HarnessRuntime:
                             sequence,
                         )
                     )
-                    if mode == STREAM_MODE
+                    if mode in {STREAM_MODE, FILE_MODE}
                     else None
                 ),
                 on_state=lambda state: self._guarded_callback(
@@ -2280,7 +2292,14 @@ class HarnessRuntime:
                     generation, self._on_timeline_result, result
                 ),
             )
-            if mode == STREAM_MODE:
+            if mode == FILE_MODE:
+                from .offline_benchmark import OfflineVideoSource
+                session = StreamingSession(
+                    session_config, client, callbacks, mode=FILE_MODE,
+                    video_stream=OfflineVideoSource(video_path, self),
+                    source_id=self.source_id, archive=self.event_archive(),
+                )
+            elif mode == STREAM_MODE:
                 assert stream_url is not None
                 connection = self._video_connection
                 stream_options = {}
@@ -2984,6 +3003,9 @@ class HarnessRuntime:
                 payload["stream"]["crop_selection"] = selector.status()
         payload["postprocessing_runs"] = [run.status() for run in postprocess]
         payload["session_start_pending"] = self._session_start_pending
+        # 离线调度复用启动入口的原有判据，区分结果收尾与原生会话清理。
+        # 仅读取本地生命周期状态，不创建会话或发起远端探测。
+        payload["processing_lifecycle_busy"] = self._processing_lifecycle_busy()
         if self._session_start_pending and payload.get("pipeline_state") not in {
             "running", "draining",
         }:
@@ -3998,6 +4020,11 @@ class HarnessRuntime:
                         scene_archive.failed_for_run(session.stream_session_id)
                     ):
                         raise RuntimeError("scene archive write failed")
+                offline_capture = getattr(session.video_stream, "capture", None)
+                if offline_capture is not None and final_snapshot is not None:
+                    offline_capture.observe_events(final_snapshot, session.stream_session_id)
+                    offline_capture.append({"kind": "final_scene",
+                                            "stream_session_id": session.stream_session_id})
                 with control.lock:
                     control.state, control.stage = "finalized", "complete"
                     control.session = control.scene = None
@@ -4165,7 +4192,7 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
 
 def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
     if features is None:
-        return DETECTION_EVENT_LABELS
+        return BUILTIN_DETECTION_LABELS
     if not isinstance(features, (list, tuple)):
         raise ValueError("features must be an array")
     raw = tuple(features)
@@ -4764,8 +4791,8 @@ def create_app(
         require_coordinator(request)
         payload = payload or {}
         mode = payload.get("mode", STREAM_MODE)
-        if not isinstance(mode, str) or mode not in {CAMERA_MODE, STREAM_MODE}:
-            raise HTTPException(status_code=400, detail="mode must be camera or stream")
+        if not isinstance(mode, str) or mode not in {CAMERA_MODE, STREAM_MODE, FILE_MODE}:
+            raise HTTPException(status_code=400, detail="mode must be camera, stream or file")
         if mode == CAMERA_MODE:
             raise HTTPException(
                 status_code=400,
@@ -4789,8 +4816,8 @@ def create_app(
         runtime = _runtime(request)
         try:
             return await asyncio.to_thread(
-                runtime.start_stream,
-                stream_url,
+                runtime.start_file if mode == FILE_MODE else runtime.start_stream,
+                payload.get('video_path', '') if mode == FILE_MODE else stream_url,
                 dry_run=dry_run,
                 event_label=event_label,
                 analysis_mode=analysis_mode,

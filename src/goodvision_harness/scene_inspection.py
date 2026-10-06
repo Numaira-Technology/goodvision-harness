@@ -16,7 +16,8 @@ from .contracts import NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .scene_runtime import SceneRuntime, TemporalInspection, TemporalVerdict
 
-_EVENT_LABELS = frozenset(("fight", "smoking", "fall", "weapon"))
+from .event_session import SAFETY_LABELS, SCENE_EVENT_LABELS, prompt_definitions, valid_subject_binding
+_EVENT_LABELS = frozenset(SAFETY_LABELS)
 _MAX_BYTES = 16 * 1024 * 1024
 _MAX_PIXELS = 16 * 1024 * 1024
 _PROMPT = """Use every supplied frame in source timestamp order as one continuous
@@ -34,11 +35,18 @@ insufficient temporal evidence prevents a conclusion. A motion cue alone is not
 proof; absence in one frame does not establish that an ongoing event ended.
 
 {output_instruction} Each verdict object must contain exactly these four fields:
-event_label (an allowed label), subject_ids (a nonempty list of grounded allowed
-IDs), detected (true, false, or null), confidence (0 through 1, or null).
-Every verdict, including false/null, must name its supported people; a negative
+event_label (an allowed label), subject_ids (a list), detected (true, false,
+or null), confidence (0 through 1, or null). For labels in scene_event_labels,
+subject_ids must be []: judge the visible scene condition or vehicle in full-scene
+temporal context, even when no people are present. Never substitute a nearby
+person. For ground_litter require visible waste in contact with the ground,
+without requiring an observed littering action. For ppe_violation reference only
+the affected grounded people and do not infer missing equipment from occlusion.
+For all other labels every verdict, including
+false/null, must name a nonempty list of supported grounded people. A negative
 event verdict does not mean no people are present. No duplicate event/subject
-groups. Return {empty_output} if no subject assignment is supported. Do not output new
+groups. Return {empty_output} only when neither a scene-level judgment nor any
+supported person assignment is possible. Do not output new
 bounding boxes, descriptions, commentary, credentials, or unrelated information.
 """
 
@@ -171,6 +179,8 @@ def build_temporal_messages(
     context = {
         "allowed_event_labels": list(job.request.event_labels),
         "allowed_subject_ids": sorted(allowed_ids),
+        "event_definitions": prompt_definitions(job.request.event_labels),
+        "scene_event_labels": [label for label in job.request.event_labels if label in SCENE_EVENT_LABELS],
     }
     content: list[dict[str, Any]] = [
         {"type": "text", "text": json.dumps(context, separators=(",", ":"))}
@@ -238,7 +248,7 @@ def _validate_verdicts(
             or any(
                 not isinstance(value, str) or not value for value in verdict.subject_ids
             )
-            or not verdict.subject_ids
+            or not valid_subject_binding(verdict.event_label, verdict.subject_ids)
             or not set(verdict.subject_ids) <= allowed
             or len(set(verdict.subject_ids)) != len(verdict.subject_ids)
             or type(verdict.detected) not in (bool, type(None))

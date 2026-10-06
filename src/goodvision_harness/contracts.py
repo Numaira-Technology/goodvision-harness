@@ -205,7 +205,12 @@ class EventJudgment:
         if len(set(self.matched_memory_ids)) != len(self.matched_memory_ids):
             raise ValueError("matched_memory_ids must be unique")
         if self.detected and not self.object_ids:
-            raise ValueError("detected judgments must reference at least one object")
+            # 独立Ashley补齐版：已声明的车辆场景事件没有人物框关联。
+            # 普通人物/物体阳性仍要求真实对象，不借场景例外放宽其关联。
+            from .event_session import requires_subject
+            # 地面垃圾沿主线显式scene extent投影，车辆保留空对象发布。
+            if self.event_label == "ground_litter" or requires_subject(self.event_label):
+                raise ValueError("detected judgments must reference at least one object")
 
     def as_dict(self) -> dict[str, object]:
         record: dict[str, object] = {
@@ -217,6 +222,9 @@ class EventJudgment:
         }
         if self.matched_memory_ids:
             record["matched_memory_ids"] = list(self.matched_memory_ids)
+        from .event_session import requires_subject
+        if not requires_subject(self.event_label):
+            record["grounding_scope"] = "scene"
         return record
 
 

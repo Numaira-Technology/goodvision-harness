@@ -32,8 +32,11 @@ from .scene_state import SceneState
 from .video_tracking import BACKEND as _NATIVE_VIDEO_BACKEND
 from .video_tracking import VideoFrame
 
-_EVENTS = frozenset(("fight", "smoking", "fall", "weapon", "stranger"))
-_INSPECTION_TIMEOUT_SECONDS = 20.0
+from .event_session import (
+    BUILTIN_SAFETY_LABELS, DETECTION_LABELS, SCENE_EVENT_LABELS, valid_subject_binding,
+)
+_EVENTS = frozenset(DETECTION_LABELS)
+_INSPECTION_TIMEOUT_SECONDS = 320.0
 _TEMPORAL_MIN_SPAN_SECONDS = 0.75
 _PERSON_LABELS = frozenset(
     (
@@ -135,7 +138,7 @@ class SceneRuntime:
         source_id: str,
         *,
         mode: str = "active",
-        event_labels: tuple[str, ...] = ("fight", "smoking", "fall", "weapon"),
+        event_labels: tuple[str, ...] = BUILTIN_SAFETY_LABELS,
         event_sensitivities: Mapping[str, str] | None = None,
         tracking_mode: str = "immediate",
         tracking_history_seconds: float = 12.0,
@@ -200,6 +203,9 @@ class SceneRuntime:
         self.scene = SceneState(
             stream_session_id,
             source_id,
+            # 仅用于本轮隔离评测：累计身份对齐 native ID 上限，事件预算不变。
+            max_entities=2048,
+            max_events=640,
             person_history_size=512 if tracking_mode == "batch" else None,
             person_history_seconds=(
                 self.tracking_history_seconds if tracking_mode == "batch" else None
@@ -923,7 +929,7 @@ class SceneRuntime:
             return
         if self.temporal_observation_fps is not None:
             for source in self._temporal_source_records(snapshots):
-                if not self.scene.pin_source_observations(
+                if source.subject_boxes and not self.scene.pin_source_observations(
                     source.pin_id,
                     tuple((sid, source.frame.timestamp_seconds, sequence, bbox)
                           for sequence, sid, bbox in source.subject_boxes),
@@ -1021,7 +1027,7 @@ class SceneRuntime:
                     "observation_state", "observed",
                 )) == "observed"
             )
-            if not observed:
+            if not observed and not SCENE_EVENT_LABELS.intersection(self.event_labels):
                 continue
             frame = self._tracking_source_frame(
                 snapshot.frame_sequence, snapshot.timestamp_seconds,
@@ -1072,10 +1078,14 @@ class SceneRuntime:
         context_seconds = max(1.0, interval)
         while self._temporal_sources and len(self._jobs) < self.max_pending_inspections:
             sources = tuple(self._temporal_sources.values())
-            epoch = sources[0].epoch
+            scene_requested = bool(SCENE_EVENT_LABELS.intersection(self.event_labels))
+            # 空帧的epoch未知，不虚构人物epoch，也不把人物暂时消失当作reset。
+            # 首个已知epoch之后出现不同已知epoch时仍按原生逻辑切断窗口。
+            epoch = (next((source.epoch for source in sources if source.epoch), ())
+                     if scene_requested else sources[0].epoch)
             boundary = next(
                 (index for index, source in enumerate(sources)
-                 if source.epoch != epoch),
+                 if source.epoch != epoch and (source.epoch or not scene_requested)),
                 len(sources),
             )
             segment = sources[:boundary]
@@ -1145,7 +1155,7 @@ class SceneRuntime:
             )
             boxes = tuple(box for source in selected for box in source.subject_boxes)
             times = {frame.frame_sequence: frame.timestamp_seconds for frame in frames}
-            if not self.scene.pin_source_observations(
+            if boxes and not self.scene.pin_source_observations(
                 request.request_id,
                 tuple((sid, times[sequence], sequence, bbox)
                       for sequence, sid, bbox in boxes),
@@ -1567,7 +1577,10 @@ class SceneRuntime:
                 start_seconds=request.start_seconds,
                 end_seconds=request.end_seconds,
                 limit=4,
-                frame_sequences=sequences,
+                frame_sequences=(
+                    None if not request.subject_ids
+                    and "ground_litter" in request.event_labels else sequences
+                ),
             )
             retained = sum(
                 len(frame.jpeg_bytes)
@@ -1673,7 +1686,7 @@ class SceneRuntime:
                 if (
                     not isinstance(verdict, TemporalVerdict)
                     or not isinstance(verdict.subject_ids, (tuple, list))
-                    or not verdict.subject_ids
+                    or not valid_subject_binding(verdict.event_label, verdict.subject_ids)
                     or len(verdict.subject_ids) > 128
                     or any(
                         not isinstance(sid, str) or not sid or len(sid) > 256

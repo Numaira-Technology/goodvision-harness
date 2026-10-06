@@ -40,9 +40,10 @@ SAFETY_MULTI_ANALYSIS_KIND = "safety_events"
 FIXED_FIVE_ANALYSIS_KIND = "fixed_five_events"
 SELECTED_FEATURES_ANALYSIS_KIND = "selected_features"
 
-SAFETY_EVENT_LABELS = ("fight", "smoking", "fall", "weapon")
+from .event_session import LEGACY_FOUR_SAFETY_LABELS, VOCABULARY
+from .event_session import SAFETY_LABELS as SAFETY_EVENT_LABELS
+from .event_session import DETECTION_LABELS as DETECTION_EVENT_LABELS
 STRANGER_EVENT_LABEL = "stranger"
-DETECTION_EVENT_LABELS = (*SAFETY_EVENT_LABELS, STRANGER_EVENT_LABEL)
 MIN_MULTI_EVENT_MAX_TOKENS = 1024
 _LOGGER = logging.getLogger(__name__)
 
@@ -80,6 +81,13 @@ def _system_prompt_with_evidence_rules(
             return SENSITIVITY_SYSTEM_PROMPT + "\n\n" + sensitivity_policy_text(
                 settings, smoking_standard_rule=SMOKING_EVIDENCE_RULE,
             )
+    extra = normalize_event_sensitivities(
+        None, set(event_labels) & {"ppe_violation", "ground_litter"},
+    )
+    if extra:
+        system_prompt += "\n\n" + sensitivity_policy_text(
+            extra, smoking_standard_rule=SMOKING_EVIDENCE_RULE,
+        )
     if "smoking" in {label.strip().casefold() for label in event_labels}:
         return f"{system_prompt}\n\n{SMOKING_EVIDENCE_RULE}"
     return system_prompt
@@ -162,14 +170,7 @@ def _smoking_box_rule(smoking_high: bool) -> str:
         "For smoking, return only the cigarette, cigar, pipe, or e-cigarette box, "
         "never the smoker's person box. "
     )
-_EVENT_NAMES_ZH = {
-    "fight": "打架",
-    "smoking": "吸烟",
-    "fall": "跌倒",
-    "weapon": "武器",
-    "stranger": "陌生人",
-    "unknown_person": "陌生人",
-}
+_EVENT_NAMES_ZH = {**VOCABULARY.display_names(), "unknown_person": "陌生人"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -981,6 +982,9 @@ def build_grounding_messages(
             "negative uses objects=[]. For fight/fall box involved people. "
             + _smoking_box_rule(smoking_high)
             + "For weapon box only the visible weapon item."
+            + " For ppe_violation box only affected visible people. "
+            "For ground_litter box the actual visible waste and use actor_ids=[]; "
+            "never use a nearby person's body as the litter box."
         )
     rendered_prompt = prompt.replace("{event}", effective_event_label).replace(
         "{window_label}", window.label
@@ -1128,7 +1132,9 @@ def build_multi_grounding_messages(
         + _smoking_box_rule(smoking_high)
         + "For weapon, use the selected sensitivity policy and "
         "return only the firearm, knife, machete, club, or other weapon box, "
-        "never the holder's person box."
+        "never the holder's person box. For ppe_violation return affected visible "
+        "people's body boxes. For ground_litter return actual litter boxes and "
+        "actor_ids=[]; never associate ground waste with a nearby person."
     )
     system_text += (
         "\nA positive response always has a top-level events array, even for "
@@ -1348,7 +1354,7 @@ class AIClubMultiGroundingClient:
         # JSON example. Reuse it only for that exact request; selected subsets use
         # the generic prompt plus the dynamic authoritative contract below.
         use_fixed_prompt = (
-            bool(multi_prompt) and self.event_labels == SAFETY_EVENT_LABELS
+            bool(multi_prompt) and self.event_labels == LEGACY_FOUR_SAFETY_LABELS
         )
         prompt = multi_prompt if use_fixed_prompt else self.settings.prompt
         request_parameters = dict(self.settings.request_parameters)

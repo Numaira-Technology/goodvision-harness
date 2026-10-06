@@ -30,6 +30,7 @@ from .scene_inspection import (
     build_temporal_messages,
 )
 from .scene_runtime import TemporalInspection, TemporalVerdict
+from .event_session import requires_subject, valid_subject_binding
 from .vlm_transport import create_vlm_http_client
 
 _MAX_RESPONSE_BYTES = 256 * 1024
@@ -81,8 +82,8 @@ def _verdict_rejection_reason(job, verdicts, allowed) -> str:
         if verdict.event_label not in job.request.event_labels:
             return "unrequested_event_label"
         ids = verdict.subject_ids
-        if not ids:
-            return "empty_subject_ids"
+        if not valid_subject_binding(verdict.event_label, ids):
+            return "invalid_subject_binding"
         if any(not isinstance(value, str) or not value for value in ids):
             return "invalid_subject_id_type"
         if not set(ids) <= allowed:
@@ -724,12 +725,45 @@ class TemporalVLMInspector:
                 )
             )
         allowed = _validate_job(job)
+        associated = []
+        associated_raw_indices = []
+        unassociated = []
+        unassociated_labels = set()
+        for index, verdict in enumerate(verdicts):
+            # 空人物关联的否定/不确定没有具体主体，保存窗口原始证据但不进入
+            # 人物事件生命周期。阳性空关联、未知ID、未请求标签仍按原契约拒绝。
+            if (verdict.event_label in job.request.event_labels
+                    and requires_subject(verdict.event_label)
+                    and not verdict.subject_ids
+                    and (verdict.detected is False or verdict.detected is None)):
+                confidence = verdict.confidence
+                if confidence is not None and (type(confidence) not in (int, float)
+                        or not math.isfinite(confidence) or not 0 <= confidence <= 1):
+                    raise _ResponseValidationError("invalid_confidence_range", "verdict_grounding")
+                if verdict.event_label in unassociated_labels:
+                    raise _ResponseValidationError("duplicate_verdict", "verdict_grounding")
+                unassociated_labels.add(verdict.event_label)
+                unassociated.append({"raw_verdict_index": index, "event_label": verdict.event_label,
+                    "subject_ids": [], "detected": verdict.detected, "confidence": confidence})
+            else:
+                associated.append(verdict)
+                associated_raw_indices.append(index)
         try:
-            return _validate_verdicts(job, verdicts, allowed)
+            validated = _validate_verdicts(job, associated, allowed)
         except ValueError:
             raise _ResponseValidationError(
-                _verdict_rejection_reason(job, verdicts, allowed), "verdict_grounding"
+                _verdict_rejection_reason(job, associated, allowed), "verdict_grounding"
             ) from None
+        if unassociated:
+            from .native_event_audit import append
+            append("unassociated-window-verdicts.jsonl", {
+                "stream_session_id": job.stream_session_id, "request_id": job.request.request_id,
+                "start_seconds": job.request.start_seconds, "end_seconds": job.request.end_seconds,
+                "verdicts": unassociated, "accepted_into_person_lifecycle": False,
+                "associated_raw_verdict_indices": associated_raw_indices,
+                "used_as_absence_or_end_evidence": False,
+                "reason": "negative_or_unknown_without_grounded_subject"})
+        return validated
 
     def _record_usage(self, response: Mapping[str, Any]) -> None:
         usage = response.get("usage")

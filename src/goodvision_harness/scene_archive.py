@@ -17,7 +17,8 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any
 
-_LABELS = frozenset({"fight", "smoking", "fall", "weapon", "stranger"})
+from .event_session import DETECTION_LABELS, valid_subject_binding
+_LABELS = frozenset(DETECTION_LABELS)
 _PHASES = frozenset({"suspected", "confirmed", "ended", "retracted"})
 _TEXT_LIMIT = 256
 
@@ -97,7 +98,8 @@ class SceneArchive:
         if not isinstance(phase, str) or phase not in _PHASES:
             raise ValueError("invalid event phase")
         subjects = event.get("subject_ids")
-        if not isinstance(subjects, (list, tuple)) or not 1 <= len(subjects) <= 128:
+        if (not isinstance(subjects, (list, tuple)) or len(subjects) > 128
+                or not valid_subject_binding(label, subjects)):
             raise ValueError("invalid event participants")
         record: dict[str, Any] = {
             "event_id": _text(event.get("event_id")),

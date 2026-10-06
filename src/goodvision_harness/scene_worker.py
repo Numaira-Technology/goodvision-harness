@@ -50,9 +50,7 @@ def _verdict_log_fields(outcome: _InspectionOutcome) -> dict[str, Any]:
     A failed/unavailable response has no measurable verdict coverage, including
     no manufactured unknown/negative verdict. Only fixed public labels enter logs.
     """
-    requested = sorted(set(outcome.job.request.event_labels).intersection(
-        {"fight", "smoking", "fall", "weapon"},
-    ))
+    requested = sorted(set(outcome.job.request.event_labels))
     counts = {
         label: dict.fromkeys(("true", "false", "unknown", "omitted"), None)
         for label in requested

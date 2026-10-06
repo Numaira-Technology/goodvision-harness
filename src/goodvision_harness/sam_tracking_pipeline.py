@@ -8,6 +8,7 @@ discarding observations. Recovery facts never enter public status payloads.
 from __future__ import annotations
 
 import math
+import logging
 import os
 import threading
 import time
@@ -65,6 +66,7 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
     ):
         super().__init__(client, **kwargs)
         self.on_native_batch = on_native_batch
+        self.allow_equal_source_timestamps = False
         if client.startup_frames != 1 or client.max_append_frames > 4:
             raise ValueError("pipelined tracking requires the causal SAM route")
         self._spool_directory = Path(
@@ -145,7 +147,9 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                 return False
             if (
                 frame_sequence <= self._last_input[0]
-                or timestamp_seconds <= self._last_input[1]
+                or timestamp_seconds < self._last_input[1]
+                or (timestamp_seconds == self._last_input[1]
+                    and not self.allow_equal_source_timestamps)
             ):
                 self._stats["rejected_order"] += 1
                 return False
@@ -154,6 +158,8 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             if self._capture_started_at is None:
                 self._capture_started_at = arrived
             self._stats["session_source_frames"] += 1
+            # 离线文件可能有同PTS但不同序号的原帧；仍按下方既有时间槽采样，
+            # 不重标时间、不向模型重复提交该时间槽、也不误记为乱序丢帧。
             # Match source-clock sampling slots, rather than requiring a minimum
             # gap since the previous accepted frame. Camera timestamps jitter
             # around each 3fps boundary; a 0.32s gap after a 0.35s gap still
@@ -237,6 +243,13 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
         return work
 
     def _fail(self, generation, phase, exc, work=None):
+        # 本轮隔离诊断：保留提交阶段的原始异常与调用栈，不改变失败处理。
+        if phase in {"commit", "request"}:
+            logging.getLogger("uvicorn.error").error(
+                "sam_pipeline_failure_detail phase=%s generation=%s request_id=%s",
+                phase, generation, trace_id(work.request_id) if work else None,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
         with self._condition:
             if generation == self._generation and not self._closed:
                 self._failed_session = True

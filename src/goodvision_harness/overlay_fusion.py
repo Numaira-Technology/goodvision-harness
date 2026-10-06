@@ -66,8 +66,8 @@ _FACE_PERSON_LABELS = frozenset(
         "unknownperson",
     }
 )
-_PERSON_TARGET_EVENTS = frozenset({"fight", "fall", "stranger"})
-_OBJECT_TARGET_EVENTS = frozenset({"smoking", "weapon"})
+_PERSON_TARGET_EVENTS = frozenset({"fight", "fall", "ppe_violation", "stranger"})
+_OBJECT_TARGET_EVENTS = frozenset({"smoking", "weapon", "ground_litter"})
 _MIN_MATCH_SCORE = 0.42
 _AMBIGUITY_MARGIN = 0.08
 
