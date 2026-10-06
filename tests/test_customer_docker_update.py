@@ -216,7 +216,9 @@ def test_customer_manifest_validates_matching_complete_roles(tmp_path, component
     assert customer.load_package(directory) == manifest
 
 
-@pytest.mark.parametrize("corruption", ["archive", "escape", "roles", "image-id", "config-id"])
+@pytest.mark.parametrize(
+    "corruption", ["archive", "escape", "roles", "image-id", "config-id"]
+)
 def test_invalid_customer_package_never_loads_images(tmp_path, corruption):
     directory = tmp_path / "customer update"
     manifest = make_package(directory)
