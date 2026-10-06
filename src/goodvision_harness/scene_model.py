@@ -701,9 +701,30 @@ class TemporalVLMInspector:
             timing["http_until_headers_seconds"] = time.monotonic() - started
             timing["http_status"] = response.status_code
             if not 200 <= response.status_code < 300:
+                code = "http_error"
+                if self.settings.inspection_endpoint:
+                    # The companion returns only public, fixed error codes.
+                    # Bound the error body and never retain upstream details.
+                    error_body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(error_body) + len(chunk) > 4096:
+                            break
+                        error_body.extend(chunk)
+                    else:
+                        try:
+                            error_payload = json.loads(error_body)
+                        except (ValueError, TypeError, RecursionError):
+                            error_payload = None
+                        if isinstance(error_payload, dict):
+                            candidate = error_payload.get("code")
+                            if isinstance(candidate, str) and candidate in {
+                                "invalid_response", "empty_response", "connection",
+                                "timeout", "overloaded", "request_failed",
+                            }:
+                                code = candidate
                 raise ModelAPIError(
                     "temporal model HTTP request failed",
-                    code="http_error",
+                    code=code,
                     status_code=response.status_code,
                 )
             body = bytearray()
