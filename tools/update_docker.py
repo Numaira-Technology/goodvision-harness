@@ -101,22 +101,22 @@ class LocalConnection(http.client.HTTPConnection):
         self.sock.settimeout(self.timeout)
         self.sock.connect('/var/run/docker.sock')
 request=json.load(sys.stdin)
-with LocalConnection('localhost',timeout=150) as connection:
-    connection.request('GET','/version')
-    response=connection.getresponse()
-    data=response.read()
-    if response.status>=300: sys.exit(1)
-    version=json.loads(data)
-    maximum=tuple(map(int,version['ApiVersion'].split('.')))
-    minimum=tuple(map(int,version.get('MinAPIVersion','1.12').split('.')))
-    selected=min((1,45),maximum)
-    if selected<max((1,41),minimum): sys.exit(1)
-    path='/v'+'.'.join(map(str,selected))+'/containers/create?name='
-    connection.request('POST',path+urllib.parse.quote(request['name'],safe=''),
-        json.dumps(request['config']),{'Content-Type':'application/json'})
-    response=connection.getresponse()
-    data=response.read()
-    sys.exit(1) if response.status>=300 else print(data.decode())
+connection=LocalConnection('localhost',timeout=150)
+connection.request('GET','/version')
+response=connection.getresponse()
+data=response.read()
+if response.status>=300: sys.exit(1)
+version=json.loads(data)
+maximum=tuple(map(int,version['ApiVersion'].split('.')))
+minimum=tuple(map(int,version.get('MinAPIVersion','1.12').split('.')))
+selected=min((1,45),maximum)
+if selected<max((1,41),minimum): sys.exit(1)
+path='/v'+'.'.join(map(str,selected))+'/containers/create?name='
+connection.request('POST',path+urllib.parse.quote(request['name'],safe=''),
+    json.dumps(request['config']),{'Content-Type':'application/json'})
+response=connection.getresponse()
+data=response.read()
+sys.exit(1) if response.status>=300 else print(data.decode())
 """
         return self.json(
             "run",

@@ -913,12 +913,6 @@ def test_runtime_helper_negotiates_daemon_api(
         def __init__(self, *args, **kwargs):
             pass
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
         def request(self, *args):
             calls.append(args)
 
