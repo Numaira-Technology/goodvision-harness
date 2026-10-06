@@ -5,9 +5,11 @@ from __future__ import annotations
 import copy
 import gzip
 import hashlib
+import io
 import json
 import queue
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -214,7 +216,7 @@ def test_customer_manifest_validates_matching_complete_roles(tmp_path, component
     assert customer.load_package(directory) == manifest
 
 
-@pytest.mark.parametrize("corruption", ["archive", "escape", "roles", "image-id"])
+@pytest.mark.parametrize("corruption", ["archive", "escape", "roles", "image-id", "config-id"])
 def test_invalid_customer_package_never_loads_images(tmp_path, corruption):
     directory = tmp_path / "customer update"
     manifest = make_package(directory)
@@ -224,8 +226,10 @@ def test_invalid_customer_package_never_loads_images(tmp_path, corruption):
         manifest["archive"]["file"] = "../outside.tar.gz"
     elif corruption == "roles":
         manifest["images"]["engine"] = manifest["images"]["harness"]
-    else:
+    elif corruption == "image-id":
         manifest["images"]["harness"]["id"] = "sha256:not-an-image-id"
+    else:
+        manifest["images"]["harness"]["config_id"] = "sha256:not-an-image-id"
     write_manifest(directory, manifest)
     installed = tmp_path / "installed"
     installed.mkdir()
@@ -251,6 +255,68 @@ def test_loaded_image_id_must_match_manifest_before_analysis_stops(tmp_path):
         kind == "api" and args[2] == "/v1/analysis/stop" for kind, args in docker.calls
     )
     assert not any("stop" in args or "up" in args for args in docker.mutations)
+
+
+@pytest.mark.parametrize("storage", ["containerd", "classic"])
+def test_customer_update_accepts_only_the_recorded_storage_identity(tmp_path, storage):
+    directory = tmp_path / "package"
+    manifest = make_package(directory)
+    image = manifest["images"]["harness"]
+    image["config_id"] = "sha256:" + "c" * 64
+    write_manifest(directory, manifest)
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    docker = CustomerDocker(installed)
+    actual = image["id"] if storage == "containerd" else image["config_id"]
+    docker.loaded_images[image["reference"]] = actual
+    customer.install(directory, docker=docker)
+    assert all(docker.containers[role]["Image"] == actual for role in docker.services)
+
+
+def test_unknown_storage_identity_is_refused_before_analysis_stops(tmp_path):
+    directory = tmp_path / "package"
+    manifest = make_package(directory)
+    image = manifest["images"]["harness"]
+    image["config_id"] = "sha256:" + "c" * 64
+    write_manifest(directory, manifest)
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    docker = CustomerDocker(installed)
+    docker.loaded_images[image["reference"]] = "sha256:" + "d" * 64
+    with pytest.raises(customer.CustomerError, match="wrong images"):
+        customer.install(directory, docker=docker)
+    assert not any(kind == "create" for kind, _args in docker.calls)
+
+
+def test_packager_records_config_id_from_the_exported_platform(tmp_path):
+    config = json.dumps({"os": "linux", "architecture": "amd64"}).encode()
+    config_id = "sha256:" + hashlib.sha256(config).hexdigest()
+    platform = json.dumps({"config": {"digest": config_id}}).encode()
+    platform_id = "sha256:" + hashlib.sha256(platform).hexdigest()
+    index = json.dumps(
+        {
+            "manifests": [
+                {
+                    "digest": platform_id,
+                    "platform": {"os": "linux", "architecture": "amd64"},
+                }
+            ]
+        }
+    ).encode()
+    identity = "sha256:" + hashlib.sha256(index).hexdigest()
+    archive = tmp_path / "images.tar"
+    with tarfile.open(archive, "w") as bundle:
+        for digest, data in [
+            (identity, index),
+            (platform_id, platform),
+            (config_id, config),
+        ]:
+            member = tarfile.TarInfo("blobs/sha256/" + digest[7:])
+            member.size = len(data)
+            bundle.addfile(member, io.BytesIO(data))
+    images = {"harness": {"id": identity, "reference": "prepared:v2"}}
+    packager.add_config_ids(archive, images)
+    assert images["harness"]["config_id"] == config_id
 
 
 @pytest.mark.parametrize("failed_update", [False, True])
@@ -470,9 +536,15 @@ def test_unexpected_error_details_and_credentials_stay_out_of_customer_ui():
 class ExportDocker:
     def __init__(self, component):
         roles = ("harness",) if component == "harness" else ("contour", "engine")
+        self.configs = {
+            role: json.dumps(
+                {"os": "linux", "architecture": "amd64", "role": role}
+            ).encode()
+            for role in roles
+        }
         self.images = {
             f"prepared-{role}:latest": {
-                "Id": "sha256:" + hashlib.sha256(role.encode()).hexdigest(),
+                "Id": "sha256:" + hashlib.sha256(self.configs[role]).hexdigest(),
                 "Os": "linux",
                 "Architecture": "amd64",
             }
@@ -493,9 +565,12 @@ class ExportDocker:
         if self.fail_save:
             raise updater.UpdateError("Image export failed")
         assert all(reference.startswith("sha256:") for reference in args[4:])
-        Path(args[3]).write_bytes(
-            b"exported image data\n" + "\n".join(args[4:]).encode()
-        )
+        with tarfile.open(args[3], "w") as archive:
+            for role, data in self.configs.items():
+                name = self.images[self.roles[role]]["Id"][7:] + ".json"
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
         return ""
 
 
@@ -537,7 +612,8 @@ def test_shipped_zip_contains_executable_verified_images_and_simple_instructions
         assert set(manifest["images"]) == set(docker.roles)
         contents = gzip.decompress(image_archive).decode()
         for metadata in manifest["images"].values():
-            assert metadata["id"] in contents
+            assert metadata["id"][7:] in contents
+            assert metadata["config_id"] == metadata["id"]
             assert metadata["reference"] not in contents
         instructions = archive.read(prefix + "Read me.txt").decode()
         assert "Double-click Update.exe" in instructions

@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -78,6 +79,47 @@ def file_digest(path):
     return digest.hexdigest()
 
 
+def add_config_ids(archive, images):
+    """Record the same image's ID in Docker's classic and containerd stores."""
+    with tarfile.open(archive, "r") as bundle:
+
+        def blob(identity):
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", identity):
+                raise ValueError("Invalid exported image identity.")
+            try:
+                stream = bundle.extractfile("blobs/sha256/" + identity[7:])
+            except KeyError:
+                stream = bundle.extractfile(identity[7:] + ".json")
+            if stream is None:
+                raise ValueError("Missing exported image metadata.")
+            with stream:
+                data = stream.read(1024 * 1024 + 1)
+            if (
+                len(data) > 1024 * 1024
+                or hashlib.sha256(data).hexdigest() != identity[7:]
+            ):
+                raise ValueError("Exported image metadata does not match its ID.")
+            return json.loads(data)
+
+        for image in images.values():
+            value = blob(image["id"])
+            if "manifests" in value:
+                platforms = [
+                    item
+                    for item in value["manifests"]
+                    if item.get("platform", {}).get("os") == "linux"
+                    and item.get("platform", {}).get("architecture") == "amd64"
+                ]
+                if len(platforms) != 1:
+                    raise ValueError("Export exactly one Linux amd64 image per role.")
+                value = blob(platforms[0]["digest"])
+            identity = value["config"]["digest"] if "config" in value else image["id"]
+            config = blob(identity)
+            if config.get("os") != "linux" or config.get("architecture") != "amd64":
+                raise ValueError("Exported image configuration has the wrong platform.")
+            image["config_id"] = identity
+
+
 def package(output, release, component, images, executable, *, docker=None):
     roles = {"harness"} if component == "harness" else {"contour", "engine"}
     if (
@@ -127,6 +169,7 @@ def package(output, release, component, images, executable, *, docker=None):
                 *sorted({image["id"] for image in metadata.values()}),
                 timeout=7200,
             )
+            add_config_ids(raw, metadata)
             archive = temp / "images.tar.gz"
             with (
                 raw.open("rb") as source,

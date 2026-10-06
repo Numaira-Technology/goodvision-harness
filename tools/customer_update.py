@@ -97,6 +97,10 @@ def load_package(directory: Path) -> dict:
                     r"[A-Za-z0-9][A-Za-z0-9_.:/@-]*", image["reference"]
                 )
                 or not re.fullmatch(r"sha256:[a-f0-9]{64}", image["id"])
+                or (
+                    "config_id" in image
+                    and not re.fullmatch(r"sha256:[a-f0-9]{64}", image["config_id"])
+                )
             ):
                 raise ValueError
         archive = directory / "images.tar.gz"
@@ -365,7 +369,17 @@ def install(
             "image", "load", "-i", str(directory / "images.tar.gz"), timeout=7200
         )
         for image in manifest["images"].values():
-            if image_id(docker, image["id"]) != image["id"]:
+            identities = [image["id"]]
+            if image.get("config_id") not in {None, image["id"]}:
+                identities.append(image["config_id"])
+            for identity in identities:
+                try:
+                    if image_id(docker, identity) == identity:
+                        image["id"] = identity
+                        break
+                except UpdateError:
+                    continue
+            else:
                 raise CustomerError(
                     "This update contains the wrong images. Download a fresh copy."
                 )
