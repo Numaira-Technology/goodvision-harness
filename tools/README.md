@@ -39,6 +39,7 @@ checks describe that delivery, not subsequent source changes.
 | `low_resolution_model_eval.py` | Replay listed samples through a real model service. |
 | `replay_stress.py` | Paced active-scene replay with recorded tracks, temporal HTTP fault injection, compressed timelines and a shared request budget. [Scope and usage](../docs/guides/diagnostics-replay.md). |
 | `low_resolution_tracking_eval.py` | Replay saved observations through person tracking. |
+| `summarize_sam_timing.py` | Join saved client, SAM worker and cloud pool timing logs offline, keeping stage durations and missing measurements separate. |
 | `low_resolution_evidence_eval.py` | Exercise synthetic event continuity and H.264 evidence offline. |
 | `benchmark_display_cadence.py` | Compare local synthetic display cadence, lag and frame drops. |
 | `evaluate_pipeline_latency.cjs` | Play a complete original video through an isolated real pipeline and production Chrome renderer; record actual presented-frame contour coverage, SSE arrivals and delay. Requires Playwright, Chrome, and an authorized real-model service with a same-origin byte-range video URL; see the script header and [measurement record](../docs/validation/network-and-display.md). |

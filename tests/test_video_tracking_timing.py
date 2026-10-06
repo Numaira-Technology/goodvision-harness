@@ -97,7 +97,10 @@ def payload():
     }
 
 
-def exchange(transport, factory=payload, parser=None, *, deadline=1000.0):
+def exchange(
+    transport, factory=payload, parser=None, *, deadline=1000.0,
+    timing_context=None, admitted_at=None,
+):
     client = VideoTrackingHTTPClient(
         "https://private-user:private-token@worker-private.test/v1/video/sessions",
         transport=transport,
@@ -107,13 +110,91 @@ def exchange(transport, factory=payload, parser=None, *, deadline=1000.0):
         try:
             return await client._exchange(
                 "POST", client.endpoint + "/private-session/append", factory, parser,
-                deadline=deadline,
+                deadline=deadline, timing_context=timing_context,
+                admitted_at=admitted_at,
             )
         finally:
             if client._client is not None:
                 await client._client.aclose()
 
     return asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["client_setup", "payload_prepare"])
+def test_early_failure_keeps_safe_correlation_and_elapsed_work(
+    failure, monkeypatch, caplog,
+):
+    clock, requests = Clock(), []
+    monkeypatch.setattr(video_tracking, "time", clock)
+    original = RuntimeError("https://private-user:private-token@worker-private.test")
+
+    def fail(*_args, **_kwargs):
+        clock.advance(0.4)
+        raise original
+
+    if failure == "client_setup":
+        monkeypatch.setattr(video_tracking.httpx, "AsyncClient", fail)
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        with pytest.raises(RuntimeError) as caught:
+            exchange(
+                httpx.MockTransport(requests.append),
+                factory=fail if failure == "payload_prepare" else payload,
+                timing_context={
+                    "request_id": "append.001", "stream_session_id": "source.001",
+                    "input_frames": 2, "first_source_sequence": 3,
+                    "last_source_sequence": 15, "final": False,
+                    "url": "https://private-token@worker-private.test",
+                    "headers": {"Authorization": "private-token"},
+                    "phase": "private-override",
+                },
+                admitted_at=98.0,
+            )
+    assert caught.value is original and requests == []
+    fields, = timing_records(caplog)
+    assert fields["request_id"] == "append.001"
+    assert fields["stream_session_id"] == "source.001"
+    assert fields["phase"] == failure
+    assert fields[f"{failure}_seconds"] == pytest.approx(0.4)
+    assert fields["admission_to_exchange_seconds"] == 2
+    assert fields["total_seconds"] == pytest.approx(0.4)
+    assert "private" not in json.dumps(fields)
+
+
+def test_append_diagnostic_headers_correlate_unique_http_attempts(monkeypatch, caplog):
+    monkeypatch.setattr(video_tracking, "time", Clock())
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        for _ in range(2):
+            assert exchange(httpx.MockTransport(handler)) == {"ok": True}
+    first, second = timing_records(caplog)
+    assert first["request_id"] == second["request_id"] == "append.001"
+    assert first["http_attempt_id"] != second["http_attempt_id"]
+    for request, fields in zip(requests, (first, second), strict=True):
+        assert request.headers["X-Goodvision-Request-ID"] == fields["request_id"]
+        assert (
+            request.headers["X-Goodvision-HTTP-Attempt-ID"]
+            == fields["http_attempt_id"]
+        )
+        assert request.headers["Content-Type"] == "application/json"
+
+
+def test_unsafe_request_id_never_becomes_diagnostic_header(monkeypatch):
+    monkeypatch.setattr(video_tracking, "time", Clock())
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    exchange(httpx.MockTransport(handler), lambda: payload() | {
+        "request_id": "https://private-user:private-token@worker-private.test",
+    })
+    assert "X-Goodvision-Request-ID" not in requests[0].headers
 
 
 @pytest.mark.parametrize("route", ["legacy", "sam_live"])
