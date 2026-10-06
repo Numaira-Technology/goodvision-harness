@@ -119,6 +119,7 @@ def resolve_model_route(
         # or credential name, when the environment selects a different channel.
         shared_connection.pop("endpoint", None)
         shared_connection.pop("api_key_env", None)
+        shared_connection.pop("inspection_endpoint", None)
         if "providers" not in service or provider == "local":
             shared_connection.pop("extra_headers", None)
     connection = {
@@ -140,6 +141,8 @@ def resolve_model_route(
             if route.get(key):
                 headers[header] = str(route[key])
     connection["extra_headers"] = headers
+    if provider != "local":
+        connection.pop("inspection_endpoint", None)
     settings = ModelAPISettings.from_mapping(connection)
 
     configured_model = (

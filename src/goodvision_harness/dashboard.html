@@ -277,13 +277,19 @@ html:lang(en) .nav-item>span{min-width:0;line-height:1.5}html:lang(en) .module-t
           </select>
         </label>
         <div id="inference-server-fields" class="stack" hidden>
+          <label class="field"><span>分析服务器协议</span>
+            <select id="inference-server-protocol" aria-describedby="inference-server-help">
+              <option value="compatible">兼容模型 API</option>
+              <option value="goodvision">GoodVision 分析服务</option>
+            </select>
+          </label>
           <label class="field"><span>分析服务器地址</span>
             <input id="inference-server-url" type="url" autocomplete="off" spellcheck="false" placeholder="http://server:8000">
           </label>
           <label class="field"><span>服务标识（隐藏显示）</span>
             <input id="inference-server-model" type="password" maxlength="512" autocomplete="off" spellcheck="false" placeholder="输入服务标识">
           </label>
-          <div class="secret-status">填写服务器地址和端口，无需填写接口路径。事件分析服务可独立部署，控制台无需本机显卡。</div>
+          <div id="inference-server-help" class="secret-status">填写服务器地址和端口，无需填写接口路径。GoodVision 分析服务会在服务器完成图像解码、缩放、编码、提示词构建和回复校验。兼容模型 API 直接调用模型接口，图像处理在控制端完成。控制台无需本机显卡。</div>
         </div>
         <label class="field">
           <span>人物追踪运行位置</span>
@@ -587,6 +593,7 @@ const ui={
   inferenceLocalOption:$("inference-mode-local"),trackingLocalOption:$("tracking-mode-local"),
   inferenceServerFields:$("inference-server-fields"),trackingServerFields:$("tracking-server-fields"),
   inferenceServerUrl:$("inference-server-url"),inferenceServerModel:$("inference-server-model"),
+  inferenceServerProtocol:$("inference-server-protocol"),
   trackingServerUrl:$("tracking-server-url"),trackingServerCapacity:$("tracking-server-capacity"),
   trackingSampleFps:$("tracking-sample-fps"),
   trackingServerProtocol:$("tracking-server-protocol"),trackingNodeKey:$("tracking-node-key"),
@@ -1030,7 +1037,7 @@ function controls(){
   const persistenceReady=state.deployment&&state.deployment.persistence_available===true;
   const deploymentBusy=state.deploymentLoading||state.deploymentSaving||routeBusy;
   for(const item of [ui.localInference,ui.localTracking,ui.inferenceMode,ui.trackingMode,
-    ui.inferenceServerUrl,ui.inferenceServerModel,ui.trackingServerUrl,ui.trackingServerCapacity,
+    ui.inferenceServerUrl,ui.inferenceServerModel,ui.inferenceServerProtocol,ui.trackingServerUrl,ui.trackingServerCapacity,
     ui.trackingServerProtocol,ui.trackingNodeKey,ui.clearTrackingNodeKey,ui.trackingSampleFps])
     item.disabled=!persistenceReady||deploymentBusy||sharedBusy;
   ui.inferenceLocalOption.disabled=localGpuUnavailable("inference");
@@ -1393,7 +1400,8 @@ function renderLocalGpuSettings(){
   ui.trackingNodeKeyFields.hidden=tracking!=="server"||ui.trackingServerProtocol.value!=="contour";
   const changed=inference!==savedExecutionMode("inference")||tracking!==savedExecutionMode("tracking")||
     inference==="server"&&(ui.inferenceServerUrl.value.trim()!==(data.inference_server_url||"")||
-      ui.inferenceServerModel.value.trim()!==(data.inference_server_model||"local-vision"))||
+      ui.inferenceServerModel.value.trim()!==(data.inference_server_model||"local-vision")||
+      ui.inferenceServerProtocol.value!==(data.inference_server_protocol||"compatible"))||
     tracking==="server"&&(ui.trackingServerUrl.value.trim()!==(data.tracking_server_url||"")||
       Number(ui.trackingServerCapacity.value)!==Number(data.tracking_server_capacity||1)||
       ui.trackingServerProtocol.value!==(data.tracking_server_protocol||"legacy"))||
@@ -1442,6 +1450,7 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   ui.inferenceMode.value=savedExecutionMode("inference");ui.trackingMode.value=savedExecutionMode("tracking");
   ui.inferenceServerUrl.value=data.inference_server_url||"";
   ui.inferenceServerModel.value=data.inference_server_model||"local-vision";
+  ui.inferenceServerProtocol.value=data.inference_server_protocol||"compatible";
   ui.trackingServerUrl.value=data.tracking_server_url||"";
   ui.trackingServerCapacity.value=String(data.tracking_server_capacity||1);
   ui.trackingServerProtocol.value=data.tracking_server_protocol||"legacy";
@@ -1546,6 +1555,9 @@ async function saveDeploymentSettings(){
       throw {field:ui.trackingSampleFps,message:"采样帧率请输入 0.5–30 之间的数值，建议从 2 FPS 开始。"};
     payload.tracking_sample_fps=fps;
     if(inference==="server"){
+      payload.inference_server_protocol=ui.inferenceServerProtocol.value;
+      if(!["compatible","goodvision"].includes(payload.inference_server_protocol))
+        throw {field:ui.inferenceServerProtocol,message:"请选择兼容模型 API 或 GoodVision 分析服务。"};
       payload.inference_server_url=serverOrigin(ui.inferenceServerUrl,"模型服务器地址");
       payload.inference_server_model=ui.inferenceServerModel.value.trim();
       if(!payload.inference_server_model||payload.inference_server_model.length>512||/[\u0000-\u001f\u007f]/.test(payload.inference_server_model))
@@ -2578,7 +2590,7 @@ $("archive-feature").onchange=()=>loadEventArchive();
 $("archive-subject").onchange=()=>loadEventArchive();
 ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
 ui.inferenceMode.onchange=ui.trackingMode.onchange=()=>{renderLocalGpuSettings();deploymentEdited()};
-for(const field of [ui.inferenceServerUrl,ui.inferenceServerModel,ui.trackingServerUrl,ui.trackingServerCapacity,
+for(const field of [ui.inferenceServerUrl,ui.inferenceServerModel,ui.inferenceServerProtocol,ui.trackingServerUrl,ui.trackingServerCapacity,
   ui.trackingServerProtocol,ui.trackingSampleFps])
   field.oninput=()=>{renderLocalGpuSettings();deploymentEdited()};
 ui.localInference.onchange=()=>{ui.inferenceMode.value=ui.localInference.checked?"local":"cloud";renderLocalGpuSettings();deploymentEdited()};

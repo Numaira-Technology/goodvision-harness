@@ -6,6 +6,50 @@ const {test}=require("node:test");
 const {createDocument,runDashboard}=require("./helpers/dashboard.cjs");
 const {payload:catalogPayload}=require("./helpers/event_catalog.cjs");
 
+test("analysis protocol defaults to compatible API and persists GoodVision independently",async()=>{
+  const view=dashboard({inference_mode:"server",tracking_mode:"legacy",
+    inference_server_url:"http://analysis:8094",inference_server_model:"vision"});
+  const protocol=view.element("inference-server-protocol");
+  assert.equal(protocol.value,"compatible");
+  protocol.value="goodvision";view.renderLocalGpuSettings();
+  assert.match(view.element("local-gpu-status").textContent,/待保存/);
+  await view.saveDeploymentSettings();
+  const payload=view.requests.at(-1).payload;
+  assert.equal(payload.inference_server_protocol,"goodvision");
+  assert.equal(payload.inference_server_url,"http://analysis:8094");
+  assert.equal(payload.inference_server_model,"vision");
+  assert.equal(payload.tracking_mode,"legacy");
+  assert.equal(Object.hasOwn(payload,"api_key"),false);
+  assert.equal(view.state.deployment.inference_server_protocol,"goodvision");
+  protocol.value="compatible";await view.loadDeploymentSettings(true);
+  assert.equal(protocol.value,"goodvision");
+});
+
+test("invalid analysis protocol is rejected and failed save preserves the draft",async()=>{
+  const view=dashboard({inference_mode:"server",inference_server_url:"http://analysis:8094"});
+  const protocol=view.element("inference-server-protocol");
+  protocol.value="invalid";await view.saveDeploymentSettings();
+  assert.equal(view.requests.length,0);assert.equal(protocol.focused,true);
+  protocol.value="goodvision";view.context.fail=true;await view.saveDeploymentSettings();
+  assert.equal(view.state.deployment.inference_server_protocol,undefined);
+  assert.equal(protocol.value,"goodvision");
+});
+
+test("analysis protocol locks with shared settings and survives route saves",async()=>{
+  const view=dashboard({inference_mode:"server",inference_server_protocol:"goodvision",
+    inference_server_url:"http://analysis:8094"});
+  view.context.GoodvisionFleet={extraBusy:()=>true};view.controls();
+  assert.equal(view.element("inference-server-protocol").disabled,true);
+  view.context.GoodvisionFleet={extraBusy:()=>false};
+  for(const mode of ["local","cloud"]){
+    view.element("inference-mode").value=mode;view.renderLocalGpuSettings();view.controls();
+    assert.equal(view.element("inference-server-fields").hidden,true);
+    await view.saveDeploymentSettings();
+    assert.equal(Object.hasOwn(view.requests.at(-1).payload,"inference_server_protocol"),false);
+    assert.equal(view.state.deployment.inference_server_protocol,"goodvision");
+  }
+});
+
 function dashboard(settings={}){
   const requests=[],messages=[];
   const {document,element}=createDocument(["smoking"]);

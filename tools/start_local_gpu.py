@@ -1,7 +1,7 @@
 """Run person tracking on this machine's NVIDIA GPU using the Contour runtime.
 
 Python 3.10+ standard library only. --dry-run never writes files or calls Docker.
-Only SAM starts by default; --with-local-inference adds the legacy local VLM.
+Only SAM starts by default; --with-local-inference adds local VLM and CPU processing.
 Existing .env/cloud settings and saved console choices are not modified.
 """
 
@@ -45,6 +45,7 @@ TRACKING_SETTINGS = SETTINGS | {
     "INFERENCE_EXECUTION_MODE",
     "INFERENCE_SERVER_URL",
     "INFERENCE_SERVER_MODEL",
+    "INFERENCE_SERVER_PROTOCOL",
 }
 
 
@@ -147,6 +148,9 @@ def plan_tracking_environment(
             )
     if inference == "server" and not server_url:
         raise LaunchError("INFERENCE_SERVER_URL is required for server inference")
+    protocol = settings.get("INFERENCE_SERVER_PROTOCOL", "compatible")
+    if protocol not in {"compatible", "goodvision"}:
+        raise LaunchError("INFERENCE_SERVER_PROTOCOL must be compatible or goodvision")
     checkpoint = settings.get("SAM31_CHECKPOINT_FILE")
     if not checkpoint:
         candidates = (
@@ -160,7 +164,7 @@ def plan_tracking_environment(
     path = (root / path).resolve() if not path.is_absolute() else path.resolve()
     result = {key: settings[key] for key in (
         "HARNESS_PORT", "HARNESS_BIND_ADDRESS", "INFERENCE_SERVER_URL",
-        "INFERENCE_SERVER_MODEL",
+        "INFERENCE_SERVER_MODEL", "INFERENCE_SERVER_PROTOCOL",
     ) if settings.get(key)}
     result.update(
         LOCAL_GPU_AVAILABLE="true",
@@ -214,6 +218,12 @@ RUNTIME_FILES = {
         "sam_tracking_pipeline.py", "sam_tracking_spool.py",
         "video_tracking_session.py", "dashboard.html",
     ),
+    "local-vlm-processing": (
+        "vlm_server.py", "vlm_offload.py", "scene_model.py", "scene_inspection.py",
+        "vlm_independent_model.py", "vlm_compact_model.py", "model_api.py",
+        "event_sensitivity.py", "scene_runtime.py", "scene_evidence.py",
+        "vlm_transport.py", "contracts.py",
+    ),
 }
 
 
@@ -252,7 +262,7 @@ for name in ('HF_HOME', 'TORCH_HOME', 'XDG_CACHE_HOME', 'MPLCONFIGDIR',
     assert value and Path(value).is_absolute(), 'Missing writable cache: ' + name
     paths.append(Path(value))
 """
-    else:
+    elif service != "local-vlm-processing":
         script += """settings = os.environ.get('HARNESS_DEPLOYMENT_SETTINGS_PATH', '')
 assert settings, 'Persistent deployment settings path is required'
 spool = (os.environ.get('GOODVISION_TRACKING_SPOOL_DIRECTORY')
@@ -260,6 +270,8 @@ spool = (os.environ.get('GOODVISION_TRACKING_SPOOL_DIRECTORY')
          or str(Path(settings).parent / 'sam-spool'))
 paths = [Path(settings).parent, Path(spool)]
 """
+    else:
+        script += "paths = []\n"
     script += """for path in paths:
     path.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryFile(dir=path) as probe:
@@ -322,6 +334,7 @@ def plan_environment(
         LOCAL_INFERENCE_GPU_ID=str(indices[0]),
         LOCAL_TRACKING_GPU_ID=str(indices[0] if shared else indices[1]),
         LOCAL_INFERENCE_ENDPOINT="http://local-inference:8000/v1/chat/completions",
+        LOCAL_INFERENCE_INSPECTION_ENDPOINT="http://local-vlm-processing:8080/v1/inspections",
         LOCAL_TRACKING_ENDPOINT="http://local-tracking:8092/v1/video/sessions",
     )
     defaults = {
@@ -520,11 +533,13 @@ def compose_command(
     command.extend(["up", "--detach", "--wait", "--wait-timeout", "900"])
     if build:
         command.append("--build")
-    elif not with_local_inference:
-        command.extend(["--no-build", "--pull", "never"])
+    else:
+        command.append("--no-build")
+        if not with_local_inference:
+            command.extend(["--pull", "never"])
     command.append("harness")
     if with_local_inference:
-        command.append("local-inference")
+        command.extend(["local-inference", "local-vlm-processing"])
     command.append("local-tracking")
     command.extend(f"harness-{index:02d}" for index in range(2, streams + 1))
     if with_paddle:
@@ -653,7 +668,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--with-local-inference", action="store_true",
-        help="Also provision the local VLM and GPU face runtime (legacy deployment)",
+        help="Provision the local VLM, CPU processing service and GPU face runtime",
     )
     parser.add_argument(
         "--gpu", type=int, help="SAM GPU index (default: first detected NVIDIA GPU)",
@@ -749,6 +764,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "local-tracking", "python", "-c", runtime_check("local-tracking"),
         ]
         checks = [cuda_command]
+        if args.with_local_inference:
+            checks.append([
+                *compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
+                "local-vlm-processing", "python", "-c",
+                runtime_check("local-vlm-processing"),
+            ])
         harness_check = runtime_check("harness")
         for index in range(1, args.streams + 1):
             service = "harness" if index == 1 else f"harness-{index:02d}"
@@ -787,6 +808,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             if not args.no_build:
                 services = ["harness", "local-tracking"]
+                if args.with_local_inference:
+                    services.append("local-vlm-processing")
                 if args.with_paddle:
                     services.append("rich-label-worker")
                 result = subprocess.run(
@@ -826,7 +849,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if result.returncode:
             print(
                 "Local GPU startup did not become healthy. Check local-tracking "
-                "logs (and local-inference when enabled). Check the checkpoint, "
+                "logs (and local-inference/local-vlm-processing when enabled). "
+                "Check the checkpoint, "
                 "CUDA driver and free VRAM; no cloud fallback is started.",
                 file=sys.stderr,
             )
