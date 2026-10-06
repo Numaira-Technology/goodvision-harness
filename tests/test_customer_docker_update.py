@@ -890,6 +890,79 @@ def test_http_error_transport_keeps_endpoint_status_without_response_body():
     assert "404" in str(failure.value)
 
 
+@pytest.mark.parametrize(
+    "maximum,minimum,selected",
+    [
+        ("1.41", "1.12", "1.41"),
+        ("1.44", "1.24", "1.44"),
+        ("1.55", "1.44", "1.45"),
+        ("1.40", "1.12", None),
+        ("1.55", "1.46", None),
+    ],
+)
+def test_runtime_helper_negotiates_daemon_api(
+    monkeypatch, capsys, maximum, minimum, selected
+):
+    import http.client
+    import io
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def request(self, *args):
+            calls.append(args)
+
+        def getresponse(self):
+            value = (
+                {"ApiVersion": maximum, "MinAPIVersion": minimum}
+                if len(calls) == 1
+                else {"Id": "created-id"}
+            )
+            return SimpleNamespace(status=200, read=lambda: json.dumps(value).encode())
+
+    code = []
+
+    def run(*args, **kwargs):
+        code.append(args[-1])
+        return {"Id": "unused"}
+
+    docker = updater.Docker()
+    monkeypatch.setattr(docker, "json", run)
+    docker.create_container({"Image": "sha256:verified"}, "custom name", "helper")
+    monkeypatch.setattr(http.client, "HTTPConnection", Connection)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps({"name": "custom name", "config": {"Image": "sha256:verified"}})
+        ),
+    )
+    if selected is None:
+        with pytest.raises(SystemExit) as error:
+            exec(code[0], {})
+        assert error.value.code == 1
+        assert calls == [("GET", "/version")]
+    else:
+        exec(code[0], {})
+        assert calls[0] == ("GET", "/version")
+        assert calls[1][0:2] == (
+            "POST",
+            f"/v{selected}/containers/create?name=custom%20name",
+        )
+        assert json.loads(calls[1][2]) == {"Image": "sha256:verified"}
+        assert json.loads(capsys.readouterr().out) == {"Id": "created-id"}
+
+
 def test_autostart_restore_attempts_every_lane_after_one_lane_fails(tmp_path):
     directory, _manifest, docker = installed_package(tmp_path)
     docker.autostarts = {"harness": True, "harness-2": True}
