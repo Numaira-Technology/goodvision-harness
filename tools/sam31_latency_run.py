@@ -115,7 +115,7 @@ class MeasuredClient:
 
     def append(
         self, frames, *, stream_session_id, is_last_batch=False, request_id=None,
-        prepared=None,
+        prepared=None, retry_transport=True,
     ):
         before = time.perf_counter()
         result = None
@@ -127,6 +127,7 @@ class MeasuredClient:
                 is_last_batch=is_last_batch,
                 request_id=request_id,
                 prepared=prepared,
+                retry_transport=retry_transport,
             )
             return result
         except Exception as error:

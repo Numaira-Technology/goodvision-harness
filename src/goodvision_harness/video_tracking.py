@@ -397,6 +397,34 @@ class VideoTrackingHTTPClient:
         self._record_transport(frames, wire_bytes, elapsed)
         return tuple(outputs)
 
+    @staticmethod
+    def _safe_timing_context(context: Mapping[str, Any] | None) -> dict[str, Any]:
+        """Retain protocol correlation before setup/preparation can fail.
+
+        Never accept arbitrary log fields from a caller: request bodies, URLs,
+        headers and exception text must stay outside these diagnostics.
+        """
+        if context is None:
+            return {}
+        fields: dict[str, Any] = {}
+        for name in ("request_id", "stream_session_id"):
+            if name in context:
+                fields[name] = trace_id(context[name])
+        for name in (
+            "generation", "input_frames", "first_source_sequence",
+            "last_source_sequence",
+        ):
+            value = context.get(name)
+            if type(value) is int and value >= 0:
+                fields[name] = value
+        for name in ("first_source_timestamp_seconds", "last_source_timestamp_seconds"):
+            value = context.get(name)
+            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                fields[name] = value
+        if type(context.get("final")) is bool:
+            fields["final"] = context["final"]
+        return fields
+
     async def _exchange(
         self,
         method: str,
@@ -405,12 +433,21 @@ class VideoTrackingHTTPClient:
         result_parser: Callable[[dict[str, Any]], Any] | None,
         *,
         deadline: float,
+        timing_context: Mapping[str, Any] | None = None,
+        admitted_at: float | None = None,
     ) -> Any:
         started = time.monotonic()
         timing: dict[str, Any] = {
             "phase": "client_setup", "outcome": "error",
             "route": getattr(getattr(self, "method", None), "id", "legacy"),
+            **self._safe_timing_context(timing_context),
         }
+        if method == "POST" and url.endswith("/append"):
+            # One append may previously have produced multiple HTTP attempts.
+            # Correlate actual IO separately from its protocol request ID.
+            timing["http_attempt_id"] = uuid4().hex
+        if admitted_at is not None:
+            timing["admission_to_exchange_seconds"] = max(0.0, started - admitted_at)
         try:
             result = await self._exchange_timed(
                 method, url, payload_factory, result_parser,
@@ -473,17 +510,21 @@ class VideoTrackingHTTPClient:
         deadline: float,
         timing: dict[str, Any],
     ) -> Any:
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(
-                    self._timeout_seconds, connect=min(self._timeout_seconds, 5)
-                ),
-                transport=self._transport,
-                follow_redirects=False,
-                trust_env=self._trust_env,
-                headers={"Accept-Encoding": "identity", **self._request_headers},
-                limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
-            )
+        setup_started = time.monotonic()
+        try:
+            if self._client is None:
+                self._client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(
+                        self._timeout_seconds, connect=min(self._timeout_seconds, 5)
+                    ),
+                    transport=self._transport,
+                    follow_redirects=False,
+                    trust_env=self._trust_env,
+                    headers={"Accept-Encoding": "identity", **self._request_headers},
+                    limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
+                )
+        finally:
+            timing["client_setup_seconds"] = time.monotonic() - setup_started
         timing["phase"] = "payload_prepare"
         prepare_started = time.monotonic()
         transport_requests = self.transport_stats()["requests"]
@@ -535,6 +576,18 @@ class VideoTrackingHTTPClient:
                         if type(timestamp) in (int, float) and math.isfinite(timestamp):
                             timing[f"{name}_source_timestamp_seconds"] = timestamp
             timing["final"] = payload.get("is_last_batch") is True
+        if method == "POST" and url.endswith("/append"):
+            # Optional diagnostics, never session credentials or image content.
+            # Payload validation remains authoritative on the worker.
+            headers = dict(kwargs.get("headers", {}))
+            for name, field in (
+                ("X-Goodvision-Request-ID", "request_id"),
+                ("X-Goodvision-HTTP-Attempt-ID", "http_attempt_id"),
+            ):
+                value = trace_id(timing.get(field))
+                if value is not None:
+                    headers[name] = value
+            kwargs["headers"] = headers
         if time.monotonic() >= deadline:
             raise httpx.TimeoutException("video preparation exceeded total deadline")
         # Deliver a queued cancellation before opening the network stream after
@@ -682,6 +735,8 @@ class VideoTrackingHTTPClient:
         operation: concurrent.futures.Future,
         deadline: float,
         args: tuple[Any, ...],
+        timing_context: Mapping[str, Any] | None = None,
+        admitted_at: float | None = None,
     ) -> None:
         assert self._loop is not None
         with self._lock:
@@ -691,7 +746,10 @@ class VideoTrackingHTTPClient:
                 close = self._closed
             else:
                 self._task = self._loop.create_task(
-                    self._exchange(*args, deadline=deadline)
+                    self._exchange(
+                        *args, deadline=deadline, timing_context=timing_context,
+                        admitted_at=admitted_at,
+                    )
                 )
                 self._task.add_done_callback(
                     lambda task: self._finish_operation(operation, task, deadline)
@@ -761,7 +819,9 @@ class VideoTrackingHTTPClient:
         deadline: float,
         payload_factory: Callable[[], dict[str, Any]] | None = None,
         result_parser: Callable[[dict[str, Any]], Any] | None = None,
+        timing_context: Mapping[str, Any] | None = None,
     ) -> Any:
+        admitted_at = time.monotonic()
         with self._lock:
             if self._closed:
                 raise httpx.RequestError("video client is closed")
@@ -783,6 +843,8 @@ class VideoTrackingHTTPClient:
                 operation,
                 deadline,
                 (method, url, payload_factory, result_parser),
+                self._safe_timing_context(timing_context),
+                admitted_at,
             )
         try:
             result = operation.result(timeout=max(0, deadline - time.monotonic()))
