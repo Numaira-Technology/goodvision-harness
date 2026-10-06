@@ -1481,6 +1481,12 @@ class HarnessRuntime:
                         batch, native_token=(revision, id(coordinator), generation),
                     )
                 )
+            if hasattr(coordinator, "on_native_recovery"):
+                coordinator.on_native_recovery = lambda session_id, generation: (
+                    self._bind_recovered_native_run(
+                        revision, coordinator, session_id, generation,
+                    )
+                )
             return coordinator
         return RichLabelCoordinator(
             client, max_fps=rich.max_fps, history_size=rich.history_size,
@@ -1488,6 +1494,20 @@ class HarnessRuntime:
             max_hold_seconds=rich.max_hold_seconds,
             on_snapshot=self._on_tracking_snapshot,
         )
+
+    def _bind_recovered_native_run(self, revision, coordinator, session_id, generation):
+        with self._state_lock:
+            if (self._closed or revision != self._rich_config_revision
+                    or coordinator is not self._rich_labels
+                    or self._session is None
+                    or self._session.stream_session_id != session_id
+                    or self._active_rich_session_id != session_id
+                    or coordinator._generation != generation
+                    or coordinator._closed):
+                return False
+            return self._camera_display_metadata.bind_native_run(
+                session_id, (revision, id(coordinator), generation),
+            )
 
     def _on_processing_batch(self, revision: int, batch: VideoTrackingBatch) -> None:
         with self._source_commit_lock:
@@ -1500,6 +1520,9 @@ class HarnessRuntime:
             if revision != self._rich_config_revision:
                 return
             coordinator = self._rich_labels
+            accepts_batch = getattr(coordinator, "accepts_batch", None)
+            if accepts_batch is not None and not accepts_batch(batch):
+                return
             load_sources = getattr(coordinator, "retained_sources", None)
         # This read may wait behind a durable SQLite write. Do not freeze every
         # service callback while fetching immutable, already-admitted evidence.
@@ -1513,7 +1536,8 @@ class HarnessRuntime:
             raise
         with self._state_lock:
             if (revision != self._rich_config_revision
-                    or coordinator is not self._rich_labels):
+                    or coordinator is not self._rich_labels
+                    or (accepts_batch is not None and not accepts_batch(batch))):
                 return
             self._on_tracking_batch(batch, retained_sources=sources)
 

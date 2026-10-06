@@ -763,6 +763,30 @@ DELETE /v1/perception/{route}/sessions/{video_session_id}
 HTTP 仍按请求返回完整 JSON，尚未实现逐帧 HTTP 分块输出。
 旧 `/v1/video/sessions` 保留原有 16 帧启动和确认缓冲协议。
 
+主程序的 `latest_only` / `realtime_latest` 路径在非 final、尚未开始结束排空的
+append 遇到 `RemoteProtocolError`、`ConnectError`、`ReadError` 或 `WriteError`
+时，不再重试旧帧。只关闭该摄像头的原生会话，再从最新、未过期的待处理帧建立新
+epoch；旧会话准备好的 payload 不会带入新会话。视频源、源帧序号／时间及显示缓冲
+继续运行，原生人物编号可能改变。关闭会话沿用最多 2 秒的截止时间，创建沿用客户端
+既有总超时；这些是恢复操作的上限，不是新增显示等待或恢复速度保证。
+若关闭失败，保留原会话句柄并报告 `recovery_required`，避免遗失仍占用远端容量的
+状态。DELETE 的 404/410 表示已删除，可以继续。`durable_ordered` 仍保留相同
+ID／内容重放；协议、状态码、超时、日志持久化和提交失败沿用明确失败处理。
+
+诊断记录通过 `request_id` 和每次 HTTP 的 `http_attempt_id` 关联主程序、worker、
+cloud pool。原生会话凭据只记录 hash；不记录图像、密钥、响应内容或异常正文。
+客户端记录准备、进入 I/O 循环、上传、响应头等待、读取、解析、提交及恢复；worker
+记录 body、解码、GPU admission 等待、native advance、几何转换和响应发送；pool
+记录流式转发和上游响应头等待。`inference_wall_seconds` 是 native advance 的宿主
+耗时，包含既有等待／原生后处理，不是 CUDA kernel 耗时。ASGI send 不证明浏览器
+已收到；互相重叠的阶段不能相加，HTTP 响应头等待也不能当成 GPU 推理时间。
+在已有日志上运行以下命令即可，不会调用任何服务：
+
+```sh
+python tools/summarize_sam_timing.py lane-*.log worker.log pool.log \
+  --output output/sam-timing.json
+```
+
 新接口额外返回 `route_metadata`，与严格源帧对象协议分开：
 
 ```json

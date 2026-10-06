@@ -2,8 +2,9 @@
 
 The remote protocol remains single-flight. Durable mode preserves every
 admitted source. Latest-only mode retains two recent in-memory candidates and
-overlaps one preparation slot with HTTP. Unsent work expires; sent requests and
-results retain their original recovery guarantees.
+overlaps one preparation slot with HTTP. Unsent work expires. Live transport
+failures abandon the ambiguous append and start a fresh native epoch; durable
+mode retains identical-request replay and explicit recovery guarantees.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
+
+import httpx
 
 from .latency_trace import log_timing, trace_id
 from .sam_tracking_spool import TrackingSpool
@@ -62,7 +65,8 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
 
     def __init__(
         self, client, *, spool_directory=None, spool_max_bytes=256 * 1024**2,
-        on_native_batch=None, latest_only=False, queue_policy="durable_ordered",
+        on_native_batch=None, on_native_recovery=None,
+        latest_only=False, queue_policy="durable_ordered",
         realtime_pending_frames=2, realtime_max_age_seconds=2.0,
         realtime_append_frames=1,
         result_deadline_seconds=4.0, **kwargs
@@ -101,6 +105,10 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             kwargs.update(pending_capacity=2)
         super().__init__(client, **kwargs)
         self.on_native_batch = on_native_batch
+        self.on_native_recovery = on_native_recovery
+        self._recover_transport = self._realtime or self._latest_only
+        self._recovering_generation = None
+        self._active_predictor_epoch = None
         if client.startup_frames != 1 or client.max_append_frames > 4:
             raise ValueError("pipelined tracking requires the causal SAM route")
         # Container images keep application code read-only. Recovery journals
@@ -138,6 +146,9 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             results_after_deadline=0,
             rejected_capacity=0,
             recovery_required=False,
+            transport_recoveries=0,
+            transport_abandoned_frames=0,
+            transport_superseded_frames=0,
         )
 
     def _journal(self):
@@ -158,6 +169,8 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             self._candidate_frames.clear()
             self._commits.clear()
             self._native_ready = None
+            self._recovering_generation = None
+            self._active_predictor_epoch = None
             self._next_ordinal = 0
             self._next_sample_at = 0.0
             self._latest_result_arrived = None
@@ -298,6 +311,103 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
     def _current(self, work):
         return not self._closed and work.generation == self._generation
 
+    def accepts_batch(self, batch):
+        """Fence an already running commit when its native session retires."""
+        with self._condition:
+            return (
+                not self._closed and not self._failed_session
+                and batch.stream_session_id == self._session
+                and batch.predictor_epoch == self._active_predictor_epoch
+            )
+
+    def _recover_live_transport(self, work, exc):
+        """Abandon one ambiguous append; never replay it into the new epoch.
+
+        Capture and its sampling clock continue. Only the newest unsent source
+        survives; any payload prepared against the old session is invalidated.
+        Sent bytes remain in the journal for diagnosis, not automatic replay.
+        """
+        with self._condition:
+            if (not self._recover_transport or not self._current(work)
+                    or self._failed_session or self._flush or work.final
+                    or not isinstance(exc, (httpx.RemoteProtocolError,
+                                           httpx.ConnectError, httpx.ReadError,
+                                           httpx.WriteError))):
+                return False
+            now = time.monotonic()
+            candidates = [(s, self._candidate_frames.get(s.sequence))
+                          for s in self._pending]
+            for staged in (self._prepared, self._preparing):
+                if staged is not None and staged.generation == work.generation:
+                    frames = {f.frame_sequence: f for f in staged.frames}
+                    candidates.extend(
+                        (s, frames.get(s.sequence)) for s in staged.sources
+                    )
+            unsent_sequences = {s.sequence for s, _ in candidates}
+            candidates = [(s, f) for s, f in candidates
+                          if now - s.arrived < self._realtime_max_age]
+            newest = max(candidates, key=lambda item: item[0].sequence, default=None)
+            if newest is not None and newest[1] is None:
+                source, _ = newest
+                newest = (source, self._journal().load(
+                    work.generation, [source.sequence],
+                )[0])
+            # Fail closed if journal persistence fails before retiring this run.
+            self._journal().mark(
+                work.request_id, "transport_abandoned", type(exc).__name__,
+            )
+            self._journal().finish(
+                work.generation, "transport_abandoned", type(exc).__name__,
+            )
+            self._generation += 1
+            self._native_ready = self._active_predictor_epoch = None
+            self._recovering_generation = self._generation
+            self._cleanup_requested = True
+            self._pending.clear()
+            self._pending_bytes = 0
+            self._candidate_frames.clear()
+            self._prepared = None
+            self._commits.clear()
+            self._history.clear()
+            self._epochs.clear()
+            self._source_arrivals.clear()
+            self._next_ordinal = 0
+            self._eof_sent = False
+            self._prepare_durations.clear()
+            self._append_durations.clear()
+            if newest is not None:
+                source, frame = newest
+                if self._latest_only:
+                    self._candidate_frames[source.sequence] = frame
+                else:
+                    self._journal().begin(self._generation, self._session)
+                    self._journal().admit(
+                        self._generation, self._session, frame, source.arrived,
+                    )
+                self._pending.append(source)
+                self._pending_bytes = source.size
+                self._source_arrivals[source.sequence] = source.arrived
+            self._stats["transport_recoveries"] += 1
+            self._stats["transport_abandoned_frames"] += len(work.sources)
+            self._stats["transport_superseded_frames"] += (
+                len(unsent_sequences) - bool(newest)
+            )
+            self._stats.update(last_error=type(exc).__name__, recovery_required=False)
+            self._condition.notify_all()
+            generation = self._generation
+        log_timing(
+            "sam_transport_recovery", stream_session_id=trace_id(work.session),
+            generation=generation, retired_generation=work.generation,
+            request_id=trace_id(work.request_id), error_type=type(exc).__name__,
+            abandoned_sequences=[s.sequence for s in work.sources],
+            discarded_unsent_sequences=sorted(unsent_sequences - (
+                {newest[0].sequence} if newest else set()
+            )),
+            retained_sequence=newest[0].sequence if newest else None,
+            failed_append_seconds=now - work.started, outcome="started",
+        )
+        return True
+
     def _new_work(self, sources=(), *, final=False):
         self._next_ordinal += 1
         work = _Work(
@@ -327,6 +437,8 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                     last_error=type(exc).__name__, recovery_required=True
                 )
                 self._native_ready = None
+                self._recovering_generation = None
+                self._active_predictor_epoch = None
             try:
                 if (
                     work is not None
@@ -566,6 +678,7 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                 log_timing(
                     "sam_pipeline_prepare",
                     generation=work.generation,
+                    stream_session_id=trace_id(work.session),
                     request_id=trace_id(work.request_id),
                     input_sequences=[s.sequence for s in work.sources],
                     prepare_seconds=time.monotonic() - started,
@@ -598,7 +711,8 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                             if (self._flush and not self._pending
                                     and self._preparing is None
                                     and self._prepared is None
-                                    and self._stats["received_batches"] == 0):
+                                    and (self._stats["received_batches"] == 0
+                                         or self._native_ready != self._generation)):
                                 operation = "finish_empty"
                                 generation = self._generation
                                 break
@@ -648,25 +762,73 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                         self._condition.notify_all()
                     continue
                 if operation == "cleanup":
-                    self._discard()
+                    with self._condition:
+                        recovering = self._recovering_generation
+                    started = time.monotonic()
+                    outcome = "completed"
+                    try:
+                        if recovering is not None:
+                            # Unlike generic shutdown cleanup, recovery must
+                            # report a failed DELETE and preserve its handle.
+                            try:
+                                self._client.discard_session(timeout_seconds=2)
+                            except httpx.HTTPStatusError as exc:
+                                if exc.response.status_code not in (404, 410):
+                                    raise
+                            self._server_generation = None
+                        else:
+                            self._discard()
+                    except Exception as exc:
+                        outcome = "error"
+                        self._fail(recovering, "recovery_cleanup", exc)
+                        with self._condition:
+                            if recovering == self._generation:
+                                self._cleanup_requested = False
+                    finally:
+                        log_timing("sam_session_cleanup", generation=recovering,
+                                   cleanup_seconds=time.monotonic() - started,
+                                   outcome=outcome, recovery=recovering is not None)
                     with self._condition:
                         self._native_ready = None
                         self._in_flight = False
                         self._condition.notify_all()
                     continue
                 if operation == "open":
+                    started = time.monotonic()
+                    outcome = "stale"
                     try:
                         self._discard()
-                        self._client.open_session(session)
+                        native = self._client.open_session(session)
+                        with self._condition:
+                            self._server_generation = generation
+                            recovering = self._recovering_generation == generation
+                            current = (
+                                generation == self._generation and not self._closed
+                            )
+                        # Lifecycle callbacks acquire the service lock. Never
+                        # invoke them while holding the coordinator condition.
+                        if (current and recovering
+                                and self.on_native_recovery is not None):
+                            bound = self.on_native_recovery(session, generation)
+                            if bound is False:
+                                raise RuntimeError("native recovery binding rejected")
                         with self._condition:
                             self._server_generation = generation
                             if generation == self._generation and not self._closed:
                                 self._native_ready = generation
+                                self._active_predictor_epoch = native.predictor_epoch
+                                self._recovering_generation = None
+                                outcome = "completed"
                             else:
                                 self._cleanup_requested = True
                     except Exception as exc:
+                        outcome = "error"
                         self._fail(generation, "session_setup", exc)
                     finally:
+                        log_timing("sam_session_open", generation=generation,
+                                   stream_session_id=trace_id(session),
+                                   open_seconds=time.monotonic() - started,
+                                   outcome=outcome)
                         with self._condition:
                             self._in_flight = False
                             self._condition.notify_all()
@@ -716,6 +878,9 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                         request_id=work.request_id,
                         is_last_batch=work.final,
                         prepared=work.prepared,
+                        retry_transport=(
+                            not self._recover_transport or work.final or self._flush
+                        ),
                     )
                     work.received = time.monotonic()
                     work.timing["append_seconds"] = work.received - work.started
@@ -773,7 +938,18 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                             self._journal().mark(work.request_id, "interrupted")
                             self._stats["stale_results"] += 1
                 except Exception as exc:
-                    self._fail(work.generation, "request", exc, work)
+                    log_timing(
+                        "sam_coordinator_request_failure", **work.timing,
+                        request_elapsed_seconds=time.monotonic() - work.started,
+                        error_type=type(exc).__name__,
+                    )
+                    try:
+                        recovered = self._recover_live_transport(work, exc)
+                    except Exception as recovery_exc:
+                        self._fail(self._generation, "recovery", recovery_exc, work)
+                    else:
+                        if not recovered:
+                            self._fail(work.generation, "request", exc, work)
                 finally:
                     with self._condition:
                         self._requesting = None
@@ -906,6 +1082,7 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
             result.update(
                 pipeline_overlap=True,
                 queue_policy=self._queue_policy,
+                recovering=self._recovering_generation == self._generation,
                 effective_max_append_frames=(
                     1 if self._latest_only else
                     self._realtime_append_frames if self._realtime
