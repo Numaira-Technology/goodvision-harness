@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -138,12 +139,32 @@ def test_short_eof_with_real_coordinator_closes_client_and_annotations(
 
 
 @pytest.mark.parametrize("method", tuple(perception.METHODS))
+@pytest.mark.parametrize("startup_delay", (0.0, 2.0))
 def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
-    tmp_path, monkeypatch, method
+    tmp_path, monkeypatch, method, startup_delay
 ):
     from test_perception_client import RouteServer
 
     monkeypatch.setenv("GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "sam-spool"))
+    # Slow coordinator/spool setup must not consume the source replay clock.
+    # Advance only this runner's clock, without making the suite sleep for setup.
+    offset = [0.0]
+    monkeypatch.setattr(
+        runner,
+        "time",
+        SimpleNamespace(
+            perf_counter=lambda: time.perf_counter() + offset[0],
+            sleep=time.sleep,
+        ),
+    )
+    create_coordinator = runner.create_tracking_coordinator
+
+    def initialize(*args, **kwargs):
+        coordinator = create_coordinator(*args, **kwargs)
+        offset[0] += startup_delay
+        return coordinator
+
+    monkeypatch.setattr(runner, "create_tracking_coordinator", initialize)
 
     source = video(tmp_path, count=3)
     server = RouteServer(method)
@@ -174,6 +195,7 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     )
     result = runner.run(args)
     assert result["ok"] and result["source_evidence_unchanged"]
+    assert result["arrival_lateness_seconds"]["peak"] < 1
     assert result["tracking_coverage"]["all_capture_frames_processed"]
     assert result["processing_method"] == method
     assert result["backend"] == perception.METHODS[method].backend

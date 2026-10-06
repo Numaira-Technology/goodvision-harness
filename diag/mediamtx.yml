@@ -1,0 +1,41 @@
+# MediaMTX config for the phone -> harness diagnostic rig.
+# Accepts the phone's WebRTC (WHIP) or RTMP publish and re-serves it so the
+# harness can pull it. Run: mediamtx diag/mediamtx.yml
+#
+# Phone publishes to (same WiFi as the PC, IP = the PC's LAN address):
+#   WebRTC : open in phone browser  http://<PC-IP>:8889/phonecam/publish  -> Start
+#   RTMP   : push from an app (Larix/OBS) to  rtmp://<PC-IP>:1935/phonecam
+# Harness pulls:
+#   WebRTC : webrtc+http://<PC-IP>:8889/phonecam/whep
+#   RTMP   : rtmp://<PC-IP>:1935/phonecam
+
+logLevel: info
+
+# RTSP hub (also used by the benchmark replay scripts).
+rtsp: yes
+rtspAddress: :8554
+
+# WebRTC: serves both the WHIP publish page/endpoint and the WHEP read endpoint.
+# HTTPS is REQUIRED: phone browsers only grant camera access on a secure
+# context, so the publish page must be https. run_diag_test.sh auto-generates
+# the self-signed cert (with the PC's LAN IP in the SAN) into diag/certs/.
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: yes
+webrtcServerCert: diag/certs/server.crt
+webrtcServerKey: diag/certs/server.key
+# Advertise the host's LAN IP to WebRTC peers on the same network.
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: yes
+
+# RTMP ingest for the phone-app comparison.
+rtmp: yes
+rtmpAddress: :1935
+
+paths:
+  phonecam:            # the phone's live camera (WebRTC or RTMP)
+    source: publisher
+  benchA:              # benchmark replay (optional, unused by diag)
+    source: publisher
+  benchB:
+    source: publisher

@@ -1,0 +1,1655 @@
+{
+  "kind": "six-event OpenRouter model ABBA, Mac scheduler, 12 replay streams",
+  "started_at": "2026-10-04T21:39:47.710308+00:00",
+  "main_commit": "7d38318613e7d6961c7000a124ee0534afdd09ad",
+  "git_commit": "331f3606457587bee663bbd26c29cdf1e4a8c552",
+  "uncommitted_source_changes": true,
+  "source_sha256": {
+    "src/goodvision_harness/__init__.py": "fb6b952849d188e829f1e94992b0ee6ea17325997b27787642cbbdafd70ea370",
+    "src/goodvision_harness/aiclub.py": "348999171aaa23ea95ad33eecb2787b240399af43871ac538bc48516424fe2de",
+    "src/goodvision_harness/archive_ingress.py": "6385a7667e35a2070643dbd5023b2aa1e23aa5f0294cfef60ac01cadef2b5163",
+    "src/goodvision_harness/camera_display.py": "ccc39723490971f81531f38c5b3d7af8a710c1d8bf6091e43c67c3c7c85c7fbf",
+    "src/goodvision_harness/cloud_gpu.py": "c0284ec28275d8a091586acf97318160189a2ba07550b66ff17bacc10df00f06",
+    "src/goodvision_harness/config.py": "696b1db82571ea406b52d386dda2348532995bb2c2938fff88a7a1d52f7aa323",
+    "src/goodvision_harness/continuous_display.py": "4338a0857351cc70318f7b904df425259b53774ee9a94f17a1c850cabee21918",
+    "src/goodvision_harness/contracts.py": "ab7eefdb17365155b4414c7069bb7a8ac9f7b061ad306b0e4316942c8c7068bd",
+    "src/goodvision_harness/delayed_overlay.py": "0e48d514f55a7b2e5c1c0384f915510c57697cdfe68985cc973e060a2b52f3f0",
+    "src/goodvision_harness/delivery.py": "d2e711bfbd26740d15ca2f03f0563f019c58debab133dc8930d35786e14b883a",
+    "src/goodvision_harness/demo/__init__.py": "27dbc662fc427b3ab943cbce3b388bf6d35907613815f8e720ed62c2274f4d30",
+    "src/goodvision_harness/demo/server.py": "568c168830a73d389ffc472c2fb4210143c9eb7d4b584260be2f58ed24b6c62c",
+    "src/goodvision_harness/deployment_settings.py": "28ef16044342c09bdb99aaa3bd512f2ed944c547f040f4310b559b3d02e97f55",
+    "src/goodvision_harness/diagnostics.py": "5c0a0c12006c9cd16e7db9fe004606f73ea6c99a9742a80ce5545d26ecdb78ef",
+    "src/goodvision_harness/display_telemetry.py": "3ce173243708aef01de1d3e93810eca92573a9392959dd06fded48ca9215dedd",
+    "src/goodvision_harness/event_archive.py": "c74a756cff368f86931737bfa5bf58bc8a47cc4afd6744d052714678b1cc835f",
+    "src/goodvision_harness/event_catalog.py": "b2a6921bc938394ad4f585d6f09241db26fc8a19790cd900f3c0c43d247553f7",
+    "src/goodvision_harness/event_routes.py": "3c993711bc5e199892d294633d214623b13b78727902d76ac91f70a6837da2b0",
+    "src/goodvision_harness/event_sensitivity.py": "08383e64089e0f60769cf569cad0c39707a3fabf6e06bafd8aa704ce4a5495e1",
+    "src/goodvision_harness/face_admission.py": "307c1324d08dcb381970d86a0e45a8c44229d1461a5210fc959e163b78dabb12",
+    "src/goodvision_harness/face_fast.py": "38f83f3d2396c06de6651650cfc0bfe6a64be7b539c400dc6f2565da10f5b56f",
+    "src/goodvision_harness/face_observation_store.py": "d0fb6fc7b33311936f57834c734f7067334976533a7325a140a3165a7c6fda52",
+    "src/goodvision_harness/face_recognition.py": "70f986a70d4c02f2f1a2cea5449cc42fccca74228b8f4bb695eee86406770979",
+    "src/goodvision_harness/face_tracking.py": "f39afe03d35e9231ad8cb5c0825b1538b7defbd06343691b3b2c482839cb3ff1",
+    "src/goodvision_harness/face_worker.py": "635ac3eafd4b4134a08bf3abdbaea43f3cc7ba5350408a6da5f076d18dacf047",
+    "src/goodvision_harness/fleet.py": "e8db6021aa0ef7dfa9f6f0656c9b8f941e54b83f0b41845b9213cc60d0399217",
+    "src/goodvision_harness/fleet_diagnostics.py": "1a9375c497c1bb8eafb3a85e32eb178daba5dafe7a80fc1568639acdad43e477",
+    "src/goodvision_harness/fleet_outputs.py": "699b6d2a004c25293d564c8df8bea24ca14fc4aaf6f4fb86b127e83923dae4a8",
+    "src/goodvision_harness/frame_crop.py": "11a85b4c22dd15954fad3534f6f99b118958d286f346c24d4360e52b679ac8f4",
+    "src/goodvision_harness/grounding.py": "aa686f5a3488be06390293d6afcd49309114467c8694891d7f751a0446e1af73",
+    "src/goodvision_harness/identity_review.py": "b008db2676491a531bc98614171a5de517988e9d9e2a8ce2f3e8549fe43ccee8",
+    "src/goodvision_harness/identity_review_worker.py": "6299023d04be5b6f90a887119359208a1aaafd4a56c12b15672aa4a9fd5b2834",
+    "src/goodvision_harness/independent_diagnostics.py": "cdee0128d013e8f5b8ace364b61b523186916e9b0cc9e3421702293bf574733c",
+    "src/goodvision_harness/inference.py": "16e97bfa60f6e40dca97b46582a144bf1b47d6a85faf0adb4b840dc808e52045",
+    "src/goodvision_harness/jev_observation.py": "f4c0dafacb1f41915b125e239e329b8580260f6b0de8b3ae8f8e16b65f9633d6",
+    "src/goodvision_harness/latency_trace.py": "5f6a1bce4093d0b8dba54f28b9eb50bb2d12a8c96531c59abcfd707d0457301b",
+    "src/goodvision_harness/local_gpu.py": "ef5071332bd01335406f71ef773ea55f196f353d967a6eb9ec9861e5721713eb",
+    "src/goodvision_harness/model_api.py": "3dd072340d4d14c90c6a9a1361a9ec624e816b168b92b17180e83ddb3db168e2",
+    "src/goodvision_harness/model_routing.py": "81c8b5ca652114d05462c11fd55d16fb117e6022c94e8d58837210e7fc6e534c",
+    "src/goodvision_harness/network_display.py": "e213ac4a9da810be086066a5171991d505a69488456a0a8abf8863e0db9bc05a",
+    "src/goodvision_harness/organizer.py": "4507488a804ccb3ee9508a41b209f6d8542065c1f2457f7450dfd7c3f5d5c62f",
+    "src/goodvision_harness/overlay.py": "2ce0b898f519907b0d914e513a1d9fb9c42f96a2cf65499ea0c52c7e1434287c",
+    "src/goodvision_harness/overlay_fusion.py": "fbf7941163eb68301a9bae12cf8ac6b9269c7f51a90b222d4acb626a59316bf6",
+    "src/goodvision_harness/perception.py": "51b6fafd3dacf189d7246edaab06beccd2ed139014434147e63e51fc9ffaa6ff",
+    "src/goodvision_harness/person_event_overlay.py": "5f3c82955c5cbf26a800f6187b7f1df2e4d233b323e3f5af6c66a33a348ed2eb",
+    "src/goodvision_harness/person_identity.py": "1a3f359f6d2a001c6e5fd4a6a8d27550f2d444bfb8ce1b741bcdd92cd3ecad53",
+    "src/goodvision_harness/person_registry.py": "49df8e42ac4bd041394463bc95f06dea097259c2374b06cd87e8a4a07b1a1d16",
+    "src/goodvision_harness/pipeline.py": "c3fd73836b849d68f3ed23569745e431e7e0b69e9637b8dee8cd37801bde218c",
+    "src/goodvision_harness/privacy.py": "e551b32d90486b91b5fb45419f80f31815a29f8d4c28ba11deaefae31f5276d3",
+    "src/goodvision_harness/prompt.py": "68e93770937765694576a3025a47ce9ab4b170bccf776cd7ff6d544eac37b61b",
+    "src/goodvision_harness/reference_memory.py": "38b1ccc75463911c796c3f1ba26055b5f00c7d0d0b52f3db3ab62c328d75fbf4",
+    "src/goodvision_harness/result_bus.py": "5146d68ed682d3ede4c288904fa1eeb82b392a611deb302cf81b80eff8e52d65",
+    "src/goodvision_harness/rich_labeling.py": "db5f9059849c9de4bf1639849cd5919925cb50ec77b9647ff09ebfb1840c9684",
+    "src/goodvision_harness/route_probe.py": "7cf711ba355c8d09387ccd7cb5f346258fab18de459b85e68109748d452fa521",
+    "src/goodvision_harness/run_postprocess.py": "70a91bcc02f85b891b3fee8ab405d3e4484d90dc4a80a467e8a5b2aa06ad81ef",
+    "src/goodvision_harness/sam_display_fusion.py": "578bbacc4d4168e35a19761456bc8cc9662646300d2193b6850afc4f7124d357",
+    "src/goodvision_harness/sam_tracking_pipeline.py": "6f9b58d78eb6098341fe470bef1ae165bc5d95a8d433d191c0c876a01f412398",
+    "src/goodvision_harness/sam_tracking_spool.py": "dea331b017228ea5bd7de5f5ee7ed1641acbc672b03d1ae6f12f4589ab919fff",
+    "src/goodvision_harness/scene_alerts.py": "49ff79d5cdabd4a44d9c326612b1f324a5c8584e7173e42dc043450ae342951e",
+    "src/goodvision_harness/scene_archive.py": "98a561e55087e51106ce843ebc7fc01dcb824265baccdfa59a353b8858a6f552",
+    "src/goodvision_harness/scene_capture.py": "61b1c97586e6f1abbedda4e72703a9e71d0e4f3d5d1e935c45592e43735ae3ac",
+    "src/goodvision_harness/scene_delivery.py": "8f7c019883f35d1baa891ca40aed43b6794df5248bde0b131b5de275e129d696",
+    "src/goodvision_harness/scene_evidence.py": "8e0e3b7cadbaf4cd7732a5b5393eb9669407784c485ded886956f8aabcec67b2",
+    "src/goodvision_harness/scene_inspection.py": "a9995c9adb5965a3428077f22c3415500a0db615bfb30a0f46e1d50cbbff2949",
+    "src/goodvision_harness/scene_model.py": "d5ed0b976c8a71b576d1f98b3876cbd859dae4d5fea1dd6dadc5e4b3a776deb3",
+    "src/goodvision_harness/scene_results.py": "78013a470fc50eef5ff8a381198ee2187bde3b5bc1695e386f044f2b24d8392d",
+    "src/goodvision_harness/scene_runtime.py": "717ce6baff03011f18ff6c4cbd6e9482672acda9c8ec7f26c79abf3f92326ae6",
+    "src/goodvision_harness/scene_state.py": "bd5d2497b9685a5d115cf15969247a480353075faf502d0f3ac807fa718c5c35",
+    "src/goodvision_harness/scene_worker.py": "45e557e9db7f24313267691fb0a253a00487c6f4797157d16999545f04200d39",
+    "src/goodvision_harness/service.py": "2b9a3e7d18bf14ef3ec6dd30808425b21120688629570bfede4ebfa64e766075",
+    "src/goodvision_harness/service_locations.py": "30b5f8dd27b5ceeb9316490831b96f14b775141fb1e2f8ab924d3cd85d385ae0",
+    "src/goodvision_harness/sliding_window.py": "735bb44442720dadad34a28239a1dfa765875903633c700e02dc31d95da19136",
+    "src/goodvision_harness/stream_adapter.py": "7d9342ad2367c8a19459e3a00e14643388722f52fdc32708b25f540664709e50",
+    "src/goodvision_harness/stream_decode.py": "caabbf9b57cbb703cb82adec07b2676023ce507c6e9a879a5c1fa9fafcd1955a",
+    "src/goodvision_harness/stream_diagnostics.py": "6be8ed4d74809a194ef4bbe7f2ae002c7032f1b9c09335f9bea099380a192638",
+    "src/goodvision_harness/stream_timing.py": "9c9b5ea3c40c51d26c640b34142ec9daf287313bdd5c662fe5674670a401becf",
+    "src/goodvision_harness/streaming_model_api.py": "83c74900998ba302ac333d19f5d0ab38899047137eb7ae602e735a32b072dc7d",
+    "src/goodvision_harness/temporal_client_pool.py": "781cfb815305f128a73c11c070acd762fb4f6ab3f4ef26611d185fd5d8783c89",
+    "src/goodvision_harness/video_connection.py": "cf1fe9a5ff01b7905c54ed7d6620cf7725a5df9dc129b78edd9a51ea12b13f59",
+    "src/goodvision_harness/video_evidence.py": "aa6b4afaf7f97e11405f987dc7efd66eeb8ce08b06110238035ee908d08fdef7",
+    "src/goodvision_harness/video_to_stream.py": "ec53021d2baaa99e361a8a29d3dc8951f5add7af712241b2661d917164246c21",
+    "src/goodvision_harness/video_tracking.py": "06013f9dc580f8d54a8ecd2c3b08dfee913410083ff548b20ac90ab692cbed3d",
+    "src/goodvision_harness/video_tracking_session.py": "996c3168b5508dc2a0924e5726450d16332e563f1d0916ba7c5e63c7f725cbe1",
+    "src/goodvision_harness/video_transport.py": "ac2aa61b54bcaedf9c4b092eb19da0969d1682fb6ec9f50664d9e47a65d3ccbb",
+    "src/goodvision_harness/vision_result.py": "63928d42ea0ae259ae483fd2c36d0b5b9583599ae76bd5e8ec5ebee2ffcb491f",
+    "src/goodvision_harness/visual_memory.py": "b6277b7bd32b1eff99a590fc8d9e1edb170057b75abf3c13ded3632aeb7920b1",
+    "src/goodvision_harness/vlm_admission.py": "c3fb3b7f0aaceb19400ef5be752edd9f2a9d853187cb89af22756d72f258432f",
+    "src/goodvision_harness/vlm_compact_model.py": "f1dd07a7ab0cfb86b0de12fb22b48992087b48e648edc359747db286b2b11d37",
+    "src/goodvision_harness/vlm_fusion.py": "ba74a781f814027d6a8e28838d8a878ac081f79d7fe3584a50027f36bc9c8d5f",
+    "src/goodvision_harness/vlm_independent.py": "88a4b327722dd1413a2bf05fcf7aac30b4647d870781e1499450a32f032d83ad",
+    "src/goodvision_harness/vlm_independent_model.py": "15a30e1879ab003d5e311e7df96a5eb5bb9a1b460c4dbc4e3632b576e4c50e60",
+    "src/goodvision_harness/vlm_object_wire.py": "9f230b64001a157cd1710718350c4ddeda8311685a70fa9d9e433f26c60e2789",
+    "src/goodvision_harness/vlm_rich_labeling.py": "fbe19341b1d0bb6681593747b8a80ebb5e8841ece8d6bf4eb59174c67916c840",
+    "src/goodvision_harness/vlm_transport.py": "8a3fc515c7cd252759ad6a9fe6a14c97f1f59f4fa03912e415ec89b26dc36953",
+    "src/goodvision_harness/vlm_validation.py": "5b72dcb9312201ca5dc050e388c92f443ee5d981956359595113753b893417da",
+    "src/goodvision_harness/webrtc_jitter.py": "a0b6950e703b4ccfcfdffaae8cbf2ca1387dc34d92e56ea4e39b3a98b42ac316",
+    "src/goodvision_harness/whep_process.py": "f93ee2af2ade3de5f76ad2727973d1a63fb1f89ec85004c1374f2b15daea8976",
+    "tools/vlm_benchmark/config.json": "830a4b6e1f71891fda20c875ab3f8ac87fe0666dc4ee40210910fa9f7f47dbc3",
+    "tools/vlm_multistream_benchmark.py": "e4ff5b218de686038db3e071ccf96075100d60a26dd3c98768af04e29250ca56"
+  },
+  "event_labels": [
+    "fight",
+    "smoking",
+    "fall",
+    "weapon",
+    "ppe_violation",
+    "ground_litter"
+  ],
+  "scope": "Six main safety events; one Mac schedules 12 replay streams; inference is external OpenRouter, not a rented GPU",
+  "video_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "plans": {
+    "35b": {
+      "version": 1,
+      "provider": "openrouter",
+      "model": "qwen/qwen3.5-35b-a3b",
+      "simulate": false,
+      "streams": [
+        12
+      ],
+      "duration": 30,
+      "repeats": 2,
+      "soak_seconds": 0,
+      "compare": false,
+      "compare_concurrency": false,
+      "compare_arrival": false,
+      "compare_routing": false,
+      "provider_sort": "latency",
+      "provider_only": "",
+      "arrival_mode": "staggered",
+      "event_json_mode": "schema",
+      "global_limit": 48,
+      "per_stream_limit": 4,
+      "request_rate": 20,
+      "queue_timeout": 1,
+      "observation_fps": 1.25,
+      "deadline": 3,
+      "min_coverage": 0.95,
+      "max_error_fraction": 0.01,
+      "max_uncertain_fraction": 0.1
+    },
+    "8b": {
+      "version": 1,
+      "provider": "openrouter",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "simulate": false,
+      "streams": [
+        12
+      ],
+      "duration": 30,
+      "repeats": 2,
+      "soak_seconds": 0,
+      "compare": false,
+      "compare_concurrency": false,
+      "compare_arrival": false,
+      "compare_routing": false,
+      "provider_sort": "latency",
+      "provider_only": "",
+      "arrival_mode": "staggered",
+      "event_json_mode": "schema",
+      "global_limit": 48,
+      "per_stream_limit": 4,
+      "request_rate": 20,
+      "queue_timeout": 1,
+      "observation_fps": 1.25,
+      "deadline": 3,
+      "min_coverage": 0.95,
+      "max_error_fraction": 0.01,
+      "max_uncertain_fraction": 0.1
+    }
+  },
+  "sampling": {
+    "sample_fps": 2.5,
+    "observation_fps": 1.25,
+    "max_side": 720,
+    "jpeg_quality": 90,
+    "max_tokens": 160,
+    "http_timeout": 5,
+    "retries": 0
+  },
+  "effective_request_parameters": {
+    "35b": {
+      "reasoning": {
+        "enabled": false
+      },
+      "provider": {
+        "sort": "latency",
+        "allow_fallbacks": true,
+        "ignore": [
+          "coreweave",
+          "novita"
+        ],
+        "require_parameters": true
+      },
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "scene_events",
+          "strict": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "fight": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "smoking": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "fall": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "weapon": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ppe_violation": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ground_litter": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "fight",
+              "smoking",
+              "fall",
+              "weapon",
+              "ppe_violation",
+              "ground_litter"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "8b": {
+      "provider": {
+        "sort": "latency",
+        "allow_fallbacks": true,
+        "ignore": [
+          "coreweave",
+          "novita"
+        ],
+        "require_parameters": true
+      },
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "scene_events",
+          "strict": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "fight": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "smoking": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "fall": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "weapon": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ppe_violation": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ground_litter": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "fight",
+              "smoking",
+              "fall",
+              "weapon",
+              "ppe_violation",
+              "ground_litter"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "source_run": "outputs/vlm-model-compare/qwen3-vl-8b-six-events-20261004/abba",
+  "rounds": [
+    {
+      "id": "round-1-35b",
+      "model": "qwen/qwen3.5-35b-a3b",
+      "label": "35b",
+      "repeat": 1,
+      "expected": 444,
+      "complete": 433,
+      "within_3s": 311,
+      "complete_fraction": 0.9752252252252253,
+      "within_3s_fraction": 0.7004504504504504,
+      "per_stream_within_3s_range": [
+        0.5945945945945946,
+        0.7837837837837838
+      ],
+      "p50": 2.5846637089853175,
+      "p95": 3.74138083300204,
+      "p99": 4.250742957985494,
+      "histogram": {
+        "≤1s": 0,
+        "1–1.5s": 10,
+        "1.5–2s": 77,
+        "2–2.5s": 105,
+        "2.5–3s": 119,
+        "3–5s": 122,
+        ">5s": 0
+      },
+      "no_complete_result": 11,
+      "errors": {
+        "timeout": 1,
+        "admission_superseded": 2
+      },
+      "skipped_cadence_windows": 8,
+      "input_valid": true,
+      "drained": true,
+      "records_missing": 0,
+      "event_counts": {
+        "fight": {
+          "negative": 391,
+          "positive": 42
+        },
+        "smoking": {
+          "positive": 71,
+          "negative": 362
+        },
+        "fall": {
+          "negative": 409,
+          "positive": 24
+        },
+        "weapon": {
+          "negative": 433
+        },
+        "ppe_violation": {
+          "positive": 118,
+          "negative": 315
+        },
+        "ground_litter": {
+          "negative": 348,
+          "positive": 85
+        }
+      },
+      "uncertain_judgments": 0,
+      "total_judgments": 2598,
+      "uncertain_fraction": 0.0,
+      "uncertain_fraction_per_lane": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "raw_reports_sha256": "8d58f9519aa8baacf1996d430062bc8f68b5814217dbb892e20ad080977964b3",
+      "lanes": [
+        {
+          "camera": 1,
+          "expected": 37,
+          "timely": {
+            "count": 25,
+            "p50": 2.487115875002928,
+            "p90": 2.913040125014959,
+            "p95": 2.974711707996903,
+            "p99": 2.986295832990436,
+            "max": 2.986295832990436
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.7418136659835,
+            "p90": 3.429497374978382,
+            "p95": 3.6552076660154853,
+            "p99": 3.6633414999814704,
+            "max": 3.6633414999814704
+          }
+        },
+        {
+          "camera": 2,
+          "expected": 37,
+          "timely": {
+            "count": 25,
+            "p50": 2.456624083017232,
+            "p90": 2.917838833993301,
+            "p95": 2.9301739999791607,
+            "p99": 2.9545427080010995,
+            "max": 2.9545427080010995
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.667991249996703,
+            "p90": 3.4966475410037674,
+            "p95": 3.832358333020238,
+            "p99": 4.41000425000675,
+            "max": 4.41000425000675
+          }
+        },
+        {
+          "camera": 3,
+          "expected": 37,
+          "timely": {
+            "count": 24,
+            "p50": 2.2520957090018783,
+            "p90": 2.834485874976963,
+            "p95": 2.894421582983341,
+            "p99": 2.9620804580044933,
+            "max": 2.9620804580044933
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.6246012909978162,
+            "p90": 3.5389623749942984,
+            "p95": 3.7727244579873513,
+            "p99": 3.9845474579778966,
+            "max": 3.9845474579778966
+          }
+        },
+        {
+          "camera": 4,
+          "expected": 37,
+          "timely": {
+            "count": 23,
+            "p50": 2.455495083006099,
+            "p90": 2.985642249986995,
+            "p95": 2.9885673339886125,
+            "p99": 2.9894579160027206,
+            "max": 2.9894579160027206
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.7816530410200357,
+            "p90": 3.7006477499962784,
+            "p95": 3.8401153330050875,
+            "p99": 4.025030125019839,
+            "max": 4.025030125019839
+          }
+        },
+        {
+          "camera": 5,
+          "expected": 37,
+          "timely": {
+            "count": 27,
+            "p50": 2.077620666997973,
+            "p90": 2.871954000002006,
+            "p95": 2.90608037498896,
+            "p99": 2.929680625005858,
+            "max": 2.929680625005858
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.3925921249901876,
+            "p90": 3.478985042020213,
+            "p95": 3.6901901249948423,
+            "p99": 3.698716249986319,
+            "max": 3.698716249986319
+          }
+        },
+        {
+          "camera": 6,
+          "expected": 37,
+          "timely": {
+            "count": 28,
+            "p50": 2.1601965829904657,
+            "p90": 2.7409224579751026,
+            "p95": 2.8136154170206282,
+            "p99": 2.846523915999569,
+            "max": 2.846523915999569
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.293409709003754,
+            "p90": 3.343872833007481,
+            "p95": 3.772205125016626,
+            "p99": 4.317352999991272,
+            "max": 4.317352999991272
+          }
+        },
+        {
+          "camera": 7,
+          "expected": 37,
+          "timely": {
+            "count": 25,
+            "p50": 2.226763791986741,
+            "p90": 2.750144833989907,
+            "p95": 2.7910007089958526,
+            "p99": 2.8819592499930877,
+            "max": 2.8819592499930877
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.508642417000374,
+            "p90": 3.6567861670046113,
+            "p95": 4.136799165979028,
+            "p99": 4.344752458011499,
+            "max": 4.344752458011499
+          }
+        },
+        {
+          "camera": 8,
+          "expected": 37,
+          "timely": {
+            "count": 22,
+            "p50": 2.5545679579954594,
+            "p90": 2.8442182919825427,
+            "p95": 2.9137923329835758,
+            "p99": 2.98281987500377,
+            "max": 2.98281987500377
+          },
+          "all_complete": {
+            "count": 35,
+            "p50": 2.7468837090127636,
+            "p90": 3.599864374991739,
+            "p95": 4.227418708003825,
+            "p99": 4.2757308750005905,
+            "max": 4.2757308750005905
+          }
+        },
+        {
+          "camera": 9,
+          "expected": 37,
+          "timely": {
+            "count": 28,
+            "p50": 2.217494333977811,
+            "p90": 2.7311042080109473,
+            "p95": 2.772838207980385,
+            "p99": 2.8456255420169327,
+            "max": 2.8456255420169327
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.4359722080116626,
+            "p90": 3.3956757499836385,
+            "p95": 3.8209346249932423,
+            "p99": 3.9835888340021484,
+            "max": 3.9835888340021484
+          }
+        },
+        {
+          "camera": 10,
+          "expected": 37,
+          "timely": {
+            "count": 29,
+            "p50": 2.1392755419947207,
+            "p90": 2.8883135840005707,
+            "p95": 2.958649082982447,
+            "p99": 2.996293208008865,
+            "max": 2.996293208008865
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 2.468122999998741,
+            "p90": 3.5585502499889117,
+            "p95": 3.7973758330044802,
+            "p99": 3.9306927090219688,
+            "max": 3.9306927090219688
+          }
+        },
+        {
+          "camera": 11,
+          "expected": 37,
+          "timely": {
+            "count": 27,
+            "p50": 2.0777397920028307,
+            "p90": 2.886741083028028,
+            "p95": 2.9547198329819366,
+            "p99": 2.957396540994523,
+            "max": 2.957396540994523
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 2.4867640000011306,
+            "p90": 3.276279624988092,
+            "p95": 3.4472822500101756,
+            "p99": 3.729632500006119,
+            "max": 3.729632500006119
+          }
+        },
+        {
+          "camera": 12,
+          "expected": 37,
+          "timely": {
+            "count": 28,
+            "p50": 2.3982163749751635,
+            "p90": 2.7700113340106327,
+            "p95": 2.8487042079796083,
+            "p99": 2.8708922500081826,
+            "max": 2.8708922500081826
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 2.5180896669917274,
+            "p90": 3.212157625006512,
+            "p95": 3.8407867920177523,
+            "p99": 4.250742957985494,
+            "max": 4.250742957985494
+          }
+        }
+      ],
+      "reference_gate": {
+        "passed": false,
+        "reasons": [
+          "camera1:low_on_time_coverage",
+          "camera2:low_on_time_coverage",
+          "camera3:low_on_time_coverage",
+          "camera4:low_on_time_coverage",
+          "camera5:low_on_time_coverage",
+          "camera5:request_errors",
+          "camera6:low_on_time_coverage",
+          "camera7:low_on_time_coverage",
+          "camera8:low_on_time_coverage",
+          "camera9:low_on_time_coverage",
+          "camera9:request_errors",
+          "camera10:low_on_time_coverage",
+          "camera11:low_on_time_coverage",
+          "camera11:request_errors",
+          "camera12:low_on_time_coverage"
+        ]
+      }
+    },
+    {
+      "id": "round-2-8b",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "label": "8b",
+      "repeat": 1,
+      "expected": 444,
+      "complete": 444,
+      "within_3s": 444,
+      "complete_fraction": 1.0,
+      "within_3s_fraction": 1.0,
+      "per_stream_within_3s_range": [
+        1.0,
+        1.0
+      ],
+      "p50": 1.0078956250217743,
+      "p95": 1.3300330420024693,
+      "p99": 1.9360509589896537,
+      "histogram": {
+        "≤1s": 214,
+        "1–1.5s": 223,
+        "1.5–2s": 3,
+        "2–2.5s": 3,
+        "2.5–3s": 1,
+        "3–5s": 0,
+        ">5s": 0
+      },
+      "no_complete_result": 0,
+      "errors": {},
+      "skipped_cadence_windows": 0,
+      "input_valid": true,
+      "drained": true,
+      "records_missing": 0,
+      "event_counts": {
+        "fight": {
+          "negative": 396,
+          "positive": 48
+        },
+        "smoking": {
+          "negative": 384,
+          "positive": 60
+        },
+        "fall": {
+          "negative": 396,
+          "positive": 48
+        },
+        "weapon": {
+          "negative": 444
+        },
+        "ppe_violation": {
+          "negative": 384,
+          "positive": 6,
+          "uncertain": 54
+        },
+        "ground_litter": {
+          "positive": 359,
+          "negative": 85
+        }
+      },
+      "uncertain_judgments": 54,
+      "total_judgments": 2664,
+      "uncertain_fraction": 0.02027027027027027,
+      "uncertain_fraction_per_lane": [
+        0.018018018018018018,
+        0.02702702702702703,
+        0.02252252252252252,
+        0.02252252252252252,
+        0.018018018018018018,
+        0.018018018018018018,
+        0.02252252252252252,
+        0.02252252252252252,
+        0.018018018018018018,
+        0.018018018018018018,
+        0.018018018018018018,
+        0.018018018018018018
+      ],
+      "raw_reports_sha256": "ac8cd68200c8e7053283d2f90bfd289949af875b92715281a568e4f350a318fb",
+      "lanes": [
+        {
+          "camera": 1,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.0931489579961635,
+            "p90": 1.343040125007974,
+            "p95": 1.364203124976484,
+            "p99": 2.0127362909843214,
+            "max": 2.0127362909843214
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.0931489579961635,
+            "p90": 1.343040125007974,
+            "p95": 1.364203124976484,
+            "p99": 2.0127362909843214,
+            "max": 2.0127362909843214
+          }
+        },
+        {
+          "camera": 2,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.0705910830001812,
+            "p90": 1.3931079999892972,
+            "p95": 1.9360509589896537,
+            "p99": 2.3591303749999497,
+            "max": 2.3591303749999497
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.0705910830001812,
+            "p90": 1.3931079999892972,
+            "p95": 1.9360509589896537,
+            "p99": 2.3591303749999497,
+            "max": 2.3591303749999497
+          }
+        },
+        {
+          "camera": 3,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.0719906250014901,
+            "p90": 1.302950375014916,
+            "p95": 1.35345504200086,
+            "p99": 1.4841921670013107,
+            "max": 1.4841921670013107
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.0719906250014901,
+            "p90": 1.302950375014916,
+            "p95": 1.35345504200086,
+            "p99": 1.4841921670013107,
+            "max": 1.4841921670013107
+          }
+        },
+        {
+          "camera": 4,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.03807270800462,
+            "p90": 1.1799393749970477,
+            "p95": 1.3009835420234594,
+            "p99": 1.4178098749835044,
+            "max": 1.4178098749835044
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.03807270800462,
+            "p90": 1.1799393749970477,
+            "p95": 1.3009835420234594,
+            "p99": 1.4178098749835044,
+            "max": 1.4178098749835044
+          }
+        },
+        {
+          "camera": 5,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9983651669754181,
+            "p90": 1.1425515839946456,
+            "p95": 1.1938692920084577,
+            "p99": 1.3623778330220375,
+            "max": 1.3623778330220375
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9983651669754181,
+            "p90": 1.1425515839946456,
+            "p95": 1.1938692920084577,
+            "p99": 1.3623778330220375,
+            "max": 1.3623778330220375
+          }
+        },
+        {
+          "camera": 6,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.0063149579800665,
+            "p90": 1.2076958749967162,
+            "p95": 1.4400314580125269,
+            "p99": 1.462301583000226,
+            "max": 1.462301583000226
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.0063149579800665,
+            "p90": 1.2076958749967162,
+            "p95": 1.4400314580125269,
+            "p99": 1.462301583000226,
+            "max": 1.462301583000226
+          }
+        },
+        {
+          "camera": 7,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9973279999976512,
+            "p90": 1.2206625410181005,
+            "p95": 1.6485513329971582,
+            "p99": 2.0843274999933783,
+            "max": 2.0843274999933783
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9973279999976512,
+            "p90": 1.2206625410181005,
+            "p95": 1.6485513329971582,
+            "p99": 2.0843274999933783,
+            "max": 2.0843274999933783
+          }
+        },
+        {
+          "camera": 8,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9537471249932423,
+            "p90": 1.1822947080072481,
+            "p95": 1.2560079999966547,
+            "p99": 1.6750625830027275,
+            "max": 1.6750625830027275
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9537471249932423,
+            "p90": 1.1822947080072481,
+            "p95": 1.2560079999966547,
+            "p99": 1.6750625830027275,
+            "max": 1.6750625830027275
+          }
+        },
+        {
+          "camera": 9,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9439616249874234,
+            "p90": 1.2529702089959756,
+            "p95": 1.3093933750060387,
+            "p99": 2.58218070800649,
+            "max": 2.58218070800649
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9439616249874234,
+            "p90": 1.2529702089959756,
+            "p95": 1.3093933750060387,
+            "p99": 2.58218070800649,
+            "max": 2.58218070800649
+          }
+        },
+        {
+          "camera": 10,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9960817499959376,
+            "p90": 1.184882708999794,
+            "p95": 1.247602999996161,
+            "p99": 1.3414058749913238,
+            "max": 1.3414058749913238
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9960817499959376,
+            "p90": 1.184882708999794,
+            "p95": 1.247602999996161,
+            "p99": 1.3414058749913238,
+            "max": 1.3414058749913238
+          }
+        },
+        {
+          "camera": 11,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9421889999939594,
+            "p90": 1.2224674590106588,
+            "p95": 1.3418054170033429,
+            "p99": 1.3659057080221828,
+            "max": 1.3659057080221828
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9421889999939594,
+            "p90": 1.2224674590106588,
+            "p95": 1.3418054170033429,
+            "p99": 1.3659057080221828,
+            "max": 1.3659057080221828
+          }
+        },
+        {
+          "camera": 12,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9112187499995343,
+            "p90": 1.1401996659988072,
+            "p95": 1.2315284590004012,
+            "p99": 1.3338189590140246,
+            "max": 1.3338189590140246
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9112187499995343,
+            "p90": 1.1401996659988072,
+            "p95": 1.2315284590004012,
+            "p99": 1.3338189590140246,
+            "max": 1.3338189590140246
+          }
+        }
+      ],
+      "reference_gate": {
+        "passed": true,
+        "reasons": []
+      }
+    },
+    {
+      "id": "round-3-8b",
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "label": "8b",
+      "repeat": 2,
+      "expected": 444,
+      "complete": 444,
+      "within_3s": 444,
+      "complete_fraction": 1.0,
+      "within_3s_fraction": 1.0,
+      "per_stream_within_3s_range": [
+        1.0,
+        1.0
+      ],
+      "p50": 0.9724934159894474,
+      "p95": 1.6106312090123538,
+      "p99": 1.9073158749961294,
+      "histogram": {
+        "≤1s": 263,
+        "1–1.5s": 146,
+        "1.5–2s": 34,
+        "2–2.5s": 1,
+        "2.5–3s": 0,
+        "3–5s": 0,
+        ">5s": 0
+      },
+      "no_complete_result": 0,
+      "errors": {},
+      "skipped_cadence_windows": 0,
+      "input_valid": true,
+      "drained": true,
+      "records_missing": 0,
+      "event_counts": {
+        "fight": {
+          "negative": 396,
+          "positive": 48
+        },
+        "smoking": {
+          "negative": 384,
+          "positive": 60
+        },
+        "fall": {
+          "negative": 396,
+          "positive": 48
+        },
+        "weapon": {
+          "negative": 444
+        },
+        "ppe_violation": {
+          "negative": 389,
+          "positive": 9,
+          "uncertain": 46
+        },
+        "ground_litter": {
+          "positive": 360,
+          "negative": 84
+        }
+      },
+      "uncertain_judgments": 46,
+      "total_judgments": 2664,
+      "uncertain_fraction": 0.017267267267267267,
+      "uncertain_fraction_per_lane": [
+        0.018018018018018018,
+        0.018018018018018018,
+        0.018018018018018018,
+        0.018018018018018018,
+        0.018018018018018018,
+        0.018018018018018018,
+        0.018018018018018018,
+        0.013513513513513514,
+        0.018018018018018018,
+        0.013513513513513514,
+        0.02252252252252252,
+        0.013513513513513514
+      ],
+      "raw_reports_sha256": "ac2e6c1623eef4a310e3058ee3774ddda7bea8123585ddc8e31570f33a577f19",
+      "lanes": [
+        {
+          "camera": 1,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9963681660010479,
+            "p90": 1.4334572079824284,
+            "p95": 1.6881635000172537,
+            "p99": 1.7223134170053527,
+            "max": 1.7223134170053527
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9963681660010479,
+            "p90": 1.4334572079824284,
+            "p95": 1.6881635000172537,
+            "p99": 1.7223134170053527,
+            "max": 1.7223134170053527
+          }
+        },
+        {
+          "camera": 2,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.0295535830082372,
+            "p90": 1.5424010420101695,
+            "p95": 1.8837449999991804,
+            "p99": 1.9603579170070589,
+            "max": 1.9603579170070589
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.0295535830082372,
+            "p90": 1.5424010420101695,
+            "p95": 1.8837449999991804,
+            "p99": 1.9603579170070589,
+            "max": 1.9603579170070589
+          }
+        },
+        {
+          "camera": 3,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9952563749975525,
+            "p90": 1.337047207984142,
+            "p95": 1.5065636250074022,
+            "p99": 1.9452296250092331,
+            "max": 1.9452296250092331
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9952563749975525,
+            "p90": 1.337047207984142,
+            "p95": 1.5065636250074022,
+            "p99": 1.9452296250092331,
+            "max": 1.9452296250092331
+          }
+        },
+        {
+          "camera": 4,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.954549042013241,
+            "p90": 1.382013124995865,
+            "p95": 1.5857470000046305,
+            "p99": 1.7644007499911822,
+            "max": 1.7644007499911822
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.954549042013241,
+            "p90": 1.382013124995865,
+            "p95": 1.5857470000046305,
+            "p99": 1.7644007499911822,
+            "max": 1.7644007499911822
+          }
+        },
+        {
+          "camera": 5,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.976216375012882,
+            "p90": 1.6003405000083148,
+            "p95": 1.6421084589965176,
+            "p99": 1.9073158749961294,
+            "max": 1.9073158749961294
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.976216375012882,
+            "p90": 1.6003405000083148,
+            "p95": 1.6421084589965176,
+            "p99": 1.9073158749961294,
+            "max": 1.9073158749961294
+          }
+        },
+        {
+          "camera": 6,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9733420829870738,
+            "p90": 1.1089317919977475,
+            "p95": 1.5293651660031173,
+            "p99": 1.8083937500196043,
+            "max": 1.8083937500196043
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9733420829870738,
+            "p90": 1.1089317919977475,
+            "p95": 1.5293651660031173,
+            "p99": 1.8083937500196043,
+            "max": 1.8083937500196043
+          }
+        },
+        {
+          "camera": 7,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9770486659836024,
+            "p90": 1.5991008749988396,
+            "p95": 1.8638942500110716,
+            "p99": 1.971818791993428,
+            "max": 1.971818791993428
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9770486659836024,
+            "p90": 1.5991008749988396,
+            "p95": 1.8638942500110716,
+            "p99": 1.971818791993428,
+            "max": 1.971818791993428
+          }
+        },
+        {
+          "camera": 8,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.972331666998798,
+            "p90": 1.1926227920048404,
+            "p95": 1.6391437079873867,
+            "p99": 1.7009664159850217,
+            "max": 1.7009664159850217
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.972331666998798,
+            "p90": 1.1926227920048404,
+            "p95": 1.6391437079873867,
+            "p99": 1.7009664159850217,
+            "max": 1.7009664159850217
+          }
+        },
+        {
+          "camera": 9,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9590559170173947,
+            "p90": 1.1698225000000093,
+            "p95": 1.6454382079828065,
+            "p99": 1.8726727080065757,
+            "max": 1.8726727080065757
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9590559170173947,
+            "p90": 1.1698225000000093,
+            "p95": 1.6454382079828065,
+            "p99": 1.8726727080065757,
+            "max": 1.8726727080065757
+          }
+        },
+        {
+          "camera": 10,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9340836250048596,
+            "p90": 1.1638197500142269,
+            "p95": 1.537561334000202,
+            "p99": 1.5616255000059027,
+            "max": 1.5616255000059027
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9340836250048596,
+            "p90": 1.1638197500142269,
+            "p95": 1.537561334000202,
+            "p99": 1.5616255000059027,
+            "max": 1.5616255000059027
+          }
+        },
+        {
+          "camera": 11,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 0.9410048330028076,
+            "p90": 1.1850140420137905,
+            "p95": 1.4303515829960816,
+            "p99": 1.7639228330226615,
+            "max": 1.7639228330226615
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 0.9410048330028076,
+            "p90": 1.1850140420137905,
+            "p95": 1.4303515829960816,
+            "p99": 1.7639228330226615,
+            "max": 1.7639228330226615
+          }
+        },
+        {
+          "camera": 12,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.0081308750086464,
+            "p90": 1.6106312090123538,
+            "p95": 1.8534547499730252,
+            "p99": 2.1536549589945935,
+            "max": 2.1536549589945935
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.0081308750086464,
+            "p90": 1.6106312090123538,
+            "p95": 1.8534547499730252,
+            "p99": 2.1536549589945935,
+            "max": 2.1536549589945935
+          }
+        }
+      ],
+      "reference_gate": {
+        "passed": true,
+        "reasons": []
+      }
+    },
+    {
+      "id": "round-4-35b",
+      "model": "qwen/qwen3.5-35b-a3b",
+      "label": "35b",
+      "repeat": 2,
+      "expected": 444,
+      "complete": 443,
+      "within_3s": 427,
+      "complete_fraction": 0.9977477477477478,
+      "within_3s_fraction": 0.9617117117117117,
+      "per_stream_within_3s_range": [
+        0.8918918918918919,
+        1.0
+      ],
+      "p50": 1.9023121249920223,
+      "p95": 2.869093041983433,
+      "p99": 3.278808500006562,
+      "histogram": {
+        "≤1s": 0,
+        "1–1.5s": 39,
+        "1.5–2s": 218,
+        "2–2.5s": 112,
+        "2.5–3s": 58,
+        "3–5s": 16,
+        ">5s": 0
+      },
+      "no_complete_result": 1,
+      "errors": {
+        "timeout": 1
+      },
+      "skipped_cadence_windows": 0,
+      "input_valid": true,
+      "drained": true,
+      "records_missing": 0,
+      "event_counts": {
+        "fight": {
+          "negative": 407,
+          "positive": 36
+        },
+        "smoking": {
+          "positive": 72,
+          "negative": 371
+        },
+        "fall": {
+          "negative": 419,
+          "positive": 24
+        },
+        "weapon": {
+          "negative": 443
+        },
+        "ppe_violation": {
+          "negative": 243,
+          "positive": 200
+        },
+        "ground_litter": {
+          "negative": 359,
+          "positive": 84
+        }
+      },
+      "uncertain_judgments": 0,
+      "total_judgments": 2658,
+      "uncertain_fraction": 0.0,
+      "uncertain_fraction_per_lane": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "raw_reports_sha256": "dde97c9c70a06d7da293703e8783f7da5e042b72b2aba60051d4ade39b69cb44",
+      "lanes": [
+        {
+          "camera": 1,
+          "expected": 37,
+          "timely": {
+            "count": 34,
+            "p50": 1.9394502920040395,
+            "p90": 2.646514666004805,
+            "p95": 2.7058216669829562,
+            "p99": 2.9393768750014715,
+            "max": 2.9393768750014715
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 2.0238579580036458,
+            "p90": 2.9393768750014715,
+            "p95": 3.23112970800139,
+            "p99": 3.8475247910246253,
+            "max": 3.8475247910246253
+          }
+        },
+        {
+          "camera": 2,
+          "expected": 37,
+          "timely": {
+            "count": 33,
+            "p50": 2.0158948750176933,
+            "p90": 2.584856083994964,
+            "p95": 2.6130934999964666,
+            "p99": 2.620451333001256,
+            "max": 2.620451333001256
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 2.036297917016782,
+            "p90": 3.0149712080019526,
+            "p95": 3.266623667004751,
+            "p99": 3.938685000000987,
+            "max": 3.938685000000987
+          }
+        },
+        {
+          "camera": 3,
+          "expected": 37,
+          "timely": {
+            "count": 36,
+            "p50": 1.9490520420076791,
+            "p90": 2.654470457986463,
+            "p95": 2.9631630840012804,
+            "p99": 2.9980670000077225,
+            "max": 2.9980670000077225
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.9719789170194417,
+            "p90": 2.763888792018406,
+            "p95": 2.9980670000077225,
+            "p99": 3.193096749979304,
+            "max": 3.193096749979304
+          }
+        },
+        {
+          "camera": 4,
+          "expected": 37,
+          "timely": {
+            "count": 35,
+            "p50": 1.9745814579946455,
+            "p90": 2.6294005420058966,
+            "p95": 2.8004527500015683,
+            "p99": 2.944660915993154,
+            "max": 2.944660915993154
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 2.0098756669904105,
+            "p90": 2.8004527500015683,
+            "p95": 3.109117917018011,
+            "p99": 3.418918124982156,
+            "max": 3.418918124982156
+          }
+        },
+        {
+          "camera": 5,
+          "expected": 37,
+          "timely": {
+            "count": 35,
+            "p50": 1.8802102500048932,
+            "p90": 2.5515704579884186,
+            "p95": 2.822910040995339,
+            "p99": 2.8841417919902597,
+            "max": 2.8841417919902597
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.8819693750119768,
+            "p90": 2.822910040995339,
+            "p95": 3.0478775840019807,
+            "p99": 3.278808500006562,
+            "max": 3.278808500006562
+          }
+        },
+        {
+          "camera": 6,
+          "expected": 37,
+          "timely": {
+            "count": 36,
+            "p50": 1.754697375028627,
+            "p90": 2.499787541979458,
+            "p95": 2.737264875002438,
+            "p99": 2.812285125022754,
+            "max": 2.812285125022754
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.7990084580087569,
+            "p90": 2.5607459580060095,
+            "p95": 2.812285125022754,
+            "p99": 3.102496459003305,
+            "max": 3.102496459003305
+          }
+        },
+        {
+          "camera": 7,
+          "expected": 37,
+          "timely": {
+            "count": 36,
+            "p50": 1.8405708330101334,
+            "p90": 2.479921457997989,
+            "p95": 2.758760875003645,
+            "p99": 2.8123605830187444,
+            "max": 2.8123605830187444
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.840735042002052,
+            "p90": 2.59509070799686,
+            "p95": 2.8123605830187444,
+            "p99": 3.018344249983784,
+            "max": 3.018344249983784
+          }
+        },
+        {
+          "camera": 8,
+          "expected": 37,
+          "timely": {
+            "count": 36,
+            "p50": 1.8901166660070885,
+            "p90": 2.5217690000135917,
+            "p95": 2.673368791991379,
+            "p99": 2.7555269160075113,
+            "max": 2.7555269160075113
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.8934155419992749,
+            "p90": 2.550541125005111,
+            "p95": 2.7555269160075113,
+            "p99": 3.1089500420202967,
+            "max": 3.1089500420202967
+          }
+        },
+        {
+          "camera": 9,
+          "expected": 37,
+          "timely": {
+            "count": 36,
+            "p50": 1.896638541977154,
+            "p90": 2.519696625007782,
+            "p95": 2.749826082988875,
+            "p99": 2.869093041983433,
+            "max": 2.869093041983433
+          },
+          "all_complete": {
+            "count": 36,
+            "p50": 1.896638541977154,
+            "p90": 2.519696625007782,
+            "p95": 2.749826082988875,
+            "p99": 2.869093041983433,
+            "max": 2.869093041983433
+          }
+        },
+        {
+          "camera": 10,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.7637128329952247,
+            "p90": 2.551574665994849,
+            "p95": 2.81318295802339,
+            "p99": 2.9121642090030946,
+            "max": 2.9121642090030946
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.7637128329952247,
+            "p90": 2.551574665994849,
+            "p95": 2.81318295802339,
+            "p99": 2.9121642090030946,
+            "max": 2.9121642090030946
+          }
+        },
+        {
+          "camera": 11,
+          "expected": 37,
+          "timely": {
+            "count": 37,
+            "p50": 1.8053138329996727,
+            "p90": 2.563423249986954,
+            "p95": 2.655005999986315,
+            "p99": 2.6850477079860866,
+            "max": 2.6850477079860866
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.8053138329996727,
+            "p90": 2.563423249986954,
+            "p95": 2.655005999986315,
+            "p99": 2.6850477079860866,
+            "max": 2.6850477079860866
+          }
+        },
+        {
+          "camera": 12,
+          "expected": 37,
+          "timely": {
+            "count": 36,
+            "p50": 1.7544971670140512,
+            "p90": 2.618961208005203,
+            "p95": 2.6574789580190554,
+            "p99": 2.7303597909922246,
+            "max": 2.7303597909922246
+          },
+          "all_complete": {
+            "count": 37,
+            "p50": 1.7684325829904992,
+            "p90": 2.627194792003138,
+            "p95": 2.7303597909922246,
+            "p99": 4.323599833005574,
+            "max": 4.323599833005574
+          }
+        }
+      ],
+      "reference_gate": {
+        "passed": false,
+        "reasons": [
+          "camera1:low_on_time_coverage",
+          "camera2:low_on_time_coverage",
+          "camera4:low_on_time_coverage",
+          "camera5:low_on_time_coverage",
+          "camera9:request_errors"
+        ]
+      }
+    }
+  ],
+  "limitations": [
+    "Same video copied to all streams; 30 seconds each round, two rounds per model.",
+    "Complete result requires six boolean/null fields, not verified correctness.",
+    "3s/95% are reference gates, not approved business requirements.",
+    "External API routing and time variation are not controlled; no causal four-versus-six comparison.",
+    "Latency excludes decode, camera upload and browser presentation."
+  ]
+}

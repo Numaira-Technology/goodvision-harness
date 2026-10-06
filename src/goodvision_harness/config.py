@@ -93,6 +93,10 @@ class RichLabelSettings:
     video_realtime_max_age_seconds: float = 2.0
     video_result_deadline_seconds: float = 4.0
     processing_method: str | None = None
+    # Compatibility toggle for the diagnostic rig. True selects the current
+    # latest_only candidate path; False leaves video_queue_policy in control.
+    # Offline capture explicitly selects video_queue_policy=durable_ordered.
+    video_latest_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +151,11 @@ class RuntimeSettings:
     scene_diagnostics_enabled: bool = False
     # Fast event information and grounded person evidence run independently.
     scene_vlm_output_mode: str = "parallel"
+    scene_admission_database: str | None = None
+    scene_global_max_in_flight: int = 16
+    scene_per_stream_max_in_flight: int = 2
+    scene_requests_per_second: float = 20.0
+    scene_queue_timeout_seconds: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +447,13 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             ),
         ),
         backend=rich_label_backend,
+        video_latest_only=_environment_bool(
+            "RICH_LABEL_LATEST_ONLY",
+            _bool(
+                rich_label_section.get("video_latest_only", False),
+                "rich_labeling.video_latest_only",
+            ),
+        ),
         video_batch_frames=_bounded_int(
             int(os.environ["SAM31_BATCH_FRAMES"])
             if os.environ.get("SAM31_BATCH_FRAMES")
@@ -683,7 +699,43 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
     )
     if scene_timeout > 20:
         raise ValueError("runtime.scene_timeout_seconds must not exceed 20 seconds")
+    admission_path = os.environ.get("VLM_ADMISSION_DATABASE") or runtime_section.get(
+        "scene_admission_database"
+    )
     runtime = RuntimeSettings(
+        scene_admission_database=(
+            str(
+                _configured_path(
+                    admission_path,
+                    config_path=config_path,
+                    name="runtime.scene_admission_database",
+                ).resolve()
+            )
+            if admission_path
+            else None
+        ),
+        scene_global_max_in_flight=_positive_int(
+            int(os.environ["VLM_GLOBAL_MAX_IN_FLIGHT"])
+            if "VLM_GLOBAL_MAX_IN_FLIGHT" in os.environ
+            else runtime_section.get("scene_global_max_in_flight", 16),
+            "runtime.scene_global_max_in_flight",
+        ),
+        scene_per_stream_max_in_flight=_positive_int(
+            int(os.environ["VLM_PER_STREAM_MAX_IN_FLIGHT"])
+            if "VLM_PER_STREAM_MAX_IN_FLIGHT" in os.environ
+            else runtime_section.get("scene_per_stream_max_in_flight", 2),
+            "runtime.scene_per_stream_max_in_flight",
+        ),
+        scene_requests_per_second=_positive_float(
+            os.environ.get("VLM_REQUESTS_PER_SECOND")
+            or runtime_section.get("scene_requests_per_second", 20),
+            "runtime.scene_requests_per_second",
+        ),
+        scene_queue_timeout_seconds=_positive_float(
+            os.environ.get("VLM_QUEUE_TIMEOUT_SECONDS")
+            or runtime_section.get("scene_queue_timeout_seconds", 1),
+            "runtime.scene_queue_timeout_seconds",
+        ),
         max_concurrent_requests=_positive_int(
             runtime_section.get("max_concurrent_requests", 4),
             "runtime.max_concurrent_requests",
@@ -707,14 +759,22 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
         ),
         scene_timeout_seconds=scene_timeout,
         scene_max_in_flight=_positive_int(
-            int(os.environ.get("SCENE_MAX_IN_FLIGHT") or runtime_section.get(
-                "scene_max_in_flight", 4,
-            )), "runtime.scene_max_in_flight",
+            int(
+                os.environ.get("SCENE_MAX_IN_FLIGHT")
+                or runtime_section.get(
+                    "scene_max_in_flight",
+                    4,
+                )
+            ),
+            "runtime.scene_max_in_flight",
         ),
         scene_observation_fps=_positive_float(
-            os.environ.get("SCENE_OBSERVATION_FPS") or runtime_section.get(
-                "scene_observation_fps", 1.25,
-            ), "runtime.scene_observation_fps",
+            os.environ.get("SCENE_OBSERVATION_FPS")
+            or runtime_section.get(
+                "scene_observation_fps",
+                1.25,
+            ),
+            "runtime.scene_observation_fps",
         ),
         scene_max_image_side=_positive_int(
             int(os.environ["SCENE_MAX_IMAGE_SIDE"])
@@ -732,13 +792,29 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             int(os.environ["SCENE_JPEG_QUALITY"])
             if os.environ.get("SCENE_JPEG_QUALITY")
             else runtime_section.get("scene_jpeg_quality", 90),
-            "runtime.scene_jpeg_quality", minimum=1, maximum=100,
+            "runtime.scene_jpeg_quality",
+            minimum=1,
+            maximum=100,
         ),
     )
     if runtime.scene_max_image_side > 2048 or runtime.scene_max_tokens > 16384:
         raise ValueError("scene image/output budget exceeds supported limits")
-    if runtime.scene_vlm_output_mode not in {"full", "compact", "parallel"}:
-        raise ValueError("scene_vlm_output_mode must be full, compact or parallel")
+    if runtime.scene_vlm_output_mode not in {"full", "compact", "parallel", "events"}:
+        raise ValueError(
+            "scene_vlm_output_mode must be full, compact, parallel or events"
+        )
+    if runtime.scene_vlm_output_mode == "events" and not runtime.scene_independent_vlm:
+        raise ValueError("events mode requires scene_independent_vlm")
+    if runtime.scene_admission_database:
+        from .vlm_admission import AdmissionSettings
+
+        AdmissionSettings(
+            runtime.scene_admission_database,
+            runtime.scene_global_max_in_flight,
+            runtime.scene_per_stream_max_in_flight,
+            runtime.scene_requests_per_second,
+            runtime.scene_queue_timeout_seconds,
+        )
     if runtime.scene_max_in_flight > 4 or runtime.scene_observation_fps > 3:
         raise ValueError("scene concurrency/cadence exceeds validated tuning range")
     server = ServerSettings(

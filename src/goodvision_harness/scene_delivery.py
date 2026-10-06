@@ -213,6 +213,7 @@ def render_scene_jpeg(
     snapshot: Mapping[str, Any],
     media_timestamp: float,
     quality: int = 85,
+    breakdown: dict[str, float] | None = None,
 ) -> bytes:
     """Render presentation state only; held geometry is never event evidence.
 
@@ -220,6 +221,10 @@ def render_scene_jpeg(
     one-second visual hold is dashed and age-labelled; older/future geometry is
     omitted. Event text can persist independently and explicitly shows uncertain
     visibility. Metadata and credentials are not copied into the JPEG.
+
+    When `breakdown` is supplied it is populated with `decode_seconds`,
+    `draw_seconds` and `encode_seconds` so the caller can attribute this stage's
+    host CPU across JPEG decode, PIL draw and JPEG re-encode (display is stage 7).
     """
     if not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= _MAX_JPEG_BYTES:
         raise ValueError("scene JPEG must be nonempty and at most 16 MiB")
@@ -229,7 +234,11 @@ def render_scene_jpeg(
         raise ValueError("scene display timestamp must be finite and non-negative")
     if type(quality) is not int or not 1 <= quality <= 95:
         raise ValueError("scene JPEG quality must be an integer from 1 through 95")
+    _decode_started = time.monotonic()
     with _read_image(jpeg) as image:
+        _draw_started = time.monotonic()
+        if breakdown is not None:
+            breakdown["decode_seconds"] = _draw_started - _decode_started
         draw = ImageDraw.Draw(image)
         font = ImageFont.load_default()
         width, height = image.size
@@ -301,9 +310,14 @@ def render_scene_jpeg(
                 fill=(16, 23, 35),
             )
             draw.text((7, y), text, font=font, fill=color)
+        _encode_started = time.monotonic()
+        if breakdown is not None:
+            breakdown["draw_seconds"] = _encode_started - _draw_started
         with io.BytesIO() as encoded:
             image.save(encoded, format="JPEG", quality=quality)
             result = encoded.getvalue()
+        if breakdown is not None:
+            breakdown["encode_seconds"] = time.monotonic() - _encode_started
         if len(result) > _MAX_JPEG_BYTES:
             raise ValueError("rendered scene JPEG exceeds size limit")
         return result
@@ -712,11 +726,13 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                         self._stats["discarded_frames"] += 1
                     continue
                 render_started = time.monotonic()
+                render_breakdown: dict[str, float] = {}
                 rendered = render_scene_jpeg(
                     source.jpeg_bytes,
                     snapshot,
                     source.timestamp_seconds,
                     quality=self._quality,
+                    breakdown=render_breakdown,
                 )
                 render_seconds = time.monotonic() - render_started
                 with self._condition:
@@ -790,6 +806,15 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                             ),
                             "snapshot_seconds": round(snapshot_seconds, 6),
                             "render_seconds": round(render_seconds, 6),
+                            "render_decode_seconds": round(
+                                render_breakdown.get("decode_seconds", 0.0), 6
+                            ),
+                            "render_draw_seconds": round(
+                                render_breakdown.get("draw_seconds", 0.0), 6
+                            ),
+                            "render_encode_seconds": round(
+                                render_breakdown.get("encode_seconds", 0.0), 6
+                            ),
                             "publish_seconds": round(publish_seconds, 6),
                             "late_event_repaint": late_event_repaint,
                             "distinct_source_frames": self._stats[

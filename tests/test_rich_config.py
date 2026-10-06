@@ -500,3 +500,12 @@ def test_realtime_queue_rejects_noncausal_route(monkeypatch):
     monkeypatch.delenv("PERCEPTION_METHOD", raising=False)
     with pytest.raises(ValueError, match="requires sam_live"):
         load_config(ROOT / "config.yaml")
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_diagnostic_latest_only_environment_toggle(monkeypatch, enabled):
+    monkeypatch.setenv("RICH_LABEL_LATEST_ONLY", str(enabled).lower())
+    monkeypatch.setenv("SAM31_QUEUE_POLICY", "durable_ordered")
+    rich = load_config(ROOT / "config.yaml").rich_labeling
+    assert rich.video_latest_only is enabled
+    assert rich.video_queue_policy == "durable_ordered"
