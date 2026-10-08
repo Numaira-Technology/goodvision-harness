@@ -16,6 +16,8 @@ import logging
 import math
 import os
 import threading
+from collections import OrderedDict
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -25,6 +27,7 @@ from tracker import IoUTracker
 
 LOGGER = logging.getLogger("uvicorn.error")
 MAX_JPEG_BYTES = 8 * 1024 * 1024
+MAX_TRACKING_SESSIONS = 128
 # Per-request override of the active model, set by the harness from the console
 # selection (see rich_label_models.DETECTOR_MODEL_HEADER). Absent => default.
 DETECTOR_MODEL_HEADER = "x-goodvision-detector-model"
@@ -34,25 +37,29 @@ class RichLabelBusyError(RuntimeError):
     """Another inference is already running on this single-GPU worker."""
 
 
+@dataclass
+class _SessionState:
+    active_model: str
+    tracker: IoUTracker = field(default_factory=IoUTracker)
+    last_source_key: tuple[float, int] | None = None
+
+
 class DetectorEngine:
     """Serves one or more detector models, switchable per request.
 
     The default model (DETECTOR_MODEL) is warmed at startup; any other model the
-    console selects is lazy-built and cached on first use. Switching the active
-    model resets the tracker, since boxes from a different detector cannot share
-    track_id continuity.
+    console selects is lazy-built and cached on first use. Each session keeps its
+    own tracker and source ordering. Switching a session's model resets only its
+    tracker, since boxes from a different detector cannot share track continuity.
+    The least recently used session is evicted when the session limit is reached.
     """
 
     def __init__(self) -> None:
         self.default_model = os.environ.get("DETECTOR_MODEL", "yolo26-s").strip()
         self._detectors: dict[str, Detector] = {}
         self._warmed_models: set[str] = set()
-        self.tracker = IoUTracker()
         self._lock = threading.Lock()
-        self._state_lock = threading.Lock()
-        self._session_id: str | None = None
-        self._active_model: str | None = None
-        self._last_source_key: tuple[float, int] | None = None
+        self._sessions: OrderedDict[str, _SessionState] = OrderedDict()
 
     def _get_detector(self, model_key: str) -> Detector:
         detector = self._detectors.get(model_key)
@@ -96,63 +103,67 @@ class DetectorEngine:
             raise RichLabelBusyError("rich-label inference is already running")
         try:
             active_model = self.resolve_model(model_key)
-            with self._state_lock:
-                if (
-                    stream_session_id != self._session_id
-                    or active_model != self._active_model
-                ):
-                    # New session or a mid-stream model switch: track_ids restart.
-                    self.tracker.reset()
-                    self._session_id = stream_session_id
-                    self._active_model = active_model
-                    self._last_source_key = None
-                if self._last_source_key is not None and (
-                    timestamp_seconds < self._last_source_key[0]
-                    or frame_sequence <= self._last_source_key[1]
-                ):
-                    raise ValueError("source frame metadata must increase")
+            state = self._sessions.get(stream_session_id)
+            if (
+                state is not None
+                and state.last_source_key is not None
+                and (
+                    timestamp_seconds < state.last_source_key[0]
+                    or frame_sequence <= state.last_source_key[1]
+                )
+            ):
+                raise ValueError("source frame metadata must increase")
             detector = self._get_detector(active_model)
             if active_model not in self._warmed_models:
                 detector.warmup()
                 self._warmed_models.add(active_model)
             detections = detector.detect(image)
-            with self._state_lock:
-                tracks = self.tracker.update(
-                    detections,
-                    frame_sequence=frame_sequence,
-                    timestamp_seconds=timestamp_seconds,
-                )
-                self._last_source_key = (timestamp_seconds, frame_sequence)
-                height, width = image.shape[:2]
-                return {
-                    "stream_session_id": stream_session_id,
-                    "frame_sequence": frame_sequence,
-                    "timestamp_seconds": timestamp_seconds,
-                    "objects": [
-                        {
-                            "track_id": track.track_id,
-                            "label": track.label,
-                            "confidence": round(track.confidence, 6),
-                            "bbox": {
-                                "x1": track.bbox[0] / width,
-                                "y1": track.bbox[1] / height,
-                                "x2": track.bbox[2] / width,
-                                "y2": track.bbox[3] / height,
-                            },
-                            "attributes": {},
-                            "observation_state": (
-                                "observed"
-                                if track.last_update_tick == self.tracker._update_tick
-                                else "predicted"
-                            ),
-                            "last_observed_timestamp_seconds": (
-                                track.last_observed_timestamp_seconds
-                            ),
-                            "last_observed_frame_sequence": track.last_frame_sequence,
-                        }
-                        for track in tracks
-                    ],
-                }
+            if state is None:
+                state = _SessionState(active_model)
+                self._sessions[stream_session_id] = state
+                if len(self._sessions) > MAX_TRACKING_SESSIONS:
+                    self._sessions.popitem(last=False)
+            elif state.active_model != active_model:
+                state.tracker.reset()
+                state.active_model = active_model
+            self._sessions.move_to_end(stream_session_id)
+            tracker = state.tracker
+            tracks = tracker.update(
+                detections,
+                frame_sequence=frame_sequence,
+                timestamp_seconds=timestamp_seconds,
+            )
+            state.last_source_key = (timestamp_seconds, frame_sequence)
+            height, width = image.shape[:2]
+            return {
+                "stream_session_id": stream_session_id,
+                "frame_sequence": frame_sequence,
+                "timestamp_seconds": timestamp_seconds,
+                "objects": [
+                    {
+                        "track_id": track.track_id,
+                        "label": track.label,
+                        "confidence": round(track.confidence, 6),
+                        "bbox": {
+                            "x1": track.bbox[0] / width,
+                            "y1": track.bbox[1] / height,
+                            "x2": track.bbox[2] / width,
+                            "y2": track.bbox[3] / height,
+                        },
+                        "attributes": {},
+                        "observation_state": (
+                            "observed"
+                            if track.last_update_tick == tracker._update_tick
+                            else "predicted"
+                        ),
+                        "last_observed_timestamp_seconds": (
+                            track.last_observed_timestamp_seconds
+                        ),
+                        "last_observed_frame_sequence": track.last_frame_sequence,
+                    }
+                    for track in tracks
+                ],
+            }
         finally:
             self._lock.release()
 
@@ -172,9 +183,12 @@ def create_app() -> FastAPI:
     def _startup() -> None:
         try:
             engine.warmup()
-            LOGGER.info("detector rich-label ready model=%s gpu=%s available=%s",
-                        engine.default_model, engine.gpu_ready,
-                        sorted(MODEL_REGISTRY))
+            LOGGER.info(
+                "detector rich-label ready model=%s gpu=%s available=%s",
+                engine.default_model,
+                engine.gpu_ready,
+                sorted(MODEL_REGISTRY),
+            )
         except Exception:
             LOGGER.exception("detector warmup failed")
 
@@ -184,13 +198,21 @@ def create_app() -> FastAPI:
 
     @application.get("/health/ready")
     def _ready() -> dict:
-        return {"ready": True, "gpu_ready": engine.gpu_ready,
-                "model": engine.default_model, "available": sorted(MODEL_REGISTRY)}
+        return {
+            "ready": True,
+            "gpu_ready": engine.gpu_ready,
+            "model": engine.default_model,
+            "available": sorted(MODEL_REGISTRY),
+        }
 
     @application.get("/health/tracking")
     def _tracking() -> dict:
-        return {"ready": True, "gpu_ready": engine.gpu_ready,
-                "model": engine.default_model, "available": sorted(MODEL_REGISTRY)}
+        return {
+            "ready": True,
+            "gpu_ready": engine.gpu_ready,
+            "model": engine.default_model,
+            "available": sorted(MODEL_REGISTRY),
+        }
 
     async def _infer_request(request: Request) -> dict:
         import asyncio
@@ -233,8 +255,9 @@ def create_app() -> FastAPI:
                 model_key=requested_model,
             )
         except RichLabelBusyError as exc:
-            raise HTTPException(status_code=429, detail="inference busy",
-                                headers={"Retry-After": "1"}) from exc
+            raise HTTPException(
+                status_code=429, detail="inference busy", headers={"Retry-After": "1"}
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception:

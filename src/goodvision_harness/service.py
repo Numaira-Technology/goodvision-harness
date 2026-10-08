@@ -22,6 +22,7 @@ from html import escape
 from pathlib import Path
 from threading import Event, RLock, Thread
 from typing import Annotated, Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import anyio
@@ -343,11 +344,7 @@ class HarnessRuntime:
             and resolve_rich_label_model(selected_model).backend != "sam31_stream"
         )
         if detector_selected and config is not None:
-            config = replace(config, rich_labeling=replace(
-                config.rich_labeling,
-                backend=resolve_rich_label_model(selected_model).backend,
-                processing_method=None,
-            ))
+            config = self._configure_rich_label_model(config, selected_model)
         processing_method = (
             None if detector_selected else
             self._deployment_settings.processing_method
@@ -469,12 +466,7 @@ class HarnessRuntime:
             elif rich.backend in {"sam31", "sam31_stream"}:
                 rich_client = self._create_tracking_client(rich)
             else:
-                rich_client = RichLabelHTTPClient(
-                    rich.endpoint,
-                    timeout_seconds=rich.timeout_seconds,
-                    mode="tracks", include_attributes=self._rich_requested,
-                    headers=self._detector_model_headers(),
-                )
+                rich_client = self._create_rich_http_client(rich)
             if rich.backend == "vlm" or rich_client.gpu_ready():
                 self._rich_labels = self._tracking_coordinator(rich_client)
             else:
@@ -955,6 +947,33 @@ class HarnessRuntime:
         detector_model = resolve_rich_label_model(key).detector_model
         return {DETECTOR_MODEL_HEADER: detector_model} if detector_model else {}
 
+    @staticmethod
+    def _configure_rich_label_model(
+        configuration: HarnessConfig, key: str | None,
+    ) -> HarnessConfig:
+        if key is None:
+            return configuration
+        model = resolve_rich_label_model(key)
+        if model.detector_model is None:
+            return configuration
+        endpoint = urlsplit(configuration.rich_labeling.endpoint)
+        return replace(configuration, rich_labeling=replace(
+            configuration.rich_labeling, backend=model.backend,
+            endpoint=urlunsplit((
+                endpoint.scheme, endpoint.netloc, "/v1/labels", "", "",
+            )),
+            processing_method=None,
+        ))
+
+    def _create_rich_http_client(self, rich, *, headers=None):
+        if headers is None:
+            headers = self._detector_model_headers()
+        return RichLabelHTTPClient(
+            rich.endpoint, timeout_seconds=rich.timeout_seconds,
+            mode="tracks", include_attributes=self._rich_requested,
+            **({"headers": headers} if headers else {}),
+        )
+
     def _processing_methods(self) -> list[dict[str, Any]]:
         if self.config is None:
             return []
@@ -1011,7 +1030,8 @@ class HarnessRuntime:
                 self.config.rich_labeling, processing_method=method,
             ))
             if (getattr(self, "_service_locations", ServiceLocations()).tracking_mode
-                    == "legacy" and self._remote_config is not None):
+                    == "legacy" and self._remote_config is not None
+                    and not self._detector_model_headers()):
                 self._remote_config = replace(
                     self._remote_config, rich_labeling=replace(
                         self._remote_config.rich_labeling, processing_method=method,
@@ -1058,6 +1078,7 @@ class HarnessRuntime:
 
     def _apply_local_execution(
         self, configuration: HarnessConfig, *, locations: ServiceLocations,
+        replace_rich_labels: bool = False,
     ) -> None:
         """Activate validated routes only after persistence succeeds, while idle."""
         previous = self.config
@@ -1089,7 +1110,8 @@ class HarnessRuntime:
                 and self._deployment_store.load_model_route() == self._selected_route_id
             )
             self._route_pool_enabled = self._route_persisted
-        if previous.rich_labeling != configuration.rich_labeling:
+        if (replace_rich_labels
+                or previous.rich_labeling != configuration.rich_labeling):
             self._replace_processing_method(
                 configuration.rich_labeling.processing_method, config=configuration,
             )
@@ -1157,6 +1179,8 @@ class HarnessRuntime:
             }
             settings: DeploymentSettings | None = None
             local_configuration = None
+            rich_configuration = None
+            model_changed = False
             locations = self._service_locations
             if (SERVICE_LOCATION_FIELDS | {
                 "local_inference_enabled", "local_tracking_enabled",
@@ -1202,6 +1226,24 @@ class HarnessRuntime:
                     buffer_delay_seconds = validate_buffer_delay_seconds(
                         payload["buffer_delay_seconds"]
                     )
+                rich_label_model = (
+                    self._deployment_settings.rich_label_model
+                    if self._deployment_settings is not None else None
+                )
+                if "rich_label_model" in payload:
+                    selected_model = validate_rich_label_model(
+                        payload["rich_label_model"],
+                    )
+                    model_changed = selected_model != rich_label_model
+                    rich_label_model = selected_model
+                    if self.config is not None and self._remote_config is not None:
+                        canonical = local_configuration or locations.configure(
+                            self._remote_config, self._local_gpu,
+                            self._fleet_camera_index,
+                        )
+                        rich_configuration = replace(
+                            self.config, rich_labeling=canonical.rich_labeling,
+                        )
                 processing_method = (
                     self._deployment_settings.processing_method
                     if self._deployment_settings is not None else None
@@ -1210,8 +1252,10 @@ class HarnessRuntime:
                     processing_method = validate_processing_method(
                         payload["processing_method"]
                     )
-                    methods = (processing_methods(local_configuration.rich_labeling)
-                               if local_configuration is not None
+                    prospective = local_configuration or rich_configuration
+                    methods = (processing_methods(prospective.rich_labeling)
+                               if prospective is not None
+                               and prospective.runtime.scene_mode == "active"
                                else self._processing_methods())
                     if not any(item["id"] == processing_method and item["available"]
                                for item in methods):
@@ -1221,20 +1265,22 @@ class HarnessRuntime:
                     processing_method = (
                         local_configuration.rich_labeling.processing_method
                     )
-                if (local_configuration is not None and processing_method is not None):
-                    # Apply one complete prospective route. Detaching twice can
-                    # overwrite the handle of a worker still retiring.
-                    local_configuration = replace(local_configuration, rich_labeling=
-                        replace(local_configuration.rich_labeling,
-                                processing_method=processing_method))
-                rich_label_model = (
-                    self._deployment_settings.rich_label_model
-                    if self._deployment_settings is not None else None
-                )
-                if "rich_label_model" in payload:
-                    rich_label_model = validate_rich_label_model(
-                        payload["rich_label_model"]
+                prospective = local_configuration or rich_configuration
+                if prospective is None and "processing_method" in payload:
+                    prospective = self.config
+                if prospective is not None:
+                    if processing_method is not None:
+                        prospective = replace(prospective, rich_labeling=replace(
+                            prospective.rich_labeling,
+                            processing_method=processing_method,
+                        ))
+                    prospective = self._configure_rich_label_model(
+                        prospective, rich_label_model,
                     )
+                    if local_configuration is not None:
+                        local_configuration = prospective
+                    else:
+                        rich_configuration = prospective
                 settings = DeploymentSettings(
                     stream_url=stream_url,
                     dry_run=dry_run,
@@ -1307,10 +1353,16 @@ class HarnessRuntime:
                 if local_configuration is not None:
                     self._apply_local_execution(
                         local_configuration, locations=locations,
+                        replace_rich_labels=model_changed,
                     )
-                if (settings.processing_method is not None
-                        and settings.processing_method != self._processing_method()):
-                    self._replace_processing_method(settings.processing_method)
+                elif rich_configuration is not None and (
+                    model_changed
+                    or rich_configuration.rich_labeling != self.config.rich_labeling
+                ):
+                    self._replace_processing_method(
+                        rich_configuration.rich_labeling.processing_method,
+                        config=rich_configuration,
+                    )
                 if "buffer_delay_seconds" in payload:
                     assert buffer_delay_seconds is not None
                     self._delayed_overlay.set_delay_seconds(buffer_delay_seconds)
@@ -1864,16 +1916,13 @@ class HarnessRuntime:
                 return True
             rich = self.config.rich_labeling
             revision = self._rich_config_revision
+            headers = self._detector_model_headers()
         client = None
         try:
             if rich.backend in {"sam31", "sam31_stream"}:
                 client = self._create_tracking_client(rich)
             else:
-                client = RichLabelHTTPClient(
-                    rich.endpoint, timeout_seconds=rich.timeout_seconds,
-                    mode="tracks", include_attributes=self._rich_requested,
-                    headers=self._detector_model_headers(),
-                )
+                client = self._create_rich_http_client(rich, headers=headers)
             if not client.gpu_ready():
                 return False
             # Network I/O never holds either lifecycle lock. The active session

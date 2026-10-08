@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 from typing import Any
 
 import cv2
+import httpx
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -20,9 +22,17 @@ from goodvision_harness.contracts import (
     NormalizedBBox,
 )
 from goodvision_harness.delayed_overlay import OverlaySelection
-from goodvision_harness.deployment_settings import DeploymentSettingsStore
+from goodvision_harness.deployment_settings import (
+    DeploymentSettings,
+    DeploymentSettingsStore,
+)
 from goodvision_harness.grounding import DETECTION_EVENT_LABELS, DryRunGroundingClient
+from goodvision_harness.rich_label_models import DETECTOR_MODEL_HEADER
 from goodvision_harness.rich_labeling import (
+    FRAME_SEQUENCE_HEADER,
+    STREAM_SESSION_HEADER,
+    TIMESTAMP_HEADER,
+    RichLabelHTTPClient,
     RichLabelObject,
     RichLabelSelection,
     RichLabelSnapshot,
@@ -716,3 +726,178 @@ def test_vlm_callbacks_follow_deployment_changes_and_session_override(
         assert captured["dry_run"]() is not session_dry_run
     finally:
         runtime.stop()
+
+
+@pytest.fixture
+def model_selection_rig(tmp_path, monkeypatch):
+    monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_: "")
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.delenv("CLOUD_GPU_CONTROLLER_URL", raising=False)
+    config = load_config(ROOT / "config.yaml")
+    config = replace(
+        config,
+        rich_labeling=replace(
+            config.rich_labeling, enabled=True, backend="sam31_stream",
+            processing_method="sam_live",
+            endpoint="http://tracking.test/v1/perception/sam_live/sessions",
+        ),
+        runtime=replace(config.runtime, scene_mode="active"),
+    )
+    store = DeploymentSettingsStore(tmp_path / "settings.json")
+    requests, detector_clients, tracking_clients, runtimes = [], [], [], []
+    control = SimpleNamespace(ready=True, probe=None)
+
+    def handle(request):
+        requests.append(request)
+        if request.method == "GET":
+            ready = control.probe(request) if control.probe else control.ready
+            return httpx.Response(200, json={"ready": ready, "gpu_ready": ready})
+        return httpx.Response(200, json={
+            "stream_session_id": request.headers[STREAM_SESSION_HEADER],
+            "frame_sequence": int(request.headers[FRAME_SEQUENCE_HEADER]),
+            "timestamp_seconds": float(request.headers[TIMESTAMP_HEADER]),
+            "objects": [],
+        })
+
+    def detector_client(endpoint, **options):
+        client = RichLabelHTTPClient(
+            endpoint, transport=httpx.MockTransport(handle), **options,
+        )
+        detector_clients.append(client)
+        return client
+
+    class TrackingClient:
+        startup_frames = 1
+        max_append_frames = 4
+
+        def __init__(self, rich, **kwargs):
+            self.rich = rich
+            self.closed = False
+            tracking_clients.append(self)
+
+        def gpu_ready(self):
+            return True
+
+        def close(self):
+            self.closed = True
+
+        def close_complete(self):
+            return self.closed
+
+        def discard_session(self):
+            pass
+
+        def transport_stats(self):
+            return {}
+
+    monkeypatch.setattr(service_module, "RichLabelHTTPClient", detector_client)
+    monkeypatch.setattr(service_module, "create_tracking_client", TrackingClient)
+
+    def make():
+        runtime = HarnessRuntime(config, deployment_store=store)
+        runtimes.append(runtime)
+        return runtime
+
+    yield SimpleNamespace(
+        make=make, store=store, config=config, requests=requests,
+        detector_clients=detector_clients, tracking_clients=tracking_clients,
+        control=control,
+    )
+    for runtime in runtimes:
+        runtime.stop()
+
+
+def test_saved_detector_switch_rebuilds_existing_client_and_survives_restart(
+    model_selection_rig,
+):
+    rig = model_selection_rig
+    rig.store.save(DeploymentSettings("", True, False, rich_label_model="det-fast"))
+    runtime = rig.make()
+    old = runtime._rich_labels
+    assert runtime.config.rich_labeling.endpoint == "http://tracking.test/v1/labels"
+    runtime.update_deployment_settings({"rich_label_model": "det-balanced"})
+    assert old.close_complete()
+    assert runtime._rich_labels is None
+    assert runtime._try_enable_rich_labels()
+    assert runtime._rich_labels is not old
+    current = rig.detector_clients[-1]
+    runtime._rich_labels.reset("after-switch")
+    current.infer(b"jpeg", stream_session_id="after-switch", frame_sequence=1,
+                  timestamp_seconds=0)
+    assert rig.requests[-1].url.path == "/v1/tracks"
+    assert rig.requests[-1].headers[DETECTOR_MODEL_HEADER] == "rfdetr-l"
+    restored = rig.make()
+    assert restored.config.rich_labeling == runtime.config.rich_labeling
+    assert rig.requests[-1].headers[DETECTOR_MODEL_HEADER] == "rfdetr-l"
+
+
+def test_detector_selection_and_location_changes_retire_once_and_restore_contour(
+    model_selection_rig,
+):
+    rig = model_selection_rig
+    runtime = rig.make()
+    contour = runtime._rich_labels
+    runtime.update_deployment_settings({"rich_label_model": "det-fast"})
+    assert contour.close_complete()
+    assert rig.tracking_clients[0].closed
+    assert runtime._remote_config.rich_labeling.processing_method == "sam_live"
+    assert runtime.config.rich_labeling.backend == "paddle"
+    assert runtime.config.rich_labeling.processing_method is None
+    assert runtime._try_enable_rich_labels()
+    detector = runtime._rich_labels
+    revision = runtime._rich_config_revision
+    runtime.update_deployment_settings({
+        "rich_label_model": "det-accurate", "tracking_mode": "server",
+        "tracking_server_url": "http://new-worker.test:8093",
+        "tracking_server_protocol": "contour",
+    })
+    assert detector.close_complete()
+    assert runtime._rich_config_revision == revision + 1
+    assert runtime.config.rich_labeling.backend == "paddle"
+    assert runtime.config.rich_labeling.endpoint == "http://new-worker.test:8093/v1/labels"
+    assert runtime._try_enable_rich_labels()
+    runtime.update_deployment_settings({"tracking_sample_fps": 3})
+    assert runtime.config.rich_labeling.backend == "paddle"
+    assert runtime.config.rich_labeling.processing_method is None
+    assert runtime._try_enable_rich_labels()
+    runtime.update_deployment_settings({"rich_label_model": "contour"})
+    assert runtime.config.rich_labeling.backend == "sam31_stream"
+    assert runtime.config.rich_labeling.processing_method == "sam_live"
+    assert runtime.config.rich_labeling.endpoint == "http://new-worker.test:8093/v1/contour/sessions"
+    assert runtime._detector_model_headers() == {}
+    assert runtime._try_enable_rich_labels()
+    assert rig.tracking_clients[-1].rich == runtime.config.rich_labeling
+
+
+def test_detector_readiness_cannot_install_client_from_previous_model_selection(
+    model_selection_rig,
+):
+    rig = model_selection_rig
+    rig.store.save(DeploymentSettings("", True, False, rich_label_model="det-fast"))
+    rig.control.ready = False
+    runtime = rig.make()
+    entered, release = Event(), Event()
+
+    def blocked(request):
+        entered.set()
+        assert release.wait(3)
+        return True
+
+    rig.control.probe = blocked
+    probe = Thread(target=runtime._try_enable_rich_labels)
+    probe.start()
+    try:
+        assert entered.wait(1)
+        runtime.update_deployment_settings({"rich_label_model": "det-balanced"})
+        release.set()
+        probe.join(2)
+        assert not probe.is_alive()
+        assert runtime._rich_labels is None
+        assert all(client._closed for client in rig.detector_clients)
+        rig.control.probe = None
+        rig.control.ready = True
+        assert runtime._try_enable_rich_labels()
+        assert rig.requests[-1].headers[DETECTOR_MODEL_HEADER] == "rfdetr-l"
+    finally:
+        release.set()
+        probe.join(3)

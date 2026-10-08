@@ -11,4 +11,4 @@ RUN python3 -m pip install --no-cache-dir -r requirements.txt
 COPY app.py tracker.py detectors.py ./
 ENV DETECTOR_MODEL=yolo26-s DETECTOR_DEVICE=cuda DETECTOR_WEIGHTS_DIR=/models
 EXPOSE 8092
-CMD ["python3","-m","uvicorn","app:app","--host","127.0.0.1","--port","8092","--workers","1"]
+CMD ["python3","-m","uvicorn","app:app","--host","0.0.0.0","--port","8092","--workers","1"]
