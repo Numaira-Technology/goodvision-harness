@@ -379,6 +379,10 @@ html:lang(en) .nav-item>span{min-width:0;line-height:1.5}html:lang(en) .module-t
           <div id="processing-method-note" class="secret-status" role="status" aria-live="polite"></div>
           <div class="secret-status" style="margin-top:8px">画面与人物描边优先显示；事件报警和描边变色在复核后更新。</div>
         </div>
+        <label class="field" id="richlabel-model-field" hidden><span>描边模型</span>
+          <select id="richlabel-model" aria-describedby="richlabel-model-note"></select>
+        </label>
+        <div id="richlabel-model-note" class="secret-status" role="status" aria-live="polite"></div>
         <label class="field"><span>默认网络摄像头类型</span>
           <select id="default-camera-layout">
             <option value="mono">单目 · 完整画面</option>
@@ -606,6 +610,7 @@ const ui={
   processingField:$("processing-method-field"),processingMethod:$("processing-method"),
   processingSelected:$("processing-method-selected"),processingNote:$("processing-method-note"),
   processingComparison:$("processing-comparison"),processingComparisonBody:$("processing-comparison-body"),
+  richlabelModelField:$("richlabel-model-field"),richlabelModel:$("richlabel-model"),richlabelModelNote:$("richlabel-model-note"),
   saveDeployment:$("save-deployment-button"),resetDeployment:$("reset-deployment-button"),
   clearApiKey:$("clear-api-key-button"),deploymentNote:$("deployment-note"),
   bufferDelay:$("buffer-delay-seconds"),saveBufferDelay:$("save-buffer-delay-button"),
@@ -1077,8 +1082,25 @@ function processingLabel(method){
 function renderProcessingSettings(){
   const methods=processingMethods();
   ui.processingField.hidden=methods.length===0;ui.processingComparison.hidden=methods.length===0;
+  renderRichLabelModel();
   if(!methods.length)return;
   updateProcessingSelection();renderProcessingComparison()
+}
+function renderRichLabelModel(){
+  const models=state.deployment?.rich_label_models||[];
+  const current=state.deployment?.rich_label_model;
+  ui.richlabelModelField.hidden=models.length===0;
+  if(!models.length)return;
+  const rebuilt=ui.richlabelModel.options.length!==models.length;
+  if(rebuilt){
+    ui.richlabelModel.replaceChildren(...models.map(m=>{
+      const o=document.createElement("option");o.value=m.id;o.textContent=m.label;return o}));
+  }
+  // Only sync from the server on first build or when empty; never clobber an
+  // unsaved user selection on a polling refresh.
+  if((rebuilt||!ui.richlabelModel.value)&&current)ui.richlabelModel.value=current;
+  const sel=models.find(m=>m.id===ui.richlabelModel.value);
+  ui.richlabelModelNote.textContent=sel?sel.note:"";
 }
 function updateProcessingSelection(){
   const method=processingMethods()[0];
@@ -1537,6 +1559,7 @@ async function saveDeploymentSettings(){
     camera_layout:ui.defaultCameraLayout.value,
     inference_mode:inference,tracking_mode:tracking,
     local_inference_enabled:inference==="local",local_tracking_enabled:tracking==="local"};
+  if(ui.richlabelModel.value)payload.rich_label_model=ui.richlabelModel.value;
   if(inference==="local"&&localGpuUnavailable("inference")||tracking==="local"&&localGpuUnavailable("tracking")){
     deploymentSay("所选本机 GPU 服务未部署或不可用。请准备对应运行环境，或选择云端 / 独立服务器。",true);return
   }
@@ -2596,6 +2619,7 @@ for(const field of [ui.inferenceServerUrl,ui.inferenceServerModel,ui.inferenceSe
 ui.localInference.onchange=()=>{ui.inferenceMode.value=ui.localInference.checked?"local":"cloud";renderLocalGpuSettings();deploymentEdited()};
 ui.localTracking.onchange=()=>{ui.trackingMode.value=ui.localTracking.checked?"local":"legacy";renderLocalGpuSettings();deploymentEdited()};
 ui.defaultCameraLayout.onchange=deploymentEdited;
+ui.richlabelModel.onchange=()=>{const m=(state.deployment?.rich_label_models||[]).find(x=>x.id===ui.richlabelModel.value);ui.richlabelModelNote.textContent=m?m.note:"";};
 ui.saveDeployment.onclick=saveDeploymentSettings;
 saveApiKeyButton.onclick=saveApiKey;
 ui.resetDeployment.onclick=()=>loadDeploymentSettings(true);

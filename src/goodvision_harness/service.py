@@ -133,6 +133,13 @@ from .reference_memory import (
 )
 from .resource_trace import start_resource_sampling, stop_resource_sampling
 from .result_bus import FrameBus, FramePacket, ResultBus
+from .rich_label_models import (
+    DEFAULT_RICH_LABEL_MODEL,
+    DETECTOR_MODEL_HEADER,
+    RICH_LABEL_MODELS,
+    resolve_rich_label_model,
+    validate_rich_label_model,
+)
 from .rich_labeling import (
     DeferredRichLabelHistory,
     RichLabelClient,
@@ -322,7 +329,27 @@ class HarnessRuntime:
             dry_run = False
             autostart = False
             config_error = config_error or "configuration error"
+        # Console-selected detector (YOLO / RF-DETR) overrides the rich-label
+        # backend. SAM / unset leaves the configured backend and processing
+        # method untouched, so the existing production path is unchanged.
+        # Detectors speak the paddle-style /v1/labels contract, so the endpoint
+        # must point at a running detector worker (tools/start_detector.py).
+        selected_model = (
+            self._deployment_settings.rich_label_model
+            if self._deployment_settings is not None else None
+        )
+        detector_selected = (
+            selected_model is not None
+            and resolve_rich_label_model(selected_model).backend != "sam31_stream"
+        )
+        if detector_selected and config is not None:
+            config = replace(config, rich_labeling=replace(
+                config.rich_labeling,
+                backend=resolve_rich_label_model(selected_model).backend,
+                processing_method=None,
+            ))
         processing_method = (
+            None if detector_selected else
             self._deployment_settings.processing_method
             if self._deployment_settings is not None
             and self._deployment_settings.processing_method is not None
@@ -446,6 +473,7 @@ class HarnessRuntime:
                     rich.endpoint,
                     timeout_seconds=rich.timeout_seconds,
                     mode="tracks", include_attributes=self._rich_requested,
+                    headers=self._detector_model_headers(),
                 )
             if rich.backend == "vlm" or rich_client.gpu_ready():
                 self._rich_labels = self._tracking_coordinator(rich_client)
@@ -864,6 +892,11 @@ class HarnessRuntime:
             "camera_layout": self.configured_camera_layout(),
             "processing_method": self._processing_method(),
             "processing_methods": self._processing_methods(),
+            "rich_label_model": self._rich_label_model(),
+            "rich_label_models": [
+                {"id": m.key, "label": m.label, "note": m.note}
+                for m in RICH_LABEL_MODELS
+            ],
             "processing_cleanup": self._state.get("processing_cleanup"),
             "dry_run": self.dry_run,
             "autostart": self.autostart,
@@ -894,6 +927,33 @@ class HarnessRuntime:
             self.config.rich_labeling.processing_method
             if self.config is not None else None
         )
+
+    def _rich_label_model(self) -> str | None:
+        """The console-selected rich-label model, defaulting to the SAM/contour
+        option when unset."""
+        if (self._deployment_settings is not None
+                and self._deployment_settings.rich_label_model is not None):
+            return self._deployment_settings.rich_label_model
+        # Infer from the active backend so the console reflects reality.
+        if (self.config is not None
+                and self.config.rich_labeling.backend != "sam31_stream"):
+            return None
+        return DEFAULT_RICH_LABEL_MODEL
+
+    def _detector_model_headers(self) -> dict[str, str]:
+        """Header that drives the detector worker's active model from the console.
+
+        Only set when a non-SAM detector model is selected; the worker reads it
+        per request and lazy-loads that model. Empty for SAM/VLM/unset.
+        """
+        key = (
+            self._deployment_settings.rich_label_model
+            if self._deployment_settings is not None else None
+        )
+        if key is None:
+            return {}
+        detector_model = resolve_rich_label_model(key).detector_model
+        return {DETECTOR_MODEL_HEADER: detector_model} if detector_model else {}
 
     def _processing_methods(self) -> list[dict[str, Any]]:
         if self.config is None:
@@ -1074,6 +1134,7 @@ class HarnessRuntime:
             "buffer_delay_seconds",
             "camera_layout",
             "processing_method",
+            "rich_label_model",
             "local_inference_enabled",
             "local_tracking_enabled",
         }
@@ -1091,6 +1152,7 @@ class HarnessRuntime:
                 "stream_url", "dry_run", "autostart", "buffer_delay_seconds",
                 "camera_layout",
                 "processing_method",
+                "rich_label_model",
                 "local_inference_enabled", "local_tracking_enabled",
             }
             settings: DeploymentSettings | None = None
@@ -1165,12 +1227,21 @@ class HarnessRuntime:
                     local_configuration = replace(local_configuration, rich_labeling=
                         replace(local_configuration.rich_labeling,
                                 processing_method=processing_method))
+                rich_label_model = (
+                    self._deployment_settings.rich_label_model
+                    if self._deployment_settings is not None else None
+                )
+                if "rich_label_model" in payload:
+                    rich_label_model = validate_rich_label_model(
+                        payload["rich_label_model"]
+                    )
                 settings = DeploymentSettings(
                     stream_url=stream_url,
                     dry_run=dry_run,
                     autostart=autostart,
                     buffer_delay_seconds=buffer_delay_seconds,
                     processing_method=processing_method,
+                    rich_label_model=rich_label_model,
                     local_inference_enabled=locations.inference_mode == "local",
                     local_tracking_enabled=locations.tracking_mode == "local",
                     **locations.public_status(),
@@ -1801,6 +1872,7 @@ class HarnessRuntime:
                 client = RichLabelHTTPClient(
                     rich.endpoint, timeout_seconds=rich.timeout_seconds,
                     mode="tracks", include_attributes=self._rich_requested,
+                    headers=self._detector_model_headers(),
                 )
             if not client.gpu_ready():
                 return False
