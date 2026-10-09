@@ -113,7 +113,10 @@ def test_parallel_inference_commits_identity_and_facts_in_order(
             )
             for index in range(16)
         ]
-        wait_for(lambda: 1 in finished)
+        # Submission order does not guarantee inference entry order. Wait for
+        # both the blocked first call and the completed second call before
+        # checking that they required separate model instances.
+        wait_for(lambda: 0 in calls and 1 in finished)
         assert not futures[0].done() and not futures[1].done()
         assert not futures[0].cancel()
         assert len(loaded) == 2

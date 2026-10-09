@@ -36,7 +36,9 @@ def digest(path):
     return result.hexdigest()
 
 
-def bundle(root, videos, destination, *, include_video=True):
+def bundle(
+    root, videos, destination, *, include_video=True, scope="external_vlm_api_only"
+):
     root = Path(root).resolve()
     files = list((root / "src/goodvision_harness").rglob("*.py"))
     files += [
@@ -47,9 +49,9 @@ def bundle(root, videos, destination, *, include_video=True):
     files += [
         p
         for p in (root / "tools/vlm_benchmark").iterdir()
-        if p.suffix in {".py", ".sh", ".json", ".txt"}
+        if p.suffix in {".py", ".sh", ".json", ".txt", ".html", ".js"}
     ]
-    manifest = {"files": {}, "videos": [], "scope": "external_vlm_api_only"}
+    manifest = {"files": {}, "videos": [], "scope": scope}
     with tempfile.TemporaryDirectory(prefix="vlm-package-") as temp:
         stage = Path(temp)
         for source in sorted(set(files)):
@@ -137,6 +139,8 @@ class SSH:
             "-o",
             f"ControlPath={self.socket}",
         ]
+        if sys.platform == "darwin":
+            self.options += ["-o", "UseKeychain=yes"]
         self.port = str(args.port)
 
     def connect(self):
@@ -157,7 +161,7 @@ class SSH:
             timeout=180,
         )
 
-    def call(self, code, *args, data=None, capture=True):
+    def call(self, code, *args, data=None, capture=True, timeout=60):
         command = shlex.join(["python3", "-c", code, *map(str, args)])
         result = subprocess.run(
             [
@@ -174,7 +178,7 @@ class SSH:
             stdout=subprocess.PIPE if capture else None,
             text=True,
             check=True,
-            timeout=60,
+            timeout=timeout,
         )
         return result.stdout
 
@@ -203,8 +207,14 @@ guide=pathlib.Path('/etc/vast-agents-guide.md')
 if guide.exists(): (p/'host-guide.txt').write_text(guide.read_text())
 """
 
-LAUNCH = """
-import os,sys,json,pathlib,tarfile,subprocess
+# Embed stdlib-only helpers so recovery also works with older uploaded bundles
+# and before the instance has installed any benchmark dependencies.
+REMOTE_LIFECYCLE = Path(__file__).with_name("lifecycle.py").read_text(encoding="utf-8")
+
+LAUNCH = (
+    REMOTE_LIFECYCLE
+    + """
+import os,sys,json,pathlib,tarfile,subprocess,shutil
 os.umask(0o077)
 p=pathlib.Path(sys.argv[1]); app=p/'app'; app.mkdir()
 with tarfile.open(p/'bundle.tar.gz') as tar:
@@ -226,24 +236,69 @@ if len(sys.argv)>2 and sys.argv[2]:
    raise ValueError('reusable video missing')
   target.parent.mkdir(parents=True,exist_ok=True)
   shutil.copyfile(source,target)
-(p/'runtime-key.json').write_text(sys.stdin.read()); (p/'runtime-key.json').chmod(0o600)
-with (p/'setup-and-run.log').open('w') as log:
- proc=subprocess.Popen([sys.executable,'-m','tools.vlm_benchmark.bootstrap','--root',str(app)],
-  cwd=app,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
-(p/'control.json').write_text(json.dumps({'pid':proc.pid,'root':str(app)}))
-(p/'launched.json').write_text(json.dumps({'pid':proc.pid}))
+plan=json.loads((p/'plan.json').read_text()) if (p/'plan.json').exists() else {}
+managed=plan.get('suite')=='modes' and shutil.which('supervisorctl')
+control={'pid':None,'root':str(app),'launch_state':'preparing'}
+if managed: control['service']='gv-vlm-'+p.name
+save_control_json(p/'control.json',control)
+save_control_json(p/'status.json',{'state':'starting','job':'launch'})
+try:
+ (p/'runtime-key.json').write_text(sys.stdin.read())
+ (p/'runtime-key.json').chmod(0o600)
+ if managed:
+  sys.path.insert(0,str(app))
+  from tools.vlm_benchmark.cloud_modes import launch_managed
+  control.update(launch_managed(p))
+ else:
+  with (p/'setup-and-run.log').open('w') as log:
+   proc=subprocess.Popen([sys.executable,'-m','tools.vlm_benchmark.bootstrap','--root',str(app)],
+    cwd=app,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+  control['pid']=proc.pid
+ control['launch_state']='started'
+ save_control_json(p/'control.json',control)
+ if (p/'launch-failure.json').exists(): raise RuntimeError('cloud launch was cancelled')
+ try:
+  fields=pathlib.Path('/proc/%s/stat'%control['pid']).read_text().rsplit(')',1)[1].split()
+  control['process_start_ticks']=fields[19]
+ except FileNotFoundError: pass
+ save_control_json(p/'control.json',control)
+ save_control_json(p/'launched.json',{'pid':control['pid']})
+except BaseException as exc:
+ record_launch_failure(p,control,'launch_failed:'+type(exc).__name__)
+ raise SystemExit(2) from None
 """
+)
 
-STATUS = """
+STATUS = (
+    REMOTE_LIFECYCLE
+    + """
 import json,sys,pathlib,os
 p=pathlib.Path(sys.argv[1]); status=p/'status.json'
+failure=p/'launch-failure.json'
+if failure.exists():
+ print('VLM_STATUS='+failure.read_text())
+ raise SystemExit(0)
+if not (p/'control.json').exists():
+ data=record_launch_failure(p,recovery_control(p),'launch_control_missing')
+ print('VLM_STATUS='+json.dumps(data))
+ raise SystemExit(0)
 data=(json.loads(status.read_text()) if status.exists()
  else {'state':'starting','job':'environment'})
 if data['state'] not in ('completed','failed','cancelled'):
- pid=json.loads((p/'control.json').read_text())['pid']
+ control=json.loads((p/'control.json').read_text()); pid=control['pid']
+ if not pid:
+  data=record_launch_failure(p,control,'launch_not_finalized')
+  print('VLM_STATUS='+json.dumps(data))
+  raise SystemExit(0)
  try:
+  fields=pathlib.Path('/proc/%s/stat'%pid).read_text().rsplit(')',1)[1].split()
   raw=pathlib.Path('/proc/%s/cmdline'%pid).read_bytes()
-  alive=b'tools.vlm_benchmark.' in raw and str(p/'app').encode() in raw
+  if control.get('process_start_ticks'):
+   alive=fields[0]!='Z' and fields[19]==control['process_start_ticks']
+  else:
+   # execve can temporarily expose an empty command line for a live process.
+   alive=fields[0]!='Z' and (not raw or (
+    b'tools.vlm_benchmark.' in raw and str(p/'app').encode() in raw))
  except OSError: alive=False
  if not alive:
   data.update(state='failed',reason='process_exited_without_completion')
@@ -251,29 +306,37 @@ if data['state'] not in ('completed','failed','cancelled'):
   os.replace(temp,status)
   (p/'runtime-key.json').unlink(missing_ok=True)
   sys.path.insert(0,str(p/'app'))
-  from tools.vlm_benchmark.report import render
   output=p/'results'; output.mkdir(exist_ok=True)
-  summary=output/'summary.json'
-  doc=json.loads(summary.read_text()) if summary.exists() else {
-   'plan':json.loads((p/'plan.json').read_text()),'jobs':[]}
-  doc.update(state='failed',reason=data['reason'],engineering_capacity_gate_passed=False,
-   conclusion='Process exited; unfinished stages are not acceptance evidence.')
-  render(output,doc)
+  plan=json.loads((p/'plan.json').read_text())
+  if plan.get('suite')=='modes':
+   from tools.vlm_benchmark.cloud_modes import failure_report
+   failure_report(output,plan,'failed',data['reason'])
+  else:
+   from tools.vlm_benchmark.report import render
+   summary=output/'summary.json'
+   doc=json.loads(summary.read_text()) if summary.exists() else {'plan':plan,'jobs':[]}
+   doc.update(state='failed',reason=data['reason'],engineering_capacity_gate_passed=False,
+    conclusion='Process exited; unfinished stages are not acceptance evidence.')
+   render(output,doc)
 print('VLM_STATUS='+json.dumps(data))
 """
+)
 
-STOP = """
-import os,signal,json,sys,pathlib
-p=pathlib.Path(sys.argv[1]); pid=json.loads((p/'control.json').read_text())['pid']
-try:
- raw=pathlib.Path('/proc/%s/cmdline'%pid).read_bytes()
- if (b'tools.vlm_benchmark.' not in raw
-  or str(p/'app').encode() not in raw or os.getpgid(pid)!=pid):
-  raise RuntimeError('refusing to stop an unrelated process')
- os.killpg(pid,signal.SIGTERM)
-except (FileNotFoundError,ProcessLookupError): pass
+STOP = (
+    REMOTE_LIFECYCLE
+    + """
+p=Path(sys.argv[1]); control=recovery_control(p)
 (p/'runtime-key.json').unlink(missing_ok=True)
+failure=p/'launch-failure.json'
+if failure.exists() or not control.get('pid'):
+ reason=(json.loads(failure.read_text())['reason'] if failure.exists()
+  else 'launch_control_missing')
+ data=record_launch_failure(p,control,reason)
+ if data['cleanup_required']: raise RuntimeError('could not confirm stop; retry --stop')
+else:
+ stop_control(p,control)
 """
+)
 
 COLLECT = """
 import pathlib,sys,tarfile
@@ -281,9 +344,10 @@ p=pathlib.Path(sys.argv[1])
 with tarfile.open(p/'results.tar.gz','w:gz') as tar:
  for source in sorted((p/'results').rglob('*')):
   if (source.is_file() and not source.is_symlink()
-   and source.suffix in ('.json','.jsonl','.html')):
+   and source.suffix in ('.json','.jsonl','.html','.mp4','.webm','.png','.csv')):
    tar.add(source,arcname=source.relative_to(p).as_posix())
- for name in ('status.json','plan.json','setup-and-run.log','host-guide.txt'):
+ for name in ('status.json','launch-failure.json','plan.json',
+  'setup-and-run.log','host-guide.txt'):
   source=p/name
   if source.is_file(): tar.add(source,arcname=name)
 """
@@ -291,6 +355,7 @@ with tarfile.open(p/'results.tar.gz','w:gz') as tar:
 
 def watch(ssh, remote):
     previous = None
+    monitor_url = None
     while True:
         response = ssh.call(STATUS, remote)
         lines = [
@@ -299,17 +364,30 @@ def watch(ssh, remote):
         if not lines:
             raise RuntimeError("missing remote status")
         status = json.loads(lines[-1].split("=", 1)[1])
+        if status.get("monitor_url") and status["monitor_url"] != monitor_url:
+            monitor_url = status["monitor_url"]
+            print(
+                f"Live monitor (SSH port forwarding required): {monitor_url}",
+                flush=True,
+            )
         update = (status["state"], status.get("job"), status.get("reason"))
         if update != previous:
             print(f"{update[0]}: {update[1]} {update[2] or ''}", flush=True)
             previous = update
         if status["state"] in {"completed", "failed", "cancelled"}:
+            if status.get("cleanup_required"):
+                print(
+                    "Cloud launch failed; stop is not confirmed. Retry --stop.",
+                    file=sys.stderr,
+                )
+                raise RuntimeError("cloud cleanup required")
             return status
         time.sleep(5)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", choices=["capacity", "modes"], default="capacity")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     parser.add_argument(
@@ -318,14 +396,26 @@ def main():
     parser.add_argument("--video", type=Path, action="append")
     parser.add_argument("--reuse-video", metavar="RUN_ID")
     parser.add_argument("--streams", type=int, nargs="+", default=[1, 4, 8, 12])
-    parser.add_argument(
-        "--provider", choices=["aiclub", "openrouter", "dashscope"], default="aiclub"
-    )
+    parser.add_argument("--provider", choices=["aiclub", "openrouter", "dashscope"])
     parser.add_argument("--model", default="")
-    parser.add_argument("--soak-seconds", type=int, default=900)
-    parser.add_argument("--global-limit", type=int, default=16)
-    parser.add_argument("--per-stream-limit", type=int, default=2)
-    parser.add_argument("--request-rate", type=float, default=20)
+    parser.add_argument("--soak-seconds", type=int)
+    parser.add_argument("--global-limit", type=int)
+    parser.add_argument("--per-stream-limit", type=int)
+    parser.add_argument("--request-rate", type=float)
+    parser.add_argument(
+        "--real", action="store_true", help="modes suite: call paid API"
+    )
+    parser.add_argument(
+        "--modes",
+        nargs="+",
+        choices=["events", "compact", "parallel"],
+        default=["events", "compact", "parallel"],
+    )
+    parser.add_argument("--duration", type=float, default=60)
+    parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--warmup-seconds", type=float, default=3)
+    parser.add_argument("--record", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--monitor-port", type=int, default=8787)
     parser.add_argument("--compare", action="store_true")
     parser.add_argument("--compare-concurrency", action="store_true")
     parser.add_argument("--compare-arrival", action="store_true")
@@ -336,9 +426,7 @@ def main():
     parser.add_argument(
         "--provider-sort", choices=["", "throughput", "latency"], default=""
     )
-    parser.add_argument(
-        "--arrival-mode", choices=["aligned", "staggered"], default="aligned"
-    )
+    parser.add_argument("--arrival-mode", choices=["aligned", "staggered"])
     parser.add_argument(
         "--event-json-mode", choices=["prompt", "schema"], default="prompt"
     )
@@ -348,24 +436,52 @@ def main():
     action.add_argument("--resume", metavar="RUN_ID")
     action.add_argument("--stop", metavar="RUN_ID")
     args = parser.parse_args()
+    mode_suite = args.suite == "modes"
+    for name, value in {
+        "provider": "openrouter" if mode_suite else "aiclub",
+        "soak_seconds": 0 if mode_suite else 900,
+        "global_limit": 48 if mode_suite else 16,
+        "per_stream_limit": 4 if mode_suite else 2,
+        "request_rate": 40 if mode_suite else 20,
+        "arrival_mode": "staggered" if mode_suite else "aligned",
+    }.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
     try:
-        plan = make_plan(
-            provider=args.provider,
-            model=args.model,
-            soak_seconds=args.soak_seconds,
-            global_limit=args.global_limit,
-            per_stream_limit=args.per_stream_limit,
-            request_rate=args.request_rate,
-            compare=args.compare,
-            streams=args.streams,
-            compare_concurrency=args.compare_concurrency,
-            compare_arrival=args.compare_arrival,
-            compare_routing=args.compare_routing,
-            provider_sort=args.provider_sort,
-            provider_only=args.provider_only,
-            arrival_mode=args.arrival_mode,
-            event_json_mode=args.event_json_mode,
-        )
+        if mode_suite:
+            from tools.vlm_benchmark.cloud_modes import make_plan as make_modes_plan
+
+            if args.provider != "openrouter" or any(
+                (
+                    args.compare,
+                    args.compare_concurrency,
+                    args.compare_arrival,
+                    args.compare_routing,
+                    args.provider_only,
+                    args.provider_sort,
+                )
+            ):
+                parser.error("modes suite uses OpenRouter and its fixed routing policy")
+            args.model = args.model or "qwen/qwen3-vl-30b-a3b-instruct"
+            plan = make_modes_plan(args)
+        else:
+            plan = make_plan(
+                provider=args.provider,
+                model=args.model,
+                soak_seconds=args.soak_seconds,
+                global_limit=args.global_limit,
+                per_stream_limit=args.per_stream_limit,
+                request_rate=args.request_rate,
+                compare=args.compare,
+                streams=args.streams,
+                compare_concurrency=args.compare_concurrency,
+                compare_arrival=args.compare_arrival,
+                compare_routing=args.compare_routing,
+                provider_sort=args.provider_sort,
+                provider_only=args.provider_only,
+                arrival_mode=args.arrival_mode,
+                event_json_mode=args.event_json_mode,
+            )
         if args.reuse_video and not RUN_ID.fullmatch(args.reuse_video):
             parser.error("invalid reusable video run ID")
         if not args.prepare_only and not args.plan_only:
@@ -375,13 +491,21 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
     print("External VLM API test: the rented GPU does not run inference.", flush=True)
-    print(
-        "Proposed gates: each stream >=95% complete results within 3 s; errors <=1%; "
-        "uncertain judgments <=10%. Not a semantic-accuracy acceptance.",
-        flush=True,
-    )
+    if mode_suite:
+        print(
+            "Three-mode suite: 3 s is a latency reference, not a business SLA.",
+            flush=True,
+        )
+    else:
+        print(
+            "Proposed gates: each stream >=95% complete results within 3 s; "
+            "errors <=1%; "
+            "uncertain judgments <=10%. Not a semantic-accuracy acceptance.",
+            flush=True,
+        )
     if not args.resume and not args.stop:
-        print("Request upper budget:", json.dumps(request_budget(plan)), flush=True)
+        budget = plan["request_budget"] if mode_suite else request_budget(plan)
+        print("Request upper budget:", json.dumps(budget), flush=True)
         if plan.get("compare_concurrency"):
             print(
                 "One stream; in-flight request limits 2 -> 4 -> 4 -> 2; "
@@ -435,15 +559,34 @@ def main():
     try:
         ssh.connect()
         if not started:
-            key = os.environ.get("INFERENCE_API_KEY") or os.environ.get(
-                {
-                    "aiclub": "AICLUB_API_KEY",
-                    "openrouter": "OPENROUTER_API_KEY",
-                    "dashscope": "DASHSCOPE_API_KEY",
-                }[args.provider]
+            # Read the instance guide before deploying, not just into an archive.
+            guide = ssh.call(
+                "from pathlib import Path; p=Path('/etc/vast-agents-guide.md'); "
+                "print(p.read_text() if p.exists() else 'No instance guide found.')"
             )
-            key = key or getpass.getpass(f"{args.provider} API key (hidden): ")
-            if not key.strip():
+            print(guide, flush=True)
+            if mode_suite:
+                from dotenv import dotenv_values
+
+                key = (
+                    (
+                        os.environ.get("OPENROUTER_API_KEY")
+                        or dotenv_values(ROOT / ".env").get("OPENROUTER_API_KEY")
+                    )
+                    if args.real
+                    else ""
+                )
+            else:
+                key = os.environ.get("INFERENCE_API_KEY") or os.environ.get(
+                    {
+                        "aiclub": "AICLUB_API_KEY",
+                        "openrouter": "OPENROUTER_API_KEY",
+                        "dashscope": "DASHSCOPE_API_KEY",
+                    }[args.provider]
+                )
+            if not plan["simulate"]:
+                key = key or getpass.getpass(f"{args.provider} API key (hidden): ")
+            if not plan["simulate"] and not key.strip():
                 raise ValueError("API key is empty")
             ssh.call(CREATE, remote)
             ssh.copy(local / "bundle.tar.gz", f"{ssh.host}:{remote}/bundle.tar.gz")
@@ -461,7 +604,8 @@ def main():
         if args.stop:
             ssh.call(STOP, remote)
         status = watch(ssh, remote)
-        ssh.call(COLLECT, remote)
+        # Recorded suites contain videos; packaging can exceed an RPC's 60 s.
+        ssh.call(COLLECT, remote, timeout=1800)
         ssh.copy(f"{ssh.host}:{remote}/results.tar.gz", local / "results.tar.gz")
         safe_extract(local / "results.tar.gz", local)
         print(f"Report: {local / 'results/report.html'}", flush=True)

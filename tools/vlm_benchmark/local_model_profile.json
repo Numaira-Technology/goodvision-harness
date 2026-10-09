@@ -1,0 +1,29 @@
+{
+  "profile": "qwen38-27b-w4a16-4090-v1",
+  "model_repo": "avyukth/Qwen3.8-27B-AWQ-INT4",
+  "model_revision": "5a2ee524cbc9f3ac5df12729ecf0c4b57f311192",
+  "base_model": "Qwen/Qwen3.8-27B",
+  "served_model": "qwen3.8-27b-w4a16",
+  "quantization": "community W4A16 (AWQ+RTN), compressed-tensors; BF16 vision",
+  "vllm_version": "0.31.0",
+  "transformers_version": "5.14.1",
+  "min_driver_major": 580,
+  "min_vram_mib": 24000,
+  "min_free_vram_mib": 22500,
+  "min_ram_gib": 32,
+  "min_free_disk_gib": 60,
+  "max_model_len": 8192,
+  "max_num_seqs": 8,
+  "max_num_batched_tokens": 8192,
+  "gpu_memory_utilization": 0.93,
+  "cache_policy": "prefix cache disabled; multimodal processor cache disabled",
+  "eager": true,
+  "cpu_offload_gb": 0,
+  "validation": "metadata and local control-flow tests only; GPU validation required",
+  "sources": [
+    "https://huggingface.co/Qwen/Qwen3.8-27B",
+    "https://huggingface.co/avyukth/Qwen3.8-27B-AWQ-INT4",
+    "https://docs.vllm.ai/en/latest/cli/serve/",
+    "https://pypi.org/project/vllm/0.31.0/"
+  ]
+}

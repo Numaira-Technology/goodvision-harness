@@ -46,6 +46,8 @@ checks describe that delivery, not subsequent source changes.
 | `evaluate_pipeline_latency.cjs` | Play a complete original video through an isolated real pipeline and production Chrome renderer; record actual presented-frame contour coverage, SSE arrivals and delay. Requires Playwright, Chrome, and an authorized real-model service with a same-origin byte-range video URL; see the script header and [measurement record](../docs/validation/network-and-display.md). |
 | `rich_label_benchmark.py` | Benchmark the JPEG `/v1/labels` worker on local video. |
 | `vlm_speed_matrix.py` | Measure the native rich client with an explicit local `--cases` JSON file. |
+| `vlm_benchmark/modes.py` | Compare events, compact grounding, and parallel with per-lane results and optional telemetry. `--monitor` shows live inputs/results; `--record` saves the browser viewport as MP4. [Guide](../docs/guides/vlm-mode-benchmark.md). |
+| `vlm_benchmark/local_model.sh` | Package/install/start/check a pinned local Qwen3.8 27B W4A16 service on a 4090, then run the mode benchmark. [Guide](../docs/guides/vlm-local-model.md). |
 | `vlm_simple_jev_benchmark.py` | Compare Simple Jev direct vision with Qwen event-only and full JSON; see below. |
 | `vlm_delivery_probe.py` | Independently receive real VLM/general/event SSE, poll SAM/face progress, and pull live/annotated MJPEG; preserve arrival times and pending positive observations. |
 

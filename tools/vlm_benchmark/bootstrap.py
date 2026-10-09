@@ -98,11 +98,39 @@ def main():
             timeout=180,
         )
         subprocess.run([executable, "-m", "pip", "check"], check=True, timeout=60)
+        mode_suite = plan.get("suite") == "modes"
+        if mode_suite and plan["settings"]["record"]:
+            subprocess.run(
+                [
+                    executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "-q",
+                    "-r",
+                    str(root / "tools/vlm_benchmark/monitor-requirements.txt"),
+                ],
+                check=True,
+                timeout=600,
+            )
+            subprocess.run(
+                [executable, "-m", "playwright", "install", "--with-deps", "chromium"],
+                check=True,
+                timeout=1200,
+            )
+            subprocess.run(
+                ["apt-get", "install", "-y", "fonts-noto-cjk"],
+                check=True,
+                timeout=600,
+                env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+            )
         os.chdir(root)
         command = [
             executable,
             "-m",
-            "tools.vlm_benchmark.cloud",
+            "tools.vlm_benchmark.cloud_modes"
+            if mode_suite
+            else "tools.vlm_benchmark.cloud",
             "--root",
             str(root),
             "--plan",
@@ -120,16 +148,21 @@ def main():
         reason = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
         secret.unlink(missing_ok=True)
         output.mkdir(exist_ok=True)
-        render(
-            output,
-            {
-                "state": state,
-                "plan": plan,
-                "jobs": [],
-                "reason": reason,
-                "conclusion": "环境尚未准备完成；没有容量测试结论",
-            },
-        )
+        if plan.get("suite") == "modes":
+            from tools.vlm_benchmark.cloud_modes import failure_report
+
+            failure_report(output, plan, state, reason)
+        else:
+            render(
+                output,
+                {
+                    "state": state,
+                    "plan": plan,
+                    "jobs": [],
+                    "reason": reason,
+                    "conclusion": "环境尚未准备完成；没有容量测试结论",
+                },
+            )
         write_json(
             run / "status.json",
             {
