@@ -34,12 +34,16 @@ def launch_managed(run):
         encoding="utf-8",
     )
     for operation in (["reread"], ["update", name], ["start", name]):
+        if (run / "launch-failure.json").exists():
+            raise RuntimeError("cloud launch was cancelled")
         subprocess.run(["supervisorctl", *operation], check=True, timeout=45)
     pid = int(
         subprocess.check_output(["supervisorctl", "pid", name], text=True, timeout=15)
     )
     if pid <= 0:
         raise RuntimeError("managed cloud job exited at startup; inspect its log")
+    if (run / "launch-failure.json").exists():
+        raise RuntimeError("cloud launch was cancelled")
     return {"pid": pid, "root": str(app), "service": name}
 
 

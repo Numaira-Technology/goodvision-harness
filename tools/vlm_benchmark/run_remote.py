@@ -207,7 +207,13 @@ guide=pathlib.Path('/etc/vast-agents-guide.md')
 if guide.exists(): (p/'host-guide.txt').write_text(guide.read_text())
 """
 
-LAUNCH = """
+# Embed stdlib-only helpers so recovery also works with older uploaded bundles
+# and before the instance has installed any benchmark dependencies.
+REMOTE_LIFECYCLE = Path(__file__).with_name("lifecycle.py").read_text(encoding="utf-8")
+
+LAUNCH = (
+    REMOTE_LIFECYCLE
+    + """
 import os,sys,json,pathlib,tarfile,subprocess,shutil
 os.umask(0o077)
 p=pathlib.Path(sys.argv[1]); app=p/'app'; app.mkdir()
@@ -230,32 +236,60 @@ if len(sys.argv)>2 and sys.argv[2]:
    raise ValueError('reusable video missing')
   target.parent.mkdir(parents=True,exist_ok=True)
   shutil.copyfile(source,target)
-(p/'runtime-key.json').write_text(sys.stdin.read()); (p/'runtime-key.json').chmod(0o600)
 plan=json.loads((p/'plan.json').read_text()) if (p/'plan.json').exists() else {}
-if plan.get('suite')=='modes' and shutil.which('supervisorctl'):
- sys.path.insert(0,str(app))
- from tools.vlm_benchmark.cloud_modes import launch_managed
- control=launch_managed(p)
-else:
- with (p/'setup-and-run.log').open('w') as log:
-  proc=subprocess.Popen([sys.executable,'-m','tools.vlm_benchmark.bootstrap','--root',str(app)],
-   cwd=app,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
- control={'pid':proc.pid,'root':str(app)}
+managed=plan.get('suite')=='modes' and shutil.which('supervisorctl')
+control={'pid':None,'root':str(app),'launch_state':'preparing'}
+if managed: control['service']='gv-vlm-'+p.name
+save_control_json(p/'control.json',control)
+save_control_json(p/'status.json',{'state':'starting','job':'launch'})
 try:
- fields=pathlib.Path('/proc/%s/stat'%control['pid']).read_text().rsplit(')',1)[1].split()
- control['process_start_ticks']=fields[19]
-except FileNotFoundError: pass
-(p/'control.json').write_text(json.dumps(control))
-(p/'launched.json').write_text(json.dumps({'pid':control['pid']}))
+ (p/'runtime-key.json').write_text(sys.stdin.read())
+ (p/'runtime-key.json').chmod(0o600)
+ if managed:
+  sys.path.insert(0,str(app))
+  from tools.vlm_benchmark.cloud_modes import launch_managed
+  control.update(launch_managed(p))
+ else:
+  with (p/'setup-and-run.log').open('w') as log:
+   proc=subprocess.Popen([sys.executable,'-m','tools.vlm_benchmark.bootstrap','--root',str(app)],
+    cwd=app,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+  control['pid']=proc.pid
+ control['launch_state']='started'
+ save_control_json(p/'control.json',control)
+ if (p/'launch-failure.json').exists(): raise RuntimeError('cloud launch was cancelled')
+ try:
+  fields=pathlib.Path('/proc/%s/stat'%control['pid']).read_text().rsplit(')',1)[1].split()
+  control['process_start_ticks']=fields[19]
+ except FileNotFoundError: pass
+ save_control_json(p/'control.json',control)
+ save_control_json(p/'launched.json',{'pid':control['pid']})
+except BaseException as exc:
+ record_launch_failure(p,control,'launch_failed:'+type(exc).__name__)
+ raise SystemExit(2) from None
 """
+)
 
-STATUS = """
+STATUS = (
+    REMOTE_LIFECYCLE
+    + """
 import json,sys,pathlib,os
 p=pathlib.Path(sys.argv[1]); status=p/'status.json'
+failure=p/'launch-failure.json'
+if failure.exists():
+ print('VLM_STATUS='+failure.read_text())
+ raise SystemExit(0)
+if not (p/'control.json').exists():
+ data=record_launch_failure(p,recovery_control(p),'launch_control_missing')
+ print('VLM_STATUS='+json.dumps(data))
+ raise SystemExit(0)
 data=(json.loads(status.read_text()) if status.exists()
  else {'state':'starting','job':'environment'})
 if data['state'] not in ('completed','failed','cancelled'):
  control=json.loads((p/'control.json').read_text()); pid=control['pid']
+ if not pid:
+  data=record_launch_failure(p,control,'launch_not_finalized')
+  print('VLM_STATUS='+json.dumps(data))
+  raise SystemExit(0)
  try:
   fields=pathlib.Path('/proc/%s/stat'%pid).read_text().rsplit(')',1)[1].split()
   raw=pathlib.Path('/proc/%s/cmdline'%pid).read_bytes()
@@ -286,26 +320,23 @@ if data['state'] not in ('completed','failed','cancelled'):
    render(output,doc)
 print('VLM_STATUS='+json.dumps(data))
 """
+)
 
-STOP = """
-import os,signal,json,sys,pathlib,subprocess
-p=pathlib.Path(sys.argv[1]); control=json.loads((p/'control.json').read_text())
-pid=control['pid']
-try:
- raw=pathlib.Path('/proc/%s/cmdline'%pid).read_bytes()
- if (b'tools.vlm_benchmark.' not in raw
-  or str(p/'app').encode() not in raw):
-  raise RuntimeError('refusing to stop an unrelated process')
- if control.get('service'):
-  if control['service']!='gv-vlm-'+p.name:
-   raise RuntimeError('unexpected managed service')
-  subprocess.run(['supervisorctl','stop',control['service']],check=True,timeout=45)
- else:
-  if os.getpgid(pid)!=pid: raise RuntimeError('refusing to stop an unrelated group')
-  os.killpg(pid,signal.SIGTERM)
-except (FileNotFoundError,ProcessLookupError): pass
+STOP = (
+    REMOTE_LIFECYCLE
+    + """
+p=Path(sys.argv[1]); control=recovery_control(p)
 (p/'runtime-key.json').unlink(missing_ok=True)
+failure=p/'launch-failure.json'
+if failure.exists() or not control.get('pid'):
+ reason=(json.loads(failure.read_text())['reason'] if failure.exists()
+  else 'launch_control_missing')
+ data=record_launch_failure(p,control,reason)
+ if data['cleanup_required']: raise RuntimeError('could not confirm stop; retry --stop')
+else:
+ stop_control(p,control)
 """
+)
 
 COLLECT = """
 import pathlib,sys,tarfile
@@ -315,7 +346,8 @@ with tarfile.open(p/'results.tar.gz','w:gz') as tar:
   if (source.is_file() and not source.is_symlink()
    and source.suffix in ('.json','.jsonl','.html','.mp4','.webm','.png','.csv')):
    tar.add(source,arcname=source.relative_to(p).as_posix())
- for name in ('status.json','plan.json','setup-and-run.log','host-guide.txt'):
+ for name in ('status.json','launch-failure.json','plan.json',
+  'setup-and-run.log','host-guide.txt'):
   source=p/name
   if source.is_file(): tar.add(source,arcname=name)
 """
@@ -343,6 +375,12 @@ def watch(ssh, remote):
             print(f"{update[0]}: {update[1]} {update[2] or ''}", flush=True)
             previous = update
         if status["state"] in {"completed", "failed", "cancelled"}:
+            if status.get("cleanup_required"):
+                print(
+                    "Cloud launch failed; stop is not confirmed. Retry --stop.",
+                    file=sys.stderr,
+                )
+                raise RuntimeError("cloud cleanup required")
             return status
         time.sleep(5)
 

@@ -302,3 +302,244 @@ def test_status_uses_process_identity_during_exec_transition(
     assert json.loads((job / "status.json").read_text())["state"] == (
         "installing" if same_process else "failed"
     )
+
+
+def execute_remote(code, run, monkeypatch):
+    """Execute the exact SSH payload without an SSH server or paid requests."""
+    monkeypatch.setattr(sys, "argv", ["remote", str(run)])
+    old_mask = os.umask(0o077)
+    try:
+        exec(code, {})
+    finally:
+        os.umask(old_mask)
+
+
+@pytest.mark.parametrize("failure_at", ["config", "reread", "update", "start", "pid"])
+def test_partial_managed_launch_can_be_recovered_and_stopped(
+    tmp_path, monkeypatch, capsys, failure_at
+):
+    import io
+    from types import SimpleNamespace
+
+    doc = plan(tmp_path, monkeypatch, "--real")
+    run = tmp_path.resolve() / "20261008T190000Z-abcdef01"
+    run.mkdir()
+    (run / "plan.json").write_text(json.dumps(doc))
+    with tarfile.open(run / "bundle.tar.gz", "w:gz") as archive:
+        entry = tarfile.TarInfo("stub.txt")
+        entry.size = 4
+        archive.addfile(entry, io.BytesIO(b"test"))
+    config_dir = tmp_path / "conf.d"
+    if failure_at != "config":
+        config_dir.mkdir()
+    monkeypatch.setattr(
+        cloud_modes,
+        "Path",
+        lambda value: (
+            config_dir if str(value) == "/etc/supervisor/conf.d" else Path(value)
+        ),
+    )
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/supervisorctl")
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"key":"test-key-never-print"}'))
+    active = False
+    calls = []
+
+    def supervisor(command, **kwargs):
+        nonlocal active
+        calls.append(command)
+        operation = command[1]
+        if operation == "start":
+            active = True  # A start RPC may take effect before its client times out.
+        if operation == failure_at:
+            raise subprocess.TimeoutExpired(command, 45)
+        if operation == "stop":
+            active = False
+        return SimpleNamespace(returncode=0, stdout="")
+
+    def pid(command, **kwargs):
+        calls.append(command)
+        if failure_at == "pid":
+            raise subprocess.TimeoutExpired(command, 15)
+        return "1234\n"
+
+    monkeypatch.setattr(subprocess, "run", supervisor)
+    monkeypatch.setattr(subprocess, "check_output", pid)
+    with pytest.raises(SystemExit) as error:
+        execute_remote(run_remote.LAUNCH, run, monkeypatch)
+    assert error.value.code == 2
+    assert not active
+    assert not (run / "runtime-key.json").exists()
+    control = json.loads((run / "control.json").read_text())
+    assert control["service"] == "gv-vlm-" + run.name
+    assert control["pid"] is None
+    status = json.loads((run / "status.json").read_text())
+    assert status["state"] == "failed" and not status["cleanup_required"]
+    assert json.loads((run / "results/summary.json").read_text())["state"] == "failed"
+    assert (run / "results/report.html").is_file()
+    assert ["supervisorctl", "stop", control["service"]] in calls
+    # A late worker status update must not turn a failed launch into success.
+    (run / "status.json").write_text('{"state":"completed"}')
+    with pytest.raises(SystemExit) as error:
+        execute_remote(run_remote.STATUS, run, monkeypatch)
+    assert error.value.code == 0
+    response = capsys.readouterr().out
+    assert '"state": "failed"' in response
+    assert "test-key-never-print" not in response
+    execute_remote(run_remote.STOP, run, monkeypatch)
+    assert not json.loads((run / "launch-failure.json").read_text())["cleanup_required"]
+    execute_remote(run_remote.COLLECT, run, monkeypatch)
+    with tarfile.open(run / "results.tar.gz") as archive:
+        assert "launch-failure.json" in archive.getnames()
+        assert "runtime-key.json" not in archive.getnames()
+
+
+def test_failed_cleanup_is_explicit_and_stop_can_retry(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from tools.vlm_benchmark.lifecycle import record_launch_failure
+
+    doc = plan(tmp_path, monkeypatch)
+    run = tmp_path / "20261008T190000Z-abcdef01"
+    run.mkdir()
+    (run / "plan.json").write_text(json.dumps(doc))
+    control = {"service": "gv-vlm-" + run.name, "pid": None}
+    (run / "control.json").write_text(json.dumps(control))
+    (run / "runtime-key.json").write_text('{"key":"test-only"}')
+
+    def unavailable(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 45)
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    data = record_launch_failure(run, control, "launch_failed:TimeoutExpired")
+    assert data["cleanup_required"]
+    assert not (run / "runtime-key.json").exists()
+    ssh = SimpleNamespace(call=lambda *args: "VLM_STATUS=" + json.dumps(data))
+    with pytest.raises(RuntimeError, match="cloud cleanup required"):
+        run_remote.watch(ssh, str(run))
+    assert "stop is not confirmed" in capsys.readouterr().err
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=""),
+    )
+    execute_remote(run_remote.STOP, run, monkeypatch)
+    assert not json.loads((run / "launch-failure.json").read_text())["cleanup_required"]
+
+
+@pytest.mark.parametrize(
+    "message", ["not running", "no such process", "connection refused"]
+)
+def test_legacy_launch_without_control_recovers_conservatively(
+    tmp_path, monkeypatch, message
+):
+    from types import SimpleNamespace
+
+    doc = plan(tmp_path, monkeypatch)
+    run = tmp_path / "20261008T190000Z-abcdef01"
+    run.mkdir()
+    (run / "plan.json").write_text(json.dumps(doc))
+    (run / "runtime-key.json").write_text('{"key":"test-only"}')
+    service = "gv-vlm-" + run.name
+    calls = []
+
+    def supervisor(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=2, stdout=f"{service}: ERROR ({message})\n")
+
+    monkeypatch.setattr(subprocess, "run", supervisor)
+    with pytest.raises(SystemExit) as error:
+        execute_remote(run_remote.STATUS, run, monkeypatch)
+    assert error.value.code == 0
+    status = json.loads((run / "launch-failure.json").read_text())
+    assert status["cleanup_required"] is (message == "connection refused")
+    assert calls == [["supervisorctl", "stop", service]]
+    assert not (run / "runtime-key.json").exists()
+    assert (run / "results/report.html").is_file()
+
+
+def test_stop_rejects_a_different_managed_service(tmp_path, monkeypatch):
+    from tools.vlm_benchmark.lifecycle import stop_control
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **kw: pytest.fail("unrelated stop")
+    )
+    with pytest.raises(RuntimeError, match="unexpected managed service"):
+        stop_control(tmp_path, {"service": "another-job"})
+
+
+def test_stop_during_registration_prevents_later_start(tmp_path, monkeypatch):
+    config_dir = tmp_path / "conf.d"
+    config_dir.mkdir()
+    run = tmp_path / "20261008T190000Z-abcdef01"
+    (run / "app").mkdir(parents=True)
+    monkeypatch.setattr(
+        cloud_modes,
+        "Path",
+        lambda value: (
+            config_dir if str(value) == "/etc/supervisor/conf.d" else Path(value)
+        ),
+    )
+    calls = []
+
+    def registering(command, **kwargs):
+        calls.append(command)
+        (run / "launch-failure.json").write_text('{"cleanup_required":true}')
+
+    monkeypatch.setattr(subprocess, "run", registering)
+    with pytest.raises(RuntimeError, match="cancelled"):
+        cloud_modes.launch_managed(run)
+    assert calls == [["supervisorctl", "reread"]]
+
+
+@pytest.mark.parametrize("same_process", [True, False])
+def test_direct_stop_uses_birth_identity_and_waits_for_exit(
+    tmp_path, monkeypatch, same_process
+):
+    from types import SimpleNamespace
+
+    from tools.vlm_benchmark import lifecycle
+
+    run = tmp_path
+    control = {"pid": 1234, "process_start_ticks": "123"}
+    killed = []
+
+    def read_stat():
+        return "1234 (python) " + " ".join(
+            ["Z" if killed else "S"] + ["0"] * 18 + ["123" if same_process else "456"]
+        )
+
+    monkeypatch.setattr(
+        lifecycle, "Path", lambda _: SimpleNamespace(read_text=read_stat)
+    )
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
+    monkeypatch.setattr(
+        os, "killpg", lambda pid, sig: killed.append((pid, sig)), raising=False
+    )
+    lifecycle.stop_control(run, control)
+    assert bool(killed) is same_process
+
+
+def test_direct_launch_error_removes_key_and_saves_failure(tmp_path, monkeypatch):
+    import io
+
+    run = tmp_path.resolve() / "job"
+    run.mkdir()
+    doc = plan(tmp_path, monkeypatch)
+    (run / "plan.json").write_text(json.dumps(doc))
+    with tarfile.open(run / "bundle.tar.gz", "w:gz") as archive:
+        entry = tarfile.TarInfo("stub.txt")
+        archive.addfile(entry)
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"key":"test-only"}'))
+
+    def fail(*args, **kwargs):
+        raise OSError("could not create child")
+
+    monkeypatch.setattr(subprocess, "Popen", fail)
+    with pytest.raises(SystemExit) as error:
+        execute_remote(run_remote.LAUNCH, run, monkeypatch)
+    assert error.value.code == 2
+    assert not (run / "runtime-key.json").exists()
+    status = json.loads((run / "launch-failure.json").read_text())
+    assert status["state"] == "failed" and not status["cleanup_required"]
+    execute_remote(run_remote.STOP, run, monkeypatch)
