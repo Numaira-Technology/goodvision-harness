@@ -183,7 +183,9 @@ def test_monitor_keeps_lanes_and_real_frame_mapping_without_backdating(tmp_path)
     monitor.log.close()
     entries = [
         json.loads(line)
-        for line in (tmp_path / "monitor.jsonl").read_text().splitlines()
+        for line in (tmp_path / "monitor.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     assert [e["kind"] for e in entries] == [
         "stage",
@@ -300,7 +302,7 @@ def test_late_encoder_completion_cannot_undo_an_interrupt(tmp_path):
         recorder.finish("stage", True)
     finish_encoding.set()
     recorder.close()
-    saved = json.loads((tmp_path / "recording.json").read_text())
+    saved = json.loads((tmp_path / "recording.json").read_text(encoding="utf-8"))
     assert saved["complete"] is False
     assert saved["state"] == "interrupted"
 
@@ -362,11 +364,13 @@ def test_partial_recording_stops_remaining_stages_and_stays_in_report(
     monkeypatch.setattr(modes, "run_stage", stage)
     with pytest.raises(RuntimeError, match="incomplete browser recording"):
         modes.run(options)
-    doc = json.loads((options.output / "summary.json").read_text())
+    doc = json.loads((options.output / "summary.json").read_text(encoding="utf-8"))
     assert doc["state"] == "failed"
     assert len(calls) == 3  # Preflight, warmup, then the incomplete measurement.
     assert doc["jobs"][-1]["recording"] == {"complete": False}
-    assert "recording/viewport.mp4" not in (options.output / "report.html").read_text()
+    assert "recording/viewport.mp4" not in (options.output / "report.html").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.parametrize("during", ["begin", "running", "finalizing"])
@@ -437,13 +441,13 @@ def test_interrupted_stage_keeps_capture_and_no_broken_mp4_link(
     monkeypatch.setattr(modes, "run_stage", stage)
     with pytest.raises(exception, match="fixture interrupted"):
         modes.run(options)
-    doc = json.loads((options.output / "summary.json").read_text())
+    doc = json.loads((options.output / "summary.json").read_text(encoding="utf-8"))
     interrupted = doc["interrupted_jobs"][-1]
     assert interrupted["id"] == "1-streams-events-repeat-1"
     assert interrupted["recording"]["complete"] is False
     assert interrupted["recording"]["benchmark_completed"] is False
     assert len(doc["jobs"]) == 2  # Preflight + warmup; no made-up final statistics.
-    html = (options.output / "report.html").read_text()
+    html = (options.output / "report.html").read_text(encoding="utf-8")
     assert "recording/partial.webm" in html
     assert "recording/recording.json" in html
     assert "recording/viewport.mp4" not in html

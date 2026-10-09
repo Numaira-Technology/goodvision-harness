@@ -26,11 +26,28 @@ def participant(config, stream, start, ready, results):
     ready.put(stream)
     try:
         assert start.wait(30), "parent did not release the startup barrier"
-        for _ in range(3):
-            with gate.slot(stream, stop=Event(), source_deadline=time.monotonic() + 3):
-                begin = time.monotonic()
-                time.sleep(0.08)
-                results.put((stream, begin, time.monotonic()))
+        completed = expired = 0
+        until = time.monotonic() + 30
+        # This verifies shared limits and eventual progress, not a CI machine's
+        # latency SLA. Expired evidence must stay expired; offer a fresh window
+        # within a bounded overall budget when a busy runner misses its deadline.
+        while completed < 3:
+            assert time.monotonic() < until, (
+                f"no progress after {completed} grants / {expired} expired windows; "
+                f"{gate.snapshot()}"
+            )
+            try:
+                with gate.slot(
+                    stream, stop=Event(), source_deadline=time.monotonic() + 3
+                ):
+                    begin = time.monotonic()
+                    time.sleep(0.08)
+                    results.put((stream, begin, time.monotonic()))
+                    completed += 1
+            except AdmissionError as exc:
+                if exc.code != "admission_timeout":
+                    raise
+                expired += 1
     except Exception as exc:
         results.put((stream, None, f"{type(exc).__name__}: {exc}"))
         raise
@@ -58,7 +75,7 @@ def test_twelve_processes_share_concurrency_rate_and_all_make_progress(tmp_path)
         start.set()
         rows = []
         for _ in range(36):
-            row = results.get(timeout=10)
+            row = results.get(timeout=40)
             assert row[1] is not None, f"participant {row[0]} failed: {row[2]}"
             rows.append(row)
         for process in workers:

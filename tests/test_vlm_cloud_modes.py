@@ -271,9 +271,6 @@ def test_managed_launch_is_one_shot_and_controls_only_its_own_service(
 def test_status_uses_process_identity_during_exec_transition(
     tmp_path, monkeypatch, same_process
 ):
-    import pathlib
-    from types import SimpleNamespace
-
     doc = plan(tmp_path, monkeypatch)
     job = tmp_path / "job"
     job.mkdir()
@@ -288,15 +285,23 @@ def test_status_uses_process_identity_during_exec_transition(
         ["S"] + ["0"] * 18 + ["123" if same_process else "456"]
     )
 
-    def paths(value):
-        if str(value) == "/proc/1234/stat":
-            return SimpleNamespace(read_text=lambda: stat)
-        if str(value) == "/proc/1234/cmdline":
-            return SimpleNamespace(read_bytes=lambda: b"")
-        return type(tmp_path)(value)
+    original_text, original_bytes = Path.read_text, Path.read_bytes
+
+    def read_text(path, *args, **kwargs):
+        if str(path).replace("\\", "/") == "/proc/1234/stat":
+            return stat
+        return original_text(path, *args, **kwargs)
+
+    def read_bytes(path, *args, **kwargs):
+        if str(path).replace("\\", "/") == "/proc/1234/cmdline":
+            return b""
+        return original_bytes(path, *args, **kwargs)
 
     monkeypatch.setattr(sys, "argv", ["status", str(job)])
-    monkeypatch.setattr(pathlib, "Path", paths)
+    # Replacing pathlib.Path itself breaks Python 3.11's constructor dispatch,
+    # including pytest's own error reporting. Mock only the two proc reads.
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
     exec(run_remote.STATUS, {})
     assert secret.exists() is same_process
     assert json.loads((job / "status.json").read_text())["state"] == (

@@ -138,7 +138,7 @@ def test_runner_stops_and_preserves_report_on_failure(tmp_path, monkeypatch, fai
     monkeypatch.setattr(modes, "run_stage", fake_stage)
     with pytest.raises(RuntimeError, match=r"429|invalid input"):
         modes.run(args)
-    result = json.loads((args.output / "summary.json").read_text())
+    result = json.loads((args.output / "summary.json").read_text(encoding="utf-8"))
     assert result["state"] == "failed"
     assert result["jobs"]
     if failure == "429":
@@ -196,7 +196,7 @@ def test_missing_video_leaves_a_failed_report(tmp_path):
     )
     with pytest.raises(FileNotFoundError):
         modes.run(args)
-    result = json.loads((args.output / "summary.json").read_text())
+    result = json.loads((args.output / "summary.json").read_text(encoding="utf-8"))
     assert result["state"] == "failed"
     assert result["reason"] == "FileNotFoundError"
     assert not result["jobs"]
@@ -211,10 +211,12 @@ def test_stage_exception_keeps_failed_stage_visible(tmp_path, monkeypatch):
     monkeypatch.setattr(modes, "run_stage", broken_stage)
     with pytest.raises(RuntimeError, match="test startup failure"):
         modes.run(args)
-    result = json.loads((args.output / "summary.json").read_text())
+    result = json.loads((args.output / "summary.json").read_text(encoding="utf-8"))
     assert result["state"] == "failed"
     assert result["active_stage"] == "preflight-events"
-    assert "preflight-events" in (args.output / "report.html").read_text()
+    assert "preflight-events" in (args.output / "report.html").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.skipif(suite_lock.fcntl is None, reason="real runner requires POSIX")
@@ -383,9 +385,7 @@ def test_default_uses_openrouter_model_without_local_deployment():
     assert "reasoning" not in base.inference.request_parameters
     assert base.inference.request_parameters["provider"]["sort"] == "latency"
     assert base.inference.request_parameters["provider"]["require_parameters"]
-    hybrid = modes.configure(
-        modes.parser().parse_args(["--model", "qwen/qwen3.8-27b"])
-    )
+    hybrid = modes.configure(modes.parser().parse_args(["--model", "qwen/qwen3.8-27b"]))
     assert hybrid.inference.request_parameters["reasoning"] == {"enabled": False}
     args.real, args.video = True, ["example.mp4"]
     modes.validate(args)  # No local weights/revision/GPU metadata needed.
@@ -480,9 +480,11 @@ def test_production_branch_collects_grounding_bus_and_preserves_old_event_view(
         ],
     }
     render_modes(tmp_path, document)
-    assert "grounding" in (tmp_path / "report.html").read_text()
-    assert "模拟调度" in (tmp_path / "report.html").read_text()
+    assert "grounding" in (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert "模拟调度" in (tmp_path / "report.html").read_text(encoding="utf-8")
     assert (
-        json.loads((tmp_path / "summary.json").read_text())["jobs"][0]["result"]
+        json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))["jobs"][0][
+            "result"
+        ]
         == stage
     )
