@@ -40,7 +40,7 @@ RUN apt-get update \
     && python -m pip install --no-cache-dir vastai==1.5.6 'python-dotenv>=1,<2'
 
 WORKDIR /app
-COPY tools/start_sam.py tools/start_detector.py ./tools/
+COPY tools/start_sam.py tools/start_detector.py tools/cloud_gpu_settings.py ./tools/
 COPY workers/detector_rich_label/app.py workers/detector_rich_label/tracker.py \
     workers/detector_rich_label/detectors.py \
     workers/detector_rich_label/requirements.txt \
