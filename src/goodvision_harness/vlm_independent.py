@@ -401,6 +401,7 @@ def run_vlm_process(
             gate = (admission.slot(
                 config.stream_session_id, stop=stop,
                 source_deadline=sample.received_monotonic + 3.0,
+                lane=lane,
             ) if admission else nullcontext(0.0))
             with gate as admission_wait:
                 started, started_at = time.monotonic(), utc_now()

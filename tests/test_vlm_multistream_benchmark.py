@@ -132,3 +132,83 @@ def test_phase_statistics_include_observed_failures_and_do_not_invent_zeros():
     result = summarize([good, bad], {}, 8, 10, 3)["request_phase_metrics"]
     assert result["http_timing.send_request_body_seconds"]["count"] == 2
     assert result["http_timing.response_read_seconds"]["count"] == 1
+
+
+@pytest.mark.parametrize("finish_after, drained", [(17.0, True), (25.0, False)])
+def test_drain_collects_last_timeout_without_extending_request_or_waiting_forever(
+    tmp_path, monkeypatch, finish_after, drained
+):
+    from tools import vlm_multistream_benchmark as benchmark
+
+    class Clock:
+        now = 1000.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    clock = Clock()
+    configs = []
+
+    class Branch:
+        def __init__(self, config, **kwargs):
+            configs.append(config)
+            self.finished = None
+            self.results = self
+
+        def start(self):
+            pass
+
+        def health(self):
+            return {"state": "running"}
+
+        def offer(self, *args):
+            return True
+
+        def finish_source(self):
+            self.finished = clock.now
+
+        def done(self):
+            return (
+                self.finished is not None
+                and clock.now - self.finished >= finish_after
+            )
+
+        def stats(self):
+            return {"state": "drained" if self.done() else "running"}
+
+        def records_after(self, cursor):
+            if cursor or not self.done():
+                return []
+            payload = report(seconds=finish_after, error="timeout", complete=False)
+            payload["vlm_lane"] = "combined"
+            return [SimpleNamespace(cursor=1, payload=payload)]
+
+        def close(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(benchmark, "time", clock)
+    monkeypatch.setattr(benchmark, "IndependentVLMBranch", Branch)
+    monkeypatch.setattr(benchmark, "environment_api_key", lambda settings: "fake-key")
+    base = load_config(ROOT / "config.yaml")
+    from dataclasses import replace
+
+    base = replace(base, runtime=replace(base.runtime, scene_timeout_seconds=15))
+    args = SimpleNamespace(
+        real=True, duration=3, observation_fps=1.25, output_mode="compact",
+        local_concurrency=4, global_limit=0, per_stream_limit=4,
+        request_rate=40, queue_timeout=1, deadline=3,
+    )
+    result = run_stage(args, base, 1, [[jpeg()]], tmp_path, 1)
+    assert configs[0].model_settings.timeout_seconds == 15
+    assert result["all_drained"] is drained
+    assert result["drain_timeout_seconds"] == 20
+    assert result["drain_elapsed_seconds"] == pytest.approx(
+        min(finish_after, 20), abs=0.03
+    )
+    lane = result["lanes"]["grounding"]
+    assert lane["expected_observations"] == 3
+    assert lane["complete_valid_results"] == 0
+    assert lane["errors"] == ({"timeout": 1} if drained else {})

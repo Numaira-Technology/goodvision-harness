@@ -1,0 +1,447 @@
+"""Loopback-only live view of benchmark input/results, with no inference calls."""
+
+from __future__ import annotations
+
+import bisect
+import copy
+import json
+import math
+import re
+import secrets
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from tools.vlm_benchmark.recording import save_recording
+from tools.vlm_benchmark.report import write_json
+
+ASSETS = Path(__file__).resolve().parent
+
+
+def lane_name(report):
+    return (
+        "grounding" if report.get("vlm_lane") in {"grounding", "combined"} else "events"
+    )
+
+
+def media_time(frames, tick, fps):
+    index = tick % len(frames)
+    times = getattr(frames, "media_seconds", None)
+    return times[index] if times else index / fps
+
+
+class LiveMonitor:
+    def __init__(self, output, framesets, args):
+        self.output, self.framesets, self.args = Path(output), framesets, args
+        self.lock = threading.RLock()
+        self.state = {"stage": None, "state": "preparing"}
+        self.log = None
+        self.started = None
+        self.latencies = {}
+        self.seen = set()
+        self.previews = []
+        self.token = secrets.token_urlsafe(24)
+        self.server = None
+        self.recorder = None
+
+    def __enter__(self):
+        from tools.vlm_benchmark.recording import BrowserRecorder, make_preview
+
+        media_dir = self.output / "monitor-media"
+        media_dir.mkdir()
+        for i, frames in enumerate(self.framesets):
+            path = getattr(frames, "source_path", None)
+            preview = media_dir / f"video-{i + 1}.mp4"
+            if path:
+                print(
+                    f"Preparing browser preview {i + 1} (original playback speed)...",
+                    flush=True,
+                )
+                make_preview(path, preview)
+                self.previews.append(preview)
+            else:
+                self.previews.append(None)
+        self.server = ThreadingHTTPServer(
+            ("127.0.0.1", self.args.monitor_port), self.handler()
+        )
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}/{self.token}/"
+        print(f"Live monitor: {self.url}", flush=True)
+        write_json(
+            self.output / "monitor.json",
+            {
+                "url": self.url,
+                "recording": self.args.record,
+                "scope": "live benchmark browser viewport; no retrospective replay",
+                "preview": "15 FPS H.264 proxy; media PTS/inference JPEGs unchanged",
+            },
+        )
+        try:
+            if self.args.record:
+                self.recorder = BrowserRecorder(self.url, self.args.headed)
+            return self
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, *_):
+        try:
+            if self.recorder:
+                self.recorder.close()
+        finally:
+            if self.log:
+                self.log.close()
+                self.log = None
+            if self.server:
+                self.server.shutdown()
+                self.server.server_close()
+                self.thread.join(timeout=5)
+
+    def emit(self, kind, **payload):
+        if self.log:
+            self.log.write(
+                json.dumps({"kind": kind, "monotonic": time.monotonic(), **payload})
+                + "\n"
+            )
+
+    def begin(self, job, location):
+        from tools.vlm_multistream_benchmark import planned_observations
+
+        with self.lock:
+            self.location = location
+            if self.log:
+                self.log.close()
+            self.log = (location / "monitor.jsonl").open("w", encoding="utf-8")
+            self.started, self.seen = None, set()
+            self.latencies = {
+                lane: []
+                for lane in (
+                    ("events", "grounding")
+                    if job["mode"] == "parallel"
+                    else ("events",)
+                    if job["mode"] == "events"
+                    else ("grounding",)
+                )
+            }
+            self.state = {
+                "stage": job["id"],
+                "state": "preparing",
+                "mode": job["mode"],
+                "phase": job["phase"],
+                "duration": job["duration"],
+                "repeat": job["repeat"],
+                "model": self.args.model,
+                "real": self.args.real,
+                "backend": self.args.backend,
+                "sample_fps": max(2.0, self.args.observation_fps * 2),
+                "observation_fps": self.args.observation_fps,
+                "planned": planned_observations(
+                    job["duration"], self.args.observation_fps
+                )
+                * job["streams"],
+                "offsets": [0] * job["streams"],
+                "summary": None,
+                "source_count": len(self.framesets),
+                "lanes": list(self.latencies),
+                "cameras": [
+                    {
+                        "camera": i + 1,
+                        "tick": -1,
+                        "rejected": 0,
+                        "out_of_order": 0,
+                        "lanes": {},
+                    }
+                    for i in range(job["streams"])
+                ],
+            }
+            self.emit("stage", **self.state)
+        self.recording_active = bool(
+            self.recorder and job["phase"] in {"measurement", "soak"}
+        )
+        if self.recording_active:
+            self.recorder.begin(location, job["id"])
+
+    def source_started(self, started, offsets):
+        with self.lock:
+            self.started = started
+            self.state.update(state="playing", offsets=offsets)
+            self.emit("source_started", started=started, offsets=offsets)
+
+    def sample(self, camera, tick, accepted):
+        if self.recorder:
+            self.recorder.check()
+        with self.lock:
+            item = self.state["cameras"][camera]
+            item["tick"] = tick
+            item["rejected"] += int(not accepted)
+            frames = self.framesets[camera % len(self.framesets)]
+            self.emit(
+                "sample",
+                camera=camera + 1,
+                tick=tick,
+                accepted=accepted,
+                media_seconds=media_time(frames, tick, self.state["sample_fps"]),
+            )
+
+    def result(self, camera, report):
+        with self.lock:
+            key = (
+                camera,
+                report.get("message_id")
+                or (report.get("window_id"), lane_name(report)),
+            )
+            if key in self.seen:
+                return
+            self.seen.add(key)
+            lane = lane_name(report)
+            if lane not in self.latencies:
+                return
+            tick = report.get("frame", {}).get("source_frame_index")
+            frames = self.framesets[camera % len(self.framesets)]
+            valid_tick = type(tick) is int and 0 <= tick < math.ceil(
+                self.state["duration"] * self.state["sample_fps"]
+            )
+            seconds = report.get("timing", {}).get("source_to_publish_seconds")
+            complete = (
+                report.get("state") == "completed"
+                and report.get("analysis_complete") is True
+            )
+            if (
+                complete
+                and isinstance(seconds, (float, int))
+                and math.isfinite(seconds)
+            ):
+                bisect.insort(self.latencies[lane], seconds)
+            view = {
+                "id": report.get("message_id"),
+                "window": report.get("window_id"),
+                "tick": tick if valid_tick else None,
+                "source_seconds": report.get("frame", {}).get("timestamp_seconds"),
+                "media_seconds": media_time(frames, tick, self.state["sample_fps"])
+                if valid_tick
+                else None,
+                "received_elapsed": time.monotonic() - self.started
+                if self.started
+                else None,
+                "latency": seconds,
+                "complete": complete,
+                "error": report.get("error_code"),
+                "judgments": [
+                    {
+                        "label": j.get("event_label"),
+                        "observed": j.get("observed_detected"),
+                    }
+                    for j in report.get("judgments", [])
+                ],
+                "objects": [
+                    {"bbox": o.get("bbox"), "label": o.get("label")}
+                    for o in report.get("objects", [])
+                ],
+            }
+            current = self.state["cameras"][camera]
+            previous = current["lanes"].get(lane)
+            stale = bool(
+                previous and (tick if valid_tick else -1) < (previous["tick"] or 0)
+            )
+            if stale:
+                current["out_of_order"] += 1
+            else:
+                current["lanes"][lane] = view
+            self.emit("result", camera=camera + 1, lane=lane, stale=stale, result=view)
+
+    def draining(self):
+        with self.lock:
+            self.state["state"] = "draining"
+            self.emit("draining")
+
+    def finish(self, result=None, error=None):
+        with self.lock:
+            self.state.update(
+                state="failed" if error else "finished",
+                summary=result,
+                error=type(error).__name__ if error else None,
+            )
+            if self.started:
+                self.state["finished_elapsed"] = time.monotonic() - self.started
+            self.emit("finish", result=result, error=self.state["error"])
+            self.log.flush()
+        if self.recording_active:
+            try:
+                return self.recorder.finish(
+                    self.state["stage"], result is not None and not error
+                )
+            except Exception as exc:
+                record = {
+                    "state": "failed",
+                    "complete": False,
+                    "error_type": type(exc).__name__,
+                }
+                folder = self.location / "recording"
+                folder.mkdir(exist_ok=True)
+                save_recording(folder / "recording.json", record)
+                return record
+            finally:
+                self.recording_active = False
+        return None
+
+    def snapshot(self):
+        with self.lock:
+            data = copy.deepcopy(self.state)
+            if not data.get("stage"):
+                return data
+            data["elapsed"] = (time.monotonic() - self.started) if self.started else 0
+            data["counters"] = {
+                lane: {
+                    "complete": len(values),
+                    "p50": values[max(0, math.ceil(len(values) * 0.5) - 1)]
+                    if values
+                    else None,
+                    "p95": values[max(0, math.ceil(len(values) * 0.95) - 1)]
+                    if values
+                    else None,
+                }
+                for lane, values in self.latencies.items()
+            }
+            data["media"] = [
+                {
+                    "url": f"media/{i}" if self.previews[i] else None,
+                    "timestamps": getattr(
+                        frames,
+                        "media_seconds",
+                        [j / data["sample_fps"] for j in range(len(frames))],
+                    ),
+                    "duration": getattr(
+                        frames, "media_duration", len(frames) / data["sample_fps"]
+                    ),
+                    "sample_count": len(frames),
+                }
+                for i, frames in enumerate(self.framesets)
+            ]
+            return data
+
+    def handler(self):
+        monitor = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def reply(self, data, content_type, status=200, extra=None, head=False):
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                for key, value in (extra or {}).items():
+                    self.send_header(key, value)
+                self.end_headers()
+                if not head:
+                    self.wfile.write(data)
+
+            def do_HEAD(self):
+                self.do_GET(head=True)
+
+            def do_GET(self, head=False):
+                path = urlsplit(self.path).path
+                prefix = f"/{monitor.token}/"
+                if not path.startswith(prefix):
+                    self.reply(b"Not found", "text/plain", 404, head=head)
+                    return
+                path = path[len(prefix) :]
+                try:
+                    if path in {"", "monitor.js"}:
+                        name = "monitor.html" if not path else path
+                        self.reply(
+                            (ASSETS / name).read_bytes(),
+                            "text/html; charset=utf-8"
+                            if not path
+                            else "text/javascript; charset=utf-8",
+                            head=head,
+                        )
+                    elif path == "state":
+                        self.reply(
+                            json.dumps(monitor.snapshot()).encode(),
+                            "application/json",
+                            head=head,
+                        )
+                    elif re.fullmatch(r"media/\d+", path):
+                        index = int(path.split("/")[1])
+                        if (
+                            index >= len(monitor.previews)
+                            or not monitor.previews[index]
+                        ):
+                            raise ValueError("media unavailable")
+                        file = monitor.previews[index]
+                        size = file.stat().st_size
+                        start, end, status = 0, size - 1, 200
+                        headers = {"Accept-Ranges": "bytes"}
+                        if value := self.headers.get("Range"):
+                            match = re.fullmatch(r"bytes=(\d+)-(\d*)", value)
+                            if not match:
+                                self.reply(
+                                    b"",
+                                    "video/mp4",
+                                    416,
+                                    {"Content-Range": f"bytes */{size}"},
+                                    head=head,
+                                )
+                                return
+                            start, end = (
+                                int(match[1]),
+                                min(int(match[2]) if match[2] else size - 1, size - 1),
+                            )
+                            if start > end:
+                                self.reply(
+                                    b"",
+                                    "video/mp4",
+                                    416,
+                                    {"Content-Range": f"bytes */{size}"},
+                                    head=head,
+                                )
+                                return
+                            status = 206
+                            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+                        self.send_response(status)
+                        for key, value in {
+                            "Content-Type": "video/mp4",
+                            "Content-Length": str(end - start + 1),
+                            **headers,
+                        }.items():
+                            self.send_header(key, value)
+                        self.end_headers()
+                        if not head:
+                            with file.open("rb") as stream:
+                                stream.seek(start)
+                                remaining = end - start + 1
+                                while remaining:
+                                    chunk = stream.read(min(remaining, 256 * 1024))
+                                    self.wfile.write(chunk)
+                                    remaining -= len(chunk)
+                    elif match := re.fullmatch(r"frame/([^/]+)/(\d+)/(\d+)\.jpg", path):
+                        stage, camera, tick = match[1], int(match[2]), int(match[3])
+                        with monitor.lock:
+                            if (
+                                stage != monitor.state.get("stage")
+                                or not 0 <= camera < len(monitor.state["cameras"])
+                                or tick
+                                >= math.ceil(
+                                    monitor.state["duration"]
+                                    * monitor.state["sample_fps"]
+                                )
+                            ):
+                                raise ValueError("unknown evidence frame")
+                            frames = monitor.framesets[camera % len(monitor.framesets)]
+                            data = frames[tick % len(frames)]
+                        self.reply(data, "image/jpeg", head=head)
+                    else:
+                        self.reply(b"Not found", "text/plain", 404, head=head)
+                except (ValueError, IndexError):
+                    self.reply(b"Not found", "text/plain", 404, head=head)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+        return Handler

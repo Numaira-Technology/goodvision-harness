@@ -33,6 +33,7 @@ from goodvision_harness.vlm_admission import (  # noqa: E402
     SharedAdmission,
 )
 from goodvision_harness.vlm_independent import (  # noqa: E402
+    INFORMATION_HTTP_DEADLINE_SECONDS,
     IndependentVLMBranch,
     VLMProcessConfig,
     _inspector,
@@ -45,7 +46,13 @@ LABELS = SAFETY_EVENT_LABELS
 
 class SimulatedInspector:
     def __init__(self, config):
-        self.seconds = config.parameters["simulation_seconds"]
+        self.seconds = (
+            config.parameters.get(
+                "simulation_grounding_seconds", config.parameters["simulation_seconds"]
+            )
+            if config.output_mode == "compact"
+            else config.parameters["simulation_seconds"]
+        )
 
     def inspect(self, job):
         time.sleep(self.seconds)
@@ -99,27 +106,67 @@ def release_schedule(count, duration, sample_fps, observation_fps, mode):
     ]
 
 
+def planned_observations(duration, observation_fps):
+    """Count integer observation slots on the same source clock as run_stage."""
+    sample_fps = max(2.0, observation_fps * 2)
+    ticks = math.ceil(duration * sample_fps)
+    first = math.ceil(0.75 * sample_fps) / sample_fps
+    last = (ticks - 1) / sample_fps
+    return max(0, 1 + math.floor((last - first) * observation_fps + 1e-9))
+
+
+class DecodedFrames(list):
+    """JPEG samples plus exact media PTS for monitoring; list API is unchanged."""
+
+    def __init__(self, frames, path, timestamps, duration):
+        super().__init__(frames)
+        self.source_path = Path(path).resolve()
+        self.media_seconds = timestamps
+        self.media_duration = duration
+
+
 def decode(path, sample_fps, max_side, quality):
     import av
 
-    frames, due = [], 0.0
+    frames, timestamps, due = [], [], 0.0
     with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        origin = float((stream.start_time or 0) * stream.time_base)
+        duration = float(stream.duration * stream.time_base) if stream.duration else 0
         for frame in container.decode(video=0):
-            if frame.time is None or frame.time + 1e-9 < due:
+            if frame.time is None:
+                continue
+            at = max(0.0, frame.time - origin)
+            if at + 1e-9 < due:
                 continue
             image = frame.to_image()
             image.thumbnail((max_side, max_side))
             buffer = io.BytesIO()
             image.save(buffer, format="JPEG", quality=quality)
             frames.append(buffer.getvalue())
+            timestamps.append(at)
             due += 1 / sample_fps
     if len(frames) < 4:
         raise ValueError("video has fewer than four sample frames")
-    return frames
+    return DecodedFrames(
+        frames, path, timestamps, duration or timestamps[-1] + 1 / sample_fps
+    )
 
 
-def summarize(reports, stats, duration, expected, deadline):
-    reports = [r for r in reports if r.get("vlm_lane") != "grounding"]
+def report_lane(report):
+    """Standalone compact/full reports use the production 'combined' label."""
+    return (
+        "grounding" if report.get("vlm_lane") in {"grounding", "combined"} else "events"
+    )
+
+
+def summarize(reports, stats, duration, expected, deadline, *, lane=None):
+    # Preserve the historical primary-lane view for existing API reports.
+    reports = [
+        r
+        for r in reports
+        if (report_lane(r) == lane if lane else r.get("vlm_lane") != "grounding")
+    ]
     good = [r for r in reports if r["state"] == "completed" and r["analysis_complete"]]
     on_time = [r for r in good if r["timing"]["source_to_publish_seconds"] <= deadline]
     errors = {}
@@ -159,11 +206,56 @@ def summarize(reports, stats, duration, expected, deadline):
                 "count": len(values),
                 **timing(values),
             }
+    for name in (
+        "source_to_request_seconds",
+        "dispatch_wait_seconds",
+        "reorder_wait_seconds",
+    ):
+        values = [r["timing"][name] for r in reports if name in r["timing"]]
+        phase_metrics[name] = {"count": len(values), **timing(values)}
+    # Disjoint residual outside inspect(), including publication and IPC;
+    # it is not pure JSON parsing or pure GPU time.
+    residuals = [
+        max(
+            0,
+            r["timing"]["source_to_publish_seconds"]
+            - r["timing"]["source_to_request_seconds"]
+            - r["timing"]["model_seconds"],
+        )
+        for r in reports
+        if "source_to_request_seconds" in r["timing"]
+    ]
+    phase_metrics["after_inspect_to_publish_seconds"] = {
+        "count": len(residuals),
+        **timing(residuals),
+    }
+    latencies = [r["timing"]["source_to_publish_seconds"] for r in good]
     return {
         "expected_observations": expected,
         "scheduled_observations": stats.get("scheduled_observation_windows"),
         "reports": len(reports),
         "complete_valid_results": valid_rows,
+        "complete_result_fraction": valid_rows / expected if expected else None,
+        "without_complete_result": max(0, expected - valid_rows),
+        "late_complete_results": valid_rows - len(on_time),
+        "within_seconds": {
+            str(limit): {
+                "count": sum(v <= limit for v in latencies),
+                "fraction_of_planned": (
+                    sum(v <= limit for v in latencies) / expected if expected else None
+                ),
+            }
+            for limit in (1, 2, 3, 5)
+        },
+        "localization_complete_results": sum(
+            r.get("localization_complete") is True for r in good
+        ),
+        "all_negative_results": sum(
+            bool(r["judgments"])
+            and all(j["observed_detected"] is False for j in r["judgments"])
+            for r in good
+        ),
+        "historical_only_results": sum(r.get("historical_only", False) for r in good),
         "on_time_valid_results": len(on_time),
         "on_time_coverage": len(on_time) / expected if expected else None,
         "effective_results_per_second": valid_rows / duration,
@@ -177,7 +269,11 @@ def summarize(reports, stats, duration, expected, deadline):
         ),
         "model_seconds": timing([r["timing"]["model_seconds"] for r in good]),
         "admission_wait_seconds": timing(
-            [r["timing"].get("admission_wait_seconds", 0) for r in reports]
+            [
+                r["timing"]["admission_wait_seconds"]
+                for r in reports
+                if "admission_wait_seconds" in r["timing"]
+            ]
         ),
         "errors": errors,
         "http_status_counts": http_statuses,
@@ -189,7 +285,81 @@ def summarize(reports, stats, duration, expected, deadline):
     }
 
 
-def run_stage(args, base, count, framesets, output, repetition):
+def paired_summary(reports_by_camera, expected):
+    """Pair only the exact same production window, never nearest timestamps."""
+    pairs = {}
+    for camera, reports in enumerate(reports_by_camera):
+        for r in reports:
+            window = r.get("window_id")
+            if window is not None:
+                pairs.setdefault((camera, window), {})[report_lane(r)] = r
+
+    def complete(r):
+        return r and r["state"] == "completed" and r["analysis_complete"]
+
+    both, event_only, grounding_only, differences, full_latency = 0, 0, 0, [], []
+    for pair in pairs.values():
+        event, ground = pair.get("events"), pair.get("grounding")
+        if complete(event) and complete(ground):
+            both += 1
+            e = event["timing"]["source_to_publish_seconds"]
+            g = ground["timing"]["source_to_publish_seconds"]
+            differences.append(g - e)
+            full_latency.append(max(g, e))
+        elif complete(event):
+            event_only += 1
+        elif complete(ground):
+            grounding_only += 1
+    return {
+        "expected_source_windows": expected,
+        "both_complete": both,
+        "both_complete_fraction": both / expected if expected else None,
+        "without_both_complete": max(0, expected - both),
+        "events_complete_without_grounding": event_only,
+        "grounding_complete_without_events": grounding_only,
+        "paired_admission_superseded": sum(
+            "events" in pair
+            and "grounding" in pair
+            and any(
+                r.get("error_code") == "admission_superseded" for r in pair.values()
+            )
+            for pair in pairs.values()
+        ),
+        "grounding_minus_events_seconds": timing(differences),
+        "both_published_seconds": timing(full_latency),
+        "pairing": "same camera and exact window_id; unmatched windows remain missing",
+    }
+
+
+def drain_budget_seconds(args, base):
+    """Allow the final fresh request to expire and publish, without extending it."""
+    if args.real:
+        request_timeout = base.runtime.scene_timeout_seconds
+        if args.output_mode == "events":
+            request_timeout = min(request_timeout, INFORMATION_HTTP_DEADLINE_SECONDS)
+    else:
+        request_timeout = args.simulated_latency
+        if args.output_mode in {"compact", "parallel"}:
+            request_timeout = max(
+                request_timeout,
+                getattr(args, "simulated_grounding_latency", request_timeout),
+            )
+    # Production admission can start a request until its evidence is 3 s old.
+    # Then allow its existing HTTP deadline plus 2 s for result/status delivery.
+    return max(15.0, request_timeout + 3.0 + 2.0)
+
+
+def run_stage(
+    args,
+    base,
+    count,
+    framesets,
+    output,
+    repetition,
+    *,
+    inspector_factory=None,
+    observer=None,
+):
     stage = output / f"streams-{count}-repeat-{repetition}"
     stage.mkdir()
     gate_settings = (
@@ -207,7 +377,7 @@ def run_stage(args, base, count, framesets, output, repetition):
     branches, reports, cursors = (
         [],
         [[] for _ in range(count)],
-        [0] * count,
+        [[0, 0] for _ in range(count)],
     )
     missing_records = 0
     raw = (stage / "reports.jsonl").open("w")
@@ -216,13 +386,20 @@ def run_stage(args, base, count, framesets, output, repetition):
     def collect():
         nonlocal missing_records
         for i, branch in enumerate(branches):
-            for record in branch.results.records_after(cursors[i]):
-                missing_records += max(0, record.cursor - cursors[i] - 1)
-                cursors[i] = record.cursor
-                reports[i].append(record.payload)
-                raw.write(
-                    json.dumps({"camera": i + 1, "report": record.payload}) + "\n"
-                )
+            buses = [branch.results]
+            if args.output_mode == "parallel":
+                buses.append(branch.grounding_results)
+            for bus_index, bus in enumerate(buses):
+                for record in bus.records_after(cursors[i][bus_index]):
+                    missing_records += max(0, record.cursor - cursors[i][bus_index] - 1)
+                    cursors[i][bus_index] = record.cursor
+                    payload = dict(record.payload)
+                    if args.output_mode == "full":
+                        payload.setdefault("vlm_lane", "combined")
+                    reports[i].append(payload)
+                    raw.write(json.dumps({"camera": i + 1, "report": payload}) + "\n")
+                    if observer is not None:
+                        observer.result(i, payload)
         raw.flush()
 
     try:
@@ -242,7 +419,12 @@ def run_stage(args, base, count, framesets, output, repetition):
                 parameters=(
                     dict(base.inference.request_parameters)
                     if args.real
-                    else {"simulation_seconds": args.simulated_latency}
+                    else {
+                        "simulation_seconds": args.simulated_latency,
+                        "simulation_grounding_seconds": getattr(
+                            args, "simulated_grounding_latency", args.simulated_latency
+                        ),
+                    }
                 ),
                 options={
                     "max_tokens": base.runtime.scene_max_tokens,
@@ -256,7 +438,10 @@ def run_stage(args, base, count, framesets, output, repetition):
                 admission=gate_settings,
             )
             branch = IndependentVLMBranch(
-                cfg, inspector_factory=_inspector if args.real else simulated_factory
+                cfg,
+                inspector_factory=(inspector_factory or _inspector)
+                if args.real
+                else simulated_factory,
             )
             branches.append(branch)
             branch.start()
@@ -268,7 +453,6 @@ def run_stage(args, base, count, framesets, output, repetition):
                 raise RuntimeError("VLM branch startup failed")
             time.sleep(0.02)
         sample_fps = max(2.0, args.observation_fps * 2)
-        ticks = math.ceil(args.duration * sample_fps)
         arrival_mode = getattr(args, "arrival_mode", "aligned")
         offsets, releases = release_schedule(
             count, args.duration, sample_fps, args.observation_fps, arrival_mode
@@ -276,6 +460,8 @@ def run_stage(args, base, count, framesets, output, repetition):
         release_lags, sender_missed, offer_rejected = [], 0, [0] * count
         missed_by_stream = [0] * count
         start = time.monotonic()
+        if observer is not None:
+            observer.source_started(start, offsets)
         next_status = start
         for release_at, actions in releases:
             due = start + release_at
@@ -292,10 +478,13 @@ def run_stage(args, base, count, framesets, output, repetition):
                 continue
             for i, tick in actions:
                 frames = framesets[i % len(framesets)]
-                if not branches[i].offer(
+                accepted = branches[i].offer(
                     frames[tick % len(frames)], tick / sample_fps, tick
-                ):
+                )
+                if not accepted:
                     offer_rejected[i] += 1
+                if observer is not None:
+                    observer.sample(i, tick, accepted)
             collect()
             if time.monotonic() >= next_status:
                 status_log.write(
@@ -314,27 +503,46 @@ def run_stage(args, base, count, framesets, output, repetition):
             time.sleep(remaining)
         for branch in branches:
             branch.finish_source()
-        drain_deadline = time.monotonic() + 15
+        if observer is not None:
+            observer.draining()
+        drain_started = time.monotonic()
+        drain_timeout = drain_budget_seconds(args, base)
+        drain_deadline = drain_started + drain_timeout
         while time.monotonic() < drain_deadline:
             collect()
             if all(b.stats()["state"] == "drained" for b in branches):
                 break
             time.sleep(0.02)
         collect()
-        first_endpoint = math.ceil(0.75 * sample_fps) / sample_fps
-        last_endpoint = (ticks - 1) / sample_fps
-        expected = max(
-            0,
-            1
-            + math.floor(
-                (last_endpoint - first_endpoint) * args.observation_fps + 1e-9
-            ),
-        )
+        expected = planned_observations(args.duration, args.observation_fps)
         stats = [b.stats() for b in branches]
+        lanes = (
+            ("events", "grounding")
+            if args.output_mode == "parallel"
+            else ("events" if args.output_mode == "events" else "grounding",)
+        )
+        per_stream = []
+        for rr, ss in zip(reports, stats, strict=True):
+            row = summarize(rr, ss, args.duration, expected, args.deadline)
+            row["lanes"] = {
+                lane: summarize(
+                    rr, ss, args.duration, expected, args.deadline, lane=lane
+                )
+                for lane in lanes
+            }
+            per_stream.append(row)
         result = {
             "streams": count,
             "event_labels": list(LABELS),
             "repeat": repetition,
+            "output_mode": args.output_mode,
+            "nominal_requests_per_second": count * args.observation_fps * len(lanes),
+            "rate_limit_below_offered_load": bool(
+                gate and args.request_rate < count * args.observation_fps * len(lanes)
+            ),
+            "admission_scope": (
+                "per-stream limit shared by lanes; global limit/rate cover all lanes"
+            ),
             "measurement_kind": "real_model_capacity"
             if args.real
             else "simulated_scheduler_only",
@@ -349,14 +557,27 @@ def run_stage(args, base, count, framesets, output, repetition):
             "offer_rejected_by_stream": offer_rejected,
             "input_release_lag_seconds": timing(release_lags),
             "all_drained": all(s["state"] == "drained" for s in stats),
+            "drain_timeout_seconds": drain_timeout,
+            "drain_elapsed_seconds": time.monotonic() - drain_started,
             "result_records_missing": missing_records,
             "input_timing_valid": sender_missed == 0
             and max(release_lags, default=0) < 0.25,
             "shared_admission": gate.snapshot() if gate else None,
-            "per_stream": [
-                summarize(rr, ss, args.duration, expected, args.deadline)
-                for rr, ss in zip(reports, stats, strict=True)
-            ],
+            "per_stream": per_stream,
+            "lanes": {
+                lane: summarize(
+                    [r for rr in reports for r in rr],
+                    {},
+                    args.duration,
+                    count * expected,
+                    args.deadline,
+                    lane=lane,
+                )
+                for lane in lanes
+            },
+            "paired_windows": paired_summary(reports, count * expected)
+            if args.output_mode == "parallel"
+            else None,
         }
         (stage / "summary.json").write_text(
             json.dumps(result, indent=2) + "\n", encoding="utf-8"
@@ -381,7 +602,9 @@ def main():
     parser.add_argument("--video", type=Path, action="append", default=[])
     parser.add_argument("--simulated-latency", type=float, default=1)
     parser.add_argument(
-        "--output-mode", choices=["events", "full", "parallel"], default="events"
+        "--output-mode",
+        choices=["events", "compact", "full", "parallel"],
+        default="events",
     )
     parser.add_argument(
         "--global-limit",
@@ -424,7 +647,13 @@ def main():
     if args.plan_only:
         return
     base = load_config(args.config)
-    if args.real and (not args.video or not environment_api_key(base.model_api)):
+    if args.real and (
+        not args.video
+        or (
+            base.model_api.provider != "local"
+            and not environment_api_key(base.model_api)
+        )
+    ):
         parser.error("--real requires --video and the configured provider API key")
     framesets = [
         decode(

@@ -75,8 +75,17 @@ class SharedAdmission:
             )
             db.execute(
                 "CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, "
-                "stream TEXT, active INTEGER, created REAL, expires REAL)"
+                "stream TEXT, active INTEGER, created REAL, expires REAL, "
+                "lane TEXT NOT NULL DEFAULT 'default')"
             )
+            # Upgrade persisted databases without dropping active capacity leases.
+            # Stop old workers before upgrading: old binaries do not know lanes.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(tickets)")}
+            if "lane" not in columns:
+                db.execute(
+                    "ALTER TABLE tickets ADD COLUMN lane "
+                    "TEXT NOT NULL DEFAULT 'default'"
+                )
             db.execute(
                 "CREATE INDEX IF NOT EXISTS tickets_stream ON tickets(stream, active)"
             )
@@ -200,7 +209,11 @@ class SharedAdmission:
             return candidate is not None and candidate[0] == token
 
     @contextmanager
-    def slot(self, stream, *, stop, source_deadline):
+    def slot(self, stream, *, stop, source_deadline, lane="default"):
+        # Only the replacement key includes the lane. Admission/fairness still
+        # count all lanes against the same source and global capacity budgets.
+        if lane not in {"default", "events", "compact", "full"}:
+            raise ValueError("invalid VLM admission lane")
         token = uuid4().hex
         started = time.monotonic()
         deadline = min(source_deadline, started + self.settings.queue_timeout_seconds)
@@ -233,15 +246,18 @@ class SharedAdmission:
                                 "touched=excluded.touched",
                                 (stream, now),
                             )
-                            # One unsent observation per stream. New evidence
-                            # supersedes waiting work, never an in-flight call.
+                            # One unsent observation per source AND lane. A
+                            # grounding request must not replace its events peer.
                             db.execute(
-                                "DELETE FROM tickets WHERE stream=? AND active=0",
-                                (stream,),
+                                "DELETE FROM tickets WHERE stream=? AND lane=? "
+                                "AND active=0",
+                                (stream, lane),
                             )
                             db.execute(
-                                "INSERT INTO tickets VALUES(?,?,0,?,?)",
-                                (token, stream, now, deadline),
+                                "INSERT INTO tickets"
+                                "(id,stream,active,created,expires,lane) "
+                                "VALUES(?,?,0,?,?,?)",
+                                (token, stream, now, deadline, lane),
                             )
                         elif (
                             db.execute(

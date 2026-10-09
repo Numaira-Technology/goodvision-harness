@@ -235,7 +235,8 @@ def test_already_waiting_process_notices_expired_crash_lease(tmp_path, monkeypat
     gate = SharedAdmission(config)
     with sqlite3.connect(config.database) as db:
         db.execute(
-            "INSERT INTO tickets VALUES('crashed','crashed',1,?,?)",
+            "INSERT INTO tickets(id,stream,active,created,expires) "
+            "VALUES('crashed','crashed',1,?,?)",
             (time.monotonic(), time.monotonic() + 60),
         )
     read_waiting, admitted, stop = Event(), Event(), Event()
@@ -285,12 +286,151 @@ def test_policy_mismatch_fails_closed(tmp_path):
         SharedAdmission(replace(config, global_limit=24))
 
 
+def wait_until(predicate, timeout=2):
+    until = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < until, "condition did not become true"
+        time.sleep(0.005)
+
+
+def test_parallel_waiters_only_replace_their_own_lane(tmp_path):
+    gate = SharedAdmission(
+        settings(
+            tmp_path,
+            global_limit=1,
+            per_stream_limit=1,
+            queue_timeout_seconds=3,
+        )
+    )
+    stopped = Event()
+    ran, errors = [], []
+
+    def wait(name, lane):
+        try:
+            with gate.slot(
+                "camera", lane=lane, stop=stopped, source_deadline=time.monotonic() + 3
+            ):
+                ran.append(name)
+        except AdmissionError as exc:
+            errors.append((name, exc.code))
+
+    workers = [
+        Thread(target=wait, args=(name, lane))
+        for name, lane in (
+            ("events-old", "events"),
+            ("grounding", "compact"),
+            ("events-new", "events"),
+        )
+    ]
+    try:
+        with gate.slot("blocker", stop=stopped, source_deadline=time.monotonic() + 3):
+            workers[0].start()
+            wait_until(lambda: gate.snapshot()["waiting"] == 1)
+            workers[1].start()
+            wait_until(lambda: gate.snapshot()["waiting"] == 2 or errors)
+            assert not errors, "peer lane replaced existing waiter"
+            workers[2].start()
+            wait_until(lambda: errors)
+            assert errors == [("events-old", "admission_superseded")]
+            assert gate.snapshot()["waiting"] == 2
+        for worker in workers:
+            worker.join(3)
+            assert not worker.is_alive()
+        assert set(ran) == {"grounding", "events-new"}
+        assert gate.snapshot()["grants"] == 3
+        assert gate.snapshot()["peak_active"] == 1
+        assert gate.snapshot()["waiting"] == gate.snapshot()["active"] == 0
+    finally:
+        stopped.set()
+        for worker in workers:
+            if worker.ident is not None:
+                worker.join(3)
+
+
+def test_parallel_lanes_still_share_per_stream_limit(tmp_path):
+    gate = SharedAdmission(
+        settings(
+            tmp_path,
+            global_limit=8,
+            per_stream_limit=1,
+            queue_timeout_seconds=3,
+        )
+    )
+    admitted, stopped = Event(), Event()
+    errors = []
+
+    def wait():
+        try:
+            with gate.slot(
+                "camera",
+                lane="compact",
+                stop=stopped,
+                source_deadline=time.monotonic() + 3,
+            ):
+                admitted.set()
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = Thread(target=wait)
+    try:
+        with gate.slot(
+            "camera", lane="events", stop=stopped, source_deadline=time.monotonic() + 3
+        ):
+            worker.start()
+            wait_until(lambda: gate.snapshot()["waiting"] == 1)
+            assert not admitted.wait(0.05)
+            # Another source may still use the spare GLOBAL capacity.
+            with gate.slot(
+                "other-camera",
+                lane="events",
+                stop=stopped,
+                source_deadline=time.monotonic() + 3,
+            ):
+                assert gate.snapshot()["active"] == 2
+        assert admitted.wait(2)
+        worker.join(3)
+        assert not errors
+    finally:
+        stopped.set()
+        if worker.ident is not None:
+            worker.join(3)
+
+
+def test_legacy_database_migration_preserves_active_lease(tmp_path):
+    config = settings(tmp_path, global_limit=1, per_stream_limit=1)
+    with sqlite3.connect(config.database) as db:
+        db.execute(
+            "CREATE TABLE tickets (id TEXT PRIMARY KEY, stream TEXT, "
+            "active INTEGER, created REAL, expires REAL)"
+        )
+        db.execute(
+            "INSERT INTO tickets VALUES('old','camera',1,?,?)",
+            (time.monotonic(), time.monotonic() + 60),
+        )
+    gate = SharedAdmission(config)
+    SharedAdmission(config)  # Migration is idempotent across processes/restarts.
+    assert gate.snapshot()["active"] == 1
+    with sqlite3.connect(config.database) as db:
+        assert db.execute("SELECT lane FROM tickets WHERE id='old'").fetchone() == (
+            "default",
+        )
+    with pytest.raises(AdmissionError, match="admission_timeout"):
+        with gate.slot(
+            "camera",
+            lane="compact",
+            stop=Event(),
+            source_deadline=time.monotonic() + 0.03,
+        ):
+            pytest.fail("old capacity lease was ignored")
+
+
 def test_persisted_previous_monotonic_epoch_does_not_stall_restart(tmp_path):
     config = settings(tmp_path)
     SharedAdmission(config)
     with sqlite3.connect(config.database) as db:
         db.execute(
-            "INSERT INTO tickets VALUES('old','old',1,?,?)",
+            "INSERT INTO tickets(id,stream,active,created,expires) "
+            "VALUES('old','old',1,?,?)",
             (time.monotonic() + 10000, time.monotonic() + 10100),
         )
         db.execute("UPDATE policy SET next_grant=?", (time.monotonic() + 10000,))
