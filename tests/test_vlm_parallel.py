@@ -85,11 +85,13 @@ class OutputQueue(Queue):
         pass
 
 
-def test_default_mode_publishes_information_while_grounding_is_blocked():
+@pytest.mark.parametrize("scheduling", ["independent", "paired"])
+def test_default_mode_publishes_information_while_grounding_is_blocked(scheduling):
     base = config()
     cfg = VLMProcessConfig(
         base.stream_session_id, base.source_id, base.generation, base.labels,
         base.model_settings, base.model, max_in_flight=base.max_in_flight,
+        parallel_scheduling=scheduling,
     )
     incoming, outgoing = Queue(), OutputQueue()
     stop, release, started = Event(), Event(), Event()
@@ -344,7 +346,8 @@ def test_information_deadline_cancels_body_and_keeps_client_usable(monkeypatch):
     grounded.close()
 
 
-def test_fresh_information_bypasses_slow_rpc_and_full_grounding_pool():
+@pytest.mark.parametrize("slow_failure", [None, "timeout", "http_error"])
+def test_fresh_information_bypasses_slow_rpc_and_full_grounding_pool(slow_failure):
     from threading import Lock
 
     from test_vlm_independent import await_condition
@@ -361,6 +364,7 @@ def test_fresh_information_bypasses_slow_rpc_and_full_grounding_pool():
             self.mode = mode
 
         def inspect(self, j):
+            self.last_http_timing = {"http_request_attempted": True}
             endpoint = j.frames[-1].frame_sequence
             with lock:
                 inspected.append((self.mode, endpoint))
@@ -372,8 +376,15 @@ def test_fresh_information_bypasses_slow_rpc_and_full_grounding_pool():
                 elif endpoint == 18:
                     slow_started.set()
                     assert release_slow.wait(8)
+                    if slow_failure:
+                        from goodvision_harness.model_api import ModelAPIError
+
+                        raise ModelAPIError(
+                            "private upstream error", code=slow_failure,
+                            status_code=429 if slow_failure == "http_error" else None,
+                        )
                 # Explicitly test that a late positive cannot overwrite a newer
-                # report; its discard must remain visible in counters.
+                # report, but must remain available for historical evaluation.
                 return (verdict(detected=endpoint == 18),)
             finally:
                 with lock:
@@ -442,10 +453,25 @@ def test_fresh_information_bypasses_slow_rpc_and_full_grounding_pool():
             ):
                 seen_information.append(row["report"])
             if row.get("state") == "drained":
-                assert row["stats"]["late_information_reports_discarded"] == 1
+                assert row["stats"].get("late_information_reports_discarded", 0) == 0
+                assert row["stats"]["late_information_reports_preserved"] == 1
                 assert row["stats"]["inflight_requests"] == 0
+                for lane, n in (("events", 3), ("grounding", 2)):
+                    counts = row["stats"]["request_accounting"][lane]
+                    assert (
+                        counts["submitted"] == counts["finished"]
+                        == counts["published"] == counts["http_attempted"] == n
+                    )
                 break
-        assert not seen_information
+        assert len(seen_information) == 1
+        assert seen_information[0]["historical_only"] is True
+        assert seen_information[0]["frame"]["source_frame_index"] == 18
+        assert seen_information[0]["error_code"] == slow_failure
+        if slow_failure is None:
+            assert seen_information[0]["judgments"][0]["observed_detected"] is True
+        if slow_failure == "http_error":
+            assert seen_information[0]["timing"]["http_status"] == 429
+        assert seen_information[0]["timing"]["http_request_attempted"] is True
         assert all(n <= cfg.max_in_flight for n in maximum.values())
     finally:
         release_slow.set()
@@ -577,6 +603,11 @@ def test_grounding_output_backpressure_keeps_both_lanes_progressing_and_retries_
             elif item.get("state") == "drained":
                 assert item["stats"]["succeeded_requests"] == 8
                 assert item["stats"]["active_requests"] == 0
+                for counts in item["stats"]["request_accounting"].values():
+                    assert (
+                        counts["submitted"] == counts["finished"]
+                        == counts["published"] == 4
+                    )
                 break
         assert len(reports) == len({r["message_id"] for r in reports}) == 8
         assert [r["sequence"] for r in reports] == list(range(1, 9))

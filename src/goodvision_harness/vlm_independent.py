@@ -32,7 +32,13 @@ from .latency_trace import configure_worker_timing, log_timing
 from .result_bus import ResultBus
 from .scene_evidence import EvidenceFrame, InspectionRequest
 from .scene_runtime import TemporalInspection
-from .vlm_admission import AdmissionError, AdmissionSettings, SharedAdmission
+from .vlm_admission import (
+    MAX_PER_STREAM_CONCURRENCY,
+    AdmissionError,
+    AdmissionSettings,
+    SharedAdmission,
+)
+from .vlm_event_policy import event_policy_snapshot
 from .vlm_independent_model import IndependentVLMInspector
 
 MAX_FRAME_BYTES = 4 * 1024**2
@@ -64,16 +70,24 @@ class VLMProcessConfig:
     output_mode: str = "parallel"
     diagnostics_enabled: bool = False
     admission: AdmissionSettings | None = None
+    grounding_format: str = "legacy"
+    parallel_scheduling: str = "independent"
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
             raise ValueError("invalid VLM output mode")
+        if self.grounding_format not in {"legacy", "lean-v1"}:
+            raise ValueError("invalid grounding wire format")
+        if self.parallel_scheduling not in {"independent", "paired"}:
+            raise ValueError("invalid parallel scheduling")
         if not self.stream_session_id or not self.source_id or not self.labels:
             raise ValueError("VLM process requires a scoped source and event labels")
         if not 0 < self.observation_fps <= 3 or not math.isfinite(self.observation_fps):
             raise ValueError("VLM cadence must be in (0, 3]")
-        if type(self.max_in_flight) is not int or not 1 <= self.max_in_flight <= 4:
-            raise ValueError("VLM concurrency must be within 1..4")
+        if type(self.max_in_flight) is not int or not (
+            1 <= self.max_in_flight <= MAX_PER_STREAM_CONCURRENCY
+        ):
+            raise ValueError("VLM concurrency must be within 1..8")
 
 
 @dataclass(frozen=True)
@@ -211,6 +225,9 @@ class IndependentEventState:
             "schema_version": "1",
             "type": "vlm_report",
             "analysis_kind": "vlm_event",
+            "event_policy": event_policy_snapshot(
+                job.request.event_labels, dict(job.event_sensitivities),
+            ),
             "event_scope": "scene"
             if self.config.output_mode == "events"
             else "observation",
@@ -281,7 +298,31 @@ def _inspector(config):
         config.output_mode, IndependentVLMInspector
     )
     options = dict(config.options)
+    parameters = dict(config.parameters)
     settings = config.model_settings
+    if (
+        config.output_mode in {"compact", "full"}
+        and config.grounding_format == "lean-v1"
+    ):
+        from .vlm_lean_grounding import LeanGroundingInspector, response_format
+
+        cls = LeanGroundingInspector
+        parameters["response_format"] = response_format(config.labels)
+    if (
+        settings.provider == "dashscope"
+        and config.model == "qwen3-vl-30b-a3b-instruct"
+    ) or (
+        settings.provider == "openrouter"
+        and config.model == "qwen/qwen3.5-35b-a3b"
+        and (parameters.get("provider", {}).get("only") == ["alibaba"]
+             or parameters.get("provider", {}).get("order", [])[:1] == ["alibaba"])
+    ):
+        # Qwen3-VL Instruct supports JSON Object on Model Studio, not strict
+        # JSON Schema. Keep the same prompts and all six-label/localization
+        # validation in the inspectors; this does not change routing policy.
+        # Alibaba's Qwen3.5-35B multimodal route also rejects JSON Schema
+        # (HTTP 400, schema is None), although its text-only route accepts it.
+        parameters["response_format"] = {"type": "json_object"}
     if config.output_mode == "events":
         options["max_tokens"] = 160
         # The transport uses asyncio.wait_for: expiry cancels the HTTP request
@@ -297,7 +338,7 @@ def _inspector(config):
         settings,
         model=config.model,
         api_key=config.api_key,
-        request_parameters=config.parameters,
+        request_parameters=parameters,
         **options,
     )
 
@@ -325,6 +366,7 @@ def run_vlm_process(
         else (config.output_mode,)
     )
     queues = {lane: OrderedDict() for lane in lanes}
+    accounting = {lane: Counter(submitted=0, finished=0, published=0) for lane in lanes}
     ready = {lane: {} for lane in lanes}
     next_dispatch_order = {lane: 0 for lane in lanes}
     next_publish_order = {lane: 0 for lane in lanes}
@@ -387,6 +429,7 @@ def run_vlm_process(
         response_diagnostics = {}
         shape = {}
         inspector = None
+        inspection_attempted = False
         diagnostic = None
         failure = None
         if config.diagnostics_enabled and diagnostic_outgoing is not None:
@@ -402,11 +445,14 @@ def run_vlm_process(
                 config.stream_session_id, stop=stop,
                 source_deadline=sample.received_monotonic + 3.0,
                 lane=lane,
+                pair_id=(job.request.request_id if config.output_mode == "parallel"
+                         and config.parallel_scheduling == "paired" else ""),
             ) if admission else nullcontext(0.0))
             with gate as admission_wait:
                 started, started_at = time.monotonic(), utc_now()
                 try:
                     inspector = worker_inspector(lane)
+                    inspection_attempted = True
                     verdicts = inspector.inspect(job)
                     shape = getattr(inspector, "last_response_diagnostics", {})
                 finally:
@@ -459,10 +505,11 @@ def run_vlm_process(
                 if type(value) is int and 0 <= value <= 10**9:
                     response_diagnostics[key] = value
             for key, allowed in {
+                "model_match": {"matched", "mismatch", "unreported"},
                 "provider_category": {
                     "Darkbloom", "DeepInfra", "Parasail", "Alibaba",
                     "Alibaba Cloud Int.", "AtlasCloud", "SiliconFlow",
-                    "Venice", "other",
+                    "Venice", "Novita", "other",
                 },
                 "finish_reason": {
                     "stop", "length", "content_filter", "tool_calls",
@@ -494,6 +541,14 @@ def run_vlm_process(
                 and math.isfinite(value) and 0 <= value <= 10**9
             ):
                 http_timing[name] = value
+        http_attempted = (
+            measurements.get("http_request_attempted")
+            if isinstance(measurements, dict) else None
+        )
+        if not inspection_attempted:
+            http_attempted = False
+        elif type(http_attempted) is not bool:
+            http_attempted = None  # Custom/legacy inspectors are not evidence of HTTP.
         inspection_timing = {}
         measurements = getattr(inspector, "last_inspection_timing", {})
         for name in (
@@ -514,6 +569,7 @@ def run_vlm_process(
                 )
             except Exception:
                 pass  # Separate bounded diagnostics never gate normal reports.
+        completed = time.monotonic()
         return (
             verdicts,
             error,
@@ -528,6 +584,12 @@ def run_vlm_process(
                 "response_diagnostics": response_diagnostics,
                 "http_timing": http_timing,
                 "inspection_timing": inspection_timing,
+                "inspection_attempted": inspection_attempted,
+                "http_request_attempted": http_attempted,
+                "completion_monotonic": completed,
+                "source_to_completion_seconds": max(
+                    0.0, completed - sample.received_monotonic
+                ),
             },
         )
 
@@ -554,6 +616,10 @@ def run_vlm_process(
                 for counts in lane_counts.values()
             ),
             "lanes": lane_counts,
+            "request_accounting": {
+                "events" if lane == "events" else "grounding": dict(counts)
+                for lane, counts in accounting.items()
+            },
         }
 
     try:
@@ -627,6 +693,16 @@ def run_vlm_process(
                         continue
                     pending.pop(order)
                     result = future.result()
+                    accounting[lane]["finished"] += 1
+                    accounting[lane]["inspection_attempted"] += int(
+                        result[2]["inspection_attempted"]
+                    )
+                    http_attempted = result[2]["http_request_attempted"]
+                    accounting[lane][
+                        "http_attempt_unknown" if http_attempted is None
+                        else "http_attempted" if http_attempted
+                        else "http_not_attempted"
+                    ] += 1
                     if lane == "events" and result[1] == "timeout":
                         stats["information_http_timeouts"] += 1
                     ready[lane][order] = (job, sample, result, dispatched, None)
@@ -645,19 +721,9 @@ def run_vlm_process(
                         lane == "events"
                         and sample.frame.frame_sequence <= last_published[lane]
                     )
-                    if historical and config.output_mode != "events":
-                        ready[lane].pop(order)
-                        stats["late_information_reports_discarded"] += 1
-                        log_timing(
-                            "vlm_information_report_discarded",
-                            stream_session_id=config.stream_session_id,
-                            request_id=job.request.request_id,
-                            source_sequence=sample.frame.frame_sequence,
-                            reason="superseded",
-                            error_code=error,
-                            model_seconds=timing["model_seconds"],
-                        )
-                        continue
+                    # Preserve every finished evaluation, including failures and
+                    # older events overtaken by a newer admission failure. Source-
+                    # ordered snapshots keep history from rolling live state back.
                     if report is None:
                         now = time.monotonic()
                         timing.update(
@@ -717,6 +783,7 @@ def run_vlm_process(
                         stats["output_backpressure"] += 1
                         break
                     next_report_sequence += 1
+                    accounting[lane]["published"] += 1
                     ready[lane].pop(order)
                     last_published[lane] = max(
                         last_published[lane], sample.frame.frame_sequence
@@ -763,7 +830,20 @@ def run_vlm_process(
                         )
                         next_due += due_slots * period
                         pending_event_window = True
-                    if not available_lanes:
+                    if (config.output_mode == "parallel"
+                            and config.parallel_scheduling == "paired"
+                            and len(available_lanes) != len(lanes)):
+                        # Admit a local pair together, without waiting for both
+                        # responses. A busy peer must not leave a lone submitted
+                        # window. Skips stay in the benchmark's fixed denominator.
+                        stats["paired_busy_windows_skipped"] += 1
+                        for lane in lanes:
+                            stats[lane + "_busy_windows_skipped"] += 1
+                        last_endpoint = frame.frame_sequence
+                        next_due = (
+                            frame.timestamp_seconds + 1.0 / config.observation_fps
+                        )
+                    elif not available_lanes:
                         if config.output_mode == "events" and newly_due:
                             stats["events_busy_windows_deferred"] += 1
                     else:
@@ -806,6 +886,7 @@ def run_vlm_process(
                                 ),
                                 dispatched,
                             )
+                            accounting[lane]["submitted"] += 1
                             last_lane_endpoint[lane] = frame.frame_sequence
                         last_endpoint = frame.frame_sequence
                         if config.output_mode != "events":
@@ -1115,6 +1196,11 @@ class IndependentVLMBranch:
                 0.0, now - report["timing"].pop("evidence_received_monotonic")
             )
             report["timing"].pop("request_started_monotonic", None)
+            completed = report["timing"].pop("completion_monotonic", None)
+            if completed is not None:
+                report["timing"]["completion_to_publish_seconds"] = max(
+                    0.0, now - completed
+                )
             # Independent publication precedes every optional fusion/archive action.
             information = report.get("vlm_lane") != "grounding"
             grounding = report.get("vlm_lane") != "information"

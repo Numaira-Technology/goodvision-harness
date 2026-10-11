@@ -1,5 +1,11 @@
 # VLM 三模式：事件、定位与双分支耗时对照
 
+固定 Qwen3.5-35B＋Alibaba、十二路三模式、15 FPS 单视频无框录屏，见
+[本轮专用入口](vlm-qwen35b-alibaba.md)。以下通用入口继续保留原有默认配置。
+
+十二路 grounding 的每路并发 4/6/8 对照见
+[专用脚本与统计口径](vlm-grounding-concurrency.md)。
+
 入口：`python -m tools.vlm_benchmark.modes`，在仓库根目录运行。
 它调用已有模型服务，不安装推理引擎、不下载权重、不创建付费实例。
 当前测试默认后端为 **OpenRouter**，模型为 **Qwen3-VL-30B-A3B-Instruct**，
@@ -14,13 +20,17 @@ ID 为 `qwen/qwen3-vl-30b-a3b-instruct`，见 [OpenRouter 模型页](https://ope
 
 | 模式 | 请求内容 |
 | --- | --- |
-| `events` | 六类事件 boolean/null，严格 JSON Schema，最多 160 output tokens |
+| `events` | 六类事件 boolean/null，OpenRouter 使用 JSON Schema；百炼使用 JSON Object + 本地六类校验，最多 160 output tokens |
 | `compact` | parallel 中同一个 grounding adapter；全阴性允许简短回复，其余返回定位结构，最多 1600 tokens |
 | `parallel` | 独立 events + compact 请求，分别发布、分别统计 |
 
 `events+parallel` 会重复事件工作，因此不提供这个选项。以上均不依赖 SAM。
 事件范围来自代码中的 `SAFETY_EVENT_LABELS`，包括 fight、smoking、fall、weapon、
 ppe_violation、ground_litter。不能将完整 JSON 比例当作事件识别准确率。
+
+三种模式共用同一份事件判断规则；新结果记录规则指纹，测试目录的
+`event-policy.json` 可直接用于独立参考标注。六类定义、敏感度、不确定的处理以及
+旧标注的兼容范围见 [统一事件判断与评测口径](vlm-event-policy.md)。
 
 ## 开始前
 
@@ -67,11 +77,66 @@ python -m tools.vlm_benchmark.modes --real --backend openrouter \
 
 OpenRouter 测试不提供本地 endpoint/metrics，也不声明服务商权重精度、显卡或缓存。
 只记录客户端可观察的阶段，不能把 API 总等待拆成上游排队、视觉编码和 GPU 计算。
-key 的读取规则与 Harness 一致，已有 `INFERENCE_API_KEY` 可能覆盖
-`OPENROUTER_API_KEY`；切换到新 key 前应清除旧的 `INFERENCE_API_KEY`。
+本套件的 OpenRouter 模式只读取 `OPENROUTER_API_KEY`；不会使用
+`INFERENCE_API_KEY` 或 `MODEL_API_KEY` 覆盖它。百炼模式只读取 `DASHSCOPE_API_KEY`。
+若此前仅配置了通用变量，需将所选渠道的密钥配置到对应专用变量。
+独立的旧 capacity 入口及生产 Harness 的通用变量规则保持原样。
 
 自部署仅作为独立的可选方案保留，需显式 `--backend local`，另见
 [本地模型部署指南](vlm-local-model.md)。它的量化模型结果不能混作本轮 OpenRouter 结果。
+
+## 可选：直接调用阿里云百炼
+
+保留默认 OpenRouter 流程，另可选择 `--backend dashscope`。
+直连模型 ID 为 `qwen3-vl-30b-a3b-instruct`；仅将现有默认模型 ID 映射为这个同模型名称，
+不替换为 Plus、Thinking 或其他尺寸。events、grounding（compact）、parallel、
+实时监看、录屏及耗时统计使用相同的调度和六类事件规则。
+
+百炼只读取 `DASHSCOPE_API_KEY`，不会使用 `OPENROUTER_API_KEY`、
+`INFERENCE_API_KEY` 或 `MODEL_API_KEY` 作为替代。密钥在运行环境本地设置，
+不能用 OpenRouter 的密钥调用百炼。云端启动脚本也可从本地 `.env` 读取所选渠道的
+专用密钥，否则在终端隐藏输入；不会把密钥写入测试计划或报告。
+
+`--endpoint` 接收完整 Chat Completions URL（不是 SDK 的 base URL）。
+省略时使用现有百炼默认地址，即北京共享域名；必须与密钥所属地域匹配。
+也支持百炼工作空间专属域名，按控制台地址补上 `/chat/completions`。
+例如新加坡地址为 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions`。
+
+先生成计划，不读取密钥、不发付费请求：
+
+```bash
+python -m tools.vlm_benchmark.modes --plan-only \
+  --backend dashscope \
+  --endpoint https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions \
+  --streams 12 --global-limit 48 --per-stream-limit 4 --request-rate 40 \
+  --modes events grounding parallel --grounding-format lean-v1 \
+  --video '/workspace/output 3.mp4' --record
+```
+
+正式本机运行时，将 `--plan-only` 替换为 `--real`。云实例仍只运行 Harness 和录屏浏览器，
+VLM 推理由百炼执行；云端入口如下，SSH 参数填写实际实例：
+
+```bash
+bash tools/vlm_benchmark/run_remote.sh --suite modes \
+  --provider dashscope \
+  --endpoint https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions \
+  --streams 12 --global-limit 48 --per-stream-limit 4 --request-rate 40 \
+  --modes events grounding parallel --grounding-format lean-v1 \
+  --video '/path/to/output 3.mp4' --real --record \
+  --host "$VLM_SSH_HOST" --port "$VLM_SSH_PORT" \
+  --identity ~/.ssh/id_ed25519_vast
+```
+
+直连不发送 OpenRouter 的 `provider`、`reasoning` 等路由参数，也不接受
+`--provider-only`。百炼 Qwen3-VL Instruct 使用 JSON Object，继续通过原有解析器
+检查六类字段、判断类型和人物引用；缺字段或无效结果仍记为失败。报告保存实际渠道、
+模型、端点及结构化输出方式，不能把两种 API 的成绩混成同一条件，也不预设直连更快。
+真实模型表现、账号权限和额度需另做实测验证。十二路默认单分支约 900 请求/分钟，
+parallel 约 1800 请求/分钟，正式压测前应核对 RPM/TPM 配额；HTTP 429 仍停止后续阶段。
+
+接口依据：[百炼模型说明](https://www.alibabacloud.com/help/en/model-studio/qwen3-vl-30b-a3b-instruct)、
+[地域和端点](https://help.aliyun.com/en/model-studio/base-url)、
+[结构化输出](https://www.alibabacloud.com/help/en/model-studio/qwen-structured-output)。
 
 ## 调度与计时口径
 
@@ -97,11 +162,23 @@ key 的读取规则与 Harness 一致，已有 `INFERENCE_API_KEY` 可能覆盖
   `paired_admission_superseded` 单列发生待发送替换的配对窗口；它也包含同分支正常的
   新旧替换，不能仅据此认定发生跨分支替换。升级时先停止旧 workers，再统一启动新版；
   持久化队列表自动补充分支字段并保留在途额度，不支持新旧 workers 混跑。
-- parallel 的生产逻辑可能丢弃被更新结果覆盖的历史 events 回复；脚本不改变此语义，
-  这些缺口仍体现在计划分母及 process_stats 中。
+- events 和 parallel 均保留被更新结果超过的历史 events 回复，包括成功、超时、
+  HTTP 错误与不完整结果。`historical_only` 标记使其进入历史查询、配对和质量统计，
+  不回退实时最新状态。`late_information_reports_preserved` 记录保留数；
+  不再通过丢弃旧回复隐藏 HTTP 429 或超时。
+- `delivery_accounting` 区分 HTTP 已尝试、已尝试但不完整、确认未尝试 HTTP、
+  HTTP 状态未知、计划中无记录、历史完整结果和非历史完整结果。
+  `http_request_attempted` 只在客户端执行 send 时置真，不能用请求体大小、获准名额
+  或 `inspect` 耗时代替；它也不证明服务商已经收到。模拟请求明确记为没有 HTTP。
+  旧记录没有标记则保留未知，计划中无记录也不能自动算作请求失败或全部未发出。
+- 每路每分支独立记录 submitted / finished / published，并与收集到的唯一请求记录
+  核对；排空后不一致则保留诊断、停止后续轮次。旧版本缺少计数时核对结果为未知。
+  完整返回含历史结果，非历史结果不代表浏览器实际展示次数；录屏实际帧率单独统计。
 - 延迟：最新证据进入分支到发布，排除视频解码、摄像头上传和浏览器显示。
   P50/P95 对该分支全部完整结果计算；不平均各路 P95。
   3 秒只作报告参考，不等于已经批准的业务 SLA。
+  新增 `source_to_completion_seconds` 与 `completion_to_publish_seconds`，
+  区分本地调用处理结束前的耗时与之后的排序/IPC/发布等待，两者逐请求相加为发布延迟。
 - request phases 含失败请求已观察到的阶段，各字段有自己的样本数；缺失不是零。
   source_to_request、dispatch_wait 与 admission_wait 有包含关系，不能相加。
   model_seconds 包含准备、HTTP 和解析；after_inspect_to_publish 含排序、IPC 和发布。
@@ -259,3 +336,61 @@ HTTP 429 在当前有界轮次结束后停止继续升档；不会自动重试�
 每条分支完整率均达到 **99%** 才继续其 15 分钟测试；这是节约测试资源的筛选条件，
 不是业务准确率或延迟验收标准。未满足的模式写入 `skipped_soaks`。
 调整并发时重复同一视频/精度/频率/输出设置，仅变更待研究参数，避免同时改变多个变量。
+
+### 帧间人框跟踪（监看与录屏）
+
+在 `evidence` 布局下，有原始视频的 `compact` / `parallel` 监看默认启用轻量 CPU 跟踪。
+左侧连续播放预览视频，蓝色虚线框表示跟踪估计；右侧显示原始定位证据帧。
+`events` 没有人框，仍显示原始事件证据帧。请求失败改用蓝灰色，检测为阳性仍为红色。
+`single-video` 布局仅显示连续视频，关闭跟踪与右侧证据帧，三个模式均不画框。
+跟踪只影响监看与录屏，不改动事件结果、人物关联、VLM 请求频率、延迟统计或 API 用量；
+也不会把跟踪框作为新的模型观测。它不使用 SAM，不具备跨定位结果的人员重识别能力。
+
+实现使用 OpenCV 稀疏光流，逐帧检查前后向一致性、运动一致性及图像外观。
+有效定位先在原始证据图像上初始化，再追过已经看到的历史帧；不会把旧框直接画到新图像。
+每路每个查看窗口缓存最多 8 秒 / 128 张灰度预览帧，宽 320 像素；
+每次最多追踪 12 个目标，每路仅一个在途预览请求，历史追赶预算为 120 ms。
+遮挡或交叉匹配模糊、侧边出画、帧间断档超过 300 ms、源时钟跳转、定位过期时隐藏框，
+等待下一次有效定位。超过 250 ms 才返回的预览结果不画回屏幕；视频继续刷新。
+这是避免错框的保守策略，会减少有框时间，尤其是定位响应迟到数秒的片段。
+侧边被截断的人框暂不跟踪；俯仰、尺度和姿态变化较大也可能提前丢失。
+
+页面加 `?tracking=off` 可关闭跟踪作同源播放对照。一个阶段最多允许两个同时跟踪的查看窗口，
+30 秒无请求的窗口会释放；正式录屏自身占一个。窗口打开后才开始积累历史帧。
+`recording/recording.json` 的 `browser.tracking` 记录每路计算耗时、预览请求往返耗时、
+显示间隔、跟踪丢失和错误；诊断样本有上限。这些是预览开销，不能当作 VLM 模型延迟。
+12 路完整录制仍需使用实际云实例测量，不能从本机短测推断长期容量。
+
+验证方式：
+
+- `tests/test_vlm_preview_tracking.py` 使用有已知身份和逐帧位置的合成目标，检查迟到定位、
+  交叉、遮挡、侧边出画、旧结果、视频循环、缓存上限及监看端点；隐藏框不能代替覆盖率检查。
+- 设置 `VLM_MONITOR_BROWSER_TESTS=1` 后增加 1 / 12 路真实浏览器开启/关闭跟踪对照，
+  核对已显示的框与已知位置的 IoU，并检查最终录屏统计是否能完整显示。
+- `python -m tools.vlm_preview_tracking_check --video <input.mp4> --reports <reports.jsonl>
+  --output <new-folder> [--camera 1] [--sample-fps 2.5]` 用历史响应离线重放。
+  输出明确标记 `OFFLINE replay` 的视频、逐帧估计、接触表和耗时，不调用模型。
+  该结果不是新一轮实时模型测试；有框比例也不是身份正确率。
+- 正式验收仍需独立的逐人轨迹标注，报告可见目标覆盖、框偏移、身份切换和遮挡后恢复。
+  原 VLM 框不能同时充当初始化输入和“跟对人”的真值。
+# 十二路实际画面录制与精简 grounding
+
+`--modes events grounding parallel` 分别运行事件、单独定位、事件与定位同时运行；
+`grounding` 是内部 `compact` 模式的易读别名，`parallel` 已包括两个分支。
+`--grounding-format lean-v1` 将精简协议同时用于独立与并行模式中的定位分支，
+六类事件规则不变。默认仍为 `legacy`。
+
+云端 `--suite modes` 默认录制正式测试的浏览器视口，先执行同路数、同模式的
+无模型调用录制检查。检查失败即停止，不启动收费推理。正式录像覆盖播放前的准备、
+原速视频播放、实际返回的检测结果、排空以及最终统计；保存 MP4、原始 WebM、
+最终截图和 `recording.json`。多路窗口全部可见、视频未冻结、末帧证据已绘制、
+录像时长完整才标记录制成功。
+
+左侧显示实时视频与可用的帧间跟踪估计，右侧始终显示模型结果对应的原始证据帧及框。
+迟到框不会被伪装成当前时刻的定位。录制的是实时测试监看页，不是完整产品界面，
+也不是根据日志事后合成的回放。预览与录制的资源开销包含在本轮机器负载中。
+
+示例配置：`--suite modes --real --streams 12 --repeats 1 --modes events grounding parallel
+--grounding-format lean-v1 --provider-only deepinfra --http-timeout 20 --record`。
+单路并发额度由两个分支共享，联合模式总请求率上限应覆盖两分支负载；
+报告保留失败、跳过与未返回的分母。`--provider-only` 限定服务商并禁止自动回退。

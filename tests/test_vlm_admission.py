@@ -120,6 +120,67 @@ def test_shared_rate_and_release_on_error(tmp_path):
     assert gate.snapshot()["active"] == 0
 
 
+@pytest.mark.parametrize("model_error", [False, True])
+def test_completed_request_releases_after_extended_writer_contention(
+    tmp_path, model_error,
+):
+    gate = SharedAdmission(settings(tmp_path, global_limit=1, per_stream_limit=1))
+    entered, finish_request, finished = Event(), Event(), Event()
+    errors = []
+
+    def run():
+        try:
+            with gate.slot(
+                "camera", stop=Event(), source_deadline=time.monotonic() + 3,
+            ):
+                entered.set()
+                assert finish_request.wait(5)
+                if model_error:
+                    raise ValueError("model failure")
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    worker = Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        with sqlite3.connect(gate.settings.database, isolation_level=None) as db:
+            db.execute("BEGIN IMMEDIATE")
+            finish_request.set()
+            try:
+                # The old short retry loop abandoned the slot during this lock.
+                assert not finished.wait(0.65)
+            finally:
+                db.rollback()
+        assert finished.wait(5)
+        assert [str(e) for e in errors] == (["model failure"] if model_error else [])
+        assert gate.snapshot()["active"] == 0
+        with gate.slot("camera", stop=Event(), source_deadline=time.monotonic() + 3):
+            pass
+        assert gate.snapshot()["active"] == 0
+    finally:
+        finish_request.set()
+        worker.join(6)
+
+
+def test_permanent_cleanup_failure_is_bounded_and_visible(
+    tmp_path, monkeypatch, caplog,
+):
+    gate = SharedAdmission(settings(tmp_path))
+    monkeypatch.setattr(gate, "RELEASE_TIMEOUT_SECONDS", 0.03)
+
+    @contextmanager
+    def unavailable(**kwargs):
+        raise sqlite3.OperationalError("locked")
+        yield
+
+    monkeypatch.setattr(gate, "_transaction", unavailable)
+    assert gate._remove("missing") is False
+    assert "capacity lease remains" in caplog.text
+
+
 def test_blocked_waiter_does_not_repeatedly_take_the_writer_lock(tmp_path, monkeypatch):
     gate = SharedAdmission(settings(tmp_path, global_limit=1, per_stream_limit=1))
     original = gate._transaction

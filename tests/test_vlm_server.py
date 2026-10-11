@@ -26,6 +26,7 @@ from goodvision_harness.vlm_compact_model import (
     EventJSONInspector,
 )
 from goodvision_harness.vlm_independent_model import IndependentVLMInspector
+from goodvision_harness.vlm_lean_grounding import LeanGroundingInspector
 from goodvision_harness.vlm_offload import decode_inspection, encode_inspection
 from goodvision_harness.vlm_server import VLMServerSettings, create_app
 
@@ -62,6 +63,10 @@ def _reply(kind="full"):
         content = {"smoking": False}
     elif kind == "compact":
         content = {"no_events": 0.9}
+    elif kind == "lean-v1":
+        content = {"v": 1, "s": [], "e": {
+            "smoking": [{"p": [], "d": False, "c": 0.9}],
+        }}
     elif kind == "temporal":
         content = [
             {
@@ -124,13 +129,14 @@ def test_wire_roundtrip_retains_originals_without_decoding(monkeypatch):
     assert decoded.kind == "full"
 
 
-@pytest.mark.parametrize("kind", ["temporal", "full", "compact", "events"])
+@pytest.mark.parametrize("kind", ["temporal", "full", "compact", "events", "lean-v1"])
 def test_cpu_prompt_and_parser_reuse_for_every_lane(monkeypatch, kind):
     cls = {
         "temporal": TemporalVLMInspector,
         "full": IndependentVLMInspector,
         "compact": CompactGroundingInspector,
         "events": EventJSONInspector,
+        "lean-v1": LeanGroundingInspector,
     }[kind]
     reference = cls(
         ModelAPISettings(provider="local"),

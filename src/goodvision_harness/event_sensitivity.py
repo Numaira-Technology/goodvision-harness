@@ -66,8 +66,8 @@ EVENT_SENSITIVITY_OPTIONS = {
 
 
 for _label, _description in {
-    "ppe_violation": "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",
-    "ground_litter": "地面上可见被丢弃的垃圾；无需有人在场",
+    "ppe_violation": "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",  # noqa: RUF001
+    "ground_litter": "地面上可见被丢弃的垃圾；无需有人在场",  # noqa: RUF001
 }.items():
     EVENT_SENSITIVITY_OPTIONS[_label] = [
         {"value": level, "label": title, "description": _description}
@@ -169,7 +169,7 @@ _EVIDENCE_POLICIES = {
         "Fighting sensitivity HIGH: flag plausible early confrontation, "
         "threatening approach, forceful interaction, or partly obscured attack "
         "gestures as well as active fighting. Complete contact or certainty is "
-        "not required; lower confidence for ambiguous aggression. Mere proximity "
+        "not required. Mere proximity "
         "or clearly friendly/ordinary interaction is insufficient."
     ),
     ("fall", "standard"): (
@@ -182,21 +182,27 @@ _EVIDENCE_POLICIES = {
         "Falling sensitivity HIGH: also flag a plausible imminent fall indicated "
         "by an unstable posture, an apparent attempt to catch balance, partial "
         "collapse, or loss-of-support cues, even if descent is not conclusive. "
-        "Use lower confidence for ambiguity. A clearly stable supported crouch, "
+        "A clearly stable supported crouch, "
         "sit, lie, or deliberate bend alone remains negative."
     ),
     ("smoking", "high"): (
         _SMOKING_HIGH_CRITERIA
-        + "Lower confidence when uncertain; "
         + _SMOKING_HIGH_LIMITS
     ),
     ("weapon", "standard"): _WEAPON_STANDARD_CRITERIA,
     ("weapon", "high"): (
         _WEAPON_HIGH_CRITERIA
-        + "Lower confidence if uncertain. "
         + _WEAPON_HIGH_LIMITS
         + " Never invent a hidden weapon."
     ),
+}
+
+# Confidence is output guidance, not a second threshold for event detection.
+_CONFIDENCE_GUIDANCE = {
+    ("fight", "high"): "Lower confidence for ambiguous aggression.",
+    ("fall", "high"): "Use lower confidence for ambiguity.",
+    ("smoking", "high"): "Lower confidence when uncertain.",
+    ("weapon", "high"): "Lower confidence if uncertain.",
 }
 
 PPE_RULE = (
@@ -245,6 +251,7 @@ def sensitivity_policy_text(
     *,
     smoking_standard_rule: str,
     include_output_guidance: bool = True,
+    include_confidence_guidance: bool = True,
 ) -> str:
     """Render evidence criteria, optionally with grounding output instructions.
 
@@ -258,6 +265,8 @@ def sensitivity_policy_text(
         else:
             key = (label, level)
             rule = _EVIDENCE_POLICIES[key]
+            if include_confidence_guidance and key in _CONFIDENCE_GUIDANCE:
+                rule += " " + _CONFIDENCE_GUIDANCE[key]
             if include_output_guidance:
                 rule = _GROUNDING_POLICIES.get(key, rule)
             rules.append(rule)

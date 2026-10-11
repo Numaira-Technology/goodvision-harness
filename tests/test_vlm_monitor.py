@@ -26,6 +26,7 @@ from tools.vlm_multistream_benchmark import DecodedFrames, planned_observations
         "poll-stall",
         "playback-stall",
         "frozen-video",
+        "cropped-cameras",
     ],
 )
 def test_truncated_or_frozen_capture_is_not_deliverable(problem):
@@ -60,9 +61,71 @@ def test_truncated_or_frozen_capture_is_not_deliverable(problem):
         d["maxPollGapSeconds"] = 2.1
     elif problem == "playback-stall":
         d["maxPlaybackGapSeconds"] = 2.1
+    elif problem == "cropped-cameras":
+        d["allCamerasVisible"] = False
     else:
         d["videoFrames"][11] = 1
     assert not recording_is_complete(measured, 10, d, errors)
+
+
+@pytest.mark.parametrize(
+    "problem",
+    ["slow-camera", "missing-data", "missing-camera", "no-sample", "nan", "infinite"],
+)
+def test_playback_metrics_do_not_add_a_new_benchmark_stop_condition(problem):
+    from tools.vlm_benchmark.recording import playback_quality, recording_is_complete
+
+    d = {
+        "layout": "single-video",
+        "sawPlaying": True,
+        "finalPainted": True,
+        "pendingEvidence": 0,
+        "mediaErrors": [],
+        "maxPollGapSeconds": 0.2,
+        "maxPlaybackGapSeconds": 0.5,
+        "videoFrames": [420] * 12,
+        "playback": [{"seconds": 30.0, "frames": 420} for _ in range(12)],
+    }
+    measured = {"duration_seconds": 35}
+    assert recording_is_complete(measured, 35, d, [])
+    if problem == "slow-camera":
+        # One camera advances steadily at 2 FPS; a whole-screen average hides it.
+        d["playback"][11]["frames"] = 60
+    elif problem == "missing-data":
+        d.pop("playback")
+    elif problem == "missing-camera":
+        d["playback"].pop()
+    elif problem == "no-sample":
+        d["playback"][11]["seconds"] = 0
+    elif problem == "nan":
+        d["playback"][11]["seconds"] = float("nan")
+    else:
+        d["playback"][11]["frames"] = float("inf")
+    quality = playback_quality(d)
+    assert quality["measurement_complete"] is (problem == "slow-camera")
+    if problem == "slow-camera":
+        assert quality["per_stream"][11]["fps"] == 2
+    assert recording_is_complete(measured, 35, d, [])
+
+
+def test_recording_report_exposes_measured_playback_instead_of_encoder_fps(tmp_path):
+    from tools.vlm_benchmark.mode_report import recording_links
+    from tools.vlm_benchmark.recording import playback_quality
+
+    quality = playback_quality(
+        {
+            "layout": "single-video",
+            "videoFrames": [60, 450],
+            "playback": [{"seconds": 30, "frames": 60}, {"seconds": 30, "frames": 450}],
+        }
+    )
+    text = recording_links(
+        tmp_path,
+        {"id": "stage", "recording": {"complete": False, "playback_quality": quality}},
+    )
+    assert "2.00–15.00 FPS" in text  # noqa: RUF001
+    assert "帧率仅作记录，不作为中止条件" in text  # noqa: RUF001
+    assert "最低 12" not in text
 
 
 def test_input_pts_and_preview_keep_the_original_duration(tmp_path):
@@ -98,6 +161,97 @@ def test_input_pts_and_preview_keep_the_original_duration(tmp_path):
 
 def args():
     return modes.parser().parse_args(["--monitor", "--streams", "1"])
+
+
+@pytest.mark.skipif(
+    os.environ.get("VLM_MONITOR_BROWSER_TESTS") != "1",
+    reason="opt-in installed Chromium integration",
+)
+@pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
+def test_single_video_twelve_streams_without_evidence_or_tracking(tmp_path, mode):
+    from fractions import Fraction
+
+    from PIL import Image
+    from playwright.sync_api import sync_playwright
+
+    from tools.vlm_benchmark.recording import playback_quality
+    from tools.vlm_multistream_benchmark import decode
+
+    av = pytest.importorskip("av")
+    source = tmp_path / "source.mp4"
+    with av.open(str(source), "w") as writer:
+        stream = writer.add_stream("libx264", rate=25)
+        stream.width, stream.height, stream.pix_fmt = 96, 64, "yuv420p"
+        for n in range(100):
+            frame = av.VideoFrame.from_image(Image.new("RGB", (96, 64), (n, 0, 0)))
+            frame.pts, frame.time_base = n, Fraction(1, 25)
+            for packet in stream.encode(frame):
+                writer.mux(packet)
+        for packet in stream.encode():
+            writer.mux(packet)
+    options = args()
+    options.monitor_layout = "single-video"
+    frames = decode(source, 2.5, 720, 90)
+    requests = []
+    with LiveMonitor(tmp_path, [frames], options) as monitor:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        monitor.begin({**job(), "streams": 12, "mode": mode, "duration": 3}, stage)
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": 1920, "height": 1080})
+            page.on("request", lambda request: requests.append(request.url))
+            page.goto(monitor.url + "?tracking=on")  # Cannot override the saved layout.
+            page.wait_for_function("window.monitorReady")
+            assert page.locator("video").count() == 12
+            assert page.locator("canvas, img, .tracking-note").count() == 0
+            assert "结果对应的证据帧" not in page.locator("body").inner_text()
+            monitor.source_started(time.monotonic(), [0] * 12)
+            lanes = ["information", "grounding"] if mode == "parallel" else [
+                "information" if mode == "events" else "grounding"
+            ]
+            for camera in range(12):
+                for lane in lanes:
+                    monitor.result(camera, result(2, lane))
+            page.wait_for_function(
+                "n => document.querySelectorAll('.chip.positive').length === n",
+                arg=12 * len(lanes),
+            )
+            page.wait_for_function(
+                "window.monitorDiagnostics.videoFrames.length === 12 && "
+                "window.monitorDiagnostics.videoFrames.every(n => n > 20) && "
+                "window.monitorDiagnostics.playback.every(row => row.seconds >= 2)"
+            )
+            monitor.draining()
+            monitor.finish({"lanes": {}, "input_timing_valid": True,
+                            "all_drained": True, "result_records_missing": 0})
+            page.wait_for_function("window.monitorDiagnostics.phases.includes('finished')")
+            rects = page.locator(".camera, #summary").evaluate_all(
+                "es => es.map(e => ({height:innerHeight, "
+                "bottom:e.getBoundingClientRect().bottom}))"
+            )
+            assert all(r["bottom"] <= r["height"] for r in rects), rects
+            page.wait_for_function("window.finalPainted")
+            d = page.evaluate("window.monitorDiagnostics")
+            assert d["layout"] == "single-video" and not d["trackingEnabled"]
+            assert d["pendingEvidence"] == d["evidenceFramesPainted"] == 0
+            assert d["allCamerasVisible"]
+            assert not d["mediaErrors"]
+            assert all(row["frames"] > 10 and row["fps"] > 10 for row in d["playback"])
+            assert playback_quality(d)["measurement_complete"], d["playback"]
+            assert not any("/frame/" in r or "/tracking/" in r for r in requests)
+            if mode != "events":
+                # Hiding UI boxes does not remove the model's localization record.
+                assert monitor.snapshot()["cameras"][0]["lanes"]["grounding"]["objects"]
+            browser.close()
+
+
+def test_single_video_does_not_silently_fall_back_to_sampled_images(tmp_path):
+    options = args()
+    options.monitor_layout = "single-video"
+    with pytest.raises(ValueError, match="actual video"):
+        with LiveMonitor(tmp_path, [[jpeg()]], options):
+            pass
 
 
 def job():
@@ -167,7 +321,9 @@ def test_monitor_keeps_lanes_and_real_frame_mapping_without_backdating(tmp_path)
     r = result(5)
     monitor.result(0, r)
     monitor.result(0, r)  # Duplicate polling must not inflate completeness.
-    monitor.result(0, result(2))  # Late old response cannot overwrite newer state.
+    old = result(2)
+    old["historical_only"] = True
+    monitor.result(0, old)  # Late old response cannot overwrite newer state.
     monitor.result(0, result(5, "grounding", seconds=2))
     snapshot = monitor.snapshot()
     camera = snapshot["cameras"][0]

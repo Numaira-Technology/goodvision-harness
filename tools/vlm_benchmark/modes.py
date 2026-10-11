@@ -31,13 +31,22 @@ sys.path.insert(0, str(ROOT / "src"))
 from PIL import Image
 
 from goodvision_harness.config import load_config
-from goodvision_harness.model_api import ModelAPISettings, environment_api_key
+from goodvision_harness.model_api import ModelAPISettings
+from goodvision_harness.vlm_admission import MAX_PER_STREAM_CONCURRENCY
 from goodvision_harness.vlm_compact_model import event_response_format
+from goodvision_harness.vlm_event_policy import annotation_policy, event_policy_snapshot
 from goodvision_harness.vlm_independent import _inspector
 from tools.vlm_benchmark.lock import acquire
 from tools.vlm_benchmark.mode_report import render_modes
 from tools.vlm_benchmark.recording import save_recording
 from tools.vlm_benchmark.report import write_json
+from tools.vlm_benchmark.routes import (
+    DASHSCOPE_MODEL,
+    FIXED_OPENROUTER_PROVIDERS,
+    mode_api_key,
+    model_name,
+    validate_route,
+)
 from tools.vlm_benchmark.telemetry import Telemetry
 from tools.vlm_multistream_benchmark import (
     LABELS,
@@ -75,6 +84,31 @@ def mode_inspector(config):
 
 
 def validate(args):
+    if args.backend != "local":
+        validate_route(args.backend, args.endpoint, args.provider_only)
+    args.model = model_name(args.backend, args.model)
+    # Public name matches the UI; keep compact as the production lane name.
+    args.modes = ["compact" if m == "grounding" else m for m in args.modes]
+    if getattr(args, "grounding_format", "legacy") not in {"legacy", "lean-v1"}:
+        raise ValueError("invalid grounding format")
+    if getattr(args, "provider_only", "") not in ("", *FIXED_OPENROUTER_PROVIDERS):
+        raise ValueError("invalid fixed provider")
+    if args.backend != "openrouter" and getattr(args, "provider_only", ""):
+        raise ValueError("fixed providers require OpenRouter")
+    preferred = getattr(args, "provider_prefer", "")
+    if preferred and (
+        preferred != "alibaba" or args.backend != "openrouter" or args.provider_only
+    ):
+        raise ValueError("preferred Alibaba requires OpenRouter without provider-only")
+    if getattr(args, "require_route_match", False) and (
+        args.backend != "openrouter"
+        or (args.provider_only != "alibaba" and preferred != "alibaba")
+    ):
+        raise ValueError(
+            "route verification requires fixed or preferred OpenRouter Alibaba"
+        )
+    if getattr(args, "monitor_layout", "evidence") not in {"evidence", "single-video"}:
+        raise ValueError("invalid monitor layout")
     if not 0 <= args.monitor_port <= 65535 or (args.headed and not args.record):
         raise ValueError("invalid monitor port or --headed without --record")
     if not args.model.strip() or len(args.model) > 200:
@@ -95,10 +129,39 @@ def validate(args):
             raise ValueError(f"invalid {name}")
     if not 1 <= args.repeats <= 3 or not 1 <= args.global_limit <= 128:
         raise ValueError("invalid repeats/global_limit")
-    if not 1 <= args.per_stream_limit <= min(4, args.global_limit):
+    if not 1 <= args.per_stream_limit <= min(
+        MAX_PER_STREAM_CONCURRENCY, args.global_limit
+    ):
         raise ValueError("invalid shared per-stream concurrency")
-    if not 1 <= args.local_concurrency <= 4:
+    if not 1 <= args.local_concurrency <= MAX_PER_STREAM_CONCURRENCY:
         raise ValueError("invalid local concurrency")
+    sweep = getattr(args, "grounding_concurrency_sweep", [])
+    parallel_sweep = getattr(args, "parallel_concurrency_sweep", [])
+    if getattr(args, "parallel_scheduling", "independent") not in {
+        "independent", "paired"
+    }:
+        raise ValueError("invalid parallel scheduling")
+    if parallel_sweep and (
+        parallel_sweep != [4, 6, 8]
+        or sweep or args.modes != ["parallel"] or args.streams != [12]
+        or args.grounding_format != "lean-v1" or args.soak_seconds
+    ):
+        raise ValueError(
+            "parallel sweep requires 4 6 8, twelve streams, parallel only, "
+            "lean-v1, no grounding sweep and no soak"
+        )
+    if sweep and (
+        sweep != sorted(set(sweep))
+        or any(n not in {4, 6, 8} for n in sweep)
+        or args.modes != ["compact"]
+        or args.streams != [12]
+        or args.grounding_format != "lean-v1"
+        or args.soak_seconds
+    ):
+        raise ValueError(
+            "grounding sweep requires unique increasing 4/6/8, twelve streams, "
+            "grounding only, lean-v1, and no soak"
+        )
     if (
         not args.streams
         or sorted(set(args.streams)) != args.streams
@@ -129,7 +192,7 @@ def validate(args):
                 raise ValueError(
                     "endpoint URLs must be HTTP(S), without credentials or query"
                 )
-    if args.backend == "openrouter" and (args.endpoint or args.metrics_url):
+    if args.backend != "local" and args.metrics_url:
         raise ValueError("external API mode cannot claim local inference metrics")
     endpoint = args.endpoint or "http://127.0.0.1:8000/v1/chat/completions"
     if args.metrics_url:
@@ -171,6 +234,42 @@ def validate(args):
 
 
 def jobs(args):
+    if getattr(args, "parallel_concurrency_sweep", []):
+        arms = [("independent", 4), ("paired", 4), ("paired", 6), ("paired", 8)]
+        for repetition in range(1, args.repeats + 1):
+            order = arms if repetition % 2 else list(reversed(arms))
+            for scheduling, concurrency in order:
+                yield {
+                    "id": (
+                        f"12-streams-parallel-{scheduling}"
+                        f"-c{concurrency}-repeat-{repetition}"
+                    ),
+                    "mode": "parallel", "streams": 12, "repeat": repetition,
+                    "phase": "measurement", "duration": args.duration,
+                    "parallel_scheduling": scheduling,
+                    "limits": {
+                        "global_limit": 12 * concurrency,
+                        "per_stream_limit": concurrency,
+                        "local_concurrency": concurrency,
+                    },
+                }
+        return
+    sweep = getattr(args, "grounding_concurrency_sweep", [])
+    if sweep:
+        for repetition in range(1, args.repeats + 1):
+            order = sweep if repetition % 2 else list(reversed(sweep))
+            for concurrency in order:
+                yield {
+                    "id": f"12-streams-grounding-c{concurrency}-repeat-{repetition}",
+                    "mode": "compact", "streams": 12, "repeat": repetition,
+                    "phase": "measurement", "duration": args.duration,
+                    "limits": {
+                        "global_limit": 12 * concurrency,
+                        "per_stream_limit": concurrency,
+                        "local_concurrency": concurrency,
+                    },
+                }
+        return
     for count in args.streams:
         for repetition in range(1, args.repeats + 1):
             order = args.modes if repetition % 2 else list(reversed(args.modes))
@@ -187,14 +286,18 @@ def jobs(args):
 
 def request_budget(args):
     lanes = sum(2 if mode == "parallel" else 1 for mode in args.modes)
+    arms = len(getattr(args, "grounding_concurrency_sweep", [])) or 1
+    if getattr(args, "parallel_concurrency_sweep", []):
+        arms = 4  # independent 48, paired 48/72/96; both lanes count below
     measurements = (
         sum(args.streams)
         * args.repeats
         * lanes
+        * arms
         * planned_observations(args.duration, args.observation_fps)
     )
     warmups = (
-        (1 + len(args.streams) * args.repeats)
+        (1 + len(args.streams) * args.repeats * arms)
         * lanes
         * planned_observations(args.warmup_seconds, args.observation_fps)
     )
@@ -219,6 +322,8 @@ def configure(args):
     parameters = (
         {"chat_template_kwargs": {"enable_thinking": False}}
         if args.backend == "local"
+        else {}
+        if args.backend == "dashscope"
         else {
             "reasoning": {"enabled": False},
             "provider": {
@@ -233,6 +338,14 @@ def configure(args):
         # This Instruct endpoint does not advertise reasoning support. With
         # require_parameters=True even a disabled reasoning flag can filter routes.
         parameters.pop("reasoning", None)
+    if getattr(args, "provider_only", ""):
+        parameters["provider"].update(only=[args.provider_only], allow_fallbacks=False)
+        parameters["provider"].pop("ignore", None)
+    if getattr(args, "provider_prefer", ""):
+        parameters["provider"].update(
+            order=[args.provider_prefer], allow_fallbacks=True
+        )
+        parameters["provider"].pop("ignore", None)
     settings = ModelAPISettings(
         provider=args.backend,
         endpoint=args.endpoint or "",
@@ -244,7 +357,7 @@ def configure(args):
         aiclub=settings,
         inference=replace(
             base.inference,
-            model=args.model,
+            model=model_name(args.backend, args.model),
             request_parameters={**parameters, "temperature": 0},
         ),
         runtime=replace(
@@ -262,8 +375,15 @@ def usable(stage):
         stage["input_timing_valid"]
         and stage["all_drained"]
         and not stage["result_records_missing"]
+        and stage.get("result_retention", {}).get("valid") is not False
+        and admission_drained(stage)
         and all(row["complete_valid_results"] for row in stage["lanes"].values())
     )
+
+
+def admission_drained(stage):
+    state = stage.get("shared_admission") or {}
+    return state.get("active", 0) == 0 and state.get("waiting", 0) == 0
 
 
 def run(args):
@@ -284,11 +404,7 @@ def run(args):
 
 def _run(args):
     base = configure(args)
-    if (
-        args.real
-        and args.backend != "local"
-        and not environment_api_key(base.model_api)
-    ):
+    if args.real and args.backend != "local" and not mode_api_key(base.model_api):
         raise ValueError("configured API credential is unavailable")
     output = args.output or ROOT / "outputs/vlm-modes" / datetime.now(
         timezone.utc
@@ -326,6 +442,11 @@ def _run(args):
         document["active_stage"] = job["id"]
         render_modes(output, document)
         options = SimpleNamespace(**vars(args))
+        for name, value in job.get("limits", {}).items():
+            setattr(options, name, value)
+        options.parallel_scheduling = job.get(
+            "parallel_scheduling", getattr(args, "parallel_scheduling", "independent")
+        )
         options.duration, options.output_mode, options.deadline = (
             job["duration"],
             job["mode"],
@@ -341,7 +462,7 @@ def _run(args):
             with Telemetry(
                 telemetry_file,
                 args.metrics_url if args.real else None,
-                environment_api_key(base.model_api) if args.real else "",
+                mode_api_key(base.model_api) if args.real else "",
             ) as telemetry:
                 result = run_stage(
                     options,
@@ -389,9 +510,30 @@ def _run(args):
             "telemetry_file": str(telemetry_file.relative_to(output)),
             "recording": recording,
         }
+        if getattr(args, "grounding_concurrency_sweep", []):
+            from tools.vlm_benchmark.grounding_sweep_report import analyze
+
+            saved["capacity"] = analyze(
+                result, output / saved["raw_reports"], real=args.real
+            )
+        if getattr(args, "parallel_concurrency_sweep", []):
+            from tools.vlm_benchmark.parallel_sweep_report import analyze
+
+            saved["capacity"] = analyze(
+                result, output / saved["raw_reports"], real=args.real
+            )
         document["jobs"].append(saved)
+        if args.real and getattr(args, "require_route_match", False):
+            from tools.vlm_benchmark.route_audit import audit
+
+            saved["route_audit"] = audit(
+                output / saved["raw_reports"], result,
+                allow_other_providers=bool(getattr(args, "provider_prefer", "")),
+            )
         document.pop("active_stage", None)
         render_modes(output, document)
+        if saved.get("route_audit", {}).get("valid") is False:
+            raise RuntimeError("model/provider response mismatch or unverified route")
         if recording and not recording.get("complete"):
             raise RuntimeError(
                 "incomplete browser recording; stopped subsequent stages"
@@ -401,8 +543,24 @@ def _run(args):
             f"/ repeat {job['repeat']}",
             flush=True,
         )
-        if any(r["http_status_counts"].get("429") for r in result["lanes"].values()):
-            raise RuntimeError("HTTP 429; stopped subsequent stages")
+        for status in ("401", "402", "403", "429"):
+            if any(
+                r["http_status_counts"].get(status) for r in result["lanes"].values()
+            ):
+                raise RuntimeError(f"HTTP {status}; stopped subsequent stages")
+        if saved.get("capacity", {}).get("accounting_valid") is False:
+            raise RuntimeError(
+                "incomplete request accounting; stopped subsequent stages"
+            )
+        if result.get("result_retention", {}).get("valid") is False:
+            raise RuntimeError(
+                "submitted/finished/published/retained result counts disagree; "
+                "stopped subsequent stages"
+            )
+        if not admission_drained(result):
+            raise RuntimeError(
+                "admission slots remain after drain; invalid capacity trial"
+            )
         if (
             not result["all_drained"]
             or not result["input_timing_valid"]
@@ -419,14 +577,36 @@ def _run(args):
         manifest = {
             "settings": settings,
             "model": args.model,
+            "model_api": {
+                "provider": base.model_api.provider,
+                "endpoint": base.model_api.endpoint,
+                "structured_output": "json_object_with_local_validation"
+                if (args.backend == "dashscope" and args.model == DASHSCOPE_MODEL)
+                or (
+                    args.backend == "openrouter"
+                    and args.model == "qwen/qwen3.5-35b-a3b"
+                    and (args.provider_only == "alibaba"
+                         or getattr(args, "provider_prefer", "") == "alibaba")
+                )
+                else "mode_specific",
+            },
             "git_revision": revision,
             "platform": platform.platform(),
             "python": platform.python_version(),
             "event_labels": list(LABELS),
+            "event_policy": event_policy_snapshot(LABELS),
             "request_parameters": base.inference.request_parameters,
             "image_side": 720,
             "jpeg_quality": 90,
             "output_limits": {"events": 160, "compact": 1600},
+            "grounding_format": args.grounding_format,
+            "grounding_json_object_shape_example": (
+                args.model == "qwen/qwen3.5-35b-a3b"
+                and args.grounding_format == "lean-v1"
+                and args.backend == "openrouter"
+                and (args.provider_only == "alibaba"
+                     or getattr(args, "provider_prefer", "") == "alibaba")
+            ),
             "http_timeouts": {
                 "events": min(5, args.http_timeout),
                 "compact": args.http_timeout,
@@ -444,12 +624,14 @@ def _run(args):
                     *sorted((ROOT / "src/goodvision_harness").glob("*.py")),
                     *sorted((ROOT / "tools/vlm_benchmark").glob("*.py")),
                     *sorted((ROOT / "tools/vlm_benchmark").glob("monitor.*")),
+                    ROOT / "tools/vlm_benchmark/preview_tracking.js",
                     ROOT / "tools/vlm_multistream_benchmark.py",
                 ]
             },
             "videos": [{"path": str(p), "sha256": sha(p)} for p in args.video],
         }
         write_json(output / "manifest.json", manifest)
+        write_json(output / "event-policy.json", annotation_policy(LABELS))
 
         framesets = [
             decode(p, max(2, args.observation_fps * 2), 720, 90) for p in args.video
@@ -544,7 +726,9 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--real", action="store_true")
     p.add_argument("--plan-only", action="store_true")
-    p.add_argument("--backend", choices=["openrouter", "local"], default="openrouter")
+    p.add_argument(
+        "--backend", choices=["openrouter", "dashscope", "local"], default="openrouter"
+    )
     p.add_argument(
         "--model", default=DEFAULT_MODEL, help="exact served model name/alias"
     )
@@ -560,7 +744,33 @@ def parser():
         help="record this as a different deployment",
     )
     p.add_argument("--video", type=Path, action="append", default=[])
-    p.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
+    p.add_argument(
+        "--modes", nargs="+", choices=(*MODES, "grounding"), default=list(MODES)
+    )
+    p.add_argument(
+        "--grounding-format", choices=["legacy", "lean-v1"], default="legacy"
+    )
+    p.add_argument(
+        "--grounding-concurrency-sweep", type=int, nargs="+", default=[],
+        help="grounding only: compare per-stream 4/6/8; shared/local limits match",
+    )
+    p.add_argument(
+        "--parallel-scheduling", choices=["independent", "paired"],
+        default="independent",
+    )
+    p.add_argument(
+        "--parallel-concurrency-sweep", type=int, nargs="+", default=[],
+        help="4 6 8: independent 48, paired 48/72/96 (reverse next round)",
+    )
+    p.add_argument(
+        "--provider-only", choices=["", *FIXED_OPENROUTER_PROVIDERS], default=""
+    )
+    p.add_argument("--require-route-match", action="store_true")
+    p.add_argument("--provider-prefer", choices=["", "alibaba"], default="")
+    p.add_argument(
+        "--monitor-layout", choices=["evidence", "single-video"], default="evidence",
+        help="single-video: 15 FPS source video, no evidence pane or box overlays",
+    )
     p.add_argument("--streams", nargs="+", type=int, default=[1, 4, 8, 12])
     p.add_argument("--duration", type=float, default=60)
     p.add_argument("--repeats", type=int, default=2)

@@ -20,7 +20,7 @@ from .scene_runtime import TemporalInspection
 MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
 MAX_REQUEST_BYTES = 23 * 1024 * 1024
 MAX_COMPLETION_BYTES = 256 * 1024
-INSPECTION_KINDS = frozenset({"temporal", "full", "compact", "events"})
+INSPECTION_KINDS = frozenset({"temporal", "full", "compact", "events", "lean-v1"})
 _OPTION_DEFAULTS = {"max_tokens": 1600, "max_image_side": 720, "jpeg_quality": 90}
 
 
