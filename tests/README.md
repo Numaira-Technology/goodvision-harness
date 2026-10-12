@@ -20,6 +20,12 @@ skips dashboard checks; FFmpeg is required for the full evidence suite. CI
 installs the dependencies on Linux and Windows. Treat skipped tests as missing
 coverage for that local run, not evidence that the feature works.
 
+CI runs `test_whep_integration.py` first in a separate pytest process, then runs
+the remaining suite with that file excluded. This isolates the real-time
+receiver stress check from process state retained by the rest of the suite;
+its resolution, workload and frame-rate assertions are unchanged. Both steps
+must pass, and the remaining suite still runs if the isolated check fails.
+
 For focused iteration, select the modules that own the behavior:
 
 | Area | Representative tests |

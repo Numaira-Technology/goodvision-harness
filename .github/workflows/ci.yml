@@ -47,6 +47,13 @@ jobs:
       - name: Install video encoder (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
+      # Keep the real-time receiver stress check out of the long-lived pytest
+      # process. Its frame-rate requirement must not include resources retained
+      # by thousands of unrelated tests; all original assertions still run.
+      - name: Run isolated WHEP receiver stress check
+        id: whep
+        run: python -m pytest -o addopts='' -v --durations=20 -o faulthandler_timeout=60 tests/test_whep_integration.py
       - name: Run regression suite (no models or service credentials)
+        if: ${{ !cancelled() && steps.whep.outcome != 'skipped' }}
         # Keep the active test and thread stacks visible if a worker gets stuck.
-        run: python -m pytest -o addopts='' -v --durations=20 -o faulthandler_timeout=60
+        run: python -m pytest -o addopts='' -v --durations=20 -o faulthandler_timeout=60 --ignore=tests/test_whep_integration.py
