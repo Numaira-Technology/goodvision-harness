@@ -538,7 +538,7 @@ def run(args, *, inspector_factory=None):
         "reference_window_slots": len(planned),
         "mode_settings": mode_settings,
         "source_hashes": {
-            str(p.relative_to(ROOT)): sha(p.read_bytes())
+            p.relative_to(ROOT).as_posix(): sha(p.read_bytes())
             for p in [
                 Path(__file__),
                 ROOT / "tools/vlm_benchmark/behavior_report.py",

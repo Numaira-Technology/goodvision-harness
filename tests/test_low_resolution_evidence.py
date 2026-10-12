@@ -92,7 +92,7 @@ def test_low_resolution_replay_preserves_episode_count_and_full_clip(
     record = evaluate_variant(
         tmp_path / "replay", Variant(width, height, fps, scenario)
     )
-    assert record["passed"], record
+    assert record["passed"], json.dumps(record, indent=2)
     assert record["event_count"] == (2 if scenario == "split" else 1)
     assert record["video_count"] == record["event_count"]
     assert all(clip["decoded_frames"] == 15 for clip in record["clips"])
