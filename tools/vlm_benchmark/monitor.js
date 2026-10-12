@@ -26,7 +26,10 @@
     document.body.classList.toggle("compact", count > 4);
     document.body.classList.toggle("single-video", singleVideo);
     document.body.classList.toggle("parallel-mode", data.mode === "parallel");
-    document.body.classList.toggle("tracking-preview", trackingEnabled && data.lanes.includes("grounding"));
+    // The YOLO detector preview supplies its own boxes, so enable tracking on
+    // the detector flag even without a VLM grounding lane (events-only runs).
+    window.previewHasBoxes = data.lanes.includes("grounding") || !!data.detector;
+    document.body.classList.toggle("tracking-preview", trackingEnabled && window.previewHasBoxes);
     document.body.classList.toggle("multicam", count > 1);
     byId("grid").style.setProperty("--cols", count > 8 ? 4 : count > 4 ? 3 : count > 1 ? 2 : 1);
     byId("grid").style.maxWidth = count === 1 ? "1340px" : "none";
@@ -52,10 +55,10 @@
       const canvas = node("canvas"); canvas.width = 640; canvas.height = 360;
       const empty = node("div","empty","等待对应结果"); evidenceScreen.append(canvas,empty);
       let trackCanvas=null,trackNote=null;
-      if(video && trackingEnabled && data.lanes.includes("grounding")) {
+      if(video && trackingEnabled && window.previewHasBoxes) {
         trackCanvas=node("canvas");trackCanvas.width=640;trackCanvas.height=360;
         trackCanvas.className="tracking-overlay";sourceScreen.append(trackCanvas);
-        source.firstChild.textContent="当前播放 · 蓝框为跟踪估计";
+        source.firstChild.textContent=data.detector ? "当前播放 · YOLO 检测框(按事件变色)" : "当前播放 · 蓝框为跟踪估计";
         evidence.firstChild.textContent="模型原始定位 · 对应证据帧";
         trackNote=node("div","tracking-note","等待视频播放与定位");
       }
