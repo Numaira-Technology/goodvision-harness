@@ -173,6 +173,9 @@ class LiveMonitor:
                 "summary": None,
                 "source_count": len(self.framesets),
                 "lanes": list(self.latencies),
+                # The browser enables the YOLO box preview on this flag even when
+                # there is no VLM grounding lane (events-only runs).
+                "detector": bool(self.detector_url),
                 "cameras": [
                     {
                         "camera": i + 1,
@@ -379,9 +382,15 @@ class LiveMonitor:
         ):
             raise ValueError("invalid preview metadata")
         with self.lock:
+            # The optical-flow preview needs VLM grounding boxes as seeds; the
+            # YOLO detector preview supplies its own boxes, so it only needs a
+            # live stage (works in events-only mode, no grounding lane).
             if (
                 stage != self.state.get("stage")
-                or "grounding" not in self.state.get("lanes", [])
+                or (
+                    not self.detector_url
+                    and "grounding" not in self.state.get("lanes", [])
+                )
                 or not 0 <= camera < len(self.state["cameras"])
             ):
                 raise ValueError("unknown preview")
@@ -456,29 +465,36 @@ class LiveMonitor:
 
         Calls the detector worker's /v1/tracks with this camera's own stable
         session id and a monotonic sequence, so each preview stream keeps stable
-        track_ids. Any detector hiccup degrades to an empty frame, never an error.
+        track_ids. Calls are serialized across cameras so a single-GPU worker is
+        never flooded with concurrent requests (which it rejects with 429); each
+        stream simply gets boxes in round-robin. Any hiccup degrades to an empty
+        frame (keeping event_state so the UI stays in detector mode), never raises.
         """
         with self._detector_lock:
             seq = self._detector_seq.get(key, 0) + 1
             self._detector_seq[key] = seq
-        session_id = f"preview-{key[0]}-{key[1]}"
-        request = urllib.request.Request(
-            f"{self.detector_url}/v1/tracks",
-            data=jpeg,
-            method="POST",
-            headers={
-                "Content-Type": "image/jpeg",
-                "x-goodvision-stream-session-id": session_id,
-                "x-goodvision-frame-sequence": str(seq),
-                "x-goodvision-timestamp-seconds": repr(max(0.0, at)),
-                "X-GoodVision-Detector-Model": self.detector_model,
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=2.0) as response:
-                snapshot = json.loads(response.read())
-        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
-            return {"status": "detector_unavailable", "objects": []}
+            session_id = f"preview-{key[0]}-{key[1]}"
+            request = urllib.request.Request(
+                f"{self.detector_url}/v1/tracks",
+                data=jpeg,
+                method="POST",
+                headers={
+                    "Content-Type": "image/jpeg",
+                    "x-goodvision-stream-session-id": session_id,
+                    "x-goodvision-frame-sequence": str(seq),
+                    "x-goodvision-timestamp-seconds": repr(max(0.0, at)),
+                    "X-GoodVision-Detector-Model": self.detector_model,
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=2.0) as response:
+                    snapshot = json.loads(response.read())
+            except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+                return {
+                    "status": "detector_unavailable",
+                    "event_state": event_state,
+                    "objects": [],
+                }
         objects = [
             {"track_id": o["track_id"], "bbox": o["bbox"], "event_state": event_state}
             for o in snapshot.get("objects", [])

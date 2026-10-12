@@ -10,6 +10,7 @@ window.PreviewTracking = class {
     this.captureCanvas.height = 180;
     this.busy = false; this.closed = false; this.epoch = 0; this.generation = 0;
     this.lastPaint = 0; this.lastTime = -1; this.playing = false;
+    this.lastObjects = []; this.lastObjectsAt = 0;
     this.stats = {frames:0, painted:0, requests:0, lost:0, errors:0, framesWithBoxes:0, samples:[], busySkipped:0, staleResponses:0,
       maxPaintGapSeconds:0, roundTripSeconds:[], computeSeconds:[], lastStatus:"waiting_for_grounding"};
     this.ctx = canvas.getContext("2d");
@@ -59,12 +60,15 @@ window.PreviewTracking = class {
     if(this.captureCanvas.height!==height) this.captureCanvas.height=height;
     this.captureContext.drawImage(this.video,0,0,320,height);
     // A slow tracker cannot freeze the video or leave an old person's box up.
+    // Detector boxes update in round-robin across streams; keep the last ones
+    // drawn (briefly) so they persist on live frames instead of flickering.
+    const held = (this.lastObjects && now-this.lastObjectsAt<1200) ? this.lastObjects : [];
     if(this.busy) {
       this.stats.busySkipped++;
-      if(now-this.lastPaint>100) {this.paint(this.captureCanvas);this.note.textContent="跟踪处理中 · 暂不显示旧框";}
+      if(now-this.lastPaint>100) {this.paint(this.captureCanvas,held);if(!held.length)this.note.textContent="跟踪处理中 · 暂不显示旧框";}
       return;
     }
-    if(now-this.lastPaint>150) this.paint(this.captureCanvas);
+    if(now-this.lastPaint>150) this.paint(this.captureCanvas,held);
     this.busy=true;this.stats.requests++;
     const generation=this.generation, epoch=this.epoch, started=performance.now();
     const snapshot=document.createElement("canvas");snapshot.width=320;snapshot.height=height;
@@ -90,6 +94,7 @@ window.PreviewTracking = class {
       // Bounded diagnostics even in a long monitoring session.
       if(this.stats.roundTripSeconds.length>5000) {this.stats.roundTripSeconds.shift();this.stats.computeSeconds.shift();}
       this.paint(snapshot,result.objects);
+      if(yolo){this.lastObjects=result.objects;this.lastObjectsAt=performance.now();}
       this.note.textContent = yolo ?
           (result.status==="detector_unavailable" ? "检测器暂不可用 · 不显示框" :
            result.objects.length ? `YOLO 检测 ${result.objects.length} 人${result.event_state==="alert"?" · 事件告警":""}` :
