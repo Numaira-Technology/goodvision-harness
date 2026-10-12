@@ -3,12 +3,14 @@ import time
 from dataclasses import replace
 from queue import Queue
 from threading import Event, Thread
+from types import SimpleNamespace
 
 import pytest
 from test_vlm_admission import settings, wait_until
 from test_vlm_independent import config, jpeg, utc_now, verdict
 from test_vlm_parallel import OutputQueue
 
+from goodvision_harness import vlm_admission
 from goodvision_harness.scene_evidence import EvidenceFrame
 from goodvision_harness.vlm_admission import AdmissionError, SharedAdmission
 from goodvision_harness.vlm_independent import SourceSample, run_vlm_process
@@ -98,13 +100,23 @@ def test_pair_priority_is_scoped_and_keeps_cross_camera_fairness(tmp_path):
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
-def test_paired_waiter_expires_or_cancels_without_leaking_capacity(tmp_path, cancelled):
+def test_paired_waiter_expires_or_cancels_without_leaking_capacity(
+    tmp_path, cancelled, monkeypatch
+):
+    # Observe the registered waiter before expiring it. Real SQLite I/O on a
+    # busy host can otherwise consume its entire 100 ms lifetime before polling.
+    now = [1000.0]
+    monkeypatch.setattr(
+        vlm_admission,
+        "time",
+        SimpleNamespace(monotonic=lambda: now[0], sleep=time.sleep),
+    )
     gate = SharedAdmission(
         settings(
             tmp_path, global_limit=1, per_stream_limit=1, queue_timeout_seconds=0.1
         )
     )
-    with gate.slot("holder", stop=Event(), source_deadline=time.monotonic() + 3):
+    with gate.slot("holder", stop=Event(), source_deadline=now[0] + 3):
         stop, errors = Event(), []
 
         def wait():
@@ -114,7 +126,7 @@ def test_paired_waiter_expires_or_cancels_without_leaking_capacity(tmp_path, can
                     lane="compact",
                     pair_id="w",
                     stop=stop,
-                    source_deadline=time.monotonic() + 3,
+                    source_deadline=now[0] + 3,
                 ):
                     pytest.fail("capacity was bypassed")
             except AdmissionError as exc:
@@ -122,13 +134,22 @@ def test_paired_waiter_expires_or_cancels_without_leaking_capacity(tmp_path, can
 
         t = Thread(target=wait)
         t.start()
-        wait_until(lambda: gate.snapshot()["waiting"] == 1)
-        if cancelled:
+        try:
+            wait_until(lambda: gate.snapshot()["waiting"] == 1)
+            if cancelled:
+                stop.set()
+            else:
+                now[0] += 0.2
+            t.join(2)
+            assert not t.is_alive()
+            assert errors == [
+                "admission_cancelled" if cancelled else "admission_timeout"
+            ]
+            assert gate.snapshot()["waiting"] == 0
+            assert gate.snapshot()["active"] == 1
+        finally:
             stop.set()
-        t.join(2)
-        assert not t.is_alive()
-        assert errors == ["admission_cancelled" if cancelled else "admission_timeout"]
-        assert gate.snapshot()["waiting"] == 0
+            t.join(3)
     assert gate.snapshot()["active"] == 0
 
 
