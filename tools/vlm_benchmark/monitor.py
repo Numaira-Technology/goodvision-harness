@@ -7,10 +7,13 @@ import bisect
 import copy
 import json
 import math
+import os
 import re
 import secrets
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -49,6 +52,17 @@ class LiveMonitor:
         self.recorder = None
         self.preview_trackers = {}
         self.preview_viewers = {}
+        # Optional: draw real YOLO detector boxes (colored by event state) in the
+        # preview instead of the VLM-seeded optical-flow estimate. Points at a
+        # running detector worker (tools/start_detector.py).
+        self.detector_url = (
+            os.environ.get("PREVIEW_DETECTOR_URL", "").strip().rstrip("/")
+        )
+        self.detector_model = (
+            os.environ.get("PREVIEW_DETECTOR_MODEL", "yolo26-s").strip()
+        )
+        self._detector_seq = {}
+        self._detector_lock = threading.Lock()
 
     def __enter__(self):
         from tools.vlm_benchmark.recording import BrowserRecorder, make_preview
@@ -391,6 +405,14 @@ class LiveMonitor:
             self.preview_viewers[client] = now
             tracker = self.preview_trackers[key]
             view = self.state["cameras"][camera]["tracking_anchor"]
+            # Box color follows the camera's latest event verdicts: red when any
+            # target event is observed, else green. Drives the preview's YOLO
+            # boxes so they change color the moment an event fires.
+            event_lane = self.state["cameras"][camera].get("lanes", {}).get("events")
+            event_state = "alert" if (
+                event_lane
+                and any(j.get("observed") for j in event_lane.get("judgments", []))
+            ) else "normal"
             frames = self.framesets[camera % len(self.framesets)]
             duration = getattr(
                 frames, "media_duration", len(frames) / self.state["sample_fps"]
@@ -423,9 +445,50 @@ class LiveMonitor:
                     or max(image.size) > 640
                 ):
                     raise ValueError("invalid preview dimensions")
+            if self.detector_url:
+                return self._yolo_track(key, at, jpeg, event_state)
             return tracker.advance(gray_frame(jpeg), at, epoch=epoch, anchor=anchor)
         finally:
             tracker.lock.release()
+
+    def _yolo_track(self, key, at, jpeg, event_state):
+        """Per-frame YOLO detector boxes (colored by event) for the preview.
+
+        Calls the detector worker's /v1/tracks with this camera's own stable
+        session id and a monotonic sequence, so each preview stream keeps stable
+        track_ids. Any detector hiccup degrades to an empty frame, never an error.
+        """
+        with self._detector_lock:
+            seq = self._detector_seq.get(key, 0) + 1
+            self._detector_seq[key] = seq
+        session_id = f"preview-{key[0]}-{key[1]}"
+        request = urllib.request.Request(
+            f"{self.detector_url}/v1/tracks",
+            data=jpeg,
+            method="POST",
+            headers={
+                "Content-Type": "image/jpeg",
+                "x-goodvision-stream-session-id": session_id,
+                "x-goodvision-frame-sequence": str(seq),
+                "x-goodvision-timestamp-seconds": repr(max(0.0, at)),
+                "X-GoodVision-Detector-Model": self.detector_model,
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=2.0) as response:
+                snapshot = json.loads(response.read())
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            return {"status": "detector_unavailable", "objects": []}
+        objects = [
+            {"track_id": o["track_id"], "bbox": o["bbox"], "event_state": event_state}
+            for o in snapshot.get("objects", [])
+            if isinstance(o.get("bbox"), dict) and o.get("track_id")
+        ]
+        return {
+            "status": "tracking" if objects else "no_person_boxes",
+            "event_state": event_state,
+            "objects": objects,
+        }
 
     def handler(self):
         monitor = self
