@@ -217,6 +217,8 @@ def test_wrong_provider_stops_at_preflight_and_marks_trial_invalid(
     options.video = [video]
     monkeypatch.setattr(modes, "mode_api_key", lambda _: "fixture-key")
     monkeypatch.setattr(modes, "decode", lambda *_: [b"fixture-frame"])
+    # This exercises route validation, not the POSIX cloud execution lock.
+    monkeypatch.setattr(modes, "acquire", lambda _: None)
 
     class QuietTelemetry:
         def __init__(self, *_):

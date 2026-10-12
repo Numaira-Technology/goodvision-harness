@@ -279,7 +279,7 @@ def test_failed_worker_removes_secret_and_does_not_start_measurement(
 
 
 def test_recording_preflight_failure_prevents_paid_calls(tmp_path, monkeypatch):
-    from tools.vlm_benchmark import cloud, modes
+    from tools.vlm_benchmark import cloud, lock, modes
 
     doc = plan(tmp_path, monkeypatch, "--real", "--streams", "12")
     root = tmp_path / "run/app"
@@ -287,6 +287,8 @@ def test_recording_preflight_failure_prevents_paid_calls(tmp_path, monkeypatch):
     secret = root.parent / "runtime-key.json"
     secret.write_text('{"key":"must-not-leak"}')
     monkeypatch.setattr(cloud, "verify_bundle", lambda _: {"videos": ["clip.mp4"]})
+    # Keep the recording-before-paid-calls contract runnable on Windows too.
+    monkeypatch.setattr(lock, "acquire", lambda _: None)
     calls = []
 
     def recording_failure(args):

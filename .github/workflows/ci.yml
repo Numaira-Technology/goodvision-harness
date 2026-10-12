@@ -48,4 +48,5 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
       - name: Run regression suite (no models or service credentials)
-        run: python -m pytest -q
+        # Keep the active test and thread stacks visible if a worker gets stuck.
+        run: python -m pytest -o addopts='' -v --durations=20 -o faulthandler_timeout=60

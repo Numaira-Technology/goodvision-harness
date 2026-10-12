@@ -4,7 +4,9 @@ import copy
 import io
 import json
 import os
+from contextlib import contextmanager
 from html.parser import HTMLParser
+from threading import Lock
 
 import pytest
 from PIL import Image
@@ -118,6 +120,33 @@ def args(packet, tmp_path, *extra):
             *extra,
         ]
     )
+
+
+@pytest.fixture
+def immediate_admission(monkeypatch):
+    """Isolate response/stop-policy tests from disk throughput and queue pressure.
+
+    Real SQLite admission, overload and latency accounting are exercised by the
+    queue tests below and test_vlm_admission.py. Those tests allow honest skips;
+    these contract tests require every fake response to reach the evaluator.
+    """
+    from tools.vlm_benchmark import behavior_queue
+
+    class ImmediateAdmission:
+        def __init__(self, settings):
+            self.settings, self.grants = settings, 0
+            self.lock = Lock()
+
+        @contextmanager
+        def slot(self, *_args, **_kwargs):
+            with self.lock:
+                self.grants += 1
+            yield 0.0
+
+        def snapshot(self):
+            return {"active": 0, "waiting": 0, "grants": self.grants}
+
+    monkeypatch.setattr(behavior_queue, "SharedAdmission", ImmediateAdmission)
 
 
 @pytest.mark.parametrize(
@@ -337,7 +366,7 @@ def test_rate_limit_stops_and_keeps_skipped_denominator(
 
 @pytest.mark.parametrize("continue_timeouts", [False, True])
 def test_repeated_timeouts_respect_explicit_policy_and_stay_failed(
-    packet, tmp_path, continue_timeouts
+    packet, tmp_path, continue_timeouts, immediate_admission
 ):
     class TimeoutInspector:
         def inspect(self, job):
@@ -350,6 +379,8 @@ def test_repeated_timeouts_respect_explicit_policy_and_stay_failed(
         packet,
         tmp_path,
         "--simulate",
+        "--simulation-time-scale",
+        "1",
         *(["--continue-on-timeout"] if continue_timeouts else []),
     )
     out = behavior.run(options, inspector_factory=lambda _: TimeoutInspector())
@@ -575,7 +606,9 @@ def test_real_path_uses_explicit_key_and_never_saves_it(packet, tmp_path, monkey
 
 
 @pytest.mark.parametrize("failure", ["incomplete", "interrupted", "close_error"])
-def test_interruption_and_bad_cleanup_preserve_reports(packet, tmp_path, failure):
+def test_interruption_and_bad_cleanup_preserve_reports(
+    packet, tmp_path, failure, immediate_admission
+):
     class Inspector(UngroundedInspector):
         def inspect(self, job):
             if failure == "interrupted":
@@ -589,7 +622,8 @@ def test_interruption_and_bad_cleanup_preserve_reports(packet, tmp_path, failure
                 raise RuntimeError("SECRET_CLOSE_EXCEPTION")
 
     out = behavior.run(
-        args(packet, tmp_path, "--simulate"), inspector_factory=lambda cfg: Inspector()
+        args(packet, tmp_path, "--simulate", "--simulation-time-scale", "1"),
+        inspector_factory=lambda cfg: Inspector(),
     )
     doc = behavior.read_json(out / "manifest.json")
     assert doc["state"] == "stopped"
@@ -843,6 +877,7 @@ def test_provider_pin_preserves_model_policy_and_disables_fallbacks(packet, tmp_
 def test_lean_grounding_simulation_keeps_all_windows_and_quality_accounting(
     packet,
     tmp_path,
+    immediate_admission,
 ):
     out = behavior.run(
         args(
@@ -872,7 +907,9 @@ def test_lean_grounding_simulation_keeps_all_windows_and_quality_accounting(
     assert "lean-v1" in (out / "report.html").read_text(encoding="utf-8")
 
 
-def test_grounding_only_plan_and_run_has_no_phantom_events(packet, tmp_path):
+def test_grounding_only_plan_and_run_has_no_phantom_events(
+    packet, tmp_path, immediate_admission
+):
     out = behavior.run(
         args(
             packet,

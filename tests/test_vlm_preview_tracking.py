@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import os
 import uuid
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import pytest
 
+from tools.vlm_benchmark import preview_tracking
 from tools.vlm_benchmark.preview_tracking import PreviewTracker, iou
 
 
@@ -58,7 +60,12 @@ def as_pixels(obj):
     return np.array([b[k] for k in ("x1", "y1", "x2", "y2")]) * (320, 180, 320, 180)
 
 
-def test_delayed_anchor_replays_original_frame_and_keeps_both_people():
+def test_delayed_anchor_replays_original_frame_and_keeps_both_people(monkeypatch):
+    # Verify optical-flow identity independently of the CI host's CPU speed.
+    # A separate controlled-clock test below verifies the replay time budget.
+    monkeypatch.setattr(
+        preview_tracking, "time", SimpleNamespace(perf_counter=lambda: 0.0)
+    )
     tracker = PreviewTracker()
     image, boxes = scene(0)
     seed = anchor(image, boxes)
@@ -71,6 +78,29 @@ def test_delayed_anchor_replays_original_frame_and_keeps_both_people():
                 assert obj["track_id"] == f"seed:{index}"
                 assert iou(as_pixels(obj), expected[index]) > 0.95
     assert r["anchor_age"] == 3
+
+
+def test_delayed_anchor_hides_boxes_when_replay_exceeds_budget(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(
+        preview_tracking, "time", SimpleNamespace(perf_counter=lambda: now[0])
+    )
+    tracker = PreviewTracker()
+    image, boxes = scene(0)
+    seed = anchor(image, boxes)
+    for n in range(31):
+        tracker.advance(scene(n)[0], n / 15)
+    step = tracker._step
+
+    def slow_step(*args):
+        now[0] += 0.13
+        return step(*args)
+
+    monkeypatch.setattr(tracker, "_step", slow_step)
+    result = tracker.advance(scene(31)[0], 31 / 15, anchor=seed)
+    assert result["objects"] == []
+    assert result["status"] == "lost"
+    assert result["replayed_frames"] == 1
 
 
 def test_crossing_drops_ambiguous_boxes_instead_of_swapping_identities():
