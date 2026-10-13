@@ -14,8 +14,8 @@ from hashlib import sha256
 from threading import Lock
 
 from .contracts import NormalizedBBox
+from .events.state_machine import SceneState
 from .person_registry import _face_body_score
-from .scene_state import SceneState
 from .vlm_fusion import _unambiguous_matches
 
 

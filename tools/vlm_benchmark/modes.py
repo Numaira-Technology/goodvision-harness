@@ -441,7 +441,7 @@ def _run(args):
             "source_hashes": {
                 str(p.relative_to(ROOT)): sha(p)
                 for p in [
-                    *sorted((ROOT / "src/goodvision_harness").glob("*.py")),
+                    *sorted((ROOT / "src/goodvision_harness").rglob("*.py")),
                     *sorted((ROOT / "tools/vlm_benchmark").glob("*.py")),
                     *sorted((ROOT / "tools/vlm_benchmark").glob("monitor.*")),
                     ROOT / "tools/vlm_multistream_benchmark.py",

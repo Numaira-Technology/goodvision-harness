@@ -30,8 +30,8 @@ from .independent_diagnostics import (
 )
 from .latency_trace import configure_worker_timing, log_timing
 from .result_bus import ResultBus
-from .scene_evidence import EvidenceFrame, InspectionRequest
-from .scene_runtime import TemporalInspection
+from .runtime.scene import TemporalInspection
+from .runtime.scheduling import EvidenceFrame, InspectionRequest
 from .vlm_admission import AdmissionError, AdmissionSettings, SharedAdmission
 from .vlm_independent_model import IndependentVLMInspector
 

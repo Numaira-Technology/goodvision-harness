@@ -25,12 +25,12 @@ from .model_api import (
     environment_api_key,
     model_request_headers,
 )
+from .runtime.scene import TemporalInspection, TemporalVerdict
 from .scene_inspection import (
     _validate_job,
     _validate_verdicts,
     build_temporal_messages,
 )
-from .scene_runtime import TemporalInspection, TemporalVerdict
 from .vlm_transport import create_vlm_http_client
 
 _MAX_RESPONSE_BYTES = 256 * 1024
