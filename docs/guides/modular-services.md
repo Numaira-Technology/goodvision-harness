@@ -1,11 +1,11 @@
 # 主程序、SAM 和大模型分机部署
 
 控制台入口、GPU 主机分析、SAM 和大模型可以分别更新和重启。
-GPU 模式的 CPU 分析也运行在 GPU 主机；本机负责控制台与视频接入，不执行人脸和事件分析。
+显式连接完整 `analysis` 服务时，CPU 分析也运行在 GPU 主机，本机负责控制台与视频接入。仅配置追踪服务地址时，`main` 保留本机 CPU 分析和已有配置。
 
 | 模块 | 部署内容 | GPU 和模型文件 |
 | --- | --- | --- |
-| 本机入口 `main` | 控制台、本机拉流与必要的接入解码、视频和结果转发 | 不加载识别模型，不创建分析进程 |
+| 本机网关 `main --analysis-server` | 控制台、本机拉流与必要的接入解码、视频和结果转发 | 不加载识别模型，不创建分析进程 |
 | GPU 主机分析 `analysis` | 视频解码、人脸识别、事件处理、结果和证据存储 | 使用 GPU 主机的 CPU；人脸模型保存在该主机的 `/models` 卷 |
 | SAM `sam` | 多路人物追踪，共用一份 SAM 模型 | NVIDIA GPU、SAM3.1 checkpoint |
 | 大模型 `vlm`，可选 | vLLM + Qwen3-VL-30B-A3B-Instruct-FP8，以及 CPU 图像准备服务 | NVIDIA GPU、完整的离线 Qwen 模型目录；CPU 服务不分配 GPU |
@@ -49,13 +49,12 @@ python tools/start_modular.py analysis --streams 12 --tracking-server http://hos
 再在本机启动控制台入口：
 
 ```sh
-python tools/start_modular.py main --streams 12 --tracking-server http://192.168.10.20:8092 --tracking-capacity 12
+python tools/start_modular.py main --streams 12 --analysis-server http://192.168.10.20:8080 --tracking-server http://192.168.10.20:8092 --tracking-capacity 12
 ```
 
-`main` 在独立 GPU 模式默认连接追踪主机的 8080 分析端口。分析端口不同或使用 HTTPS 时指定
-`--analysis-server https://gpu-host.example`，也可设置 `HARNESS_ANALYSIS_URL`。
+`main` 只有通过 `--analysis-server` 或 `HARNESS_ANALYSIS_URL` 显式指定完整 Harness 分析服务地址，才启用网关。分析端口不同或使用 HTTPS 时填写实际 origin，例如 `--analysis-server https://gpu-host.example`。
 这一步只连接远端，不创建或修改远端通道；路数、模型线路和采样参数在 GPU 主机的
-`analysis` 启动命令或控制台配置。只有旧版无 GPU 追踪的 `main` 入口仍在本机运行分析。
+`analysis` 启动命令或控制台配置。仅配置 `--tracking-server` 时，原版 SAM 和 Contour 部署都保留本机 CPU 分析及原有数据卷，不推导分析服务地址；控制台保存的节点设置继续由该分析进程加载。
 `/gateway` 可查看连接状态，远端故障返回 503，不会自动切回本机 CPU。
 
 然后打开 [控制台](http://127.0.0.1:8080)，在每一路填入视频地址并连接。也可以预填 `LOCAL_CAMERA_01_STREAM_URL`、`LOCAL_CAMERA_02_STREAM_URL` 等。第一路兼容已有 `HARNESS_STREAM_URL` / `RTSP_URL`；默认启动后保持空闲，等待控制台连接。不同路数使用独立的数据卷，其他摄像头通过主控制台访问，只有主控制台发布端口。
@@ -84,6 +83,8 @@ python tools/start_modular.py main --streams 12 --tracking-server http://192.168
 ## 连接 GoodVision Contour 节点
 
 已部署 GoodVision Contour 的 GPU 机器使用这一接入方式。主程序必须先更新到包含 Contour 客户端的版本；仅修改源码不会更新正在运行的 8080 容器。
+
+Contour 节点只提供追踪 API，不包含 8080 的完整 Harness 分析服务。在主程序的 `.env` 设置 `TRACKING_SERVER_PROTOCOL=contour`，再运行 `python tools/start_modular.py main --streams 2 --tracking-server http://192.168.20.93:8093`，会在本机启动各路 CPU 分析并调用远端 Contour。若已另行部署完整 `analysis` 服务，则通过 `--analysis-server` 或 `HARNESS_ANALYSIS_URL` 指定其地址，启用网关。
 
 停止全部分析并完成收尾后，在主程序控制台的部署设置中填写：
 
@@ -150,7 +151,7 @@ python -m goodvision_harness.vlm_server --host 0.0.0.0 --port 8001
 
 | 环境变量 | 含义 |
 | --- | --- |
-| `HARNESS_ANALYSIS_URL` | 本机网关连接的 GPU 主机 Harness HTTP(S) origin；不填时从追踪主机推导 8080 端口 |
+| `HARNESS_ANALYSIS_URL` | 完整 Harness 分析服务的 HTTP(S) origin；显式填写才启用本机网关，未填写时保留本机 CPU 分析 |
 | `HARNESS_GATEWAY_SHM_SIZE` | 网关共享内存容量；启动器按 `--streams N` 自动设为 `64 × (N + 1) MiB`，直接 Compose 默认 128 MiB |
 | `HARNESS_VIDEO_PULL_LOCATION` | 摄像头拉流默认位置：`local`（本机，默认）或 `gpu`（GPU 主机）；控制台可覆盖 |
 | `INFERENCE_EXECUTION_MODE` | `cloud` 或 `server`；同机 GPU 入口还支持 `local` |

@@ -39,6 +39,8 @@ def runtime_environment(environment):
         "HARNESS_WEBHOOK_SECRET",
         "RESULT_WEBHOOK_URL",
         "LOCAL_TRACKING_FPS",
+        "LOCAL_INFERENCE_API_KEY",
+        "LOCAL_INFERENCE_MAX_TOKENS",
         "HARNESS_INFERENCE_PROFILE",
     }
     return {
@@ -82,11 +84,24 @@ def prepare(root, remote, ssh, scp, run):
             snapshot = Path(temporary) / "legacy-data.tar.gz"
             with tarfile.open(snapshot, "w:gz") as archive:
                 legacy = Path("/legacy")
-                lanes = sorted(legacy.glob("camera-*"))
-                if not lanes and (legacy / "default").is_dir():
-                    lanes = [legacy / "default"]
-                for lane in lanes:
-                    name = "camera-01" if lane.name == "default" else lane.name
+                lanes = {
+                    lane.name: lane
+                    for lane in sorted(legacy.glob("camera-*"))
+                    if lane.is_dir()
+                }
+                primary = lanes.get("camera-01")
+                default = legacy / "default"
+                # The launcher creates empty per-camera volumes even for an
+                # older single-camera installation whose data is in face-data.
+                # Empty lane 1 must not hide that gallery, settings or keys;
+                # already populated per-camera state remains authoritative.
+                if (
+                    default.is_dir()
+                    and any(default.iterdir())
+                    and (primary is None or not any(primary.iterdir()))
+                ):
+                    lanes["camera-01"] = default
+                for name, lane in sorted(lanes.items()):
                     archive.add(
                         lane, arcname=f"data/{name}", filter=source_filter
                     )

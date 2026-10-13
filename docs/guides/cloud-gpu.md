@@ -44,10 +44,19 @@ python tools/start_cloud_gpu.py --streams 37
 原先保存为 `legacy` 的受管云端追踪配置会自动迁移到 `cloud`；
 其他本机/独立服务器设置保留。普通旧版外部单会话服务仍保留其兼容入口。
 
+既有独立 VLM 服务的 `.env` 配置也会传到 GPU 主机的分析进程：
+`INFERENCE_EXECUTION_MODE=server`、`INFERENCE_SERVER_URL`、
+`INFERENCE_SERVER_MODEL`、`INFERENCE_SERVER_PROTOCOL`（`compatible` 或 `goodvision`），
+以及专用的 `LOCAL_INFERENCE_API_KEY` 和 `LOCAL_INFERENCE_MAX_TOKENS`。
+保存的控制台配置仍优先；VLM 地址须能从 GPU 主机访问。
+服务器认证沿用专用密钥，不会使用云端供应商的 API Key 代替。
+
 视频通道数必须与部署一致。扩容时重新用 `--streams N` 启动，
 再保存云 GPU 配置中的相同路数。各路分析进程和数据目录独立，只有本机控制台开放端口。
 
 首次升级会从原有 `camera-NN-data` 卷（旧单路入口为 `face-data`）导入配置、人脸库和记录。
+新启动器创建的空 `camera-01-data` 卷不会遮住旧单路数据：第一路为空时，
+从旧 `face-data` 的 `/legacy/default` 导入；已有内容的各摄像头数据优先。
 升级前先停止旧分析；旧的本机 `harness-NN` 容器需停止，数据卷保留供迁移。
 云 GPU 正常释放前先停止并排空所有分析进程，再通过 SSH 将数据完整同步到
 `cloud-gpu-settings` 卷的 `analysis-data.tar.gz`；下次租用自动恢复。

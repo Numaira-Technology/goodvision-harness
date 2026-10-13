@@ -456,8 +456,8 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--analysis-server",
                 help=(
-                    "GPU host Harness origin; defaults to tracking host "
-                    "port 8080 in main mode"
+                    "Full GPU-host Harness origin; explicitly enables the main "
+                    "gateway instead of local CPU analysis"
                 ),
             )
             command.add_argument(
@@ -515,24 +515,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             environment = main_environment(settings, args)
             if args.module == "analysis":
                 environment["HARNESS_MANAGED_ANALYSIS"] = "true"
-            analysis_url = args.analysis_server or settings.get(
-                "HARNESS_ANALYSIS_URL", "",
+            analysis_url = (
+                args.analysis_server if args.analysis_server is not None
+                else settings.get("HARNESS_ANALYSIS_URL", "")
             )
-            if args.module == "main" and (
-                analysis_url or environment["TRACKING_EXECUTION_MODE"] == "server"
-            ):
-                if not analysis_url:
-                    target = urlsplit(environment["TRACKING_SERVER_URL"])
-                    host = (
-                        f"[{target.hostname}]"
-                        if ":" in target.hostname else target.hostname
+            if args.module == "main":
+                analysis_url = server_origin(analysis_url, "Analysis server")
+                if args.analysis_server is not None and not analysis_url:
+                    raise LaunchError(
+                        "Analysis server must be a non-empty HTTP(S) origin"
                     )
-                    analysis_url = urlunsplit(
-                        (target.scheme, host + ":8080", "", "", ""),
-                    )
-                environment["HARNESS_ANALYSIS_URL"] = server_origin(
-                    analysis_url, "Analysis server",
-                )
+            # Tracking settings can also live in the existing analysis volumes.
+            # Only an explicit full analysis origin switches main to a gateway.
+            if args.module == "main" and analysis_url:
+                environment["HARNESS_ANALYSIS_URL"] = analysis_url
                 environment["HARNESS_GATEWAY_SHM_SIZE"] = gateway_shared_memory(streams)
                 gateway = True
             elif args.module == "analysis" and args.analysis_server:

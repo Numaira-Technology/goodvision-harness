@@ -1,9 +1,12 @@
 """GPU-host CPU analysis isolation, credential boundaries and safe shutdown."""
 
 import json
+import os
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -134,3 +137,83 @@ def test_backup_only_replaces_last_snapshot_after_successful_complete_download(
     with pytest.raises(tarfile.ReadError):
         cloud_analysis.backup(process, "/workspace/analysis", fail_download)
     assert previous.read_bytes() == saved
+
+
+@pytest.mark.parametrize("protocol", ["compatible", "goodvision"])
+def test_cloud_lane_preserves_authenticated_server_vlm_route(
+    tmp_path, monkeypatch, protocol,
+):
+    from test_scene_model import _job, _response
+
+    from goodvision_harness import scene_model
+    from goodvision_harness.config import load_config
+    from goodvision_harness.local_gpu import LocalGPUDeployment
+    from goodvision_harness.scene_model import TemporalVLMInspector
+    from goodvision_harness.service_locations import ServiceLocations
+
+    # Both old cloud main-server settings and restored server profiles use the
+    # dedicated local key; a cloud-provider credential must not substitute it.
+    settings = {
+        "INFERENCE_EXECUTION_MODE": "server",
+        "INFERENCE_SERVER_URL": "https://vision.example",
+        "INFERENCE_SERVER_MODEL": "installed-vision",
+        "INFERENCE_SERVER_PROTOCOL": protocol,
+        "INFERENCE_PROVIDER": "openrouter",
+        "INFERENCE_API_KEY": "cloud-key-must-not-be-used",
+        "LOCAL_INFERENCE_API_KEY": "companion-test-key",
+        "LOCAL_INFERENCE_MAX_TOKENS": "2048",
+        "LOCAL_INFERENCE_MODEL_DIRECTORY": "private-model-path",
+        "VAST_API_KEY": "rental-key",
+        "HF_TOKEN": "download-token",
+        "SAM_SSH_KEY": "private-key-path",
+    }
+    uploaded = cloud_analysis.runtime_environment(settings)
+    assert uploaded["LOCAL_INFERENCE_API_KEY"] == "companion-test-key"
+    assert not set(uploaded) & {
+        "LOCAL_INFERENCE_MODEL_DIRECTORY", "VAST_API_KEY", "HF_TOKEN", "SAM_SSH_KEY",
+    }
+    lane = gpu_analysis_host.lane_environment(uploaded, tmp_path, 2, 3)
+    monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_: "")
+    job, seen = _job(), []
+
+    def reply(request):
+        seen.append(request)
+        completion = _response()
+        if protocol == "goodvision":
+            completion = {
+                "version": 1, "request_id": job.request.request_id,
+                "completion": completion, "timing": {},
+            }
+        return httpx.Response(200, json=completion)
+
+    monkeypatch.setattr(
+        scene_model, "create_vlm_http_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(reply)),
+    )
+    with patch.dict(os.environ, lane, clear=True):
+        base = load_config(Path(__file__).parents[1] / "config.yaml")
+        locations = ServiceLocations.resolve(
+            None, local_inference=False, local_tracking=False,
+        )
+        configured = locations.configure(base, LocalGPUDeployment(), 2)
+        assert locations.inference_mode == "server"
+        assert locations.tracking_mode == "cloud"
+        assert configured.inference.model == "installed-vision"
+        assert configured.model_api.provider == "local"
+        assert configured.runtime.scene_max_tokens == 2048
+        assert configured.rich_labeling.endpoint.startswith("http://127.0.0.1:8092/")
+        path = "/v1/inspections" if protocol == "goodvision" else "/v1/chat/completions"
+        assert configured.model_api.inspection_endpoint == (
+            "https://vision.example/v1/inspections" if protocol == "goodvision" else ""
+        )
+        inspector = TemporalVLMInspector(
+            configured.model_api, model=configured.inference.model,
+        )
+        try:
+            assert inspector.inspect(job)[0].detected
+        finally:
+            inspector.close()
+    assert len(seen) == 1
+    assert str(seen[0].url) == "https://vision.example" + path
+    assert seen[0].headers["authorization"] == "Bearer companion-test-key"
+    assert "cloud-key-must-not-be-used" not in str(seen[0].headers)

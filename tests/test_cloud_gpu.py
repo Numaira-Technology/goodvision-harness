@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -417,3 +418,57 @@ def test_gateway_container_budget_covers_whep_slots_and_reconnects(streams):
     )["services"]["harness"]
     assert "HARNESS_GATEWAY_SHM_SIZE" in recipe["shm_size"]
     assert recipe["tmpfs"] == ["/tmp:size=64m"]
+
+
+@pytest.mark.parametrize("recipe", ["cloud", "legacy"])
+def test_cloud_compose_keeps_existing_server_inference_configuration(
+    tmp_path, recipe,
+):
+    from compose_support import isolated_docker_config
+
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker Compose is required for configuration rendering")
+    root = Path(__file__).parents[1]
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    docker_config = tmp_path / "docker"
+    docker_config.mkdir()
+    selected = {
+        "INFERENCE_EXECUTION_MODE": "server",
+        "INFERENCE_SERVER_URL": "https://vision.example",
+        "INFERENCE_SERVER_MODEL": "installed-vision",
+        "INFERENCE_SERVER_PROTOCOL": "goodvision",
+        "LOCAL_INFERENCE_API_KEY": "companion-test-key",
+        "LOCAL_INFERENCE_MAX_TOKENS": "2048",
+    }
+    environment = {
+        **os.environ, **selected,
+        "DOCKER_CONFIG": isolated_docker_config(docker_config),
+        "VAST_API_KEY": "rental-test-key", "HF_TOKEN": "download-test-token",
+        "SAM_SSH_KEY": str(tmp_path / "ssh-key"),
+    }
+    files = (
+        ["compose.cloud-gpu.yaml"] if recipe == "cloud"
+        else ["compose.yaml", "compose.sam31-remote.yaml"]
+    )
+    command = [
+        docker, "compose", "--project-directory", str(root),
+        "--env-file", str(empty_env),
+    ]
+    for filename in files:
+        command.extend(["-f", str(root / filename)])
+    rendered = subprocess.run(
+        [*command, "config", "--format", "json"], env=environment,
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    services = json.loads(rendered.stdout)["services"]
+    controller = services["sam-remote"]["environment"]
+    # The old cloud main application received these through main-server; the
+    # controller now must pass them to the remote analysis process instead.
+    for key, value in selected.items():
+        assert controller.get(key) == value, key
+    assert services["harness"]["environment"]["HARNESS_ANALYSIS_URL"] == (
+        "http://sam-remote:8094"
+    )
