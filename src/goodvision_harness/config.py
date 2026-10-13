@@ -313,9 +313,9 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             rich_label_section.get("backend", "paddle"), "rich_labeling.backend"
         )
     ).lower()
-    if rich_label_backend not in {"paddle", "vlm", "sam", "sam31", "sam31_stream"}:
+    if rich_label_backend not in {"paddle", "vlm", "sam", "sam31", "sam31_stream", "detector_stream"}:
         raise ValueError(
-            "rich_labeling.backend must be paddle, vlm, sam, sam31 or sam31_stream"
+            "rich_labeling.backend must be paddle, vlm, sam, sam31, sam31_stream or detector_stream"
         )
     rich_label_model = rich_label_section.get("model")
     if rich_label_model is not None and not isinstance(rich_label_model, str):
@@ -487,11 +487,11 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> HarnessConfig:
             "rich_labeling.max_hold_seconds",
         ),
     )
-    if rich_labeling.backend in {"sam31", "sam31_stream"} and (
+    if rich_labeling.backend in {"sam31", "sam31_stream", "detector_stream"} and (
         rich_labeling.max_fps > 30 or rich_labeling.history_size > 4096
     ):
         raise ValueError("sam31 max_fps must be <=30 and history_size must be <=4096")
-    if rich_labeling.backend == "sam31_stream" and rich_labeling.max_fps < 0.5:
+    if rich_labeling.backend in {"sam31_stream", "detector_stream"} and rich_labeling.max_fps < 0.5:
         raise ValueError("sam31_stream requires max_fps>=0.5")
     if rich_labeling.video_transport_codec not in {"jpeg", "h264"}:
         raise ValueError("video transport codec must be jpeg or h264")

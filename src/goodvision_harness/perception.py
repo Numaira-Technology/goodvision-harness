@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from dataclasses import dataclass, replace
@@ -48,6 +49,14 @@ METHODS = {
             "sam3.1_video",
             "causal_native_three_detections",
             True,
+        ),
+        ProcessingMethod(
+            "detector_live",
+            "检测器原生人物追踪",
+            "逐帧检测与 worker IoU 身份连续关联。",
+            "detector_stream",
+            "worker_iou_observed_only",
+            False,
         ),
     )
 }
@@ -246,13 +255,22 @@ class ContourSessionHTTPClient(PerceptionSessionHTTPClient):
 
 
 def create_tracking_client(rich, *, api_key=None):
+    if rich.backend == "detector_stream":
+        from .detector_native_session import DetectorNativeSessionAdapter
+        if rich.processing_method not in (None, "detector_live"):
+            raise ValueError("detector_stream requires detector_live")
+        model = os.environ.get("DETECTOR_MODEL", "").strip()
+        endpoint = os.environ.get("DETECTOR_ENDPOINT", "").strip() or rich.endpoint
+        return DetectorNativeSessionAdapter(
+            endpoint, model=model, timeout_seconds=rich.video_timeout_seconds,
+        )
     options: dict[str, Any] = {
         "timeout_seconds": rich.video_timeout_seconds,
         "transport_max_side": rich.video_transport_max_side,
         "transport_jpeg_quality": rich.video_transport_jpeg_quality,
     }
     method = rich.processing_method
-    if method is not None and rich.backend != "sam31_stream":
+    if method is not None and rich.backend not in {"sam31_stream", "detector_stream"}:
         raise ValueError("processing methods require the continuous video backend")
     if rich.backend == "sam31_stream":
         options.update(
@@ -283,7 +301,7 @@ def create_tracking_coordinator(client, rich, on_batch):
         options.update(batch_frames=1, batch_seconds=0.1, pending_capacity=4)
     coordinator = (
         PipelinedVideoSessionTrackingCoordinator
-        if rich.processing_method == "sam_live"
+        if rich.processing_method == "sam_live" or rich.backend == "detector_stream"
         else VideoSessionTrackingCoordinator
         if rich.backend == "sam31_stream"
         else VideoTrackingCoordinator
@@ -292,17 +310,22 @@ def create_tracking_coordinator(client, rich, on_batch):
 
 
 def processing_methods(rich):
-    supported = rich is not None and rich.backend == "sam31_stream"
     return [
         dict(
             id=method.id,
             label=method.label,
             description=method.description,
-            available=supported,
+            available=rich is not None and rich.backend == (
+                "detector_stream" if method.id == "detector_live" else "sam31_stream"
+            ),
             reason=(
-                "启动时检查服务器和模型是否就绪。"
-                if supported
-                else "需要启用连续视频处理服务。"
+                "首个真实源帧确认检测器模型。"
+                if rich is not None and rich.backend == "detector_stream"
+                and method.id == "detector_live"
+                else "启动时检查服务器和模型是否就绪。"
+                if rich is not None and rich.backend == "sam31_stream"
+                and method.id == "sam_live"
+                else "需要启用对应的原生人物处理服务。"
             ),
         )
         for method in METHODS.values()

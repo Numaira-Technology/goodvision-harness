@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import logging
 import os
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -243,6 +244,9 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
         return work
 
     def _fail(self, generation, phase, exc, work=None):
+        if isinstance(exc, sqlite3.Error):
+            from .native_event_audit import fail_audit_io
+            fail_audit_io('tracking-durable-journal', exc)
         # 本轮隔离诊断：保留提交阶段的原始异常与调用栈，不改变失败处理。
         if phase in {"commit", "request"}:
             logging.getLogger("uvicorn.error").error(
@@ -272,12 +276,14 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                     )
                 if self._spool is not None:
                     self._spool.finish(generation, "failed", type(exc).__name__)
-            except Exception:
+            except Exception as journal_error:
                 # A failed journal cannot erase already persisted sources. The
                 # explicit failure remains visible even if its final marker fails.
                 self._stats["last_error"] = "TrackingJournalFailure"
                 if work is not None:
                     self._retained_failures.append(work)
+                from .native_event_audit import fail_audit_io
+                fail_audit_io('tracking-durable-journal-final-marker', journal_error)
             self._condition.notify_all()
         log_timing(
             "sam_pipeline_failure",

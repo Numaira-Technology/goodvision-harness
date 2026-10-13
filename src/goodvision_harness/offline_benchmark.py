@@ -199,12 +199,15 @@ def install_capture_hooks(runtime_class):
     original_release = runtime_class._release_stopped_session
 
     def record_batch(self, batch):
+        detector_native = getattr(batch, 'backend', None) == 'detector_stream'
+        if detector_native and len(batch.detector_provenance) != len(batch.frames):
+            raise RuntimeError('detector provenance is missing from a native frame')
         original_batch(self, batch)
         session = self._session
         sink = getattr(self, '_offline_capture', None)
         if sink is None or session is None or session.stream_session_id != batch.stream_session_id:
             return
-        for frame in batch.frames:
+        for index, frame in enumerate(batch.frames):
             mapped = session.person_registry.snapshot_at(frame.timestamp_seconds, frame.frame_sequence)
             if mapped is None or (mapped.timestamp_seconds, mapped.frame_sequence) != (frame.timestamp_seconds, frame.frame_sequence):
                 raise RuntimeError('offline canonical capture lost exact source frame')
@@ -213,8 +216,14 @@ def install_capture_hooks(runtime_class):
                                    'frame': mapped.frame_sequence,
                                    'subjects': [{'id': obj.track_id,
                                                  'bbox': [obj.bbox.x1, obj.bbox.y1,
-                                                          obj.bbox.x2, obj.bbox.y2]}
-                                                for obj in mapped.objects]}})
+                                                          obj.bbox.x2, obj.bbox.y2],
+                                                 **({'native_track': dict(obj.attributes['native_track']),
+                                                     'observation_state': obj.observation_state}
+                                                    if detector_native else {})}
+                                                for obj in mapped.objects]},
+                         **({'detector_model': batch.detector_model,
+                             'detector_provenance': batch.detector_provenance[index],
+                             'backend': batch.backend} if detector_native else {})})
         if self._scene is not None:
             sink.observe_events(self._scene.snapshot(include_history=True), batch.stream_session_id)
 

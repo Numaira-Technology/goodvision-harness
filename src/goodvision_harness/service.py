@@ -325,11 +325,14 @@ class HarnessRuntime:
                 config.rich_labeling,
                 processing_method=validate_processing_method(processing_method),
             ))
-            if (config.rich_labeling.backend != "sam31_stream"
+            if (config.rich_labeling.backend not in {"sam31_stream", "detector_stream"}
                     or config.runtime.scene_mode != "active"):
                 config_error = config_error or (
-                    "processing methods require active scene mode and sam31_stream"
+                    "processing methods require an active native scene"
                 )
+            if ((config.rich_labeling.backend == "detector_stream")
+                    != (processing_method == "detector_live")):
+                config_error = config_error or "processing method and native backend differ"
         self.config = config
         self._rich_config_revision = 0
         self._retiring_rich_labels = None
@@ -382,7 +385,7 @@ class HarnessRuntime:
             )
         if (
             config is not None
-            and config.rich_labeling.backend == "sam31_stream"
+            and config.rich_labeling.backend in {"sam31_stream", "detector_stream"}
             and self._scene_mode == "active"
         ):
             # Match the console's 0..30-second promise before allocating clients
@@ -430,7 +433,7 @@ class HarnessRuntime:
                     request_parameters=rich.vlm_request_parameters,
                     dry_run=self._rich_annotation_dry_run,
                 )
-            elif rich.backend in {"sam31", "sam31_stream"}:
+            elif rich.backend in {"sam31", "sam31_stream", "detector_stream"}:
                 rich_client = self._create_tracking_client(rich)
             else:
                 rich_client = RichLabelHTTPClient(
@@ -438,7 +441,7 @@ class HarnessRuntime:
                     timeout_seconds=rich.timeout_seconds,
                     mode="tracks", include_attributes=self._rich_requested,
                 )
-            if rich.backend == "vlm" or rich_client.gpu_ready():
+            if rich.backend in {"vlm", "detector_stream"} or rich_client.gpu_ready():
                 self._rich_labels = self._tracking_coordinator(rich_client)
             else:
                 rich_client.close()
@@ -1376,7 +1379,7 @@ class HarnessRuntime:
                 "buffer_delay_seconds": (
                     0.0 if (
                         scene_active
-                        and self.config.rich_labeling.backend != "sam31_stream"
+                        and self.config.rich_labeling.backend not in {"sam31_stream", "detector_stream"}
                     )
                     else self._display_settings.delay_seconds
                 ),
@@ -1439,7 +1442,7 @@ class HarnessRuntime:
 
     def _tracking_coordinator(self, client: Any, rich: Any = None) -> Any:
         rich = rich or self.config.rich_labeling
-        if rich.backend in {"sam31", "sam31_stream"}:
+        if rich.backend in {"sam31", "sam31_stream", "detector_stream"}:
             revision = self._rich_config_revision
             coordinator = create_tracking_coordinator(
                 client, rich,
@@ -1680,6 +1683,9 @@ class HarnessRuntime:
     def _ensure_rich_readiness_probe(self) -> None:
         """Retry optional GPU warmup without blocking video or status requests."""
 
+        if self.config is not None and self.config.rich_labeling.backend == "detector_stream":
+            return
+
         with self._control_lock:
             if (
                 self._closed
@@ -1718,14 +1724,14 @@ class HarnessRuntime:
             revision = self._rich_config_revision
         client = None
         try:
-            if rich.backend in {"sam31", "sam31_stream"}:
+            if rich.backend in {"sam31", "sam31_stream", "detector_stream"}:
                 client = self._create_tracking_client(rich)
             else:
                 client = RichLabelHTTPClient(
                     rich.endpoint, timeout_seconds=rich.timeout_seconds,
                     mode="tracks", include_attributes=self._rich_requested,
                 )
-            if not client.gpu_ready():
+            if rich.backend != "detector_stream" and not client.gpu_ready():
                 return False
             # Network I/O never holds either lifecycle lock. The active session
             # or shutdown state may have changed while the worker warmed up.
@@ -1747,7 +1753,7 @@ class HarnessRuntime:
                     self._rich_disabled_reason = None
                     self._state["rich_labeling_enabled"] = self._rich_requested
                 client = None  # The coordinator now owns and closes it.
-            LOGGER.info("rich annotation enabled: remote GPU is ready")
+            LOGGER.info("rich annotation enabled: detector readiness awaits first source frame" if rich.backend == "detector_stream" else "rich annotation enabled: remote GPU is ready")
             return True
         except Exception:
             LOGGER.warning("rich annotation GPU readiness check failed")
@@ -1774,6 +1780,11 @@ class HarnessRuntime:
             # The transfer inside this helper is revision-checked, including
             # when a background warmup is trying to enable the same method.
             self._try_enable_rich_labels()
+        if rich.backend == "detector_stream":
+            with self._control_lock:
+                if revision != self._rich_config_revision or self._rich_labels is None:
+                    raise ProcessingMethodUnavailableError()
+                return revision, self._rich_labels
         # A new health-only client avoids competing with native cleanup or
         # mutating an existing client's session state during a start check.
         probe = self._create_tracking_client(rich)
@@ -2061,6 +2072,9 @@ class HarnessRuntime:
                 selected_analysis == MULTI_ANALYSIS_MODE
                 and any(feature in SAFETY_EVENT_LABELS for feature in selected_features)
             )
+            if (self.config.rich_labeling.backend == "detector_stream"
+                    and os.environ.get("ASHLEY_GEOMETRY_ONLY") == "1"):
+                needs_model_key = False
             if (needs_model_key and not use_dry_run and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
                 raise MissingAPIKeyError(
@@ -2071,8 +2085,8 @@ class HarnessRuntime:
             face_session = None
             scene_active = self._scene_mode == "active"
             injected_selected = any(not VOCABULARY.get(item).builtin for item in (selected_features or ()))
-            if injected_selected and (not scene_active or self.config.rich_labeling.backend != "sam31_stream"):
-                raise ValueError("Ashley event extension requires native active scene and sam31_stream")
+            if injected_selected and (not scene_active or self.config.rich_labeling.backend not in {"sam31_stream", "detector_stream"}):
+                raise ValueError("Ashley event extension requires a native active scene")
             if scene_active and selected_analysis == EVENT_ANALYSIS_MODE:
                 raise ValueError(
                     "continuous scene mode requires multi-feature or face analysis"
@@ -2354,6 +2368,9 @@ class HarnessRuntime:
                 and label in SAFETY_EVENT_LABELS
             ):
                 scene_labels = (label,)
+            if (self.config.rich_labeling.backend == "detector_stream"
+                    and os.environ.get("ASHLEY_GEOMETRY_ONLY") == "1"):
+                scene_labels = ()
             next_scene = (
                 SceneRuntime(
                     session.stream_session_id,
@@ -2367,27 +2384,27 @@ class HarnessRuntime:
                     event_sensitivities=selected_sensitivities,
                     temporal_observation_fps=(
                         self.config.runtime.scene_observation_fps
-                        if self.config.rich_labeling.backend == "sam31_stream"
+                        if self.config.rich_labeling.backend in {"sam31_stream", "detector_stream"}
                         and scene_labels else None
                     ),
                     max_pending_inspections=(
-                        8 if self.config.rich_labeling.backend == "sam31_stream" else 4
+                        8 if self.config.rich_labeling.backend in {"sam31_stream", "detector_stream"} else 4
                     ),
                     tracking_mode=(
                         "batch" if self.config.rich_labeling.backend in {
-                            "sam31", "sam31_stream"
+                            "sam31", "sam31_stream", "detector_stream"
                         }
                         else "immediate"
                     ),
                     native_memory_scope=(
-                        "session" if self.config.rich_labeling.backend == "sam31_stream"
+                        "session" if self.config.rich_labeling.backend in {"sam31_stream", "detector_stream"}
                         else None
                     ),
                     tracking_history_seconds=(
                         continuous_source_history_seconds(
                             self.config.rich_labeling.max_fps
                         )
-                        if self.config.rich_labeling.backend == "sam31_stream" else 12.0
+                        if self.config.rich_labeling.backend in {"sam31_stream", "detector_stream"} else 12.0
                     ),
                 )
                 if self._scene_enabled
@@ -2423,7 +2440,7 @@ class HarnessRuntime:
                         request_parameters=parameters, **options,
                     )
 
-                parallel = self.config.rich_labeling.backend == "sam31_stream"
+                parallel = self.config.rich_labeling.backend in {"sam31_stream", "detector_stream"}
                 size = self.config.runtime.scene_max_in_flight if parallel else 1
                 fingerprint = hashlib.sha256(json.dumps({
                     "settings": asdict(model_settings), "model": model,
@@ -2452,7 +2469,7 @@ class HarnessRuntime:
                 next_scene.automatic_temporal_inference = True
             display_class = (
                 TrackedSceneDisplayWorker
-                if self.config.rich_labeling.backend == "sam31_stream"
+                if self.config.rich_labeling.backend in {"sam31_stream", "detector_stream"}
                 else SceneDisplayWorker
             )
             display_options = (
@@ -3928,6 +3945,9 @@ class HarnessRuntime:
                 if self._last_scene_snapshot is not None:
                     self._last_scene_snapshot["state"] = "postprocessing"
                     self._last_scene_snapshot["automatic_temporal_inference"] = False
+                    if (self.config.rich_labeling.backend == "detector_stream"
+                            and os.environ.get("ASHLEY_GEOMETRY_ONLY") == "1"):
+                        self._last_scene_snapshot["scene_inference"] = "disabled"
                 self._scene = None
                 self._release_stopped_session(session)
                 self._update_state(
@@ -3980,6 +4000,9 @@ class HarnessRuntime:
                 if scene is not None:
                     scene.close()
                     final_snapshot = scene.snapshot()
+                    if (self.config.rich_labeling.backend == "detector_stream"
+                            and os.environ.get("ASHLEY_GEOMETRY_ONLY") == "1"):
+                        final_snapshot["scene_inference"] = "disabled"
                     admitted = self._queue_archive_scene(session, final_snapshot)
                     while not admitted:
                         if session.archive.status()["state"] in {"error", "stopped"}:
@@ -4006,6 +4029,9 @@ class HarnessRuntime:
                 # evidence encoding ran. Publish a fresh, serialized snapshot.
                 if scene is not None:
                     final_snapshot = scene.snapshot()
+                    if (self.config.rich_labeling.backend == "detector_stream"
+                            and os.environ.get("ASHLEY_GEOMETRY_ONLY") == "1"):
+                        final_snapshot["scene_inference"] = "disabled"
                 scene_archive = self._scene_archive
                 if scene_archive is not None and final_snapshot is not None:
                     while not scene_archive.submit(final_snapshot, timeout_seconds=0.1):
@@ -4023,8 +4049,31 @@ class HarnessRuntime:
                 offline_capture = getattr(session.video_stream, "capture", None)
                 if offline_capture is not None and final_snapshot is not None:
                     offline_capture.observe_events(final_snapshot, session.stream_session_id)
-                    offline_capture.append({"kind": "final_scene",
-                                            "stream_session_id": session.stream_session_id})
+                    geometry_only = (
+                        self.config.rich_labeling.backend == "detector_stream"
+                        and os.environ.get("ASHLEY_GEOMETRY_ONLY") == "1"
+                    )
+                    completion = {
+                        "kind": "geometry_finalized" if geometry_only else "final_scene",
+                        "stream_session_id": session.stream_session_id,
+                    }
+                    if self.config.rich_labeling.backend == "detector_stream":
+                        completion.update(
+                            source_eof=reason == "eof",
+                            tracking_drained=True,
+                            scene_inference=(
+                                "disabled" if geometry_only
+                                else "enabled"
+                            ),
+                            tracking_completed_frame_sequence=final_snapshot.get(
+                                "tracking_completed_frame_sequence"
+                            ),
+                            tracking_completed_timestamp_seconds=final_snapshot.get(
+                                "tracking_completed_timestamp_seconds"
+                            ),
+                            tracking_rejections=final_snapshot.get("tracking_rejections"),
+                        )
+                    offline_capture.append(completion)
                 with control.lock:
                     control.state, control.stage = "finalized", "complete"
                     control.session = control.scene = None

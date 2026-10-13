@@ -53,9 +53,11 @@ def validate_local_gpu_enabled(value: object, name: str) -> bool:
 
 
 def validate_processing_method(value: object) -> str:
-    """SAM continuous analysis is the only supported production method."""
+    """Resolve an explicit native route without changing its detector family."""
+    if value == "detector_live":
+        return value
     if not isinstance(value, str) or value not in {"sam_live", "person_tracking"}:
-        raise ValueError("processing_method must be person_tracking")
+        raise ValueError("processing_method must be person_tracking or detector_live")
     return "sam_live"
 
 

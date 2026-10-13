@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from dataclasses import asdict
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import uuid4
 
@@ -119,6 +120,31 @@ def install():
     from .scene_state import SceneState
     from .scene_results import SceneResultPublisher
 
+    baseline_path = Path(os.environ['ASHLEY_BASELINE_RESPONSE_IDS'])
+    baseline_values = json.loads(baseline_path.read_text())
+    if (not isinstance(baseline_values, list)
+            or any(not isinstance(value, str) or not value for value in baseline_values)):
+        raise RuntimeError('GLOBAL_INVALID_BASELINE_RESPONSE_IDS')
+    baseline_response_ids = set(baseline_values)
+    try:
+        known_cost_limit = Decimal(os.environ['ASHLEY_KNOWN_COST_LIMIT_USD'])
+    except (KeyError, InvalidOperation) as error:
+        raise RuntimeError('GLOBAL_INVALID_KNOWN_COST_LIMIT') from error
+    if known_cost_limit != Decimal('20'):
+        raise RuntimeError('GLOBAL_INVALID_KNOWN_COST_LIMIT')
+    dispatch_reserve = Decimal('0.05')
+
+    def receipt_cost(response):
+        usage = response.get('usage') if isinstance(response, dict) else None
+        value = usage.get('cost') if isinstance(usage, dict) else None
+        try:
+            amount = Decimal(str(value))
+        except InvalidOperation as error:
+            raise RuntimeError('GLOBAL_MISSING_RESPONSE_COST') from error
+        if not amount.is_finite() or amount < 0:
+            raise RuntimeError('GLOBAL_INVALID_RESPONSE_COST')
+        return amount
+
     # 只复用完整请求相同的成功回执，图片以原始 data URL 哈希比较；不改写人物 ID。
     previous = Path(os.environ['ASHLEY_PREVIOUS_RESPONSES'])
     cache = {}
@@ -160,6 +186,9 @@ def install():
     current_responses = ROOT / 'model-responses.jsonl'
     current_ledger = ROOT / 'attempt-ledger.jsonl'
     receipts = {}
+    new_costs = {}
+    known_cost_total = Decimal('0')
+    reserved_inflight = set()
     if current_responses.exists():
         for line in current_responses.read_text().splitlines():
             if line.strip():
@@ -168,6 +197,16 @@ def install():
                 if prior is not None and prior != saved:
                     raise RuntimeError('GLOBAL_CURRENT_DUPLICATE_RECEIPT_MISMATCH')
                 receipts[saved['call_id']] = saved
+                response = saved.get('response')
+                response_id = response.get('id') if isinstance(response, dict) else None
+                if response_id and response_id not in baseline_response_ids:
+                    cost = receipt_cost(response)
+                    prior_cost = new_costs.get(response_id)
+                    if prior_cost is not None and prior_cost != cost:
+                        raise RuntimeError('GLOBAL_DUPLICATE_RESPONSE_COST_MISMATCH')
+                    if prior_cost is None:
+                        new_costs[response_id] = cost
+                        known_cost_total += cost
     sent_hashes = {}
     if current_requests.exists():
         for line in current_requests.read_text().splitlines():
@@ -239,6 +278,7 @@ def install():
     evidence_original = SceneState.observe_event
 
     async def recorded_request(self, payload, headers, *, timing):
+        nonlocal known_cost_total
         require_audit_writable()
         if (ROOT / 'stop-loss.json').exists() or (ROOT / 'balance-blocked.json').exists():
             raise RuntimeError('GLOBAL_STOP_LOSS_BEFORE_DISPATCH')
@@ -249,15 +289,41 @@ def install():
             if (ROOT / 'stop-loss.json').exists() or (ROOT / 'balance-blocked.json').exists():
                 raise RuntimeError('GLOBAL_STOP_LOSS_BEFORE_DISPATCH')
             if digest in blocked or digest in in_flight:
-                raise RuntimeError('GLOBAL_UNRESOLVED_SAME_INPUT_REQUEST')
+                reason = 'unresolved_same_input_request'
+                blocked_row = {'reason': 'question_request_blocked',
+                               'blocked_reason': reason, 'request_sha256': digest,
+                               'stream_session_id': timing.get('stream_session_id'),
+                               'context': dict(timing), 'paid_dispatch': False}
+                append('question-blocked.jsonl', blocked_row)
+                write_stop_loss(blocked_row)
+                raise RuntimeError('QUESTION_UNRESOLVED_SAME_INPUT_REQUEST')
             if digest in cache:
                 append('cache-hits.jsonl', {'request_sha256': digest, 'context': dict(timing),
                        'response_id': cache[digest]['id'], 'source': cache_sources[digest], 'paid_dispatch': False})
                 return copy.deepcopy(cache[digest])
             if counts.get(digest, 0) >= 3:
-                raise RuntimeError('GLOBAL_SAME_INPUT_ATTEMPTS_EXHAUSTED')
+                blocked_row = {'reason': 'question_request_blocked',
+                               'blocked_reason': 'same_input_attempts_exhausted',
+                               'request_sha256': digest,
+                               'stream_session_id': timing.get('stream_session_id'),
+                               'context': dict(timing), 'paid_dispatch': False}
+                append('question-blocked.jsonl', blocked_row)
+                write_stop_loss(blocked_row)
+                raise RuntimeError('QUESTION_SAME_INPUT_ATTEMPTS_EXHAUSTED')
+            if (known_cost_total
+                    + dispatch_reserve * (len(reserved_inflight) + 1)
+                    > known_cost_limit):
+                write_stop_loss({
+                    'reason': 'known_model_cost_dispatch_limit',
+                    'known_cost_usd': str(known_cost_total),
+                    'reserved_inflight_usd': str(dispatch_reserve * len(reserved_inflight)),
+                    'next_reservation_usd': str(dispatch_reserve),
+                    'limit_usd': str(known_cost_limit),
+                })
+                raise RuntimeError('GLOBAL_KNOWN_MODEL_COST_LIMIT')
             counts[digest] = counts.get(digest, 0) + 1
             in_flight.add(digest)
+            reserved_inflight.add(digest)
         started = time.monotonic()
         row = {"started_epoch": time.time(), "request": request, 'request_sha256': digest,
                'call_id': str(uuid4()), 'attempt': counts[digest],
@@ -285,9 +351,38 @@ def install():
                    'state': 'recorded' if row.get('response', {}).get('id') or known_rejection else 'outcome_unknown'})
             with LOCK:
                 in_flight.discard(digest)
+                reserved_inflight.discard(digest)
                 if row.get('response', {}).get('id'):
                     cache[digest] = copy.deepcopy(row['response'])
                     cache_sources[digest] = str(current_responses)
+                    response = row['response']
+                    response_id = response['id']
+                    if response_id not in baseline_response_ids:
+                        try:
+                            cost = receipt_cost(response)
+                        except RuntimeError as error:
+                            write_stop_loss({
+                                'reason': str(error), 'response_id': response_id,
+                            }, global_failure=True)
+                        else:
+                            prior_cost = new_costs.get(response_id)
+                            if prior_cost is not None and prior_cost != cost:
+                                write_stop_loss({
+                                    'reason': 'GLOBAL_DUPLICATE_RESPONSE_COST_MISMATCH',
+                                    'response_id': response_id,
+                                }, global_failure=True)
+                            elif prior_cost is None:
+                                new_costs[response_id] = cost
+                                known_cost_total += cost
+                                if cost > dispatch_reserve or known_cost_total >= known_cost_limit:
+                                    write_stop_loss({
+                                        'reason': 'model_cost_reservation_exceeded'
+                                        if cost > dispatch_reserve else 'known_model_cost_limit',
+                                        'response_id': response_id,
+                                        'response_cost_usd': str(cost),
+                                        'known_cost_usd': str(known_cost_total),
+                                        'limit_usd': str(known_cost_limit),
+                                    }, global_failure=True)
                 elif not known_rejection:
                     blocked.add(digest)
 

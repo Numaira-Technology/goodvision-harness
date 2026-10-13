@@ -1,0 +1,24 @@
+# 本目录只发布源码；数据、凭据和执行状态必须留在独立运行目录。
+.env*
+!.env.example
+private/
+public/
+cohort/
+/source/
+output/
+gpu/output/
+gpu/source/prior-resources.json
+*.jsonl
+*.log
+baseline-response-ids.json
+previous-model-responses.jsonl
+launch*.json
+run.json
+resources-*.json
+ready.json
+preparation.json
+source-manifest.json
+cancel-requested.json
+stop-loss.json
+balance-blocked.json
+report/

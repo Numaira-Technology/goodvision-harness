@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import threading
 import time
 from bisect import bisect_right
@@ -338,6 +339,27 @@ class DeferredRichLabelHistory:
         return coordinator.history() if coordinator is not None else ()
 
 
+def _detector_provenance(value: object, model: str) -> dict[str, str]:
+    provenance = _strict_mapping(value, "detector_provenance")
+    _exact_keys(
+        provenance,
+        required={"detector_model", "weights_sha256", "actual_parameter_device"},
+        optional=set(),
+        name="detector_provenance",
+    )
+    if provenance["detector_model"] != model:
+        raise RichLabelProtocolError("detector provenance model mismatch")
+    digest = _strict_text(provenance["weights_sha256"], "weights_sha256")
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise RichLabelProtocolError("detector weight SHA-256 is invalid")
+    device = _strict_text(
+        provenance["actual_parameter_device"], "actual_parameter_device",
+    )
+    if re.fullmatch(r"cuda(?::[0-9]+)?", device) is None:
+        raise RichLabelProtocolError("detector parameter device is not CUDA")
+    return dict(provenance)
+
+
 class RichLabelHTTPClient:
     """Synchronous raw-JPEG client for a PaddleDetection adapter service."""
 
@@ -350,6 +372,7 @@ class RichLabelHTTPClient:
         transport: httpx.BaseTransport | None = None,
         mode: str = "labels",
         include_attributes: bool = True,
+        expected_detector_model: str | None = None,
     ) -> None:
         self.endpoint_url = _required_text(endpoint_url, "endpoint_url")
         if mode not in {"labels", "tracks"}:
@@ -358,6 +381,11 @@ class RichLabelHTTPClient:
             raise TypeError("include_attributes must be boolean")
         self.mode = mode
         self.include_attributes = include_attributes
+        self.expected_detector_model = expected_detector_model
+        self.last_detector_provenance: dict[str, Any] | None = None
+        if expected_detector_model is not None:
+            if mode != "tracks" or expected_detector_model not in {"yolo26-s", "rfdetr-l"}:
+                raise ValueError("detector model requires tracks mode")
         if mode == "tracks":
             self.endpoint_url = str(httpx.URL(self.endpoint_url).copy_with(
                 path="/v1/tracks", query=None, fragment=None,
@@ -433,6 +461,8 @@ class RichLabelHTTPClient:
                 TIMESTAMP_HEADER: _metadata_float(timestamp),
             }
         )
+        if self.expected_detector_model is not None:
+            request_headers["X-GoodVision-Detector-Model"] = self.expected_detector_model
         with self._lock:
             if self._closed:
                 raise RuntimeError("rich-label HTTP client is closed")
@@ -452,7 +482,17 @@ class RichLabelHTTPClient:
         media_type = content_type.split(";", 1)[0].strip().lower()
         if media_type != "application/json":
             raise RichLabelProtocolError("rich-label response is not application/json")
-        snapshot = RichLabelSnapshot.from_dict(_strict_json(response.content))
+        payload = _strict_json(response.content)
+        if self.expected_detector_model is not None:
+            if not isinstance(payload, dict) or payload.get("detector_model") != self.expected_detector_model:
+                raise RichLabelProtocolError("detector model receipt mismatch")
+            provenance = _detector_provenance(
+                payload.get("detector_provenance"), self.expected_detector_model,
+            )
+            payload = dict(payload)
+            del payload["detector_model"]
+            del payload["detector_provenance"]
+        snapshot = RichLabelSnapshot.from_dict(payload)
         if self.mode == "tracks" and any(
             item.observation_state is None for item in snapshot.objects
         ):
@@ -472,6 +512,8 @@ class RichLabelHTTPClient:
             raise RichLabelProtocolError(
                 "rich-label response has a mismatched timestamp"
             )
+        if self.expected_detector_model is not None:
+            self.last_detector_provenance = provenance
         return snapshot
 
     def close(self) -> None:
