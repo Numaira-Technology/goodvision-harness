@@ -207,6 +207,12 @@ CUDA_CHECK = (
 
 # Image tags are reused by offline Contour updates. A tag alone cannot prove
 # that the image contains the storage, allocator and multistream fixes here.
+# Compatibility modules delegate to these implementations; check both services.
+SCENE_RUNTIME_FILES = (
+    "runtime/__init__.py", "runtime/scene.py", "runtime/scheduling.py",
+    "events/__init__.py", "events/state_machine.py",
+    "actions/__init__.py", "actions/alerts.py", "actions/results.py",
+)
 RUNTIME_FILES = {
     "local-tracking": (
         "app.py", "sam31.py", "continuous.py", "streaming_state.py",
@@ -217,12 +223,14 @@ RUNTIME_FILES = {
         "service.py", "local_gpu.py", "service_locations.py", "perception.py",
         "sam_tracking_pipeline.py", "sam_tracking_spool.py",
         "video_tracking_session.py", "dashboard.html",
+        *SCENE_RUNTIME_FILES,
     ),
     "local-vlm-processing": (
         "vlm_server.py", "vlm_offload.py", "scene_model.py", "scene_inspection.py",
         "vlm_independent_model.py", "vlm_compact_model.py", "model_api.py",
         "event_sensitivity.py", "scene_runtime.py", "scene_evidence.py",
         "vlm_transport.py", "contracts.py",
+        *SCENE_RUNTIME_FILES,
     ),
 }
 

@@ -14,7 +14,7 @@ from PIL import Image, UnidentifiedImageError
 
 from .contracts import NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
-from .scene_runtime import SceneRuntime, TemporalInspection, TemporalVerdict
+from .runtime.scene import SceneRuntime, TemporalInspection, TemporalVerdict
 
 _EVENT_LABELS = frozenset((
     "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter",

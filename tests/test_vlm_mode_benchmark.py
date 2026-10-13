@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+from contextlib import nullcontext
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -145,6 +147,27 @@ def test_runner_stops_and_preserves_report_on_failure(tmp_path, monkeypatch, fai
         assert len(calls) == 1
     else:
         assert result["jobs"][-1]["phase"] == "soak"
+
+
+def test_manifest_fingerprints_nested_scene_implementations(tmp_path, monkeypatch):
+    args = modes.parser().parse_args(["--output", str(tmp_path / "run")])
+
+    def stop_after_manifest(*args, **kwargs):
+        raise RuntimeError("stop after manifest")
+
+    monkeypatch.setattr(modes, "Telemetry", lambda *_: nullcontext())
+    monkeypatch.setattr(modes, "run_stage", stop_after_manifest)
+    with pytest.raises(RuntimeError, match="stop after manifest"):
+        modes.run(args)
+    manifest = json.loads((args.output / "manifest.json").read_text(encoding="utf-8"))
+    hashes = manifest["source_hashes"]
+    for name in (
+        "runtime/scene.py", "runtime/scheduling.py", "events/state_machine.py",
+        "actions/alerts.py", "actions/results.py", "evaluation/replay.py",
+    ):
+        source = ROOT / "src/goodvision_harness" / name
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        assert hashes[str(source.relative_to(ROOT))] == digest
 
 
 def test_three_arm_order_budget_and_rate_limit_guard():

@@ -159,7 +159,9 @@ def test_dry_run_is_credential_free_and_has_no_writes(launch_rig, capsys, monkey
     ]
 
 
-@pytest.mark.parametrize("service", ["harness", "local-tracking"])
+@pytest.mark.parametrize("service", [
+    "harness", "local-tracking", "local-vlm-processing",
+])
 def test_preflight_rejects_old_images_and_checks_writable_runtime_paths(
     tmp_path, monkeypatch, service,
 ):
@@ -169,7 +171,9 @@ def test_preflight_rejects_old_images_and_checks_writable_runtime_paths(
     image.mkdir()
     for name in launcher.RUNTIME_FILES[service]:
         # Match Linux-built images when the source checkout uses Windows CRLF.
-        (image / name).write_bytes((source / name).read_bytes().replace(b"\r\n", b"\n"))
+        target = image / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((source / name).read_bytes().replace(b"\r\n", b"\n"))
     monkeypatch.setattr(launcher, "CUDA_CHECK", "")
     script = launcher.runtime_check(service)
     if service == "local-tracking":
@@ -193,20 +197,27 @@ def test_preflight_rejects_old_images_and_checks_writable_runtime_paths(
             "GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "data/sam-spool"),
         )
         monkeypatch.delenv("GOODVISION_TRACKING_SPOOL_DIRECTORY", raising=False)
-        expected = tmp_path / "data/sam-spool"
+        expected = (None if service == "local-vlm-processing"
+                    else tmp_path / "data/sam-spool")
     exec(script, {})
-    assert expected.is_dir()
-    assert list(expected.iterdir()) == []  # The write probe cleans up after itself.
-    target = image / launcher.RUNTIME_FILES[service][0]
+    if expected is not None:
+        assert expected.is_dir()
+        assert list(expected.iterdir()) == []  # The write probe cleans up after itself.
+    else:
+        assert not (tmp_path / "data").exists()
+    # Delegating shims stay identical while an actual scene implementation is stale.
+    target = image / (launcher.RUNTIME_FILES[service][0]
+                      if service == "local-tracking" else "runtime/scene.py")
     original = target.read_bytes()
     target.write_bytes(b"# old image with the same tag\n")
     with pytest.raises(AssertionError, match="Outdated"):
         exec(script, {})
     target.write_bytes(original)
-    expected.rmdir()
-    expected.write_text("a file cannot be used as a writable cache directory")
-    with pytest.raises(OSError):
-        exec(script, {})
+    if expected is not None:
+        expected.rmdir()
+        expected.write_text("a file cannot be used as a writable cache directory")
+        with pytest.raises(OSError):
+            exec(script, {})
 
 
 def test_full_local_model_deployment_remains_explicit(launch_rig, capsys):
