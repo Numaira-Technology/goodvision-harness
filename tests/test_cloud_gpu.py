@@ -399,3 +399,21 @@ def test_main_proxy_serializes_actions_and_blocks_mutation_while_analyzing(monke
         ):
             assert client.request(method, path, json={}).status_code == 409
         assert client.get("/v1/fleet").json()["usable_capacity"] == 2
+
+
+@pytest.mark.parametrize("streams", [2, 12, 37, 1024])
+def test_gateway_container_budget_covers_whep_slots_and_reconnects(streams):
+    import yaml
+
+    from goodvision_harness.whep_process import DEFAULT_FRAME_CAPACITY
+
+    services = yaml.safe_load(fleet_overlay(streams))["services"]
+    reservation = int(services["harness"]["shm_size"].removesuffix("m")) * 1024**2
+    # All original receivers and their replacements can coexist; metadata
+    # arenas/semaphores need additional space beyond the full pixel slots.
+    assert reservation >= 2 * streams * DEFAULT_FRAME_CAPACITY + 16 * 1024**2
+    recipe = yaml.safe_load(
+        (Path(__file__).parents[1] / "compose.analysis-gateway.yaml").read_text("utf-8")
+    )["services"]["harness"]
+    assert "HARNESS_GATEWAY_SHM_SIZE" in recipe["shm_size"]
+    assert recipe["tmpfs"] == ["/tmp:size=64m"]

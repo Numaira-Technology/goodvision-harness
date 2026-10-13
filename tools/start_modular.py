@@ -279,6 +279,12 @@ def queue_environment(settings: Mapping[str, str], args) -> dict[str, str]:
     return environment
 
 
+def gateway_shared_memory(streams: int) -> str:
+    """Budget 32 MiB slots, metadata and simultaneous replacement receivers."""
+    streams = positive_integer(streams, "--streams")
+    return f"{64 * (streams + 1)}m"
+
+
 def application_fleet(streams: int, *, root: Path = ROOT) -> str:
     """CPU camera runtimes with isolated data and one published console port."""
     streams = positive_integer(streams, "--streams")
@@ -449,7 +455,10 @@ def parser() -> argparse.ArgumentParser:
         if module in {"main", "analysis"}:
             command.add_argument(
                 "--analysis-server",
-                help="GPU host Harness origin; defaults to tracking host port 8080 in main mode",
+                help=(
+                    "GPU host Harness origin; defaults to tracking host "
+                    "port 8080 in main mode"
+                ),
             )
             command.add_argument(
                 "--sam-queue-policy",
@@ -524,6 +533,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 environment["HARNESS_ANALYSIS_URL"] = server_origin(
                     analysis_url, "Analysis server",
                 )
+                environment["HARNESS_GATEWAY_SHM_SIZE"] = gateway_shared_memory(streams)
                 gateway = True
             elif args.module == "analysis" and args.analysis_server:
                 raise LaunchError(

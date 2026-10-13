@@ -43,7 +43,9 @@
       this.ui.stop.disabled=this.busy||unavailable||!active;
     }
     async request(method,path="",payload){
-      const controller=new this.AbortController(),timer=this.setTimeout(()=>controller.abort(),75000);
+      // Allow the controller (420 s) and gateway (450 s) to finish releasing.
+      const timeout=path==="/stop"?480000:75000;
+      const controller=new this.AbortController(),timer=this.setTimeout(()=>controller.abort(),timeout);
       try{
         const response=await this.fetch("/v1/cloud-gpu"+path,{method,cache:"no-store",signal:controller.signal,
           headers:{"Content-Type":"application/json"},...(payload===undefined?{}:{body:JSON.stringify(payload)})});

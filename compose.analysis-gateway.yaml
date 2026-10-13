@@ -17,7 +17,10 @@ services:
     volumes:
       - gateway-data:/data
     read_only: true
-    tmpfs: [/tmp:size=16m]
+    # Each local WHEP receiver owns a 32 MiB slot plus multiprocessing metadata.
+    # Launchers scale this reservation with --streams; allow reconnect overlap.
+    shm_size: "${HARNESS_GATEWAY_SHM_SIZE:-128m}"
+    tmpfs: [/tmp:size=64m]
     security_opt: [no-new-privileges:true]
 volumes:
   gateway-data: {}

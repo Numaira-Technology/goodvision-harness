@@ -194,3 +194,23 @@ def test_browser_camera_binary_and_controls_round_trip_without_decoding(monkeypa
     assert remote.received[1] == b"opaque-jpeg-camera-frame"
     assert remote.closed
     assert connect.call_args.args[0] == "ws://gpu:8080/ws"
+
+
+@pytest.mark.parametrize("path,elapsed", [("/stop", 421), ("/start", 1)])
+def test_cloud_control_timeout_covers_controller_backup_window(path, elapsed):
+    def controller(request):
+        # Emulate a controller reply after drain/backup with the transport's
+        # configured read budget; no real seven-minute wait in this regression.
+        if request.extensions["timeout"]["read"] <= elapsed:
+            raise httpx.ReadTimeout("backup still in progress", request=request)
+        return httpx.Response(200, json={"state": "stopped"})
+
+    with TestClient(
+        create_app(
+            "http://gpu", controller="http://controller",
+            transport=httpx.MockTransport(controller),
+        )
+    ) as client:
+        response = client.post("/v1/cloud-gpu" + path, json={})
+        assert response.status_code == 200
+        assert response.json()["state"] == "stopped"

@@ -115,6 +115,16 @@ class ModularLauncherTests(unittest.TestCase):
             self.assertEqual(plan["command"][-1], "harness")
             self.assertEqual(plan["environment"]["HARNESS_ANALYSIS_URL"], "http://sam-host:8080")
             self.assertEqual(plan["analysis_location"], "gpu_host")
+            from goodvision_harness.whep_process import DEFAULT_FRAME_CAPACITY
+
+            budget = plan["environment"]["HARNESS_GATEWAY_SHM_SIZE"]
+            self.assertGreater(
+                int(budget.removesuffix("m")) * 1024**2,
+                2 * 16 * DEFAULT_FRAME_CAPACITY,
+            )
+            self.assertEqual(
+                run.call_args.kwargs["env"]["HARNESS_GATEWAY_SHM_SIZE"], budget
+            )
             self.assertIsNone(plan["fleet_overlay"])
             self.assertNotIn("sam-server", plan["command"])
             self.assertNotIn("vlm-server", plan["command"])

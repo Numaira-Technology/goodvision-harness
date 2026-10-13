@@ -131,7 +131,8 @@ def create_app(origin=None, *, controller=None, transport=None):
                 method,
                 controller + path,
                 json=payload,
-                timeout=180,
+                # Stop includes a 420-second drain/backup/release window.
+                timeout=450 if path == "/stop" else 180,
             )
             return JSONResponse(response.json(), status_code=response.status_code)
         except (httpx.HTTPError, ValueError):

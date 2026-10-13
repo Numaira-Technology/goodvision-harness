@@ -50,3 +50,24 @@ test("uncertain cleanup and unavailable controllers block the start button",asyn
   setData({available:false,capacity:37});await app.refresh();
   assert.equal(app.ui.start.disabled,true);assert.match(app.ui.status.textContent,/start_cloud_gpu/);
 });
+
+
+test("release remains busy and connected through the controller backup window",async()=>{
+  const {app}=fixture(),timers=new Map();let nextTimer=0;
+  app.setTimeout=(callback,delay)=>{timers.set(++nextTimer,{callback,delay});return nextTimer;};
+  app.clearTimeout=id=>timers.delete(id);
+  await app.refresh();
+  const fetch=app.fetch;
+  app.fetch=async(url,options)=>{
+    if(url.endsWith("/stop")){
+      assert.equal(app.busy,true);assert.equal(app.ui.stop.disabled,true);
+      // A valid late backup reply arrives after the controller's 420 s wait.
+      for(const timer of timers.values())if(timer.delay<=421000)timer.callback();
+      assert.equal(options.signal.aborted,false,"release was aborted before backup completed");
+    }
+    return fetch(url,options);
+  };
+  await app.action("stop");
+  assert.equal(app.data.state,"stopped");assert.equal(app.busy,false);
+  assert.equal(timers.size,0);assert.equal(app.ui.status.className,"secret-status");
+});

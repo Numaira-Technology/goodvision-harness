@@ -151,6 +151,7 @@ python -m goodvision_harness.vlm_server --host 0.0.0.0 --port 8001
 | 环境变量 | 含义 |
 | --- | --- |
 | `HARNESS_ANALYSIS_URL` | 本机网关连接的 GPU 主机 Harness HTTP(S) origin；不填时从追踪主机推导 8080 端口 |
+| `HARNESS_GATEWAY_SHM_SIZE` | 网关共享内存容量；启动器按 `--streams N` 自动设为 `64 × (N + 1) MiB`，直接 Compose 默认 128 MiB |
 | `HARNESS_VIDEO_PULL_LOCATION` | 摄像头拉流默认位置：`local`（本机，默认）或 `gpu`（GPU 主机）；控制台可覆盖 |
 | `INFERENCE_EXECUTION_MODE` | `cloud` 或 `server`；同机 GPU 入口还支持 `local` |
 | `TRACKING_EXECUTION_MODE` | `legacy` 或 `server`；同机 GPU 入口还支持 `local` |
