@@ -28,6 +28,10 @@
     // The YOLO detector preview supplies its own boxes, so enable tracking on
     // the detector flag even without a VLM grounding lane (events-only runs).
     window.previewHasBoxes = data.lanes.includes("grounding") || !!data.detector;
+    // Detector round-trips are serialized across lanes on one GPU, so a lane's
+    // response can take a few seconds. The tracker uses this to widen its abort
+    // and stale thresholds (and box hold) so slow-but-valid boxes still paint.
+    window.previewDetector = !!data.detector;
     document.body.classList.toggle("tracking-preview", trackingEnabled && window.previewHasBoxes);
     document.body.classList.toggle("multicam", count > 1);
     byId("grid").style.setProperty("--cols", count > 8 ? 4 : count > 4 ? 3 : count > 1 ? 2 : 1);
