@@ -473,6 +473,11 @@ class LiveMonitor:
             seq = self._detector_seq.get(key, 0) + 1
             self._detector_seq[key] = seq
             session_id = f"preview-{key[0]}-{key[1]}"
+            # The detector rejects non-increasing per-session frame metadata.
+            # The preview loops each clip, so replay media time (`at`) rewinds on
+            # every wrap; send a monotonic wall clock instead so the session
+            # keeps accepting frames across loops.
+            timestamp = time.monotonic()
             request = urllib.request.Request(
                 f"{self.detector_url}/v1/tracks",
                 data=jpeg,
@@ -481,7 +486,7 @@ class LiveMonitor:
                     "Content-Type": "image/jpeg",
                     "x-goodvision-stream-session-id": session_id,
                     "x-goodvision-frame-sequence": str(seq),
-                    "x-goodvision-timestamp-seconds": repr(max(0.0, at)),
+                    "x-goodvision-timestamp-seconds": repr(timestamp),
                     "X-GoodVision-Detector-Model": self.detector_model,
                 },
             )
