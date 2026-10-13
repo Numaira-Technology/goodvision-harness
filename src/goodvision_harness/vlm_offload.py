@@ -13,9 +13,9 @@ from typing import Any
 
 from .contracts import NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities
-from .scene_evidence import EvidenceFrame, InspectionRequest
+from .runtime.scene import TemporalInspection
+from .runtime.scheduling import EvidenceFrame, InspectionRequest
 from .scene_inspection import _validate_job
-from .scene_runtime import TemporalInspection
 
 MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
 MAX_REQUEST_BYTES = 23 * 1024 * 1024
