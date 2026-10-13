@@ -8,7 +8,7 @@ import os
 import re
 from pathlib import Path
 
-import httpx
+import anyio
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
@@ -73,44 +73,69 @@ class GatewayVideo:
                 json={**payload, "relay": True},
                 headers=headers,
             )
-            result = response.json()
             if response.status_code != 200:
-                return JSONResponse(result, status_code=response.status_code)
-            options = result.pop("video_relay", None)
-            if not isinstance(options, dict):
-                raise HTTPException(
-                    503,
-                    "GPU host does not support local video ingress; "
-                    "update its analysis service",
-                )
-            socket_path = (
-                f"/v1/fleet/cameras/{camera}/video/relay/{options['id']}"
-                if matched.group(1)
-                else f"/v1/video/relay/{options['id']}"
-            )
+                return JSONResponse(response.json(), status_code=response.status_code)
             relay = None
             try:
+                # Everything after remote acceptance owns a connection, even
+                # malformed JSON or relay metadata from an older GPU host.
+                result = response.json()
+                options = result.pop("video_relay", None)
+                if not isinstance(options, dict):
+                    raise HTTPException(
+                        503,
+                        "GPU host does not support local video ingress; "
+                        "update its analysis service",
+                    )
+                socket_path = (
+                    f"/v1/fleet/cameras/{camera}/video/relay/{options['id']}"
+                    if matched.group(1)
+                    else f"/v1/video/relay/{options['id']}"
+                )
                 relay = LocalVideoRelay(self.origin, socket_path, options)
                 await relay.start()
-            except Exception:
-                if relay is not None:
-                    await relay.close()
-                try:
-                    await client.post(
-                        self.origin + path.removesuffix("connect") + "disconnect",
-                        json={},
-                        headers=headers,
+                old = self.relays.get(camera)
+                if old is not None:
+                    await old.close()
+            except BaseException as error:
+                # Join cleanup even if the caller cancels again; never leave an
+                # untracked receiver or an orphaned cleanup task behind.
+                cancelled_during_cleanup = False
+                with anyio.CancelScope(shield=True):
+                    cleanup = asyncio.create_task(
+                        self._rollback_connect(client, path, headers, relay)
                     )
-                except httpx.HTTPError:
-                    pass
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            cancelled_during_cleanup = True
+                    cleanup.result()
+                if cancelled_during_cleanup:
+                    raise asyncio.CancelledError from None
+                if not isinstance(error, Exception) or isinstance(error, HTTPException):
+                    raise
                 raise HTTPException(
                     503, "Local video relay could not connect to GPU host"
                 ) from None
-            old = self.relays.pop(camera, None)
-            if old is not None:
-                await old.close()
             self.relays[camera] = relay
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    async def _rollback_connect(self, client, path, headers, relay):
+        if relay is not None:
+            try:
+                await relay.close()
+            except Exception:
+                pass  # Local cleanup failure must not skip the remote rollback.
+        try:
+            await client.post(
+                self.origin + path.removesuffix("connect") + "disconnect",
+                json={},
+                headers=headers,
+                timeout=5,
+            )
+        except Exception:
+            pass  # Preserve the original negotiation/start error without secrets.
 
     async def disconnect(self, path):
         matched = DISCONNECT.fullmatch(path)

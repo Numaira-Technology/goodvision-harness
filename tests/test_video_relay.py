@@ -165,3 +165,249 @@ class BytesStream(httpx.AsyncByteStream):
 
     async def __aiter__(self):
         yield self.value
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/video/connect",
+        "/v1/fleet/cameras/camera01/connect",
+    ],
+)
+@pytest.mark.parametrize(
+    "fault",
+    ["missing", "not-object", "missing-id", "invalid-json"],
+)
+def test_successful_remote_connect_rolls_back_failed_negotiation_and_can_retry(
+    rig,
+    monkeypatch,
+    tmp_path,
+    path,
+    fault,
+):
+    monkeypatch.setenv("HARNESS_VIDEO_PULL_LOCATION", "local")
+    monkeypatch.setenv("HARNESS_GATEWAY_SETTINGS_PATH", str(tmp_path / "gateway.json"))
+    runtime = rig.make()
+    relay = Mock(start=AsyncMock(), close=AsyncMock())
+    factory = Mock(return_value=relay)
+    monkeypatch.setattr("goodvision_harness.video_relay.LocalVideoRelay", factory)
+    calls, accepted = [], []
+    disconnect = path.removesuffix("connect") + "disconnect"
+    with TestClient(create_app(lambda: runtime)) as remote_client:
+
+        async def remote(request):
+            calls.append(request.url.path)
+            response = remote_client.request(
+                request.method,
+                request.url.path,
+                content=await request.aread(),
+                headers={"content-type": "application/json"},
+            )
+            if request.url.path == path and response.status_code == 200:
+                accepted.append(runtime._video_connection)
+                assert accepted[-1].running
+                if len(accepted) == 1:
+                    if fault == "invalid-json":
+                        return httpx.Response(200, content=b"not-json")
+                    result = response.json()
+                    result.pop("video_relay")
+                    if fault == "not-object":
+                        result["video_relay"] = []
+                    elif fault == "missing-id":
+                        result["video_relay"] = {}
+                    return httpx.Response(200, json=result)
+            return httpx.Response(response.status_code, content=response.content)
+
+        with TestClient(
+            gateway_app(
+                "http://gpu",
+                transport=httpx.MockTransport(remote),
+            )
+        ) as client:
+            response = client.post(path, json={"stream_url": "rtsp://private/live"})
+            assert response.status_code == 503
+            assert calls == [path, disconnect]
+            wait_for(lambda: not accepted[0].running)
+            assert not accepted[0].running
+            assert not client.app.state.video.relays
+            response = client.post(path, json={"stream_url": "rtsp://private/live"})
+            assert response.status_code == 200, response.text
+            assert len(accepted) == 2
+            assert accepted[1] is not accepted[0]
+            assert accepted[1].running
+            factory.assert_called_once()
+            relay.start.assert_awaited_once()
+        relay.close.assert_awaited_once()
+
+
+def test_failed_local_close_still_disconnects_remote_and_preserves_start_error(
+    rig,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HARNESS_VIDEO_PULL_LOCATION", "local")
+    monkeypatch.setenv("HARNESS_GATEWAY_SETTINGS_PATH", str(tmp_path / "gateway.json"))
+    runtime = rig.make()
+    failed = Mock(
+        start=AsyncMock(side_effect=RuntimeError("private startup details")),
+        close=AsyncMock(side_effect=OSError("private local close details")),
+    )
+    good = Mock(start=AsyncMock(), close=AsyncMock())
+    monkeypatch.setattr(
+        "goodvision_harness.video_relay.LocalVideoRelay",
+        Mock(side_effect=[failed, good]),
+    )
+    calls = []
+    with TestClient(create_app(lambda: runtime)) as remote_client:
+
+        async def remote(request):
+            calls.append(request.url.path)
+            response = remote_client.request(
+                request.method,
+                request.url.path,
+                content=await request.aread(),
+                headers={"content-type": "application/json"},
+            )
+            return httpx.Response(response.status_code, content=response.content)
+
+        with TestClient(
+            gateway_app(
+                "http://gpu",
+                transport=httpx.MockTransport(remote),
+            )
+        ) as client:
+            response = client.post(
+                "/v1/video/connect", json={"stream_url": "rtsp://private/live"}
+            )
+            assert response.status_code == 503
+            assert (
+                response.json()["detail"]
+                == "Local video relay could not connect to GPU host"
+            )
+            assert "private" not in response.text
+            failed.close.assert_awaited_once()
+            assert calls == ["/v1/video/connect", "/v1/video/disconnect"]
+            wait_for(lambda: not runtime._video_connection.running)
+            assert not runtime._video_connection.running
+            assert (
+                client.post(
+                    "/v1/video/connect",
+                    json={"stream_url": "rtsp://private/live"},
+                ).status_code
+                == 200
+            )
+        good.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("disconnect_error", ["http-error", "lost-reply"])
+def test_rollback_error_keeps_original_negotiation_error_and_allows_retry_after_close(
+    rig,
+    monkeypatch,
+    tmp_path,
+    disconnect_error,
+):
+    monkeypatch.setenv("HARNESS_VIDEO_PULL_LOCATION", "local")
+    monkeypatch.setenv("HARNESS_GATEWAY_SETTINGS_PATH", str(tmp_path / "gateway.json"))
+    runtime = rig.make()
+    relay = Mock(start=AsyncMock(), close=AsyncMock())
+    monkeypatch.setattr(
+        "goodvision_harness.video_relay.LocalVideoRelay", Mock(return_value=relay)
+    )
+    accepted = 0
+    with TestClient(create_app(lambda: runtime)) as remote_client:
+
+        async def remote(request):
+            nonlocal accepted
+            response = remote_client.request(
+                request.method,
+                request.url.path,
+                content=await request.aread(),
+                headers={"content-type": "application/json"},
+            )
+            if request.url.path.endswith("connect") and response.status_code == 200:
+                accepted += 1
+                if accepted == 1:
+                    result = response.json()
+                    result.pop("video_relay")
+                    return httpx.Response(200, json=result)
+            if request.url.path.endswith("disconnect"):
+                wait_for(lambda: not runtime._video_connection.running)
+                assert not runtime._video_connection.running
+                if disconnect_error == "lost-reply":
+                    raise httpx.ReadError("private rollback details", request=request)
+                return httpx.Response(500, json={"detail": "private rollback details"})
+            return httpx.Response(response.status_code, content=response.content)
+
+        with TestClient(
+            gateway_app(
+                "http://gpu",
+                transport=httpx.MockTransport(remote),
+            )
+        ) as client:
+            response = client.post(
+                "/v1/video/connect", json={"stream_url": "rtsp://private/live"}
+            )
+            assert response.status_code == 503
+            assert "does not support local video ingress" in response.json()["detail"]
+            assert "private" not in response.text
+            wait_for(lambda: not runtime._video_connection.running)
+            assert not runtime._video_connection.running
+            assert (
+                client.post(
+                    "/v1/video/connect",
+                    json={"stream_url": "rtsp://private/live"},
+                ).status_code
+                == 200
+            )
+
+
+def test_remote_connect_rejection_never_disconnects_existing_connection(
+    rig,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HARNESS_VIDEO_PULL_LOCATION", "local")
+    monkeypatch.setenv("HARNESS_GATEWAY_SETTINGS_PATH", str(tmp_path / "gateway.json"))
+    runtime = rig.make()
+    calls = []
+    with TestClient(create_app(lambda: runtime)) as remote_client:
+        assert (
+            remote_client.post(
+                "/v1/video/connect",
+                json={
+                    "stream_url": "rtsp://private/live",
+                    "relay": True,
+                },
+            ).status_code
+            == 200
+        )
+        original = runtime._video_connection
+
+        async def remote(request):
+            calls.append(request.url.path)
+            response = remote_client.request(
+                request.method,
+                request.url.path,
+                content=await request.aread(),
+                headers={"content-type": "application/json"},
+            )
+            return httpx.Response(response.status_code, content=response.content)
+
+        with TestClient(
+            gateway_app(
+                "http://gpu",
+                transport=httpx.MockTransport(remote),
+            )
+        ) as client:
+            assert (
+                client.post(
+                    "/v1/video/connect",
+                    json={
+                        "stream_url": "rtsp://private/live",
+                    },
+                ).status_code
+                == 409
+            )
+            assert calls == ["/v1/video/connect"]
+            assert runtime._video_connection is original
+            assert original.running
