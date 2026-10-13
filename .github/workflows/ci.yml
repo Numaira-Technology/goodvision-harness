@@ -49,3 +49,21 @@ jobs:
         run: choco install ffmpeg --no-progress -y
       - name: Run regression suite (no models or service credentials)
         run: python -m pytest -q
+
+  gateway-video-integration:
+    name: Two-route WHEP gateway (Linux container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the deployment gateway image
+        run: docker build --target analysis-gateway -t goodvision-analysis-gateway:verification .
+      - name: Verify real offline WHEP relays with deployment memory limits
+        run: |
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:size=64m --shm-size=192m \
+            --security-opt no-new-privileges:true \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --volume "$PWD/tests/gateway_whep_container.py:/verification/gateway_whep_container.py:ro" \
+            goodvision-analysis-gateway:verification \
+            python /verification/gateway_whep_container.py
