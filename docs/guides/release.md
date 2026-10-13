@@ -42,16 +42,13 @@ layers do not prove that a fresh full GPU build has completed; record which
 validation was actually performed. Dependency version ranges also mean a clean
 build is not a promise of byte-for-byte reproducibility.
 
-The last recorded delivery uses `2026.09.10-full.4` for both product images. See
-[RELEASE.md](../../RELEASE.md) for that frozen bundle and its validation record;
-it does not cover subsequent source changes. `Dockerfile.release` can reuse the audited
-GPU dependencies while reinstalling every main application file and replacing
-the worker and runtime entrypoints from the current checkout. Source hashes
-verify the resulting application files; dependency checks verify the inherited
-runtime. The full GPU Dockerfiles remain the path for rebuilding dependencies.
-Its `2026.09.10-full.3` runtime bases are intentional dependency inputs.
-Use new product tags and archive names for each later release, and update the
-launcher, Compose files, deployment guide, exporter, smoke defaults and tests.
+The current delivery uses `20260923-full1` for both product images. See
+[RELEASE.md](../../RELEASE.md) for its exact artifacts and validation record.
+Both images were rebuilt with the customer targets above; the old
+`Dockerfile.release` remains a historical recipe whose local runtime bases may
+not be installed. Use a new product tag and archive name for every later release,
+and update the launcher, Compose files, deployment guide, exporter, smoke
+defaults and tests together.
 
 ### Customer-facing boundary
 
@@ -97,13 +94,13 @@ directory and copy these reviewed sources:
 Add a reviewed `RELEASE.md` recording the exact candidate versions, completed
 checks and unverified boundaries, plus `SOURCE_HASHES.json` for the application
 files verified inside both images. The existing exporter targets the recorded
-`2026.09.10-full.4` tags and archive name:
+`20260923-full1` tags and archive name:
 
 ```bash
-python tools/export_full_delivery.py dist/goodvision-full-20260910
+python tools/export_full_delivery.py dist/goodvision-full-20260923-full1
 ```
 
-The exporter streams the two recorded image tags into a binary-safe tar
+The exporter streams the two recorded image tags into a binary-safe compressed tar
 archive, verifies the complete stream and manifest, and writes `IMAGES.json`
 and `SHA256SUMS.txt`. Load the archive directly with `docker load -i`.
 Before a later release, update the exporter's tags and archive name along with
@@ -123,3 +120,21 @@ protocol tests and `--runtime` dependency checks do not establish actual GPU or
 model correctness. Real face/detection/attribute inference, authorized-video
 results, evidence photos and performance still require the target-host checks
 in the delivery guide. Do not restart the local demo merely to validate a release.
+
+### Minimal customer ZIP (2026-09-23 packaging revision)
+
+The rich staging materials above are internal release records. Do not send them
+to customers. Run `tools/package_customer_delivery.py` against the full staging
+ZIP to retain only installation files. Its configuration is already in the image.
+
+Customer updates now use Docker images, not an exposed application payload.
+Prepare a build context using `tools/harness_update/package_image_update.py
+--prepare <context>`, build the configured update image, then use `--output <zip>`
+to stream it into the customer ZIP. The image contains the application and update
+helper. The outer ZIP contains only the Docker archive, installation entrypoints
+and a short usage note. Do not distribute source-update ZIPs made by the historical
+`package_update.py` / `package_customer_update.py` workflows.
+
+Customer instructions contain only required files and installation steps. Keep
+internal evidence outside the delivery folder. Per the requested workflow, do
+not run post-packaging hash checks.

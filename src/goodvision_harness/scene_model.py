@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from .diagnostics import note
 from .latency_trace import log_timing, trace_id
 from .model_api import (
     ModelAPIClient,
@@ -74,6 +75,63 @@ def _json(value: str | bytes, *, stage: str) -> Any:
         raise _ResponseValidationError("json_nesting_limit", stage) from None
 
 
+def _strip_json_fence(content: str) -> str:
+    """Unwrap only a complete JSON/untagged fence, never extract from prose."""
+    content = content.strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL
+    )
+    return fenced.group(1) if fenced else content
+
+
+def _reply_diagnostics(content: str) -> dict[str, object]:
+    """Bounded format evidence with no arbitrary model text, keys or values."""
+    stripped = content.strip()
+    body = _strip_json_fence(content)
+    result: dict[str, object] = {
+        "content_sha256": hashlib.sha256(
+            content.encode("utf-8", errors="replace")
+        ).hexdigest(),
+        "json_wrapper": (
+            "complete_fence" if body != stripped else
+            "unrecognized_fence" if stripped.startswith("```") else "none"
+        ),
+    }
+    # Preserve token kinds and punctuation only, never free-form reply content.
+    tokens = []
+    pattern = (
+        r'"(?:[^"\\]|\\.)*"|[{}\[\],:]|true\b|false\b|null\b|'
+        r'-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[^\s{}\[\],:"]+|"'
+    )
+    for match in re.finditer(pattern, body):
+        token = match.group()
+        tokens.append(
+            token if token in {"{", "}", "[", "]", ",", ":", "true", "false", "null"}
+            else "string" if token.startswith('"') and len(token) > 1
+            else "number" if re.fullmatch(r'-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?', token)
+            else "other"
+        )
+        if len(tokens) >= 80:
+            break
+    result["json_token_kinds_prefix"] = tokens
+    try:
+        raw = _json(body, stage="verdict_json")
+    except _ResponseValidationError as error:
+        result["diagnostic_json_reason"] = error.reason
+        if error.reason == "invalid_json_syntax":
+            try:
+                json.loads(body)
+            except json.JSONDecodeError as syntax:
+                result.update(json_error_offset=syntax.pos,
+                              json_error_line=syntax.lineno,
+                              json_error_column=syntax.colno)
+    else:
+        result["json_root_kind"] = type(raw).__name__
+        if isinstance(raw, (dict, list)):
+            result["json_root_size"] = len(raw)
+    return result
+
+
 def _verdict_rejection_reason(job, verdicts, allowed) -> str:
     """Explain an already rejected batch without relaxing the shared validator."""
     seen = set()
@@ -81,7 +139,7 @@ def _verdict_rejection_reason(job, verdicts, allowed) -> str:
         if verdict.event_label not in job.request.event_labels:
             return "unrequested_event_label"
         ids = verdict.subject_ids
-        if not ids:
+        if not ids and verdict.event_label != "ground_litter":
             return "empty_subject_ids"
         if any(not isinstance(value, str) or not value for value in ids):
             return "invalid_subject_id_type"
@@ -114,6 +172,13 @@ def _response_shape(response: object) -> dict[str, object]:
     if not isinstance(choices, list):
         return {"choices_count": None}
     result: dict[str, object] = {"choices_count": len(choices)}
+    # Known public routing labels only; never preserve arbitrary response text.
+    provider = response.get("provider")
+    if isinstance(provider, str):
+        result["provider_category"] = provider if provider in {
+            "Darkbloom", "DeepInfra", "Parasail", "Alibaba", "Alibaba Cloud Int.",
+            "AtlasCloud", "SiliconFlow", "Venice",
+        } else "other"
     if not choices or not isinstance(choices[0], Mapping):
         return result
     choice = choices[0]
@@ -147,6 +212,11 @@ def _response_shape(response: object) -> dict[str, object]:
         )
         if isinstance(content, str):
             result["content_characters"] = len(content)
+            result.update(_reply_diagnostics(content))
+            stripped = content.strip()
+            result["content_wrapper"] = (
+                "code_fence" if stripped.startswith("```") else "none"
+            )
         elif isinstance(content, list):
             result["content_parts"] = len(content)
     return result
@@ -223,6 +293,7 @@ class TemporalVLMInspector:
         self._closed = False
         self._stats: dict[str, Any] = {
             "provider": settings.provider,
+            "cpu_offload": bool(settings.inspection_endpoint),
             "requests": 0,
             "succeeded_requests": 0,
             "failed_requests": 0,
@@ -289,7 +360,9 @@ class TemporalVLMInspector:
         # Do not copy client headers/cookies/params/auth or endpoint credentials.
         # HEAD uses the configured route without sending evidence or generating
         # output; even an unsupported-method response can warm the connection.
-        endpoint = httpx.URL(self.settings.endpoint).copy_with(
+        endpoint = httpx.URL(
+            self.settings.inspection_endpoint or self.settings.endpoint
+        ).copy_with(
             username="", password="", query=None, fragment=None,
         )
         request = httpx.Request(
@@ -310,12 +383,15 @@ class TemporalVLMInspector:
 
     def inspect(self, job: TemporalInspection) -> tuple[TemporalVerdict, ...]:
         started = time.monotonic()
+        verdicts, failure = (), None
         timing = {
             "stream_session_id": trace_id(job.stream_session_id),
             "request_id": trace_id(job.request.request_id),
             "outcome": "error",
         }
         with self._call_lock:
+            self.last_http_timing = {}
+            self.last_inspection_timing = {}
             timing["inspector_lock_wait_seconds"] = time.monotonic() - started
             try:
                 verdicts = self._inspect_locked(job, timing=timing)
@@ -326,29 +402,76 @@ class TemporalVLMInspector:
                     empty_verdicts=not verdicts,
                 )
                 return verdicts
-            except ModelAPIError as error:
-                timing["error_code"] = error.code
+            except Exception as error:
+                failure = error
+                if isinstance(error, ModelAPIError):
+                    timing["error_code"] = error.code
                 raise
             finally:
+                note(job, "responded", verdicts=verdicts, error=failure,
+                     transport=timing.pop("_diagnostic_transport", None))
                 timing["total_seconds"] = time.monotonic() - started
+                self.last_inspection_timing = dict(timing)
                 log_timing("vlm_inspection_timing", **timing)
 
-    def build_messages(self, job):
+    def build_messages(self, job, *, encoded_images=None):
         response_format = self._parameters.get("response_format")
         return build_temporal_messages(
             job, max_image_side=self._max_image_side, jpeg_quality=self._jpeg_quality,
             verdicts_wrapper=(isinstance(response_format, Mapping)
                               and response_format.get("type") == "json_object"),
+            encoded_images=encoded_images,
         )
 
     def _inspect_locked(
         self, job: TemporalInspection, *, timing: dict
     ) -> tuple[TemporalVerdict, ...]:
         # Called with the inspector lock held, including preparation and parsing.
+        self.last_response_diagnostics = {}
         if self._closed:
             raise ModelAPIError("temporal inspector is closed")
         preparation_started = time.monotonic()
-        messages = self.build_messages(job)
+        offload = bool(self.settings.inspection_endpoint)
+        if offload:
+            from .vlm_offload import encode_inspection
+
+            kind = {
+                "TemporalVLMInspector": "temporal",
+                "IndependentVLMInspector": "full",
+                "EventJSONInspector": "events",
+                "CompactGroundingInspector": "compact",
+            }.get(type(self).__name__)
+            if kind is None:
+                raise ValueError("unsupported delegated inspector")
+            # Send original evidence. Image decoding, metadata stripping,
+            # resizing, prompt assembly and first response validation happen
+            # beside the model; application evidence remains source-aligned.
+            payload = encode_inspection(
+                job, kind=kind, model=self.model, parameters=self._parameters,
+                options={
+                    "max_tokens": self._parameters["max_tokens"],
+                    "max_image_side": self._max_image_side,
+                    "jpeg_quality": self._jpeg_quality,
+                },
+                deadline_seconds=self.settings.timeout_seconds,
+            )
+            encoded_image_bytes = sum(len(frame.jpeg_bytes) for frame in job.frames)
+        else:
+            if job.diagnostics is None:
+                messages = self.build_messages(job)
+            else:
+                encoded_images = []
+                messages = self.build_messages(job, encoded_images=encoded_images)
+                note(job, "prepared", encoded_images)
+            payload = {**self._parameters, "model": self.model, "messages": messages}
+            # Count bounded data URLs without copying or decoding their pixels.
+            encoded_image_bytes = 0
+            for part in messages[1]["content"]:
+                if part["type"] == "image_url":
+                    data = part["image_url"]["url"].split(",", 1)[1]
+                    encoded_image_bytes += len(data) // 4 * 3 - (
+                        len(data) - len(data.rstrip("="))
+                    )
         key = self._api_key() if callable(self._api_key) else self._api_key
         if self.settings.provider == "local" and not key:
             key = environment_api_key(self.settings)
@@ -356,16 +479,6 @@ class TemporalVLMInspector:
             not key.strip() and self.settings.provider != "local"
         ):
             raise ModelAPIError("temporal model credential is unavailable")
-        payload = {**self._parameters, "model": self.model, "messages": messages}
-        # These data URLs were just built locally from bounded JPEGs. Count
-        # decoded bytes from Base64 length without copying/decoding pixels.
-        encoded_image_bytes = 0
-        for part in messages[1]["content"]:
-            if part["type"] == "image_url":
-                data = part["image_url"]["url"].split(",", 1)[1]
-                encoded_image_bytes += len(data) // 4 * 3 - (
-                    len(data) - len(data.rstrip("="))
-                )
         http_timing = {
             "stream_session_id": trace_id(job.stream_session_id),
             "request_id": trace_id(job.request.request_id),
@@ -373,7 +486,10 @@ class TemporalVLMInspector:
             "encoded_image_bytes": encoded_image_bytes,
             "max_image_side": self._max_image_side,
             "jpeg_quality": self._jpeg_quality,
+            "cpu_offload": offload,
         }
+        if job.diagnostics is not None:
+            timing["_diagnostic_transport"] = http_timing
         headers = httpx.Headers(model_request_headers(self.settings, key.strip()))
         timing["request_prepare_seconds"] = time.monotonic() - preparation_started
         started = time.monotonic()
@@ -385,13 +501,37 @@ class TemporalVLMInspector:
             client_started = time.monotonic()
             self._ensure_transport()
             timing["client_initialize_seconds"] = time.monotonic() - client_started
+            note(job, "attempted")
             response = self._loop.run_until_complete(
                 asyncio.wait_for(
                     self._request(payload, headers, timing=http_timing),
                     timeout=self.settings.timeout_seconds,
                 )
             )
+            if offload:
+                if (
+                    type(response.get("version")) is not int
+                    or response["version"] != 1
+                    or response.get("request_id") != job.request.request_id
+                    or not isinstance(response.get("completion"), dict)
+                ):
+                    raise _ResponseValidationError(
+                        "invalid_offload_envelope", "envelope_schema"
+                    )
+                server_timing = response.get("timing")
+                if isinstance(server_timing, dict):
+                    for name in ("request_prepare_seconds", "verdict_parse_seconds"):
+                        value = server_timing.get(name)
+                        if (
+                            type(value) in (int, float)
+                            and math.isfinite(value) and 0 <= value <= 300
+                        ):
+                            timing["server_" + name] = value
+                response = response["completion"]
+                # Recheck the small result against this exact source job. No
+                # remote completion may change requested labels or grounding.
             self._record_usage(response)
+            self.last_response_diagnostics = _response_shape(response)
             parse_started = time.monotonic()
             try:
                 verdicts = self._parse(job, response)
@@ -436,6 +576,7 @@ class TemporalVLMInspector:
             # boundary; never attach the model's response or request content.
             error.validation_stage = validation_stage or "response"
             error.validation_reason = validation_reason or "invalid_response_shape"
+            error.response_diagnostics = _response_shape(response)
             log_timing(
                 "vlm_response_validation",
                 stream_session_id=trace_id(job.stream_session_id),
@@ -443,6 +584,12 @@ class TemporalVLMInspector:
                 error_code=error.code,
                 validation_stage=validation_stage or "response",
                 validation_reason=validation_reason or "invalid_response_shape",
+                parser_kind={
+                    "EventJSONInspector": "events",
+                    "CompactGroundingInspector": "compact",
+                    "IndependentVLMInspector": "full",
+                    "TemporalVLMInspector": "temporal",
+                }.get(type(self).__name__, "other"),
                 **_response_shape(response),
             )
         raise error from None
@@ -523,7 +670,8 @@ class TemporalVLMInspector:
                 # Do not inherit credentials, cookies, query parameters or
                 # private headers from a previously configured cloud pool.
                 request = httpx.Request(
-                    "POST", self.settings.endpoint, json=payload, headers=headers,
+                    "POST", self.settings.inspection_endpoint or self.settings.endpoint,
+                    json=payload, headers=headers,
                     extensions={
                         "trace": transport_trace,
                         "timeout": httpx.Timeout(
@@ -553,9 +701,30 @@ class TemporalVLMInspector:
             timing["http_until_headers_seconds"] = time.monotonic() - started
             timing["http_status"] = response.status_code
             if not 200 <= response.status_code < 300:
+                code = "http_error"
+                if self.settings.inspection_endpoint:
+                    # The companion returns only public, fixed error codes.
+                    # Bound the error body and never retain upstream details.
+                    error_body = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(error_body) + len(chunk) > 4096:
+                            break
+                        error_body.extend(chunk)
+                    else:
+                        try:
+                            error_payload = json.loads(error_body)
+                        except (ValueError, TypeError, RecursionError):
+                            error_payload = None
+                        if isinstance(error_payload, dict):
+                            candidate = error_payload.get("code")
+                            if isinstance(candidate, str) and candidate in {
+                                "invalid_response", "empty_response", "connection",
+                                "timeout", "overloaded", "request_failed",
+                            }:
+                                code = candidate
                 raise ModelAPIError(
                     "temporal model HTTP request failed",
-                    code="http_error",
+                    code=code,
                     status_code=response.status_code,
                 )
             body = bytearray()
@@ -668,6 +837,7 @@ class TemporalVLMInspector:
             finally:
                 timing["response_close_seconds"] = time.monotonic() - close_started
                 timing["total_seconds"] = time.monotonic() - started
+                self.last_http_timing = dict(timing)
                 log_timing("vlm_http_timing", **timing)
 
     @staticmethod
@@ -695,10 +865,7 @@ class TemporalVLMInspector:
         # Some vision routes wrap otherwise valid JSON in one Markdown fence.
         # Remove only a whole-message wrapper; prose, partial JSON, nested fences,
         # extra fields and type coercions remain invalid.
-        fenced = re.fullmatch(
-            r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL
-        )
-        raw = _json(fenced.group(1) if fenced else content, stage="verdict_json")
+        raw = _json(_strip_json_fence(content), stage="verdict_json")
         if isinstance(raw, dict) and set(raw) == {"verdicts"}:
             raw = raw["verdicts"]
         if not isinstance(raw, list) or len(raw) > 64:

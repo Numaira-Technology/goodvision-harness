@@ -50,6 +50,7 @@ class ModelAPIError(RuntimeError):
     _CODES = frozenset({
         "request_failed", "timeout", "connection", "http_error",
         "invalid_response", "empty_response", "cancelled", "overloaded",
+        "budget_exhausted",
     })
 
     def __init__(
@@ -81,6 +82,7 @@ class ModelAPISettings:
     retry_backoff_seconds: float = 1.0
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     provider: str = "aiclub"
+    inspection_endpoint: str = ""
 
     def __post_init__(self) -> None:
         if self.provider not in PROVIDER_DEFAULTS:
@@ -100,6 +102,26 @@ class ModelAPISettings:
             raise ValueError(
                 "inference_service.endpoint must be an absolute HTTP(S) URL"
             )
+        if self.inspection_endpoint:
+            inspection = urlparse(self.inspection_endpoint)
+            try:
+                valid_port = inspection.port is None or 1 <= inspection.port <= 65535
+            except ValueError:
+                valid_port = False
+            if (
+                self.provider != "local"
+                or inspection.scheme not in {"http", "https"}
+                or not inspection.hostname
+                or inspection.username is not None
+                or inspection.password is not None
+                or inspection.query or inspection.fragment
+                or not valid_port
+                or any(character.isspace() for character in self.inspection_endpoint)
+            ):
+                raise ValueError(
+                    "inspection_endpoint requires a local HTTP(S) route "
+                    "without credentials, queries or fragments"
+                )
         if not self.api_key_env.strip():
             raise ValueError("inference_service.api_key_env must not be empty")
         if self.timeout_seconds <= 0:
@@ -124,6 +146,7 @@ class ModelAPISettings:
             max_retries=int(value.get("max_retries", 3)),
             retry_backoff_seconds=float(value.get("retry_backoff_seconds", 1.0)),
             extra_headers={str(key): str(item) for key, item in extra_headers.items()},
+            inspection_endpoint=str(value.get("inspection_endpoint", "")),
         )
 
 

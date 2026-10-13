@@ -1102,7 +1102,7 @@
   }
 
   let warmMotionWorker=null;
-  const eventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人",identity_pending:"身份待确认"};
+  const eventName=value=>value==="identity_pending"?"身份待确认":globalThis.GoodvisionEvents?.label(value)||value;
   function drawSubjectLabel(context,subject,width,height,displayWidth=width){
     if(subject.track_id===undefined||subject.track_id===null)return;
     const points=[...(subject.polygons||[]),...(subject.open_segments||[])].flat()
@@ -1115,7 +1115,9 @@
     context.save();context.font=`600 ${fontSize}px sans-serif`;context.textBaseline="top";
     const lines=[displayName(subject.display_name)||`ID ${subject.track_id}`];
     if(subject.tracking_confirmation==="confirmed"&&(subject.alert||subject.warning)&&subject.event_labels?.length)
-      lines.push([...new Set(subject.event_labels.map(label=>eventNames[label]||label))].join(" · "));
+      lines.push([...new Set(subject.event_labels.map(label=>{
+        const name=eventName(label);return globalThis.GoodvisionI18n?.text(name)||name;
+      }))].join(" · "));
     const fitted=lines.map(line=>{
       if(context.measureText(line).width<=available)return line;
       const chars=Array.from(line);
@@ -1305,12 +1307,12 @@
       // Bound this grace period so a failed worker never stalls live playback.
       this.presentGraceSeconds=Math.max(0,.15-this.frames.delay);
       this.uploads=[];this.uploading=false;
-      this.pendingAck=null;this.analysisPause=null;
+      this.pendingAcks=new Map();this.analysisPause=null;this.uploadWindow=3;
       this.lastPresentedSequence=-1;this.lastDiscardedSequence=-1;this.sourceSequence=0;this.firstMediaTime=null;
       this.nextCaptureAt=0;this.nextAnalysisAt=0;this.latestClock=null;this.lastVideoFrame=-1;
       this.stats={captured_frames:0,analysis_admitted:0,analysis_sent:0,analysis_upload_failures:0,
         network_requests:0,network_failures:0,network_bytes_received:0,network_frames_received:0,network_source_gap_frames:0,network_queue_dropped_frames:0,
-        analysis_prepared:0,
+        analysis_prepared:0,analysis_upload_retries:0,analysis_ack_timeouts:0,analysis_in_flight_peak:0,
         video_callback_frames:0,video_callback_gap_frames:0,
         analysis_capture_pauses:0,motion_failures:0,metadata_failures:0,frames_without_contours:0,
         display_buffer_capacity_failures:0,
@@ -1529,43 +1531,73 @@
       }
       this.noteTiming("capture_total",performance.now()-captureStarted);
     }
+    // Encoding stays serial; up to three immutable packets may await receipt.
+    // The twelve-source admission bound includes every unconfirmed packet.
     async sendUploads(){
-      if(this.closed)return;
-      if(this.uploading){this.prepareNextUpload();return;}
+      if(this.closed||this.uploadHalted)return;
+      if(this.uploading){this.uploadWake=true;return;}
       this.uploading=true;
       try{
-        while(this.uploads.length&&!this.closed){
-          if(this.drainDeadline&&performance.now()>this.drainDeadline)throw new Error("upload drain deadline");
-          const task=this.uploads[0];
+        while(!this.closed&&!this.uploadHalted&&this.pendingAcks.size<this.uploadWindow){
+          const recovering=this.uploads.some(task=>task.retryReason);
+          const task=recovering?this.uploads[0]:this.uploads.find(task=>!task.attempts);
+          if(!task||this.pendingAcks.has(task.metadata.source_sequence)||task.retryWaiting)break;
           await this.prepareUpload(task);
-          if(this.closed)break;
+          if(this.closed||this.uploadHalted)break;
+          if(!this.uploads.includes(task))continue;
+          // An ACK can arrive while encoding. Recheck the retry barrier before
+          // sending a later source; the server also enforces this ordering.
+          if(this.uploads.some(item=>item.retryReason)&&task!==this.uploads[0])break;
           if(this.socket.readyState!==1)throw new Error("socket closed");
-          if(this.socket.bufferedAmount>1024*1024){await new Promise(resolve=>setTimeout(resolve,20));continue;}
-          const acknowledged=new Promise((resolve,reject)=>{this.pendingAck={task,resolve,reject,
-            timer:setTimeout(()=>{this.pendingAck=null;reject(new Error("analysis acknowledgement timed out"));},5000)};});
-          const sentAt=performance.now();this.socket.send(task.packet);
-          this.prepareNextUpload();
-          const reply=await acknowledged;
-          this.noteTiming("analysis_ack",performance.now()-sentAt);
-          if(!reply.accepted){
-            if(this.analysisPause!=="capacity")this.stats.analysis_capture_pauses++;
-            this.analysisPause=reply.reason==="capacity"?"capacity":"obsolete";
-            if(reply.reason==="capacity"&&(task.capacityRetries=(task.capacityRetries||0)+1)<=3){
-              this.onFailure("服务器分析队列暂满；画面继续播放，已接纳帧保留并等待重试。");
-              await new Promise(resolve=>setTimeout(resolve,250));continue;
-            }
-            throw new Error(reply.reason==="capacity"?"analysis capacity unavailable":"obsolete analysis source");
+          if(this.socket.bufferedAmount>1024*1024){
+            this.uploadBufferBlockedAt??=performance.now();
+            if(performance.now()-this.uploadBufferBlockedAt>15000)throw new Error("socket send queue stalled");
+            clearTimeout(this.uploadPumpTimer);this.uploadPumpTimer=setTimeout(()=>this.sendUploads(),20);break;
           }
-          this.uploads.shift();this.stats.analysis_sent++;
-          if(this.analysisPause==="capacity")this.analysisPause=null;
+          this.uploadBufferBlockedAt=null;
+          const sequence=task.metadata.source_sequence;
+          task.attempts=(task.attempts||0)+1;
+          if(task.attempts>1)this.stats.analysis_upload_retries++;
+          const pending={task,sentAt:performance.now()};
+          pending.timer=setTimeout(()=>{
+            if(this.pendingAcks.get(sequence)!==pending)return;
+            this.pendingAcks.delete(sequence);this.stats.analysis_ack_timeouts++;
+            this.retryUpload(task,"timeout");
+          },5000);
+          this.pendingAcks.set(sequence,pending);
+          this.stats.analysis_in_flight_peak=Math.max(this.stats.analysis_in_flight_peak,this.pendingAcks.size);
+          this.socket.send(task.packet);
         }
-      }catch(error){
-        if(this.pendingAck){clearTimeout(this.pendingAck.timer);this.pendingAck=null;}
-        this.stats.analysis_upload_failures++;this.analysisPause=this.analysisPause||"failure";
-        if(!this.closed)this.onFailure(this.analysisPause==="obsolete"?
-          "服务器已拒绝旧的采集会话，分析暂停；未确认帧保留，请重新开始检测。":
-          "分析帧尚未获服务器确认，分析暂停；画面继续播放，未确认帧保留。");
-      }finally{this.uploading=false;}
+      }catch(error){if(!this.closed)this.failUploads();}
+      finally{
+        this.uploading=false;
+        if(this.uploadWake){this.uploadWake=false;this.sendUploads();}
+      }
+    }
+    failUploads(reason="failure"){
+      if(this.uploadHalted||this.closed)return;
+      this.uploadHalted=true;this.analysisPause=reason;this.stats.analysis_upload_failures++;
+      clearTimeout(this.uploadPumpTimer);
+      for(const pending of this.pendingAcks.values())clearTimeout(pending.timer);
+      this.pendingAcks.clear();
+      for(const task of this.uploads)clearTimeout(task.retryTimer);
+      this.onFailure(reason==="obsolete"?
+        "服务器已拒绝旧的采集会话，分析暂停；未确认帧保留，请重新开始检测。":
+        "分析上传恢复超时或连接不可用，分析暂停；画面继续播放，未确认帧保留，请重新开始检测。");
+    }
+    retryUpload(task,reason){
+      if(this.closed||this.uploadHalted||!this.uploads.includes(task))return;
+      const key=reason==="capacity"?"capacityRetries":"timeoutRetries";
+      task[key]=(task[key]||0)+1;
+      if(task[key]>(reason==="capacity"?6:2)){this.failUploads();return;}
+      if(!this.analysisPause)this.stats.analysis_capture_pauses++;
+      this.analysisPause="recovering";task.retryReason=reason;task.retryWaiting=true;
+      this.onFailure(reason==="capacity"?
+        "服务器分析队列暂满；画面继续播放，已接纳帧保留并按顺序重试。":
+        "分析帧确认超时；画面继续播放，正在重传未确认帧。");
+      clearTimeout(task.retryTimer);
+      task.retryTimer=setTimeout(()=>{task.retryWaiting=false;this.sendUploads();},
+        Math.min(2000,250*2**(task[key]-1)));
     }
     prepareUpload(task){
       if(task.packet)return Promise.resolve();
@@ -1576,14 +1608,6 @@
         this.noteTiming("analysis_encode",performance.now()-encodeStarted);
       })();
       return task.preparation;
-    }
-    prepareNextUpload(){
-      if(this.closed||!this.pendingAck||this.pendingEncode||this.uploads.length<2)return;
-      const next=this.uploads[1];
-      if(next.packet||next.preparation)return;
-      // One lookahead slot overlaps encoding with the current packet's ACK.
-      // Only the foreground FIFO loop sends and removes acknowledged packets.
-      this.prepareUpload(next).catch(()=>{/* The same retained task fails when the FIFO reaches it. */});
     }
     encodeImage(task){
       return new Promise((resolve,reject)=>{
@@ -1599,10 +1623,22 @@
       });
     }
     acknowledgeUpload(message){
-      const pending=this.pendingAck;
-      if(!pending||message?.type!=="camera_frame_ack"||!sameRun(message,this.config)||
-        message.source_sequence!==pending.task.metadata.source_sequence||typeof message.accepted!=="boolean")return false;
-      clearTimeout(pending.timer);this.pendingAck=null;pending.resolve(message);return true;
+      if(this.closed||message?.type!=="camera_frame_ack"||!sameRun(message,this.config)||
+        typeof message.accepted!=="boolean")return false;
+      const task=this.uploads.find(item=>item.attempts&&item.metadata.source_sequence===message.source_sequence);
+      if(!task)return false;
+      const pending=this.pendingAcks.get(message.source_sequence);
+      // A late positive ACK is still valid for the same immutable packet, even
+      // between timeout and retry. An uncorrelated negative ACK is not useful.
+      if(!pending&&!message.accepted)return false;
+      if(pending){clearTimeout(pending.timer);this.pendingAcks.delete(message.source_sequence);
+        this.noteTiming("analysis_ack",performance.now()-pending.sentAt);}
+      if(message.accepted){
+        clearTimeout(task.retryTimer);this.uploads.splice(this.uploads.indexOf(task),1);this.stats.analysis_sent++;
+        if(!this.uploadHalted&&!this.uploads.some(item=>item.retryReason)&&this.uploads.length<12)this.analysisPause=null;
+      }else if(message.reason==="capacity")this.retryUpload(task,"capacity");
+      else this.failUploads("obsolete");
+      this.sendUploads();return true;
     }
     animate(){
       if(this.closed)return;
@@ -1767,7 +1803,8 @@
       motion_input_width:this.grayCanvas.width,motion_input_height:this.grayCanvas.height,
       estimated_display_buffer_bytes:this.frames.frames.length*this.displayBytesPerFrame,
       required_display_buffer_bytes:this.requiredDisplayBufferBytes,
-      analysis_prepared_pending:this.uploads.slice(1).filter(task=>!!task.packet).length,
+      analysis_prepared_pending:this.uploads.filter(task=>!!task.packet&&!this.pendingAcks.has(task.metadata.source_sequence)).length,
+      analysis_in_flight:this.pendingAcks.size,
       source_callback_fps:this.latestClock?.timestamp>0?
         (this.stats.video_callback_frames-1)/(this.latestClock.timestamp-(this.config.source_mode==="network"?this.firstMediaTime:0)||1):null,
       worker_pending_frames:this.motionFrames.size,
@@ -1829,12 +1866,11 @@
     async drain(){
       this.capturing=false;if(this.captureId!==undefined)this.video.cancelVideoFrameCallback(this.captureId);
       const started=performance.now();
-      this.drainDeadline=started+10000;
-      while(this.uploading){
-        if(performance.now()-started>10000)throw new Error("analysis upload drain timed out; frames remain pending");
-        await new Promise(resolve=>setTimeout(resolve,20));
+      while(this.uploads.length||this.uploading){
+        if(this.closed||this.uploadHalted)throw new Error("analysis uploads pending; recovery stopped");
+        if(performance.now()-started>20000)throw new Error("analysis upload drain timed out; frames remain pending");
+        this.sendUploads();await new Promise(resolve=>setTimeout(resolve,20));
       }
-      if(this.uploads.length){await this.sendUploads();if(this.uploads.length)throw new Error("analysis uploads pending");}
       while(this.socket.readyState===1&&this.socket.bufferedAmount>0){
         if(performance.now()-started>10000)throw new Error("camera send queue has not drained");
         await new Promise(resolve=>setTimeout(resolve,20));
@@ -1845,7 +1881,10 @@
       if(!this.closed)this.reportMetrics(true);
       this.closed=true;this.capturing=false;
       this.claimedWarmup?.resolve(false);
-      if(this.pendingAck){clearTimeout(this.pendingAck.timer);this.pendingAck.reject(new Error("display stopped"));this.pendingAck=null;}
+      clearTimeout(this.uploadPumpTimer);
+      for(const pending of this.pendingAcks.values())clearTimeout(pending.timer);
+      this.pendingAcks.clear();
+      for(const task of this.uploads)clearTimeout(task.retryTimer);
       if(this.pendingEncode){clearTimeout(this.pendingEncode.timer);
         this.pendingEncode.reject(new Error("display stopped"));this.pendingEncode=null;}
       if(this.captureId!==undefined)this.video.cancelVideoFrameCallback(this.captureId);
@@ -2037,10 +2076,10 @@
 
   function eventObservationSummary(report){
     if(!report||report.state!=="completed")return "等待本次事件判断";
-    const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械"};
     const judgments=new Map((report.judgments||[]).map(value=>[value.event_label,value]));
-    const parts=Object.entries(labels).filter(([key])=>judgments.has(key)).map(([key,label])=>{
-      const value=judgments.get(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;
+    const order=new Map((globalThis.GoodvisionEvents?.list()||[]).map((event,index)=>[event.id,index]));
+    const parts=[...judgments].sort(([a],[b])=>(order.get(a)??Infinity)-(order.get(b)??Infinity)).map(([key,value])=>{
+      const label=eventName(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;
       let result=observed===true?(report.type==="vlm_report"?"发现":value.confirmation_state==="confirmed"?"已确认":"发现，待确认"):observed===false?"未发现":"待判断";
       if(observed===true&&["unavailable","partial"].includes(value.localization_state))result+="，定位待确认";
       return label+"："+result;

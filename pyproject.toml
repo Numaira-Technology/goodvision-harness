@@ -9,7 +9,7 @@ description = "Independent WebRTC/WHEP video analysis and delivery harness"
 readme = { content-type = "text/markdown", text = """
 # GoodVision
 
-Live video analysis with five safety capabilities, local face matching, object
+Live video analysis with seven safety capabilities, local face matching, object
 tracking, pedestrian attributes, JSON event delivery, and annotated video.
 Deployment settings and public interfaces are documented in the supplied guide.
 Runtime components retain their original license and attribution files.
@@ -57,6 +57,9 @@ face-directml = [
 webrtc = [
   "aiohttp>=3.10,<4",
   "aiortc>=1.15,<2",
+]
+diag = [
+  "psutil>=5.9,<8",
 ]
 
 [project.scripts]

@@ -44,6 +44,77 @@ def output_sequences(batches):
     return [snapshot.frame_sequence for batch in batches for snapshot in batch.frames]
 
 
+@pytest.mark.parametrize("queue_policy", ["durable_ordered", "realtime_latest"])
+def test_first_frames_use_persistent_data_without_spool_override(
+    tmp_path, monkeypatch, queue_policy,
+):
+    # Reproduce a delivery with only its existing persistent settings path.
+    # No helper-supplied spool_directory may mask the default-path regression.
+    from goodvision_harness.perception import PerceptionSessionHTTPClient
+
+    monkeypatch.delenv("GOODVISION_SAM_SPOOL_DIRECTORY", raising=False)
+    monkeypatch.delenv("GOODVISION_TRACKING_SPOOL_DIRECTORY", raising=False)
+    monkeypatch.setenv(
+        "HARNESS_DEPLOYMENT_SETTINGS_PATH", str(tmp_path / "data/settings.json"),
+    )
+    app = tmp_path / "app"
+    app.mkdir()
+    monkeypatch.chdir(app)
+    received = []
+    client = PerceptionSessionHTTPClient(
+        "http://worker.test", method="sam_live",
+        transport=httpx.MockTransport(RouteServer("sam_live")), timeout_seconds=4,
+    )
+    coordinator = PipelinedVideoSessionTrackingCoordinator(
+        client, max_fps=4, batch_frames=1, batch_seconds=0.1,
+        on_batch=received.append, queue_policy=queue_policy,
+    )
+    try:
+        for index in range(3):
+            submit(coordinator, frames(index, 1))
+            assert coordinator.wait_until_idle(3)
+        coordinator.flush()
+        assert coordinator.wait_until_idle(3)
+        assert output_sequences(received) == [0, 3, 6]
+        assert coordinator._journal().path.parent == tmp_path / "data/sam-spool"
+        assert not (app / ".goodvision").exists()
+    finally:
+        coordinator.close()
+
+
+@pytest.mark.parametrize("selection", ["argument", "neutral", "legacy", "local"])
+def test_spool_location_preserves_explicit_overrides(tmp_path, monkeypatch, selection):
+    from goodvision_harness.perception import PerceptionSessionHTTPClient
+
+    for name in (
+        "GOODVISION_SAM_SPOOL_DIRECTORY", "GOODVISION_TRACKING_SPOOL_DIRECTORY",
+        "HARNESS_DEPLOYMENT_SETTINGS_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    kwargs = {}
+    expected = tmp_path / selection
+    if selection != "local":
+        monkeypatch.setenv(
+            "HARNESS_DEPLOYMENT_SETTINGS_PATH", str(tmp_path / "data/settings.json"),
+        )
+        monkeypatch.setenv("GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "legacy"))
+    if selection in {"argument", "neutral"}:
+        monkeypatch.setenv(
+            "GOODVISION_TRACKING_SPOOL_DIRECTORY", str(tmp_path / "neutral"),
+        )
+    if selection == "argument":
+        kwargs["spool_directory"] = expected
+    if selection == "local":
+        expected = tmp_path / ".goodvision/sam-spool"
+    client = PerceptionSessionHTTPClient("http://worker.test", method="sam_live")
+    coordinator = PipelinedVideoSessionTrackingCoordinator(client, **kwargs)
+    try:
+        assert coordinator._journal().path.resolve().parent == expected
+    finally:
+        coordinator.close()
+
+
 @pytest.mark.parametrize(
     "queue_policy", ["durable_ordered", "realtime_latest", "latest_only"],
 )
@@ -323,6 +394,85 @@ def test_phase_sampling_keeps_configured_rate_and_resets_its_clock(
         assert received[-1].stream_session_id == "new"
         assert output_sequences(received[-1:]) == [0]
         assert coordinator.stats()["session_sampled_out"] == 0
+    finally:
+        coordinator.close()
+
+
+def _park_prepare(coordinator, monkeypatch):
+    """Stop the prepare loop from draining _pending, so a backlog would grow."""
+    monkeypatch.setattr(
+        coordinator, "_preparation_schedule", lambda now: (None, {})
+    )
+
+
+def test_latest_only_drops_oldest_pending_when_behind(tmp_path, monkeypatch):
+    """With latest_only, a stalled pipeline keeps only the newest ~capacity frames."""
+    _, _, coordinator = setup_pipeline(tmp_path, max_fps=30, latest_only=True)
+    try:
+        _park_prepare(coordinator, monkeypatch)
+        for seq in range(20):
+            assert coordinator.submit(
+                b"jpeg", stream_session_id="camera", frame_sequence=seq,
+                timestamp_seconds=seq * 0.1,
+            )
+        stats = coordinator.stats()
+        assert stats["submitted"] == 20
+        # The main candidate path retains two frames without spooling them.
+        assert stats["candidate_frames"] == 2
+        assert stats["disk_pending_frames"] == 0
+        assert stats["dropped_backpressure"] == 18
+        assert set(coordinator._candidate_frames) == {18, 19}
+    finally:
+        coordinator.close()
+
+
+def test_without_latest_only_backlog_is_retained(tmp_path, monkeypatch):
+    """Default (durable) behaviour keeps every sample even when stalled."""
+    _, _, coordinator = setup_pipeline(tmp_path, max_fps=30)  # latest_only off
+    try:
+        _park_prepare(coordinator, monkeypatch)
+        for seq in range(20):
+            coordinator.submit(
+                b"jpeg", stream_session_id="camera", frame_sequence=seq,
+                timestamp_seconds=seq * 0.1,
+            )
+        stats = coordinator.stats()
+        assert stats["dropped_backpressure"] == 0
+        assert stats["disk_pending_frames"] == 20  # whole backlog retained
+    finally:
+        coordinator.close()
+
+
+def test_latest_only_releases_spool_under_overload(tmp_path, monkeypatch):
+    """Dropped candidates never consume journal quota; the retained pair can
+    still finish through the normal durable request and commit path."""
+    received = []
+    _, _, coordinator = setup_pipeline(
+        tmp_path, received.append, max_fps=30, latest_only=True,
+        spool_max_bytes=16384,
+    )
+    try:
+        with monkeypatch.context() as parked:
+            _park_prepare(coordinator, parked)
+            for seq in range(40):
+                assert coordinator.submit(
+                    b"x" * 1000, stream_session_id="camera", frame_sequence=seq,
+                    timestamp_seconds=seq * 0.1,
+                )
+            stats = coordinator.stats()
+            assert stats["submitted"] == 40
+            assert stats["candidate_frames"] == 2
+            assert stats["disk_pending_frames"] == 0
+            assert stats["dropped_backpressure"] == 38
+            assert not stats["recovery_required"]
+            assert coordinator._journal().stats()["retained_sources"] == 0
+        coordinator.flush()
+        assert coordinator.wait_until_idle(5)
+        assert coordinator.stats()["state"] == "finished"
+        assert output_sequences(received)[-1] == 39
+        assert coordinator._journal().stats()["retained_sources"] == 0
+        assert all(row["state"] == "committed"
+                   for row in coordinator._journal().records())
     finally:
         coordinator.close()
 

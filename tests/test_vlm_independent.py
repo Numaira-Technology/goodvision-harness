@@ -26,6 +26,7 @@ from goodvision_harness.vlm_independent import (
     IndependentVLMBranch,
     SourceSample,
     VLMProcessConfig,
+    _observation_window,
     utc_now,
 )
 from goodvision_harness.vlm_independent_model import (
@@ -54,6 +55,7 @@ def config(session="vlm-run", generation=1):
         "test",
         observation_fps=1.25,
         max_in_flight=2,
+        output_mode="full",  # These tests exercise the legacy single-lane contract.
     )
 
 
@@ -98,6 +100,32 @@ def await_condition(predicate, timeout=10.0):
     while not predicate():
         assert time.monotonic() < deadline, "independent process did not make progress"
         time.sleep(0.02)
+
+
+@pytest.mark.parametrize(
+    ("sample_fps", "sequences"),
+    [
+        (2, [8, 9, 10, 11]),
+        (2.5, [8, 9, 10, 11]),
+        (4, [8, 9, 10, 11]),
+        (5, [7, 9, 10, 11]),
+        (6, [6, 9, 10, 11]),
+    ],
+)
+def test_observation_window_preserves_originals_and_temporal_span(
+    sample_fps, sequences
+):
+    history = [
+        SourceSample(EvidenceFrame("run", seq, seq / sample_fps, bytes([seq])), "", 0)
+        for seq in range(12)
+    ]
+    window = _observation_window(history)
+    assert [frame.frame_sequence for frame in window] == sequences
+    assert all(
+        frame is history[seq].frame
+        for frame, seq in zip(window, sequences, strict=True)
+    )
+    assert window[-1].timestamp_seconds - window[0].timestamp_seconds >= 0.75
 
 
 class StubInspector:

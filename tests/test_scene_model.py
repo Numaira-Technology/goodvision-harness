@@ -311,6 +311,49 @@ def test_http_failure_has_no_retry_fallback_or_private_error(make_inspector):
     assert "SECRET" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    "code,status",
+    [("invalid_response", 502), ("empty_response", 502), ("connection", 502),
+     ("timeout", 504), ("overloaded", 429), ("request_failed", 502)],
+)
+def test_companion_error_classification_survives_boundary(make_inspector, code, status):
+    response = httpx.Response(status, json={"code": code, "detail": "PRIVATE_SECRET"})
+    inspector, seen, _ = make_inspector(
+        lambda _: response,
+        settings=ModelAPISettings(
+            provider="local", inspection_endpoint="http://companion/v1/inspections"
+        ),
+    )
+    with pytest.raises(ModelAPIError) as error:
+        inspector.inspect(_job())
+    assert error.value.code == code
+    assert error.value.status_code == status
+    assert inspector.stats()["last_error_code"] == code
+    assert len(seen) == 1
+    assert response.is_closed
+    assert "PRIVATE_SECRET" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"not JSON PRIVATE_SECRET", b'[]', b'{"code": []}',
+     b'{"code": "PRIVATE_SECRET"}', b'{"code": "connection", "detail": "' +
+     b"x" * 4096 + b'"}'],
+)
+def test_companion_invalid_error_body_has_safe_fallback(make_inspector, body):
+    inspector, _, _ = make_inspector(
+        lambda _: httpx.Response(502, content=body),
+        settings=ModelAPISettings(
+            provider="local", inspection_endpoint="http://companion/v1/inspections"
+        ),
+    )
+    with pytest.raises(ModelAPIError) as error:
+        inspector.inspect(_job())
+    assert error.value.code == "http_error"
+    assert error.value.status_code == 502
+    assert "PRIVATE_SECRET" not in str(error.value)
+
+
 def test_oversized_response_is_rejected(make_inspector):
     inspector, _, _ = make_inspector(
         lambda _: httpx.Response(200, content=b" " * (256 * 1024 + 1))
@@ -487,6 +530,14 @@ def test_envelope_failures_have_safe_diagnostics_and_preserve_error_code(
     with pytest.raises(ModelAPIError) as error:
         inspector.inspect(_job())
     assert error.value.code == code
+    try:
+        decoded_response = response.json()
+    except ValueError:
+        decoded_response = None
+    assert error.value.response_diagnostics == scene_model._response_shape(
+        decoded_response
+    )
+    assert "SECRET" not in str(error.value.response_diagnostics)
     assert logs[0]["validation_stage"] == stage
     assert logs[0]["validation_reason"] == reason
     assert "SECRET" not in str(logs)
@@ -1024,3 +1075,23 @@ def test_http_trace_records_body_headers_and_incomplete_upload_safely(
         assert record["http_status"] == 200
     assert record["outcome"] == ("error" if failure else "completed")
     assert "SECRET" not in repr(logs)
+
+
+@pytest.mark.parametrize("content,wrapper,reason", [
+    ('```json\n{"PRIVATE_SECRET":false,}\n```',
+     "complete_fence", "invalid_json_syntax"),
+    ('```json\n{"PRIVATE_SECRET":false}', "unrecognized_fence", "invalid_json_syntax"),
+    ('{"PRIVATE_SECRET":false,"PRIVATE_SECRET":true}', "none", "duplicate_json_field"),
+])
+def test_reply_diagnostics_are_bounded_and_do_not_expose_content(
+    content, wrapper, reason,
+):
+    result = scene_model._reply_diagnostics(content)
+    assert result["json_wrapper"] == wrapper
+    assert result["diagnostic_json_reason"] == reason
+    assert "PRIVATE_SECRET" not in str(result)
+    assert len(result["content_sha256"]) == 64
+    assert len(result["json_token_kinds_prefix"]) <= 80
+    if reason == "invalid_json_syntax":
+        assert result["json_error_line"] >= 1
+        assert result["json_error_column"] >= 1

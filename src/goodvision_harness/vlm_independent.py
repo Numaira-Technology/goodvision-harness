@@ -13,6 +13,7 @@ import os
 import time
 from collections import Counter, OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from queue import Empty, Full
@@ -22,10 +23,16 @@ from uuid import uuid4
 from PIL import Image
 
 from .contracts import PUBLIC_MODEL_NAME
-from .latency_trace import log_timing
+from .independent_diagnostics import (
+    DIAGNOSTIC_QUEUE_CAPACITY,
+    IndependentDiagnostics,
+    IndependentRequestDiagnostics,
+)
+from .latency_trace import configure_worker_timing, log_timing
 from .result_bus import ResultBus
 from .scene_evidence import EvidenceFrame, InspectionRequest
 from .scene_runtime import TemporalInspection
+from .vlm_admission import AdmissionError, AdmissionSettings, SharedAdmission
 from .vlm_independent_model import IndependentVLMInspector
 
 MAX_FRAME_BYTES = 4 * 1024**2
@@ -54,7 +61,9 @@ class VLMProcessConfig:
     observation_fps: float = 1.25
     max_in_flight: int = 4
     route_id: str | None = None
-    output_mode: str = "full"
+    output_mode: str = "parallel"
+    diagnostics_enabled: bool = False
+    admission: AdmissionSettings | None = None
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
@@ -72,6 +81,23 @@ class SourceSample:
     frame: EvidenceFrame
     received_at: str
     received_monotonic: float
+
+
+def _observation_window(history):
+    """Keep at most four originals while retaining enough temporal context."""
+    samples = tuple(history)
+    window = tuple(sample.frame for sample in samples[-4:])
+    if (
+        len(window) == 4
+        and window[-1].timestamp_seconds - window[0].timestamp_seconds < 0.75
+    ):
+        # Dense sampling can put all four recent frames inside 0.75 seconds.
+        # Replace only the oldest image, preserving the latest endpoint and
+        # image budget without changing windows at the default sampling rate.
+        for sample in reversed(samples[:-4]):
+            if window[-1].timestamp_seconds - sample.frame.timestamp_seconds >= 0.75:
+                return (sample.frame, *window[-3:])
+    return window
 
 
 class IndependentEventState:
@@ -95,8 +121,8 @@ class IndependentEventState:
             ids = tuple(
                 sorted(mapping[sid] for sid in verdict.subject_ids if sid in mapping)
             )
-            grounded = bool(verdict.subject_ids) and len(ids) == len(
-                verdict.subject_ids
+            grounded = verdict.event_label == "ground_litter" or (
+                bool(verdict.subject_ids) and len(ids) == len(verdict.subject_ids)
             )
             evidence_id = f"vlm:{job.request.request_id}:{index}"
             # Acceptance only admits this observation to background association.
@@ -149,6 +175,12 @@ class IndependentEventState:
                 else "uncertain"
             )
             detected = False if observed_detected is False else None
+            if self.config.output_mode == "events":
+                # Scene-level observations do not wait for a SAM identity.
+                # They are not confirmed person-specific event lifecycles.
+                detected = observed_detected
+                confirmation_state = "scene_observation"
+                localization_state = "not_requested"
             judgments.append(
                 {
                     "event_label": label,
@@ -179,6 +211,9 @@ class IndependentEventState:
             "schema_version": "1",
             "type": "vlm_report",
             "analysis_kind": "vlm_event",
+            "event_scope": "scene"
+            if self.config.output_mode == "events"
+            else "observation",
             "stream_session_id": self.config.stream_session_id,
             "source_id": self.config.source_id,
             "generation": self.config.generation,
@@ -275,9 +310,13 @@ def run_vlm_process(
     inspector_factory=_inspector,
     grounding_required=None,
     startup_ready=None,
+    diagnostic_outgoing=None,
 ):
     """Spawn target: image windows, inference, observation reports, then IPC."""
+    if mp.current_process().name != "MainProcess":
+        configure_worker_timing()
     state = IndependentEventState(config)
+    admission = SharedAdmission(config.admission) if config.admission else None
     stats = Counter()
     history = deque(maxlen=12)
     lanes = (
@@ -294,6 +333,7 @@ def run_vlm_process(
     last_lane_endpoint = {lane: -1 for lane in lanes}
     thread_state, clients = local(), []
     last_sequence, last_endpoint, next_due = -1, -1, -math.inf
+    pending_event_window = False
     last_status = 0.0
     source_finished = False
     executors = {
@@ -336,15 +376,53 @@ def run_vlm_process(
             # A failed best-effort transport probe must not disable inference.
             return False
 
-    def evaluate(job, lane):
-        started, started_at = time.monotonic(), utc_now()
+    def evaluate(job, lane, sample):
+        submitted = time.monotonic()
+        started, started_at = submitted, utc_now()
+        model_seconds = 0.0
+        admission_wait = 0.0
         verdicts, error = (), None
         validation_reason = None
+        http_status = None
+        response_diagnostics = {}
+        shape = {}
+        inspector = None
+        diagnostic = None
+        failure = None
+        if config.diagnostics_enabled and diagnostic_outgoing is not None:
+            try:
+                diagnostic = IndependentRequestDiagnostics(
+                    job, lane, sample, config.generation)
+                job = replace(job, diagnostics=diagnostic)
+            except Exception:
+                pass  # Optional diagnostics cannot prevent inference.
         try:
-            verdicts = worker_inspector(lane).inspect(job)
+            # Capacity belongs to the source, not each independent process/lane.
+            gate = (admission.slot(
+                config.stream_session_id, stop=stop,
+                source_deadline=sample.received_monotonic + 3.0,
+                lane=lane,
+            ) if admission else nullcontext(0.0))
+            with gate as admission_wait:
+                started, started_at = time.monotonic(), utc_now()
+                try:
+                    inspector = worker_inspector(lane)
+                    verdicts = inspector.inspect(job)
+                    shape = getattr(inspector, "last_response_diagnostics", {})
+                finally:
+                    model_seconds = time.monotonic() - started
+        except AdmissionError as exc:
+            failure = exc
+            error = exc.code
+            admission_wait = time.monotonic() - submitted
+            started, started_at = time.monotonic(), utc_now()
         except Exception as exc:
+            failure = exc
             # Closed vocabulary only: no endpoints, credentials or model text.
             error = getattr(exc, "code", None)
+            status = getattr(exc, "status_code", None)
+            if type(status) is int and 100 <= status <= 599:
+                http_status = status
             if error not in {
                 "timeout",
                 "connection",
@@ -374,6 +452,68 @@ def run_vlm_process(
                 validation_reason = reason
             elif error in {"invalid_response", "empty_response"}:
                 validation_reason = "invalid_response_shape"
+            shape = getattr(exc, "response_diagnostics", None)
+        if isinstance(shape, dict):
+            for key in ("choices_count", "content_characters", "content_parts"):
+                value = shape.get(key)
+                if type(value) is int and 0 <= value <= 10**9:
+                    response_diagnostics[key] = value
+            for key, allowed in {
+                "provider_category": {
+                    "Darkbloom", "DeepInfra", "Parasail", "Alibaba",
+                    "Alibaba Cloud Int.", "AtlasCloud", "SiliconFlow",
+                    "Venice", "other",
+                },
+                "finish_reason": {
+                    "stop", "length", "content_filter", "tool_calls",
+                    "function_call", "missing", "other",
+                },
+                "content_kind": {"text", "parts", "missing", "other"},
+                "content_wrapper": {"code_fence", "none"},
+            }.items():
+                value = shape.get(key)
+                if isinstance(value, str) and value in allowed:
+                    response_diagnostics[key] = value
+        # Only named numeric metrics cross the process boundary. Exclude all
+        # request/response values, URLs, headers and provider exception text.
+        http_timing = {}
+        measurements = getattr(inspector, "last_http_timing", {})
+        for name in (
+            "request_build_seconds", "tcp_connect_seconds",
+            "tls_handshake_seconds", "send_request_headers_seconds",
+            "send_request_body_seconds", "receive_response_headers_seconds",
+            "http_until_headers_seconds", "upload_to_first_non_whitespace_seconds",
+            "response_read_seconds", "response_json_decode_seconds", "total_seconds",
+            "request_bytes", "response_bytes", "encoded_image_bytes",
+            "prompt_tokens", "completion_tokens", "cached_prompt_tokens",
+            "reasoning_tokens",
+        ):
+            value = measurements.get(name) if isinstance(measurements, dict) else None
+            if (
+                type(value) in (int, float)
+                and math.isfinite(value) and 0 <= value <= 10**9
+            ):
+                http_timing[name] = value
+        inspection_timing = {}
+        measurements = getattr(inspector, "last_inspection_timing", {})
+        for name in (
+            "request_prepare_seconds", "verdict_parse_seconds",
+            "client_initialize_seconds",
+            "server_request_prepare_seconds", "server_verdict_parse_seconds",
+        ):
+            value = measurements.get(name) if isinstance(measurements, dict) else None
+            if (
+                type(value) in (int, float)
+                and math.isfinite(value) and 0 <= value <= 3600
+            ):
+                inspection_timing[name] = value
+        if diagnostic is not None:
+            try:
+                diagnostic.publish(
+                    diagnostic_outgoing, verdicts=verdicts, error=failure
+                )
+            except Exception:
+                pass  # Separate bounded diagnostics never gate normal reports.
         return (
             verdicts,
             error,
@@ -381,8 +521,13 @@ def run_vlm_process(
                 "request_started_at": started_at,
                 "request_ended_at": utc_now(),
                 "request_started_monotonic": started,
-                "model_seconds": time.monotonic() - started,
+                "model_seconds": model_seconds,
+                "admission_wait_seconds": admission_wait,
                 "validation_reason": validation_reason,
+                "http_status": http_status,
+                "response_diagnostics": response_diagnostics,
+                "http_timing": http_timing,
+                "inspection_timing": inspection_timing,
             },
         )
 
@@ -402,6 +547,7 @@ def run_vlm_process(
                 for key in ("active_requests", "inflight_requests", "pending_requests")
             },
             "reorder_capacity": REORDER_CAPACITY * len(lanes),
+            "pending_observation_windows": int(pending_event_window),
             "reorder_capacity_per_lane": REORDER_CAPACITY,
             "reorder_buffer_full": all(
                 counts["active_requests"] >= REORDER_CAPACITY
@@ -495,8 +641,11 @@ def run_vlm_process(
                         break
                     job, sample, result, dispatched, report = ready[lane][order]
                     verdicts, error, timing = result
-                    if (lane == "events"
-                            and sample.frame.frame_sequence <= last_published[lane]):
+                    historical = (
+                        lane == "events"
+                        and sample.frame.frame_sequence <= last_published[lane]
+                    )
+                    if historical and config.output_mode != "events":
                         ready[lane].pop(order)
                         stats["late_information_reports_discarded"] += 1
                         log_timing(
@@ -525,7 +674,14 @@ def run_vlm_process(
                         report = state.report(
                             job, sample, verdicts, timing, error=error,
                         )
+                        report["historical_only"] = historical
+                        if historical:
+                            stats["late_information_reports_preserved"] += 1
                         stats["failed_requests" if error else "succeeded_requests"] += 1
+                        if error and error.startswith("admission_"):
+                            stats[error] += 1
+                        if timing.get("http_status") is not None:
+                            stats[f"http_status_{timing['http_status']}"] += 1
                         if not error and not report["analysis_complete"]:
                             stats["incomplete_reports"] += 1
                         if not error and not verdicts:
@@ -562,7 +718,9 @@ def run_vlm_process(
                         break
                     next_report_sequence += 1
                     ready[lane].pop(order)
-                    last_published[lane] = sample.frame.frame_sequence
+                    last_published[lane] = max(
+                        last_published[lane], sample.frame.frame_sequence
+                    )
                     if lane != "events":
                         next_publish_order[lane] += 1
 
@@ -571,64 +729,105 @@ def run_vlm_process(
                 if len(queues[lane]) < config.max_in_flight
                 and len(queues[lane]) + len(ready[lane]) < REORDER_CAPACITY
             ]
-            if history and available_lanes:
+            if history:
                 sample = history[-1]
                 frame = sample.frame
-                window = tuple(x.frame for x in list(history)[-4:])
+                window = _observation_window(history)
                 if (
                     len(window) >= 2
                     and window[-1].timestamp_seconds - window[0].timestamp_seconds
                     >= 0.75
                     and frame.frame_sequence > last_endpoint
-                    and frame.timestamp_seconds + 1e-9 >= next_due
+                    and (
+                        frame.timestamp_seconds + 1e-9 >= next_due
+                        or pending_event_window
+                    )
                     and time.monotonic() - sample.received_monotonic <= 3.0
                 ):
-                    request = InspectionRequest(
-                        str(uuid4()),
-                        (),
-                        "independent_source",
-                        config.labels,
-                        window[0].timestamp_seconds,
-                        frame.timestamp_seconds,
-                    )
-                    job = TemporalInspection(
-                        config.stream_session_id,
-                        config.source_id,
-                        request,
-                        window,
-                        event_sensitivities=config.sensitivities,
-                        evidence_after_frame_sequence=last_endpoint,
-                        grounding_required=bool(
-                            grounding_required and grounding_required.is_set()
-                        ),
-                    )
-                    dispatched = time.monotonic()
-                    for lane in lanes:
-                        if lane not in available_lanes:
-                            stats[lane + "_busy_windows_skipped"] += 1
-                            continue
-                        lane_job = replace(
-                            job,
-                            evidence_after_frame_sequence=last_lane_endpoint[lane],
+                    newly_due = frame.timestamp_seconds + 1e-9 >= next_due
+                    if config.output_mode == "events" and newly_due:
+                        period = 1.0 / config.observation_fps
+                        if not math.isfinite(next_due):
+                            due_slots = 1
+                            next_due = frame.timestamp_seconds
+                        else:
+                            due_slots = 1 + max(
+                                0,
+                                math.floor(
+                                    (frame.timestamp_seconds - next_due + 1e-9) / period
+                                ),
+                            )
+                        stats["scheduled_observation_windows"] += due_slots
+                        stats["cadence_windows_missed"] += (
+                            due_slots - 1 + int(pending_event_window)
                         )
-                        order = next_dispatch_order[lane]
-                        next_dispatch_order[lane] += 1
-                        queues[lane][order] = (
-                            lane_job,
-                            sample,
-                            executors[lane].submit(evaluate, lane_job, lane),
-                            dispatched,
+                        next_due += due_slots * period
+                        pending_event_window = True
+                    if not available_lanes:
+                        if config.output_mode == "events" and newly_due:
+                            stats["events_busy_windows_deferred"] += 1
+                    else:
+                        pending_event_window = False
+                        request = InspectionRequest(
+                            str(uuid4()),
+                            (),
+                            "independent_source",
+                            config.labels,
+                            window[0].timestamp_seconds,
+                            frame.timestamp_seconds,
                         )
-                        last_lane_endpoint[lane] = frame.frame_sequence
-                    last_endpoint = frame.frame_sequence
-                    next_due = frame.timestamp_seconds + 1.0 / config.observation_fps
-                    stats["claimed_requests"] += len(available_lanes)
+                        job = TemporalInspection(
+                            config.stream_session_id,
+                            config.source_id,
+                            request,
+                            window,
+                            event_sensitivities=config.sensitivities,
+                            evidence_after_frame_sequence=last_endpoint,
+                            grounding_required=bool(
+                                grounding_required and grounding_required.is_set()
+                            ),
+                        )
+                        dispatched = time.monotonic()
+                        for lane in lanes:
+                            if lane not in available_lanes:
+                                stats[lane + "_busy_windows_skipped"] += 1
+                                continue
+                            lane_job = replace(
+                                job,
+                                evidence_after_frame_sequence=last_lane_endpoint[lane],
+                            )
+                            order = next_dispatch_order[lane]
+                            next_dispatch_order[lane] += 1
+                            queues[lane][order] = (
+                                lane_job,
+                                sample,
+                                executors[lane].submit(
+                                    evaluate, lane_job, lane, sample
+                                ),
+                                dispatched,
+                            )
+                            last_lane_endpoint[lane] = frame.frame_sequence
+                        last_endpoint = frame.frame_sequence
+                        if config.output_mode != "events":
+                            next_due = (
+                                frame.timestamp_seconds + 1.0 / config.observation_fps
+                            )
+                        stats["claimed_requests"] += len(available_lanes)
+            if (
+                pending_event_window
+                and history
+                and time.monotonic() - history[-1].received_monotonic > 3.0
+            ):
+                pending_event_window = False
+                stats["expired_waiting_windows"] += 1
             if time.monotonic() - last_status >= 1.0:
                 emit_status(
                     {
                         "kind": "status",
                         "state": "drained"
-                        if source_finished and not any(queues.values())
+                        if source_finished
+                        and not pending_event_window
+                        and not any(queues.values())
                         and not any(ready.values())
                         else "running",
                         "pid": os.getpid(),
@@ -660,6 +859,9 @@ def run_vlm_process(
             client.close()
         outgoing.close()
         outgoing.cancel_join_thread()
+        if diagnostic_outgoing is not None:
+            diagnostic_outgoing.close()
+            diagnostic_outgoing.cancel_join_thread()
 
 
 class IndependentVLMBranch:
@@ -687,6 +889,16 @@ class IndependentVLMBranch:
         context = mp.get_context("spawn")
         self._incoming = context.Queue(INPUT_CAPACITY)
         self._outgoing = context.Queue(OUTPUT_CAPACITY)
+        self._diagnostic_outgoing = None
+        self.diagnostics = None
+        if config.diagnostics_enabled:
+            try:
+                self.diagnostics = IndependentDiagnostics(
+                    config.stream_session_id, config.generation)
+                self._diagnostic_outgoing = context.Queue(DIAGNOSTIC_QUEUE_CAPACITY)
+            except Exception:
+                self.diagnostics = None  # Optional telemetry cannot prevent startup.
+        self._diagnostic_reader = None
         self._process_stop = context.Event()
         self._grounding_required = context.Event()
         self._startup_ready = context.Event()
@@ -702,6 +914,7 @@ class IndependentVLMBranch:
                 inspector_factory,
                 self._grounding_required,
                 self._startup_ready,
+                self._diagnostic_outgoing,
             ),
             name="goodvision-vlm",
             daemon=True,
@@ -739,6 +952,13 @@ class IndependentVLMBranch:
             target=self._read, name="vlm-independent-results", daemon=True
         )
         self._reader.start()
+        if self._diagnostic_outgoing is not None:
+            try:
+                self._diagnostic_reader = Thread(
+                    target=self._read_diagnostics, name="vlm-diagnostics", daemon=True)
+                self._diagnostic_reader.start()
+            except Exception:
+                self._diagnostic_reader = None  # Full telemetry queues drop records.
         if self._camera_dispatch is not None:
             self._camera_dispatch.start()
         if self.fusion is not None:
@@ -792,8 +1012,22 @@ class IndependentVLMBranch:
             try:
                 self._incoming.put_nowait(sample)
             except Full:
-                self._stats["input_backpressure_dropped"] += 1
-                return False
+                if self.config.output_mode != "events":
+                    self._stats["input_backpressure_dropped"] += 1
+                    return False
+                try:
+                    self._incoming.get_nowait()
+                    self._stats["input_superseded_samples"] += 1
+                except Empty:
+                    # multiprocessing's feeder can temporarily hide a full
+                    # queue from get_nowait. Never block camera ingestion.
+                    self._stats["input_backpressure_dropped"] += 1
+                    return False
+                try:
+                    self._incoming.put_nowait(sample)
+                except Full:
+                    self._stats["input_backpressure_dropped"] += 1
+                    return False
             self._stats["admitted_samples"] += 1
             self._last_source_monotonic = now
             self._evidence[sequence] = sample
@@ -821,6 +1055,24 @@ class IndependentVLMBranch:
                 self._status.update(
                     source_state="failed", source_error="source_reader_failed"
                 )
+
+    def _read_diagnostics(self):
+        while not self._stop.is_set():
+            try:
+                packet = self._diagnostic_outgoing.get(timeout=0.1)
+            except Empty:
+                if not self._process.is_alive():
+                    return
+                continue
+            except (EOFError, OSError, ValueError):
+                return
+            if self._stop.is_set():
+                return
+            try:
+                self.diagnostics.receive(packet)
+            except Exception:
+                # Malformed optional telemetry cannot kill result delivery.
+                continue
 
     def _read(self):
         while not self._stop.is_set():
@@ -890,13 +1142,16 @@ class IndependentVLMBranch:
                         "vlm_display_handoff_failure", error_type=type(exc).__name__
                     )
             with self._lock:
-                self._status[report.get("vlm_lane", "combined") + "_last_result"] = {
-                    "frame_sequence": report["frame"]["source_frame_index"],
-                    "state": report["state"],
-                    "seconds": report["timing"]["source_to_publish_seconds"],
-                }
+                if not report.get("historical_only"):
+                    self._status[
+                        report.get("vlm_lane", "combined") + "_last_result"
+                    ] = {
+                        "frame_sequence": report["frame"]["source_frame_index"],
+                        "state": report["state"],
+                        "seconds": report["timing"]["source_to_publish_seconds"],
+                    }
                 self._status.update(report.get("process_metrics", {}))
-                self._status.update(
+                current_status = dict(
                     last_result_at=report["emitted_at"],
                     last_attempt_state=report["state"],
                     last_attempt_error=report.get("error_code"),
@@ -909,9 +1164,12 @@ class IndependentVLMBranch:
                         "source_to_publish_seconds"
                     ],
                 )
+                if not report.get("historical_only"):
+                    self._status.update(current_status)
                 self._stats["published_reports"] += 1
-                self._last_publish_monotonic = now
-                if report["state"] == "completed":
+                if not report.get("historical_only"):
+                    self._last_publish_monotonic = now
+                if report["state"] == "completed" and not report.get("historical_only"):
                     self._last_success_monotonic = now
                     self._status["last_success_at"] = report["emitted_at"]
                 evidence = tuple(
@@ -1008,6 +1266,7 @@ class IndependentVLMBranch:
                 "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
                 "observation_fps": self.config.observation_fps,
                 "output_mode": self.config.output_mode,
+                "shared_admission_enabled": self.config.admission is not None,
                 "paired_admission": False,
                 "independent_lane_admission": self.config.output_mode == "parallel",
             }
@@ -1047,12 +1306,18 @@ class IndependentVLMBranch:
             if self._process.is_alive():
                 self._process.kill()
                 self._process.join(1.0)
-        for thread in (self._reader, self._source):
+        for thread in (self._reader, self._source, self._diagnostic_reader):
             if thread is not None:
                 thread.join(1.0)
         for queue in (self._incoming, self._outgoing):
             queue.close()
             queue.cancel_join_thread()
+        if self._diagnostic_outgoing is not None:
+            try:
+                self._diagnostic_outgoing.close()
+                self._diagnostic_outgoing.cancel_join_thread()
+            except Exception:
+                pass  # Telemetry cleanup must not prevent the stopped state.
         with self._lock:
             self._evidence.clear()
             self._evidence_bytes = 0

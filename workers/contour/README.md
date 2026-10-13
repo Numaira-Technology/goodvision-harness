@@ -55,6 +55,18 @@ sudo python3 /data/contour/deploy_contour.py --package-dir /data/contour --bind 
 更新源码部署包时请使用新的 `--install-dir`，不会自动覆盖已有安装。
 本脚本不适用于 Jetson；该设备必须使用下述单独的适配与内存保护流程。
 
+## 更新已有 Docker 部署
+
+Windows 客户收到节点更新 ZIP 后，保持 Docker Desktop 运行，完整解压并双击
+**`Update.exe`**，按窗口中的进度等待更新结果。无需安装 Python、输入命令或构建镜像；
+模型、密钥、设置和数据保留。存在多个安装时，在窗口中选择要更新的节点。
+
+更新独立 GPU 主机前，先在主程序控制台停止使用该节点的分析并等待收尾，
+再在 GPU 主机运行 Contour 更新包；节点有任务时窗口会提示先停止分析。
+主程序在另一台主机时，在那台主机运行主程序更新包。
+维护者打包与源码部署方法见 [Docker 更新指南](../../docs/guides/docker-updates.md)。
+原部署脚本继续用于初次安装。
+
 ## 先运行控制台
 
 下面的命令在本目录执行，需要 Python 3.12 和 Docker Compose。

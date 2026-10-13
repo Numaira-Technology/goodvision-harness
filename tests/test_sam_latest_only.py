@@ -10,7 +10,7 @@ from goodvision_harness.sam_tracking_spool import TrackingSpool
 from goodvision_harness.video_tracking import TrackingCommitBackpressure
 
 
-def test_preparation_overlaps_http_and_keeps_two_latest_candidates_in_order(
+def test_slow_http_keeps_candidates_replaceable_and_dispatches_only_the_freshest(
     tmp_path,
 ):
     received = []
@@ -23,8 +23,10 @@ def test_preparation_overlaps_http_and_keeps_two_latest_candidates_in_order(
         submit(coordinator, frames(1, 1))
         assert server.entered.wait(2)
         submit(coordinator, frames(2, 1))
-        # Preparation must finish before the first HTTP request is released.
-        wait_for(lambda: coordinator.stats()["prepared_frames"] == 1)
+        # The old implementation froze frame 6 here, then sent it after the
+        # slow HTTP request despite many newer candidates. No durable source
+        # should be selected until that request releases its dispatch slot.
+        assert coordinator.stats()["prepared_frames"] == 0
         with coordinator._condition:
             submit(coordinator, frames(3, 39))
         stats = coordinator.stats()
@@ -32,25 +34,25 @@ def test_preparation_overlaps_http_and_keeps_two_latest_candidates_in_order(
         assert stats["effective_max_append_frames"] == 1
         assert stats["realtime_max_age_seconds"] == 30
         assert stats["preparing_frames"] == 0
-        assert stats["prepared_frames"] == 1
+        assert stats["prepared_frames"] == 0
         assert stats["disk_pending_frames"] == 0
-        assert stats["session_admitted_frames"] == 2
+        assert stats["session_admitted_frames"] == 1
         assert stats["session_candidate_frames"] == 41
-        assert stats["skipped_by_reason"] == {"superseded": 37, "expired": 0}
+        assert stats["skipped_by_reason"] == {"superseded": 38, "expired": 0}
         assert list(coordinator._candidate_frames) == [120, 123]
-        assert coordinator._spool.stats()["retained_sources"] == 2
+        assert coordinator._spool.stats()["retained_sources"] == 1
         assert len(server.requests) == 1
         coordinator.flush()
         server.release.set()
         assert coordinator.wait_until_idle(5)
-        assert output_sequences(received) == [3, 6, 120, 123]
+        assert output_sequences(received) == [3, 123]
         assert [f.timestamp_seconds for b in received for f in b.frames] == [
-            .25, .5, 10, 10.25,
+            .25, 10.25,
         ]
         assert server.creates == ["camera"]
         assert {b.predictor_epoch for b in received} == {"epoch-1"}
-        assert coordinator.stats()["session_admitted_frames"] == 4
-        assert coordinator.stats()["processed_frames"] == 4
+        assert coordinator.stats()["session_admitted_frames"] == 2
+        assert coordinator.stats()["processed_frames"] == 2
         assert not coordinator._source_arrivals
         assert not coordinator._candidate_frames
         assert server.requests[-1]["is_last_batch"]
@@ -91,7 +93,7 @@ def test_slow_admission_does_not_hold_capture_lock_or_write_replaced_candidates(
         release.set()
         coordinator.flush()
         assert coordinator.wait_until_idle(5)
-        assert admitted == [3, 300, 303]
+        assert admitted == [3, 303]
         assert output_sequences(received) == admitted
     finally:
         release.set()
@@ -129,7 +131,7 @@ def test_slow_preparation_keeps_two_replaceable_candidates_and_no_prepared_backl
         release.set()
         coordinator.flush()
         assert coordinator.wait_until_idle(5)
-        assert prepared == output_sequences(received) == [3, 90, 93]
+        assert prepared == output_sequences(received) == [3, 93]
     finally:
         release.set()
         coordinator.close()
@@ -166,7 +168,7 @@ def test_blocked_commit_keeps_admitted_results_and_replaces_only_candidate(tmp_p
         release.set()
         coordinator.flush()
         assert coordinator.wait_until_idle(5)
-        assert output_sequences(received) == [3, 6, 93, 96]
+        assert output_sequences(received) == [3, 6, 96]
         ids = [r["request_id"] for r in server.requests]
         assert len(ids) == len(set(ids))
     finally:
@@ -185,7 +187,7 @@ def test_reset_does_not_send_old_candidate_or_publish_old_inflight_result(tmp_pa
         submit(coordinator, frames(1, 1))
         assert server.entered.wait(2)
         submit(coordinator, frames(2, 1))
-        wait_for(lambda: coordinator.stats()["prepared_frames"] == 1)
+        assert coordinator.stats()["prepared_frames"] == 0
         submit(coordinator, frames(3, 19))
         coordinator.reset("new")
         assert coordinator.stats()["session_candidate_frames"] == 0
@@ -196,9 +198,9 @@ def test_reset_does_not_send_old_candidate_or_publish_old_inflight_result(tmp_pa
         assert [b.stream_session_id for b in received] == ["new"]
         assert all(b.stream_session_id == "new" for b in native)
         assert output_sequences(received) == [3]
-        # Sent and prepared work retain recovery facts; memory candidates from
+        # Sent work retains recovery facts; memory candidates from
         # the old generation must never be selected by the new run.
-        assert coordinator._spool.stats()["retained_sources"] == 2
+        assert coordinator._spool.stats()["retained_sources"] == 1
         assert coordinator._spool.load(0, [3])[0].jpeg_bytes == b"jpeg"
     finally:
         server.release.set()

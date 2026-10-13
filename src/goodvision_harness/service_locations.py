@@ -21,6 +21,7 @@ SERVICE_LOCATION_FIELDS = frozenset(
         "tracking_mode",
         "inference_server_url",
         "inference_server_model",
+        "inference_server_protocol",
         "tracking_server_url",
         "tracking_server_capacity",
         "tracking_server_protocol",
@@ -32,6 +33,7 @@ _ENVIRONMENT_NAMES = {
     "tracking_mode": "TRACKING_EXECUTION_MODE",
     "inference_server_url": "INFERENCE_SERVER_URL",
     "inference_server_model": "INFERENCE_SERVER_MODEL",
+    "inference_server_protocol": "INFERENCE_SERVER_PROTOCOL",
     "tracking_server_url": "TRACKING_SERVER_URL",
     "tracking_server_capacity": "TRACKING_SERVER_CAPACITY",
     "tracking_server_protocol": "TRACKING_SERVER_PROTOCOL",
@@ -41,6 +43,12 @@ _ENVIRONMENT_NAMES = {
 
 def validate_service_location(name: str, value: object) -> Any:
     """Validate one persisted field without consulting environment settings."""
+    if name == "inference_server_protocol":
+        if value not in ("compatible", "goodvision"):
+            raise ValueError(
+                "inference_server_protocol must be compatible or goodvision"
+            )
+        return value
     if name == "tracking_sample_fps":
         message = "tracking_sample_fps must be a finite number between 0.5 and 30"
         if type(value) not in (int, float):
@@ -143,6 +151,7 @@ class ServiceLocations:
     tracking_server_capacity: int = 1
     tracking_server_protocol: str = "legacy"
     tracking_sample_fps: float = 2.0
+    inference_server_protocol: str = "compatible"
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -168,6 +177,7 @@ class ServiceLocations:
             "tracking_mode": "local" if local_tracking else "legacy",
             "inference_server_url": "",
             "inference_server_model": "local-vision",
+            "inference_server_protocol": "compatible",
             "tracking_server_url": "",
             "tracking_server_capacity": 1,
             "tracking_server_protocol": "legacy",
@@ -190,10 +200,15 @@ class ServiceLocations:
                     try:
                         value = float(value)
                     except (TypeError, ValueError, OverflowError):
-                        raise ValueError("LOCAL_TRACKING_FPS must be within 0.5..30") from None
+                        raise ValueError(
+                            "LOCAL_TRACKING_FPS must be within 0.5..30"
+                        ) from None
             values[name] = value
         # Existing cloud deployments saved "legacy" before there was a cloud mode.
-        if values["tracking_mode"] == "legacy" and os.environ.get("CLOUD_GPU_CONTROLLER_URL"):
+        if (
+            values["tracking_mode"] == "legacy"
+            and os.environ.get("CLOUD_GPU_CONTROLLER_URL")
+        ):
             values["tracking_mode"] = "cloud"
         return cls(**values)
 
@@ -224,7 +239,7 @@ class ServiceLocations:
             return max(1, local_capacity)
         if self.tracking_mode == "server":
             return self.tracking_server_capacity
-        if self.tracking_mode == "local" and gpu.available:
+        if self.tracking_mode == "local" and gpu.available and gpu.tracking_available:
             return max(1, local_capacity)
         return 1
 
@@ -256,13 +271,23 @@ class ServiceLocations:
                     timeout_seconds=base.model_api.timeout_seconds,
                     max_retries=base.model_api.max_retries,
                     retry_backoff_seconds=base.model_api.retry_backoff_seconds,
+                    inspection_endpoint=(
+                        self.inference_server_url + "/v1/inspections"
+                        if self.inference_server_protocol == "goodvision" else ""
+                    ),
                 ),
                 inference=replace(
                     config.inference,
                     model=self.inference_server_model,
                     request_parameters={"temperature": 0, "max_tokens": max_tokens},
                 ),
-                runtime=replace(config.runtime, scene_max_tokens=max_tokens),
+                runtime=replace(
+                    config.runtime, scene_max_tokens=max_tokens,
+                    scene_mode=(
+                        "active" if self.inference_server_protocol == "goodvision"
+                        else config.runtime.scene_mode
+                    ),
+                ),
             )
             if config.rich_labeling.backend == "vlm":
                 config = replace(
@@ -274,7 +299,10 @@ class ServiceLocations:
                     ),
                 )
         if self.tracking_mode == "cloud":
-            origin = _service_origin(os.environ.get("CLOUD_TRACKING_URL", "http://sam-remote:8092"), "CLOUD_TRACKING_URL")
+            origin = _service_origin(
+                os.environ.get("CLOUD_TRACKING_URL", "http://sam-remote:8092"),
+                "CLOUD_TRACKING_URL",
+            )
             config = replace(
                 config,
                 rich_labeling=replace(

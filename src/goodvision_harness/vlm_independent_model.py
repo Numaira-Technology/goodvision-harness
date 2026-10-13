@@ -11,7 +11,12 @@ from .contracts import NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .model_api import ModelAPIClient
 from .scene_inspection import build_temporal_messages
-from .scene_model import TemporalVLMInspector, _json, _ResponseValidationError
+from .scene_model import (
+    TemporalVLMInspector,
+    _json,
+    _ResponseValidationError,
+    _strip_json_fence,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,11 +32,12 @@ class IndependentVerdict:
 class IndependentVLMInspector(TemporalVLMInspector):
     """Reuse the existing bounded transport, credentials, timeouts and telemetry."""
 
-    def build_messages(self, job):
+    def build_messages(self, job, *, encoded_images=None):
         messages = build_temporal_messages(
             job,
             max_image_side=self._max_image_side,
             jpeg_quality=self._jpeg_quality,
+            encoded_images=encoded_images,
         )
         policy = sensitivity_policy_text(
             normalize_event_sensitivities(
@@ -87,6 +93,9 @@ class IndependentVLMInspector(TemporalVLMInspector):
             "picking objects up remains negative. A single-frame absence does not "
             "prove an event ended. Omission is unevaluated, never false. An empty "
             "subjects list is allowed, but EVERY event label still needs a verdict. "
+            "For ground_litter always use subject_ids=[]: this is a scene condition, "
+            "not a person's action; assess it even when subjects is empty. "
+            "For ppe_violation reference only the affected people. "
             "No names, descriptions, commentary or additional fields."
         )
         # Empty SAM boxes in the legacy message builder are not evidence that
@@ -115,10 +124,7 @@ class IndependentVLMInspector(TemporalVLMInspector):
         ):
             raise _ResponseValidationError("completion_not_finished", "envelope_schema")
         content = ModelAPIClient.assistant_text(response).strip()
-        fenced = re.fullmatch(
-            r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", content, re.DOTALL
-        )
-        raw = _json(fenced.group(1) if fenced else content, stage="verdict_json")
+        raw = _json(_strip_json_fence(content), stage="verdict_json")
         if not isinstance(raw, dict) or "verdicts" not in raw:
             raise _ResponseValidationError(
                 "independent_object_required", "verdict_schema"
@@ -205,7 +211,10 @@ class IndependentVLMInspector(TemporalVLMInspector):
             for sid in ids:
                 if sid not in boxes:
                     grounding_issues.add(issues.get(sid, "missing_subject"))
-            if not ids:
+            if label == "ground_litter":
+                ids = []  # Never associate ground waste with nearby people.
+                grounding_issues.clear()
+            elif not ids:
                 grounding_issues.add("unlocalized_event")
             key = (label, tuple(sorted(ids)))
             if key in seen:

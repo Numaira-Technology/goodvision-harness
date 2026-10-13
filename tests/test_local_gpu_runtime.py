@@ -107,6 +107,39 @@ def test_remote_routes_and_key_restored_after_local_roundtrip(rig):
     assert runtime._aiclub_api_key == "saved-cloud-secret"
 
 
+def test_tracking_only_deployment_keeps_cloud_vlm_and_rejects_unprovisioned_vlm(
+    rig, monkeypatch,
+):
+    monkeypatch.setenv("LOCAL_INFERENCE_AVAILABLE", "false")
+    monkeypatch.setenv("LOCAL_TRACKING_AVAILABLE", "true")
+    monkeypatch.setenv("LOCAL_TRACKING_GPU_ID", "0")
+    monkeypatch.setenv("TRACKING_EXECUTION_MODE", "local")
+    endpoint = "http://local-tracking:8092/v1/perception/sam_live/sessions"
+    monkeypatch.setenv("LOCAL_TRACKING_ENDPOINT", endpoint)
+    runtime = rig.make()
+    assert runtime.config_error is None
+    assert runtime.config.rich_labeling.endpoint == endpoint
+    assert runtime.config.rich_labeling.processing_method == "sam_live"
+    assert runtime.config.model_api.provider == "openrouter"
+    assert runtime._aiclub_api_key == "saved-cloud-secret"
+    status = runtime.deployment_settings()["local_gpu"]
+    assert status["available"] is True
+    assert status["tracking_available"] is True
+    assert status["inference_available"] is False
+    assert status["tracking_device"] == 0
+    assert status["inference_device"] is None
+    assert status["assignment"] == "tracking_only"
+    before = runtime.config
+    with pytest.raises(ValueError, match="本地大模型服务未部署"):
+        runtime.update_deployment_settings({"inference_mode": "local"})
+    assert runtime.config == before
+    runtime.update_deployment_settings({"tracking_mode": "legacy"})
+    assert runtime.config.rich_labeling.endpoint == rig.config.rich_labeling.endpoint
+    runtime.update_deployment_settings({"tracking_mode": "local"})
+    assert runtime.config.rich_labeling.endpoint == endpoint
+    assert rig.make().config.rich_labeling.endpoint == endpoint
+
+
 @pytest.mark.parametrize("bad", [None, "true", 1, [], {}])
 def test_invalid_switch_is_atomic(rig, bad):
     runtime = rig.make()

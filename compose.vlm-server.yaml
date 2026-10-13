@@ -1,4 +1,4 @@
-# Standalone vLLM server. The mounted directory contains the offline Qwen weights.
+# Standalone model and CPU processing service. Only the companion port is public.
 name: goodvision-vlm
 
 services:
@@ -6,8 +6,6 @@ services:
     image: "${LOCAL_INFERENCE_IMAGE:-vllm/vllm-openai:v0.17.1}"
     init: true
     restart: unless-stopped
-    ports:
-      - "${VLM_SERVER_BIND_ADDRESS:-0.0.0.0}:${VLM_SERVER_PORT:-8000}:8000"
     command:
       - --model
       - /models/vision
@@ -63,6 +61,40 @@ services:
       interval: 15s
       timeout: 3s
       start_period: 300s
+      retries: 10
+    stop_grace_period: 90s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  vlm-processing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: goodvision-vlm-processing:local
+    init: true
+    restart: unless-stopped
+    command: ["python", "-m", "goodvision_harness.vlm_server"]
+    depends_on:
+      vlm-server:
+        condition: service_healthy
+    ports:
+      - "${VLM_SERVER_BIND_ADDRESS:-0.0.0.0}:${VLM_SERVER_PORT:-8000}:8080"
+    environment:
+      VLM_SERVER_UPSTREAM_ENDPOINT: http://vlm-server:8000/v1/chat/completions
+      VLM_SERVER_MODEL: "${LOCAL_INFERENCE_MODEL:-local-vision}"
+      VLM_SERVER_MAX_CONCURRENCY: "${VLM_SERVER_MAX_CONCURRENCY:-8}"
+      VLM_SERVER_PREPARATION_CONCURRENCY: "${VLM_SERVER_PREPARATION_CONCURRENCY:-2}"
+      VLM_SERVER_TIMEOUT_SECONDS: "${VLM_SERVER_TIMEOUT_SECONDS:-90}"
+      LOCAL_INFERENCE_API_KEY: "${LOCAL_INFERENCE_API_KEY:-}"
+    read_only: true
+    tmpfs: ["/tmp:size=256m"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      start_period: 15s
       retries: 10
     stop_grace_period: 90s
     logging:

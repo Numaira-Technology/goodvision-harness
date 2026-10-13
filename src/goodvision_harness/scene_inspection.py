@@ -16,7 +16,9 @@ from .contracts import NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .scene_runtime import SceneRuntime, TemporalInspection, TemporalVerdict
 
-_EVENT_LABELS = frozenset(("fight", "smoking", "fall", "weapon"))
+_EVENT_LABELS = frozenset((
+    "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter",
+))
 _MAX_BYTES = 16 * 1024 * 1024
 _MAX_PIXELS = 16 * 1024 * 1024
 _PROMPT = """Use every supplied frame in source timestamp order as one continuous
@@ -35,10 +37,13 @@ proof; absence in one frame does not establish that an ongoing event ended.
 
 {output_instruction} Each verdict object must contain exactly these four fields:
 event_label (an allowed label), subject_ids (a nonempty list of grounded allowed
-IDs), detected (true, false, or null), confidence (0 through 1, or null).
-Every verdict, including false/null, must name its supported people; a negative
-event verdict does not mean no people are present. No duplicate event/subject
-groups. Return {empty_output} if no subject assignment is supported. Do not output new
+IDs; for ground_litter only, use []), detected (true, false, or null),
+confidence (0 through 1, or null).
+Ground litter is scene-scoped and must be assessed even without people.
+Every person-event verdict, including false/null, must name its supported people;
+a negative event verdict does not mean no people are present. No duplicate event/subject
+groups. Return {empty_output} if no subject assignment is supported and
+ground_litter is not requested. Do not output new
 bounding boxes, descriptions, commentary, credentials, or unrelated information.
 """
 
@@ -142,6 +147,7 @@ def build_temporal_messages(
     max_image_side: int = 720,
     jpeg_quality: int = 90,
     verdicts_wrapper: bool = False,
+    encoded_images: list[tuple[Any, bytes, int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build ordinary multimodal chat messages, retaining time and source boxes.
 
@@ -195,7 +201,10 @@ def build_temporal_messages(
             source.thumbnail((max_image_side, max_image_side), Image.Resampling.LANCZOS)
             with io.BytesIO() as encoded:
                 source.save(encoded, format="JPEG", quality=jpeg_quality)
-                data = base64.b64encode(encoded.getvalue()).decode("ascii")
+                jpeg = encoded.getvalue()
+                data = base64.b64encode(jpeg).decode("ascii")
+                if encoded_images is not None:
+                    encoded_images.append((frame, jpeg, source.width, source.height))
         content.append({
             "type": "text", "text": json.dumps(metadata, separators=(",", ":")),
         })
@@ -238,7 +247,8 @@ def _validate_verdicts(
             or any(
                 not isinstance(value, str) or not value for value in verdict.subject_ids
             )
-            or not verdict.subject_ids
+            or (not verdict.subject_ids and verdict.event_label != "ground_litter")
+            or (verdict.event_label == "ground_litter" and bool(verdict.subject_ids))
             or not set(verdict.subject_ids) <= allowed
             or len(set(verdict.subject_ids)) != len(verdict.subject_ids)
             or type(verdict.detected) not in (bool, type(None))
@@ -271,6 +281,9 @@ def run_pending_inspections(
     text is never surfaced because it may contain credentials or private inputs.
     """
     jobs = runtime.take_inspections()
+    validate_source_images = not bool(getattr(
+        getattr(inspector, "settings", None), "inspection_endpoint", "",
+    ))
     succeeded = failed = discarded = submitted = 0
     accepted = rejected = 0
     for index, job in enumerate(jobs):
@@ -278,9 +291,10 @@ def run_pending_inspections(
             if index >= 4:
                 raise ValueError("inspection execution capacity exceeded")
             allowed = _validate_job(job)
-            for frame in job.frames:
-                with _read_image(frame.jpeg_bytes):
-                    pass
+            if validate_source_images:
+                for frame in job.frames:
+                    with _read_image(frame.jpeg_bytes):
+                        pass
             verdicts = _validate_verdicts(job, inspector.inspect(job), allowed)
             counts: dict[str, int] = {}
             if runtime.complete_inspection(

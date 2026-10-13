@@ -130,6 +130,10 @@ def _safety_classification() -> MultiGroundedClassification:
                 confidence=0.94,
                 description="No weapon is visible.",
             ),
+            *(GroundedEventClassification(
+                event_label=label, detected=False, confidence=0.95,
+                description="No visible event.",
+            ) for label in ("ppe_violation", "ground_litter")),
         ),
     )
 

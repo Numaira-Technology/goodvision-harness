@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
+from .rich_label_models import validate_rich_label_model
 from .service_locations import SERVICE_LOCATION_FIELDS, validate_service_location
 
 SETTINGS_SCHEMA_VERSION = 1
@@ -44,6 +45,26 @@ class DeploymentSettings:
     tracking_server_capacity: int | None = None
     tracking_server_protocol: str | None = None
     tracking_sample_fps: float | None = None
+    inference_server_protocol: str | None = None
+    # Console-selected rich-label model key (brand-neutral: contour / det-balanced
+    # / det-fast / det-accurate); see rich_label_models.RICH_LABEL_MODELS.
+    rich_label_model: str | None = None
+
+
+def _load_rich_label_model(payload: dict) -> str | None:
+    """Read a persisted rich-label model key, tolerating an unknown value.
+
+    The save path validates strictly, but a stored key may be absent, or stale
+    from an earlier build / hand edit. Treat an unrecognized key as unset
+    (falls back to the default) rather than failing the whole settings load.
+    """
+    value = payload.get("rich_label_model")
+    if value is None:
+        return None
+    try:
+        return validate_rich_label_model(value)
+    except ValueError:
+        return None
 
 
 def validate_local_gpu_enabled(value: object, name: str) -> bool:
@@ -145,6 +166,7 @@ class DeploymentSettingsStore:
                 if "processing_method" in payload
                 else None
             ),
+            rich_label_model=_load_rich_label_model(payload),
         )
 
     def save(self, settings: DeploymentSettings) -> None:
@@ -163,6 +185,10 @@ class DeploymentSettingsStore:
         if settings.processing_method is not None:
             payload["processing_method"] = validate_processing_method(
                 settings.processing_method
+            )
+        if settings.rich_label_model is not None:
+            payload["rich_label_model"] = validate_rich_label_model(
+                settings.rich_label_model
             )
         for name in ("local_inference_enabled", "local_tracking_enabled"):
             value = getattr(settings, name)

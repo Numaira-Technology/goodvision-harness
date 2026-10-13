@@ -8,11 +8,11 @@ GPU 模式的 CPU 分析也运行在 GPU 主机；本机负责控制台与视频
 | 本机入口 `main` | 控制台、本机拉流与必要的接入解码、视频和结果转发 | 不加载识别模型，不创建分析进程 |
 | GPU 主机分析 `analysis` | 视频解码、人脸识别、事件处理、结果和证据存储 | 使用 GPU 主机的 CPU；人脸模型保存在该主机的 `/models` 卷 |
 | SAM `sam` | 多路人物追踪，共用一份 SAM 模型 | NVIDIA GPU、SAM3.1 checkpoint |
-| 大模型 `vlm`，可选 | vLLM + Qwen3-VL-30B-A3B-Instruct-FP8 | NVIDIA GPU、完整的离线 Qwen 模型目录 |
+| 大模型 `vlm`，可选 | vLLM + Qwen3-VL-30B-A3B-Instruct-FP8，以及 CPU 图像准备服务 | NVIDIA GPU、完整的离线 Qwen 模型目录；CPU 服务不分配 GPU |
 
 例如本机入口放在客户机器，`analysis` 和 SAM 放在同一台 L40S 服务器，大模型继续调用云端。以后把大模型迁到另一台 GPU 服务器，只需修改控制台的大模型部署位置、服务地址和模型名称。
 
-本页使用独立的 `compose.main-server.yaml`、`compose.sam-server.yaml`、`compose.vlm-server.yaml`，不调用云端租机。现有 `tools/start_local_gpu.py` 仍用于所有模块在同一台 NVIDIA 机器上的部署；两个入口不要在相同端口同时启动。
+本页使用独立的 `compose.main-server.yaml`、`compose.sam-server.yaml`、`compose.vlm-server.yaml`，不调用云端租机。`tools/start_local_gpu.py` 用于主程序和 SAM 在同一台 NVIDIA 机器上的部署，增加 `--with-local-inference` 可同时部署本地大模型；两个入口不要在相同端口同时启动。
 
 独立模块的 `--gpu-id` 是各自宿主机上的编号。如果两个 worker 实际在同一台双卡机器，应明确选择不同的卡；单卡共用请使用现有同机入口，以采用为 SAM 留出显存的配置。
 
@@ -117,15 +117,32 @@ Contour 控制台的“登录节点控制台”只认证当前浏览器，不会
 python tools/start_modular.py vlm --gpu-id 0 --bind 192.168.10.30 --port 8000
 ```
 
-该入口只检查大模型权重和所选 NVIDIA 卡，不要求 SAM 文件。默认使用 `vllm/vllm-openai:v0.17.1`，服务模型别名为 `local-vision`。启动后，在主程序控制台将大模型部署位置改为“独立模型服务器”，填写 `http://192.168.10.30:8000` 和 `local-vision`。新部署也可直接执行：
+该入口只检查大模型权重和所选 NVIDIA 卡，不要求 SAM 文件。默认使用 `vllm/vllm-openai:v0.17.1`，服务模型别名为 `local-vision`，同时构建并启动 CPU 服务 `vlm-processing`。宿主机的 8000 端口由 CPU 服务提供，vLLM 仅在容器网络内监听。健康检查会确认上游已提供所选模型。启动后，在主程序控制台将大模型部署位置改为“独立模型服务器”，填写 `http://192.168.10.30:8000` 和 `local-vision`，服务协议选择“GoodVision 分析服务”。新部署也可直接执行：
 
 ```sh
-python tools/start_modular.py analysis --streams 12 --tracking-server http://host.docker.internal:8092 --tracking-capacity 12 --inference-server http://192.168.10.30:8000 --inference-model local-vision --bind 192.168.10.20
+python tools/start_modular.py analysis --streams 12 --tracking-server http://host.docker.internal:8092 --tracking-capacity 12 --inference-server http://192.168.10.30:8000 --inference-model local-vision --inference-protocol goodvision --bind 192.168.10.20
 ```
 
 SAM 与大模型两种选择互相独立；SAM 使用独立服务器、VLM 使用云端的组合完整支持多路。
 
-主程序仅向自备 VLM 发送专用 `LOCAL_INFERENCE_API_KEY` 或控制台保存的自备模型密钥，不复用云端供应商密钥。若需要 VLM API Key，在两台机器各自的 `.env` 配置同一 `LOCAL_INFERENCE_API_KEY`；服务端将其传给 vLLM 的 `VLLM_API_KEY`。该变量是 vLLM 官方支持的认证入口，认证范围参见 [vLLM 0.17.1 文档](https://docs.vllm.ai/en/v0.17.1/usage/security/)。SAM 服务默认没有应用层认证，模型端口应通过客户内网或 VPN 互通。
+主程序仅向自备 VLM 发送专用 `LOCAL_INFERENCE_API_KEY` 或控制台保存的自备模型密钥，不复用云端供应商密钥。若需要 VLM API Key，在两台机器各自的 `.env` 配置同一 `LOCAL_INFERENCE_API_KEY`；CPU 服务校验此密钥并将其用于固定的 vLLM 上游。vLLM 同时接收 `VLLM_API_KEY`。该变量是 vLLM 官方支持的认证入口，认证范围参见 [vLLM 0.17.1 文档](https://docs.vllm.ai/en/v0.17.1/usage/security/)。SAM 服务默认没有应用层认证，模型端口应通过客户内网或 VPN 互通。
+
+### 已有本机或局域网大模型
+
+已有支持图像输入的 OpenAI 兼容服务时，选择“独立模型服务器”，填写该服务的 origin 和实际模型名称，协议保留 `compatible`（控制台显示“兼容模型 API”）。模型可以运行在主程序宿主机；容器连接宿主机应填写如 `http://host.docker.internal:8000`，裸机主程序可以使用 `http://127.0.0.1:8000`。此模式不要求启动脚本管理 GPU、下载 Qwen 或提供 SAM 权重。仅支持文本的模型无法处理本程序的视觉分析请求。
+
+需要把 CPU 图像准备也移到已有模型机器时，在安装本项目及运行依赖的环境中启动伴随服务（PowerShell 使用对应的 `$env:NAME='value'` 设置）：
+
+```sh
+export VLM_SERVER_UPSTREAM_ENDPOINT=http://127.0.0.1:8000/v1/chat/completions
+export VLM_SERVER_MODEL=your-vision-model
+export LOCAL_INFERENCE_API_KEY=your-local-model-key
+python -m goodvision_harness.vlm_server --host 0.0.0.0 --port 8001
+```
+
+主程序连接此伴随服务的 origin，例如 `http://192.168.10.30:8001`，协议设为 `goodvision`，模型名和专用密钥与上游一致。伴随服务只访问部署时指定的上游，请求不能更改模型服务器地址。
+
+`goodvision` 接收原始 JPEG 和分析窗口元数据，在模型端执行图像解码、缩放、JPEG/base64 编码、提示词构建和返回内容校验；主程序保留视频采集、分析窗口调度、人物/事件状态合并及结果展示。完整、紧凑、事件和并行输出沿用相同提示词与校验规则。请求、图像、并发和执行时间均有上限；过载返回 429，超时或模型失败会报告失败，不会自动调用云端。协议切换需要先停止全部分析。伴随服务也提供 `/v1/chat/completions`，兼容已有直接请求及流式调用。
 
 ## 配置和容量
 
@@ -139,6 +156,7 @@ SAM 与大模型两种选择互相独立；SAM 使用独立服务器、VLM 使�
 | `TRACKING_EXECUTION_MODE` | `legacy` 或 `server`；同机 GPU 入口还支持 `local` |
 | `INFERENCE_SERVER_URL` | 自备 VLM 服务的 HTTP(S) origin |
 | `INFERENCE_SERVER_MODEL` | 服务端模型别名，默认 `local-vision` |
+| `INFERENCE_SERVER_PROTOCOL` | `compatible`（默认）或 `goodvision`；仅后者将 CPU 图像准备交给伴随服务 |
 | `TRACKING_SERVER_URL` | 自备 SAM 服务的 HTTP(S) origin |
 | `TRACKING_SERVER_CAPACITY` | SAM 服务预留的正整数通道数 |
 | `SCENE_OBSERVATION_FPS` | 每路大模型目标分析频率，默认 `1.25` |
@@ -170,6 +188,7 @@ python tools/start_modular.py vlm --gpu-count 1 --dry-run
 docker logs --tail 100 goodvision-main-harness-1
 docker logs --tail 100 goodvision-sam-sam-server-1
 docker logs --tail 100 goodvision-vlm-vlm-server-1
+docker logs --tail 100 goodvision-vlm-vlm-processing-1
 ```
 
-可用 `--env-file` 指向当前模块自己的配置文件，`--no-build` 使用已导入的应用/SAM 镜像。VLM 始终使用指定镜像。真正离线部署应提前准备这些镜像；启动脚本不会打包或下载模型文件。
+可用 `--env-file` 指向当前模块自己的配置文件，`--no-build` 使用已导入的应用/SAM/CPU 服务镜像。VLM 后端使用指定镜像，CPU 服务默认从当前源码构建为 `goodvision-vlm-processing:local`；`vlm --no-build` 会先核对 CPU 服务镜像源码，旧版本需重新构建或导入。真正离线部署应提前准备这些镜像；启动脚本不会打包或下载模型文件。

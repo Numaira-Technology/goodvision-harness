@@ -24,10 +24,13 @@ def diagnostic_document(camera_id: str) -> str:
     # elements remain for the existing UI bindings, but have no write API here.
     setup = """
 <style>
-header,.deployment-panel,#cloud-route-panel,#fleet-panel,#face-controls{
+header,.deployment-panel,#cloud-route-panel,#fleet-panel,#face-controls,
+.console-sidebar,.runtime-strip,.page-heading,.api-directory,.integrations-panel{
   display:none!important
 }
-body{background:#fff}main{max-width:none;margin:0;padding:12px}
+body{background:#fff}.console-content{margin:0}
+#console-main{max-width:none;margin:0;padding:12px;display:flex;flex-direction:column}
+#fleet-detail-console{order:-1}
 .fleet-detail-label{position:sticky;top:0;background:#fff;padding:8px 0;z-index:10}
 </style>
 <script>

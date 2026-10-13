@@ -40,7 +40,9 @@ SAFETY_MULTI_ANALYSIS_KIND = "safety_events"
 FIXED_FIVE_ANALYSIS_KIND = "fixed_five_events"
 SELECTED_FEATURES_ANALYSIS_KIND = "selected_features"
 
-SAFETY_EVENT_LABELS = ("fight", "smoking", "fall", "weapon")
+SAFETY_EVENT_LABELS = (
+    "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter",
+)
 STRANGER_EVENT_LABEL = "stranger"
 DETECTION_EVENT_LABELS = (*SAFETY_EVENT_LABELS, STRANGER_EVENT_LABEL)
 MIN_MULTI_EVENT_MAX_TOKENS = 1024
@@ -80,6 +82,13 @@ def _system_prompt_with_evidence_rules(
             return SENSITIVITY_SYSTEM_PROMPT + "\n\n" + sensitivity_policy_text(
                 settings, smoking_standard_rule=SMOKING_EVIDENCE_RULE,
             )
+    extra = normalize_event_sensitivities(
+        None, set(event_labels) & {"ppe_violation", "ground_litter"},
+    )
+    if extra:
+        system_prompt += "\n\n" + sensitivity_policy_text(
+            extra, smoking_standard_rule=SMOKING_EVIDENCE_RULE,
+        )
     if "smoking" in {label.strip().casefold() for label in event_labels}:
         return f"{system_prompt}\n\n{SMOKING_EVIDENCE_RULE}"
     return system_prompt
@@ -167,6 +176,7 @@ _EVENT_NAMES_ZH = {
     "smoking": "吸烟",
     "fall": "跌倒",
     "weapon": "武器",
+    "ppe_violation": "防护装备缺失", "ground_litter": "地面垃圾",
     "stranger": "陌生人",
     "unknown_person": "陌生人",
 }
@@ -1320,7 +1330,7 @@ class DryRunGroundingClient:
 
 
 class AIClubMultiGroundingClient:
-    """Run one Qwen request for all four visual safety event labels."""
+    """Run one Qwen request for the selected visual safety event labels."""
 
     def __init__(
         self,
@@ -1348,7 +1358,7 @@ class AIClubMultiGroundingClient:
         # JSON example. Reuse it only for that exact request; selected subsets use
         # the generic prompt plus the dynamic authoritative contract below.
         use_fixed_prompt = (
-            bool(multi_prompt) and self.event_labels == SAFETY_EVENT_LABELS
+            bool(multi_prompt) and self.event_labels == ("fight", "smoking", "fall", "weapon")
         )
         prompt = multi_prompt if use_fixed_prompt else self.settings.prompt
         request_parameters = dict(self.settings.request_parameters)
@@ -1432,7 +1442,7 @@ class AIClubMultiGroundingClient:
 
 
 class DryRunMultiGroundingClient:
-    """Deterministic four-event client for local demos and tests."""
+    """Deterministic multi-event client for local demos and tests."""
 
     def __init__(
         self,
@@ -1454,11 +1464,11 @@ class DryRunMultiGroundingClient:
             objects = (
                 (
                     ModelObject(
-                        label="person",
+                        label="litter" if event_label == "ground_litter" else "person",
                         bbox=NormalizedBBox(0.18, 0.12, 0.72, 0.9),
                         confidence=confidence,
                         attributes={"dry_run": True},
-                        actor_ids=("a1",),
+                        actor_ids=() if event_label == "ground_litter" else ("a1",),
                     ),
                 )
                 if detected

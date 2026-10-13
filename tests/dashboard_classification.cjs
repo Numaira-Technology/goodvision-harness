@@ -14,7 +14,7 @@ function dashboard(){
   runDashboard(context, `
     // These tests exercise classification; video transport has separate coverage.
     openFeed=()=>surfaces();
-    state.running=true;state.sessionId="session-1";state.sessionFeatures=detectionEvents;
+    state.running=true;state.sessionId="session-1";state.sessionFeatures=["fight","smoking","fall","weapon","stranger"];
     state.gallery={ready:true};state.galleryLoading=false;
     globalThis.app={analysis,message,status,reset,renderClassification,state,
       renderSensitivities,selectedSensitivities,sensitivityInputs,controls,start};
@@ -98,7 +98,7 @@ test("per-event sensitivity is selectable before start, sent with the request, a
       {value:"standard",label:"标准",description:"Clear visual evidence"},
       {value:"high",label:"高",description:"Contextual evidence"}]]))};
   view.app.renderSensitivities();view.app.controls();
-  assert.equal(view.app.sensitivityInputs.size,4);
+  assert.equal(view.app.sensitivityInputs.size,6);
   assert.equal(view.app.sensitivityInputs.get("smoking").value,"high");
   assert.equal(view.app.sensitivityInputs.get("smoking").disabled,false);
   view.app.sensitivityInputs.get("smoking").value="standard";
@@ -456,4 +456,16 @@ test("independent branch overview becomes pending again after face expiry or ses
   assert.equal(view.element("verdict").textContent,"INCOMPLETE");
   view.app.analysis(result(4.2,{stranger:true}));
   assert.equal(view.status("stranger"),"WAITING");
+});
+
+
+test("new safety events render independently and clear after repeated negatives",()=>{
+  const view=dashboard();
+  view.app.state.sessionFeatures=["ppe_violation","ground_litter"];
+  view.app.analysis(result(1,{ppe_violation:true,ground_litter:true}));
+  assert.equal(view.element("verdict").textContent,"PPE_VIOLATION + GROUND_LITTER");
+  view.app.analysis(result(2,{ppe_violation:false,ground_litter:false}));
+  assert.equal(view.element("decision").className,"decision detected");
+  view.app.analysis(result(3,{ppe_violation:false,ground_litter:false}));
+  assert.equal(view.element("verdict").textContent,"CLEAR");
 });

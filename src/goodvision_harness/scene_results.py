@@ -24,7 +24,7 @@ from .contracts import (
 
 _NAMES = {
     "fight": "打架", "smoking": "吸烟", "fall": "跌倒",
-    "weapon": "持械", "stranger": "陌生人",
+    "weapon": "持械", "ppe_violation": "防护装备缺失", "ground_litter": "地面垃圾", "stranger": "陌生人",
 }
 _EVENT_FIELDS = (
     "event_id", "event_label", "subject_ids", "phase", "alert",
@@ -137,6 +137,18 @@ class SceneResultPublisher:
                 if subject in active_subjects:
                     object_ids.append(subject)
             detected = bool(confirmed)
+            if label == "ground_litter":
+                # The canonical contract requires a positive object reference.
+                # This is explicitly the scene extent, not a fabricated litter box.
+                scene_id = "scene-ground-litter"
+                label_objects[scene_id] = GroundedObject(
+                    object_id=scene_id, label="scene",
+                    bbox=NormalizedBBox(0, 0, 1, 1),
+                    attributes={"event_scope": "scene", "scene_events": episodes,
+                                "event_ids": [e["event_id"] for e in episodes]},
+                )
+                if detected:
+                    object_ids.append(scene_id)
             if detected:
                 description = f"已确认{_NAMES[label]}事件。 / Confirmed {label} event."
             else:

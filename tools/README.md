@@ -12,6 +12,8 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | --- | --- |
 | `start_delivery.py` | Start the recorded `2026.09.10-full.4` customer package. |
 | `start_windows_hybrid_demo.ps1` | Start the native Windows / Docker worker demo. |
+| `start_local_gpu.py` | Detect NVIDIA GPUs and start SAM on this host using the Contour runtime; `--streams N` provisions camera lanes, `--with-local-inference` also starts the local VLM and CPU processing companion. |
+| `start_modular.py` | Deploy application, SAM or VLM separately; `main --inference-server ... --inference-protocol goodvision` delegates VLM image preparation to the model host. See [modular services](../docs/guides/modular-services.md). |
 | `export_full_delivery.py` | Export the recorded full.4 image pair, metadata and checksums. |
 | `run_full_delivery_smoke.ps1` | Run isolated image protocol checks; accepts candidate image tags. |
 | `delivery_smoke.py` | Exercise a disposable main container using synthetic frames. |
@@ -19,6 +21,10 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | `face_gpu_smoke.py` | Check runtime packages or run real accelerated face warmup. |
 | `customer_check.py` | Installed check dispatcher; mode comes from its installed filename. |
 | `runtime_gateway.py` | Runtime process supervisor and customer diagnostic filtering. |
+| `update_docker.py` | Update an installed Compose harness or Contour deployment from source or loaded images, with readiness checks and image rollback. [Usage](../docs/guides/docker-updates.md). |
+| `customer_update.py` | Verify a customer package, stop local analysis, and restore startup settings for the update window. |
+| `customer_update_gui.py` | Windows customer update window; distributed as `Update.exe` with prepared images so customers can update by double-clicking. [Customer steps](../docs/guides/docker-updates.md#customer-updates-on-windows). |
+| `package_customer_docker_update.py` | Package validated images and a standalone Windows updater in a customer ZIP. [Maintainer steps](../docs/guides/docker-updates.md#package-a-windows-customer-update). |
 
 See [release development](../docs/guides/release.md) and the
 [customer deployment guide](../DEPLOY.md). Recorded image tags and release
@@ -32,12 +38,16 @@ checks describe that delivery, not subsequent source changes.
 | `face_llm_interop_eval.py` | Check real CPU face inference alongside synthetic remote blocking. |
 | `low_resolution_face_eval.py` | Evaluate local media/models with a disposable face gallery. |
 | `low_resolution_model_eval.py` | Replay listed samples through a real model service. |
+| `replay_stress.py` | Paced active-scene replay with recorded tracks, temporal HTTP fault injection, compressed timelines and a shared request budget. [Scope and usage](../docs/guides/diagnostics-replay.md). |
 | `low_resolution_tracking_eval.py` | Replay saved observations through person tracking. |
+| `summarize_sam_timing.py` | Join saved client, SAM worker and cloud pool timing logs offline, keeping stage durations and missing measurements separate. |
 | `low_resolution_evidence_eval.py` | Exercise synthetic event continuity and H.264 evidence offline. |
 | `benchmark_display_cadence.py` | Compare local synthetic display cadence, lag and frame drops. |
 | `evaluate_pipeline_latency.cjs` | Play a complete original video through an isolated real pipeline and production Chrome renderer; record actual presented-frame contour coverage, SSE arrivals and delay. Requires Playwright, Chrome, and an authorized real-model service with a same-origin byte-range video URL; see the script header and [measurement record](../docs/validation/network-and-display.md). |
 | `rich_label_benchmark.py` | Benchmark the JPEG `/v1/labels` worker on local video. |
 | `vlm_speed_matrix.py` | Measure the native rich client with an explicit local `--cases` JSON file. |
+| `vlm_benchmark/modes.py` | Compare events, compact grounding, and parallel with per-lane results and optional telemetry. `--monitor` shows live inputs/results; `--record` saves the browser viewport as MP4. [Guide](../docs/guides/vlm-mode-benchmark.md). |
+| `vlm_benchmark/local_model.sh` | Package/install/start/check a pinned local Qwen3.8 27B W4A16 service on a 4090, then run the mode benchmark. [Guide](../docs/guides/vlm-local-model.md). |
 | `vlm_simple_jev_benchmark.py` | Compare Simple Jev direct vision with Qwen event-only and full JSON; see below. |
 | `vlm_delivery_probe.py` | Independently receive real VLM/general/event SSE, poll SAM/face progress, and pull live/annotated MJPEG; preserve arrival times and pending positive observations. |
 
@@ -123,14 +133,17 @@ must be new; there are no retries. Latency excludes initial video decode and SAM
 The experiment retains failed attempts, missing judgments and unknowns. A short
 negative reply is not useful acceleration if it misses positive events.
 
-The isolated runtime can opt into `SCENE_VLM_OUTPUT_MODE=parallel` or `compact`;
-`full` remains the default. Runtime information publishes through existing VLM
+The isolated runtime defaults to `SCENE_VLM_OUTPUT_MODE=parallel`; `full` and
+`compact` require an explicit override. Runtime information publishes through existing VLM
 interfaces. The grounding lane alone supplies display/person-event evidence and
 is retained separately on `branch.grounding_results`. When both lanes admit a window they share `request_id` and
 `window_id`. Each lane admits independently; a full grounding lane does not block
 new information windows. Information completes out of order and discards superseded
 late results, with an HTTP timeout capped at five seconds; grounding remains ordered.
 Each lane allows `SCENE_MAX_IN_FLIGHT` requests (up to eight total in parallel mode).
+Before replay, verify `/v1/vlm/status` reports `output_mode=parallel`,
+`state=running`, and both `events` and `compact` lanes. Stop a mismatched run
+before playback and save the effective status with its evidence.
 When display has pending positives or active person events, subsequent windows
 request full grounded negative/uncertain follow-up; `no_events` cannot clear a person.
 

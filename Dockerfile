@@ -44,6 +44,30 @@ HEALTHCHECK --interval=15s --timeout=3s --retries=4 \
   CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=2).read()"]
 CMD ["python", "-m", "goodvision_harness.analysis_gateway"]
 
+# Optional CPU-only controller for the YOLO/RF-DETR detector worker (mirrors
+# sam-remote). The heavy detector deps install on the rented GPU box, not here.
+FROM python:3.11-slim AS detector-remote
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir vastai==1.5.6 'python-dotenv>=1,<2'
+
+WORKDIR /app
+COPY tools/start_sam.py tools/start_detector.py tools/cloud_gpu_settings.py \
+    tools/cloud_analysis.py ./tools/
+COPY workers/detector_rich_label/app.py workers/detector_rich_label/tracker.py \
+    workers/detector_rich_label/detectors.py \
+    workers/detector_rich_label/requirements.txt \
+    ./workers/detector_rich_label/
+
+STOPSIGNAL SIGTERM
+CMD ["python", "-u", "tools/start_detector.py"]
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

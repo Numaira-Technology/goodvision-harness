@@ -85,6 +85,7 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.delenv("SCENE_VLM_OUTPUT_MODE", raising=False)
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **kwargs: "")
     monkeypatch.setattr(service, "IndependentVLMBranch", LocalBranch)
     base = load_config(ROOT / "config.yaml")
@@ -138,6 +139,7 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
             independent = client.get("/v1/vlm/results/latest")
             assert independent.status_code == 200
             payload = independent.json()
+            assert payload["vlm_lane"] == "information"
             assert payload["analysis_kind"] == "vlm_event"
             removed = {"events", "missing_event_labels", "association", "confirmation"}
             assert removed.isdisjoint(payload)
@@ -152,6 +154,8 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
                 == "vlm_event"
             )
             status = client.get("/v1/vlm/status").json()
+            assert status["output_mode"] == "parallel"
+            assert set(status["lanes"]) == {"events", "compact"}
             assert status["independent"]
             assert status["stream_session_id"] == payload["stream_session_id"]
             assert status["generation"] == payload["generation"]

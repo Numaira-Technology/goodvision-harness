@@ -22,6 +22,7 @@ from html import escape
 from pathlib import Path
 from threading import Event, RLock, Thread
 from typing import Annotated, Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import anyio
@@ -69,8 +70,10 @@ from .deployment_settings import (
     validate_camera_layout,
     validate_processing_method,
 )
+from .diagnostics import create_diagnostics
 from .display_telemetry import validate_display_metrics
 from .event_archive import EventArchive
+from .event_catalog import event_catalog
 from .event_routes import install_event_routes
 from .event_sensitivity import (
     EVENT_SENSITIVITY_DEFAULTS,
@@ -129,7 +132,15 @@ from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
     UNKNOWN_FACE_EVENT_LABEL,
 )
+from .resource_trace import start_resource_sampling, stop_resource_sampling
 from .result_bus import FrameBus, FramePacket, ResultBus
+from .rich_label_models import (
+    DEFAULT_RICH_LABEL_MODEL,
+    DETECTOR_MODEL_HEADER,
+    RICH_LABEL_MODELS,
+    resolve_rich_label_model,
+    validate_rich_label_model,
+)
 from .rich_labeling import (
     DeferredRichLabelHistory,
     RichLabelClient,
@@ -177,6 +188,7 @@ from .visual_memory import (
     VisualMemoryRecord,
     VisualMemorySink,
 )
+from .vlm_admission import AdmissionSettings
 from .vlm_fusion import VLMFusion
 from .vlm_independent import IndependentVLMBranch, VLMProcessConfig
 from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
@@ -318,7 +330,23 @@ class HarnessRuntime:
             dry_run = False
             autostart = False
             config_error = config_error or "configuration error"
+        # Console-selected detector (YOLO / RF-DETR) overrides the rich-label
+        # backend. SAM / unset leaves the configured backend and processing
+        # method untouched, so the existing production path is unchanged.
+        # Detectors speak the paddle-style /v1/labels contract, so the endpoint
+        # must point at a running detector worker (tools/start_detector.py).
+        selected_model = (
+            self._deployment_settings.rich_label_model
+            if self._deployment_settings is not None else None
+        )
+        detector_selected = (
+            selected_model is not None
+            and resolve_rich_label_model(selected_model).backend != "sam31_stream"
+        )
+        if detector_selected and config is not None:
+            config = self._configure_rich_label_model(config, selected_model)
         processing_method = (
+            None if detector_selected else
             self._deployment_settings.processing_method
             if self._deployment_settings is not None
             and self._deployment_settings.processing_method is not None
@@ -438,11 +466,7 @@ class HarnessRuntime:
             elif rich.backend in {"sam31", "sam31_stream"}:
                 rich_client = self._create_tracking_client(rich)
             else:
-                rich_client = RichLabelHTTPClient(
-                    rich.endpoint,
-                    timeout_seconds=rich.timeout_seconds,
-                    mode="tracks", include_attributes=self._rich_requested,
-                )
+                rich_client = self._create_rich_http_client(rich)
             if rich.backend == "vlm" or rich_client.gpu_ready():
                 self._rich_labels = self._tracking_coordinator(rich_client)
             else:
@@ -490,7 +514,8 @@ class HarnessRuntime:
         self._camera_display_metadata = CameraDisplayMetadata()
         self._run_postprocess: dict[str, RunPostprocess] = {}
         self._identity_control_lock = RLock()
-        self._last_camera_receipt = None
+        self._camera_receipts = OrderedDict()
+        self._camera_blocked_receipt = None
         self._postprocess_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="run-postprocess",
         )
@@ -859,6 +884,11 @@ class HarnessRuntime:
             "camera_layout": self.configured_camera_layout(),
             "processing_method": self._processing_method(),
             "processing_methods": self._processing_methods(),
+            "rich_label_model": self._rich_label_model(),
+            "rich_label_models": [
+                {"id": m.key, "label": m.label, "note": m.note}
+                for m in RICH_LABEL_MODELS
+            ],
             "processing_cleanup": self._state.get("processing_cleanup"),
             "dry_run": self.dry_run,
             "autostart": self.autostart,
@@ -888,6 +918,60 @@ class HarnessRuntime:
         return (
             self.config.rich_labeling.processing_method
             if self.config is not None else None
+        )
+
+    def _rich_label_model(self) -> str | None:
+        """The console-selected rich-label model, defaulting to the SAM/contour
+        option when unset."""
+        if (self._deployment_settings is not None
+                and self._deployment_settings.rich_label_model is not None):
+            return self._deployment_settings.rich_label_model
+        # Infer from the active backend so the console reflects reality.
+        if (self.config is not None
+                and self.config.rich_labeling.backend != "sam31_stream"):
+            return None
+        return DEFAULT_RICH_LABEL_MODEL
+
+    def _detector_model_headers(self) -> dict[str, str]:
+        """Header that drives the detector worker's active model from the console.
+
+        Only set when a non-SAM detector model is selected; the worker reads it
+        per request and lazy-loads that model. Empty for SAM/VLM/unset.
+        """
+        key = (
+            self._deployment_settings.rich_label_model
+            if self._deployment_settings is not None else None
+        )
+        if key is None:
+            return {}
+        detector_model = resolve_rich_label_model(key).detector_model
+        return {DETECTOR_MODEL_HEADER: detector_model} if detector_model else {}
+
+    @staticmethod
+    def _configure_rich_label_model(
+        configuration: HarnessConfig, key: str | None,
+    ) -> HarnessConfig:
+        if key is None:
+            return configuration
+        model = resolve_rich_label_model(key)
+        if model.detector_model is None:
+            return configuration
+        endpoint = urlsplit(configuration.rich_labeling.endpoint)
+        return replace(configuration, rich_labeling=replace(
+            configuration.rich_labeling, backend=model.backend,
+            endpoint=urlunsplit((
+                endpoint.scheme, endpoint.netloc, "/v1/labels", "", "",
+            )),
+            processing_method=None,
+        ))
+
+    def _create_rich_http_client(self, rich, *, headers=None):
+        if headers is None:
+            headers = self._detector_model_headers()
+        return RichLabelHTTPClient(
+            rich.endpoint, timeout_seconds=rich.timeout_seconds,
+            mode="tracks", include_attributes=self._rich_requested,
+            **({"headers": headers} if headers else {}),
         )
 
     def _processing_methods(self) -> list[dict[str, Any]]:
@@ -946,7 +1030,8 @@ class HarnessRuntime:
                 self.config.rich_labeling, processing_method=method,
             ))
             if (getattr(self, "_service_locations", ServiceLocations()).tracking_mode
-                    == "legacy" and self._remote_config is not None):
+                    == "legacy" and self._remote_config is not None
+                    and not self._detector_model_headers()):
                 self._remote_config = replace(
                     self._remote_config, rich_labeling=replace(
                         self._remote_config.rich_labeling, processing_method=method,
@@ -993,6 +1078,7 @@ class HarnessRuntime:
 
     def _apply_local_execution(
         self, configuration: HarnessConfig, *, locations: ServiceLocations,
+        replace_rich_labels: bool = False,
     ) -> None:
         """Activate validated routes only after persistence succeeds, while idle."""
         previous = self.config
@@ -1024,7 +1110,8 @@ class HarnessRuntime:
                 and self._deployment_store.load_model_route() == self._selected_route_id
             )
             self._route_pool_enabled = self._route_persisted
-        if previous.rich_labeling != configuration.rich_labeling:
+        if (replace_rich_labels
+                or previous.rich_labeling != configuration.rich_labeling):
             self._replace_processing_method(
                 configuration.rich_labeling.processing_method, config=configuration,
             )
@@ -1069,6 +1156,7 @@ class HarnessRuntime:
             "buffer_delay_seconds",
             "camera_layout",
             "processing_method",
+            "rich_label_model",
             "local_inference_enabled",
             "local_tracking_enabled",
         }
@@ -1086,10 +1174,13 @@ class HarnessRuntime:
                 "stream_url", "dry_run", "autostart", "buffer_delay_seconds",
                 "camera_layout",
                 "processing_method",
+                "rich_label_model",
                 "local_inference_enabled", "local_tracking_enabled",
             }
             settings: DeploymentSettings | None = None
             local_configuration = None
+            rich_configuration = None
+            model_changed = False
             locations = self._service_locations
             if (SERVICE_LOCATION_FIELDS | {
                 "local_inference_enabled", "local_tracking_enabled",
@@ -1135,6 +1226,24 @@ class HarnessRuntime:
                     buffer_delay_seconds = validate_buffer_delay_seconds(
                         payload["buffer_delay_seconds"]
                     )
+                rich_label_model = (
+                    self._deployment_settings.rich_label_model
+                    if self._deployment_settings is not None else None
+                )
+                if "rich_label_model" in payload:
+                    selected_model = validate_rich_label_model(
+                        payload["rich_label_model"],
+                    )
+                    model_changed = selected_model != rich_label_model
+                    rich_label_model = selected_model
+                    if self.config is not None and self._remote_config is not None:
+                        canonical = local_configuration or locations.configure(
+                            self._remote_config, self._local_gpu,
+                            self._fleet_camera_index,
+                        )
+                        rich_configuration = replace(
+                            self.config, rich_labeling=canonical.rich_labeling,
+                        )
                 processing_method = (
                     self._deployment_settings.processing_method
                     if self._deployment_settings is not None else None
@@ -1143,8 +1252,10 @@ class HarnessRuntime:
                     processing_method = validate_processing_method(
                         payload["processing_method"]
                     )
-                    methods = (processing_methods(local_configuration.rich_labeling)
-                               if local_configuration is not None
+                    prospective = local_configuration or rich_configuration
+                    methods = (processing_methods(prospective.rich_labeling)
+                               if prospective is not None
+                               and prospective.runtime.scene_mode == "active"
                                else self._processing_methods())
                     if not any(item["id"] == processing_method and item["available"]
                                for item in methods):
@@ -1154,18 +1265,29 @@ class HarnessRuntime:
                     processing_method = (
                         local_configuration.rich_labeling.processing_method
                     )
-                if (local_configuration is not None and processing_method is not None):
-                    # Apply one complete prospective route. Detaching twice can
-                    # overwrite the handle of a worker still retiring.
-                    local_configuration = replace(local_configuration, rich_labeling=
-                        replace(local_configuration.rich_labeling,
-                                processing_method=processing_method))
+                prospective = local_configuration or rich_configuration
+                if prospective is None and "processing_method" in payload:
+                    prospective = self.config
+                if prospective is not None:
+                    if processing_method is not None:
+                        prospective = replace(prospective, rich_labeling=replace(
+                            prospective.rich_labeling,
+                            processing_method=processing_method,
+                        ))
+                    prospective = self._configure_rich_label_model(
+                        prospective, rich_label_model,
+                    )
+                    if local_configuration is not None:
+                        local_configuration = prospective
+                    else:
+                        rich_configuration = prospective
                 settings = DeploymentSettings(
                     stream_url=stream_url,
                     dry_run=dry_run,
                     autostart=autostart,
                     buffer_delay_seconds=buffer_delay_seconds,
                     processing_method=processing_method,
+                    rich_label_model=rich_label_model,
                     local_inference_enabled=locations.inference_mode == "local",
                     local_tracking_enabled=locations.tracking_mode == "local",
                     **locations.public_status(),
@@ -1231,10 +1353,16 @@ class HarnessRuntime:
                 if local_configuration is not None:
                     self._apply_local_execution(
                         local_configuration, locations=locations,
+                        replace_rich_labels=model_changed,
                     )
-                if (settings.processing_method is not None
-                        and settings.processing_method != self._processing_method()):
-                    self._replace_processing_method(settings.processing_method)
+                elif rich_configuration is not None and (
+                    model_changed
+                    or rich_configuration.rich_labeling != self.config.rich_labeling
+                ):
+                    self._replace_processing_method(
+                        rich_configuration.rich_labeling.processing_method,
+                        config=rich_configuration,
+                    )
                 if "buffer_delay_seconds" in payload:
                     assert buffer_delay_seconds is not None
                     self._delayed_overlay.set_delay_seconds(buffer_delay_seconds)
@@ -1303,6 +1431,7 @@ class HarnessRuntime:
             result = {
                 "configured": False,
                 "error": "configuration unavailable",
+                "event_catalog": event_catalog(),
             }
             safe = public_safe_value(result)
             assert isinstance(safe, dict)
@@ -1337,6 +1466,7 @@ class HarnessRuntime:
             "event_labels": list(DETECTION_EVENT_LABELS),
             "features": list(DETECTION_EVENT_LABELS),
             "supported_features": list(DETECTION_EVENT_LABELS),
+            "event_catalog": event_catalog(),
             **sensitivity_ui_info(),
             "local_camera_display": self.video_display_config(),
             "sample_fps": self.config.video.fps,
@@ -1474,6 +1604,12 @@ class HarnessRuntime:
                         batch, native_token=(revision, id(coordinator), generation),
                     )
                 )
+            if hasattr(coordinator, "on_native_recovery"):
+                coordinator.on_native_recovery = lambda session_id, generation: (
+                    self._bind_recovered_native_run(
+                        revision, coordinator, session_id, generation,
+                    )
+                )
             return coordinator
         return RichLabelCoordinator(
             client, max_fps=rich.max_fps, history_size=rich.history_size,
@@ -1481,6 +1617,20 @@ class HarnessRuntime:
             max_hold_seconds=rich.max_hold_seconds,
             on_snapshot=self._on_tracking_snapshot,
         )
+
+    def _bind_recovered_native_run(self, revision, coordinator, session_id, generation):
+        with self._state_lock:
+            if (self._closed or revision != self._rich_config_revision
+                    or coordinator is not self._rich_labels
+                    or self._session is None
+                    or self._session.stream_session_id != session_id
+                    or self._active_rich_session_id != session_id
+                    or coordinator._generation != generation
+                    or coordinator._closed):
+                return False
+            return self._camera_display_metadata.bind_native_run(
+                session_id, (revision, id(coordinator), generation),
+            )
 
     def _on_processing_batch(self, revision: int, batch: VideoTrackingBatch) -> None:
         with self._source_commit_lock:
@@ -1493,6 +1643,9 @@ class HarnessRuntime:
             if revision != self._rich_config_revision:
                 return
             coordinator = self._rich_labels
+            accepts_batch = getattr(coordinator, "accepts_batch", None)
+            if accepts_batch is not None and not accepts_batch(batch):
+                return
             load_sources = getattr(coordinator, "retained_sources", None)
         # This read may wait behind a durable SQLite write. Do not freeze every
         # service callback while fetching immutable, already-admitted evidence.
@@ -1506,7 +1659,8 @@ class HarnessRuntime:
             raise
         with self._state_lock:
             if (revision != self._rich_config_revision
-                    or coordinator is not self._rich_labels):
+                    or coordinator is not self._rich_labels
+                    or (accepts_batch is not None and not accepts_batch(batch))):
                 return
             self._on_tracking_batch(batch, retained_sources=sources)
 
@@ -1763,15 +1917,13 @@ class HarnessRuntime:
                 return True
             rich = self.config.rich_labeling
             revision = self._rich_config_revision
+            headers = self._detector_model_headers()
         client = None
         try:
             if rich.backend in {"sam31", "sam31_stream"}:
                 client = self._create_tracking_client(rich)
             else:
-                client = RichLabelHTTPClient(
-                    rich.endpoint, timeout_seconds=rich.timeout_seconds,
-                    mode="tracks", include_attributes=self._rich_requested,
-                )
+                client = self._create_rich_http_client(rich, headers=headers)
             if not client.gpu_ready():
                 return False
             # Network I/O never holds either lifecycle lock. The active session
@@ -1837,7 +1989,11 @@ class HarnessRuntime:
             return revision, self._rich_labels
 
     def analysis_settings(self) -> dict[str, Any]:
-        return {**copy.deepcopy(self._analysis_settings), **sensitivity_ui_info()}
+        return {
+            **copy.deepcopy(self._analysis_settings),
+            **sensitivity_ui_info(),
+            "event_catalog": event_catalog(),
+        }
 
     def update_analysis_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         if set(payload) - {"features", "event_sensitivities"}:
@@ -2424,6 +2580,10 @@ class HarnessRuntime:
                     session.stream_session_id,
                     self.source_id,
                     mode=self._scene_mode,
+                    diagnostics=create_diagnostics(
+                        self.config.runtime.scene_diagnostics_enabled
+                        and not self.config.runtime.scene_independent_vlm
+                    ),
                     event_labels=scene_labels,
                     independent_temporal_inference=(
                         self.config.runtime.scene_independent_vlm and not use_dry_run and bool(scene_labels)
@@ -2506,6 +2666,16 @@ class HarnessRuntime:
                         self.config.runtime.scene_max_in_flight,
                         route_id=PUBLIC_ROUTE_IDS.get(self._selected_route_id),
                         output_mode=self.config.runtime.scene_vlm_output_mode,
+                        diagnostics_enabled=(
+                            self.config.runtime.scene_diagnostics_enabled
+                        ),
+                        admission=(AdmissionSettings(
+                            self.config.runtime.scene_admission_database,
+                            self.config.runtime.scene_global_max_in_flight,
+                            self.config.runtime.scene_per_stream_max_in_flight,
+                            self.config.runtime.scene_requests_per_second,
+                            self.config.runtime.scene_queue_timeout_seconds,
+                        ) if self.config.runtime.scene_admission_database else None),
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
@@ -2514,11 +2684,11 @@ class HarnessRuntime:
                             lambda jpeg, timestamp, sequence: self._on_display_frame(
                                 jpeg, timestamp, sequence, generation=generation)
                         ) if mode == CAMERA_MODE else None,
-                        fusion=VLMFusion(
+                        fusion=(VLMFusion(
                             next_scene,
                             on_update=lambda: self._guarded_callback(generation, self._on_scene_update),
-                        ),
-                        display_fusion=display_fusion,
+                        ) if process_config.output_mode != "events" else None),
+                        display_fusion=(display_fusion if process_config.output_mode != "events" else None),
                         delivery=self._delivery,
                     )
                 else:
@@ -2549,6 +2719,9 @@ class HarnessRuntime:
                     ))
                     next_worker = SceneInspectionWorker(
                         next_scene, next(leases), max_in_flight=size,
+                        validate_source_images=not bool(
+                            model_settings.inspection_endpoint
+                        ),
                         inspector_factory=(lambda: next(leases)) if parallel else None,
                         on_update=lambda: self._guarded_callback(
                             generation, self._on_scene_update
@@ -2613,7 +2786,8 @@ class HarnessRuntime:
                                   self._rich_labels._generation)
                     if hasattr(self._rich_labels, "on_native_batch") else None,
                 )
-                self._last_camera_receipt = None
+                self._camera_receipts.clear()
+                self._camera_blocked_receipt = None
                 if self._scene is not None:
                     self._scene.close()
                 self._close_scene_workers()
@@ -3025,14 +3199,25 @@ class HarnessRuntime:
                     stream_session_id, generation, crop_version, source_sequence,
                     media_timestamp, hashlib.sha256(jpeg).digest(),
                 )
-                # A lost ACK may resend the same immutable source. Do not admit
-                # it to either analysis branch a second time.
-                if self._last_camera_receipt == receipt:
+                # Positive receipts outlive later admissions: pipelined ACK loss
+                # must not offer an earlier source to either branch twice.
+                current = self._camera_display_metadata.source_identity()
+                if (stream_session_id != current["stream_session_id"] or
+                        (current["generation"] is not None and
+                         (generation, crop_version) !=
+                         (current["generation"], current["crop_version"]))):
+                    return False
+                if receipt in self._camera_receipts:
                     timing["outcome"] = "duplicate"
                     return True
                 if not self._camera_display_metadata.accept_source(
                     source_header, commit=False,
                 ):
+                    return False
+                # Hold later sources behind a capacity refusal. Otherwise a
+                # retry can become obsolete when a later packet takes the slot.
+                if (self._camera_blocked_receipt is not None
+                        and receipt != self._camera_blocked_receipt):
                     return False
                 sequence, timestamp = source_sequence, media_timestamp
             else:
@@ -3044,8 +3229,6 @@ class HarnessRuntime:
                 source_sequence=sequence, source_timestamp_seconds=timestamp,
             )
             branch = getattr(self, "_vlm_branch", None)
-            if branch is not None and branch.config.stream_session_id == session.stream_session_id:
-                branch.offer(jpeg, timestamp, sequence)
             should_sample = timestamp + 1e-9 >= self._camera_next_sample_at
             timing["sampled"] = should_sample
             if should_sample:
@@ -3054,13 +3237,19 @@ class HarnessRuntime:
                     jpeg, width=width, height=height,
                     timestamp_seconds=timestamp, source_frame_index=sequence,
                 ):
+                    self._camera_blocked_receipt = receipt
                     return False
                 phase("source_metadata")
                 while self._camera_next_sample_at <= timestamp + 1e-9:
                     self._camera_next_sample_at += self._camera_sample_period
             if source_header is not None:
                 self._camera_display_metadata.accept_source(source_header)
-                self._last_camera_receipt = receipt
+                self._camera_receipts[receipt] = None
+                while len(self._camera_receipts) > 64:
+                    self._camera_receipts.popitem(last=False)
+                self._camera_blocked_receipt = None
+            if branch is not None and branch.config.stream_session_id == session.stream_session_id:
+                branch.offer(jpeg, timestamp, sequence)
             self._camera_frame_sequence = sequence + 1
             generation = self._generation
             if branch is not None and branch.dispatch_camera_source(display_jpeg, timestamp, sequence):
@@ -4504,9 +4693,11 @@ def create_app(
         runtime = factory()
         application.state.runtime = runtime
         runtime.start()
+        start_resource_sampling()
         try:
             yield
         finally:
+            stop_resource_sampling()
             runtime.stop()
             await application.state.fleet.aclose()
 
@@ -5252,6 +5443,48 @@ def create_app(
     ) -> StreamingResponse:
         return _result_events_response(request, _runtime(request), after=after)
 
+    def active_diagnostics(runtime):
+        # The independent branch owns its immutable per-run cache. Reading it
+        # must not wait for the scene/SAM state lock.
+        branch = runtime._vlm_branch
+        if branch is not None:
+            return branch.diagnostics, branch.config.labels
+        with runtime._state_lock:
+            scene = runtime._scene
+        return (scene.diagnostics, scene.event_labels) if scene else (None, ())
+
+    @application.get("/v1/scene/diagnostics")
+    def scene_diagnostics(request: Request) -> JSONResponse:
+        runtime = _runtime(request)
+        if not runtime.config.runtime.scene_diagnostics_enabled:
+            return JSONResponse(
+                {"enabled": False, "reason": "disabled", "records": []},
+                headers={"Cache-Control": "no-store"},
+            )
+        diagnostics, labels = active_diagnostics(runtime)
+        if diagnostics is None:
+            raise HTTPException(status_code=404, detail="no active scene diagnostics")
+        return JSONResponse(
+            {"enabled": True, **diagnostics.snapshot(labels)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/v1/scene/diagnostics/{request_id}/{frame_sequence}.jpg")
+    def scene_model_input(
+        request: Request, request_id: str, frame_sequence: int,
+    ) -> Response:
+        runtime = _runtime(request)
+        if not runtime.config.runtime.scene_diagnostics_enabled:
+            raise HTTPException(status_code=404, detail="scene diagnostics disabled")
+        diagnostics, _ = active_diagnostics(runtime)
+        jpeg = diagnostics.jpeg(request_id, frame_sequence) if diagnostics else None
+        if jpeg is None:
+            raise HTTPException(
+                status_code=404, detail="model input expired or unavailable",
+            )
+        return Response(jpeg, media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
     @application.get("/v1/scene/evidence")
     def scene_evidence(request: Request) -> JSONResponse:
         runtime = _runtime(request)
@@ -5401,6 +5634,32 @@ def create_app(
             feature_events_endpoint(feature),
             methods=["GET"],
             name=f"{feature}_result_events",
+        )
+
+    @application.get("/assets/console_i18n.js", include_in_schema=False)
+    async def console_i18n_script() -> Response:
+        return Response(
+            (Path(__file__).parent / "assets" / "console_i18n.js").read_text(
+                encoding="utf-8"
+            ),
+            media_type="application/javascript",
+        )
+
+    @application.get("/assets/event_catalog.js", include_in_schema=False)
+    async def event_catalog_script() -> Response:
+        return Response(
+            (Path(__file__).parent / "assets" / "event_catalog.js").read_text(
+                encoding="utf-8"
+            ),
+            media_type="application/javascript",
+        )
+
+    @application.get("/assets/scene_diagnostics.js")
+    def scene_diagnostics_script() -> Response:
+        return Response(
+            (Path(__file__).parent / "assets" / "scene_diagnostics.js").read_text(
+                encoding="utf-8"
+            ), media_type="application/javascript",
         )
 
     @application.get("/assets/cloud_gpu_console.js")

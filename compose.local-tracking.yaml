@@ -1,0 +1,56 @@
+# Same SAM runtime as Contour, on the application host's NVIDIA GPU.
+# tools/start_local_gpu.py supplies the detected device and checkpoint.
+name: goodvision-harness
+services:
+  harness:
+    extends:
+      file: compose.main-server.yaml
+      service: harness
+    environment:
+      LOCAL_GPU_AVAILABLE: "true"
+      LOCAL_GPU_COUNT: "${LOCAL_GPU_COUNT:?Run tools/start_local_gpu.py}"
+      LOCAL_INFERENCE_AVAILABLE: "false"
+      LOCAL_TRACKING_AVAILABLE: "true"
+      LOCAL_INFERENCE_ENABLED: "false"
+      LOCAL_TRACKING_ENABLED: "true"
+      LOCAL_TRACKING_GPU_ID: "${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"
+      LOCAL_TRACKING_ENDPOINT: http://local-tracking:8092/v1/perception/sam_live/sessions
+      INFERENCE_EXECUTION_MODE: "${INFERENCE_EXECUTION_MODE:-cloud}"
+      TRACKING_EXECUTION_MODE: local
+    depends_on:
+      local-tracking:
+        condition: service_healthy
+
+  local-tracking:
+    # Inherit the image, pinned dependencies, caches, CUDA reservation, warmup
+    # health check and runtime options from the deployed Contour engine.
+    extends:
+      file: workers/contour/compose.gpu.yaml
+      service: engine
+    build:
+      context: ./workers
+      dockerfile: contour/Dockerfile.engine
+      args:
+        TORCH_CUDA: "${LOCAL_TRACKING_TORCH_CUDA:-cu128}"
+    environment:
+      SAM31_LIVE_CAMERAS: "${HARNESS_FLEET_CAPACITY:-1}"
+    volumes: !override
+      - type: bind
+        source: "${SAM31_CHECKPOINT_FILE:?Set a SAM checkpoint or prepare Contour models}"
+        target: /models/contour.pt
+        read_only: true
+        bind: {create_host_path: false}
+    deploy:
+      resources:
+        reservations:
+          devices: !override
+            - driver: nvidia
+              device_ids: ["${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"]
+              capabilities: [gpu]
+
+networks:
+  default:
+    name: goodvision-demo
+volumes:
+  face-models: {}
+  face-data: {}

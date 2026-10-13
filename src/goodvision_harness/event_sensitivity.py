@@ -10,6 +10,8 @@ EVENT_SENSITIVITY_DEFAULTS = {
     "smoking": "high",
     "fall": "standard",
     "weapon": "standard",
+    "ppe_violation": "standard",
+    "ground_litter": "standard",
 }
 EVENT_SENSITIVITY_OPTIONS = {
     "fight": [
@@ -61,6 +63,16 @@ EVENT_SENSITIVITY_OPTIONS = {
         },
     ],
 }
+
+
+for _label, _description in {
+    "ppe_violation": "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",
+    "ground_litter": "地面上可见被丢弃的垃圾；无需有人在场",
+}.items():
+    EVENT_SENSITIVITY_OPTIONS[_label] = [
+        {"value": level, "label": title, "description": _description}
+        for level, title in (("standard", "标准敏感度"), ("high", "高敏感度"))
+    ]
 
 
 def normalize_event_sensitivities(
@@ -187,9 +199,36 @@ _EVIDENCE_POLICIES = {
     ),
 }
 
+PPE_RULE = (
+    "ppe_violation: flag a visible person missing EITHER a reflective safety vest "
+    "or a safety helmet (or both). Evaluate each person independently. A clearly "
+    "visible uncovered head or torso without reflective safety clothing suffices; "
+    "wearing both is negative. An ordinary cap is not a safety helmet. Bright "
+    "clothing alone is not a reflective vest. Occlusion, cropping, blur or distance "
+    "is not evidence of missing equipment. If neither required area is assessable, "
+    "use uncertainty where supported, never invent missing equipment."
+)
+LITTER_RULE = (
+    "ground_litter: flag visible discarded rubbish resting on the ground or floor, "
+    "such as wrappers, paper scraps, bottles, cans or waste bags. No person or "
+    "observed act of littering is required. Objects being held, contents inside "
+    "a bin, shadows, floor markings and deliberately stored tools/materials are "
+    "not ground litter. Do not classify every ground object as rubbish. Require "
+    "visible evidence of waste and ground contact; do not invent hidden litter."
+)
+for _label, _rule in (("ppe_violation", PPE_RULE), ("ground_litter", LITTER_RULE)):
+    for _level in ("standard", "high"):
+        _EVIDENCE_POLICIES[(_label, _level)] = _rule
+
 # Grounding still needs descriptions and object boxes. Temporal verdicts use
 # the same evidence criteria but have neither field in their output contract.
 _GROUNDING_POLICIES = {
+    **{("ppe_violation", level): PPE_RULE + (
+        " Box the affected person's visible body; describe which equipment is missing."
+    ) for level in ("standard", "high")},
+    **{("ground_litter", level): LITTER_RULE + (
+        " Box the actual litter, not a nearby person; use actor_ids=[]."
+    ) for level in ("standard", "high")},
     ("smoking", "high"): SMOKING_HIGH_RULE,
     ("weapon", "standard"): _WEAPON_STANDARD_CRITERIA + " Box the actual item.",
     ("weapon", "high"): (

@@ -209,7 +209,8 @@ class ModularLauncherTests(unittest.TestCase):
         sam.assert_not_called()
         self.assertEqual(weights.call_args.kwargs, {"require_tracking": False})
         self.assertEqual(weights.call_args.args[0]["LOCAL_INFERENCE_GPU_ID"], "3")
-        self.assertEqual(run.call_args.args[0][-1], "vlm-server")
+        self.assertEqual(run.call_args.args[0][-2:], ["vlm-server", "vlm-processing"])
+        self.assertIn("--build", run.call_args.args[0])
 
     def test_complete_vlm_weight_validation_does_not_touch_sam(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -466,9 +467,15 @@ class ModularLauncherTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 services = json.loads(result.stdout)["services"]
-                self.assertEqual(set(services), {f"{module}-server"})
+                self.assertEqual(
+                    set(services), {"vlm-server", "vlm-processing"}
+                    if module == "vlm" else {"sam-server"},
+                )
                 service = services[f"{module}-server"]
-                self.assertEqual(service["ports"][0]["host_ip"], "192.0.2.12")
+                public_service = (
+                    services["vlm-processing"] if module == "vlm" else service
+                )
+                self.assertEqual(public_service["ports"][0]["host_ip"], "192.0.2.12")
                 gpu = service["deploy"]["resources"]["reservations"]["devices"]
                 self.assertEqual(gpu[0]["device_ids"], ["3"])
                 targets = {item["target"] for item in service["volumes"]}
@@ -481,6 +488,18 @@ class ModularLauncherTests(unittest.TestCase):
                         "SAM31_LIVE_CAMERAS", service["healthcheck"]["test"][-1]
                     )
                 else:
+                    processing = services["vlm-processing"]
+                    self.assertFalse(service.get("ports"))
+                    self.assertNotIn("deploy", processing)
+                    self.assertEqual(processing["ports"][0]["target"], 8080)
+                    self.assertEqual(
+                        processing["environment"]["LOCAL_INFERENCE_API_KEY"],
+                        "worker-test-key",
+                    )
+                    self.assertEqual(
+                        processing["depends_on"]["vlm-server"]["condition"],
+                        "service_healthy",
+                    )
                     self.assertEqual(targets, {"/models/vision"})
                     self.assertEqual(
                         service["environment"]["VLLM_API_KEY"], "worker-test-key"

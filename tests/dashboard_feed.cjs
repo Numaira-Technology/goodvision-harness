@@ -150,7 +150,7 @@ function sessionStatus(){
   const state={running:false,pending:false,stopping:false,sessionId:null,sessionRevision:0,
     mode:"camera",info:{api_key_present:true},runtimeErrorMessage:""};
   const socket={send:packet=>sent.push(JSON.parse(packet))};
-  const ui={dryRun:{checked:true},statusJson:{},service:{},sourceChip:{},readinessChip:{},lastUpdate:{}};
+  const ui={dryRun:{checked:true},statusJson:{dataset:{}},service:{},sourceChip:{},readinessChip:{},lastUpdate:{}};
   const noop=()=>{};
   const context=vm.createContext({state,ui,AbortController,
     detectionEvents:[],sessionBusyStates:new Set(["starting","running","stopping","draining"]),
@@ -166,7 +166,8 @@ function sessionStatus(){
     selectedFeatures:()=>[],selectedSensitivities:()=>({}),connect:async()=>socket,
     localCameraActive:()=>false,localCameraDisplay:{controller:null},
   });
-  vm.runInContext(html.slice(html.indexOf("function message(data)"),html.indexOf("function reset(){"))+
+  vm.runInContext(script.slice(script.indexOf("function consoleJson"),script.indexOf("const ui="))+
+    html.slice(html.indexOf("function message(data)"),html.indexOf("function reset(){"))+
     html.slice(html.indexOf("async function status(){"),html.indexOf("function resetOverallDescription(){"))+
     "globalThis.handlers={message,start,stop,status};",context);
   return {state,context,ui,requests,sent,effects,...context.handlers,

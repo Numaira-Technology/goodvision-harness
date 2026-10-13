@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from goodvision_harness.config import load_config  # noqa: E402
+from goodvision_harness.event_sensitivity import (  # noqa: E402
+    normalize_event_sensitivities,
+)
 from goodvision_harness.grounding import (  # noqa: E402
     ACTOR_ASSOCIATION_RULE,
     SAFETY_EVENT_LABELS,
@@ -172,6 +175,8 @@ def main() -> int:
     parser.add_argument("--max-requests", type=int, default=256)
     parser.add_argument("--timeout", type=float, default=35)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--event-sensitivity", action="append", default=[],
+                        help="label=standard|high; defaults match the service")
     parser.add_argument(
         "--actor-mode", choices=("enabled", "disabled", "both"), default="enabled"
     )
@@ -183,6 +188,13 @@ def main() -> int:
         parser.error("sizes must be unique, nonnegative long-side dimensions")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     config = load_config(ROOT / "config.yaml")
+    try:
+        overrides = dict(value.split("=", 1) for value in args.event_sensitivity)
+        if len(overrides) != len(args.event_sensitivity):
+            raise ValueError("event sensitivity overrides must be unique")
+        sensitivities = normalize_event_sensitivities(overrides, SAFETY_EVENT_LABELS)
+    except ValueError as error:
+        parser.error(str(error))
     transport = MeasuredTransport(
         replace(
             config.model_api,
@@ -190,7 +202,9 @@ def main() -> int:
             max_retries=0,
         )
     )
-    client = AIClubMultiGroundingClient(config.inference, transport)
+    client = AIClubMultiGroundingClient(
+        config.inference, transport, event_sensitivities=sensitivities,
+    )
     jobs = []
     for clip in manifest["clips"]:
         if not clip.get("public_source_url"):
@@ -210,6 +224,8 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     journal = args.output.with_suffix(".jsonl")
     run_metadata = {
+        "entrypoint": "legacy_single_frame",
+        "event_sensitivities": sensitivities,
         "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
         "config_sha256": hashlib.sha256(
             (ROOT / "config.yaml").read_bytes()

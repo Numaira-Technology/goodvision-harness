@@ -5,9 +5,36 @@ from __future__ import annotations
 import json
 import math
 
+from .grounding import SAFETY_EVENT_LABELS
 from .model_api import ModelAPIClient
-from .scene_model import _json, _ResponseValidationError
+from .scene_model import _json, _ResponseValidationError, _strip_json_fence
 from .vlm_independent_model import IndependentVerdict, IndependentVLMInspector
+
+
+def event_response_format(labels):
+    """Exact booleans/null only; caller must select a schema-capable endpoint."""
+    labels = tuple(labels)
+    if (
+        not labels
+        or len(labels) != len(set(labels))
+        or any(label not in SAFETY_EVENT_LABELS for label in labels)
+    ):
+        raise ValueError("invalid event schema labels")
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "scene_events",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    label: {"type": ["boolean", "null"]} for label in labels
+                },
+                "required": list(labels),
+                "additionalProperties": False,
+            },
+        },
+    }
 
 
 def raw_reply(response):
@@ -19,14 +46,19 @@ def raw_reply(response):
         or choices[0].get("finish_reason") != "stop"
     ):
         raise _ResponseValidationError("completion_not_finished", "envelope_schema")
-    return _json(ModelAPIClient.assistant_text(response).strip(), stage="verdict_json")
+    return _json(
+        _strip_json_fence(ModelAPIClient.assistant_text(response)),
+        stage="verdict_json",
+    )
 
 
 class EventJSONInspector(IndependentVLMInspector):
-    def build_messages(self, job):
-        messages = super().build_messages(job)
+    def build_messages(self, job, *, encoded_images=None):
+        messages = super().build_messages(job, encoded_images=encoded_images)
         # Preserve the same sensitivity definitions as the full inspector.
-        policy = messages[0]["content"].split("\n\n", 1)[0]
+        policy = messages[0]["content"].split(
+            "\n\nUse all supplied original frames", 1
+        )[0]
         labels = list(job.request.event_labels)
         messages[0]["content"] = policy + (
             "\n\nInspect all original images in source-time order "
@@ -44,7 +76,9 @@ class EventJSONInspector(IndependentVLMInspector):
             "(evaluated absent), or null (insufficient evidence): "
             + json.dumps(labels)
             + ". No boxes, person references, confidence, explanations "
-            "or additional fields."
+            "or additional fields. Use lowercase JSON true/false/null, double-quoted "
+            "keys, no trailing commas, and no Markdown code fences. "
+            "Do not copy sample answers; evaluate the images independently."
         )
         return messages
 
@@ -64,8 +98,8 @@ class EventJSONInspector(IndependentVLMInspector):
 
 
 class CompactGroundingInspector(IndependentVLMInspector):
-    def build_messages(self, job):
-        messages = super().build_messages(job)
+    def build_messages(self, job, *, encoded_images=None):
+        messages = super().build_messages(job, encoded_images=encoded_images)
         if job.grounding_required:
             messages[0]["content"] += (
                 "\nAn earlier event still needs person-specific follow-up. "

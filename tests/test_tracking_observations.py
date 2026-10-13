@@ -171,7 +171,7 @@ def test_actors_do_not_change_existing_request_budget_or_add_model_calls() -> No
     settings = InferenceSettings(
         "model", "smoking", "system", "prompt", {"max_tokens": 1024}, "fixed prompt"
     )
-    response = AIClubMultiGroundingClient(settings, transport).classify_window(
+    response = AIClubMultiGroundingClient(settings, transport, labels).classify_window(
         _window()
     )
     assert response.ok
