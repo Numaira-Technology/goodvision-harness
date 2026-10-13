@@ -49,6 +49,10 @@
       const media = data.media[i % data.media.length]; let video = null, sample = null;
       if(media.url) {
         video = node("video"); video.muted = true; video.playsInline = true; video.preload = "auto"; video.src = media.url;
+        // Detector preview overlays live YOLO boxes per frame. The benchmark's
+        // master-clock resync (see animate) would seek each lane constantly on
+        // one shared GPU and wipe the boxes, so let each lane loop on its own.
+        if(data.detector) video.loop = true;
         video.addEventListener("error", () => window.monitorDiagnostics.mediaErrors.push(`video-${i+1}:decode`));
         sourceScreen.append(video);
       } else { sample = node("img"); sourceScreen.append(sample); }
@@ -166,7 +170,10 @@
         const media=a+(b-a)*(pos-Math.floor(pos));
         c.clock.textContent=`视频 ${seconds(media)} · 本轮 ${seconds(Math.max(0,Math.min(time,state.duration)))}`;
         if(c.video) {
-          const playing=state.state === "playing" && elapsed>=state.offsets[i] && time<state.duration-.01;
+          // In detector preview each lane loops freely, so it plays for the
+          // whole run instead of stopping at its per-lane duration/offset.
+          const playing=state.detector ? state.state === "playing"
+            : (state.state === "playing" && elapsed>=state.offsets[i] && time<state.duration-.01);
           const quality=c.video.getVideoPlaybackQuality();
           const presented=quality.totalVideoFrames-quality.droppedVideoFrames;
           const now=performance.now();
@@ -180,11 +187,14 @@
           c.lastPresented=presented;
           if(c.video.readyState>=2) {
             if(c.trackCanvas && !c.tracker) c.tracker=new window.PreviewTracking(c.video,c.trackCanvas,c.trackNote,i,c.media);
-            if(c.tracker) {c.tracker.playing=playing;c.tracker.epoch=Math.floor(Math.floor(pos)/c.media.sample_count);}
-            if(Math.abs(c.video.currentTime-media)>.3 && !c.video.seeking) c.video.currentTime=media;
+            // Detector mode: hold epoch constant so a free loop wrap does not
+            // invalidate an in-flight detector response, and skip the forced
+            // master-clock resync that would seek (and clear boxes) every frame.
+            if(c.tracker) {c.tracker.playing=playing;c.tracker.epoch=state.detector ? 0 : Math.floor(Math.floor(pos)/c.media.sample_count);}
+            if(!state.detector && Math.abs(c.video.currentTime-media)>.3 && !c.video.seeking) c.video.currentTime=media;
             if(playing && c.video.paused && !c.playRequested) {c.playRequested=true;c.video.play().catch(()=>window.monitorDiagnostics.mediaErrors.push(`video-${i+1}:autoplay`)).finally(()=>c.playRequested=false);}
           }
-          if(!playing && !c.video.paused) c.video.pause();
+          if(!state.detector && !playing && !c.video.paused) c.video.pause();
         }
       });
       window.monitorReady=cards.length>0 && cards.every(c=>!c.video || c.video.readyState>=2);
