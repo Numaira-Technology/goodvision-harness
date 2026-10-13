@@ -67,7 +67,7 @@ window.PreviewTracking = class {
     // A slow tracker cannot freeze the video or leave an old person's box up.
     // Detector boxes update in round-robin across streams; keep the last ones
     // drawn (briefly) so they persist on live frames instead of flickering.
-    const held = (this.lastObjects && now-this.lastObjectsAt<1200) ? this.lastObjects : [];
+    const held = (this.lastObjects && now-this.lastObjectsAt<3500) ? this.lastObjects : [];
     if(this.busy) {
       this.stats.busySkipped++;
       if(now-this.lastPaint>100) {this.paint(this.captureCanvas,held);if(!held.length)this.note.textContent="跟踪处理中 · 暂不显示旧框";}
