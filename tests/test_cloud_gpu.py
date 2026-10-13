@@ -6,7 +6,9 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -305,8 +307,103 @@ def test_controller_save_start_stop_persistence_and_duplicate_protection(
             )
 
         process.wait.side_effect = release
-        assert client.post("/stop").json()["state"] == "stopped"
+        assert client.post("/stop").json()["state"] == "stopping"
+        for _ in range(100):
+            if client.get("/settings?check_health=false").json()["state"] == "stopped":
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("background release did not publish stopped")
         process.send_signal.assert_called_once()
+
+
+@pytest.mark.parametrize("backup_failed", [False, True])
+def test_release_is_asynchronous_idempotent_and_shutdown_awaits_it(
+    tmp_path, monkeypatch, backup_failed,
+):
+    manager = CloudController(tmp_path, 1)
+    process = manager.process = Mock()
+    process.poll.return_value = None
+    manager.status_path.write_text(json.dumps({
+        "state": "ready", "cleanup_confirmed": False, "instance_id": 42,
+    }))
+    gate = Event()
+
+    def release():
+        assert gate.wait(5), "test never released background cleanup"
+        manager.status_path.write_text(json.dumps({
+            "state": "cleanup_required" if backup_failed else "stopped",
+            "cleanup_confirmed": not backup_failed, "instance_id": 42,
+            "error": "backup failed; instance retained" if backup_failed else None,
+        }))
+        process.poll.return_value = 130
+
+    process.wait.side_effect = release
+    spawn = Mock()
+    monkeypatch.setattr("tools.cloud_gpu_controller.subprocess.Popen", spawn)
+
+    async def scenario():
+        try:
+            assert (await manager.stop())["state"] == "stopping"
+            # The child is still reporting ready; the gateway must reject work now.
+            assert manager.record()["state"] == "ready"
+            assert manager.status()["state"] == "stopping"
+            for _ in range(3):
+                assert (await manager.stop())["state"] == "stopping"
+            process.send_signal.assert_called_once()
+            with pytest.raises(HTTPException):
+                manager.start()
+            with pytest.raises(HTTPException):
+                manager.save(CloudGPUSettings(streams=1).public())
+            close = asyncio.create_task(manager.close())
+            await asyncio.sleep(0)
+            assert not close.done()
+            gate.set()
+            await close
+            state = manager.status()
+            expected = "cleanup_required" if backup_failed else "stopped"
+            assert state["state"] == expected
+            assert state["cleanup_confirmed"] is (not backup_failed)
+            assert (await manager.stop())["state"] == state["state"]
+            process.send_signal.assert_called_once()
+            process.wait.assert_called_once_with()
+            if backup_failed:
+                with pytest.raises(HTTPException):
+                    manager.start()
+                assert state["instance_id"] == 42
+            spawn.assert_not_called()
+        finally:
+            gate.set()
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_failed_background_wait_never_confirms_release_or_signals_again(tmp_path):
+    manager = CloudController(tmp_path, 1)
+    process = manager.process = Mock()
+    process.poll.return_value = None
+    process.wait.side_effect = OSError("private SSH details must not be exposed")
+    manager.status_path.write_text(json.dumps({
+        "state": "ready", "cleanup_confirmed": False, "instance_id": 42,
+    }))
+
+    async def scenario():
+        assert (await manager.stop())["state"] == "stopping"
+        await manager.release_task
+        state = manager.status()
+        assert state["state"] == "cleanup_required"
+        assert state["cleanup_confirmed"] is False
+        assert state["instance_id"] == 42
+        assert "private SSH" not in state["error"]
+        with pytest.raises(HTTPException):
+            manager.start()
+        await manager.stop()
+        await manager.close()
+        process.send_signal.assert_called_once()
+        process.wait.assert_called_once_with()
+
+    asyncio.run(scenario())
 
 
 def test_controller_refuses_mismatched_capacity_and_uncertain_cleanup(

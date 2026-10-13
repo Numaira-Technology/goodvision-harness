@@ -49,6 +49,7 @@ services:
     restart: "no"
     environment:
       SAM_ANALYSIS_ENABLED: "true"
+      SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND: "${SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND:-1048576}"
       VAST_API_KEY: "${VAST_API_KEY:?Set your Vast team API key in .env}"
       HF_TOKEN: "${HF_TOKEN:?Set your approved SAM Hugging Face token in .env}"
       SAM_SSH_KEY: /run/secrets/sam_ssh_key
@@ -76,6 +77,8 @@ services:
       RESULT_WEBHOOK_URL: "${RESULT_WEBHOOK_URL:-}"
       HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
       LOCAL_TRACKING_FPS: "${LOCAL_TRACKING_FPS:-1.1}"
+      # Import operator-installed face profiles without changing download policy.
+      FACE_MODEL_ROOT: /legacy/face-models
       FACE_SAMPLE_FPS: "${FACE_SAMPLE_FPS:-1.25}"
       FACE_INFERENCE_INSTANCES: "${FACE_INFERENCE_INSTANCES:-1}"
       FACE_INFERENCE_THREADS: "${FACE_INFERENCE_THREADS:-2}"
@@ -94,6 +97,7 @@ services:
     volumes:
       - cloud-gpu-settings:/data/cloud-gpu
       - face-data:/legacy/default:ro
+      - face-models:/legacy/face-models:ro
       - ./config.yaml:/app/config.yaml:ro
       - ./memory:/app/memory:ro
       - type: bind
@@ -106,7 +110,9 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=128m
-    stop_grace_period: 450s
+    # Cleanup waits for the sized snapshot. Increase this for slower links or
+    # larger retention; UI release + polling completes before Compose shutdown.
+    stop_grace_period: "${SAM_CONTROL_STOP_GRACE_PERIOD:-24h}"
     security_opt:
       - no-new-privileges:true
     logging:

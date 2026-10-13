@@ -1,5 +1,6 @@
 """GPU-host CPU analysis isolation, credential boundaries and safe shutdown."""
 
+import gzip
 import json
 import os
 from pathlib import Path
@@ -115,6 +116,10 @@ def test_backup_only_replaces_last_snapshot_after_successful_complete_download(
     previous.write_bytes(b"previous-backup")
     process = Mock(analysis_connection=(["ssh", "root@gpu"], ["scp"]))
     calls = []
+    monkeypatch.setattr(
+        cloud_analysis, "remote_snapshot_size",
+        lambda *args, archive=False: 1024**3 if archive else 2 * 1024**3,
+    )
 
     def run(command, **kwargs):
         calls.append(command)
@@ -124,7 +129,8 @@ def test_backup_only_replaces_last_snapshot_after_successful_complete_download(
 
     cloud_analysis.backup(process, "/workspace/analysis", run)
     assert "/stop" in calls[0][-1]
-    assert calls[1][-1].startswith("tar -czf")
+    assert "tar -czf" in calls[1][-1]
+    assert "data models/face" in calls[1][-1]
     assert previous.read_bytes() != b"previous-backup"
     saved = previous.read_bytes()
 
@@ -134,7 +140,7 @@ def test_backup_only_replaces_last_snapshot_after_successful_complete_download(
 
     import pytest
 
-    with pytest.raises(tarfile.ReadError):
+    with pytest.raises((tarfile.ReadError, gzip.BadGzipFile)):
         cloud_analysis.backup(process, "/workspace/analysis", fail_download)
     assert previous.read_bytes() == saved
 
@@ -217,3 +223,91 @@ def test_cloud_lane_preserves_authenticated_server_vlm_route(
     assert str(seen[0].url) == "https://vision.example" + path
     assert seen[0].headers["authorization"] == "Bearer companion-test-key"
     assert "cloud-key-must-not-be-used" not in str(seen[0].headers)
+
+
+def test_large_retention_backup_sizes_archive_and_transfer_budgets(
+    tmp_path, monkeypatch,
+):
+    import tarfile
+
+    monkeypatch.setenv("SAM_CONTROL_DIRECTORY", str(tmp_path))
+    monkeypatch.delenv("SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND", raising=False)
+    sizes = {False: 8 * 1024**3, True: 5 * 1024**3}
+    monkeypatch.setattr(
+        cloud_analysis, "remote_snapshot_size",
+        lambda *args, archive=False: sizes[archive],
+    )
+    calls = []
+
+    def run(command, *, timeout):
+        calls.append((command, timeout))
+        if command[0] == "scp":
+            with tarfile.open(command[-1], "w:gz") as archive:
+                archive.addfile(tarfile.TarInfo("data"))
+                archive.addfile(tarfile.TarInfo("models/face/operator/model.onnx"))
+
+    cloud_analysis.backup(
+        Mock(analysis_connection=(["ssh", "root@gpu"], ["scp"])), "/remote", run,
+    )
+    assert [timeout for _, timeout in calls] == [115, 8312, 5240]
+    assert "data models/face" in calls[1][0][-1]
+    with tarfile.open(tmp_path / "analysis-data.tar.gz") as archive:
+        assert "models/face/operator/model.onnx" in archive.getnames()
+
+
+@pytest.mark.parametrize("rate", ["0", "-1", "bad"])
+def test_backup_rejects_invalid_throughput_budget(monkeypatch, rate):
+    monkeypatch.setenv("SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND", rate)
+    with pytest.raises(ValueError):
+        cloud_analysis.operation_timeout(1024**3)
+
+
+def test_backup_budget_can_cover_slow_links_without_a_fixed_cap(monkeypatch):
+    monkeypatch.setenv("SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND", "262144")
+    assert cloud_analysis.operation_timeout(5 * 1024**3) == 20600
+    assert cloud_analysis.operation_timeout(50 * 1024**3) == 204920
+    assert cloud_analysis.operation_timeout(0) == 120
+
+
+@pytest.mark.parametrize("body_size", [
+    0, 1, 511, 512, 513, 4096, 8192, 10240, 16384, 32768, 65536,
+])
+@pytest.mark.parametrize("footer_offset", [-8, -4], ids=["crc", "isize"])
+def test_backup_rejects_corrupt_gzip_trailer_before_replacing_snapshot(
+    tmp_path, monkeypatch, body_size, footer_offset,
+):
+    import io
+    import random
+    import tarfile
+
+    # Exercise both sides of tar's 512-byte blocks and 10-KiB record padding,
+    # using deterministic incompressible data instead of a large fixture file.
+    body = random.Random(body_size).randbytes(body_size)
+    encoded = io.BytesIO()
+    with tarfile.open(fileobj=encoded, mode="w:gz") as archive:
+        member = tarfile.TarInfo("data/camera-01/evidence")
+        member.size = len(body)
+        archive.addfile(member, io.BytesIO(body))
+    previous = encoded.getvalue()
+    corrupted = bytearray(previous)
+    corrupted[footer_offset] ^= 1
+    corrupted = bytes(corrupted)
+    with pytest.raises(gzip.BadGzipFile):
+        gzip.decompress(corrupted)
+
+    destination = tmp_path / "analysis-data.tar.gz"
+    destination.write_bytes(previous)
+    monkeypatch.setattr(cloud_analysis, "state_directory", lambda: tmp_path)
+    monkeypatch.setattr(
+        cloud_analysis, "remote_snapshot_size", lambda *args, **kwargs: len(previous),
+    )
+
+    def download(command, **kwargs):
+        if command[0] == "scp":
+            Path(command[-1]).write_bytes(corrupted)
+
+    process = Mock(analysis_connection=(["ssh", "root@fixture"], ["scp"]))
+    with pytest.raises(gzip.BadGzipFile):
+        cloud_analysis.backup(process, "/remote", download)
+    assert destination.read_bytes() == previous
+    assert destination.with_suffix(".partial").read_bytes() == corrupted

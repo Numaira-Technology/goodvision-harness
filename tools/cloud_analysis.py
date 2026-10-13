@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shlex
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -60,7 +62,9 @@ def prepare(root, remote, ssh, scp, run):
             return None
         return member
 
-    with tempfile.TemporaryDirectory(prefix="analysis-upload-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="analysis-upload-", dir=directory,
+    ) as temporary:
         bundle = Path(temporary) / "source.tar.gz"
         with tarfile.open(bundle, "w:gz") as archive:
             names = [
@@ -77,7 +81,23 @@ def prepare(root, remote, ssh, scp, run):
         environment.write_text(json.dumps(runtime_environment(os.environ)), "utf-8")
         environment.chmod(0o600)
         run([*ssh, f"mkdir -p {remote}/source {remote}/data && chmod 700 {remote}"])
-        run([*scp, str(bundle), str(environment), f"{ssh[-1]}:{remote}/"])
+        run(
+            [*scp, str(bundle), str(environment), f"{ssh[-1]}:{remote}/"],
+            timeout=operation_timeout(
+                bundle.stat().st_size + environment.stat().st_size,
+            ),
+        )
+        face_root = Path(
+            os.environ.get("FACE_MODEL_ROOT") or root / ".models/insightface"
+        ).expanduser()
+        face_bundle = Path(temporary) / "face-models.tar.gz"
+        if face_root.is_dir() and any(face_root.iterdir()):
+            with tarfile.open(face_bundle, "w:gz") as archive:
+                archive.add(face_root, arcname="models/face", filter=source_filter)
+            run(
+                [*scp, str(face_bundle), f"{ssh[-1]}:{remote}/face-models.tar.gz"],
+                timeout=operation_timeout(face_bundle.stat().st_size),
+            )
         snapshot = directory / "analysis-data.tar.gz"
         if not snapshot.exists():
             # Import existing per-camera settings/galleries exactly once.
@@ -107,7 +127,8 @@ def prepare(root, remote, ssh, scp, run):
                     )
         if snapshot.exists():
             run(
-                [*scp, str(snapshot), f"{ssh[-1]}:{remote}/restore.tar.gz"], timeout=120
+                [*scp, str(snapshot), f"{ssh[-1]}:{remote}/restore.tar.gz"],
+                timeout=operation_timeout(snapshot.stat().st_size)
             )
         run(
             [*ssh, "bash -s"],
@@ -115,10 +136,30 @@ def prepare(root, remote, ssh, scp, run):
 cd {remote}
 chmod 600 environment.json
 tar -xzf source.tar.gz -C source
-if [ -f restore.tar.gz ] && [ -z "$(ls -A data)" ]; then
-  tar -xzf restore.tar.gz
-  rm restore.tar.gz
-fi
+{remote}/env/bin/python - <<'RESTORE_ANALYSIS'
+from pathlib import Path
+import tarfile
+root = Path({remote!r})
+data_empty = not any((root / "data").iterdir())
+for filename, supplied in (("restore.tar.gz", False), ("face-models.tar.gz", True)):
+    path = root / filename
+    if not path.exists():
+        continue
+    with tarfile.open(path, "r:gz") as archive:
+        for member in archive:
+            name = member.name.rstrip("/")
+            is_face = name == "models/face" or name.startswith("models/face/")
+            is_data = name == "data" or name.startswith("data/")
+            if not is_face and not (not supplied and data_empty and is_data):
+                continue
+            if member.issym() or member.islnk():
+                continue
+            destination = root / name
+            if is_face and destination.exists() and (not supplied or not data_empty):
+                continue
+            archive.extract(member, root, filter="data")
+    path.unlink()
+RESTORE_ANALYSIS
 apt-get update
 apt-get install -y --no-install-recommends ffmpeg libgl1 libgomp1 libglib2.0-0
 if [ ! -x analysis-env/bin/python ]; then
@@ -129,7 +170,11 @@ analysis-env/bin/python -m pip uninstall -y opencv-python opencv-python-headless
 analysis-env/bin/python -m pip install --no-cache-dir --no-deps \\
   opencv-python-headless==4.14.0.94
 """,
-            timeout=30 * 60,
+            timeout=30 * 60 + operation_timeout(sum(
+                path.stat().st_size
+                for path in (snapshot, face_bundle)
+                if path.exists()
+            )),
         )
 
 
@@ -167,6 +212,45 @@ def wait_ready(process):
     raise RuntimeError("GPU host analysis did not become ready")
 
 
+def operation_timeout(size_bytes):
+    """Allow setup plus transfer/compression at a conservative 1 MiB/s.
+
+    The budget grows with retention, without a fixed total-duration cap.
+    """
+    if type(size_bytes) is not int or size_bytes < 0:
+        raise ValueError("snapshot size must be a nonnegative byte count")
+    rate = int(os.environ.get("SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND", str(1024**2)))
+    if rate <= 0:
+        raise ValueError("SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND must be positive")
+    return 120 + (size_bytes + rate - 1) // rate
+
+
+def remote_snapshot_size(ssh, remote, *, archive=False):
+    """Read byte counts over SSH, independently of the camera tunnel."""
+    if archive:
+        code = (
+            "from pathlib import Path; "
+            f"print((Path({remote!r}) / 'analysis-data.tar.gz').stat().st_size)"
+        )
+    else:
+        code = (
+            "from pathlib import Path; import subprocess; "
+            f"root=Path({remote!r}); "
+            "paths=[root/'data']; "
+            "paths += [root/'models/face'] if (root/'models/face').is_dir() else []; "
+            "print(sum(int(subprocess.check_output(['du','-sb',str(path)])"
+            ".split()[0]) for path in paths))"
+        )
+    output = subprocess.check_output(
+        [*ssh, f"{shlex.quote(remote)}/analysis-env/bin/python -c {shlex.quote(code)}"],
+        text=True, timeout=120,
+    )
+    size = int(output.strip())
+    if size < 0:
+        raise ValueError("invalid remote snapshot size")
+    return size
+
+
 def backup(process, remote, run):
     """Drain all writers, then atomically replace the controller's durable copy.
 
@@ -182,16 +266,32 @@ def backup(process, remote, run):
         "assert json.load(r)['stopped'] is True"
     )
     run([*ssh, f"{remote}/analysis-env/bin/python -c {shlex.quote(code)}"], timeout=115)
-    run([*ssh, f"tar -czf {remote}/analysis-data.tar.gz -C {remote} data"], timeout=120)
+    uncompressed = remote_snapshot_size(ssh, remote)
+    archive_command = (
+        f"cd {shlex.quote(remote)} && "
+        "if [ -d models/face ]; then "
+        "tar -czf analysis-data.tar.gz data models/face; "
+        "else tar -czf analysis-data.tar.gz data; fi"
+    )
+    run([*ssh, archive_command], timeout=operation_timeout(uncompressed))
+    compressed = remote_snapshot_size(ssh, remote, archive=True)
     destination = state_directory() / "analysis-data.tar.gz"
     partial = destination.with_suffix(".partial")
-    run([*scp, f"{ssh[-1]}:{remote}/analysis-data.tar.gz", str(partial)], timeout=120)
-    # Read every member before accepting the transfer (including gzip checksum).
-    with tarfile.open(partial, "r:gz") as archive:
-        for member in archive:
-            if member.isfile():
-                with archive.extractfile(member) as source:
-                    while source.read(1024 * 1024):
-                        pass
+    run(
+        [*scp, f"{ssh[-1]}:{remote}/analysis-data.tar.gz", str(partial)],
+        timeout=operation_timeout(compressed),
+    )
+    # Tar iteration can stop at its end marker before gzip checks the trailer.
+    # Read every member, then drain padding to EOF to validate CRC and ISIZE
+    # before accepting the transfer or replacing the last complete snapshot.
+    with gzip.open(partial, "rb") as payload:
+        with tarfile.open(fileobj=payload, mode="r:") as archive:
+            for member in archive:
+                if member.isfile():
+                    with archive.extractfile(member) as source:
+                        while source.read(1024 * 1024):
+                            pass
+        while payload.read(1024 * 1024):
+            pass
     partial.chmod(0o600)
     partial.replace(destination)

@@ -21,6 +21,7 @@ networks:
   default: {}
 volumes:
   gateway-data: {}
-  face-models: {}
+  face-models:
+    name: "${HARNESS_MODELS_VOLUME:-${COMPOSE_PROJECT_NAME:-goodvision-cloud}_face-models}"
   face-data: {}
   cloud-gpu-settings: {}

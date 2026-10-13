@@ -131,7 +131,8 @@ def create_app(origin=None, *, controller=None, transport=None):
                 method,
                 controller + path,
                 json=payload,
-                # Stop includes a 420-second drain/backup/release window.
+                # Current controllers acknowledge background release; retain
+                # this budget for older synchronous controller deployments.
                 timeout=450 if path == "/stop" else 180,
             )
             return JSONResponse(response.json(), status_code=response.status_code)

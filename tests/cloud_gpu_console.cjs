@@ -2,7 +2,7 @@ const assert=require("node:assert/strict");
 const {test}=require("node:test");
 const {CloudGPUConsole}=require("../src/goodvision_harness/cloud_gpu_console.js");
 
-function fixture(){
+function fixture({asyncStop=false}={}){
   const elements=new Map(),requests=[];
   const document={getElementById(id){if(!elements.has(id))elements.set(id,{value:"",textContent:""});return elements.get(id);}};
   let data={available:true,capacity:37,state:"stopped",settings:{gpu_name:"RTX_4090",gpu_count:1,streams:37,disk_gb:50}};
@@ -10,7 +10,7 @@ function fixture(){
     const payload=options.body&&JSON.parse(options.body);requests.push({url,method:options.method,payload});
     if(options.method==="PUT")data={...data,settings:payload};
     if(url.endsWith("/start"))data={...data,state:"starting"};
-    if(url.endsWith("/stop"))data={...data,state:"stopped"};
+    if(url.endsWith("/stop"))data={...data,state:asyncStop?"stopping":"stopped"};
     return {ok:true,json:async()=>data};
   };
   const app=new CloudGPUConsole({document,fetch,setTimeout:()=>1,clearTimeout:()=>{},AbortController});
@@ -70,4 +70,27 @@ test("release remains busy and connected through the controller backup window",a
   await app.action("stop");
   assert.equal(app.data.state,"stopped");assert.equal(app.busy,false);
   assert.equal(timers.size,0);assert.equal(app.ui.status.className,"secret-status");
+});
+
+
+test("asynchronous release keeps polling and blocks actions until backup finishes",async()=>{
+  const {app,requests,setData}=fixture({asyncStop:true});await app.refresh();
+  setData({...app.data,state:"ready"});await app.refresh();
+  await app.action("stop");
+  assert.equal(app.busy,false);assert.equal(app.data.state,"stopping");
+  assert.equal(app.ui.stop.disabled,true);assert.equal(app.ui.start.disabled,true);
+  for(let n=0;n<8;n++)await app.refresh();
+  assert.equal(requests.filter(r=>r.url.endsWith("/stop")).length,1);
+  assert.equal(app.data.state,"stopping");assert.match(app.ui.status.textContent,/备份/);
+  setData({...app.data,state:"stopped",cleanup_confirmed:true});await app.refresh();
+  assert.equal(app.ui.start.disabled,false);assert.equal(app.ui.stop.disabled,true);
+});
+
+test("asynchronous backup failure keeps the retained instance visible and blocks rental",async()=>{
+  const {app,setData}=fixture({asyncStop:true});await app.refresh();
+  setData({...app.data,state:"ready"});await app.refresh();await app.action("stop");
+  setData({...app.data,state:"cleanup_required",instance_id:42,cleanup_confirmed:false,error:"backup failed; instance retained"});
+  await app.refresh();
+  assert.equal(app.ui.start.disabled,true);assert.equal(app.ui.stop.disabled,true);
+  assert.match(app.ui.status.textContent,/42/);assert.match(app.ui.status.textContent,/backup failed/);
 });
