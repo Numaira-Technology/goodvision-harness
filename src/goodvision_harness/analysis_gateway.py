@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
+import anyio
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -310,20 +311,48 @@ def create_app(origin=None, *, controller=None, transport=None):
                     )
                 if payload.get("mode", "stream") == "stream":
                     response = await video.prepare_legacy_start(
-                        app.state.client, payload, forwarded_headers(request.headers)
+                        app.state.client,
+                        payload,
+                        forwarded_headers(request.headers),
                     )
                     if response is not None:
                         return response
                 content = bytes(body)
-            upstream = await app.state.client.send(
-                app.state.client.build_request(
-                    request.method,
-                    url,
-                    headers=forwarded_headers(request.headers),
-                    content=content,
-                ),
-                stream=True,
+            is_disconnect = request.method == "POST" and bool(
+                DISCONNECT.fullmatch(request.url.path)
             )
+            async with AsyncExitStack() as transition:
+                if is_disconnect:
+                    # The remote disconnect and local cleanup form one
+                    # transition; reconnect must not replace the relay between.
+                    await transition.enter_async_context(video.lock)
+                upstream = await app.state.client.send(
+                    app.state.client.build_request(
+                        request.method,
+                        url,
+                        headers=forwarded_headers(request.headers),
+                        content=content,
+                    ),
+                    stream=True,
+                )
+                if is_disconnect and upstream.status_code == 200:
+                    try:
+                        await video._disconnect_locked(request.url.path)
+                    except BaseException:
+                        # Level cancellation and a repeated Task.cancel must
+                        # not abandon the accepted upstream response stream.
+                        cancelled_during_cleanup = False
+                        with anyio.CancelScope(shield=True):
+                            cleanup = asyncio.create_task(upstream.aclose())
+                            while not cleanup.done():
+                                try:
+                                    await asyncio.shield(cleanup)
+                                except asyncio.CancelledError:
+                                    cancelled_during_cleanup = True
+                            cleanup.result()
+                        if cancelled_during_cleanup:
+                            raise asyncio.CancelledError from None
+                        raise
         except HTTPException as error:
             if path == "" and request.method == "GET" and error.status_code == 503:
                 return await gateway_page()
@@ -332,12 +361,6 @@ def create_app(origin=None, *, controller=None, transport=None):
             if path == "" and request.method == "GET":
                 return await gateway_page()
             raise HTTPException(503, UNAVAILABLE) from None
-        if (
-            request.method == "POST"
-            and DISCONNECT.fullmatch(request.url.path)
-            and upstream.status_code == 200
-        ):
-            await video.disconnect(request.url.path)
 
         async def response_body():
             try:

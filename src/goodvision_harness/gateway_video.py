@@ -138,12 +138,17 @@ class GatewayVideo:
             pass  # Preserve the original negotiation/start error without secrets.
 
     async def disconnect(self, path):
+        async with self.lock:
+            await self._disconnect_locked(path)
+
+    async def _disconnect_locked(self, path: str) -> None:
+        """Caller holds lock; retain the relay if local cleanup fails."""
         matched = DISCONNECT.fullmatch(path)
         camera = matched.group(1) or "camera01"
-        async with self.lock:
-            relay = self.relays.pop(camera, None)
-            if relay is not None:
-                await relay.close()
+        relay = self.relays.get(camera)
+        if relay is not None:
+            await relay.close()
+            self.relays.pop(camera, None)
 
     async def prepare_legacy_start(self, client, payload, headers=None):
         relay = self.relays.get("camera01")
