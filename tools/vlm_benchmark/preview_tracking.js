@@ -11,6 +11,13 @@ window.PreviewTracking = class {
     this.busy = false; this.closed = false; this.epoch = 0; this.generation = 0;
     this.lastPaint = 0; this.lastTime = -1; this.playing = false;
     this.lastObjects = []; this.lastObjectsAt = 0;
+    // One GPU serves all lanes in round-robin, so a detector box lands every
+    // ~3s per lane under 12-stream load. Hold boxes and tolerate round trips
+    // past that; the local optical-flow tracker keeps its tight timings.
+    this.detectorMode = !!window.previewDetector;
+    this.holdMs = this.detectorMode ? 4500 : 3500;
+    this.abortMs = this.detectorMode ? 4000 : 1500;
+    this.staleMs = this.detectorMode ? 4000 : 1200;
     this.stats = {frames:0, painted:0, requests:0, lost:0, errors:0, framesWithBoxes:0, samples:[], busySkipped:0, staleResponses:0,
       maxPaintGapSeconds:0, roundTripSeconds:[], computeSeconds:[], lastStatus:"waiting_for_grounding"};
     this.ctx = canvas.getContext("2d");
@@ -67,7 +74,7 @@ window.PreviewTracking = class {
     // A slow tracker cannot freeze the video or leave an old person's box up.
     // Detector boxes update in round-robin across streams; keep the last ones
     // drawn (briefly) so they persist on live frames instead of flickering.
-    const held = (this.lastObjects && now-this.lastObjectsAt<3500) ? this.lastObjects : [];
+    const held = (this.lastObjects && now-this.lastObjectsAt<this.holdMs) ? this.lastObjects : [];
     if(this.busy) {
       this.stats.busySkipped++;
       if(now-this.lastPaint>100) {this.paint(this.captureCanvas,held);if(!held.length)this.note.textContent="跟踪处理中 · 暂不显示旧框";}
@@ -79,7 +86,7 @@ window.PreviewTracking = class {
     const snapshot=document.createElement("canvas");snapshot.width=320;snapshot.height=height;
     snapshot.getContext("2d").drawImage(this.captureCanvas,0,0);
     const jpeg=snapshot.toDataURL("image/jpeg",0.85).split(",")[1];
-    this.controller=new AbortController();const timeout=setTimeout(()=>this.controller.abort(),1500);
+    this.controller=new AbortController();const timeout=setTimeout(()=>this.controller.abort(),this.abortMs);
     try {
       const response=await fetch(`tracking/${encodeURIComponent(this.stage)}/${this.camera}`,{
         method:"POST",headers:{"Content-Type":"application/json"},signal:this.controller.signal,
@@ -89,7 +96,7 @@ window.PreviewTracking = class {
       // YOLO runs on a remote GPU, so allow a larger round trip than the local
       // optical-flow estimate before treating a response as stale.
       const yolo=result.event_state!==undefined;
-      if(this.closed || !this.playing || generation!==this.generation || epoch!==this.epoch || end-started>(yolo?1200:250)) {this.stats.staleResponses++;return;}
+      if(this.closed || !this.playing || generation!==this.generation || epoch!==this.epoch || end-started>(yolo?this.staleMs:250)) {this.stats.staleResponses++;return;}
       this.stats.lastStatus=result.status;this.stats.lost=result.lost_tracks || 0;
       this.stats.framesWithBoxes+=Number(result.objects.length>0);
       this.stats.samples.push({time:at,anchor:result.anchor_id,status:result.status,objects:result.objects});
