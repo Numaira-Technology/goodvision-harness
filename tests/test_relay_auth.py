@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 import threading
 import time
@@ -204,8 +205,15 @@ def test_authenticated_primary_routes_private_http_and_socket_to_second_lane(
     listener.bind(("127.0.0.1", 0))
     listener.listen()
     origin = f"http://127.0.0.1:{listener.getsockname()[1]}"
+    loggers = tuple(logging.getLogger(name) for name in (
+        "uvicorn", "uvicorn.error", "uvicorn.access",
+    ))
+    logging_state = tuple(
+        (logger.level, tuple(logger.handlers), logger.propagate, logger.disabled)
+        for logger in loggers
+    )
     server = uvicorn.Server(uvicorn.Config(
-        worker_app, log_level="warning", lifespan="on",
+        worker_app, log_config=None, log_level=None, lifespan="on",
     ))
     thread = threading.Thread(
         target=server.run, kwargs={"sockets": [listener]}, daemon=True,
@@ -261,6 +269,10 @@ def test_authenticated_primary_routes_private_http_and_socket_to_second_lane(
         thread.join(10)
         listener.close()
         assert not thread.is_alive()
+        assert tuple(
+            (logger.level, tuple(logger.handlers), logger.propagate, logger.disabled)
+            for logger in loggers
+        ) == logging_state
 
 
 @pytest.mark.parametrize("value", [["visible", 3], "visible", 42, None])

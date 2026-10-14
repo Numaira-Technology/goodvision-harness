@@ -34,6 +34,8 @@ def recovery(monkeypatch, tmp_path):
     key.write_text("test-only-key")
     for name, value in {
         "VAST_API_KEY": "unused", "HF_TOKEN": "unused", "SAM_SSH_KEY": str(key),
+        "HARNESS_RELAY_KEY": "recovery-test-auth-key-0123456789abcdef",
+        "SAM_CONTROL_DIRECTORY": str(tmp_path / "cloud-control"),
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(sys, "argv", ["start_sam.py", "--resume-instance-id", "42"])
@@ -97,6 +99,7 @@ def test_failed_analysis_recovery_never_destroys_the_only_data_copy(recovery, mo
     monkeypatch.setenv("SAM_ANALYSIS_ENABLED", "true")
     launcher.wait_for_ssh.side_effect = RuntimeError("unreachable")
     assert launcher.main() == 1
+    launcher.wait_for_ssh.assert_called_once()
     recovery.destroy_instance.assert_not_called()
 
 
