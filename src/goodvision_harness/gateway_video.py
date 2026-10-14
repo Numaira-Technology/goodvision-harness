@@ -133,14 +133,16 @@ class GatewayVideo:
         try:
             # The forwarding client's read timeout is intentionally unbounded
             # for streaming routes; connection negotiation has a total budget.
-            async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
-                return await client.post(
+            return await asyncio.wait_for(
+                client.post(
                     self.origin + path,
                     json={**payload, "relay": True},
                     headers=headers,
                     timeout=_CONNECT_TIMEOUT_SECONDS,
-                )
-        except TimeoutError:
+                ),
+                timeout=_CONNECT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
             raise HTTPException(
                 503, "Local video relay could not connect to GPU host"
             ) from None
