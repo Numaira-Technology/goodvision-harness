@@ -118,11 +118,12 @@
     const d=window.monitorDiagnostics;
     if(!d.phases.includes(data.state)) d.phases.push(data.state);
     if(data.state === "playing") d.sawPlaying=true;
-    byId("model").textContent=`${data.model} · ${data.backend === "openrouter" ? `OpenRouter 服务商推理${data.provider_only ? ` · 固定 ${data.provider_only}` : ""}` : data.backend === "dashscope" ? "百炼服务" : "自部署服务"}`;
-    byId("badge").textContent=data.real ? "真实模型测试" : "模拟调度 · 未调用真实模型";
+    const previewDemo=!!data.preview_demo_events?.enabled;
+    byId("model").textContent=previewDemo ? "Synthetic preview demo · no model recognition" : `${data.model} · ${data.backend === "openrouter" ? `OpenRouter 服务商推理${data.provider_only ? ` · 固定 ${data.provider_only}` : ""}` : data.backend === "dashscope" ? "百炼服务" : "自部署服务"}`;
+    byId("badge").textContent=previewDemo ? "Synthetic preview demo / no model recognition" : data.real ? "真实模型测试" : "模拟调度 · 未调用真实模型";
     const modeLabel={events:"events · 事件识别",compact:"grounding · 带定位识别",parallel:"parallel · events + grounding"}[data.mode] || data.mode;
     byId("stage").textContent=`${phaseNames[data.phase]} / ${modeLabel} / ${data.cameras.length} 路 / 第 ${data.repeat} 轮`;
-    byId("notice").textContent=`${data.source_count === 1 && data.cameras.length>1 ? "同一视频复制为多路负载；" : ""}模型判断：绿=未检测到，红=检测到，黄=不确定，灰=等待，蓝灰=请求失败。预览 15 FPS 与请求频率 ${data.observation_fps} Hz 分开。${singleVideo ? "当前画面与结果的证据时间可能不同。" : "没有定位框不代表无人。"}`;
+    byId("notice").textContent=`${previewDemo ? "Synthetic preview demo: scripted source-time verdicts; no model recognition. " : ""}${data.source_count === 1 && data.cameras.length>1 ? "同一视频复制为多路负载；" : ""}模型判断：绿=未检测到，红=检测到，黄=不确定，灰=等待，蓝灰=请求失败。预览 15 FPS 与请求频率 ${data.observation_fps} Hz 分开。${singleVideo ? "当前画面与结果的证据时间可能不同。" : "没有定位框不代表无人。"}`;
     const expected=data.planned;
     const metrics=[];
     data.lanes.forEach(lane => {

@@ -1,6 +1,9 @@
 "use strict";
 // Only the preview uses tracking. No tracked box becomes a VLM observation.
 window.PreviewTracking = class {
+  static inflight = 0;
+  static maxInflight = 4;
+  static waiters = [];
   constructor(video, canvas, note, camera, media, evidence=null) {
     Object.assign(this, {video, canvas, note, camera, media, evidence});
     this.evidenceTime=null;
@@ -17,7 +20,7 @@ window.PreviewTracking = class {
     // A multi-second GPU reply is useful as a timing sample, but its boxes are
     // no longer evidence about the current frame. Never hold them across a loop.
     this.maxSourceAge = 0.25;
-    this.stats = {frames:0, painted:0, requests:0, lost:0, errors:0, framesWithBoxes:0, evidenceFramesWithBoxes:0, evidenceSamples:[], samples:[], busySkipped:0, staleResponses:0,
+    this.stats = {frames:0, painted:0, requests:0, lost:0, errors:0, framesWithBoxes:0, evidenceFramesWithBoxes:0, evidenceSamples:[], samples:[], busySkipped:0, budgetSkipped:0, staleResponses:0,
       maxPaintGapSeconds:0, roundTripSeconds:[], computeSeconds:[], lastStatus:"waiting_for_grounding"};
     this.ctx = canvas.getContext("2d");
     this.captureContext = this.captureCanvas.getContext("2d");
@@ -38,6 +41,8 @@ window.PreviewTracking = class {
     if(this.callback) this.video.cancelVideoFrameCallback(this.callback);
   }
   invalidate(message) {
+    const budget=window.PreviewTracking;
+    budget.waiters=budget.waiters.filter(waiter=>waiter!==this);
     this.generation++; this.controller?.abort(); this.lastTime=-1;
     this.clear(message);
   }
@@ -96,6 +101,20 @@ window.PreviewTracking = class {
     const local=this.evidenceTime%this.media.duration,age=Math.max(0,this.lastTime-this.evidenceTime);
     this.evidence.note.textContent=`YOLO 证据 ${local.toFixed(2)} s · 第 ${this.epoch+1} 轮 · ${age.toFixed(2)} s 前`;
   }
+  acquireBudget(now) {
+    // Leave browser connections available for state polls, video and model
+    // evidence. A FIFO turn queue prevents the earliest four camera callbacks
+    // from monopolizing newly freed slots; each admitted lane captures afresh.
+    const budget=window.PreviewTracking;
+    budget.waiters=budget.waiters.filter(waiter=>
+      !waiter.closed && waiter.playing && !waiter.busy && !waiter.video.seeking
+      && now-waiter.budgetWaitingAt<1000);
+    this.budgetWaitingAt=now;
+    if(!budget.waiters.includes(this)) budget.waiters.push(this);
+    if(budget.inflight>=budget.maxInflight || budget.waiters[0]!==this) return null;
+    budget.waiters.shift();budget.inflight++;
+    return budget;
+  }
   async frame(now, metadata) {
     if(this.closed) return;
     this.callback=this.video.requestVideoFrameCallback((n,m)=>this.frame(n,m));
@@ -119,15 +138,23 @@ window.PreviewTracking = class {
       return;
     }
     this.paint(this.captureCanvas,held);
+    const budget=this.detectorMode ? this.acquireBudget(now) : null;
+    if(this.detectorMode && !budget) {
+      this.stats.budgetSkipped++;
+      if(!held.length)this.note.textContent="检测排队 · 暂不显示旧框";
+      return;
+    }
     this.busy=true;this.stats.requests++;
     const generation=this.generation, epoch=this.epoch, started=performance.now();
-    // Hold the exact request image separately; the live capture keeps advancing.
-    const snapshot=document.createElement("canvas");snapshot.width=320;snapshot.height=height;
-    snapshot.getContext("2d").drawImage(this.captureCanvas,0,0);
-    const jpeg=snapshot.toDataURL("image/jpeg",0.85).split(",")[1];
-    const controller=new AbortController();this.controller=controller;
-    const timeout=setTimeout(()=>controller.abort(),this.abortMs);
+    let timeout;
     try {
+      // Capture after acquiring a slot: queued lanes send their current frame,
+      // never an old JPEG held while waiting for another lane's network reply.
+      const snapshot=document.createElement("canvas");snapshot.width=320;snapshot.height=height;
+      snapshot.getContext("2d").drawImage(this.captureCanvas,0,0);
+      const jpeg=snapshot.toDataURL("image/jpeg",0.85).split(",")[1];
+      const controller=new AbortController();this.controller=controller;
+      timeout=setTimeout(()=>controller.abort(),this.abortMs);
       const response=await fetch(`tracking/${encodeURIComponent(this.stage)}/${this.camera}`,{
         method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,
         body:JSON.stringify({client:this.client,time:at,epoch,jpeg})});
@@ -169,6 +196,9 @@ window.PreviewTracking = class {
         this.stats.errors++;this.stats.lastStatus="error";
         this.clear("跟踪暂不可用 · 不显示旧框");
       }
-    } finally {clearTimeout(timeout);this.busy=false;}
+    } finally {
+      clearTimeout(timeout);this.busy=false;
+      if(budget) budget.inflight--;
+    }
   }
 };

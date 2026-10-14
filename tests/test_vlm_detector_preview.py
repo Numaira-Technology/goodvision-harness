@@ -252,8 +252,9 @@ def test_detector_browser_freshness_stop_and_loop_with_fake_clock():
     os.environ.get("VLM_MONITOR_BROWSER_TESTS") != "1",
     reason="opt-in installed Chromium integration",
 )
+@pytest.mark.parametrize("streams", [1, 12])
 def test_real_browser_keeps_slow_detector_evidence_and_clears_on_loop_stop(
-    tmp_path, detector
+    tmp_path, detector, streams
 ):
     from fractions import Fraction
     from io import BytesIO
@@ -292,37 +293,90 @@ def test_real_browser_keeps_slow_detector_evidence_and_clears_on_loop_stop(
     with LiveMonitor(output, [frames], args()) as monitor:
         stage = tmp_path / "stage"
         stage.mkdir()
-        monitor.begin({**job(), "mode": "events", "duration": 8}, stage)
+        monitor.begin(
+            {
+                **job(),
+                "mode": "events",
+                "duration": 8,
+                "streams": streams,
+                "preview_demo_events": {"enabled": True, "requested": True},
+            },
+            stage,
+        )
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
                 args=["--autoplay-policy=no-user-gesture-required"]
             )
-            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page = browser.new_page(viewport={"width": 1920, "height": 1080})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(monitor.url)
             page.wait_for_function("window.monitorReady")
-            monitor.source_started(time.monotonic(), [0])
+            assert page.locator("#badge").inner_text() == (
+                "Synthetic preview demo / no model recognition"
+            )
+            assert page.locator("#model").inner_text() == (
+                "Synthetic preview demo · no model recognition"
+            )
+            monitor.source_started(time.monotonic(), [0] * streams)
             assert entered.wait(timeout=3)
+            camera = int(
+                requests[0][1]["x-goodvision-stream-session-id"].rsplit("-", 2)[-2]
+            )
+            evidence = page.locator(".detector-evidence").nth(camera)
+            evidence_note = page.locator(".detector-evidence-note").nth(camera)
+            overlay = page.locator(".tracking-overlay").nth(camera)
+            source_video = page.locator("video").nth(camera)
             # Delay a valid response beyond the current-frame overlay limit,
             # then hold the following response to inspect this captured frame.
             page.wait_for_timeout(950)
+            if streams == 12:
+                assert page.evaluate("window.PreviewTracking.inflight") == 4
+                assert (
+                    page.evaluate(
+                        "window.monitorDiagnostics.tracking"
+                        ".reduce((total,lane) => total+lane.requests,0)"
+                    )
+                    == 4
+                )
+                assert page.evaluate(
+                    "window.monitorDiagnostics.tracking"
+                    ".some(lane => lane.budgetSkipped > 0)"
+                )
+                # The four occupied detector slots leave connection capacity
+                # for actual model-evidence image delivery on the same origin.
+                loaded = page.evaluate(
+                    "() => new Promise((resolve,reject) => {"
+                    "const image=new Image(),start=performance.now();"
+                    "const timer=setTimeout(() => reject(new Error('evidence "
+                    "image starved by detector requests')),1000);"
+                    "image.onload=() => {clearTimeout(timer);resolve({"
+                    "width:image.naturalWidth,seconds:(performance.now()-start)/1000});};"
+                    "image.onerror=() => reject(new Error('evidence failed'));"
+                    "image.src=`frame/${encodeURIComponent(window.currentStage)}/0/0.jpg`;"
+                    "})"
+                )
+                assert loaded["width"] == 320 and loaded["seconds"] < 1
             gate.set()
             gate.clear()
             page.wait_for_function(
-                "window.monitorDiagnostics.tracking[0]?.lastStatus === 'evidence_only'"
+                "index => window.monitorDiagnostics.tracking[index]"
+                "?.lastStatus === 'evidence_only'",
+                arg=camera,
             )
-            diagnostic = page.evaluate("window.monitorDiagnostics.tracking[0]")
+            diagnostic = page.evaluate(
+                "index => window.monitorDiagnostics.tracking[index]", camera
+            )
             assert diagnostic["evidenceFramesWithBoxes"] >= 1
             assert diagnostic["evidenceSamples"][0]["age"] >= 0.7
-            assert page.locator(".detector-evidence").is_visible()
-            assert "YOLO 证据" in page.locator(".detector-evidence-note").inner_text()
-            assert page.locator(".tracking-overlay").evaluate(
+            assert evidence.is_visible()
+            assert "YOLO 证据" in evidence_note.inner_text()
+            assert overlay.evaluate(
                 "canvas => canvas.getContext('2d')"
                 ".getImageData(0,0,canvas.width,canvas.height)"
                 ".data.every(v => v === 0)"
             )
-            shown = page.locator(".detector-evidence canvas").evaluate(
+            shown = evidence.locator("canvas").evaluate(
                 "canvas => Array.from(canvas.getContext('2d')"
                 ".getImageData(200,40,1,1).data).slice(0,3)"
             )
@@ -330,7 +384,7 @@ def test_real_browser_keeps_slow_detector_evidence_and_clears_on_loop_stop(
                 Image.open(BytesIO(requests[0][2])).convert("RGB").getpixel((200, 40))
             )
             assert all(abs(a - b) <= 5 for a, b in zip(shown, sent, strict=True))
-            live = page.locator("video").evaluate(
+            live = source_video.evaluate(
                 "video => {const c=document.createElement('canvas');"
                 "c.width=320;c.height=180;const x=c.getContext('2d');"
                 "x.drawImage(video,0,0,320,180);"
@@ -340,20 +394,32 @@ def test_real_browser_keeps_slow_detector_evidence_and_clears_on_loop_stop(
             if folder := os.environ.get("VLM_TRACKING_REVIEW_OUTPUT"):
                 destination = Path(folder)
                 destination.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(destination / "detector-slow-evidence.png"))
+                page.screenshot(
+                    path=str(destination / f"detector-slow-evidence-{streams}.png")
+                )
             # Seek near the end and let the real video loop naturally. The
             # old image disappears immediately and new evidence has epoch 1.
-            page.locator("video").evaluate("video => {video.currentTime=2.8;}")
+            source_video.evaluate("video => {video.currentTime=2.8;}")
             page.wait_for_function(
-                "document.querySelector('.detector-evidence').hidden"
+                "index => document.querySelectorAll('.detector-evidence')"
+                "[index].hidden",
+                arg=camera,
             )
             gate.set()
             page.wait_for_function(
-                "window.monitorDiagnostics.tracking[0]"
+                "index => window.monitorDiagnostics.tracking[index]"
                 "?.evidenceSamples.some(s => s.epoch >= 1)",
+                arg=camera,
                 timeout=5000,
             )
-            assert "第 2 轮" in page.locator(".detector-evidence-note").inner_text()
+            assert "第 2 轮" in evidence_note.inner_text()
+            if streams == 12:
+                page.wait_for_function(
+                    "window.monitorDiagnostics.tracking"
+                    ".every(lane => lane.requests > 0)"
+                )
+                assert page.evaluate("window.PreviewTracking.inflight") <= 4
+                assert page.evaluate("window.monitorDiagnostics.maxPollGapSeconds") < 1
             monitor.draining()
             monitor.finish(
                 {
@@ -364,9 +430,12 @@ def test_real_browser_keeps_slow_detector_evidence_and_clears_on_loop_stop(
                 }
             )
             page.wait_for_function("window.finalPainted", timeout=5000)
-            assert page.locator("video").evaluate("video => video.paused")
-            assert not page.locator(".detector-evidence").is_visible()
-            assert page.locator(".tracking-overlay").evaluate(
+            page.wait_for_function("window.PreviewTracking.inflight === 0")
+            assert page.locator("video").evaluate_all(
+                "videos => videos.every(v => v.paused)"
+            )
+            assert not evidence.is_visible()
+            assert overlay.evaluate(
                 "canvas => canvas.getContext('2d')"
                 ".getImageData(0,0,canvas.width,canvas.height)"
                 ".data.every(v => v === 0)"

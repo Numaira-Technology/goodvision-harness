@@ -50,6 +50,44 @@ from tools.vlm_benchmark.source_feeder import TimedSourceFeeder  # noqa: E402
 
 # Follow the production safety catalog; stranger uses a separate identity lane.
 LABELS = SAFETY_EVENT_LABELS
+DEMO_PERIOD_SECONDS = 14.0
+DEMO_POSITIVE_WINDOW_SECONDS = 5.0
+
+
+def preview_demo_requested():
+    """Keep the upstream environment opt-in; ordinary simulation stays negative."""
+    return os.environ.get("PREVIEW_DEMO_EVENTS", "").strip().lower() not in {
+        "", "0", "false", "no", "off",
+    }
+
+
+def preview_demo_offset(source_id):
+    # Stable across processes, PYTHONHASHSEED values, machines and reruns.
+    digest = hashlib.sha256(source_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % 1000 / 1000 * DEMO_PERIOD_SECONDS
+
+
+def preview_demo_settings(real, requested=None, streams=0):
+    requested = preview_demo_requested() if requested is None else requested
+    if type(requested) is not bool:
+        raise ValueError("preview demo selection must be boolean")
+    return {
+        "requested": requested,
+        "enabled": requested and not real,
+        "algorithm": "source-time-sha256-v1",
+        "period_seconds": DEMO_PERIOD_SECONDS,
+        "positive_window_seconds": DEMO_POSITIVE_WINDOW_SECONDS,
+        "clock": "last_evidence_frame_source_seconds",
+        "phase_hash": "SHA-256(source_id UTF-8), first 8 bytes big-endian modulo 1000",
+        "source_phase_offsets_seconds": {
+            f"camera{i + 1:02d}": preview_demo_offset(f"camera{i + 1:02d}")
+            for i in range(streams)
+        },
+        "label_order": list(LABELS),
+        "meaning": (
+            "Scripted synthetic preview verdicts; no model recognition or inference."
+        ),
+    }
 
 
 class SimulatedInspector:
@@ -62,13 +100,40 @@ class SimulatedInspector:
             if config.output_mode == "compact"
             else config.parameters["simulation_seconds"]
         )
+        # Only this simulator implements the opt-in preview demo. The stage
+        # freezes its flag into config so an inherited environment change cannot
+        # make the effective experiment differ from the saved manifest.
+        self.demo_events = config.parameters.get(
+            "simulation_demo_events", preview_demo_requested(),
+        )
+        if type(self.demo_events) is not bool:
+            raise ValueError("preview demo selection must be boolean")
+        self.demo_offset = preview_demo_offset(config.source_id)
+
+    def _demo_observed_label(self, labels, source_seconds):
+        if not (self.demo_events and labels):
+            return None
+        clock = source_seconds + self.demo_offset
+        if clock % DEMO_PERIOD_SECONDS >= DEMO_POSITIVE_WINDOW_SECONDS:
+            return None
+        return labels[int(clock // DEMO_PERIOD_SECONDS) % len(labels)]
 
     def inspect(self, job):
         time.sleep(self.seconds)
-        # Complete schema, but explicitly not evidence of model recognition.
+        labels = list(job.request.event_labels)
+        observed = self._demo_observed_label(
+            labels, job.frames[-1].timestamp_seconds,
+        )
+        # Complete schema. Without PREVIEW_DEMO_EVENTS this is explicitly not
+        # evidence of model recognition (every verdict False), as before.
         return tuple(
-            IndependentVerdict(label, (), False, None, (), ("scene_only",))
-            for label in job.request.event_labels
+            IndependentVerdict(
+                label, (),
+                True if label == observed else False,
+                0.9 if label == observed else None,
+                (), ("scene_only",),
+            )
+            for label in labels
         )
 
     def close(self):
@@ -437,6 +502,9 @@ def run_stage(
                 raise ValueError("selected benchmark API credential is unavailable")
         else:
             api_key = environment_api_key(base.model_api)
+    demo = preview_demo_settings(
+        args.real, getattr(args, "preview_demo_events", None), count,
+    )
     stage = output / f"streams-{count}-repeat-{repetition}"
     stage.mkdir()
     gate_settings = (
@@ -471,6 +539,14 @@ def run_stage(
                     missing_records += max(0, record.cursor - cursors[i][bus_index] - 1)
                     cursors[i][bus_index] = record.cursor
                     payload = dict(record.payload)
+                    if not args.real:
+                        payload["synthetic"] = True
+                        payload["measurement_kind"] = "simulated_scheduler_only"
+                        payload["preview_demo_events"] = demo
+                        payload["model"] = {
+                            **payload.get("model", {}),
+                            "name": "SIMULATED", "is_simulated": True,
+                        }
                     if args.output_mode == "full":
                         payload.setdefault("vlm_lane", "combined")
                     reports[i].append(payload)
@@ -499,6 +575,7 @@ def run_stage(
                     if args.real
                     else {
                         "simulation_seconds": args.simulated_latency,
+                        "simulation_demo_events": demo["enabled"],
                         "simulation_grounding_seconds": getattr(
                             args, "simulated_grounding_latency", args.simulated_latency
                         ),
@@ -625,6 +702,7 @@ def run_stage(
             "measurement_kind": "real_model_capacity"
             if args.real
             else "simulated_scheduler_only",
+            "preview_demo_events": demo,
             "duration_seconds": args.duration,
             "arrival_mode": arrival_mode,
             "source_phase_offsets_seconds": offsets,
@@ -732,6 +810,7 @@ def main():
     )
     if args.plan_only:
         return
+    args.preview_demo_events = preview_demo_requested()
     base = load_config(args.config)
     if args.real and (
         not args.video
@@ -761,6 +840,9 @@ def main():
     manifest = {
         "event_labels": list(LABELS),
         "model": base.inference.model if args.real else "SIMULATED",
+        "preview_demo_events": preview_demo_settings(
+            args.real, args.preview_demo_events, streams=max(args.streams),
+        ),
         "provider": base.model_api.provider if args.real else None,
         "settings": {
             k: str(v) if isinstance(v, Path) else v

@@ -160,6 +160,11 @@ class LiveMonitor:
                 "repeat": job["repeat"],
                 "model": self.args.model,
                 "real": self.args.real,
+                "preview_demo_events": copy.deepcopy(
+                    job.get(
+                        "preview_demo_events", {"enabled": False, "requested": False}
+                    )
+                ),
                 "backend": self.args.backend,
                 "provider_only": getattr(self.args, "provider_only", ""),
                 "monitor_layout": self.layout,

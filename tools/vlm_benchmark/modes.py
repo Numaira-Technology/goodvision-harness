@@ -56,6 +56,7 @@ from tools.vlm_multistream_benchmark import (
     LABELS,
     decode,
     planned_observations,
+    preview_demo_settings,
     run_stage,
 )
 
@@ -409,6 +410,10 @@ def run(args):
 
 
 def _run(args):
+    demo = preview_demo_settings(
+        args.real, getattr(args, "preview_demo_events", None), max(args.streams),
+    )
+    args.preview_demo_events = demo["requested"]
     base = configure(args)
     if args.real and args.backend != "local" and not mode_api_key(base.model_api):
         raise ValueError("configured API credential is unavailable")
@@ -443,6 +448,9 @@ def _run(args):
         return digest.hexdigest()
 
     def trial(job):
+        job["preview_demo_events"] = preview_demo_settings(
+            args.real, args.preview_demo_events, job["streams"],
+        )
         location = output / job["id"]
         location.mkdir()
         document["active_stage"] = job["id"]
@@ -582,7 +590,11 @@ def _run(args):
         revision = checkout_revision()
         manifest = {
             "settings": settings,
-            "model": args.model,
+            "model": args.model if args.real else "SIMULATED",
+            "requested_model": args.model,
+            "measurement_kind": "real_model_capacity" if args.real
+            else "simulated_scheduler_only",
+            "preview_demo_events": demo,
             "model_api": {
                 "provider": base.model_api.provider,
                 "endpoint": base.model_api.endpoint,

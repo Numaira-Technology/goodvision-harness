@@ -7,23 +7,27 @@ const {test} = require("node:test");
 
 function fixture() {
   let clock=0;
-  const requests=[];
+  const requests=[],timeouts=new Map();let timeoutId=0,failCapture=false;
   const canvas=()=>{
     const context={boxes:[],colors:[],images:0,clearRect(){this.boxes=[];this.colors=[];},
       drawImage(image){this.images++;this.lastImage=image;},setLineDash(){},strokeRect(...box){this.boxes.push(box);this.colors.push(this.strokeStyle);},fillText(){}};
-    return {width:640,height:360,getContext:()=>context,toDataURL:()=>"data:image/jpeg;base64,ZmFrZQ==",context};
+    return {width:640,height:360,getContext:()=>context,toDataURL:()=>{if(failCapture)throw new Error("capture failed");return "data:image/jpeg;base64,ZmFrZQ==";},context};
   };
   const context={window:{currentStage:"test-stage",trackingClient:"client",previewDetector:true},
     document:{createElement:()=>canvas()},performance:{now:()=>clock},AbortController,
-    setTimeout:()=>1,clearTimeout:()=>{},
+    setTimeout:(fn,ms)=>{const id=++timeoutId;timeouts.set(id,{fn,ms});return id;},clearTimeout:id=>timeouts.delete(id),
     fetch:(url,options)=>new Promise((resolve,reject)=>requests.push({url,options,resolve,reject,body:JSON.parse(options.body)}))};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../tools/vlm_benchmark/preview_tracking.js"),"utf8"),context);
-  const video={seeking:false,videoWidth:320,videoHeight:180,listeners:{},
-    addEventListener(event,fn){this.listeners[event]=fn;},requestVideoFrameCallback:()=>1,cancelVideoFrameCallback(){}};
-  const overlay=canvas(),note={textContent:""},evidence={canvas:canvas(),note:{textContent:""},container:{hidden:true}};
-  const tracker=new context.window.PreviewTracking(video,overlay,note,0,{duration:6},evidence);
-  tracker.playing=true;
-  return {tracker,overlay,note,evidence,requests,advance:(ms,time)=>{clock=ms;return tracker.frame(ms,{mediaTime:time});}};
+  function makeLane(camera,detectorMode=true) {
+    const video={seeking:false,videoWidth:320,videoHeight:180,listeners:{},
+      addEventListener(event,fn){this.listeners[event]=fn;},requestVideoFrameCallback:()=>1,cancelVideoFrameCallback(){}};
+    const overlay=canvas(),note={textContent:""},evidence={canvas:canvas(),note:{textContent:""},container:{hidden:true}};
+    context.window.previewDetector=detectorMode;
+    const tracker=new context.window.PreviewTracking(video,overlay,note,camera,{duration:6},evidence);
+    tracker.playing=true;
+    return {tracker,overlay,note,evidence,requests,advance:(ms,time)=>{clock=ms;return tracker.frame(ms,{mediaTime:time});}};
+  }
+  return {...makeLane(0),makeLane,cls:context.window.PreviewTracking,timeouts,setCaptureFailure:value=>{failCapture=value;}};
 }
 const box={track_id:"p1",bbox:{x1:.1,y1:.1,x2:.3,y2:.8},event_state:"alert"};
 function reply(request,objects=[box]) {
@@ -121,4 +125,68 @@ test("a three-second serialized GPU reply remains inspectable in its matched evi
   assert.match(f.evidence.note.textContent,/3.10 s 前/);
   assert.equal(f.tracker.stats.evidenceFramesWithBoxes,1);
   assert.equal(f.tracker.stats.lastStatus,"evidence_only");
+});
+
+
+test("twelve lanes share four detector slots fairly after success, failure, abort and bad JSON",async()=>{
+  const f=fixture(),lanes=[f,...Array.from({length:11},(_,i)=>f.makeLane(i+1))];
+  let pending=lanes.map(lane=>lane.advance(0,.1));
+  assert.equal(f.requests.length,4);assert.equal(f.cls.inflight,4);
+  assert.ok(lanes.slice(4).every(lane=>lane.tracker.stats.budgetSkipped===1));
+  reply(f.requests[0]);f.requests[1].reject(new Error("offline"));
+  f.requests[2].options.signal.addEventListener("abort",()=>f.requests[2].reject(new Error("aborted")));
+  lanes[2].tracker.close();
+  f.requests[3].resolve({ok:true,json:async()=>{throw new Error("invalid JSON");}});
+  await Promise.all(pending);
+  assert.equal(f.cls.inflight,0);assert.equal(f.timeouts.size,0);
+  pending=lanes.map(lane=>lane.advance(67,.167));
+  assert.equal(f.cls.inflight,4);
+  assert.deepEqual(f.requests.slice(4).map(request=>request.url.split("/").at(-1)),["4","5","6","7"]);
+  f.requests.slice(4).forEach(request=>reply(request));await Promise.all(pending);
+  pending=lanes.map(lane=>lane.advance(133,.233));
+  assert.equal(f.cls.inflight,4);
+  assert.deepEqual(f.requests.slice(8).map(request=>request.url.split("/").at(-1)),["8","9","10","11"]);
+  f.requests.slice(8).forEach(request=>reply(request));await Promise.all(pending);
+  assert.ok(lanes.every(lane=>lane.tracker.stats.requests>=1));
+  assert.equal(f.cls.inflight,0);assert.equal(f.timeouts.size,0);
+});
+
+test("queued stopped, closed and stalled lanes cannot block fresh frames",async()=>{
+  const f=fixture(),lanes=[f,...Array.from({length:11},(_,i)=>f.makeLane(i+1))];
+  const pending=lanes.map(lane=>lane.advance(0,.1));
+  lanes[4].tracker.playing=false;lanes[5].tracker.close();
+  assert.ok(!f.cls.waiters.includes(lanes[4].tracker));
+  assert.ok(!f.cls.waiters.includes(lanes[5].tracker));
+  f.requests.forEach(request=>reply(request));await Promise.all(pending);
+  const fresh=lanes[11].advance(1200,1.3);
+  assert.equal(f.requests.length,5);
+  assert.equal(f.requests[4].url.split("/").at(-1),"11");
+  assert.equal(f.requests[4].body.time,1.3);
+  reply(f.requests[4]);await fresh;
+  assert.equal(f.cls.inflight,0);
+});
+
+test("capture exceptions and timeout cancellations release detector budget exactly once",async()=>{
+  const f=fixture();f.setCaptureFailure(true);
+  await f.advance(0,.1);
+  assert.equal(f.requests.length,0);assert.equal(f.cls.inflight,0);
+  assert.equal(f.tracker.busy,false);assert.equal(f.tracker.stats.errors,1);
+  f.setCaptureFailure(false);
+  const pending=f.advance(67,.167),request=f.requests[0];
+  request.options.signal.addEventListener("abort",()=>request.reject(new Error("timeout")));
+  assert.equal(f.cls.inflight,1);assert.equal(f.timeouts.size,1);
+  [...f.timeouts.values()][0].fn();await pending;
+  assert.equal(f.cls.inflight,0);assert.equal(f.timeouts.size,0);
+  f.tracker.close();assert.equal(f.cls.inflight,0);
+});
+
+test("non-detector optical tracking does not consume the shared detector connection budget",async()=>{
+  const f=fixture(),detectors=[f,...Array.from({length:3},(_,i)=>f.makeLane(i+1))];
+  const pending=detectors.map(lane=>lane.advance(0,.1));
+  const optical=f.makeLane(12,false),opticalPending=optical.advance(0,.1);
+  assert.equal(f.requests.length,5);assert.equal(f.cls.inflight,4);
+  f.requests[4].resolve({ok:true,json:async()=>({source_time:.1,status:"no_person_boxes",objects:[]})});
+  await opticalPending;assert.equal(f.cls.inflight,4);
+  f.requests.slice(0,4).forEach(request=>reply(request));await Promise.all(pending);
+  assert.equal(f.cls.inflight,0);
 });

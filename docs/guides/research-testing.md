@@ -9,9 +9,9 @@ remain separate.
 
 | Source | Revision | Role |
 | --- | --- | --- |
-| Main | `6c28dddd26bed7a7be50762a4c7dd6b796b2dbe3` | Current application and organized event runtime |
-| GPU-host analysis | `f93b91e` | Authenticated local gateway, camera isolation, migration and release lifecycle |
-| YOLO/VLM research | `139711ef2162cf8d892d12b3ed78faff5cb1331c` | VLM mode/quality/concurrency studies and detector preview |
+| Main | `f5bc2303fb189cf6a146f71e9bce68097c26ab53` | Current application and organized event runtime |
+| GPU-host analysis | `9a34d20e6a4752ba66276570ad5b5602740db9ab` | Authenticated local gateway, camera isolation, migration, release lifecycle and Python 3.10 timeout compatibility |
+| YOLO/VLM research | `5871e39b204867c1fd4d0d6945c1370a0a904d2f` | VLM mode/quality/concurrency studies, bounded detector preview and optional synthetic demo events |
 | Ashley native evaluation | `d167188a4dcca7b2e7fc8fe9c4de121ef7e87b25` | Benchmark cohorts, native detector evaluation and frozen protocol reference |
 
 Original source branches remain available. The branch uses current runtime
@@ -58,7 +58,32 @@ with an existing detector worker. Detector boxes are presentation evidence; they
 do not enter VLM observations. The detector evidence view pairs the actual
 captured image with its boxes and source time, including slow responses. Moving
 video overlays require a fresh matching frame. Loop changes, stage changes and
-stop clear stale evidence.
+stop clear stale evidence. A shared four-request limit serves preview lanes in
+turn so every active lane can progress.
+
+
+## Synthetic preview events
+
+`PREVIEW_DEMO_EVENTS=1` enables scripted positive event chips during a simulated
+monitor run. It is off by default and ignored for `--real` model runs:
+
+```bash
+PREVIEW_DEMO_EVENTS=1 python -m tools.vlm_benchmark.modes \
+  --streams 1 2 --modes events --duration 14 --repeats 1 --monitor \
+  --video /path/to/test.mp4 --output outputs/research/synthetic-preview
+```
+
+These verdicts demonstrate the preview; they are not model recognition or quality
+results. Each source uses a deterministic 14-second cycle with a 5-second positive
+window, staggered by SHA-256 of its source ID and advanced by evidence-frame source
+time. The requested labels rotate across cycles. Rerunning the same source IDs,
+source times and label order produces the same scripted verdicts.
+
+Manifests and stage summaries record the requested and effective demo flag, cycle
+settings, source phase offsets, label order and algorithm version. Saved simulated
+reports carry `synthetic=true` and identify the model as `SIMULATED`. The simulator
+flag is frozen into each worker configuration; host clock and Python hash seed do
+not select the scripted labels. Keep these reports separate from real evaluations.
 
 ## Ashley native evaluation
 
