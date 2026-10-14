@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse
 from .relay_auth import relay_headers
 
 CONNECT = re.compile(r"/v1/(?:video/connect|fleet/cameras/(camera[0-9]+)/connect)$")
+_CONNECT_TIMEOUT_SECONDS = 30
+
 DISCONNECT = re.compile(
     r"/v1/(?:video/disconnect|fleet/cameras/(camera[0-9]+)/disconnect)$"
 )
@@ -72,11 +74,21 @@ class GatewayVideo:
             }
         )
         async with self.lock:
-            response = await client.post(
-                self.origin + path,
-                json={**payload, "relay": True},
-                headers=headers,
+            # Cancellation cannot discard the response to a connection that
+            # the remote runtime may already have accepted. Own negotiation
+            # until its bounded result identifies whether rollback is safe.
+            owner = asyncio.create_task(
+                self._post_connect(client, path, payload, headers)
             )
+            try:
+                response = await asyncio.shield(owner)
+            except BaseException:
+                cancelled_during_cleanup = await self._finish_cleanup(
+                    self._rollback_negotiation(owner, client, path, headers)
+                )
+                if cancelled_during_cleanup:
+                    raise asyncio.CancelledError from None
+                raise
             if response.status_code != 200:
                 return JSONResponse(response.json(), status_code=response.status_code)
             relay = None
@@ -104,17 +116,9 @@ class GatewayVideo:
             except BaseException as error:
                 # Join cleanup even if the caller cancels again; never leave an
                 # untracked receiver or an orphaned cleanup task behind.
-                cancelled_during_cleanup = False
-                with anyio.CancelScope(shield=True):
-                    cleanup = asyncio.create_task(
-                        self._rollback_connect(client, path, headers, relay)
-                    )
-                    while not cleanup.done():
-                        try:
-                            await asyncio.shield(cleanup)
-                        except asyncio.CancelledError:
-                            cancelled_during_cleanup = True
-                    cleanup.result()
+                cancelled_during_cleanup = await self._finish_cleanup(
+                    self._rollback_connect(client, path, headers, relay)
+                )
                 if cancelled_during_cleanup:
                     raise asyncio.CancelledError from None
                 if not isinstance(error, Exception) or isinstance(error, HTTPException):
@@ -124,6 +128,42 @@ class GatewayVideo:
                 ) from None
             self.relays[camera] = relay
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    async def _post_connect(self, client, path, payload, headers):
+        try:
+            # The forwarding client's read timeout is intentionally unbounded
+            # for streaming routes; connection negotiation has a total budget.
+            async with asyncio.timeout(_CONNECT_TIMEOUT_SECONDS):
+                return await client.post(
+                    self.origin + path,
+                    json={**payload, "relay": True},
+                    headers=headers,
+                    timeout=_CONNECT_TIMEOUT_SECONDS,
+                )
+        except TimeoutError:
+            raise HTTPException(
+                503, "Local video relay could not connect to GPU host"
+            ) from None
+
+    async def _rollback_negotiation(self, owner, client, path, headers):
+        try:
+            response = await owner
+        except (Exception, asyncio.CancelledError):
+            return  # Unconfirmed acceptance must not disconnect another slot.
+        if response.status_code == 200:
+            await self._rollback_connect(client, path, headers, None)
+
+    async def _finish_cleanup(self, operation):
+        cancelled_during_cleanup = False
+        with anyio.CancelScope(shield=True):
+            cleanup = asyncio.create_task(operation)
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled_during_cleanup = True
+            cleanup.result()
+        return cancelled_during_cleanup
 
     async def _rollback_connect(self, client, path, headers, relay):
         if relay is not None:

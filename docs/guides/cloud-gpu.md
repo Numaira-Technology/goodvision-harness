@@ -12,6 +12,9 @@ GPU 主机无需访问内网摄像头，也无需反向连接本机端口。
 在控制台“摄像头拉流位置”或 `/gateway` 可选择“GPU 主机直接拉流”，
 设置保存在本机、下次连接生效；仅选择此项时 GPU 主机才须能访问摄像头地址。
 环境默认值为 `HARNESS_VIDEO_PULL_LOCATION=local`，可设为 `gpu`；保存的选择优先。
+本地与 GPU 直接拉流均保留 RTSP 的 TCP/5 秒超时默认，可在 `.env` 用
+`OPENCV_FFMPEG_CAPTURE_OPTIONS` 覆盖；GPU 直接拉流还保留优先的兼容别名
+`VIDEO_CAPTURE_OPTIONS`（包括显式空值）。
 启动器按 `--streams N` 为网关预留 `64 × (N + 1) MiB` 的 `/dev/shm`，
 覆盖每路 32 MiB WHEP 缓冲、进程元数据和重连期间的新旧缓冲。
 直接调用 Compose 时请通过 `HARNESS_GATEWAY_SHM_SIZE` 设置相同容量（默认 128 MiB），

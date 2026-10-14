@@ -39,6 +39,7 @@ def runtime_environment(environment):
         "HARNESS_RELAY_KEY",
         "HARNESS_STREAM_URL",
         "RTSP_URL",
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
         "HARNESS_WEBHOOK_SECRET",
         "RESULT_WEBHOOK_URL",
         "LOCAL_TRACKING_FPS",
@@ -46,11 +47,20 @@ def runtime_environment(environment):
         "LOCAL_INFERENCE_MAX_TOKENS",
         "HARNESS_INFERENCE_PROFILE",
     }
-    return {
+    selected = {
         key: value
         for key, value in environment.items()
         if key in names or key.startswith(prefixes)
     }
+    # Match service.main's legacy alias precedence, including an explicitly
+    # empty alias; send only the canonical setting to the GPU analysis lanes.
+    selected["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = environment.get(
+        "VIDEO_CAPTURE_OPTIONS",
+        environment.get(
+            "OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|timeout;5000000",
+        ),
+    )
+    return selected
 
 
 def prepare(root, remote, ssh, scp, run):

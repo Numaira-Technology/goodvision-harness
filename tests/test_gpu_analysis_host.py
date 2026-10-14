@@ -77,6 +77,7 @@ def test_cloud_upload_never_transmits_rental_credentials():
         "INFERENCE_API_KEY",
         "HARNESS_WEBHOOK_SECRET",
         "FACE_INFERENCE_THREADS",
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
     }
 
 
