@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import socket
 import sqlite3
 import threading
@@ -274,7 +275,20 @@ def test_failed_commit_does_not_mark_nested_event_changes_as_persisted(tmp_path)
         archive.close()
 
 
-def test_restart_drains_more_persisted_plans_than_encoder_queue_capacity(tmp_path):
+def test_restart_drains_more_persisted_plans_than_encoder_queue_capacity(
+    tmp_path, monkeypatch,
+):
+    queue_capacity = 2
+    total_jobs = queue_capacity + 2
+    # Exercise real bounded queue overflow without imposing the storage
+    # throughput needed to stage/fsync dozens of otherwise identical clips.
+    monkeypatch.setattr(
+        archive_module, "queue", SimpleNamespace(
+            Queue=lambda _capacity: queue.Queue(queue_capacity),
+            Empty=queue.Empty, Full=queue.Full,
+        ),
+    )
+
     class PausedEvidenceArchive(EventArchive):
         def _encode_loop(self):
             self._closed.wait()
@@ -293,7 +307,7 @@ def test_restart_drains_more_persisted_plans_than_encoder_queue_capacity(tmp_pat
     with sqlite3.connect(tmp_path / "events.sqlite3") as db:
         event = json.loads(db.execute("SELECT payload FROM events").fetchone()[0])
         plan = json.loads(db.execute("SELECT payload FROM evidence_jobs").fetchone()[0])
-        for index in range(33):
+        for index in range(total_jobs - 1):
             event_id = f"event-{index:032x}"
             db.execute("INSERT INTO events VALUES (?,?)", (
                 event_id, json.dumps({**event, "event_id": event_id}),
@@ -314,13 +328,26 @@ def test_restart_drains_more_persisted_plans_than_encoder_queue_capacity(tmp_pat
     try:
         assert entered.wait(3)
         assert reopened.flush()
-        assert len(reopened._jobs) == 34
+        with reopened._lock:
+            jobs = set(reopened._jobs)
+            assert len(jobs) == total_jobs
+            assert reopened._encode_queue.maxsize == queue_capacity
+            assert reopened._encode_queue.full()
+            # One running job, a full queue, and an admitted plan that has not
+            # been queued yet prove the actual overflow recovery boundary.
+            assert len(reopened._queued_jobs) == queue_capacity + 1
+            assert len(jobs - reopened._queued_jobs) == 1
         release.set()
-        assert reopened.wait_until_idle(10)
-        assert len(reopened.list_events()["events"]) == 34
-        assert all(
-            e["evidence"]["status"] == "ready" for e in reopened.list_events()["events"]
-        )
+        assert reopened.wait_until_idle(10), reopened.status()
+        recovered = reopened.list_events()["events"]
+        assert {event["event_id"] for event in recovered} == {
+            event_id for event_id, _revision in jobs
+        }
+        assert all(event["evidence"]["status"] == "ready" for event in recovered)
+        assert not reopened._jobs
+        assert not reopened._queued_jobs
+        with sqlite3.connect(tmp_path / "events.sqlite3") as db:
+            assert db.execute("SELECT COUNT(*) FROM evidence_jobs").fetchone()[0] == 0
     finally:
         release.set()
         reopened.close()
