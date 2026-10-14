@@ -80,6 +80,11 @@ class RelayStreamAdapter:
 
 async def receive_relay(socket, runtime, token):
     """Only the opaque capability returned by connect can feed this connection."""
+    from .relay_auth import relay_authorized
+
+    if not relay_authorized(socket.headers):
+        await socket.close(code=1008)
+        return
     connection = runtime._video_connection
     adapter = getattr(connection, "_adapter", None)
     if (
@@ -114,10 +119,16 @@ async def proxy_relay(socket, origin, path):
     """Route additional camera sockets to their existing isolated runtime."""
     from websockets.asyncio.client import connect
 
+    from .relay_auth import relay_authorized, relay_headers
+
+    if not relay_authorized(socket.headers):
+        await socket.close(code=1008)
+        return
     url = ("wss" if origin.startswith("https:") else "ws") + origin[origin.index(":") :]
     try:
         async with connect(
-            url + path, compression=None, max_size=MAX_PACKET, proxy=None
+            url + path, compression=None, max_size=MAX_PACKET, proxy=None,
+            additional_headers=relay_headers(),
         ) as peer:
             await socket.accept()
 
@@ -176,8 +187,11 @@ class LocalVideoRelay:
     async def start(self):
         from websockets.asyncio.client import connect
 
+        from .relay_auth import relay_headers
+
         self.socket = await connect(
-            self.url, compression=None, max_size=MAX_PACKET, proxy=None, open_timeout=5
+            self.url, compression=None, max_size=MAX_PACKET, proxy=None, open_timeout=5,
+            additional_headers=relay_headers(),
         )
         if (
             json.loads(await asyncio.wait_for(self.socket.recv(), timeout=5)).get(

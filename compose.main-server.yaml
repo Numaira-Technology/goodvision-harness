@@ -8,6 +8,7 @@ services:
       file: compose.yaml
       service: harness
     environment:
+      HARNESS_RELAY_KEY: "${HARNESS_RELAY_KEY:-}"
       FACE_PROVIDER: CPUExecutionProvider
       FACE_INFERENCE_INSTANCES: "${FACE_INFERENCE_INSTANCES:-1}"
       HARNESS_AUTOSTART: "${HARNESS_AUTOSTART:-false}"

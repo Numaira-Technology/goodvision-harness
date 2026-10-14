@@ -19,8 +19,10 @@ from fastapi import FastAPI, HTTPException, Request
 
 if __package__:
     from .cloud_gpu_settings import CloudGPUSettings
+    from .relay_bootstrap import controller_environment
 else:
     from cloud_gpu_settings import CloudGPUSettings
+    from relay_bootstrap import controller_environment
 
 
 class CloudController:
@@ -34,7 +36,8 @@ class CloudController:
         self.release_task = None
         self.release_error = None
         self.lock = asyncio.Lock()
-        self.directory.mkdir(parents=True, exist_ok=True)
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.child_environment = controller_environment(os.environ, self.directory)
 
     def settings(self):
         return (
@@ -142,6 +145,7 @@ class CloudController:
                     str(self.status_path),
                 ],
                 stdin=subprocess.DEVNULL,
+                env=self.child_environment,
             )
         except OSError:
             self.status_path.write_text(

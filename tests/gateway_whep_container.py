@@ -7,6 +7,7 @@ Run in the analysis-gateway image with --network none, --read-only,
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import tempfile
@@ -31,6 +32,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from goodvision_harness import whep_process
 from goodvision_harness.analysis_gateway import create_app
+from goodvision_harness.relay_auth import RELAY_AUTH_HEADER
+from goodvision_harness.relay_auth import relay_key as configured_relay_key
 from goodvision_harness.video_relay import HEADER, RelayStreamAdapter
 
 
@@ -86,6 +89,35 @@ async def start_server(app):
 
 async def verify():
     assert os.name == "posix", "this verification requires a Linux container"
+    key_file = os.environ.get("HARNESS_RELAY_KEY_FILE")
+    if key_file:
+        assert (os.geteuid(), os.getegid()) == (10001, 10001)
+        key_path = Path(key_file)
+        key_stat, directory_stat = key_path.stat(), key_path.parent.stat()
+        assert (key_stat.st_uid, key_stat.st_gid, key_stat.st_mode & 0o777) == (
+            0, 10001, 0o640,
+        )
+        assert (
+            directory_stat.st_uid, directory_stat.st_gid,
+            directory_stat.st_mode & 0o777,
+        ) == (0, 10001, 0o750)
+        assert not list(key_path.parent.glob(".relay-key-*"))
+        relay_key = configured_relay_key()
+        assert relay_key is not None and len(relay_key) == 64
+        assert os.statvfs(key_path.parent).f_flag & os.ST_RDONLY
+        try:
+            descriptor = os.open(
+                key_path.parent / "unexpected-write",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+            )
+        except OSError as error:
+            assert error.errno in {errno.EROFS, errno.EACCES}
+        else:
+            os.close(descriptor)
+            raise AssertionError("gateway must not write the private key volume")
+    else:
+        relay_key = "container-relay-auth-test-0123456789abcdef"
+        os.environ["HARNESS_RELAY_KEY"] = relay_key
     assert Path("/proc/self/fd").is_dir()
     shm = os.statvfs("/dev/shm")
     temporary = os.statvfs("/tmp")
@@ -140,6 +172,7 @@ async def verify():
 
     @fake_gpu.post("/v1/fleet/cameras/{camera}/connect")
     async def connect(camera: str, request: Request):
+        assert request.headers.get(RELAY_AUTH_HEADER) == relay_key
         payload = await request.json()
         assert payload["relay"] is True
         adapter = RelayStreamAdapter(payload["stream_url"])
@@ -151,6 +184,7 @@ async def verify():
 
     @fake_gpu.websocket("/v1/fleet/cameras/{camera}/video/relay/{token}")
     async def receive(socket: WebSocket, camera: str, token: str):
+        assert socket.headers.get(RELAY_AUTH_HEADER) == relay_key
         adapter = adapters[camera]
         assert token == adapter.token
         await socket.accept()

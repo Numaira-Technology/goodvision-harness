@@ -18,6 +18,7 @@ from starlette.background import BackgroundTask
 from starlette.websockets import WebSocketDisconnect
 
 from .gateway_video import CONNECT, DISCONNECT, GatewayVideo
+from .relay_auth import strip_relay_header
 from .service_locations import _service_origin
 
 HOP_HEADERS = {
@@ -38,7 +39,9 @@ def forwarded_headers(headers):
     excluded = HOP_HEADERS | {
         part.strip().lower() for part in headers.get("connection", "").split(",")
     }
-    return {key: value for key, value in headers.items() if key.lower() not in excluded}
+    return strip_relay_header(
+        {key: value for key, value in headers.items() if key.lower() not in excluded}
+    )
 
 
 def create_app(origin=None, *, controller=None, transport=None):

@@ -10,6 +10,8 @@ services:
       sam-remote:
         condition: service_started
     environment:
+      HARNESS_RELAY_KEY: "${HARNESS_RELAY_KEY:-}"
+      HARNESS_RELAY_KEY_FILE: /relay-auth/key
       HARNESS_ANALYSIS_URL: http://sam-remote:8094
       HARNESS_VIDEO_PULL_LOCATION: "${HARNESS_VIDEO_PULL_LOCATION:-local}"
       HARNESS_GATEWAY_SETTINGS_PATH: /data/gateway-settings.json
@@ -39,6 +41,9 @@ services:
       # Use the source deployment's selected event-model provider.
       HARNESS_INFERENCE_PROFILE: ""
 
+    volumes:
+      - relay-auth-data:/relay-auth:ro
+
   sam-remote:
     build:
       context: .
@@ -49,6 +54,8 @@ services:
     restart: "no"
     environment:
       SAM_ANALYSIS_ENABLED: "true"
+      HARNESS_RELAY_KEY: "${HARNESS_RELAY_KEY:-}"
+      HARNESS_RELAY_KEY_FILE: /relay-auth/key
       SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND: "${SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND:-1048576}"
       VAST_API_KEY: "${VAST_API_KEY:?Set your Vast team API key in .env}"
       HF_TOKEN: "${HF_TOKEN:?Set your approved SAM Hugging Face token in .env}"
@@ -96,6 +103,7 @@ services:
       SAM31_RESULT_DEADLINE_SECONDS: "${SAM31_RESULT_DEADLINE_SECONDS:-}"
     volumes:
       - cloud-gpu-settings:/data/cloud-gpu
+      - relay-auth-data:/relay-auth
       - face-data:/legacy/default:ro
       - face-models:/legacy/face-models:ro
       - ./config.yaml:/app/config.yaml:ro
@@ -122,6 +130,7 @@ services:
         max-file: "3"
 
 volumes:
+  relay-auth-data: {}
   cloud-gpu-settings: {}
   face-data:
     name: "${HARNESS_DATA_VOLUME:-${COMPOSE_PROJECT_NAME:-goodvision-harness}_face-data}"

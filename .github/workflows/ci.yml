@@ -58,12 +58,26 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the deployment gateway image
         run: docker build --target analysis-gateway -t goodvision-analysis-gateway:verification .
-      - name: Verify real offline WHEP relays with deployment memory limits
+      - name: Prepare the private relay key with controller permissions
+        run: |
+          docker volume create gateway-relay-auth-${{ github.run_id }}-${{ github.run_attempt }}
+          docker run --rm --network none --read-only --user 0:0 \
+            --tmpfs /tmp:size=16m --security-opt no-new-privileges:true \
+            --volume gateway-relay-auth-${{ github.run_id }}-${{ github.run_attempt }}:/relay-auth \
+            --volume "$PWD/tools/relay_bootstrap.py:/verification/relay_bootstrap.py:ro" \
+            goodvision-analysis-gateway:verification \
+            python -c 'import runpy; from pathlib import Path; f = runpy.run_path("/verification/relay_bootstrap.py")["controller_environment"]; env = {"SAM_ANALYSIS_ENABLED": "true", "HARNESS_RELAY_KEY": "", "HARNESS_RELAY_KEY_FILE": "/relay-auth/key"}; first = f(env, Path("/tmp/controller")); second = f(env, Path("/tmp/controller")); assert first["HARNESS_RELAY_KEY"] == second["HARNESS_RELAY_KEY"]; assert len(first["HARNESS_RELAY_KEY"]) == 64'
+      - name: Verify authenticated offline WHEP relays with deployment memory limits
         run: |
           docker run --rm --network none --read-only \
             --tmpfs /tmp:size=64m --shm-size=192m \
             --security-opt no-new-privileges:true \
             --env PYTHONDONTWRITEBYTECODE=1 \
+            --env HARNESS_RELAY_KEY_FILE=/relay-auth/key \
+            --volume gateway-relay-auth-${{ github.run_id }}-${{ github.run_attempt }}:/relay-auth:ro \
             --volume "$PWD/tests/gateway_whep_container.py:/verification/gateway_whep_container.py:ro" \
             goodvision-analysis-gateway:verification \
             python /verification/gateway_whep_container.py
+      - name: Remove the verification relay key volume
+        if: always()
+        run: docker volume rm gateway-relay-auth-${{ github.run_id }}-${{ github.run_attempt }}

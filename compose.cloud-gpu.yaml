@@ -10,8 +10,12 @@ services:
       sam-remote:
         condition: service_started
     environment:
+      HARNESS_RELAY_KEY_FILE: /relay-auth/key
       HARNESS_ANALYSIS_URL: http://sam-remote:8094
       CLOUD_GPU_CONTROLLER_URL: http://sam-remote:8093
+    volumes:
+      - relay-auth-data:/relay-auth:ro
+
   sam-remote:
     extends:
       file: compose.sam31-remote.yaml
@@ -20,6 +24,7 @@ services:
 networks:
   default: {}
 volumes:
+  relay-auth-data: {}
   gateway-data: {}
   face-models:
     name: "${HARNESS_MODELS_VOLUME:-${COMPOSE_PROJECT_NAME:-goodvision-cloud}_face-models}"

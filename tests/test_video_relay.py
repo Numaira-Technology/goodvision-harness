@@ -12,8 +12,16 @@ from test_local_gpu_runtime import rig as rig
 from test_video_connection import wait_for
 
 from goodvision_harness.analysis_gateway import create_app as gateway_app
+from goodvision_harness.relay_auth import RELAY_AUTH_HEADER
 from goodvision_harness.service import create_app
 from goodvision_harness.video_relay import HEADER, RelayStreamAdapter
+
+TEST_RELAY_KEY = "gateway-test-auth-key-0123456789abcdef"
+
+
+@pytest.fixture(autouse=True)
+def configured_relay_key(monkeypatch):
+    monkeypatch.setenv("HARNESS_RELAY_KEY", TEST_RELAY_KEY)
 
 
 def packet(sequence=10, stamp=3.25):
@@ -62,12 +70,17 @@ def test_gpu_host_never_opens_camera_when_receiving_local_relay(
     )
     with TestClient(create_app(lambda: runtime)) as client:
         response = client.post(
-            path, json={"stream_url": "rtsp://private-camera/live", "relay": True}
+            path,
+            json={"stream_url": "rtsp://private-camera/live", "relay": True},
+            headers={RELAY_AUTH_HEADER: TEST_RELAY_KEY},
         )
         assert response.status_code == 200, response.text
         token = response.json()["video_relay"]["id"]
         assert runtime._session is None
-        with client.websocket_connect(socket_prefix + token) as socket:
+        with client.websocket_connect(
+            socket_prefix + token,
+            headers={RELAY_AUTH_HEADER: TEST_RELAY_KEY},
+        ) as socket:
             assert socket.receive_json() == {"type": "ready"}
             socket.send_bytes(packet())
             assert socket.receive_json() == {"accepted": True}
@@ -201,7 +214,14 @@ def test_successful_remote_connect_rolls_back_failed_negotiation_and_can_retry(
                 request.method,
                 request.url.path,
                 content=await request.aread(),
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-type": "application/json",
+                    **{
+                        key: value
+                        for key, value in request.headers.items()
+                        if key.lower() == RELAY_AUTH_HEADER.lower()
+                    },
+                },
             )
             if request.url.path == path and response.status_code == 200:
                 accepted.append(runtime._video_connection)
@@ -266,7 +286,14 @@ def test_failed_local_close_still_disconnects_remote_and_preserves_start_error(
                 request.method,
                 request.url.path,
                 content=await request.aread(),
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-type": "application/json",
+                    **{
+                        key: value
+                        for key, value in request.headers.items()
+                        if key.lower() == RELAY_AUTH_HEADER.lower()
+                    },
+                },
             )
             return httpx.Response(response.status_code, content=response.content)
 
@@ -322,7 +349,14 @@ def test_rollback_error_keeps_original_negotiation_error_and_allows_retry_after_
                 request.method,
                 request.url.path,
                 content=await request.aread(),
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-type": "application/json",
+                    **{
+                        key: value
+                        for key, value in request.headers.items()
+                        if key.lower() == RELAY_AUTH_HEADER.lower()
+                    },
+                },
             )
             if request.url.path.endswith("connect") and response.status_code == 200:
                 accepted += 1
@@ -370,7 +404,9 @@ def test_remote_connect_rejection_never_disconnects_existing_connection(
     monkeypatch.setenv("HARNESS_GATEWAY_SETTINGS_PATH", str(tmp_path / "gateway.json"))
     runtime = rig.make()
     calls = []
-    with TestClient(create_app(lambda: runtime)) as remote_client:
+    with TestClient(
+        create_app(lambda: runtime), headers={RELAY_AUTH_HEADER: TEST_RELAY_KEY},
+    ) as remote_client:
         assert (
             remote_client.post(
                 "/v1/video/connect",
@@ -389,7 +425,14 @@ def test_remote_connect_rejection_never_disconnects_existing_connection(
                 request.method,
                 request.url.path,
                 content=await request.aread(),
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-type": "application/json",
+                    **{
+                        key: value
+                        for key, value in request.headers.items()
+                        if key.lower() == RELAY_AUTH_HEADER.lower()
+                    },
+                },
             )
             return httpx.Response(response.status_code, content=response.content)
 

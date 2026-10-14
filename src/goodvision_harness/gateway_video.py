@@ -12,6 +12,8 @@ import anyio
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from .relay_auth import relay_headers
+
 CONNECT = re.compile(r"/v1/(?:video/connect|fleet/cameras/(camera[0-9]+)/connect)$")
 DISCONNECT = re.compile(
     r"/v1/(?:video/disconnect|fleet/cameras/(camera[0-9]+)/disconnect)$"
@@ -62,11 +64,13 @@ class GatewayVideo:
 
         matched = CONNECT.fullmatch(path)
         camera = matched.group(1) or "camera01"
-        headers = {
-            key: value
-            for key, value in (headers or {}).items()
-            if key.lower() not in {"content-length", "content-encoding"}
-        }
+        headers = relay_headers(
+            {
+                key: value
+                for key, value in (headers or {}).items()
+                if key.lower() not in {"content-length", "content-encoding"}
+            }
+        )
         async with self.lock:
             response = await client.post(
                 self.origin + path,

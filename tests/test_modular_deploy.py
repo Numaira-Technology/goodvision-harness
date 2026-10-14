@@ -80,7 +80,10 @@ class ModularLauncherTests(unittest.TestCase):
             with (
                 patch.object(launcher, "ROOT", Path(temporary)),
                 patch.dict(
-                    os.environ, {"INFERENCE_API_KEY": "cloud-secret"}, clear=True
+                    os.environ, {
+                        "INFERENCE_API_KEY": "cloud-secret",
+                        "HARNESS_RELAY_KEY": "gateway-test-auth-key-0123456789abcdef",
+                    }, clear=True
                 ),
                 patch.object(launcher.local, "detect_nvidia_devices") as detect,
                 patch.object(launcher.local, "validate_weights") as weights,
@@ -106,6 +109,7 @@ class ModularLauncherTests(unittest.TestCase):
             sam.assert_not_called()
             plan = json.loads(output.getvalue())
             self.assertNotIn("cloud-secret", output.getvalue())
+            self.assertNotIn("gateway-test-auth-key-0123456789abcdef", output.getvalue())
             self.assertEqual(plan["devices"], [])
             self.assertEqual(plan["environment"]["TRACKING_EXECUTION_MODE"], "server")
             self.assertEqual(plan["environment"]["INFERENCE_EXECUTION_MODE"], "cloud")

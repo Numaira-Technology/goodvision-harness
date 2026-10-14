@@ -10,7 +10,15 @@ import pytest
 from test_local_gpu_runtime import rig as rig
 
 from goodvision_harness.analysis_gateway import create_app as gateway_app
+from goodvision_harness.relay_auth import RELAY_AUTH_HEADER
 from goodvision_harness.service import create_app as remote_app
+
+TEST_RELAY_KEY = "gateway-test-auth-key-0123456789abcdef"
+
+
+@pytest.fixture(autouse=True)
+def configured_relay_key(monkeypatch):
+    monkeypatch.setenv("HARNESS_RELAY_KEY", TEST_RELAY_KEY)
 
 
 class ReplyBody(httpx.AsyncByteStream):
@@ -78,7 +86,14 @@ def test_old_disconnect_finishes_before_new_connection_is_accepted(
                         request.method,
                         request.url.path,
                         content=await request.aread(),
-                        headers={"content-type": "application/json"},
+                        headers={
+                            "content-type": "application/json",
+                            **{
+                                key: value
+                                for key, value in request.headers.items()
+                                if key.lower() == RELAY_AUTH_HEADER.lower()
+                            },
+                        },
                     )
                     if request.url.path == disconnect_path and not effective.is_set():
                         assert response.status_code == 200

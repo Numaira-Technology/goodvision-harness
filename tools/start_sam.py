@@ -21,13 +21,16 @@ from uuid import uuid4
 if __package__:
     from . import cloud_analysis
     from .cloud_gpu_settings import CloudGPUSettings
+    from .relay_bootstrap import controller_environment
 else:
     try:
         import cloud_analysis
         from cloud_gpu_settings import CloudGPUSettings
+        from relay_bootstrap import controller_environment
     except ModuleNotFoundError:
         from tools import cloud_analysis
         from tools.cloud_gpu_settings import CloudGPUSettings
+        from tools.relay_bootstrap import controller_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = "/workspace/goodvision-sam"
@@ -550,6 +553,9 @@ def main() -> int:
                 "Missing controller dependencies; rebuild the sam-remote image with Docker Compose."
             ) from error
         load_dotenv(ROOT / ".env", override=False)
+        os.environ.update(controller_environment(
+            os.environ, cloud_analysis.state_directory(),
+        ))
         defaults = CloudGPUSettings.from_environment().public()
         settings = CloudGPUSettings(**{name: getattr(args, name) if getattr(args, name) is not None
                                       else value for name, value in defaults.items()})

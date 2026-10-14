@@ -5159,8 +5159,10 @@ def create_app(
         if "relay" in payload and type(payload["relay"]) is not bool:
             raise HTTPException(400, "relay must be boolean")
         if payload.get("relay"):
+            from .relay_auth import require_relay_auth
             from .video_relay import RelayStreamAdapter
 
+            require_relay_auth(request.headers)
             runtime = _runtime(request)
             url = payload.get("stream_url") or runtime.configured_stream_url()
             try:

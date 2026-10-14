@@ -13,7 +13,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY tools/start_sam.py ./tools/start_sam.py
-COPY tools/cloud_gpu_settings.py tools/cloud_gpu_controller.py tools/cloud_analysis.py tools/gpu_analysis_host.py ./tools/
+COPY tools/cloud_gpu_settings.py tools/cloud_gpu_controller.py tools/cloud_analysis.py tools/gpu_analysis_host.py tools/relay_bootstrap.py ./tools/
 COPY pyproject.toml config.yaml ./
 COPY src ./src
 COPY workers/sam_scene/app.py workers/sam_scene/sam31.py \
@@ -59,7 +59,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY tools/start_sam.py tools/start_detector.py tools/cloud_gpu_settings.py \
-    tools/cloud_analysis.py ./tools/
+    tools/cloud_analysis.py tools/relay_bootstrap.py ./tools/
 COPY workers/detector_rich_label/app.py workers/detector_rich_label/tracker.py \
     workers/detector_rich_label/detectors.py \
     workers/detector_rich_label/requirements.txt \

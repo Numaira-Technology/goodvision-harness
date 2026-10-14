@@ -12,13 +12,28 @@ from test_local_gpu_runtime import rig as rig
 from goodvision_harness.gateway_video import GatewayVideo
 from goodvision_harness.service import create_app
 
+TEST_RELAY_KEY = "gateway-test-auth-key-0123456789abcdef"
 
-@pytest.mark.parametrize("path", [
-    "/v1/video/connect", "/v1/fleet/cameras/camera01/connect",
-])
+
+@pytest.fixture(autouse=True)
+def configured_relay_key(monkeypatch):
+    monkeypatch.setenv("HARNESS_RELAY_KEY", TEST_RELAY_KEY)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/video/connect",
+        "/v1/fleet/cameras/camera01/connect",
+    ],
+)
 @pytest.mark.parametrize("cancellation", ["asyncio", "asyncio-repeat", "anyio"])
 def test_cancelled_local_start_rolls_back_actual_remote_slot_and_allows_retry(
-    rig, monkeypatch, tmp_path, path, cancellation,
+    rig,
+    monkeypatch,
+    tmp_path,
+    path,
+    cancellation,
 ):
     runtime = rig.make()
     monkeypatch.setenv("HARNESS_VIDEO_PULL_LOCATION", "local")
@@ -53,10 +68,12 @@ def test_cancelled_local_start_rolls_back_actual_remote_slot_and_allows_retry(
         app = create_app(lambda: runtime)
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://gpu",
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://gpu",
             ) as remote:
                 video = GatewayVideo(
-                    "http://gpu", settings_path=tmp_path / "gateway.json",
+                    "http://gpu",
+                    settings_path=tmp_path / "gateway.json",
                 )
                 payload = {"stream_url": "rtsp://fixture-camera/live"}
                 cancelled = []
@@ -114,7 +131,8 @@ def test_cancelled_local_start_rolls_back_actual_remote_slot_and_allows_retry(
                     for relay in constructed:
                         relay.release_cleanup.set()
                     await remote.post(
-                        path.removesuffix("connect") + "disconnect", json={},
+                        path.removesuffix("connect") + "disconnect",
+                        json={},
                     )
                     await video.close()
 

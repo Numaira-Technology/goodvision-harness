@@ -261,13 +261,24 @@ class FleetController:
         *,
         timeout: float = 60,
         coordinated: bool = False,
+        trusted_relay: bool = False,
     ) -> JSONResponse:
+        from .relay_auth import relay_headers
+
+        private_relay = bool(
+            path == "/v1/video/connect" and payload and payload.get("relay")
+        )
+        headers = {"X-Fleet-Coordinator": "1"} if coordinated else {}
+        if private_relay:
+            if not trusted_relay:
+                raise HTTPException(403, "Relay authentication required")
+            headers = relay_headers(headers)
         try:
             async with self._client(index).stream(
                 method,
                 self._url(index, path),
                 json=payload,
-                headers={"X-Fleet-Coordinator": "1"} if coordinated else None,
+                headers=headers or None,
                 timeout=httpx.Timeout(timeout, connect=3, pool=3),
             ) as upstream:
                 if 300 <= upstream.status_code < 400:
@@ -286,9 +297,10 @@ class FleetController:
                 # or camera authentication headers.
                 relay = (
                     result.pop("video_relay", None)
-                    if path == "/v1/video/connect" and payload and payload.get("relay")
-                    else None
+                    if isinstance(result, dict) else None
                 )
+                if not private_relay or not trusted_relay:
+                    relay = None
                 rendered = public_safe_value(result)
                 if relay is not None:
                     rendered["video_relay"] = relay
@@ -764,8 +776,13 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
 
     @application.post("/v1/fleet/cameras/{camera_id}/connect")
     async def connect(camera_id: str, request: Request) -> JSONResponse:
+        from .relay_auth import require_relay_auth
+
         index = controller.resolve_camera(camera_id)
         payload = await _json_body(request)
+        private_relay = bool(payload.get("relay"))
+        if private_relay:
+            require_relay_auth(request.headers)
         async with controller.control_lock:
             controller.require_enabled(index)
             await controller.assert_connections_mutable()
@@ -775,6 +792,7 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
                 "/v1/video/connect",
                 payload,
                 coordinated=True,
+                **({"trusted_relay": True} if private_relay else {}),
             )
 
     @application.post("/v1/fleet/cameras/{camera_id}/disconnect")

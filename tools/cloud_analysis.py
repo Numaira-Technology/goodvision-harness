@@ -36,6 +36,7 @@ def runtime_environment(environment):
         "OPENROUTER_API_KEY",
         "DASHSCOPE_API_KEY",
         "HARNESS_DRY_RUN",
+        "HARNESS_RELAY_KEY",
         "HARNESS_STREAM_URL",
         "RTSP_URL",
         "HARNESS_WEBHOOK_SECRET",

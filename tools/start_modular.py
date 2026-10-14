@@ -20,8 +20,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 if __package__:
     from . import start_local_gpu as local
+    from .relay_bootstrap import valid_relay_key
 else:
     import start_local_gpu as local
+    from relay_bootstrap import valid_relay_key
 
 ROOT = Path(__file__).resolve().parents[1]
 QUEUE_SETTINGS = {
@@ -50,6 +52,8 @@ SETTINGS = (
         "LOCAL_INFERENCE_GPU_ID",
         "PERCEPTION_METHOD",
         "HARNESS_ANALYSIS_URL",
+        "HARNESS_RELAY_KEY",
+        "HARNESS_VIDEO_PULL_LOCATION",
     }
     | QUEUE_SETTINGS
 )
@@ -531,6 +535,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 environment["HARNESS_ANALYSIS_URL"] = analysis_url
                 environment["HARNESS_GATEWAY_SHM_SIZE"] = gateway_shared_memory(streams)
                 gateway = True
+                key = settings.get("HARNESS_RELAY_KEY", "").strip()
+                if key and not valid_relay_key(key):
+                    raise LaunchError(
+                        "HARNESS_RELAY_KEY must contain 32-512 "
+                        "ASCII nonspace characters"
+                    )
+                if (
+                    not args.dry_run and not key
+                    and settings.get("HARNESS_VIDEO_PULL_LOCATION", "local") != "gpu"
+                ):
+                    raise LaunchError(
+                        "Local video ingress requires matching HARNESS_RELAY_KEY "
+                        "on the main gateway and analysis host"
+                    )
             elif args.module == "analysis" and args.analysis_server:
                 raise LaunchError(
                     "analysis runs on the GPU host; --analysis-server belongs to main",
