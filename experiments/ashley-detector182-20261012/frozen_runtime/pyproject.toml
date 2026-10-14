@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goodvision-harness"
+version = "0.1.0"
+description = "Independent WebRTC/WHEP video analysis and delivery harness"
+readme = { content-type = "text/markdown", text = """
+# GoodVision
+
+Live video analysis with five safety capabilities, local face matching, object
+tracking, pedestrian attributes, JSON event delivery, and annotated video.
+Deployment settings and public interfaces are documented in the supplied guide.
+Runtime components retain their original license and attribution files.
+""" }
+requires-python = ">=3.10"
+dependencies = [
+  "anyio>=4,<5",
+  "certifi>=2024.2.2",
+  "fastapi>=0.115,<1",
+  "starlette>=1.5.1,<2",
+  "httpx>=0.27,<1",
+  "numpy>=1.26,<3",
+  "opencv-python-headless>=4.10,<5",
+  "Pillow>=10.4,<13",
+  "python-dotenv>=1,<2",
+  "PyYAML>=6,<7",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+vlm = [
+  "httpx[http2]>=0.27,<1",
+]
+video = [
+  "av==17.1.0",
+]
+dev = [
+  "jsonschema>=4.23,<5",
+  "pytest>=8,<9",
+  "ruff>=0.9,<1",
+]
+face = [
+  "insightface==1.0.1",
+  "onnxruntime>=1.20,<2",
+]
+face-gpu = [
+  "insightface==1.0.1",
+  "onnxruntime-gpu[cuda,cudnn]==1.26.0",
+]
+face-directml = [
+  "insightface==1.0.1",
+  "onnxruntime-directml==1.24.4; sys_platform == 'win32'",
+]
+webrtc = [
+  "aiohttp>=3.10,<4",
+  "aiortc>=1.15,<2",
+]
+
+[project.scripts]
+goodvision-harness = "goodvision_harness.service:main"
+goodvision-harness-cli = "goodvision_harness.pipeline:main"
+goodvision-harness-demo = "goodvision_harness.demo.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["goodvision_harness*"]
+
+[tool.setuptools.package-data]
+goodvision_harness = [
+  "config.yaml",
+  "dashboard.html",
+  "fleet_console.js",
+  "camera_display.js",
+  "camera_display_dense.js",
+  "assets/*.js",
+  "assets/*.txt",
+  "fonts/*.otf",
+  "fonts/*.txt",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]

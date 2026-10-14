@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import bisect
 import copy
+import hashlib
 import json
 import math
+import os
 import re
 import secrets
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -35,6 +40,7 @@ def media_time(frames, tick, fps):
 class LiveMonitor:
     def __init__(self, output, framesets, args):
         self.output, self.framesets, self.args = Path(output), framesets, args
+        self.layout = getattr(args, "monitor_layout", "evidence")
         self.lock = threading.RLock()
         self.state = {"stage": None, "state": "preparing"}
         self.log = None
@@ -45,6 +51,19 @@ class LiveMonitor:
         self.token = secrets.token_urlsafe(24)
         self.server = None
         self.recorder = None
+        self.preview_trackers = {}
+        self.preview_viewers = {}
+        # Optional: draw view-only YOLO boxes on the independent preview clock.
+        # preview instead of the VLM-seeded optical-flow estimate. Points at a
+        # running detector worker (tools/start_detector.py).
+        self.detector_url = (
+            os.environ.get("PREVIEW_DETECTOR_URL", "").strip().rstrip("/")
+        )
+        self.detector_model = (
+            os.environ.get("PREVIEW_DETECTOR_MODEL", "yolo26-s").strip()
+        )
+        self._detector_seq = {}
+        self._detector_lock = threading.Lock()
 
     def __enter__(self):
         from tools.vlm_benchmark.recording import BrowserRecorder, make_preview
@@ -62,6 +81,8 @@ class LiveMonitor:
                 make_preview(path, preview)
                 self.previews.append(preview)
             else:
+                if self.layout == "single-video":
+                    raise ValueError("single-video monitor requires an actual video")
                 self.previews.append(None)
         self.server = ThreadingHTTPServer(
             ("127.0.0.1", self.args.monitor_port), self.handler()
@@ -78,6 +99,7 @@ class LiveMonitor:
                 "recording": self.args.record,
                 "scope": "live benchmark browser viewport; no retrospective replay",
                 "preview": "15 FPS H.264 proxy; media PTS/inference JPEGs unchanged",
+                "layout": self.layout,
             },
         )
         try:
@@ -113,6 +135,8 @@ class LiveMonitor:
 
         with self.lock:
             self.location = location
+            self.preview_trackers = {}
+            self.preview_viewers = {}
             if self.log:
                 self.log.close()
             self.log = (location / "monitor.jsonl").open("w", encoding="utf-8")
@@ -137,6 +161,9 @@ class LiveMonitor:
                 "model": self.args.model,
                 "real": self.args.real,
                 "backend": self.args.backend,
+                "provider_only": getattr(self.args, "provider_only", ""),
+                "monitor_layout": self.layout,
+                "preview_fps": 15,
                 "sample_fps": max(2.0, self.args.observation_fps * 2),
                 "observation_fps": self.args.observation_fps,
                 "planned": planned_observations(
@@ -147,6 +174,9 @@ class LiveMonitor:
                 "summary": None,
                 "source_count": len(self.framesets),
                 "lanes": list(self.latencies),
+                # The browser enables the YOLO box preview on this flag even when
+                # there is no VLM grounding lane (events-only runs).
+                "detector": bool(self.detector_url),
                 "cameras": [
                     {
                         "camera": i + 1,
@@ -154,6 +184,7 @@ class LiveMonitor:
                         "rejected": 0,
                         "out_of_order": 0,
                         "lanes": {},
+                        "tracking_anchor": None,
                     }
                     for i in range(job["streams"])
                 ],
@@ -245,12 +276,23 @@ class LiveMonitor:
             current = self.state["cameras"][camera]
             previous = current["lanes"].get(lane)
             stale = bool(
-                previous and (tick if valid_tick else -1) < (previous["tick"] or 0)
+                report.get("historical_only")
+                or (previous and (tick if valid_tick else -1) < (previous["tick"] or 0))
             )
             if stale:
                 current["out_of_order"] += 1
             else:
                 current["lanes"][lane] = view
+            anchor = current["tracking_anchor"]
+            if (
+                lane == "grounding"
+                and not stale
+                and complete
+                and not view["error"]
+                and valid_tick
+                and (anchor is None or tick > anchor["tick"])
+            ):
+                current["tracking_anchor"] = view
             self.emit("result", camera=camera + 1, lane=lane, stale=stale, result=view)
 
     def draining(self):
@@ -323,6 +365,183 @@ class LiveMonitor:
             ]
             return data
 
+    def track_preview(self, stage, camera, payload):
+        if self.layout == "single-video":
+            raise ValueError("tracking disabled in single-video layout")
+        from tools.vlm_benchmark.preview_tracking import PreviewTracker, gray_frame
+
+        client = payload.get("client", "")
+        at, epoch = payload.get("time"), payload.get("epoch")
+        if (
+            not isinstance(client, str)
+            or not re.fullmatch(r"[a-f0-9-]{36}", client)
+            or type(at) not in (int, float)
+            or not math.isfinite(at)
+            or at < 0
+            or type(epoch) is not int
+            or not 0 <= epoch <= 100000
+        ):
+            raise ValueError("invalid preview metadata")
+        with self.lock:
+            # The optical-flow preview needs VLM grounding boxes as seeds; the
+            # YOLO detector preview supplies its own boxes, so it only needs a
+            # live stage (works in events-only mode, no grounding lane).
+            if (
+                stage != self.state.get("stage")
+                or (
+                    not self.detector_url
+                    and "grounding" not in self.state.get("lanes", [])
+                )
+                or not 0 <= camera < len(self.state["cameras"])
+            ):
+                raise ValueError("unknown preview")
+            now = time.monotonic()
+            expired = {
+                c for c, touched in self.preview_viewers.items() if now - touched > 30
+            }
+            self.preview_trackers = {
+                k: v for k, v in self.preview_trackers.items() if k[0] not in expired
+            }
+            self.preview_viewers = {
+                c: t for c, t in self.preview_viewers.items() if c not in expired
+            }
+            key = (client, camera)
+            # At most two simultaneous viewers; never an unbounded image cache.
+            if key not in self.preview_trackers:
+                clients = {k[0] for k in self.preview_trackers}
+                if client not in clients and len(clients) >= 2:
+                    raise ValueError("too many tracking viewers")
+                self.preview_trackers[key] = PreviewTracker()
+            self.preview_viewers[client] = now
+            tracker = self.preview_trackers[key]
+            view = self.state["cameras"][camera]["tracking_anchor"]
+            # The free-running detector preview and benchmark observations have
+            # different clocks. A latest event verdict cannot label these boxes.
+            if self.detector_url and self.state.get("state") != "playing":
+                return {
+                    "detector": True, "status": "stopped", "objects": [],
+                    "source_time": at, "epoch": epoch,
+                }
+            frames = self.framesets[camera % len(self.framesets)]
+            duration = getattr(
+                frames, "media_duration", len(frames) / self.state["sample_fps"]
+            )
+            if not epoch * duration <= at <= (epoch + 1) * duration + 0.05:
+                raise ValueError("preview time does not match loop")
+            anchor = None
+            if view is not None:
+                tick = view["tick"]
+                anchor = {
+                    "id": f"{tick}:{view['id']}",
+                    "epoch": tick // len(frames),
+                    "time": (tick // len(frames)) * duration + view["media_seconds"],
+                    "objects": view["objects"],
+                    "jpeg": frames[tick % len(frames)],
+                }
+        if not tracker.lock.acquire(blocking=False):
+            return {"status": "busy", "objects": []}
+        try:
+            jpeg = base64.b64decode(payload.get("jpeg", ""), validate=True)
+            # Check compressed dimensions before allocating an OpenCV image.
+            from io import BytesIO
+
+            from PIL import Image
+
+            with Image.open(BytesIO(jpeg)) as image:
+                if (
+                    image.format != "JPEG"
+                    or not 8 <= min(image.size)
+                    or max(image.size) > 640
+                ):
+                    raise ValueError("invalid preview dimensions")
+            if self.detector_url:
+                return self._yolo_track(key, stage, epoch, at, jpeg)
+            return tracker.advance(gray_frame(jpeg), at, epoch=epoch, anchor=anchor)
+        finally:
+            tracker.lock.release()
+
+    def _yolo_track(self, key, stage, epoch, at, jpeg):
+        """View-only detector boxes; no inference verdict is attached to them.
+
+        A session belongs to one viewer/camera/stage/loop. Source time is echoed
+        for the browser's freshness check; detector transport uses a monotonic
+        clock, so a loop wrap cannot rewind a live detector session.
+        """
+        metadata = {"detector": True, "source_time": at, "epoch": epoch}
+
+        def stopped():
+            with self.lock:
+                return (
+                    self.state.get("stage") != stage
+                    or self.state.get("state") != "playing"
+                )
+
+        with self._detector_lock:
+            # A request may wait behind another camera while its run ends.
+            if stopped():
+                return {**metadata, "status": "stopped", "objects": []}
+            with self.lock:
+                viewers = set(self.preview_viewers)
+            self._detector_seq = {
+                k: v for k, v in self._detector_seq.items() if k[0] in viewers
+            }
+            previous = self._detector_seq.get(key)
+            seq = (
+                previous[2] + 1
+                if previous and previous[:2] == (stage, epoch)
+                else 1
+            )
+            self._detector_seq[key] = (stage, epoch, seq)
+            scope = hashlib.sha256(stage.encode()).hexdigest()[:16]
+            session_id = f"preview-{scope}-{key[0]}-{key[1]}-e{epoch}"
+            request = urllib.request.Request(
+                f"{self.detector_url}/v1/tracks",
+                data=jpeg,
+                method="POST",
+                headers={
+                    "Content-Type": "image/jpeg",
+                    "x-goodvision-stream-session-id": session_id,
+                    "x-goodvision-frame-sequence": str(seq),
+                    "x-goodvision-timestamp-seconds": repr(time.monotonic()),
+                    "X-GoodVision-Detector-Model": self.detector_model,
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=2.0) as response:
+                    snapshot = json.loads(response.read())
+                if not isinstance(snapshot, dict):
+                    raise ValueError("invalid detector snapshot")
+            except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+                return {**metadata, "status": "detector_unavailable", "objects": []}
+        # Discard an in-flight response after draining, failure or a new stage.
+        if stopped():
+            return {**metadata, "status": "stopped", "objects": []}
+        objects = []
+        candidates = snapshot.get("objects", [])
+        if isinstance(candidates, list):
+            for obj in candidates[:12]:
+                if not isinstance(obj, dict) or not isinstance(obj.get("bbox"), dict):
+                    continue
+                box = obj["bbox"]
+                values = [box.get(k) for k in ("x1", "y1", "x2", "y2")]
+                if (
+                    not isinstance(obj.get("track_id"), str)
+                    or not obj["track_id"]
+                    or not all(
+                        type(v) in (int, float) and math.isfinite(v) and 0 <= v <= 1
+                        for v in values
+                    )
+                    or values[0] >= values[2]
+                    or values[1] >= values[3]
+                ):
+                    continue
+                objects.append({"track_id": obj["track_id"], "bbox": box})
+        return {
+            **metadata,
+            "status": "tracking" if objects else "no_person_boxes",
+            "objects": objects,
+        }
+
     def handler(self):
         monitor = self
 
@@ -342,6 +561,31 @@ class LiveMonitor:
                 if not head:
                     self.wfile.write(data)
 
+            def do_POST(self):
+                path = urlsplit(self.path).path
+                prefix = f"/{monitor.token}/tracking/"
+                try:
+                    if not path.startswith(prefix):
+                        raise ValueError("unknown route")
+                    match = re.fullmatch(r"([^/]+)/(\d+)", path[len(prefix) :])
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if (
+                        not match
+                        or not 0 < size <= 192 * 1024
+                        or self.headers.get("Content-Type") != "application/json"
+                    ):
+                        raise ValueError("invalid preview request")
+                    self.connection.settimeout(5)
+                    payload = json.loads(self.rfile.read(size))
+                    if not isinstance(payload, dict):
+                        raise ValueError("invalid preview payload")
+                    result = monitor.track_preview(match[1], int(match[2]), payload)
+                    self.reply(json.dumps(result).encode(), "application/json")
+                except (ValueError, TypeError, OSError):
+                    self.reply(
+                        b'{"error":"invalid tracking request"}', "application/json", 400
+                    )
+
             def do_HEAD(self):
                 self.do_GET(head=True)
 
@@ -353,7 +597,7 @@ class LiveMonitor:
                     return
                 path = path[len(prefix) :]
                 try:
-                    if path in {"", "monitor.js"}:
+                    if path in {"", "monitor.js", "preview_tracking.js"}:
                         name = "monitor.html" if not path else path
                         self.reply(
                             (ASSETS / name).read_bytes(),

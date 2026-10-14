@@ -9,11 +9,13 @@ import shlex
 import signal
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 from threading import Event, Thread
 
 from tools.vlm_benchmark.mode_report import render_modes
 from tools.vlm_benchmark.report import write_json
+from tools.vlm_benchmark.routes import KEY_ENV
 
 
 def launch_managed(run):
@@ -24,9 +26,16 @@ def launch_managed(run):
     command = shlex.join(
         [sys.executable, "-m", "tools.vlm_benchmark.bootstrap", "--root", str(app)]
     )
+    plan_file = run / "plan.json"
+    plan = json.loads(plan_file.read_text()) if plan_file.exists() else {}
+    dns = plan.get("dns_transport", "system")
+    if dns not in {"system", "tcp"}:
+        raise ValueError("unsupported DNS transport")
+    environment = 'environment=RES_OPTIONS="use-vc"\n' if dns == "tcp" else ""
     config = Path("/etc/supervisor/conf.d") / (name + ".conf")
     config.write_text(
         f"[program:{name}]\ncommand={command}\ndirectory={app}\n"
+        f"{environment}"
         "autostart=false\nautorestart=false\nstartsecs=0\nstartretries=0\n"
         "stopasgroup=true\nkillasgroup=true\nstopwaitsecs=30\n"
         f"stdout_logfile={run / 'setup-and-run.log'}\n"
@@ -52,9 +61,11 @@ def make_plan(options):
     from tools.vlm_benchmark import modes
 
     args = modes.parser().parse_args([])
+    args.backend = getattr(options, "provider", None) or "openrouter"
     for name in (
         "real",
         "model",
+        "endpoint",
         "streams",
         "duration",
         "repeats",
@@ -67,8 +78,19 @@ def make_plan(options):
         "record",
         "monitor_port",
         "modes",
+        "grounding_format",
+        "event_policy",
+        "grounding_concurrency_sweep",
+        "parallel_concurrency_sweep",
+        "parallel_scheduling",
+        "local_concurrency",
+        "provider_only",
+        "provider_prefer",
+        "require_route_match",
+        "monitor_layout",
+        "http_timeout",
     ):
-        setattr(args, name, getattr(options, name))
+        setattr(args, name, getattr(options, name, getattr(args, name)))
     args.monitor = True
     args.video = options.video or [Path.home() / "Downloads/output 3.mp4"]
     modes.validate(args)
@@ -81,7 +103,8 @@ def make_plan(options):
         "settings": settings,
         "event_labels": list(modes.LABELS),
         "request_budget": modes.request_budget(args),
-        "execution": "cloud Harness and browser; OpenRouter model inference",
+        "execution": f"cloud Harness and browser; {args.backend} model inference",
+        "dns_transport": getattr(options, "dns_transport", "system"),
     }
 
 
@@ -139,20 +162,33 @@ def run(root, plan, output, secret):
         bundle = verify_bundle(root)
         args = modes.parser().parse_args([])
         args.__dict__.update(plan["settings"])
-        if args.backend != "openrouter" or args.headed or plan["simulate"] == args.real:
+        if args.backend not in KEY_ENV or args.headed or plan["simulate"] == args.real:
             raise ValueError("invalid cloud mode plan")
         args.video = [root / name for name in bundle["videos"]]
         args.output = output
         modes.validate(args)
         # Do not inherit credentials from the instance or load an unrelated .env.
         os.environ["PYTHON_DOTENV_DISABLED"] = "1"
-        for name in ("INFERENCE_API_KEY", "OPENROUTER_API_KEY"):
+        for name in ("INFERENCE_API_KEY", "MODEL_API_KEY", *KEY_ENV.values()):
             os.environ.pop(name, None)
+        if args.real and args.record:
+            # Fail before paid inference if twelve panes, playback or encoding
+            # cannot be captured on this host. Keep this clearly simulated.
+            write_json(
+                status,
+                {"state": "preflight", "job": "recording-check", "pid": os.getpid()},
+            )
+            check = deepcopy(args)
+            check.real, check.duration, check.repeats = False, 3, 1
+            check.warmup_seconds, check.soak_seconds = 3, 0
+            check.streams = [max(args.streams)]
+            check.output = root.parent / "recording-check"
+            modes.run(check)
         if args.real:
             key = json.loads(Path(secret).read_text())["key"].strip()
             if not key:
-                raise ValueError("missing OpenRouter credential")
-            os.environ["OPENROUTER_API_KEY"] = key
+                raise ValueError("missing selected API credential")
+            os.environ[KEY_ENV[args.backend]] = key
         if secret:
             Path(secret).unlink(missing_ok=True)
         write_json(status, {"state": "running", "job": "preflight", "pid": os.getpid()})
@@ -172,7 +208,8 @@ def run(root, plan, output, secret):
             reporter.join(timeout=5)
         if secret:
             Path(secret).unlink(missing_ok=True)
-        os.environ.pop("OPENROUTER_API_KEY", None)
+        for name in KEY_ENV.values():
+            os.environ.pop(name, None)
         if lock_fd is not None:
             os.close(lock_fd)
         write_json(status, {"state": state, "reason": reason, "pid": os.getpid()})

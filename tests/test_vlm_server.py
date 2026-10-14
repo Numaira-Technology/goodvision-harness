@@ -27,6 +27,7 @@ from goodvision_harness.vlm_compact_model import (
     EventJSONInspector,
 )
 from goodvision_harness.vlm_independent_model import IndependentVLMInspector
+from goodvision_harness.vlm_lean_grounding import LeanGroundingInspector
 from goodvision_harness.vlm_offload import decode_inspection, encode_inspection
 from goodvision_harness.vlm_server import VLMServerSettings, create_app
 
@@ -63,6 +64,10 @@ def _reply(kind="full"):
         content = {"smoking": False}
     elif kind == "compact":
         content = {"no_events": 0.9}
+    elif kind == "lean-v1":
+        content = {"v": 1, "s": [], "e": {
+            "smoking": [{"p": [], "d": False, "c": 0.9}],
+        }}
     elif kind == "temporal":
         content = [
             {
@@ -125,13 +130,18 @@ def test_wire_roundtrip_retains_originals_without_decoding(monkeypatch):
     assert decoded.kind == "full"
 
 
-@pytest.mark.parametrize("kind", ["temporal", "full", "compact", "events"])
-def test_cpu_prompt_and_parser_reuse_for_every_lane(monkeypatch, kind):
+@pytest.mark.parametrize("kind,profile", [
+    ("temporal", "main-baseline"),
+    *[(kind, profile) for kind in ("full", "compact", "events", "lean-v1")
+      for profile in ("main-baseline", "research-v1")],
+])
+def test_cpu_prompt_and_parser_reuse_for_every_lane(monkeypatch, kind, profile):
     cls = {
         "temporal": TemporalVLMInspector,
         "full": IndependentVLMInspector,
         "compact": CompactGroundingInspector,
         "events": EventJSONInspector,
+        "lean-v1": LeanGroundingInspector,
     }[kind]
     reference = cls(
         ModelAPISettings(provider="local"),
@@ -139,6 +149,7 @@ def test_cpu_prompt_and_parser_reuse_for_every_lane(monkeypatch, kind):
         request_parameters={"temperature": 0},
         max_image_side=32,
         jpeg_quality=40,
+        **({"event_policy": profile} if kind != "temporal" else {}),
     )
     expected = reference.build_messages(_job())
     reference.close()
@@ -151,8 +162,11 @@ def test_cpu_prompt_and_parser_reuse_for_every_lane(monkeypatch, kind):
 
     monkeypatch.setattr(scene_inspection, "_read_image", read_image)
     app, seen = _app(lambda _: httpx.Response(200, json=_reply(kind)))
+    wire = _wire(kind)
+    if profile != "main-baseline":
+        wire["event_policy"] = profile
     with TestClient(app) as client:
-        response = client.post("/v1/inspections", json=_wire(kind))
+        response = client.post("/v1/inspections", json=wire)
     assert response.status_code == 200
     envelope = response.json()
     assert envelope["version"] == 1

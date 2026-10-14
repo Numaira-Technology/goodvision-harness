@@ -1,0 +1,87 @@
+# VLM 事件判断与评测的统一口径
+
+显式选择 `research-v1` 时，独立 VLM 分支的 `events`、`full`、`compact`
+（grounding）和 `parallel` 的两条请求共用 `vlm_event_policy.py` 的事件判断文本。只在共同文本之后追加输出格式。
+沿用项目默认敏感度：吸烟 `high`，其余五类 `standard`；显式选择的敏感度仍生效。
+这是规则统一与可追溯改动，不能据此宣称识别准确率已提高。
+
+
+## Research branch selection and baseline
+
+The service and `VLMProcessConfig` default to `event_policy="main-baseline"`,
+`grounding_format="legacy"`, `parallel_scheduling="independent"`, and
+`retain_historical_results=False`. Default inspectors retain the exact main
+system prompts, including their mode-specific instructions. Research policy
+selection does not change the production event vocabulary.
+
+The general mode runner defaults to the main policy. Select the shared donor
+policy explicitly with `--event-policy research-v1`; use `--grounding-format
+lean-v1` and `--parallel-scheduling paired` independently to compare those
+experiments. Manifests and reports record the selected profile and fingerprint.
+The CPU companion propagates the profile so delegated and direct requests use
+the same policy. Deploy this version of the companion for research-v1 requests.
+
+Research runners explicitly set `retain_historical_results=True` and record it:
+every completed evaluation remains available for delivery accounting, while
+superseded results cannot roll back current snapshots. This is instrumentation
+for a benchmark run; the service keeps main's default publication behavior.
+
+The fixed Qwen/Alibaba and concurrency protocols explicitly choose research-v1.
+The frozen-evidence behavior comparison also uses research-v1 and requires its
+matching annotation fingerprint. Keep old packets and reports unchanged; a
+main-baseline packet cannot be relabelled as research-v1. Main-baseline exports
+fingerprint the shared evidence sensitivities; its legacy mode prompts remain
+separate, so the shared-policy agreement claims below apply to research-v1.
+
+## 六类事件的当前规则
+
+- 打架：明确击打、踢、推搡、攻击姿态等；保留当前项目允许单人明确拳击/击打动作
+  的口径，不要求接触。它的范围比日常所说的“两人打架”宽。
+- 吸烟：默认高敏感度允许有可见依据的疑似吸烟动作，不要求认清烟具；明显进食、
+  饮水或擦脸为阴性。阳性表示满足高敏感度规则，不等于确认看清香烟或烟雾。
+  若选择标准敏感度，则必须认清烟具且有相容动作。
+- 跌倒：标准敏感度要求失衡、失去支撑、不受控下降或倒下证据；稳定蹲、跪、弯腰、
+  坐卧或单纯身体在地面不够。使用连续动作判断。
+- 武器：标准敏感度要求可辨认的武器特征；普通物体只有明确被用于攻击或威胁他人
+  才作为临时武器。形状细长、握拳、搬放物品本身不够。
+- 防护违规：逐人检查安全头盔与反光服，任一明确缺失即可为阳性；遮挡、模糊或
+  裁切不代表缺失。不能因为未发生其他动作而跳过防护检查。
+- 地面垃圾：可见的废弃垃圾放在地面即可，无需有人或看到丢弃动作；手持物、垃圾桶
+  内容、阴影、地面标线和正常存放工具材料不算垃圾。
+
+## 同一答案在两种输出里的含义
+
+`true`：符合所选规则；`false`：已评估且不符合；`null`：按所选规则仍证据不足。
+同一场景中任一人阳性，则场景阳性；无人阳性但有不确定，则场景不确定；全部阴性
+才是场景阴性。最新帧是判断时点，前面的帧提供动作上下文。
+
+grounding 的框、人物编号和置信度是附加输出。无法画框不应让事件变为阴性；
+置信度不额外改变事件阈值。缺失类别或失败请求不当作“没有事件”。
+评测比较 `observed_detected`，不用受后续定位、关联、确认影响的 `detected` 代替。
+统一提示词不意味着相同模型每次必然给出相同答案。
+
+## 标注与结果的版本
+
+每份新 VLM 报告记录 `event_policy`（版本、判断文本 SHA-256、类别和敏感度）。
+三模式测试目录同时输出 `event-policy.json`，包含与模型完全相同的规则以及标注要求；
+`manifest.json` 记录相同的指纹。输出格式不同不会改变指纹，规则或敏感度改变会改变。
+
+重新标注时只看原画面，使用相同证据窗口与全场景范围，逐类保留不确定，并保存视频
+哈希、证据时间和规则指纹。不要看模型预测后倒推标签。AI 自动标注的指标仍只能叫
+“与自动标注的一致性”，不能称为已验证的真实准确率。
+
+旧 Astra 标注未记录这版规则，且单人挥拳定义不同、吸烟/跌倒有不确定片段、另外
+三类参考不足。保留原标注和旧报告；只有按统一规则独立复标后的参考才能进入新一轮
+正式一致性评分。不能直接将旧标注改成模型答案，也不能将旧成绩标成新版规则结果。
+
+## 接下来的验证
+
+按当前测试范围，固定 Qwen3-VL-30B-A3B，服务商自动路由，直接做十二路 events/grounding
+同帧对照，同时检查逐类一致性、疑似误报/漏报、不确定、请求完成情况及排队延迟。
+两模式分阶段运行，共用冻结证据与规则；十二路重复相同素材，不增加独立场景数。
+单路与十二路未在此次作配对，不能从这个测试推断并发是否造成识别质量变化。
+
+脚本、计划、离线验证、实测入口和计分说明见
+[十二路事件质量与队列对照](vlm-behavior-compare.md)。该测试使用生产共享 admission，
+不包括摄像头解码、浏览器显示或框跟踪。补齐各类正例、易混淆负例与不确定例仍有必要。
+后续改观察时长、局部放大或复核方式时，一次只改一个因素，并记录延迟与调用量。

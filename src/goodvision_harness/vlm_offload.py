@@ -16,11 +16,12 @@ from .event_sensitivity import normalize_event_sensitivities
 from .runtime.scene import TemporalInspection
 from .runtime.scheduling import EvidenceFrame, InspectionRequest
 from .scene_inspection import _validate_job
+from .vlm_event_policy import EVENT_POLICY_PROFILES
 
 MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
 MAX_REQUEST_BYTES = 23 * 1024 * 1024
 MAX_COMPLETION_BYTES = 256 * 1024
-INSPECTION_KINDS = frozenset({"temporal", "full", "compact", "events"})
+INSPECTION_KINDS = frozenset({"temporal", "full", "compact", "events", "lean-v1"})
 _OPTION_DEFAULTS = {"max_tokens": 1600, "max_image_side": 720, "jpeg_quality": 90}
 
 
@@ -32,6 +33,7 @@ class InspectionPayload:
     parameters: dict[str, Any]
     options: dict[str, int]
     deadline_seconds: float
+    event_policy: str = "main-baseline"
 
 
 def _text(value: object, *, maximum: int = 512) -> str:
@@ -100,7 +102,10 @@ def _parameters(value: object) -> dict[str, Any]:
     return copy.deepcopy(dict(value))
 
 
-def encode_inspection(job, kind, model, parameters, options, deadline_seconds):
+def encode_inspection(
+    job, kind, model, parameters, options, deadline_seconds,
+    *, event_policy="main-baseline",
+):
     """Serialize original JPEGs without opening, resizing or re-encoding pixels."""
     _validate_job(job)
     if kind not in INSPECTION_KINDS:
@@ -108,8 +113,12 @@ def encode_inspection(job, kind, model, parameters, options, deadline_seconds):
     deadline = _number(deadline_seconds)
     if not 0 < deadline <= 300:
         raise ValueError("invalid inspection deadline")
+    if event_policy not in EVENT_POLICY_PROFILES or (
+        kind == "temporal" and event_policy != "main-baseline"
+    ):
+        raise ValueError("invalid event policy profile")
     request = job.request
-    return {
+    envelope = {
         "version": 1,
         "kind": kind,
         "model": _text(model),
@@ -147,11 +156,14 @@ def encode_inspection(job, kind, model, parameters, options, deadline_seconds):
             "grounding_required": job.grounding_required,
         },
     }
+    if event_policy != "main-baseline":
+        envelope["event_policy"] = event_policy
+    return envelope
 
 
 def decode_inspection(payload: object) -> InspectionPayload:
     """Validate untrusted metadata and byte bounds before any pixel decoding."""
-    if not isinstance(payload, dict) or set(payload) != {
+    if not isinstance(payload, dict) or set(payload) - {"event_policy"} != {
         "version",
         "kind",
         "model",
@@ -161,6 +173,11 @@ def decode_inspection(payload: object) -> InspectionPayload:
         "job",
     }:
         raise ValueError("invalid inspection envelope")
+    event_policy = payload.get("event_policy", "main-baseline")
+    if event_policy not in EVENT_POLICY_PROFILES or (
+        payload.get("kind") == "temporal" and event_policy != "main-baseline"
+    ):
+        raise ValueError("invalid event policy profile")
     if type(payload["version"]) is not int or payload["version"] != 1:
         raise ValueError("unsupported inspection version")
     kind = payload["kind"]
@@ -290,4 +307,5 @@ def decode_inspection(payload: object) -> InspectionPayload:
         _parameters(payload["parameters"]),
         _options(payload["options"]),
         deadline,
+        event_policy,
     )

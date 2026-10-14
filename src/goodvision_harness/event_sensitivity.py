@@ -66,8 +66,8 @@ EVENT_SENSITIVITY_OPTIONS = {
 
 
 for _label, _description in {
-    "ppe_violation": "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",
-    "ground_litter": "地面上可见被丢弃的垃圾；无需有人在场",
+    "ppe_violation": "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",  # noqa: RUF001
+    "ground_litter": "地面上可见被丢弃的垃圾；无需有人在场",  # noqa: RUF001
 }.items():
     EVENT_SENSITIVITY_OPTIONS[_label] = [
         {"value": level, "label": title, "description": _description}
@@ -245,6 +245,7 @@ def sensitivity_policy_text(
     *,
     smoking_standard_rule: str,
     include_output_guidance: bool = True,
+    include_confidence_guidance: bool = True,
 ) -> str:
     """Render evidence criteria, optionally with grounding output instructions.
 
@@ -258,6 +259,16 @@ def sensitivity_policy_text(
         else:
             key = (label, level)
             rule = _EVIDENCE_POLICIES[key]
+            if not include_confidence_guidance:
+                # Research formats share evidence criteria while confidence
+                # guidance remains output-specific. Default text stays exact.
+                for before, after in (
+                    ("; lower confidence for ambiguous aggression.", "."),
+                    ("Use lower confidence for ambiguity. ", ""),
+                    ("Lower confidence when uncertain; ", ""),
+                    ("Lower confidence if uncertain. ", ""),
+                ):
+                    rule = rule.replace(before, after)
             if include_output_guidance:
                 rule = _GROUNDING_POLICIES.get(key, rule)
             rules.append(rule)

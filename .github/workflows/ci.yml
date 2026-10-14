@@ -3,7 +3,7 @@ name: Regression tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, codex/research-testing]
 
 permissions:
   contents: read
@@ -47,8 +47,17 @@ jobs:
       - name: Install video encoder (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
+      # Keep the real-time receiver stress check out of the long-lived pytest
+      # process. Its frame-rate requirement must not include resources retained
+      # by thousands of unrelated tests; all original assertions still run.
+      - name: Run isolated WHEP receiver stress check
+        id: whep
+        run: python -m pytest -o addopts='' -v --durations=20 -o faulthandler_timeout=60 tests/test_whep_integration.py
       - name: Run regression suite (no models or service credentials)
-        run: python -m pytest -q
+        if: ${{ !cancelled() && steps.whep.outcome != 'skipped' }}
+        # Keep active test/thread stacks visible and exercise the shared
+        # benchmark package in the same isolated research regression run.
+        run: python -m pytest -o addopts='' -v --durations=20 -o faulthandler_timeout=60 --ignore=tests/test_whep_integration.py tests benchmark/tests
 
   gateway-video-integration:
     name: Two-route WHEP gateway (Linux container)

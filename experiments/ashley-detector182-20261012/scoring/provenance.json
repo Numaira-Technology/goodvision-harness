@@ -1,0 +1,11 @@
+{
+  "repository": "Numaira-Technology/goodvision",
+  "pull_request": 63,
+  "merge_commit": "253935fc944fd8ff05ae84c1f3a987c035141578",
+  "source_path": "evaluation/lmms_eval/tasks/benchmark_v1/scoring.py",
+  "source_url": "https://github.com/Numaira-Technology/goodvision/blob/253935fc944fd8ff05ae84c1f3a987c035141578/evaluation/lmms_eval/tasks/benchmark_v1/scoring.py",
+  "git_blob_sha": "d9fd01d70c1f8df0487bc700151794fd17e18f63",
+  "local_sha256": "956982bd59015fbd8591c9e8e5e5c58397189ab4d9e908428668094a84c53d43",
+  "dependency": "numpy==2.3.5",
+  "dependency_origin": "本机正式离线准备所用固定 Python runtime 的 numpy dist-info"
+}

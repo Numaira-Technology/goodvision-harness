@@ -1,0 +1,2501 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GoodVision | Deployment Console</title>
+<style>
+:root{--bg:#f7f8fb;--surface:#fff;--soft:#f3f5f9;--line:#e4e8ef;--text:#17202e;--muted:#5d6b80;--orange:#ff7a1a;--green:#16a34a;--red:#dc2626;--amber:#d97706;--blue:#2563eb;--gray:#64748b;font-size:16px}
+*{box-sizing:border-box;margin:0;padding:0}body{padding:22px clamp(14px,3vw,36px) 48px;color:var(--text);background:linear-gradient(180deg,#fff 0,#f7f8fb 240px);font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:14px;margin-bottom:18px}.brand{display:grid;gap:3px}.brand-subtitle{color:var(--muted);font-size:12.5px}
+h1{font-size:clamp(20px,2.4vw,30px);letter-spacing:-.03em}h1 span{color:var(--orange)}
+.chips,.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.chip{padding:4px 12px;color:var(--muted);background:#f8fafc;border:1px solid var(--line);border-radius:999px;font-size:12px}.chip b{color:var(--text)}
+.grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(340px,2fr);gap:18px}.data{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel{min-width:0;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 2px rgba(23,32,46,.04)}
+.stack{display:flex;flex-direction:column;gap:14px}.head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:7px}.head h2{color:var(--muted);font-size:13px;letter-spacing:.08em;text-transform:uppercase}.head span{color:#8a96a8;font-size:11.5px}
+.viewport{position:relative;height:min(38vh,390px);min-height:240px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#eef1f6;border:1px solid var(--line);border-radius:12px}
+.viewport img,.viewport video{position:absolute;inset:0;display:none;width:100%;height:100%;object-fit:contain;background:#0b0f16;z-index:1}.bbox-layer{position:absolute;display:none;pointer-events:none;z-index:2}.bbox-box{position:absolute;border:3px solid #ef4444;border-radius:4px;box-shadow:0 0 0 1px rgba(255,255,255,.75) inset}.bbox-box span{position:absolute;left:-3px;top:-25px;max-width:300px;padding:3px 7px;color:#fff;background:#dc2626;border-radius:4px;font-size:11px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bbox-box.face-known{border-color:var(--green)}.bbox-box.face-known span{background:#15803d}.bbox-box.face-unknown{border-color:var(--red)}.bbox-box.face-unknown span{background:#b91c1c}.bbox-box.face-unusable{border-color:var(--gray)}.bbox-box.face-unusable span{background:#475569}.analysis-hud{position:absolute;left:10px;right:10px;top:10px;display:grid;gap:3px;padding:9px 11px;color:#fff;background:rgba(22,101,52,.88);border-radius:7px;box-shadow:0 2px 10px rgba(0,0,0,.25)}.analysis-hud.hud-positive,.analysis-hud.hud-face-unknown{background:rgba(185,28,28,.9)}.analysis-hud.hud-face-neutral{background:rgba(71,85,105,.9)}.hud-title{font-size:14px;font-weight:850;letter-spacing:.04em}.hud-description{font-size:12px;line-height:1.35}.hud-meta{font-size:10.5px;opacity:.88}.placeholder{padding:24px;color:#8894a6;text-align:center;font-size:13px;line-height:1.55}
+.badge{z-index:3;position:absolute;top:10px;right:10px;display:none;align-items:center;gap:7px;padding:5px 10px;color:#fff;background:rgba(15,23,42,.8);border-radius:999px;font-size:11.5px;font-weight:700}.dot{width:7px;height:7px;background:#f87171;border-radius:50%;animation:pulse 1.1s infinite}@keyframes pulse{50%{opacity:.25}}
+.seg{display:inline-flex;padding:3px;background:var(--soft);border:1px solid var(--line);border-radius:10px}.seg button{padding:7px 16px;color:var(--muted);background:transparent;border:0;border-radius:8px;font-weight:650;cursor:pointer}.seg button.active{color:var(--text);background:#fff;box-shadow:0 1px 3px rgba(23,32,46,.12)}
+button,input{font:inherit}.btn{padding:8px 16px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px;font-size:13.5px;font-weight:650;cursor:pointer}.btn:disabled,.seg button:disabled{opacity:.38;cursor:default}.primary{padding:10px 24px;color:#fff;background:var(--orange);border-color:transparent;font-size:15px}.danger{color:#b91c1c;background:#fdf1f1;border-color:rgba(220,38,38,.3)}
+a{color:#c2410c;text-decoration:none;font-weight:700}a:hover{text-decoration:underline}
+.field select{min-height:38px;padding:8px 12px;font:inherit;font-size:13px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px}
+.field{display:flex;flex-direction:column;gap:5px;min-width:0}.field.grow{flex:1 1 360px}.field>span{color:var(--muted);font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+input[type=text],input[type=url],input[type=password],input[type=file],input[type=number]{width:100%;min-width:180px;padding:8px 12px;color:var(--text);border:1px solid var(--line);border-radius:10px;font-size:13.5px}input[type=text]:focus,input[type=url]:focus,input[type=password]:focus,input[type=file]:focus,input[type=number]:focus{outline:2px solid rgba(255,122,26,.42);border-color:transparent}
+.inline{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13.5px}.note,.status{color:var(--muted);font-size:12.5px;line-height:1.5}.status.error,.note.error{color:var(--red)}.notice{margin-bottom:18px;padding:10px 12px;color:#9a3412;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;font-size:12.5px;line-height:1.5}
+.decision{flex:1;min-height:390px;display:flex;flex-direction:column;justify-content:center;gap:14px;padding:clamp(22px,3vw,40px);background:linear-gradient(#fbfcfe,#f4f6fa);border:2px solid #d8dee9;border-radius:14px}.decision .eyebrow{color:var(--muted);font-size:12.5px;font-weight:750;letter-spacing:.18em;text-transform:uppercase}.verdict{font-size:clamp(40px,5.2vw,76px);font-weight:850;line-height:.95;letter-spacing:-.04em;overflow-wrap:anywhere}.confidence{color:var(--muted);font-size:20px;font-weight:650}.event-statuses{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.event-state{display:flex;justify-content:space-between;gap:8px;padding:8px 10px;color:#15803d;background:rgba(22,163,74,.09);border-radius:9px;font-size:12px;font-weight:750;text-transform:uppercase}.event-state.detected{color:var(--red);background:rgba(220,38,38,.1)}.event-state.pending{color:var(--gray);background:#e2e8f0}.description{color:#3f4a5c;font-size:15.5px;line-height:1.55}.meta{color:var(--muted);font-size:13px;line-height:1.5}.detected{border-color:var(--red);background:linear-gradient(#fef2f2,#fde8e8)}.detected .verdict{color:var(--red)}.clear{border-color:var(--green);background:linear-gradient(#f0fdf4,#e6f9ec)}.clear .verdict{color:#15803d}.warming{border-color:#e0c391}.warming .verdict{color:#8a94a6}
+.data{grid-template-columns:minmax(280px,2fr) minmax(340px,3fr);gap:18px;margin-top:18px}.data .panel{display:flex;flex-direction:column;gap:10px}pre{min-height:210px;max-height:420px;overflow:auto;padding:12px;color:#334155;background:#f8fafc;border:1px solid var(--line);border-radius:12px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.log{margin-top:18px}.scroll{max-height:310px;overflow:auto;margin-top:10px;border:1px solid var(--line);border-radius:12px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #eef1f5;white-space:nowrap}th{position:sticky;top:0;background:#f8fafc;color:var(--muted);font-size:11.5px;text-transform:uppercase}td:last-child{min-width:260px;color:var(--muted);white-space:normal}.pill{padding:2px 10px;border-radius:999px;font-size:11.5px;font-weight:750}.pill.yes{color:var(--red);background:#fee2e2}.pill.no{color:#15803d;background:#dcfce7}.pill.neutral{color:#475569;background:#e2e8f0}.face-gallery{padding:12px;background:#f8fafc;border:1px solid var(--line);border-radius:12px}.face-fields{display:grid;grid-template-columns:minmax(130px,1fr) minmax(150px,1fr) minmax(220px,2fr) auto;align-items:end;gap:10px}.face-list{max-height:180px;margin-top:10px}.face-list td:last-child{min-width:auto}.face-list .btn{padding:5px 10px;font-size:12px}[hidden]{display:none!important}
+.control-panel{margin-bottom:18px}.control-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(280px,1fr);gap:14px}.control-block,.connection-card{padding:14px;background:#fbfcfe;border:1px solid var(--line);border-radius:12px}.control-block{display:grid;gap:12px}.connection-card{display:flex;flex-direction:column;justify-content:space-between;gap:12px}.section-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.step{display:inline-grid;place-items:center;width:24px;height:24px;color:#fff;background:var(--orange);border-radius:8px;font-size:12px;font-weight:850}.section-title h2{color:var(--text);font-size:15px;letter-spacing:-.01em;text-transform:none}.scope{padding:3px 8px;border-radius:999px;font-size:10.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase}.scope.persistent{color:#1d4ed8;background:#dbeafe}.scope.temporary{color:#9a3412;background:#ffedd5}.deployment-panel{margin-bottom:18px;border-left:4px solid var(--blue)}.deployment-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}.deployment-title{display:grid;gap:5px}.deployment-grid{display:grid;grid-template-columns:minmax(280px,2fr) minmax(250px,1fr);gap:12px;margin-top:14px}.deployment-fields,.deployment-options{display:grid;gap:10px;padding:13px;background:#f8fafc;border:1px solid var(--line);border-radius:12px}.deployment-options{align-content:start}.deployment-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}.deployment-note{min-height:19px;margin-top:8px}.secret-status{color:var(--muted);font-size:11.5px;line-height:1.4}.state-line{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.state-orb{width:10px;height:10px;background:var(--gray);border-radius:50%;box-shadow:0 0 0 4px rgba(100,116,139,.12)}.state-orb.good{background:var(--green);box-shadow:0 0 0 4px rgba(22,163,74,.12)}.state-orb.warn{background:var(--amber);box-shadow:0 0 0 4px rgba(217,119,6,.12)}.state-orb.bad{background:var(--red);box-shadow:0 0 0 4px rgba(220,38,38,.12)}.state-name{font-size:19px;font-weight:800}.state-detail{color:var(--muted);font-size:12.5px;line-height:1.45}.session-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.switch{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;background:#fff;border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:12.5px}.switch input{accent-color:var(--orange)}.error-banner{padding:9px 11px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:9px;font-size:12.5px;line-height:1.45}.output-console{margin-top:18px}.metrics{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px;margin-top:12px}.metric{padding:12px;background:#f8fafc;border:1px solid var(--line);border-radius:11px}.metric-label{display:block;margin-bottom:4px;color:var(--muted);font-size:10.5px;font-weight:750;letter-spacing:.08em;text-transform:uppercase}.metric-value{font-size:22px;font-weight:820;letter-spacing:-.03em}.metric-note{display:block;margin-top:3px;color:#8792a4;font-size:11px}.endpoint-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:9px;margin-top:12px}.endpoint{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 11px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:10px;font-size:12.5px;font-weight:720}.endpoint:hover{border-color:rgba(255,122,26,.55);box-shadow:0 2px 8px rgba(23,32,46,.06);text-decoration:none}.endpoint small{color:var(--muted);font-size:10px;font-weight:600}.channel-row{display:flex;gap:8px;flex-wrap:wrap}.channel{padding:4px 9px;color:var(--gray);background:#eef2f7;border-radius:999px;font-size:11px;font-weight:750}.channel.good{color:#166534;background:#dcfce7}.channel.warn{color:#92400e;background:#fef3c7}.face-diagnostic{margin-bottom:12px;padding:11px 12px;background:#f8fafc;border-left:4px solid var(--gray);border-radius:8px}.face-diagnostic.error{color:#991b1b;background:#fef2f2;border-left-color:var(--red)}.gallery-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.gallery-head-actions .btn{padding:5px 10px;font-size:12px}.debug-head{align-items:center}.debug-head .channel-row{justify-content:flex-end}.muted-link{font-size:11.5px}.control-source-row{display:flex;align-items:end;gap:10px;flex-wrap:wrap}.control-source-row .field.grow{min-width:240px}.session-note{min-height:19px}.face-panel{margin-top:18px}.face-panel>.section-title{margin-bottom:12px}
+.feature-select{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.feature-select .switch{padding:6px 9px}.feature-select .switch:has(input:not(:checked)){opacity:.58}
+.analysis-workspace{position:relative}.annotation-panel,.annotation-main{min-height:0}.annotation-panel{position:relative}.annotation-main{display:flex;flex:1;flex-direction:column}.annotation-head{align-items:center}.annotation-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}.viewport-control,.overlay-toggle{display:inline-flex;min-height:36px;align-items:center;justify-content:center;gap:7px;padding:7px 10px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:9px;font-size:12px;font-weight:750;line-height:1;cursor:pointer}.viewport-control:hover,.overlay-toggle:hover{border-color:rgba(255,122,26,.65);box-shadow:0 2px 8px rgba(23,32,46,.08)}.viewport-control:focus-visible,.overlay-toggle:focus-visible{outline:3px solid rgba(255,122,26,.4);outline-offset:2px}.viewport-control svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8}.detection-rail-head{display:none;align-items:center;justify-content:space-between;gap:10px}.detection-rail-title{display:flex;align-items:center;gap:7px;color:#fff;font-size:11px;font-weight:850;letter-spacing:.1em;text-transform:uppercase}.detection-rail-dot{width:7px;height:7px;background:#fb7185;border-radius:50%;box-shadow:0 0 0 4px rgba(251,113,133,.15)}
+.analysis-workspace.fullscreen-active{width:100vw;height:100vh;padding:0;overflow:hidden;background:#030712}.analysis-workspace:fullscreen{width:100vw;height:100vh;padding:0;overflow:hidden;background:#030712}.analysis-workspace:-webkit-full-screen{width:100vw;height:100vh;padding:0;overflow:hidden;background:#030712}.analysis-workspace::backdrop{background:#030712}.analysis-workspace.fullscreen-active .annotation-panel{position:absolute;inset:0;display:flex;height:100%;padding:0;overflow:hidden;background:#030712;border:0;border-radius:0;box-shadow:none}.analysis-workspace.fullscreen-active .annotation-main{height:100%}.analysis-workspace.fullscreen-active .annotation-head{z-index:7;position:absolute;top:max(14px,env(safe-area-inset-top));left:max(14px,env(safe-area-inset-left));max-width:calc(100% - 380px);margin:0;padding:7px 8px;color:#fff;background:rgba(3,7,18,.62);border:1px solid rgba(255,255,255,.14);border-radius:11px;backdrop-filter:blur(14px);box-shadow:0 8px 24px rgba(0,0,0,.18)}.analysis-workspace.fullscreen-active .annotation-head .section-title h2{color:#fff;font-size:12px}.analysis-workspace.fullscreen-active .annotation-head .step{width:21px;height:21px;border-radius:7px}.analysis-workspace.fullscreen-active .annotation-actions{flex-wrap:wrap}.analysis-workspace.fullscreen-active .annotation-actions #stream-meta{color:#dbe4f3}.analysis-workspace.fullscreen-active .viewport-control{color:#fff;background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.16)}.analysis-workspace.fullscreen-active .viewport{flex:1;width:100%;height:100%;min-height:0;background:#000;border:0;border-radius:0}.analysis-workspace.fullscreen-active .annotation-note{display:none}.analysis-workspace.fullscreen-active .analysis-hud{display:none}.analysis-workspace.fullscreen-active .badge{top:auto;right:max(14px,env(safe-area-inset-right));bottom:max(14px,env(safe-area-inset-bottom));left:auto}.analysis-workspace.fullscreen-active .classification-panel{z-index:8;position:absolute;top:max(14px,env(safe-area-inset-top));right:max(14px,env(safe-area-inset-right));width:min(320px,calc(100vw - 28px));max-height:calc(100vh - 28px);padding:10px;overflow:auto;color:#fff;background:rgba(8,15,27,.72);border:1px solid rgba(255,255,255,.16);border-radius:14px;backdrop-filter:blur(18px) saturate(1.2);box-shadow:0 18px 45px rgba(0,0,0,.3);transition:width .18s ease,background .18s ease}.analysis-workspace.fullscreen-active .detection-rail-head{display:flex;margin-bottom:8px}.analysis-workspace.fullscreen-active .overlay-toggle{min-height:30px;padding:5px 8px;color:#e5edf8;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);font-size:11px}.analysis-workspace.fullscreen-active .decision{min-height:0;gap:8px;padding:12px;color:#fff;background:rgba(15,23,42,.62);border:1px solid rgba(148,163,184,.38);border-radius:10px}.analysis-workspace.fullscreen-active .decision.detected{background:rgba(127,29,29,.64);border-color:rgba(248,113,113,.8)}.analysis-workspace.fullscreen-active .decision.clear{background:rgba(20,83,45,.58);border-color:rgba(74,222,128,.65)}.analysis-workspace.fullscreen-active .decision.warming{background:rgba(51,65,85,.58);border-color:rgba(148,163,184,.5)}.analysis-workspace.fullscreen-active .decision.detected .verdict{color:#fecaca}.analysis-workspace.fullscreen-active .decision.clear .verdict{color:#bbf7d0}.analysis-workspace.fullscreen-active .decision.warming .verdict{color:#e2e8f0}.analysis-workspace.fullscreen-active .decision .eyebrow{color:#cbd5e1;font-size:10px}.analysis-workspace.fullscreen-active .verdict{font-size:clamp(22px,3.2vw,34px);line-height:1;letter-spacing:-.025em}.analysis-workspace.fullscreen-active .confidence{color:#e2e8f0;font-size:12px}.analysis-workspace.fullscreen-active .event-statuses{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}.analysis-workspace.fullscreen-active .event-state{gap:5px;padding:6px 7px;color:#bbf7d0;background:rgba(22,163,74,.2);font-size:10px}.analysis-workspace.fullscreen-active .event-state.detected{color:#fecaca;background:rgba(220,38,38,.3)}.analysis-workspace.fullscreen-active .event-state.pending{color:#cbd5e1;background:rgba(100,116,139,.26)}.analysis-workspace.fullscreen-active .description{display:-webkit-box;overflow:hidden;color:#f1f5f9;font-size:11.5px;line-height:1.4;-webkit-box-orient:vertical;-webkit-line-clamp:2}.analysis-workspace.fullscreen-active .meta{overflow:hidden;color:#cbd5e1;font-size:10.5px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed{width:auto;max-width:min(260px,calc(100vw - 28px));overflow:hidden;background:rgba(8,15,27,.62)}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed .detection-rail-head{margin:0}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed .decision{display:block;margin-top:7px;padding:7px 9px}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed .decision>:not(.verdict){display:none!important}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed .verdict{max-width:210px;overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:1050px){.grid,.data,.control-grid,.deployment-grid{grid-template-columns:1fr}.metrics,.endpoint-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}@media(max-width:720px){.viewport{height:300px}.decision{min-height:300px}.face-fields,.metrics,.endpoint-grid{grid-template-columns:1fr}.control-source-row{align-items:stretch}.session-actions .btn,.deployment-actions .btn{flex:1}.debug-head{align-items:flex-start;flex-direction:column}}
+@media(max-width:720px){.analysis-workspace.fullscreen-active .annotation-head{right:max(10px,env(safe-area-inset-right));left:max(10px,env(safe-area-inset-left));max-width:none}.analysis-workspace.fullscreen-active .annotation-head .section-title h2,.analysis-workspace.fullscreen-active .annotation-head .step{display:none}.analysis-workspace.fullscreen-active .classification-panel{top:auto;right:max(10px,env(safe-area-inset-right));bottom:max(10px,env(safe-area-inset-bottom));left:max(10px,env(safe-area-inset-left));width:auto;max-height:38vh}.analysis-workspace.fullscreen-active .classification-panel.overlay-collapsed{right:max(10px,env(safe-area-inset-right));bottom:max(10px,env(safe-area-inset-bottom));left:auto;max-width:calc(100vw - 20px)}.analysis-workspace.fullscreen-active .badge{top:max(68px,calc(env(safe-area-inset-top) + 58px));right:max(10px,env(safe-area-inset-right));bottom:auto}.analysis-workspace.fullscreen-active .description{-webkit-line-clamp:1}.analysis-workspace.fullscreen-active .meta{display:none}}
+.frame-summary{display:grid;gap:7px;padding:13px 15px;background:#f8fafc;border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:10px}.frame-summary-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:5px 12px}.frame-summary h3{font-size:12px;font-weight:750;color:var(--text)}.frame-summary-meta{color:var(--muted);font-size:11px}.frame-summary-text{color:#334155;font-size:14px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap;max-height:150px;overflow:auto}
+.scene-panel{margin-top:18px}.scene-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:16px;margin-top:14px}.scene-grid h3{font-size:13px;margin-bottom:8px}.scene-list{display:grid;gap:8px;max-height:330px;overflow:auto}.scene-item{padding:10px 12px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}.scene-item.alert{border-left:3px solid var(--red);background:#fff5f5}.scene-item.uncertain{border-left:3px solid var(--amber)}.scene-item strong{display:block;font-size:13px;margin-bottom:4px}.scene-empty{padding:12px;color:var(--muted);font-size:13px;background:#f8fafc;border-radius:10px}.scene-panel .head h2{text-transform:none;letter-spacing:0;font-size:15px;color:var(--text)}@media(max-width:720px){.scene-grid{grid-template-columns:1fr}}
+.analysis-workspace.fullscreen-active .frame-summary{position:absolute;z-index:7;left:16px;right:360px;bottom:16px;background:rgba(8,15,27,.82);border-color:rgba(255,255,255,.2);border-left-color:#60a5fa;backdrop-filter:blur(14px)}.analysis-workspace.fullscreen-active .frame-summary h3,.analysis-workspace.fullscreen-active .frame-summary-text{color:#f1f5f9}.analysis-workspace.fullscreen-active .frame-summary-meta{color:#cbd5e1}.analysis-workspace.fullscreen-active .frame-summary-text{max-height:18vh}
+@media(max-width:720px){.analysis-workspace.fullscreen-active .frame-summary{left:10px;right:10px;bottom:auto;top:110px;padding:10px 12px}.analysis-workspace.fullscreen-active .frame-summary-text{font-size:12px;max-height:15vh}}
+
+.fleet-grid{align-items:start}.fleet-camera-details{padding:14px;border-top:1px solid var(--line);display:grid;gap:12px;background:#fff}.fleet-camera-details[hidden]{display:none}.fleet-camera-details h4{margin:0;font-size:13px}.fleet-sensitivities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.fleet-sensitivities .note{line-height:1.5;font-size:11px}.fleet-detail-summary{font-size:12px;line-height:1.6;color:var(--muted)}.fleet-result-details summary{cursor:pointer;font-size:12px;font-weight:650}.fleet-detail-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;font-size:11px;margin:8px 0 0;padding:10px;background:#f3f5f9;border-radius:8px}.fleet-grid.compact .fleet-card-fields{display:grid}.fleet-grid.compact .fleet-card-fields>.field,.fleet-grid.compact .fleet-source{display:none}.fleet-grid.compact .fleet-card-buttons .btn:not([aria-controls]){display:none}.fleet-grid.compact .fleet-card-detail{display:none}.fleet-grid.compact .fleet-camera-details .fleet-card-detail{display:block}.fleet-grid.compact .fleet-camera-details .fleet-card-buttons .btn{display:inline-flex}#fleet-analysis-state{margin-bottom:12px;line-height:1.7}@media(max-width:420px){.fleet-sensitivities{grid-template-columns:1fr}}
+.fleet-preview canvas{position:absolute;width:100%;height:100%;object-fit:contain}
+.fleet-preview canvas[hidden]{display:none}
+</style>
+<style>
+.fleet-grid.compact{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}.fleet-grid.compact .fleet-card-head{padding:9px 11px}.fleet-grid.compact .fleet-card-head h3{font-size:12px}.fleet-preview{width:100%}
+</style>
+<style>
+.fleet-panel{margin-bottom:18px}.fleet-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.fleet-heading{display:grid;gap:7px}.fleet-heading h2{font-size:19px;letter-spacing:-.02em}.fleet-actions{display:flex;gap:8px;flex-wrap:wrap}.fleet-mode{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#e8f2ff;color:#1d4ed8;border-radius:999px;font-size:11.5px;font-weight:750}.fleet-count{margin:14px 0 10px;font-size:13px;font-weight:700;color:var(--muted)}.fleet-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:14px}.fleet-card{min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:#fbfcfe}.fleet-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 13px}.fleet-card-head h3{font-size:14px}.fleet-camera-state{font-size:11.5px;color:var(--muted);padding:3px 8px;border-radius:999px;background:#edf0f5}.fleet-camera-state.good{color:#166534;background:#dcfce7}.fleet-camera-state.error{color:#991b1b;background:#fee2e2}.fleet-preview{position:relative;aspect-ratio:16/9;background:#111827;display:grid;place-items:center;overflow:hidden}.fleet-preview img{position:absolute;width:100%;height:100%;object-fit:contain}.fleet-preview-note{color:#b5bfd0;padding:20px;text-align:center;font-size:12px;line-height:1.6;z-index:1}.fleet-preview-note.over-image{align-self:end;justify-self:stretch;background:rgba(15,23,42,.8);padding:8px}.fleet-card-fields{padding:12px;display:grid;gap:9px}.fleet-source{font-size:11.5px;color:var(--muted);line-height:1.4}.fleet-card input{min-width:0}.fleet-card .field>span{letter-spacing:0;text-transform:none}.fleet-card select{min-width:0;width:100%}.fleet-card-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.fleet-card-buttons .btn{font-size:12px;padding:7px 10px}.fleet-card-buttons .fleet-remove{margin-left:auto;color:var(--muted)}.fleet-card-detail{font-size:11.5px;min-height:18px;overflow-wrap:anywhere;color:var(--muted)}.fleet-card-detail.error{color:var(--red)}.fleet-summary{margin-top:10px;min-height:19px}.fleet-detail-bar{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}.fleet-detail-bar .note{flex:1}.fleet-detail-label{margin:0 0 14px;color:var(--muted);font-size:13px}.fleet-grid[data-single="true"]{max-width:960px}.fleet-grid[data-single="true"] .fleet-preview{max-height:450px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:minmax(0,2fr) minmax(150px,1fr)}.fleet-grid[data-single="true"] .fleet-card-buttons,.fleet-grid[data-single="true"] .fleet-card-detail,.fleet-grid[data-single="true"] .fleet-source{grid-column:1/-1}@media(min-width:1800px){.fleet-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:600px){.fleet-actions{width:100%}.fleet-actions .btn{flex:1;padding:8px 10px}.fleet-grid[data-single="true"] .fleet-card-fields{grid-template-columns:1fr}.fleet-panel{padding:12px}}
+</style>
+<style>.face-diagnostic.warning{color:#92400e;background:#fffbeb;border-left-color:var(--amber)}</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>GoodVision <span>|</span> Deployment Console</h1>
+    <div class="brand-subtitle">Video ingest, live analysis, annotated delivery, and face-data diagnostics.</div>
+  </div>
+  <div class="chips">
+    <span class="chip">service <b id="service-chip">loading</b></span>
+    <span class="chip">source <b id="source-chip">waiting</b></span>
+    <span class="chip">readiness <b id="readiness-chip">checking</b></span>
+    <span class="chip">model <b id="model-chip">...</b></span>
+    <span class="chip"><span id="analysis-chip-label">events</span> <b id="event-chip">...</b></span>
+    <span class="chip">sampling <b id="sampling-chip">...</b></span>
+  </div>
+</header>
+<div id="secure-warning" class="notice" hidden></div>
+
+<main>
+  <section class="panel deployment-panel">
+    <div class="deployment-head">
+      <div class="deployment-title">
+        <div class="section-title">
+          <h2>Persistent deployment defaults</h2>
+          <span class="scope persistent">survives restart</span>
+        </div>
+        <div class="note">设置保存在 Docker 数据卷中。停止全部分析后保存，对下次统一分析生效；已连接的视频可继续预览。密钥不会回显。</div>
+      </div>
+      <span id="deployment-storage" class="channel">Persistence · loading</span>
+    </div>
+    <div class="deployment-grid">
+      <div class="deployment-fields">
+        <label class="field">
+          <span>大模型运行位置</span>
+          <select id="inference-mode" aria-describedby="local-gpu-status local-gpu-help">
+            <option value="cloud">云端 API</option>
+            <option id="inference-mode-local" value="local">本机显卡</option>
+            <option value="server">独立模型服务器</option>
+          </select>
+        </label>
+        <div id="inference-server-fields" class="stack" hidden>
+          <label class="field"><span>模型服务器地址</span>
+            <input id="inference-server-url" type="url" autocomplete="off" spellcheck="false" placeholder="http://server:8000">
+          </label>
+          <label class="field"><span>服务器提供的模型名称</span>
+            <input id="inference-server-model" type="text" maxlength="512" autocomplete="off" spellcheck="false" placeholder="local-vision">
+          </label>
+          <div class="secret-status">填写服务器地址和端口，无需填写接口路径。大模型服务可独立部署，控制台无需本机显卡。</div>
+        </div>
+        <label class="field">
+          <span>人物追踪运行位置</span>
+          <select id="tracking-mode" aria-describedby="local-gpu-status local-gpu-help">
+            <option value="legacy">原部署服务（单路）</option>
+            <option id="tracking-mode-local" value="local">本机显卡</option>
+            <option value="server">独立 GPU 服务器</option>
+          </select>
+        </label>
+        <div id="tracking-server-fields" class="stack" hidden>
+          <label class="field"><span>追踪节点类型</span>
+            <select id="tracking-server-protocol">
+              <option value="contour">GoodVision Contour</option>
+              <option value="legacy">原版追踪服务</option>
+            </select>
+          </label>
+          <label class="field"><span>人物追踪服务器地址</span>
+            <input id="tracking-server-url" type="url" autocomplete="off" spellcheck="false" placeholder="http://server:8092">
+          </label>
+          <label class="field"><span>追踪服务器已部署容量（路）</span>
+            <input id="tracking-server-capacity" type="number" min="1" step="1" inputmode="numeric" value="1">
+          </label>
+          <div id="tracking-node-key-fields" class="stack" hidden>
+            <label class="field"><span>追踪节点密钥</span>
+              <input id="tracking-node-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入 GPU 节点的 node-key；留空保留已保存值">
+            </label>
+            <div id="tracking-node-key-status" class="secret-status"></div>
+            <label><input id="clear-tracking-node-key" type="checkbox"> 清除已保存的追踪节点密钥</label>
+          </div>
+          <div class="secret-status">容量须与独立 GPU 服务器已部署的通道数一致；页面不会创建服务器或扩容通道。大模型可同时使用云端 API。</div>
+        </div>
+        <label class="field"><span>采样帧率（FPS）</span>
+          <input id="tracking-sample-fps" type="number" min="0.5" max="30" step="any" inputmode="decimal" value="2" aria-describedby="tracking-sample-fps-help">
+        </label>
+        <div id="tracking-sample-fps-help" class="secret-status">每秒送入人物追踪模型的帧数，默认 2。中间画面通过运动补帧衔接描边。停止分析后保存，重启后保留。</div>
+        <div hidden aria-hidden="true">
+          <input id="local-inference-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help" tabindex="-1">
+          <input id="local-tracking-enabled" type="checkbox" aria-describedby="local-gpu-status local-gpu-help" tabindex="-1">
+        </div>
+        <div id="local-gpu-status" class="secret-status" role="status" aria-live="polite">正在读取本地显卡状态…</div>
+        <div id="local-gpu-help" class="secret-status">两项独立选择，停止全部分析后保存，对下次统一分析生效。本机 1 张显卡时共用 GPU 0；2 张或以上时，大模型使用 GPU 0，人物追踪和其他本机 GPU 任务使用 GPU 1。选择独立服务器时不要求控制台有显卡。</div>
+        <label class="field">
+          <span>Default network stream URL</span>
+          <input id="default-stream-url" type="password" autocomplete="new-password" spellcheck="false"
+                 placeholder="Leave blank to keep the saved/default source">
+        </label>
+        <div id="default-stream-status" class="secret-status">Checking the saved/default video source...</div>
+        <div id="cloud-model-settings" class="stack">
+        <label class="field">
+          <span>Model API key</span>
+          <input id="default-api-key" type="password" autocomplete="new-password" spellcheck="false"
+                 placeholder="Leave blank to keep the current key">
+        </label>
+        <div id="default-api-key-status" class="secret-status">Checking key status...</div>
+        <div class="row">
+          <button id="save-api-key-button" class="btn" disabled>保存 API key</button>
+          <span class="note">可直接在此配置，无需 .env；保存后重启仍有效。正式检测请取消 Test mode。</span>
+        </div>
+        </div>
+      </div>
+      <div class="deployment-options">
+        <span class="metric-label">Defaults for future sessions</span>
+        <div id="processing-method-field" hidden>
+          <div class="field"><span>人物描边</span>
+            <strong id="processing-method" aria-describedby="processing-method-note">人员追踪模块 连续分析</strong>
+          </div>
+          <div id="processing-method-selected" class="secret-status" style="margin-top:8px"></div>
+          <div id="processing-method-note" class="secret-status" role="status" aria-live="polite"></div>
+          <div class="secret-status" style="margin-top:8px">画面与人物描边优先显示；事件报警和描边变色在复核后更新。</div>
+        </div>
+        <label class="field"><span>默认网络摄像头类型</span>
+          <select id="default-camera-layout">
+            <option value="mono">单目 · 完整画面</option>
+            <option value="stereo">双目 · 使用左半幅</option>
+          </select>
+        </label>
+        <label class="switch"><input id="default-dry-run" type="checkbox"> Test mode · no model calls</label>
+        <div class="secret-status">Unchecked means formal mode with model calls enabled.</div>
+        <label class="switch"><input id="default-autostart" type="checkbox"> 启动时自动连接视频（分析需手动统一开始）</label>
+        <div id="deployment-source-status" class="secret-status">Loading effective settings source...</div>
+      </div>
+    </div>
+    <div class="deployment-actions">
+      <button id="save-deployment-button" class="btn primary" disabled>Save deployment defaults</button>
+      <button id="reset-deployment-button" class="btn" disabled>Discard edits</button>
+      <button id="clear-api-key-button" class="btn danger" disabled>Clear saved API key</button>
+    </div>
+    <div id="deployment-note" class="status deployment-note" role="status" aria-live="polite">Loading persistent settings...</div>
+    <div id="processing-comparison" hidden style="margin-top:14px">
+      <div class="section-title"><h2>人员追踪模块 连续分析 · 运行观测</h2></div>
+      <div class="note">目标：画面与完整人物描边尽量在 2 秒内显示。下方为服务端实测值，不代表摄像头到屏幕的完整延迟；事件复核独立进行，报警和颜色可能稍后更新。</div>
+      <div class="scroll"><table>
+        <thead><tr><th>人物分析</th><th>运行状态</th><th>人物结果延迟</th><th>输出帧延迟</th><th>已处理帧</th><th>丢弃帧</th></tr></thead>
+        <tbody id="processing-comparison-body"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="cloud-route-panel" class="panel control-panel" aria-labelledby="route-title">
+    <div class="deployment-head">
+      <div class="deployment-title">
+        <div class="section-title"><h2 id="route-title">线路测速</h2><span class="scope persistent">启动前检查</span></div>
+        <p class="note">线路分批检查，每条预热后测 3 次完整响应。自动选择全部成功且中位耗时最短的线路，也可在表格中手动选择并保存。切换线路前请先停止全部分析。</p>
+        <p class="note">使用固定测试图发起真实请求，会产生少量 API 费用。结果用于选路，实际视频延迟还包含本地处理。</p>
+      </div>
+      <button id="route-check-button" class="btn primary" disabled>检查最快线路</button>
+    </div>
+    <div class="state-line" style="margin-top:12px"><strong id="route-selected">当前线路：读取中</strong></div>
+    <div id="route-note" class="status deployment-note" role="status" aria-live="polite">正在读取线路配置…</div>
+    <div class="scroll">
+      <table aria-label="线路测速结果"><thead><tr><th>线路</th><th>状态</th><th>成功次数</th><th>中位耗时</th><th>测量记录</th><th>手动选择</th></tr></thead>
+      <tbody id="route-results"></tbody></table>
+    </div>
+  </section>
+
+  <section id="fleet-panel" class="panel fleet-panel" aria-labelledby="fleet-title">
+    <div class="fleet-toolbar">
+      <div class="fleet-heading">
+        <div class="section-title"><h2 id="fleet-title">视频总览</h2><span id="fleet-mode" class="fleet-mode">正在检查运行模式</span></div>
+        <p id="fleet-capacity" class="note">正在读取可用摄像头通道…</p>
+      </div>
+      <div class="fleet-actions">
+        <button id="fleet-view-toggle" type="button" class="btn" aria-pressed="false" hidden>只看画面</button>
+        <button id="fleet-add" type="button" class="btn" disabled>＋ 添加一路</button>
+        <button id="fleet-start-all" type="button" class="btn" disabled>连接全部视频</button>
+        <button id="fleet-stop-all" type="button" class="btn" disabled>断开全部视频</button>
+        <button id="fleet-analysis-start" type="button" class="btn primary" disabled>开始全部分析</button>
+        <button id="fleet-analysis-stop" type="button" class="btn danger" disabled>停止全部分析</button>
+      </div>
+    </div>
+    <div id="fleet-count" class="fleet-count">正在加载…</div>
+    <div id="fleet-analysis-state" class="note" role="status">连接视频后，统一开始所有已连接视频的分析。</div>
+    <div id="fleet-grid" class="fleet-grid" aria-label="摄像头画面"></div>
+    <div id="fleet-note" class="status fleet-summary" role="status" aria-live="polite"></div>
+    <div class="fleet-detail-bar">
+      <span class="note">每路独立连接、断开视频，在各自“详细控制”中设置检测项目与敏感度。全部已连接视频统一开始、停止分析；分析期间先停止全部分析，再增减视频。总览画面每秒最多刷新 4 次。</span>
+      <button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false">本机摄像头 / 诊断</button>
+    </div>
+  </section>
+
+  <section id="face-controls" class="panel face-panel" aria-labelledby="gallery-title">
+    <div class="head">
+      <div class="section-title"><h2 id="gallery-title">Known people gallery</h2><span class="scope persistent">所有摄像头共用</span></div>
+      <div class="gallery-head-actions"><span id="gallery-summary">Loading...</span><button id="refresh-gallery-button" class="btn">Refresh</button></div>
+    </div>
+    <div class="note">全局人脸库，供所有摄像头的陌生人识别共用。在此录入或删除人员将应用于所有摄像头，无需逐路设置。</div>
+    <div class="note">Upload one clear face image. Clear unmatched faces require repeated confirmation; distant or unclear faces may remain unconfirmed.</div>
+    <div class="face-fields">
+      <label class="field"><span>Person ID</span><input id="person-id" type="text" spellcheck="false" placeholder="alice"></label>
+      <label class="field"><span>Display name</span><input id="person-name" type="text" spellcheck="false" placeholder="Alice"></label>
+      <label class="field"><span>Face image</span><input id="person-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
+      <button id="enroll-button" class="btn">Enroll face</button>
+    </div>
+    <div id="gallery-note" class="note">Loading gallery...</div>
+    <div class="scroll face-list">
+      <table>
+        <thead><tr><th>Person ID</th><th>Name</th><th>Samples</th><th>Action</th></tr></thead>
+        <tbody id="gallery-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div id="fleet-detail-console" hidden>
+  <p class="fleet-detail-label">本机摄像头 / 诊断 · 网络视频请使用上方各路卡片设置，并通过顶部统一开始、停止分析。此处保留浏览器摄像头和服务诊断。</p>
+  <section class="panel control-panel">
+    <div class="control-grid">
+      <div class="control-block">
+        <div class="section-title"><span class="step">1</span><h2>本机摄像头与服务诊断</h2></div>
+        <div class="control-source-row">
+          <div class="seg" aria-label="Video source type">
+            <button id="camera-mode">Browser camera</button>
+            <button id="stream-mode" class="active">Network stream</button>
+          </div>
+          <div id="camera-controls" class="row" hidden>
+            <button id="camera-button" class="btn">Enable camera</button>
+            <span id="camera-note" class="note">camera off</span>
+          </div>
+          <div id="stream-controls" class="field grow">
+            <span>This session's RTSP / RTMP / WHEP URL</span>
+            <input id="stream-url" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Blank uses the saved/default network source">
+            <label class="field"><span>本次摄像头类型</span>
+              <select id="camera-layout" aria-describedby="camera-layout-note">
+                <option value="mono">单目 · 完整画面</option>
+                <option value="stereo">双目 · 使用左半幅</option>
+              </select>
+            </label>
+            <span id="camera-layout-note" class="note">手动选择，不再自动判断。双目指左右并排画面；切换前请先停止会话。</span>
+          </div>
+        </div>
+        <div id="source-note" class="note">Loading source configuration...</div>
+        <div id="event-controls" class="row">
+          <div class="field">
+            <span>Detection features (choose one or more)</span>
+            <div id="feature-select" class="feature-select">
+              <label class="switch"><input type="checkbox" data-feature="fight" checked> fight</label>
+              <label class="switch"><input type="checkbox" data-feature="smoking" checked> smoking</label>
+              <label class="switch"><input type="checkbox" data-feature="fall" checked> fall</label>
+              <label class="switch"><input type="checkbox" data-feature="weapon" checked> weapon</label>
+              <label class="switch"><input type="checkbox" data-feature="stranger" checked> stranger</label>
+            </div>
+          </div>
+          <label class="switch"><input id="dry-run" type="checkbox"> this run only · dry run · no model calls</label>
+        </div>
+        <div class="field" id="event-sensitivity-controls">
+          <span>事件敏感度 · 启动前调整</span>
+          <div id="event-sensitivity-fields" class="row"></div>
+          <span id="event-sensitivity-note" class="note">高敏感度更容易触发警报，也可能增加误报。行为警报需连续 2 次有效阴性才解除；人脸识别使用独立设置。</span>
+        </div>
+        <div class="session-actions">
+          <button id="start-button" class="btn primary" disabled>Start selected detection</button>
+          <button id="stop-button" class="btn danger" disabled>Stop session</button>
+        </div>
+        <div id="status-line" class="status session-note">Loading service information...</div>
+        <div id="runtime-error" class="error-banner" hidden></div>
+      </div>
+      <aside class="connection-card">
+        <div>
+          <span class="metric-label">Current connection</span>
+          <div class="state-line">
+            <span id="connection-orb" class="state-orb"></span>
+            <strong id="connection-state" class="state-name">Checking service</strong>
+          </div>
+          <div id="connection-detail" class="state-detail">Waiting for the runtime status endpoint.</div>
+          <div id="postprocessing-status" class="state-detail" role="status" hidden></div>
+        </div>
+        <div class="channel-row">
+          <span id="control-channel" class="channel">Control WS · closed</span>
+          <span id="sse-channel" class="channel">Result SSE · connecting</span>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div id="analysis-workspace" class="grid analysis-workspace">
+    <section id="annotation-panel" class="panel stack annotation-panel">
+      <div class="annotation-main">
+        <div class="head annotation-head">
+          <div class="section-title"><span class="step">2</span><h2>实时画面与 人员追踪模块 描边</h2></div>
+          <div class="annotation-actions">
+            <span id="stream-meta">buffering</span>
+            <button id="fullscreen-button" class="viewport-control" type="button"
+                    aria-controls="analysis-workspace" aria-pressed="false"
+                    title="Enter fullscreen annotation view">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M7 3H3v4M13 3h4v4M17 13v4h-4M7 17H3v-4"/>
+              </svg>
+              <span id="fullscreen-button-label">Fullscreen</span>
+            </button>
+          </div>
+        </div>
+        <div id="live-viewport" class="viewport">
+          <div id="raw-placeholder" class="placeholder">Connect a source above to inspect the Docker-delivered output.</div>
+          <video id="camera-preview" muted playsinline autoplay></video>
+          <canvas id="camera-display" style="position:absolute;inset:0;display:none;width:100%;height:100%;object-fit:contain;background:#0b0f16;z-index:1" aria-label="连续摄像头画面与人物描边"></canvas>
+          <img id="raw-feed" alt="Waiting for the continuous annotated stream">
+          <div id="bbox-layer" class="bbox-layer" aria-hidden="true"></div>
+          <div id="raw-badge" class="badge"><span class="dot"></span><span id="raw-badge-text">LIVE</span></div>
+        </div>
+      </div>
+      <section class="frame-summary" aria-labelledby="overall-description-title">
+        <div class="frame-summary-head">
+          <h3 id="overall-description-title">Overall description · 全画面描述</h3>
+          <span id="overall-description-meta" class="frame-summary-meta">等待分析帧</span>
+        </div>
+        <p id="overall-description" class="frame-summary-text">等待当前帧分析… / Waiting for frame analysis…</p>
+      </section>
+      <div id="annotation-note" class="note annotation-note">
+        Original video frames inherit the preceding annotation between analysis updates.
+        <a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.
+      </div>
+      <div id="rich-annotation-status" class="note annotation-note" aria-live="polite" hidden></div>
+    </section>
+
+    <section id="classification-panel" class="panel stack classification-panel">
+      <div class="detection-rail-head">
+        <span class="detection-rail-title"><span class="detection-rail-dot"></span>Detection</span>
+        <button id="detection-overlay-toggle" class="overlay-toggle" type="button"
+                aria-controls="decision" aria-expanded="true" hidden>Minimize</button>
+      </div>
+      <div id="decision" class="decision">
+        <div id="decision-eyebrow" class="eyebrow">Live selected-feature classification</div>
+        <div id="verdict" class="verdict">READY</div>
+        <div id="confidence" class="confidence"></div>
+        <div id="event-statuses" class="event-statuses"></div>
+        <div id="description" class="description">Choose features and an input, then start detection.</div>
+        <div id="decision-meta" class="meta"></div>
+      </div>
+      <div id="event-notice" class="error-banner" role="status" aria-live="polite" hidden></div>
+    </section>
+  </div>
+
+  <section id="scene-panel" class="panel scene-panel" aria-labelledby="scene-title" hidden>
+    <div class="head"><h2 id="scene-title">连续人物与事件</h2><span id="scene-mode" class="channel"></span></div>
+    <p id="scene-status" class="status" role="status" aria-live="polite">等待连续观察证据…</p>
+    <p id="scene-summary" class="note"></p>
+    <div class="scene-grid">
+      <div><h3>现场人物</h3><div id="scene-entities" class="scene-list"></div></div>
+      <div><h3>事件进展</h3><div id="scene-events" class="scene-list"></div></div>
+    </div>
+  </section>
+
+  <section class="panel output-console">
+    <div class="head debug-head">
+      <div class="section-title"><span class="step">3</span><h2>Output debug &amp; delivery checks</h2></div>
+      <div class="channel-row">
+        <span id="output-channel" class="channel">Annotated output · buffering</span>
+        <span id="last-update" class="channel">Status · waiting</span>
+      </div>
+    </div>
+    <div class="deployment-actions">
+      <label class="field">
+        <span>网络视频缓存（秒）</span>
+        <input id="buffer-delay-seconds" type="number" min="0" max="30" step="any" disabled
+               aria-describedby="buffer-delay-note" placeholder="0">
+      </label>
+      <button id="save-buffer-delay-button" class="btn primary" disabled>应用并保存缓存时间</button>
+      <span id="buffer-delay-current" class="note">正在读取缓存时间…</span>
+    </div>
+    <div id="local-camera-buffer-note" class="note" hidden></div>
+    <div class="note">此设置仅适用于网络视频，额外显示缓存可设为 0–30 秒，运行中可调整，重启后保留。调小后会跳过旧画面、追上最新结果。本机摄像头使用独立的描边缓冲，由部署配置设置。</div>
+    <div id="buffer-delay-note" class="status deployment-note" role="status" aria-live="polite"></div>
+    <div class="metrics">
+      <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
+      <div class="metric"><span class="metric-label">Results published</span><strong id="published-result-count" class="metric-value">0</strong><span id="last-result-note" class="metric-note">No result yet</span></div>
+      <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Each image identifies its source result</span></div>
+      <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">等待首帧描边结果</span></div>
+    </div>
+    <div class="endpoint-grid" aria-label="Output and API shortcuts">
+      <a class="endpoint" href="/v1/video/annotated/stream.mjpeg" target="_blank" rel="noreferrer">Annotated stream <small>MJPEG</small></a>
+      <a id="legacy-evidence-stream" class="endpoint" href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Exact evidence stream <small>MJPEG</small></a>
+      <a class="endpoint" href="/v1/video/live/stream.mjpeg" target="_blank" rel="noreferrer">Raw source stream <small>MJPEG</small></a>
+      <a class="endpoint" href="/v1/video/annotated/latest.jpg" target="_blank" rel="noreferrer">Latest annotated frame <small>JPEG</small></a>
+      <a id="legacy-evidence-latest" class="endpoint" href="/v1/video/latest.jpg" target="_blank" rel="noreferrer">Latest exact evidence <small>JPEG</small></a>
+      <a id="scene-evidence-latest" class="endpoint" href="/v1/scene/evidence" target="_blank" rel="noreferrer" hidden>连续观察证据 <small>JSON · 原始画面</small></a>
+      <a class="endpoint" href="/v1/results/latest" target="_blank" rel="noreferrer">Latest result <small>JSON</small></a>
+      <a class="endpoint" href="/v1/results/events" target="_blank" rel="noreferrer">Result event stream <small>SSE</small></a>
+      <a class="endpoint" href="/v1/status" target="_blank" rel="noreferrer">Runtime status <small>API</small></a>
+    </div>
+  </section>
+
+  <div class="data">
+    <section class="panel">
+      <div class="head"><h2>Service status</h2><a class="muted-link" href="/v1/status" target="_blank" rel="noreferrer">GET /v1/status ↗</a></div>
+      <pre id="status-json">Loading...</pre>
+    </section>
+    <section class="panel">
+      <div class="head"><h2>Latest AnalysisResult</h2><a class="muted-link" href="/v1/results/events" target="_blank" rel="noreferrer">SSE /v1/results/events ↗</a></div>
+      <pre id="result-json">Waiting for the first analysis result...</pre>
+    </section>
+  </div>
+
+  <section class="panel face-panel">
+    <div class="section-title"><span class="step">4</span><h2>Face data debug</h2></div>
+    <div id="face-diagnostic-summary" class="face-diagnostic">Face diagnostics | waiting for the first analyzed frame.</div>
+  </section>
+
+  <section class="panel log" aria-labelledby="event-history-title">
+    <div class="deployment-head section-title"><h2 id="event-history-title">事件记录 · Video evidence</h2>
+      <button id="refresh-events" class="btn" type="button">刷新记录</button></div>
+    <p class="note">连续事件与视频证据。实时识别状态仍以当前画面结果为准。</p>
+    <div class="control-source-row" style="margin-top:12px">
+      <div class="field"><label for="archive-feature">事件</label><select id="archive-feature"><option value="">全部</option><option value="smoking">吸烟 · Smoking</option><option value="fight">打架 · Fight</option><option value="fall">跌倒 · Fall</option><option value="weapon">持械 · Weapon</option><option value="stranger">陌生人 · Stranger</option></select></div>
+      <div class="field"><label for="archive-subject">人物 ID</label><input id="archive-subject" type="text" placeholder="subject_id"></div>
+    </div>
+    <p id="archive-note" class="note" role="status">正在读取事件记录…</p>
+    <div class="scroll"><table><thead><tr><th>事件 / 人物</th><th>源时间</th><th>归档状态</th><th>视频证据</th></tr></thead><tbody id="archive-body"></tbody></table></div>
+    <button id="archive-more" class="btn" type="button" hidden>更早记录</button>
+    <video id="archive-video" controls preload="none" hidden style="width:100%;max-height:420px;margin-top:12px"></video>
+    <p id="archive-video-note" class="note"></p>
+  </section>
+
+  <section class="panel log">
+    <div class="head"><h2>Live result log</h2><span id="result-count">0 results</span></div>
+    <div class="note">Each row shows this frame's observations. PARTIAL means some selected features were not analyzed in that frame.</div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Result</th><th>Video time</th><th>Frame verdict</th><th>Conf.</th><th>Latency</th><th>Bboxes</th><th>Description</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+  </section>
+  </div>
+</main>
+
+<script src="/assets/camera_display.js"></script>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const ui={
+  deploymentStorage:$("deployment-storage"),defaultStreamUrl:$("default-stream-url"),
+  defaultStreamStatus:$("default-stream-status"),defaultApiKey:$("default-api-key"),
+  defaultApiKeyStatus:$("default-api-key-status"),defaultDryRun:$("default-dry-run"),
+  localInference:$("local-inference-enabled"),localTracking:$("local-tracking-enabled"),
+  inferenceMode:$("inference-mode"),trackingMode:$("tracking-mode"),
+  inferenceLocalOption:$("inference-mode-local"),trackingLocalOption:$("tracking-mode-local"),
+  inferenceServerFields:$("inference-server-fields"),trackingServerFields:$("tracking-server-fields"),
+  inferenceServerUrl:$("inference-server-url"),inferenceServerModel:$("inference-server-model"),
+  trackingServerUrl:$("tracking-server-url"),trackingServerCapacity:$("tracking-server-capacity"),
+  trackingSampleFps:$("tracking-sample-fps"),
+  trackingServerProtocol:$("tracking-server-protocol"),trackingNodeKey:$("tracking-node-key"),
+  trackingNodeKeyFields:$("tracking-node-key-fields"),trackingNodeKeyStatus:$("tracking-node-key-status"),
+  clearTrackingNodeKey:$("clear-tracking-node-key"),
+  localGpuStatus:$("local-gpu-status"),cloudModelSettings:$("cloud-model-settings"),
+  cloudRoutePanel:$("cloud-route-panel"),
+  defaultAutostart:$("default-autostart"),deploymentSourceStatus:$("deployment-source-status"),
+  defaultCameraLayout:$("default-camera-layout"),cameraLayout:$("camera-layout"),
+  processingField:$("processing-method-field"),processingMethod:$("processing-method"),
+  processingSelected:$("processing-method-selected"),processingNote:$("processing-method-note"),
+  processingComparison:$("processing-comparison"),processingComparisonBody:$("processing-comparison-body"),
+  saveDeployment:$("save-deployment-button"),resetDeployment:$("reset-deployment-button"),
+  clearApiKey:$("clear-api-key-button"),deploymentNote:$("deployment-note"),
+  bufferDelay:$("buffer-delay-seconds"),saveBufferDelay:$("save-buffer-delay-button"),
+  bufferDelayCurrent:$("buffer-delay-current"),bufferDelayNote:$("buffer-delay-note"),
+  localCameraBufferNote:$("local-camera-buffer-note"),
+  service:$("service-chip"),sourceChip:$("source-chip"),readinessChip:$("readiness-chip"),
+  model:$("model-chip"),event:$("event-chip"),sampling:$("sampling-chip"),
+  analysisChipLabel:$("analysis-chip-label"),eventControls:$("event-controls"),faceControls:$("face-controls"),
+  warning:$("secure-warning"),cameraMode:$("camera-mode"),streamMode:$("stream-mode"),
+  cameraControls:$("camera-controls"),streamControls:$("stream-controls"),cameraButton:$("camera-button"),
+  cameraNote:$("camera-note"),sourceNote:$("source-note"),streamUrl:$("stream-url"),
+  dryRun:$("dry-run"),featureSelect:$("feature-select"),start:$("start-button"),stop:$("stop-button"),
+  gallerySummary:$("gallery-summary"),personId:$("person-id"),personName:$("person-name"),
+  personFile:$("person-file"),enroll:$("enroll-button"),galleryNote:$("gallery-note"),
+  galleryBody:$("gallery-body"),refreshGallery:$("refresh-gallery-button"),eyebrow:$("decision-eyebrow"),
+  annotationNote:$("annotation-note"),richAnnotationStatus:$("rich-annotation-status"),
+  streamMeta:$("stream-meta"),runtimeError:$("runtime-error"),
+  connectionOrb:$("connection-orb"),connectionState:$("connection-state"),
+  connectionDetail:$("connection-detail"),controlChannel:$("control-channel"),sseChannel:$("sse-channel"),
+  postprocessingStatus:$("postprocessing-status"),
+  outputChannel:$("output-channel"),lastUpdate:$("last-update"),
+  sourceFrameCount:$("source-frame-count"),publishedResultCount:$("published-result-count"),
+  analysisFrameCount:$("analysis-frame-count"),annotatedState:$("annotated-state"),
+  annotatedNote:$("annotated-note"),lastFrameNote:$("last-frame-note"),lastResultNote:$("last-result-note"),
+  statusLine:$("status-line"),viewport:$("live-viewport"),cameraPreview:$("camera-preview"),
+  rawFeed:$("raw-feed"),localCameraCanvas:$("camera-display"),rawPlaceholder:$("raw-placeholder"),
+  rawBadge:$("raw-badge"),rawBadgeText:$("raw-badge-text"),bboxLayer:$("bbox-layer"),
+  analysisWorkspace:$("analysis-workspace"),annotationPanel:$("annotation-panel"),
+  classificationPanel:$("classification-panel"),fullscreenButton:$("fullscreen-button"),
+  fullscreenButtonLabel:$("fullscreen-button-label"),overlayToggle:$("detection-overlay-toggle"),
+  decision:$("decision"),verdict:$("verdict"),confidence:$("confidence"),eventStatuses:$("event-statuses"),
+  faceDiagnosticSummary:$("face-diagnostic-summary"),
+  overallDescription:$("overall-description"),overallDescriptionMeta:$("overall-description-meta"),
+  description:$("description"),meta:$("decision-meta"),statusJson:$("status-json"),
+  resultJson:$("result-json"),resultCount:$("result-count"),logBody:$("log-body")
+};
+const sceneUi={panel:$("scene-panel"),mode:$("scene-mode"),status:$("scene-status"),
+  summary:$("scene-summary"),entities:$("scene-entities"),events:$("scene-events")};
+const featureInputs=[...document.querySelectorAll("[data-feature]")];
+const saveApiKeyButton=$("save-api-key-button");
+const localHosts=new Set(["localhost","127.0.0.1","::1","[::1]"]);
+const detectionEvents=["fight","smoking","fall","weapon","stranger"];
+const safetyEvents=detectionEvents.filter(key=>key!=="stranger");
+const sensitivityInputs=new Map();
+const clearAfterNegatives=2;
+const cameraAllowed=window.isSecureContext||localHosts.has(location.hostname);
+const activeStates=new Set(["starting","running"]);
+const sessionBusyStates=new Set([...activeStates,"stopping","draining"]);
+const state={
+  routes:null,routeLoading:false,routeSubmitting:false,routeRevision:0,
+  info:null,mode:"stream",sessionAnalysisMode:null,sessionFeatures:null,
+  deployment:null,deploymentLoading:false,deploymentSaving:false,runOverridesDirty:false,
+  processingStatus:null,processingRuns:new Map(),
+  bufferDelayDirty:false,
+  gallery:null,galleryLoading:false,running:false,pending:false,stopping:false,sessionId:null,sessionMode:null,sessionRevision:0,
+  ws:null,cameraStream:null,cameraTimer:null,cameraBusy:false,cameraGeneration:0,count:0,
+  activeAnnotationId:null,annotationTimer:null,overlayCollapsed:false,overallResult:null,
+  classificationJudgments:new Map(),classificationResult:null,classificationHistory:new Map(),
+  notifiedResults:new Set(),runtimeErrorMessage:""
+};
+const sceneView={enabled:false,mode:"disabled",snapshot:null,error:false,timer:null,
+  controller:null,generation:0,polling:false,closed:false,sourceKey:null,sourceTimestamp:null,
+  advancedAt:null,receivedAt:null,aliases:new Map(),nextAlias:1};
+const sceneEventNames={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械",stranger:"陌生人"};
+function sceneActive(){return sceneView.enabled&&sceneView.mode==="active"}
+function sceneMoment(value){return typeof value==="number"&&Number.isFinite(value)?value.toFixed(1)+" 秒":"待补充"}
+function sceneName(value){return sceneEventNames[canonicalEventLabel(value)]||"事件"}
+function scenePerson(subject){
+  const key=String(subject||"");
+  if(!sceneView.aliases.has(key)){
+    if(sceneView.aliases.size>=512)sceneView.aliases.delete(sceneView.aliases.keys().next().value);
+    sceneView.aliases.set(key,"人物 "+sceneView.nextAlias++)
+  }
+  return sceneView.aliases.get(key)
+}
+function sceneDrain(){
+  const runtime=state.processingStatus;
+  if(runtime&&(!runtime.stream_session_id||runtime.stream_session_id===state.sessionId))return runtime.scene_drain||{};
+  return sceneView.snapshot?.scene?.stream_session_id===state.sessionId?sceneView.snapshot.scene_drain||{}:{}
+}
+function sceneDrainMessage(drain=sceneDrain()){
+  return ({detection:"正在完成已接收画面的分析",tracking:"正在完成人物追踪",identity_review:"正在复核人脸并合并人物",
+    inspection:"正在完成事件复核",evidence:"正在整理人物记录和视频证据",postprocessing:"后台整理中，可以开始新的检测"})[drain.stage]||"正在完成人物复核、合并和视频证据整理"
+}
+function backgroundRuns(data=state.processingStatus){
+  return Array.isArray(data?.postprocessing_runs)?data.postprocessing_runs.filter(run=>run&&typeof run==="object"):[]
+}
+function backgroundMessage(data=state.processingStatus){
+  const runs=backgroundRuns(data),queued=runs.filter(run=>run.state==="queued").length,
+    running=runs.filter(run=>run.state==="running").length,failed=runs.filter(run=>run.state==="failed").length,
+    finalized=runs.filter(run=>run.state==="finalized").length;
+  const parts=[];
+  if(queued)parts.push(queued+" 次检测等待后台整理");
+  if(running)parts.push(running+" 次检测正在后台整理");
+  if(failed)parts.push(failed+" 次检测后台整理失败，请查看运行记录");
+  if(!parts.length&&finalized)parts.push(finalized+" 次检测后台整理已完成");
+  if(!parts.length&&data?.scene_drain?.state==="running"&&data.scene_drain.stage==="postprocessing")parts.push("后台整理中");
+  return parts.join("；")
+}
+function sceneCondition(){
+  const data=sceneView.snapshot;
+  if(state.stopping||!state.running&&sceneDrain().state==="running")return "finalizing";
+  if(!state.running||data&&["stopped","idle","disabled"].includes(data.state))return "stopped";
+  if(sceneView.error||state.processingStatus?.rich_labeling?.state==="failed"||
+    state.processingStatus?.rich_labeling?.recovery_required===true)return "unavailable";
+  if(!data||!data.scene)return "waiting";
+  if(sceneView.advancedAt!==null&&Date.now()-sceneView.advancedAt>5000)return "stale";
+  if(data.worker&&["failed","stopped","stopping"].includes(data.worker.state))return "unavailable";
+  return "observing"
+}
+function sceneEmpty(parent,text){const item=document.createElement("div");item.className="scene-empty";item.textContent=text;parent.append(item)}
+function sceneItem(parent,title,detail,tone=""){
+  const item=document.createElement("div"),heading=document.createElement("strong"),body=document.createElement("div");
+  item.className="scene-item"+(tone?" "+tone:"");heading.textContent=title;body.className="note";body.textContent=detail;
+  item.append(heading,body);parent.append(item)
+}
+function renderSceneDecision(){
+  if(!sceneActive())return;
+  const data=sceneView.snapshot||{},scene=data.scene||{},condition=sceneCondition();
+  const events=Array.isArray(scene.events)?scene.events:[];
+  const live=events.filter(item=>item&&["suspected","confirmed"].includes(item.phase));
+  const confirmed=live.filter(item=>item.phase==="confirmed");
+  const labels=(Array.isArray(data.event_labels)?data.event_labels:visibleFeatures()).filter(key=>key!=="stranger");
+  const historical=["stopped","finalizing"].includes(condition),hasAlert=confirmed.length>0&&!historical;
+  ui.analysisChipLabel.textContent="持续事件";ui.event.textContent=labels.length+" 类";
+  ui.eyebrow.textContent="连续事件判断";
+  ui.decision.className="decision "+(hasAlert?"detected":"warming");
+  ui.verdict.textContent=condition==="finalizing"?"后台收尾中":condition==="stopped"?"已停止":hasAlert?"事件持续中":
+    condition==="unavailable"?"状态暂不可用":condition==="stale"?"画面未更新":live.length?"正在复核":"等待证据";
+  ui.confidence.textContent=hasAlert?confirmed.map(item=>sceneName(item.event_label)).join(" · "):
+    "根据连续观察更新事件状态";
+  ui.description.textContent=condition==="finalizing"?(state.stopping?"正在完成已接收画面的分析并释放检测资源。":"检测已停止，"+sceneDrainMessage()+"。"):
+    condition==="stopped"?"视频观察已停止，历史事件不代表当前状态。":
+    condition==="unavailable"?"暂时无法获得新的识别结果，已确认事件仍需后续证据更新。":
+    condition==="stale"?"视频画面已一段时间没有推进，保留历史事件并等待新画面。":
+    hasAlert&&confirmed.some(item=>item.observation_state==="uncertain")?"事件已确认；相关人物暂不可见或证据不足，持续状态待核实。":
+    hasAlert?"持续跟踪相关人物，等待后续证据确认事件结束。":
+    live.length?"发现疑似事件，正在收集和复核更多证据。":"尚无已确认的持续事件，等待连续观察证据。";
+  ui.meta.textContent="最近画面："+sceneMoment(scene.timestamp_seconds);
+  ui.eventStatuses.hidden=false;ui.eventStatuses.replaceChildren();
+  for(const key of [...new Set(labels)].slice(0,16)){
+    const group=events.filter(item=>item&&canonicalEventLabel(item.event_label)===canonicalEventLabel(key));
+    const active=group.find(item=>item.phase==="confirmed")||group.find(item=>item.phase==="suspected");
+    const ended=group.find(item=>item.phase==="ended"),retracted=group.find(item=>item.phase==="retracted");
+    const item=document.createElement("div"),name=document.createElement("span"),status=document.createElement("span");
+    const alert=!historical&&active&&active.phase==="confirmed";
+    item.dataset.eventLabel=key;item.className="event-state "+(alert?"detected":"pending");name.textContent=sceneName(key);
+    status.textContent=condition==="finalizing"?"后台复核与整理中":condition==="stopped"?"已停止":active?
+      (active.phase==="confirmed"?"持续中":"疑似，复核中")+
+      (active.observation_state==="uncertain"||["stale","unavailable"].includes(condition)?" · 待核实":""):
+      condition==="unavailable"?"状态暂不可用":condition==="stale"?"等待新画面":ended?"已结束，继续观察":retracted?"判断已修订":"等待证据";
+    item.append(name,status);ui.eventStatuses.append(item)
+  }
+}
+function renderScene(){
+  sceneUi.panel.hidden=!sceneView.enabled;if(!sceneView.enabled)return;
+  const data=sceneView.snapshot||{},scene=data.scene||{},condition=sceneCondition();
+  const allEntities=(Array.isArray(scene.entities)?scene.entities:[]).filter(Boolean);
+  const entities=allEntities.slice(0,64),subjectNames=new Map(),nameCounts=new Map();
+  for(const entity of allEntities){
+    const identity=entity.identity,name=identity?.status==="known"&&typeof identity.name==="string"?identity.name.trim():"";
+    if(name)subjectNames.set(String(entity.subject_id),name)
+  }
+  for(const name of subjectNames.values())nameCounts.set(name,(nameCounts.get(name)||0)+1);
+  const eventSubject=subject=>{
+    const name=subjectNames.get(String(subject));
+    return name?(nameCounts.get(name)>1?name+"（"+scenePerson(subject)+"）":name):scenePerson(subject)
+  };
+  const sceneEvents=(Array.isArray(scene.events)?scene.events:[]).filter(Boolean);
+  const events=sceneEvents.slice(-64).reverse();
+  const strangerSubjects=new Set(sceneEvents.filter(event=>canonicalEventLabel(event.event_label)==="stranger"&&
+    event.alert_reason!=="identity_pending"&&event.confirmed_since_timestamp_seconds!==null&&
+    ["confirmed","ended"].includes(event.phase)).flatMap(event=>Array.isArray(event.subject_ids)?event.subject_ids:[]));
+  sceneUi.mode.textContent=data.tracking_mode==="batch"?(data.memory_scope==="session"?"连续人物追踪（实验）":"视频片段验证"):"持续识别";
+  sceneUi.status.textContent=condition==="finalizing"?"检测已停止；"+sceneDrainMessage()+"，人物和事件记录会继续更新。":
+    condition==="stopped"?(sceneDrain().state==="failed"?"观察已停止；后台整理失败，请查看运行状态。":
+      backgroundRuns().some(run=>["queued","running","failed"].includes(run.state))?"观察已停止；"+backgroundMessage()+"。":
+      sceneDrain().state==="completed"?"本次观察已停止，人物复核、合并和视频证据整理已完成。":"观察已停止；以下保留最近一次记录。"):
+    condition==="unavailable"?"识别结果暂不可用，正在重试。":condition==="stale"?"画面未更新，当前人物与事件状态待核实。":
+    condition==="waiting"?"等待当前视频的连续观察证据…":data.automatic_temporal_inference===true?"正在持续观察人物，按变化复核事件。":"正在记录人物状态，自动事件复核尚未就绪。";
+  sceneUi.status.className="status"+(condition==="unavailable"?" error":"");
+  const worker=data.worker||{};
+  sceneUi.summary.textContent=entities.length+" 位人物 · "+events.filter(item=>item.phase==="confirmed").length+
+    " 项已确认事件 · 最近画面 "+sceneMoment(scene.timestamp_seconds)+
+    (Number.isFinite(worker.succeeded_requests)?" · 已完成 "+worker.succeeded_requests+" 次复核":"")+
+    (Number.isFinite(data.stats?.identity_subjects_merged)?" · 已按人脸合并 "+data.stats.identity_subjects_merged+" 次人物记录":"")+
+    (data.tracking_mode==="batch"?" · "+(Number.isFinite(data.tracking_lag_seconds)&&data.tracking_lag_seconds>=0?
+      "分析落后画面 "+data.tracking_lag_seconds.toFixed(1)+" 秒":"等待首段分析")+
+      (data.memory_scope==="session"?" · 当前会话保持人物编号":" · 片段之间人物重新编号"):"");
+  sceneUi.entities.replaceChildren();sceneUi.events.replaceChildren();
+  for(const entity of entities){
+    const identity=entity.identity&&typeof entity.identity==="object"?entity.identity:{};
+    const name=identity.status==="known"?(identity.name?String(identity.name):"已确认身份"):
+      strangerSubjects.has(entity.subject_id)?"已确认陌生人":"身份待确认";
+    const observation=condition==="finalizing"?"观察已停止，后台复核中":condition==="stopped"?"观察已停止":["stale","unavailable"].includes(condition)?"当前状态待核实":
+      entity.observation_state==="observed"?"画面中可见":entity.observation_state==="occluded"?"暂时遮挡或离开画面":
+      entity.observation_state==="predicted"?"位置待确认":"观察状态待核实";
+    sceneItem(sceneUi.entities,scenePerson(entity.subject_id)+" · "+name,
+      observation+" · 最近看见："+sceneMoment(entity.last_observed_timestamp_seconds),
+      entity.identity_pending||entity.observation_state!=="observed"||condition!=="observing"?"uncertain":"")
+  }
+  if(!entities.length)sceneEmpty(sceneUi.entities,"等待建立人物记录；空列表不代表现场安全。");
+  for(const event of events){
+    const phase=condition==="stopped"&&event.phase==="suspected"?"证据不足，未确认":
+      ["stopped","finalizing"].includes(condition)&&event.phase==="confirmed"?"已确认":
+      ({suspected:"发现疑似事件，正在复核",confirmed:"已确认，持续中",ended:"已结束",retracted:"判断已修订"})[event.phase]||"等待更多证据";
+    const uncertain=event.observation_state==="uncertain"||condition!=="observing";
+    const subjects=Array.isArray(event.subject_ids)?event.subject_ids.map(eventSubject).join("、"):"相关人物待确认";
+    sceneItem(sceneUi.events,sceneName(event.event_label)+" · "+subjects,
+      phase+(condition==="stopped"?" · 历史记录":condition==="finalizing"?" · 后台整理中":uncertain?" · 当前状态待核实":"")+
+      " · 首次证据："+sceneMoment(event.first_evidence_timestamp_seconds)+
+      " · 最近证据："+sceneMoment(event.last_evidence_timestamp_seconds),
+      event.phase==="confirmed"&&!["stopped","finalizing"].includes(condition)?"alert":uncertain||event.phase==="suspected"?"uncertain":"")
+  }
+  if(!events.length)sceneEmpty(sceneUi.events,"等待连续观察证据，尚无可展示的事件。");
+  renderSceneDecision()
+}
+function acceptSceneSnapshot(data){
+  if(!sceneActive()||!data||typeof data!=="object"||data.enabled!==true||data.mode!=="active")return false;
+  const scene=data.scene;
+  if(scene){
+    if(typeof scene.stream_session_id!=="string"||
+      state.sessionId&&scene.stream_session_id!==state.sessionId)return false;
+    if(typeof scene.timestamp_seconds!=="number"||!Number.isFinite(scene.timestamp_seconds))return false;
+    const key=scene.stream_session_id+"/"+String(scene.source_id||"");
+    if(key!==sceneView.sourceKey){
+      sceneView.aliases.clear();sceneView.nextAlias=1;sceneView.sourceTimestamp=null;sceneView.sourceKey=key
+    }
+    if(sceneView.sourceTimestamp!==null&&scene.timestamp_seconds<sceneView.sourceTimestamp)return false;
+    if(sceneView.sourceTimestamp===null||scene.timestamp_seconds>sceneView.sourceTimestamp)sceneView.advancedAt=Date.now();
+    sceneView.sourceTimestamp=scene.timestamp_seconds
+  }
+  sceneView.snapshot=data;sceneView.receivedAt=Date.now();sceneView.error=false;renderScene();return true
+}
+function stopScenePolling(){
+  sceneView.generation++;sceneView.polling=false;clearTimeout(sceneView.timer);sceneView.timer=null;
+  if(sceneView.controller)sceneView.controller.abort();sceneView.controller=null
+}
+function startScenePolling(){
+  if(sceneView.closed||sceneView.polling||!sceneView.enabled||document.hidden)return;
+  sceneView.polling=true;const generation=++sceneView.generation;pollScene(generation)
+}
+async function pollScene(generation){
+  if(generation!==sceneView.generation||!sceneView.polling)return;
+  const controller=new AbortController();sceneView.controller=controller;
+  const session=state.sessionId,timeout=setTimeout(()=>controller.abort(),4000);
+  try{
+    const response=await fetch("/v1/scene",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error("scene unavailable");
+    const data=await response.json();
+    if(generation!==sceneView.generation||session!==state.sessionId)return;
+    if(!acceptSceneSnapshot(data)){sceneView.error=true;renderScene()}
+  }catch(_){if(generation===sceneView.generation){sceneView.error=true;renderScene()}}
+  finally{
+    clearTimeout(timeout);
+    if(generation===sceneView.generation){
+      sceneView.controller=null;
+      if(sceneView.polling&&!sceneView.closed&&!document.hidden)
+        sceneView.timer=setTimeout(()=>pollScene(generation),750)
+    }
+  }
+}
+function configureScene(config){
+  sceneView.enabled=!!(config&&config.enabled===true&&config.mode==="active");
+  sceneView.mode=sceneView.enabled?"active":"disabled";
+  $("legacy-evidence-stream").hidden=sceneActive();
+  $("legacy-evidence-latest").hidden=sceneActive();
+  $("scene-evidence-latest").hidden=!sceneActive();
+  if(sceneView.enabled){renderScene();startScenePolling()}
+  else{stopScenePolling();sceneUi.panel.hidden=true}
+}
+function resetSceneView(){
+  stopScenePolling();sceneView.snapshot=null;sceneView.error=false;sceneView.sourceKey=null;
+  sceneView.sourceTimestamp=null;sceneView.advancedAt=null;sceneView.receivedAt=null;
+  sceneView.aliases.clear();sceneView.nextAlias=1;renderScene();startScenePolling()
+}
+function number(value,digits){const n=Number(value);return Number.isFinite(n)?n.toFixed(digits):"-"}
+function say(text,error=false){ui.statusLine.textContent=text;ui.statusLine.className="status"+(error?" error":"")}
+function count(value){const n=Number(value);return Number.isFinite(n)&&n>=0?Math.floor(n).toLocaleString():"0"}
+function timeLabel(value){
+  if(!value)return "none yet";
+  const date=new Date(value);return Number.isNaN(date.getTime())?String(value):date.toLocaleTimeString()
+}
+function setChannel(element,text,tone=""){
+  element.textContent=text;element.className="channel"+(tone?" "+tone:"")
+}
+function setConnection(title,detail,tone=""){
+  ui.connectionState.textContent=title;ui.connectionDetail.textContent=detail;
+  ui.connectionOrb.className="state-orb"+(tone?" "+tone:"")
+}
+function fullscreenElement(){return document.fullscreenElement||document.webkitFullscreenElement||null}
+function annotationFullscreen(){return fullscreenElement()===ui.analysisWorkspace}
+function setOverlayCollapsed(collapsed){
+  state.overlayCollapsed=Boolean(collapsed);
+  ui.classificationPanel.classList.toggle("overlay-collapsed",state.overlayCollapsed);
+  ui.overlayToggle.setAttribute("aria-expanded",String(!state.overlayCollapsed));
+  ui.overlayToggle.textContent=state.overlayCollapsed?"Show details":"Minimize";
+  ui.overlayToggle.title=state.overlayCollapsed?"Show Detection details":"Minimize Detection overlay";
+  requestAnimationFrame(alignAnnotationLayer)
+}
+function syncFullscreenUi(){
+  const active=annotationFullscreen();
+  ui.analysisWorkspace.classList.toggle("fullscreen-active",active);
+  ui.fullscreenButton.setAttribute("aria-pressed",String(active));
+  ui.fullscreenButtonLabel.textContent=active?"Exit fullscreen":"Fullscreen";
+  ui.fullscreenButton.title=active?"Exit fullscreen annotation view":"Enter fullscreen annotation view";
+  ui.overlayToggle.hidden=!active;
+  if(!active)setOverlayCollapsed(false);
+  requestAnimationFrame(alignAnnotationLayer)
+}
+async function toggleAnnotationFullscreen(){
+  try{
+    if(annotationFullscreen()){
+      const exit=document.exitFullscreen||document.webkitExitFullscreen;
+      if(exit)await exit.call(document)
+    }else{
+      const request=ui.analysisWorkspace.requestFullscreen||ui.analysisWorkspace.webkitRequestFullscreen;
+      if(!request){say("Fullscreen view is not supported by this browser.",true);return}
+      await request.call(ui.analysisWorkspace)
+    }
+  }catch(error){say("Could not change fullscreen view: "+error.message,true)}
+}
+function deploymentSay(text,error=false){
+  ui.deploymentNote.textContent=text;ui.deploymentNote.className="status deployment-note"+(error?" error":"")
+}
+function configured(){
+  return state.deployment&&state.deployment.configured_stream===true||
+    state.info&&state.info.configured_stream===true
+}
+function cameraSettings(){
+  if(!state.info)return null;
+  return visibleFeatures().includes("stranger")?(state.info.multi||state.info):state.info
+}
+function cameraConfig(){
+  const i=cameraSettings();
+  return i&&Number.isFinite(i.sample_fps)&&i.sample_fps>0&&Number.isInteger(i.max_image_side)&&
+    i.max_image_side>0&&Number.isFinite(i.jpeg_quality)&&i.jpeg_quality>=1&&i.jpeg_quality<=100
+}
+function selectedFeatures(){return featureInputs.filter(item=>item.checked).map(item=>item.dataset.feature)}
+function visibleFeatures(){return state.running&&Array.isArray(state.sessionFeatures)?state.sessionFeatures:selectedFeatures()}
+function selectedSensitivities(){
+  return Object.fromEntries(selectedFeatures().filter(key=>sensitivityInputs.has(key))
+    .map(key=>[key,sensitivityInputs.get(key).value]))
+}
+function renderSensitivities(){
+  const options=state.info&&state.info.event_sensitivity_options||{};
+  const defaults=state.info&&state.info.event_sensitivity_defaults||{};
+  const labels={fight:"打架",smoking:"吸烟",fall:"跌倒",weapon:"持械"};
+  const previous=Object.fromEntries([...sensitivityInputs].map(([key,input])=>[key,input.value]));
+  const fields=$("event-sensitivity-fields");fields.replaceChildren();sensitivityInputs.clear();
+  for(const key of safetyEvents){
+    if(!Array.isArray(options[key]))continue;
+    const field=document.createElement("label"),title=document.createElement("span");
+    const select=document.createElement("select"),note=document.createElement("span");
+    field.className="field grow";title.textContent=labels[key]+" · "+key;
+    select.id="sensitivity-"+key;select.setAttribute("aria-label",labels[key]+"敏感度");
+    note.className="note";note.style.maxWidth="230px";
+    for(const option of options[key]){
+      const item=document.createElement("option");item.value=option.value;item.textContent=option.label;
+      select.appendChild(item)
+    }
+    select.value=previous[key]||defaults[key]||"standard";
+    select.onchange=()=>{note.textContent=(options[key].find(item=>item.value===select.value)||{}).description||""};
+    select.onchange();sensitivityInputs.set(key,select);
+    field.appendChild(title);field.appendChild(select);field.appendChild(note);fields.appendChild(field)
+  }
+}
+function reflectSessionSensitivities(values){
+  if(!values||typeof values!=="object")return;
+  for(const [key,input] of sensitivityInputs){
+    if(values[key]==="standard"||values[key]==="high"){input.value=values[key];input.onchange()}
+  }
+}
+function controls(){
+  const fleetManaged=Boolean(globalThis.GoodvisionFleet);
+  ui.start.hidden=fleetManaged;ui.stop.hidden=fleetManaged;
+  if(fleetManaged){
+    ui.eventControls.hidden=true;$("event-sensitivity-controls").hidden=true;ui.streamControls.hidden=true;
+  }
+  const busy=state.running||state.pending||state.stopping||sessionBusyStates.has(state.processingStatus?.pipeline_state)||
+    state.processingStatus?.processing_cleanup==="closing";
+  const routeBusy=state.routeSubmitting||state.routes&&state.routes.state==="running";
+  const ready=state.mode==="camera"
+    ?cameraAllowed&&cameraConfig()&&!!state.cameraStream
+    :!!ui.streamUrl.value.trim()||configured();
+  const processingUnavailable=savedProcessingMethod()==="person_tracking"&&processingMethods()[0]?.available===false;
+  ui.start.disabled=busy||routeBusy||!state.info||!ready||selectedFeatures().length===0||
+    state.deploymentSaving||processingUnavailable||trackingConfigurationRequired();ui.stop.disabled=!busy||state.stopping;
+  ui.stop.textContent=state.stopping?"后台收尾中…":"Stop session";
+  const localInference=localInferenceEnabled();
+  const sharedBusy=busy||globalThis.GoodvisionFleet?.extraBusy?.()===true;
+  ui.cloudModelSettings.hidden=localInference;ui.cloudRoutePanel.hidden=localInference;
+  ui.clearApiKey.hidden=localInference;
+  $("route-check-button").disabled=localInference||sharedBusy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_probe;
+  for(const button of $("route-results").querySelectorAll("button"))
+    button.disabled=localInference||sharedBusy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_select||
+      button.dataset.routeId===state.routes.selected_id;
+  for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun,ui.cameraLayout])item.disabled=busy;
+  for(const item of featureInputs)item.disabled=busy;
+  for(const [key,item] of sensitivityInputs)item.disabled=busy||!selectedFeatures().includes(key);
+  ui.cameraButton.disabled=busy||!cameraAllowed||!cameraConfig();
+  ui.refreshGallery.disabled=busy||state.galleryLoading;
+  const galleryBusy=busy||state.galleryLoading||!state.gallery||state.gallery.ready!==true;
+  for(const item of [ui.personId,ui.personName,ui.personFile,ui.enroll])item.disabled=galleryBusy;
+  for(const button of ui.galleryBody.querySelectorAll("button"))button.disabled=galleryBusy;
+  const persistenceReady=state.deployment&&state.deployment.persistence_available===true;
+  const deploymentBusy=state.deploymentLoading||state.deploymentSaving||routeBusy;
+  for(const item of [ui.localInference,ui.localTracking,ui.inferenceMode,ui.trackingMode,
+    ui.inferenceServerUrl,ui.inferenceServerModel,ui.trackingServerUrl,ui.trackingServerCapacity,
+    ui.trackingServerProtocol,ui.trackingNodeKey,ui.clearTrackingNodeKey,ui.trackingSampleFps])
+    item.disabled=!persistenceReady||deploymentBusy||sharedBusy;
+  ui.inferenceLocalOption.disabled=ui.trackingLocalOption.disabled=localGpuUnavailable();
+  for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart,ui.defaultCameraLayout])
+    item.disabled=!persistenceReady||deploymentBusy;
+  ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||sharedBusy;
+  saveApiKeyButton.disabled=localInference||!persistenceReady||deploymentBusy||sharedBusy||!ui.defaultApiKey.value.trim();
+  ui.resetDeployment.disabled=deploymentBusy||!state.deployment;
+  const localBuffer=state.mode==="camera"&&state.info?.local_camera_display?.enabled;
+  ui.localCameraBufferNote.hidden=!localBuffer;
+  if(localBuffer)ui.localCameraBufferNote.textContent="本机描边缓冲："+
+    state.info.local_camera_display.delay_seconds+" 秒（由部署配置设置）。网络视频缓存不影响本机摄像头。";
+  ui.bufferDelay.disabled=!persistenceReady||deploymentBusy||state.pending||!!localBuffer;
+  ui.saveBufferDelay.disabled=ui.bufferDelay.disabled;
+  ui.clearApiKey.disabled=!persistenceReady||deploymentBusy||sharedBusy||
+    state.deployment.api_key_persisted!==true
+}
+function processingMethods(){
+  const items=state.deployment?.processing_methods||state.info?.processing_methods;
+  return Array.isArray(items)?items.filter(item=>item&&item.id==="person_tracking"):[]
+}
+function savedProcessingMethod(){
+  for(const source of [state.processingStatus,state.deployment,state.info]){
+    if(source&&Object.hasOwn(source,"processing_method"))return source.processing_method??null
+  }
+  return null
+}
+function trackingConfigurationRequired(){
+  const method=savedProcessingMethod();
+  return method!=="person_tracking"&&(processingMethods().some(item=>item.available===true)||method!==null)
+}
+function processingLabel(method){
+  return processingMethods().find(item=>item.id===method)?.label||
+    (method==="person_tracking"?"人员追踪模块 连续分析":"尚未启用 人员追踪模块 连续分析")
+}
+function renderProcessingSettings(){
+  const methods=processingMethods();
+  ui.processingField.hidden=methods.length===0;ui.processingComparison.hidden=methods.length===0;
+  if(!methods.length)return;
+  updateProcessingSelection();renderProcessingComparison()
+}
+function updateProcessingSelection(){
+  const method=processingMethods()[0];
+  const needsConfiguration=trackingConfigurationRequired();
+  const enabled=savedProcessingMethod()==="person_tracking";
+  ui.processingMethod.textContent=enabled?"人员追踪模块 连续分析":
+    needsConfiguration?"人员追踪模块 连续分析 · 待启用":"人员追踪模块 连续分析 · 未启用";
+  const active=state.processingStatus&&sessionBusyStates.has(state.processingStatus.pipeline_state);
+  const closing=state.processingStatus?.processing_cleanup==="closing";
+  ui.processingSelected.textContent=(active?(closing?"正在停止：":"当前运行：")+
+    processingLabel(state.processingStatus.processing_retiring_method||state.processingStatus.processing?.method||
+      state.processingStatus.processing_method)+"。 ":"")+
+    (enabled?"固定使用 人员追踪模块 连续分析。":"尚未启用 人员追踪模块 连续分析。");
+  ui.processingNote.textContent=(method?.description||"")+
+    (needsConfiguration?" 请先保存默认设置，以启用 人员追踪模块 连续分析。":"")+
+    (method?.available===false?" 暂不可用："+(method.reason||"服务尚未就绪")+"。":"")+
+    (state.processingStatus?.processing_cleanup==="closing"?" 会话正在收尾，请等待释放后再开始。":
+      state.processingStatus?.processing_cleanup==="remote_check_pending"?
+        " 本地已停止；开始检测时会确认服务器已释放旧会话。":"")
+}
+function measuredSeconds(value){
+  return typeof value==="number"&&Number.isFinite(value)&&value>=0?number(value,2)+" 秒":"—"
+}
+function updateProcessingDiagnostics(data){
+  state.processingStatus=data;
+  const method=data.processing?.method||data.processing_method;
+  if(method==="person_tracking"&&data.stream_session_id){
+    const previous=state.processingRuns.get(method),sameSession=previous?.session_id===data.stream_session_id;
+    const current=data.processing||{},output=data.annotated_output||{};
+    state.processingRuns.set(method,{
+      session_id:data.stream_session_id,pipeline_state:data.pipeline_state,
+      source_to_result_seconds:current.source_to_result_seconds??(sameSession?previous.source_to_result_seconds:null),
+      display_delay_seconds:output.stream_delay_seconds??(sameSession?previous.display_delay_seconds:null),
+      processed_frames:current.processed_frames??(sameSession?previous.processed_frames:null),
+      dropped_frames:current.dropped_frames??(sameSession?previous.dropped_frames:null),
+    })
+  }
+  updateProcessingSelection();renderProcessingComparison()
+}
+function renderProcessingComparison(){
+  const methods=processingMethods();if(!methods.length)return;
+  ui.processingComparisonBody.replaceChildren();
+  for(const method of methods){
+    const run=state.processingRuns.get(method.id),row=document.createElement("tr");
+    const active=run&&sessionBusyStates.has(run.pipeline_state)&&
+      run.session_id===state.processingStatus?.stream_session_id;
+    const integer=value=>Number.isInteger(value)&&value>=0?String(value):"—";
+    for(const value of [method.label,run?(active?(activeStates.has(run.pipeline_state)?"运行中":"收尾中"):"最近一次运行"):"尚未运行",
+      measuredSeconds(run?.source_to_result_seconds),measuredSeconds(run?.display_delay_seconds),
+      integer(run?.processed_frames),integer(run?.dropped_frames)]){
+      const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)
+    }
+    ui.processingComparisonBody.appendChild(row)
+  }
+}
+function mode(next){
+  if(state.running||state.pending)return;
+  state.mode=next;ui.cameraMode.classList.toggle("active",next==="camera");
+  ui.streamMode.classList.toggle("active",next==="stream");
+  ui.cameraControls.hidden=next!=="camera";ui.streamControls.hidden=next!=="stream";
+  surfaces();controls()
+}
+function samplingText(settings){
+  return settings&&Number.isFinite(settings.sample_fps)&&Number.isInteger(settings.max_image_side)&&
+    Number.isFinite(settings.jpeg_quality)
+    ?number(settings.sample_fps,1)+" fps | "+settings.max_image_side+" px | Q"+settings.jpeg_quality
+    :"camera settings unavailable"
+}
+function annotatedOutputText(output){
+  const value=output&&typeof output==="object"?output:{};
+  const fps=Number(value.output_fps),delay=Number(value.buffer_delay_seconds);
+  return (Number.isFinite(fps)?"up to "+number(fps,1)+" FPS":"full cadence")+" | "+
+    (Number.isFinite(delay)?"额外缓存 "+number(delay,1)+" 秒":"等待画面")
+}
+function updateAnnotatedOutput(output){
+  const value=output&&typeof output==="object"?output:{},mode=String(value.annotation_mode||"none");
+  const delay=value.buffer_delay_seconds;
+  if(typeof delay==="number"&&Number.isFinite(delay)){
+    ui.bufferDelayCurrent.textContent="当前网络视频缓存："+delay+" 秒";
+    if(!state.bufferDelayDirty)ui.bufferDelay.value=String(delay)
+  }
+  const stateLabel=value.state==="running"?mode.toUpperCase():"BUFFERING";
+  const actualDelay=Number(value.stream_delay_seconds);
+  const actualText=value.stream_delay_seconds!=null&&Number.isFinite(actualDelay)
+    ?" · 输出帧延迟 "+number(actualDelay,1)+" 秒":"";
+  ui.rawBadgeText.textContent="人员追踪模块 | "+stateLabel+actualText;
+  ui.streamMeta.textContent=annotatedOutputText(value);
+  ui.annotatedState.textContent=stateLabel;
+  ui.annotatedNote.textContent=annotatedOutputText(value)+actualText+(mode!=="none"?" · "+mode:" · no frame yet");
+  setChannel(ui.outputChannel,"Annotated output · "+stateLabel.toLowerCase(),value.state==="running"?"good":"warn")
+}
+function updateRichAnnotationStatus(rich){
+  const disabled=rich&&rich.disabled_reason==="gpu_required";
+  const failed=rich&&(rich.state==="failed"||rich.recovery_required===true);
+  ui.richAnnotationStatus.hidden=!disabled&&!failed;
+  ui.richAnnotationStatus.textContent=failed?"人员追踪模块 分析失败，当前描边可能缺失；请查看运行状态后重新开始检测。":
+    disabled?"Rich annotation disabled: GPU required":""
+}
+function updateAnalysisUi(){
+  const settings=cameraSettings()||{};
+  const features=visibleFeatures();
+  ui.eventControls.hidden=false;ui.faceControls.hidden=false;ui.eventStatuses.hidden=false;
+  ui.analysisChipLabel.textContent="events";
+  // The public model label is supplied by the service (for example,
+  // numaira-beta-fast); never expose or infer an underlying provider model here.
+  ui.model.textContent=state.info&&state.info.model||"unknown";
+  ui.event.textContent=features.length+" selected";
+  ui.sampling.textContent=samplingText(settings)+" analysis";
+  ui.eyebrow.textContent="Live selected-feature classification";
+  ui.start.textContent="Start selected detection";
+  const output=state.info&&state.info.annotated_output||{};
+  if(sceneActive()){
+    ui.annotationNote.textContent="人员追踪模块 持续更新人物完整描边，画面尽快显示；事件报警和描边变色在复核后更新。暂时遮挡时，保留历史判断并标记待核实。 ";
+    const evidence=document.createElement("a");evidence.href="/v1/scene/evidence";
+    evidence.target="_blank";evidence.rel="noreferrer";evidence.textContent="查看连续观察证据";
+    ui.annotationNote.append(evidence);
+    $("event-sensitivity-note").textContent="事件按连续观察证据确认和结束；人物暂时不可见时继续等待复核。人脸识别使用独立设置。"
+  }else{
+    ui.annotationNote.innerHTML="The server delivers "+
+      annotatedOutputText(output)+". Original video frames inherit the preceding annotation between analysis updates. "+
+      '<a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.';
+    $("event-sensitivity-note").textContent="高敏感度更容易触发警报，也可能增加误报。行为警报需连续 2 次有效阴性才解除；人脸识别使用独立设置。"
+  }
+  if(!state.running&&!state.pending){
+    resetClassification();
+    ui.decision.className="decision warming";ui.verdict.textContent="READY";
+    ui.confidence.textContent="";
+    ui.description.textContent=features.length
+      ?"Ready to detect: "+features.join(", ")+"."
+      :"Select at least one detection feature.";
+    ui.meta.textContent="";resetAnnotations();renderEventStatuses([])
+  }
+  renderScene();controls();if(!state.gallery&&!state.galleryLoading)refreshGallery()
+}
+function sourceMedia(){
+  if(localCameraActive()||networkVideoDisplay)return ui.localCameraCanvas;
+  if(state.running)return ui.rawFeed;
+  if(state.cameraStream&&(state.sessionMode==="camera"||(!state.running&&state.mode==="camera")))return ui.cameraPreview;
+  return null
+}
+function sourceDimensions(media){
+  if(media===ui.localCameraCanvas)return [media.width,media.height];
+  if(media===ui.cameraPreview)return [media.videoWidth,media.videoHeight];
+  return media?[media.naturalWidth,media.naturalHeight]:[0,0]
+}
+function surfaces(){
+  const local=localCameraActive(),network=!!networkVideoDisplay;
+  const previewCamera=!state.running&&state.mode==="camera"&&!!state.cameraStream;
+  ui.cameraPreview.style.display=previewCamera||local?"block":"none";
+  ui.cameraPreview.style.visibility=local?"hidden":"visible";
+  ui.localCameraCanvas.style.display=local||network?"block":"none";
+  ui.rawFeed.style.display=state.running&&!local&&!network?"block":"none";
+  ui.rawFeed.style.visibility="visible";
+  if(!state.running&&!previewCamera){
+    ui.rawPlaceholder.textContent="Connect a source above to inspect the Docker-delivered output.";
+    ui.rawPlaceholder.style.display="block"
+  }else{
+    ui.rawPlaceholder.style.display="none"
+  }
+  ui.rawBadge.style.display=state.running?"flex":"none";
+  if(!ui.rawBadgeText.textContent)ui.rawBadgeText.textContent="人员追踪模块 | BUFFERING";
+  requestAnimationFrame(alignAnnotationLayer)
+}
+const localCameraDisplay={controller:null,lastStats:null};
+let networkVideoDisplay=null;
+function localCameraActive(){return !!localCameraDisplay.controller&&!localCameraDisplay.controller.closed;}
+function startLocalCameraDisplay(){
+  const config=state.info?.local_camera_display,api=globalThis.GoodvisionCameraDisplay;
+  if(!config?.enabled||config.protocol!==1||!api?.BrowserController||!state.sessionId||
+    state.sessionMode!=="camera"||!api.BrowserController.supported(ui.cameraPreview))return false;
+  localCameraDisplay.controller=new api.BrowserController({video:ui.cameraPreview,canvas:ui.localCameraCanvas,
+    config:{...config,stream_session_id:state.sessionId,generation:state.cameraGeneration,crop_version:0},
+    settings:cameraSettings(),socket:state.ws,onStatus:stats=>{
+      localCameraDisplay.lastStats=stats;
+      const fps=stats.distinct_presented_fps;
+      ui.rawBadgeText.textContent=stats.display_buffer_capacity_failures?"画面缓冲配置不可用":
+        stats.distinct_presented_frames===0?"正在缓冲画面以等待完整轮廓":
+        "连续画面 · "+(fps===null?"首帧已显示":fps.toFixed(1)+" 帧/秒")+
+        (stats.propagated_contour_frames||stats.observed_contour_frames?" · 人物描边":" · 等待描边");
+      ui.localCameraCanvas.dataset.displayStats=JSON.stringify(stats);
+    },onFailure:detail=>{ui.cameraNote.textContent=detail;ui.cameraNote.className="note error";}});
+  ui.rawBadgeText.textContent="正在缓冲画面以等待完整轮廓";
+  stopLatestFeed();resetAnnotations();localCameraDisplay.controller.start();surfaces();
+  ui.annotationNote.textContent="本机描边缓冲 "+localCameraDisplay.controller.frames.delay+
+    " 秒，再按原图分辨率连续播放。人物描边根据真实分析和画面运动更新；新入画、遮挡或运动不可靠时可能暂缺。";
+  return true;
+}
+function stopLocalCameraDisplay(){
+  if(localCameraDisplay.controller){localCameraDisplay.lastStats=localCameraDisplay.controller.snapshot();
+    if(localCameraDisplay.lastStats.analysis_pending){
+      ui.cameraNote.textContent=localCameraDisplay.lastStats.analysis_pending+" 帧尚未收到服务器确认，本次分析的完整性尚未确认。";
+      ui.cameraNote.className="note error";
+    }
+    localCameraDisplay.controller.stop();localCameraDisplay.controller=null;}
+}
+const latestFeed={generation:0,active:false,session:null,timer:null,controller:null,url:null};
+function stopLatestFeed(){
+  latestFeed.generation++;latestFeed.active=false;
+  clearTimeout(latestFeed.timer);latestFeed.controller?.abort();latestFeed.controller=null;
+  if(latestFeed.url)URL.revokeObjectURL(latestFeed.url);
+  latestFeed.url=null;
+  ui.rawFeed.removeAttribute("src");
+  for(const key of ["frameSequence","observedAt","mediaTimestamp","receivedAt"]){
+    delete ui.rawFeed.dataset[key]
+  }
+}
+async function pullLatestFrame(generation){
+  if(generation!==latestFeed.generation||!latestFeed.active||!state.running)return;
+  if(document.hidden){latestFeed.timer=setTimeout(()=>pullLatestFrame(generation),250);return}
+  const started=performance.now(),controller=new AbortController();
+  latestFeed.controller=controller;
+  const timeout=setTimeout(()=>controller.abort(),3000);
+  let nextUrl=null,retry=0;
+  try{
+    // Request one complete JPEG at a time so a slow viewer cannot replay a
+    // backlog already written into a continuous MJPEG response.
+    const response=await fetch("/v1/video/annotated/latest.jpg",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error("Frame unavailable");
+    nextUrl=URL.createObjectURL(await response.blob());
+    const decoded=new Image();decoded.src=nextUrl;await decoded.decode();
+    if(generation!==latestFeed.generation||!latestFeed.active||!state.running||document.hidden)return;
+    const previous=latestFeed.url;
+    ui.rawFeed.src=nextUrl;latestFeed.url=nextUrl;nextUrl=null;
+    ui.rawFeed.dataset.frameSequence=response.headers.get("X-Frame-Sequence")||"";
+    ui.rawFeed.dataset.observedAt=response.headers.get("X-Observed-At")||"";
+    ui.rawFeed.dataset.mediaTimestamp=response.headers.get("X-Media-Timestamp")||"";
+    ui.rawFeed.dataset.receivedAt=String(Date.now());
+    if(previous)URL.revokeObjectURL(previous)
+  }catch(error){retry=250}
+  finally{
+    clearTimeout(timeout);if(nextUrl)URL.revokeObjectURL(nextUrl);
+    if(generation===latestFeed.generation&&latestFeed.active&&state.running){
+      latestFeed.controller=null;
+      const fps=Math.min(30,Math.max(1,Number(state.info?.annotated_output?.output_fps)||30));
+      latestFeed.timer=setTimeout(()=>pullLatestFrame(generation),Math.max(retry,1000/fps-(performance.now()-started)))
+    }
+  }
+}
+function openFeed(){
+  if(globalThis.GoodvisionFleet?.detailHidden?.()){stopLatestFeed();return;}
+  if(typeof localCameraActive==="function"&&localCameraActive()){surfaces();return;}
+  const Network=globalThis.GoodvisionCameraDisplay?.NetworkController;
+  if(state.running&&state.sessionMode!=="camera"&&Network?.supported()){
+    if(!networkVideoDisplay){
+      stopLatestFeed();networkVideoDisplay=new Network({canvas:ui.localCameraCanvas,
+        url:"/v1/video/display/frames",metricsUrl:"/v1/video/display/metrics",
+        onStatus:stats=>{ui.rawBadgeText.textContent="连续画面 · "+(stats.distinct_presented_fps??0).toFixed(1)+
+          " 帧/秒 · 缓冲 "+stats.configured_display_delay_seconds+" 秒";},
+        onFailure:message=>{ui.rawBadgeText.textContent=message;}});
+      networkVideoDisplay.start();
+    }
+    surfaces();return;
+  }
+  if(state.running&&(!latestFeed.active||latestFeed.session!==state.sessionId)){
+    stopLatestFeed();latestFeed.active=true;latestFeed.session=state.sessionId;
+    pullLatestFrame(latestFeed.generation)
+  }
+  surfaces()
+}
+function closeFeed(){
+  networkVideoDisplay?.stop();networkVideoDisplay=null;
+  stopLatestFeed();resetAnnotations();surfaces()
+}
+
+function settingsSourceLabel(value){
+  const source=String(value||"built-in defaults").trim().replaceAll("_"," ");
+  return source.charAt(0).toUpperCase()+source.slice(1)
+}
+function savedExecutionMode(kind){
+  const modes=kind==="inference"?["cloud","local","server"]:["legacy","local","server"];
+  const candidates=state.deployment?[state.deployment]:[state.info,state.info?.deployment];
+  for(const data of candidates){
+    if(modes.includes(data?.[kind+"_mode"]))return data[kind+"_mode"];
+    if(typeof data?.["local_"+kind+"_enabled"]==="boolean")
+      return data["local_"+kind+"_enabled"]?"local":modes[0]
+  }
+  return modes[0]
+}
+function draftExecutionMode(kind){
+  const value=(kind==="inference"?ui.inferenceMode:ui.trackingMode).value;
+  return (kind==="inference"?["cloud","local","server"]:["legacy","local","server"]).includes(value)
+    ?value:savedExecutionMode(kind)
+}
+function localInferenceEnabled(){
+  return savedExecutionMode("inference")!=="cloud"
+}
+function localGpuUnavailable(){
+  const gpu=state.deployment?.local_gpu||state.info?.local_gpu||state.info?.deployment?.local_gpu||{};
+  return gpu.available===false||gpu.gpu_count!=null&&Number(gpu.gpu_count)===0
+}
+function renderLocalGpuSettings(){
+  const data=state.deployment||state.info?.deployment||state.info||{};
+  const gpu=data.local_gpu||state.info?.local_gpu||{};
+  const count=Number(gpu.gpu_count),known=gpu.gpu_count!=null&&Number.isInteger(count)&&count>=0;
+  const inference=draftExecutionMode("inference"),tracking=draftExecutionMode("tracking");
+  const localInference=inference==="local",localTracking=tracking==="local";
+  ui.localInference.checked=localInference;ui.localTracking.checked=localTracking;
+  ui.inferenceServerFields.hidden=inference!=="server";ui.trackingServerFields.hidden=tracking!=="server";
+  ui.trackingNodeKeyFields.hidden=tracking!=="server"||ui.trackingServerProtocol.value!=="contour";
+  const changed=inference!==savedExecutionMode("inference")||tracking!==savedExecutionMode("tracking")||
+    inference==="server"&&(ui.inferenceServerUrl.value.trim()!==(data.inference_server_url||"")||
+      ui.inferenceServerModel.value.trim()!==(data.inference_server_model||"local-vision"))||
+    tracking==="server"&&(ui.trackingServerUrl.value.trim()!==(data.tracking_server_url||"")||
+      Number(ui.trackingServerCapacity.value)!==Number(data.tracking_server_capacity||1)||
+      ui.trackingServerProtocol.value!==(data.tracking_server_protocol||"legacy"))||
+    Number(ui.trackingSampleFps.value)!==Number(data.tracking_sample_fps??2);
+  const device=(value,fallback)=>{
+    const match=String(value??"").match(/^(?:[a-z]+:)?(\d+)$/);
+    return "GPU "+(match?match[1]:fallback)
+  };
+  const inferenceDevice=device(gpu.inference_device,0),trackingDevice=device(gpu.tracking_device,count>=2?1:0);
+  const allocation=[localInference?"大模型 → "+inferenceDevice:
+    inference==="server"?"大模型 → 独立模型服务器":"大模型 → 云端 API",
+    localTracking?"人物追踪及其他本地 GPU 任务 → "+trackingDevice:
+    tracking==="server"?"人物追踪 → 独立 GPU 服务器":"人物追踪 → 原部署服务（单路）"].join("；");
+  ui.localGpuStatus.className="secret-status";
+  if(known&&count>0&&gpu.available!==false){
+    ui.localGpuStatus.textContent="检测到 "+count+" 张本地显卡。"+allocation+"。"
+  }else if(gpu.available===false||known&&count===0){
+    ui.localGpuStatus.textContent="本机未检测到可用 GPU，云端 API 和独立服务器仍可使用。"+allocation+"。"+
+      (localInference||localTracking?"本机显卡运行需要先准备驱动和运行环境。":"");
+    if(localInference||localTracking)ui.localGpuStatus.className+=" error"
+  }else{
+    ui.localGpuStatus.textContent="本地显卡状态尚未确认。"+allocation+"。"
+  }
+  if(localInferenceEnabled())ui.localGpuStatus.textContent+=" 已保存的大模型服务无需云端 API key。";
+  if(gpu.error&&(localInference||localTracking)){ui.localGpuStatus.textContent+=" "+String(gpu.error);ui.localGpuStatus.className+=" error"}
+  if(changed)ui.localGpuStatus.textContent+=" 此处为待保存选择，请保存默认设置后开始新会话。"
+}
+function updateSourceNote(){
+  const deployment=state.deployment;
+  if(deployment&&deployment.configured_stream===true){
+    const protocol=String(deployment.configured_stream_protocol||"network").toUpperCase();
+    ui.sourceNote.textContent="Saved/default "+protocol+" source is available. Leave this session URL blank to use it, or enter a one-run override."
+  }else if(configured()){
+    ui.sourceNote.textContent="A default network source is available. Leave this session URL blank to use it, or enter a one-run override."
+  }else{
+    ui.sourceNote.textContent="No saved/default network source is configured. Enter a one-run URL above or save one in Deployment defaults."
+  }
+}
+function renderDeploymentSettings(clearSecrets=true,syncRun=false){
+  const data=state.deployment;if(!data)return;
+  if(clearSecrets){ui.defaultStreamUrl.value="";ui.defaultApiKey.value="";
+    ui.trackingNodeKey.value="";ui.clearTrackingNodeKey.checked=false}
+  ui.defaultDryRun.checked=data.dry_run===true;
+  ui.defaultAutostart.checked=data.autostart===true;
+  ui.inferenceMode.value=savedExecutionMode("inference");ui.trackingMode.value=savedExecutionMode("tracking");
+  ui.inferenceServerUrl.value=data.inference_server_url||"";
+  ui.inferenceServerModel.value=data.inference_server_model||"local-vision";
+  ui.trackingServerUrl.value=data.tracking_server_url||"";
+  ui.trackingServerCapacity.value=String(data.tracking_server_capacity||1);
+  ui.trackingServerProtocol.value=data.tracking_server_protocol||"legacy";
+  ui.trackingSampleFps.value=String(data.tracking_sample_fps??2);
+  ui.trackingNodeKeyStatus.textContent=data.tracking_key_present===true
+    ?"已保存追踪节点密钥；不会回显，留空保留。"
+    :"尚未保存追踪节点密钥。请从 GPU 机器的 secrets/node-key 文件复制。";
+  renderLocalGpuSettings();
+  ui.defaultCameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono";
+  renderProcessingSettings();
+  if(!state.bufferDelayDirty&&Number.isFinite(data.buffer_delay_seconds))
+    ui.bufferDelay.value=String(data.buffer_delay_seconds);
+  const available=data.persistence_available===true;
+  ui.deploymentStorage.textContent=available?"Persistence · available":"Persistence · unavailable";
+  ui.deploymentStorage.className="channel "+(available?"good":"warn");
+  const protocol=String(data.configured_stream_protocol||"network").toUpperCase();
+  ui.defaultStreamStatus.textContent=data.configured_stream===true
+    ?protocol+" source configured · address hidden · entering a value replaces it"
+    :"No default source configured · enter a network stream URL to save one";
+  ui.defaultApiKeyStatus.textContent=localInferenceEnabled()?"当前大模型服务无需云端 API key。":data.api_key_persisted===true
+    ?"Saved API key present · value hidden · blank keeps it"
+    :data.api_key_present===true
+      ?"API key available from runtime/environment · value hidden"
+      :"No API key configured · formal mode cannot call the model";
+  ui.defaultApiKey.placeholder=data.api_key_present===true
+    ?"Leave blank to keep the current key"
+    :"Enter an API key for formal mode";
+  ui.deploymentSourceStatus.textContent="Effective source: "+settingsSourceLabel(data.settings_source)+
+    (data.settings_saved===true?" · persistent settings saved":" · no persistent override saved");
+  if(syncRun&&!state.running&&!state.pending){
+    ui.streamUrl.value="";ui.dryRun.checked=data.dry_run===true;
+    ui.cameraLayout.value=ui.defaultCameraLayout.value;state.runOverridesDirty=false
+  }
+  updateSourceNote();controls()
+}
+async function loadDeploymentSettings(discarded=false){
+  if(state.deploymentLoading||state.deploymentSaving)return;
+  state.deploymentLoading=true;deploymentSay("Loading persistent settings...");controls();
+  try{
+    const response=await fetch("/v1/deployment/settings",{cache:"no-store"});
+    if(!response.ok)throw new Error(await responseError(response));
+    state.deployment=await response.json();
+    renderDeploymentSettings(true,!state.runOverridesDirty);
+    if(state.deployment.storage_error){
+      deploymentSay("Persistent storage error: "+state.deployment.storage_error,true)
+    }else if(state.deployment.persistence_available!==true){
+      deploymentSay("Persistent storage is unavailable. The container needs a writable deployment data volume.",true)
+    }else{
+      deploymentSay(discarded
+        ?"Unsaved deployment edits discarded. Saved/default values reloaded; secret fields remain hidden."
+        :"已载入保存的默认设置。停止全部分析后保存修改，对下次统一分析生效。")
+    }
+  }catch(error){
+    state.deployment=null;ui.deploymentStorage.textContent="Persistence · unreachable";
+    ui.deploymentStorage.className="channel warn";
+    deploymentSay("Could not load persistent settings: "+error.message,true)
+  }finally{state.deploymentLoading=false;controls()}
+}
+async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={}){
+  if(state.running||state.pending||state.stopping||sessionBusyStates.has(state.processingStatus?.pipeline_state)||
+    state.processingStatus?.processing_cleanup==="closing"||globalThis.GoodvisionFleet?.extraBusy?.()===true){
+    deploymentSay("请先停止全部分析并等待收尾完成，再保存运行设置。",true);return false
+  }
+  if(state.deploymentLoading||state.deploymentSaving||state.routeSubmitting||state.routes?.state==="running")return false;
+  if(!state.deployment||state.deployment.persistence_available!==true)return false;
+  state.deploymentSaving=true;deploymentSay("Saving persistent settings...");controls();
+  try{
+    const response=await fetch("/v1/deployment/settings",{
+      method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)
+    });
+    if(!response.ok)throw new Error(await responseError(response));
+    state.deployment=await response.json();
+    renderDeploymentSettings(true,syncRun);
+    await info();renderDeploymentSettings(true,syncRun);
+    if(Object.hasOwn(payload,"processing_method"))await status();
+    deploymentSay(successMessage);globalThis.GoodvisionFleet?.refresh?.();return true
+  }catch(error){
+    deploymentSay("Could not save persistent settings: "+error.message,true);return false
+  }finally{state.deploymentSaving=false;controls()}
+}
+async function saveDeploymentSettings(){
+  const inference=draftExecutionMode("inference"),tracking=draftExecutionMode("tracking");
+  const payload={dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked,
+    camera_layout:ui.defaultCameraLayout.value,
+    inference_mode:inference,tracking_mode:tracking,
+    local_inference_enabled:inference==="local",local_tracking_enabled:tracking==="local"};
+  if(localGpuUnavailable()&&(inference==="local"||tracking==="local")){
+    deploymentSay("本机显卡不可用。请准备本机运行环境，或选择云端 / 独立服务器。",true);return
+  }
+  const serverOrigin=(field,label)=>{
+    const raw=field.value.trim();let url;
+    try{url=new URL(raw)}catch(_){throw {field,message:label+"需填写完整的 http:// 或 https:// 地址和端口。"}}
+    if(raw.length>2048||!/^https?:\/\/[^/]+\/?$/i.test(raw)||/[\\\s%?#]/.test(raw)||/:\/?$/.test(raw)||
+      !["http:","https:"].includes(url.protocol)||!url.hostname||url.username||url.password||
+      url.pathname!=="/"||url.search||url.hash||url.port&&Number(url.port)<1)
+      throw {field,message:label+"仅填写服务器地址和端口，不含接口路径、账号、查询参数或片段。"};
+    return url.origin
+  };
+  try{
+    const fpsText=ui.trackingSampleFps.value.trim(),fps=Number(fpsText);
+    if(!fpsText||!Number.isFinite(fps)||fps<.5||fps>30)
+      throw {field:ui.trackingSampleFps,message:"采样帧率请输入 0.5–30 之间的数值，建议从 2 FPS 开始。"};
+    payload.tracking_sample_fps=fps;
+    if(inference==="server"){
+      payload.inference_server_url=serverOrigin(ui.inferenceServerUrl,"模型服务器地址");
+      payload.inference_server_model=ui.inferenceServerModel.value.trim();
+      if(!payload.inference_server_model||payload.inference_server_model.length>512||/[\u0000-\u001f\u007f]/.test(payload.inference_server_model))
+        throw {field:ui.inferenceServerModel,message:"请填写服务器提供的模型名称，如 local-vision。"}
+    }
+    if(tracking==="server"){
+      payload.tracking_server_protocol=ui.trackingServerProtocol.value;
+      payload.tracking_server_url=serverOrigin(ui.trackingServerUrl,"人物追踪服务器地址");
+      const raw=ui.trackingServerCapacity.value.trim(),capacity=Number(raw);
+      if(!/^[1-9]\d*$/.test(raw)||!Number.isSafeInteger(capacity))
+        throw {field:ui.trackingServerCapacity,message:"追踪服务器容量须为正整数，与已部署通道数一致。"};
+      payload.tracking_server_capacity=capacity
+      if(payload.tracking_server_protocol==="contour"){
+        if(ui.trackingNodeKey.value.trim())payload.tracking_api_key=ui.trackingNodeKey.value.trim();
+        if(ui.clearTrackingNodeKey.checked)payload.clear_tracking_api_key=true;
+        if(payload.tracking_api_key&&payload.clear_tracking_api_key)
+          throw {field:ui.trackingNodeKey,message:"不能同时输入和清除节点密钥。"}
+      }
+    }
+  }catch(error){deploymentSay(error.message,true);error.field?.focus();return}
+  const trackingChanged=tracking!==savedExecutionMode("tracking")||tracking==="server"&&
+    (payload.tracking_server_url!==(state.deployment?.tracking_server_url||"")||
+      payload.tracking_server_capacity!==Number(state.deployment?.tracking_server_capacity||1)||
+      payload.tracking_server_protocol!==(state.deployment?.tracking_server_protocol||"legacy"));
+  if(!trackingChanged&&processingMethods().some(method=>method.available!==false))payload.processing_method="person_tracking";
+  const streamUrl=ui.defaultStreamUrl.value.trim(),apiKey=ui.defaultApiKey.value.trim();
+  if(streamUrl)payload.stream_url=streamUrl;
+  if(apiKey&&inference==="cloud")payload.api_key=apiKey;
+  await updateDeploymentSettings(payload,
+    "默认设置已保存，对下次统一分析生效，重启后继续保留。"+
+      (payload.processing_method?" 新会话使用 人员追踪模块 连续分析。":"")+
+      (apiKey&&inference!=="cloud"?" 自部署大模型不使用云端 API key；本次输入未保存。":""),
+    {syncRun:true})
+}
+async function saveApiKey(){
+  if(localInferenceEnabled())return;
+  const key=ui.defaultApiKey.value.trim();
+  if(!key){deploymentSay("请输入 API key 后保存。",true);return}
+  await updateDeploymentSettings({api_key:key},
+    "API key 已保存，无需 .env 或重启服务。正式检测请取消 Test mode，再开始检测。")
+}
+async function saveBufferDelay(){
+  const raw=ui.bufferDelay.value.trim(),seconds=Number(raw);
+  if(!raw||!Number.isFinite(seconds)||seconds<0||seconds>30){
+    ui.bufferDelayNote.textContent="请输入 0–30 之间的秒数，支持小数。";
+    ui.bufferDelayNote.className="status deployment-note error";return
+  }
+  if(ui.saveBufferDelay.disabled)return;
+  state.deploymentSaving=true;controls();
+  ui.bufferDelayNote.className="status deployment-note";
+  ui.bufferDelayNote.textContent="正在应用并保存缓存时间…";
+  try{
+    const response=await fetch("/v1/deployment/settings",{
+      method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({buffer_delay_seconds:seconds})
+    });
+    if(!response.ok)throw new Error(await responseError(response));
+    state.deployment=await response.json();state.bufferDelayDirty=false;
+    const saved=state.deployment.buffer_delay_seconds;
+    if(state.info){
+      state.info.annotated_output={...state.info.annotated_output,buffer_delay_seconds:saved};
+      updateAnalysisUi()
+    }
+    ui.bufferDelay.value=String(saved);
+    ui.bufferDelayCurrent.textContent="当前网络视频缓存："+saved+" 秒";
+    ui.bufferDelayNote.textContent="已应用并保存为 "+saved+" 秒，重启后继续使用。";
+    await status()
+  }catch(error){
+    ui.bufferDelayNote.textContent="缓存时间保存失败："+error.message;
+    ui.bufferDelayNote.className="status deployment-note error"
+  }finally{state.deploymentSaving=false;controls()}
+}
+async function clearSavedApiKey(){
+  if(!state.deployment||state.deployment.api_key_persisted!==true)return;
+  if(!window.confirm("Clear the saved API key? Formal mode will require another available key."))return;
+  await updateDeploymentSettings({clear_api_key:true},
+    "Saved API key cleared. A runtime/environment key, if configured, remains available.")
+}
+
+async function info(){
+  try{
+    const response=await fetch("/v1/ui/info",{cache:"no-store"});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    const data=await response.json();
+    data.sample_fps=Number(data.sample_fps);data.max_image_side=Number(data.max_image_side);
+    data.jpeg_quality=Number(data.jpeg_quality);
+    if(data.face&&typeof data.face==="object"){
+      data.face.sample_fps=Number(data.face.sample_fps);
+      data.face.max_image_side=Number(data.face.max_image_side);
+      data.face.jpeg_quality=Number(data.face.jpeg_quality);
+      data.face.threshold=Number(data.face.threshold)
+    }
+    if(data.multi&&typeof data.multi==="object"){
+      data.multi.sample_fps=Number(data.multi.sample_fps);
+      data.multi.max_image_side=Number(data.multi.max_image_side);
+      data.multi.jpeg_quality=Number(data.multi.jpeg_quality)
+    }
+    if(data.annotated_output&&typeof data.annotated_output==="object"){
+      data.annotated_output.output_fps=Number(data.annotated_output.output_fps);
+      data.annotated_output.buffer_delay_seconds=Number(data.annotated_output.buffer_delay_seconds)
+    }
+    state.info=data;configureScene(data.scene_engine);
+    renderProcessingSettings();
+    renderSensitivities();
+    updateAnnotatedOutput(data.annotated_output);
+    if(!state.runOverridesDirty&&!state.deployment){
+      ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present&&!localInferenceEnabled());
+      ui.cameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono"
+    }
+    updateSourceNote();
+    say("Ready. Choose an input or monitor the active server session.");updateAnalysisUi()
+  }catch(error){say("Could not load /v1/ui/info: "+error.message,true)}
+  controls()
+}
+async function responseError(response){
+  try{
+    const data=await response.json();
+    return data.error||data.detail||data.message||("HTTP "+response.status)
+  }catch(_){return "HTTP "+response.status}
+}
+
+function renderRoutes(){
+  const data=state.routes;if(!data)return;
+  $("route-selected").textContent="当前线路："+(data.selected_label||"默认线路")+
+    (data.selection_persisted?" · 已保存，重启后继续使用":"");
+  const labels={pending:"等待",warming:"预热中",testing:"测速中",complete:"可用",unavailable:"不可用"};
+  const body=$("route-results");body.replaceChildren();
+  let completed=0;
+  for(const result of data.results||[]){
+    const samples=result.samples||[];completed+=samples.length;
+    const row=document.createElement("tr");
+    const values=[result.label+(data.selected_id===result.id?" · 当前":""),
+      labels[result.state]||"等待",samples.filter(sample=>sample.ok).length+" / "+data.trials_per_route,
+      result.median_seconds===null?"—":number(result.median_seconds,3)+" 秒",
+      samples.length?samples.map(sample=>sample.ok?number(sample.seconds,3)+" 秒":
+        sample.error==="invalid_result"?"结果不完整":"请求失败").join(" / "):"—"];
+    for(const value of values){const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)}
+    const action=document.createElement("td"),button=document.createElement("button");
+    button.className="btn";button.dataset.routeId=result.id;
+    button.textContent=data.selected_id===result.id?"使用中":"选择此线路";
+    button.setAttribute("aria-label","选择"+result.label);
+    button.onclick=()=>selectRoute(result.id);action.appendChild(button);row.appendChild(action);
+    body.appendChild(row)
+  }
+  const note=$("route-note");note.className="status deployment-note";
+  if(!data.supported)note.textContent="当前部署未启用线路测速。";
+  else if(data.state==="running")note.textContent="正在检查线路（"+completed+" / "+
+    ((data.results||[]).length*data.trials_per_route)+" 次）…完成后自动选路，再启动检测。";
+  else if(data.selection_method==="manual"&&!data.error)note.textContent="已手动选择"+data.selected_label+
+    "，下次启动检测时生效。"+(data.selection_persisted?"重启后继续使用。":"");
+  else if(data.state==="complete")note.textContent="已选择中位耗时最短的可用线路。"+
+    "下次启动检测时生效。测速时间："+timeLabel(data.finished_at);
+  else if(data.state==="failed"){
+    note.className+=" error";note.textContent=data.error==="no_available_route"
+      ?"本次没有通过检查的线路，保留原选择。请检查网络或 API key 后重试。"
+      :"线路检查未完成，保留原选择。请重试。"
+  }else note.textContent=data.error?"上次保存的线路无法读取，请重新测速。":
+    "共 "+(data.results||[]).length+" 条候选线路；可直接手动选择，或测速后自动选择最快线路。";
+  controls()
+}
+async function loadRoutes(){
+  if(localInferenceEnabled()||state.routeLoading||state.routeSubmitting)return;
+  const revision=state.routeRevision;
+  state.routeLoading=true;
+  try{
+    const response=await fetch("/v1/deployment/routes",{cache:"no-store"});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    const data=await response.json();
+    if(!state.routeSubmitting&&revision===state.routeRevision){state.routes=data;renderRoutes()}
+  }catch(_){$("route-note").textContent="无法读取线路状态，请检查服务连接。"}
+  finally{state.routeLoading=false}
+}
+async function checkRoutes(){
+  if(localInferenceEnabled()||state.running||state.pending||state.routeSubmitting)return;
+  state.routeRevision++;
+  state.routeSubmitting=true;controls();
+  $("route-note").textContent="正在启动线路测速…";
+  try{
+    const response=await fetch("/v1/deployment/routes/check",{method:"POST"});
+    if(!response.ok)throw new Error(await responseError(response));
+    state.routes=await response.json();renderRoutes()
+  }catch(_){$("route-note").textContent="无法开始测速。请确认全部分析已停止且 API key 已保存。"}
+  finally{state.routeSubmitting=false;controls()}
+}
+async function selectRoute(routeId){
+  if(localInferenceEnabled()||state.running||state.pending||state.routeSubmitting||!state.routes||!state.routes.can_select)return;
+  state.routeRevision++;
+  state.routeSubmitting=true;controls();
+  $("route-note").textContent="正在保存线路选择…";
+  try{
+    const response=await fetch("/v1/deployment/routes/select",{
+      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({route_id:routeId})
+    });
+    if(!response.ok)throw new Error(await responseError(response));
+    state.routes=await response.json();renderRoutes()
+  }catch(_){
+    $("route-note").className="status deployment-note error";
+    $("route-note").textContent="线路选择未保存，保留原选择。请确认全部分析和测速已停止后重试。"
+  }finally{state.routeSubmitting=false;controls()}
+}
+function sampleCount(person){
+  if(Array.isArray(person.samples))return person.samples.length;
+  const value=Number(person.samples);return Number.isFinite(value)?value:0
+}
+function renderGallery(){
+  ui.galleryBody.replaceChildren();
+  const gallery=state.gallery,people=gallery&&Array.isArray(gallery.people)?gallery.people:[];
+  if(!gallery){ui.gallerySummary.textContent="Unavailable";ui.galleryNote.textContent="Gallery not loaded.";return}
+  const total=Number(gallery.sample_count);
+  ui.gallerySummary.textContent=people.length+" people | "+(Number.isFinite(total)?total:people.reduce((sum,p)=>sum+sampleCount(p),0))+" samples";
+  ui.galleryNote.textContent=gallery.error||
+    (gallery.ready?"Gallery ready. Enroll one clear face image at a time.":"Face gallery is not ready.");
+  ui.galleryNote.className="note"+(gallery.error||!gallery.ready?" error":"");
+  if(!people.length){
+    const row=document.createElement("tr"),cell=document.createElement("td");
+    cell.colSpan=4;cell.textContent="No known people enrolled.";row.appendChild(cell);ui.galleryBody.appendChild(row)
+  }
+  for(const person of people){
+    const row=document.createElement("tr");
+    for(const value of [person.person_id||"",person.name||"",String(sampleCount(person))]){
+      const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)
+    }
+    const action=document.createElement("td"),button=document.createElement("button");
+    button.className="btn danger";button.textContent="Delete";
+    button.onclick=()=>deletePerson(String(person.person_id||""),String(person.name||person.person_id||"person"));
+    action.appendChild(button);row.appendChild(action);ui.galleryBody.appendChild(row)
+  }
+  controls()
+}
+async function refreshGallery(){
+  if(state.galleryLoading)return;
+  state.galleryLoading=true;ui.gallerySummary.textContent="Loading...";ui.galleryNote.textContent="Loading gallery...";controls();
+  try{
+    const response=await fetch("/v1/faces/gallery",{cache:"no-store"});
+    if(!response.ok)throw new Error(await responseError(response));
+    const data=await response.json();
+    state.gallery={ready:data.ready===true,people:Array.isArray(data.people)?data.people:[],
+      sample_count:Number(data.sample_count),error:data.error||""}
+  }catch(error){
+    state.gallery={ready:false,people:[],sample_count:0,error:"Could not load gallery: "+error.message}
+  }finally{state.galleryLoading=false;renderGallery();controls()}
+}
+async function enrollPerson(){
+  const personId=ui.personId.value.trim(),name=ui.personName.value.trim(),file=ui.personFile.files[0];
+  if(!personId||!name||!file){ui.galleryNote.textContent="Person ID, name, and one face image are required.";ui.galleryNote.className="note error";return}
+  state.galleryLoading=true;ui.galleryNote.textContent="Enrolling "+name+"...";ui.galleryNote.className="note";controls();
+  try{
+    const url="/v1/faces/gallery/"+encodeURIComponent(personId)+"?name="+encodeURIComponent(name);
+    const response=await fetch(url,{method:"POST",headers:{"Content-Type":file.type||"application/octet-stream"},body:file});
+    if(!response.ok)throw new Error(await responseError(response));
+    ui.personFile.value="";say("Enrolled "+name+" in the known people gallery.");
+    state.galleryLoading=false;await refreshGallery()
+  }catch(error){
+    state.galleryLoading=false;ui.galleryNote.textContent="Enrollment failed: "+error.message;
+    ui.galleryNote.className="note error";controls()
+  }
+}
+async function deletePerson(personId,name){
+  if(!personId||!window.confirm("Delete "+name+" and all enrolled samples?"))return;
+  state.galleryLoading=true;ui.galleryNote.textContent="Deleting "+name+"...";ui.galleryNote.className="note";controls();
+  try{
+    const response=await fetch("/v1/faces/gallery/"+encodeURIComponent(personId),{method:"DELETE"});
+    if(!response.ok)throw new Error(await responseError(response));
+    say("Deleted "+name+" from the known people gallery.");state.galleryLoading=false;await refreshGallery()
+  }catch(error){
+    state.galleryLoading=false;ui.galleryNote.textContent="Delete failed: "+error.message;
+    ui.galleryNote.className="note error";controls()
+  }
+}
+async function camera(){
+  if(state.cameraStream){disableCamera();return}
+  if(!cameraAllowed){say("Camera access requires HTTPS or localhost.",true);return}
+  try{
+    const video=state.info?.local_camera_display?.enabled?{frameRate:{min:15,ideal:30}}:true;
+    const stream=await navigator.mediaDevices.getUserMedia({video,audio:false});
+    state.cameraStream=stream;ui.cameraPreview.srcObject=stream;await ui.cameraPreview.play();
+    ui.cameraButton.textContent="Disable camera";ui.cameraNote.textContent="camera ready";ui.cameraNote.className="note";
+    say("Camera ready. Press "+ui.start.textContent+".");
+    const display=globalThis.GoodvisionCameraDisplay,config=state.info?.local_camera_display;
+    if(config?.enabled&&config.motion_backend==="dense"&&display?.BrowserController?.supported(ui.cameraPreview))
+      display.BrowserController.warmupMotion({onFailure:detail=>{
+        if(state.cameraStream===stream){ui.cameraNote.textContent=detail;ui.cameraNote.className="note error";}
+      }});
+  }catch(error){say("Camera unavailable: "+error.message,true)}
+  surfaces();controls()
+}
+function disableCamera(){
+  stopSampler();
+  globalThis.GoodvisionCameraDisplay?.BrowserController?.discardWarmup();
+  if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
+  state.cameraStream=null;ui.cameraPreview.srcObject=null;ui.cameraButton.textContent="Enable camera";
+  ui.cameraNote.textContent="camera off";surfaces();controls()
+}
+function startSampler(){
+  stopSampler();if(!state.cameraStream||!cameraConfig())return;
+  if(typeof startLocalCameraDisplay==="function"&&startLocalCameraDisplay())return;
+  const settings=cameraSettings();
+  const output=state.info&&state.info.annotated_output||{};
+  const displayFps=Math.min(30,Number(output.output_fps)||30);
+  const analysisFps=Number(settings.sample_fps)||0;
+  const captureFps=Math.max(displayFps,analysisFps);
+  const generation=state.cameraGeneration;
+  const canvas=document.createElement("canvas"),context=canvas.getContext("2d");
+  state.cameraTimer=setInterval(async()=>{
+    const video=ui.cameraPreview,socket=state.ws;
+    // Preserve the existing 1 MiB upload bound; an admitted capture is sent after encoding.
+    if(generation!==state.cameraGeneration||state.cameraBusy||!socket||socket.readyState!==1||socket.bufferedAmount>1024*1024||!video.videoWidth)return;
+    state.cameraBusy=true;
+    try{
+      const scale=Math.min(1,settings.max_image_side/Math.max(video.videoWidth,video.videoHeight));
+      canvas.width=Math.max(1,Math.round(video.videoWidth*scale));
+      canvas.height=Math.max(1,Math.round(video.videoHeight*scale));
+      context.drawImage(video,0,0,canvas.width,canvas.height);
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",settings.jpeg_quality/100));
+      if(!blob)return;
+      const jpeg=new Uint8Array(await blob.arrayBuffer()),packet=new Uint8Array(4+jpeg.length);
+      const header=new DataView(packet.buffer);header.setUint16(0,canvas.width);header.setUint16(2,canvas.height);
+      packet.set(jpeg,4);
+      if(generation===state.cameraGeneration&&socket===state.ws&&socket.readyState===1)
+        socket.send(packet.buffer)
+    }finally{if(generation===state.cameraGeneration)state.cameraBusy=false}
+  },1000/captureFps)
+}
+function stopSampler(){
+  if(typeof stopLocalCameraDisplay==="function")stopLocalCameraDisplay();
+  if(state.cameraTimer)clearInterval(state.cameraTimer);
+  state.cameraTimer=null;state.cameraBusy=false;state.cameraGeneration++
+}
+
+function clearAnnotation(){
+  if(state.annotationTimer)clearTimeout(state.annotationTimer);
+  state.annotationTimer=null;ui.bboxLayer.replaceChildren();
+  ui.bboxLayer.style.display="none";state.activeAnnotationId=null
+}
+function resetAnnotations(){clearAnnotation()}
+function alignAnnotationLayer(){
+  if(!ui.bboxLayer.children.length){ui.bboxLayer.style.display="none";return}
+  const dimensions=sourceDimensions(sourceMedia()),width=dimensions[0],height=dimensions[1];
+  const viewWidth=ui.viewport.clientWidth,viewHeight=ui.viewport.clientHeight;
+  if(!width||!height||!viewWidth||!viewHeight){ui.bboxLayer.style.display="none";return}
+  const scale=Math.min(viewWidth/width,viewHeight/height);
+  const displayWidth=width*scale,displayHeight=height*scale;
+  Object.assign(ui.bboxLayer.style,{
+    left:(viewWidth-displayWidth)/2+"px",top:(viewHeight-displayHeight)/2+"px",
+    width:displayWidth+"px",height:displayHeight+"px",display:"block"
+  })
+}
+function renderRichAnnotation(result,judgment,allowBoxes=true,syncNote=""){
+  clearAnnotation();
+  const positive=judgment.detected===true,eventLabel=judgment.event_label||"event";
+  const positiveLabel=result.analysis_kind==="face_reference_match"?"UNKNOWN":eventLabel.toUpperCase();
+  const confidence=Number(judgment.confidence),frame=result.frame||{},model=result.model||{};
+  const hud=document.createElement("div");hud.className="analysis-hud"+(positive?" hud-positive":"");
+  const title=document.createElement("div");title.className="hud-title";
+  title.textContent=(positive?positiveLabel:"CLEAR | "+eventLabel.toUpperCase())+
+    (Number.isFinite(confidence)?"  "+confidence.toFixed(2):"");
+  const description=document.createElement("div");description.className="hud-description";
+  description.textContent=judgment.description||"No description.";
+  const meta=document.createElement("div");meta.className="hud-meta";
+  meta.textContent="R"+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | model "+number(model.latency_seconds,2)+"s"+
+    (syncNote?" | "+syncNote:"");
+  hud.append(title,description,meta);ui.bboxLayer.appendChild(hud);
+
+  let drewBoxes=false;
+  if(positive&&allowBoxes&&Array.isArray(result.objects)){
+    const referenced=new Set(Array.isArray(judgment.object_ids)?judgment.object_ids:[]);
+    for(const object of result.objects){
+      if(!referenced.has(object.object_id)||!object.bbox)continue;
+      const bbox=object.bbox,x1=Number(bbox.x1),y1=Number(bbox.y1);
+      const x2=Number(bbox.x2),y2=Number(bbox.y2);
+      if(![x1,y1,x2,y2].every(Number.isFinite)||x2<=x1||y2<=y1)continue;
+      const left=Math.max(0,Math.min(1,x1)),top=Math.max(0,Math.min(1,y1));
+      const right=Math.max(0,Math.min(1,x2)),bottom=Math.max(0,Math.min(1,y2));
+      if(right<=left||bottom<=top)continue;
+      const box=document.createElement("div");box.className="bbox-box";
+      Object.assign(box.style,{
+        left:left*100+"%",top:top*100+"%",
+        width:(right-left)*100+"%",height:(bottom-top)*100+"%"
+      });
+      const label=document.createElement("span"),objectConfidence=Number(object.confidence);
+      label.textContent=(object.label||object.object_id||"object")+" | "+eventLabel+
+        (Number.isFinite(objectConfidence)?" | "+objectConfidence.toFixed(2):"");
+      box.appendChild(label);ui.bboxLayer.appendChild(box);drewBoxes=true
+    }
+  }
+  state.activeAnnotationId=result.message_id||String(result.sequence||frame.timestamp_seconds);
+  alignAnnotationLayer();
+  if(drewBoxes){
+    const annotationId=state.activeAnnotationId;
+    const settings=cameraSettings()||{},sampleFps=Number(settings.sample_fps)||2.5;
+    state.annotationTimer=setTimeout(()=>{
+      if(state.activeAnnotationId===annotationId)
+        renderRichAnnotation(result,judgment,false,"bbox sample interval ended")
+    },1000/sampleFps)
+  }
+}
+function faceStatus(object){
+  const value=object&&object.attributes&&object.attributes.status;
+  return new Set(["known","unknown","unusable"]).has(String(value||"").toLowerCase())
+    ?String(value).toLowerCase():"unusable"
+}
+function faceSimilarity(object){
+  const attributes=object&&object.attributes||{};
+  for(const value of [attributes.similarity,attributes.match_score,attributes.score]){
+    const score=Number(value);if(Number.isFinite(score))return score
+  }
+  return null
+}
+function faceDisplayName(object){
+  const attributes=object&&object.attributes||{};
+  return attributes.name||attributes.person_name||attributes.person_id||object.label||"KNOWN"
+}
+function summarizeFaces(result){
+  const objects=Array.isArray(result.objects)?result.objects:[],known=[],unknown=[],unusable=[];
+  for(const object of objects){
+    const status=faceStatus(object);
+    if(status==="known")known.push(object);else if(status==="unknown")unknown.push(object);else unusable.push(object)
+  }
+  let verdict="NO FACE",decisionClass="warming",hudClass="hud-face-neutral";
+  if(unknown.length){verdict="UNKNOWN";decisionClass="detected";hudClass="hud-face-unknown"}
+  else if(known.length){verdict="CLEAR";decisionClass="clear";hudClass=""}
+  else if(objects.length)verdict="NO USABLE FACE";
+  const names=[...new Set(known.map(faceDisplayName))];
+  const parts=[];
+  if(unknown.length)parts.push(unknown.length+" unknown");
+  if(known.length)parts.push(known.length+" known"+(names.length?" ("+names.join(", ")+")":""));
+  if(unusable.length)parts.push(unusable.length+" unusable");
+  const scores=objects.map(faceSimilarity).filter(Number.isFinite),best=scores.length?Math.max(...scores):null;
+  return {objects,known,unknown,unusable,verdict,decisionClass,hudClass,best,
+    description:parts.length?parts.join(" | "):"No face detected in this sample."}
+}
+function renderFaceAnnotation(result,summary,allowBoxes=true,syncNote=""){
+  clearAnnotation();
+  const frame=result.frame||{},model=result.model||{},hud=document.createElement("div");
+  hud.className="analysis-hud"+(summary.hudClass?" "+summary.hudClass:"");
+  const title=document.createElement("div");title.className="hud-title";
+  title.textContent=summary.verdict+(Number.isFinite(summary.best)?"  "+summary.best.toFixed(3):"");
+  const description=document.createElement("div");description.className="hud-description";
+  description.textContent=summary.description;
+  const meta=document.createElement("div");meta.className="hud-meta";
+  meta.textContent="R"+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | model "+number(model.latency_seconds,2)+"s"+
+    (syncNote?" | "+syncNote:"");
+  hud.append(title,description,meta);ui.bboxLayer.appendChild(hud);
+
+  let drewBoxes=false;
+  if(allowBoxes){
+    for(const object of summary.objects){
+      if(!object||!object.bbox)continue;
+      const bbox=object.bbox,x1=Number(bbox.x1),y1=Number(bbox.y1),x2=Number(bbox.x2),y2=Number(bbox.y2);
+      if(![x1,y1,x2,y2].every(Number.isFinite)||x2<=x1||y2<=y1)continue;
+      const left=Math.max(0,Math.min(1,x1)),top=Math.max(0,Math.min(1,y1));
+      const right=Math.max(0,Math.min(1,x2)),bottom=Math.max(0,Math.min(1,y2));
+      if(right<=left||bottom<=top)continue;
+      const status=faceStatus(object),box=document.createElement("div");box.className="bbox-box face-"+status;
+      Object.assign(box.style,{left:left*100+"%",top:top*100+"%",width:(right-left)*100+"%",height:(bottom-top)*100+"%"});
+      const attributes=object.attributes||{},label=document.createElement("span"),score=faceSimilarity(object);
+      const identity=status==="known"?faceDisplayName(object):status.toUpperCase();
+      label.textContent=identity+(Number.isFinite(score)?" | "+score.toFixed(3):"")+
+        (status==="unusable"&&attributes.reason?" | "+attributes.reason:"");
+      box.appendChild(label);ui.bboxLayer.appendChild(box);drewBoxes=true
+    }
+  }
+  state.activeAnnotationId=result.message_id||String(result.sequence||frame.timestamp_seconds);
+  alignAnnotationLayer();
+  if(drewBoxes){
+    const annotationId=state.activeAnnotationId,settings=cameraSettings()||{};
+    const sampleFps=Number(settings.sample_fps)||2.5;
+    state.annotationTimer=setTimeout(()=>{
+      if(state.activeAnnotationId===annotationId)
+        renderFaceAnnotation(result,summary,false,"bbox sample interval ended")
+    },1000/sampleFps)
+  }
+}
+function connect(){
+  return new Promise((resolve,reject)=>{
+    if(state.ws&&state.ws.readyState===1){resolve(state.ws);return}
+    const scheme=location.protocol==="https:"?"wss://":"ws://",socket=new WebSocket(scheme+location.host+"/ws");
+    state.ws=socket;setChannel(ui.controlChannel,"Control WS · connecting","warn");
+    const timer=setTimeout(()=>{setChannel(ui.controlChannel,"Control WS · timeout","warn");reject(new Error("WebSocket timeout"))},5000);
+    socket.onopen=()=>{clearTimeout(timer);setChannel(ui.controlChannel,"Control WS · connected","good");resolve(socket)};
+    socket.onmessage=event=>{if(typeof event.data==="string")message(JSON.parse(event.data))};
+    socket.onerror=()=>{setChannel(ui.controlChannel,"Control WS · error","warn")};
+    socket.onclose=()=>{clearTimeout(timer);state.ws=null;stopSampler();setChannel(ui.controlChannel,"Control WS · closed")}
+  })
+}
+function message(data){
+  if(data.type==="camera_frame_ack"){
+    localCameraDisplay.controller?.acknowledgeUpload(data);
+  }else if(data.type==="camera_display_metadata"){
+    localCameraDisplay.controller?.receiveMetadata(data,{transport:"websocket"});
+  }else if(data.type==="session"){
+    state.sessionRevision=(state.sessionRevision||0)+1;
+    resetOverallDescription();
+    state.pending=false;state.running=true;state.stopping=false;state.sessionMode=data.mode||state.mode;
+    state.sessionAnalysisMode=data.analysis_mode||"multi";
+    state.sessionFeatures=Array.isArray(data.features)?data.features:detectionEvents;
+    reflectSessionSensitivities(data.event_sensitivities);
+    const sessionId=data.stream_session_id||data.session_id||null;
+    if(sessionId!==state.sessionId){state.sessionId=sessionId;reset()}
+    openFeed();
+    if(state.sessionMode==="camera")startSampler();
+    say("Live | "+(state.sessionMode==="camera"?"browser camera":"network stream")+
+      " | "+(state.sessionAnalysisMode==="face"?"face diagnostics":state.sessionFeatures.join(" + "))+
+      " | 人员追踪模块 连续描边"+(state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""));
+    controls()
+  }else if(data.type==="error"){
+    state.pending=false;const detail=data.message||data.error||"Session error";
+    say(detail,true);setConnection("Session error",detail,"bad");controls()
+  }else if(data.type==="ended"){
+    state.sessionRevision=(state.sessionRevision||0)+1;
+    resetOverallDescription();
+    state.pending=false;state.running=false;state.stopping=false;state.sessionAnalysisMode=null;state.sessionFeatures=null;stopSampler();closeFeed();
+    say("Session ended | "+(data.reason||"unknown")+(data.error?" | "+data.error:""),!!data.error);
+    setConnection(data.error?"Session failed":"Session stopped",data.error||data.reason||"No active video source.",data.error?"bad":"");
+    updateAnalysisUi()
+  }
+}
+async function start(){
+  if(globalThis.GoodvisionFleet)return globalThis.GoodvisionFleet.startAnalysis();
+  if(state.running||state.pending||state.stopping||!state.info)return;
+  if(state.deploymentSaving){
+    say("正在保存默认设置，请稍后开始检测。",true);return
+  }
+  if(trackingConfigurationRequired()){
+    const message="请先保存默认设置，以启用 人员追踪模块 连续分析。";
+    say(message,true);deploymentSay(message,true);return
+  }
+  const processing=processingMethods()[0];
+  if(savedProcessingMethod()==="person_tracking"&&processing?.available===false){
+    say("人员追踪模块 连续分析暂不可用："+(processing.reason||"服务尚未就绪"),true);return
+  }
+  const needsKey=selectedFeatures().some(feature=>feature!=="stranger");
+  if(needsKey&&!ui.dryRun.checked&&!localInferenceEnabled()&&!state.info.api_key_present){
+    const message="请先在控制台填写并保存 API key，再启动正式检测；无需创建 .env。";
+    say(message,true);deploymentSay(message,true);
+    ui.defaultApiKey.scrollIntoView({behavior:"smooth",block:"center"});ui.defaultApiKey.focus();return
+  }
+  state.sessionRevision=(state.sessionRevision||0)+1;
+  state.pending=true;reset();say("Starting session...");
+  setConnection("Starting session","Opening the selected video source and waiting for its first frame.","warn");controls();
+  try{
+    const socket=await connect(),data={
+      type:"start",mode:state.mode,analysis_mode:"multi",features:selectedFeatures(),
+      event_sensitivities:selectedSensitivities()
+    };
+    data.dry_run=ui.dryRun.checked;
+    if(state.mode==="stream"){
+      data.stream_url=ui.streamUrl.value.trim();data.camera_layout=ui.cameraLayout.value
+    }
+    socket.send(JSON.stringify(data))
+  }catch(error){state.pending=false;say("Could not start: "+error.message,true);controls()}
+}
+async function stop(){
+  if(globalThis.GoodvisionFleet)return globalThis.GoodvisionFleet.stopAnalysis();
+  state.sessionRevision=(state.sessionRevision||0)+1;
+  try{
+    const socket=await connect();
+    if(localCameraActive())await localCameraDisplay.controller.drain();
+    // A status request issued while admitted camera frames drained is also old.
+    state.sessionRevision=(state.sessionRevision||0)+1;
+    socket.send(JSON.stringify({type:"stop"}));state.stopping=true;stopSampler();
+    say("检测正在停止；后台将完成人物复核、合并和视频证据整理。");
+    setConnection("后台收尾中","正在完成已接收画面的分析并释放检测资源；后续记录整理会在后台继续。","warn");
+    controls();renderScene()
+  }catch(error){say("Could not stop: "+error.message,true)}
+}
+function reset(){
+  resetSceneView();
+  resetOverallDescription();
+  resetClassification();
+  state.count=0;ui.resultCount.textContent="0 results";ui.logBody.replaceChildren();
+  ui.resultJson.textContent="Waiting for the first analysis result...";ui.decision.className="decision warming";
+  ui.verdict.textContent="WARMING";ui.confidence.textContent="";
+  ui.description.textContent="Waiting for selected-feature analysis.";
+  ui.meta.textContent="";resetAnnotations();renderEventStatuses([])
+}
+
+function runtimeErrorText(data){
+  const pipeline=data.pipeline&&typeof data.pipeline==="object"?data.pipeline:{};
+  const errors=pipeline.branch_errors&&typeof pipeline.branch_errors==="object"
+    &&!Array.isArray(pipeline.branch_errors)?pipeline.branch_errors:{};
+  const branches={safety:"Event analysis",stranger:"Face analysis",analysis:"Analysis"};
+  const reasons={request_failed:"request failed",timeout:"timed out",connection:"connection failed",
+    http_error:"service returned an error",invalid_response:"returned an invalid result",
+    empty_response:"returned no result"};
+  const messages=[];
+  for(const [branch,code] of Object.entries(errors)){
+    if(code===null||code===undefined||code==="")continue;
+    const label=Object.prototype.hasOwnProperty.call(branches,branch)?branches[branch]:"Analysis";
+    const reason=typeof code==="string"&&Object.prototype.hasOwnProperty.call(reasons,code)
+      ?reasons[code]:"request failed";
+    messages.push(label+" "+reason)
+  }
+  return messages.length?[...new Set(messages)].join(" | "):String(data.last_error||"").trim()
+}
+function updateRuntimeSummary(data){
+  updateRichAnnotationStatus(data.rich_labeling);
+  const pipeline=String(data.pipeline_state||"unknown"),active=activeStates.has(pipeline);
+  const background=backgroundMessage(data);
+  ui.postprocessingStatus.hidden=!background;ui.postprocessingStatus.textContent=background;
+  const inputMode=String(data.input_mode||""),stream=data.stream&&typeof data.stream==="object"?data.stream:{};
+  const protocol=String(stream.protocol||"").toUpperCase();
+  const modeLabel=inputMode==="camera"?"browser camera":inputMode==="stream"?(protocol?protocol+" network stream":"network stream"):"no source";
+  const frames=count(data.source_frames_received),results=count(data.results_published),exact=count(data.analysis_frames_published);
+  ui.service.textContent=pipeline;ui.sourceChip.textContent=active?(Number(data.source_frames_received)>0?"receiving":"connecting"):pipeline;
+  ui.readinessChip.textContent=data.ready===true?"ready":String(data.readiness_reason||"not ready").replaceAll("_"," ");
+  ui.sourceFrameCount.textContent=frames;ui.publishedResultCount.textContent=results;ui.analysisFrameCount.textContent=exact;
+  ui.lastFrameNote.textContent=data.last_frame_at?"Last frame · "+timeLabel(data.last_frame_at):"No frame received";
+  ui.lastResultNote.textContent=data.last_result_at?"Last result · "+timeLabel(data.last_result_at):"No result yet";
+  setChannel(ui.lastUpdate,"Status · "+new Date().toLocaleTimeString(),data.ready===true?"good":"warn");
+  const error=runtimeErrorText(data);
+  ui.runtimeError.hidden=!error;ui.runtimeError.textContent=error?"Runtime error · "+error:"";
+  if(error||pipeline==="error"||pipeline==="configuration_error"){
+    setConnection("Attention required",error||("Runtime state: "+pipeline),"bad")
+  }else if(["stopping","draining"].includes(pipeline)){
+    setConnection("后台收尾中",sceneDrainMessage(data.scene_drain||{})+"；完成后即可开始下一次检测。","warn")
+  }else if(data.ready===true){
+    setConnection("Ready and delivering",modeLabel+" · fresh frames and analysis results are available.","good")
+  }else if(active){
+    const reason=String(data.readiness_reason||"warming").replaceAll("_"," ");
+    setConnection(pipeline==="starting"?"Connecting source":"Pipeline warming",modeLabel+" · "+reason+".","warn")
+  }else if(["idle","ended"].includes(pipeline)&&
+    (backgroundRuns(data).some(run=>["queued","running"].includes(run.state))||data.scene_drain?.state==="running")){
+    setConnection("可以开始新的检测","后台整理中，可以开始新的检测。", "good")
+  }else{
+    setConnection("No active session","Select a source and start detection. Runtime state: "+pipeline+".")
+  }
+}
+
+async function status(){
+  if(state.statusLoading)return;
+  state.statusLoading=true;
+  const sessionRevision=state.sessionRevision||0,sessionId=state.sessionId;
+  const current=()=>sessionRevision===(state.sessionRevision||0)&&sessionId===state.sessionId;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
+  try{
+    const response=await fetch("/v1/status",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    const data=await response.json();
+    // A response from before a session transition cannot stop or revive its successor.
+    if(!current())return;
+    const previousError=state.runtimeErrorMessage,error=runtimeErrorText(data);
+    state.runtimeErrorMessage=error;
+    ui.statusJson.textContent=JSON.stringify(data,null,2);updateAnnotatedOutput(data.annotated_output);updateRuntimeSummary(data);
+    updateProcessingDiagnostics(data);
+    state.stopping=["stopping","draining"].includes(data.pipeline_state);
+    const active=sessionBusyStates.has(data.pipeline_state);
+    if(active){
+      const sessionId=data.stream_session_id||state.sessionId,changedSession=sessionId!==state.sessionId;
+      state.running=true;state.pending=false;state.sessionId=sessionId;
+      state.sessionAnalysisMode=data.analysis_mode||state.sessionAnalysisMode||"multi";
+      state.sessionFeatures=Array.isArray(data.features)?data.features:
+        (Array.isArray(data.event_labels)?data.event_labels:detectionEvents);
+      reflectSessionSensitivities(data.event_sensitivities);
+      if(changedSession)reset();
+      updateAnalysisUi();
+      state.sessionMode=data.input_mode||data.mode||(data.stream?"stream":state.sessionMode)||"stream";
+      if(state.sessionMode==="stream"){
+        state.mode="stream";ui.streamMode.classList.add("active");ui.cameraMode.classList.remove("active");
+        ui.streamControls.hidden=false;ui.cameraControls.hidden=true;
+        if(data.stream&&data.stream.camera_layout)ui.cameraLayout.value=data.stream.camera_layout
+      }
+      openFeed();
+      if(state.stopping){stopSampler();say("检测已停止；"+sceneDrainMessage(data.scene_drain||{})+"。")}
+      else say("Server session "+data.pipeline_state+" | "+
+        (data.ready?"ready":data.readiness_reason||"warming")+" | 人员追踪模块 连续描边"+
+        (state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""))
+    }else if(state.running&&!state.pending){
+      resetOverallDescription();
+      state.running=false;state.sessionAnalysisMode=null;state.sessionFeatures=null;stopSampler();closeFeed();updateAnalysisUi()
+    }
+    if(error)say(error,true);
+    else if(previousError&&!active&&!state.pending)say("No active session. Choose a source to start detection.");
+    controls();renderScene()
+  }catch(error){
+    if(!current())return;
+    ui.service.textContent="unreachable";ui.sourceChip.textContent="unknown";ui.readinessChip.textContent="unreachable";
+    ui.statusJson.textContent=String(error);setConnection("Service unreachable","GET /v1/status failed: "+error.message,"bad");
+    setChannel(ui.lastUpdate,"Status · unreachable","warn")
+  }finally{clearTimeout(timer);state.statusLoading=false;}
+}
+function resetOverallDescription(){
+  state.overallResult=null;
+  ui.overallDescription.textContent="等待当前帧分析… / Waiting for frame analysis…";
+  ui.overallDescriptionMeta.textContent="等待分析帧"
+}
+function renderOverallDescription(result){
+  if(state.overallResult&&compareClassificationFrames(result,state.overallResult)<0)return;
+  state.overallResult=result;
+  ui.overallDescription.textContent=typeof result.description==="string"&&result.description.trim()
+    ?result.description:"本帧未提供整体描述 / No overall description for this frame";
+  const frame=result.frame||{};
+  ui.overallDescriptionMeta.textContent="Frame "+(frame.source_frame_index??"-")+
+    " · "+number(frame.timestamp_seconds,3)+"s"
+}
+function compareClassificationFrames(left,right){
+  const a=left.frame||{},b=right.frame||{};
+  return (Number(a.timestamp_seconds)||0)-(Number(b.timestamp_seconds)||0)||
+    (Number(a.source_frame_index)||0)-(Number(b.source_frame_index)||0)
+}
+function analysis(result){
+  if(!result||result.type!=="analysis_result")return;
+  if(!state.running||!state.sessionId||result.stream_session_id!==state.sessionId)return;
+  if(!state.overallResult||compareClassificationFrames(result,state.overallResult)>=0)
+    ui.resultJson.textContent=JSON.stringify(result,null,2);
+  renderOverallDescription(result);
+  if(result.analysis_kind==="face_recognition"){
+    if(state.overallResult&&compareClassificationFrames(result,state.overallResult)<0)
+      logFace(result,summarizeFaces(result));
+    else analysisFace(result);
+    return
+  }
+  const judgments=Array.isArray(result.judgments)?result.judgments:[];if(!judgments.length)return;
+  notifyEvent(result,judgments);
+  mergeClassification(result);renderClassification();clearAnnotation();
+  const ids=new Set(judgments.filter(judgment=>judgment&&judgment.detected===true)
+    .flatMap(judgment=>Array.isArray(judgment.object_ids)?judgment.object_ids:[]));
+  // Evidence and the log remain the original per-frame result, never the held display state.
+  log(result,judgments,ids.size)
+}
+function resetClassification(){
+  state.classificationJudgments.clear();state.classificationResult=null;
+  state.classificationHistory.clear();state.notifiedResults.clear();
+  $("event-notice").hidden=true;$("event-notice").textContent=""
+}
+function notifyEvent(result,judgments){
+  if(sceneActive())return;
+  const active=judgments.filter(item=>item&&item.detected===true&&safetyEvents.includes(canonicalEventLabel(item.event_label)));
+  if(!active.length)return;
+  const id=result.message_id||String(result.sequence);
+  if(state.notifiedResults.has(id))return;
+  state.notifiedResults.add(id);
+  if(state.notifiedResults.size>1024)state.notifiedResults.delete(state.notifiedResults.values().next().value);
+  const late=state.classificationResult&&compareClassificationFrames(result,state.classificationResult)<0;
+  const notice=$("event-notice");notice.hidden=false;
+  notice.textContent=(late?"迟到事件通知":"最近事件通知")+" · "+
+    active.map(item=>String(item.event_label).toUpperCase()).join(" + ")+" · 视频 "+
+    number((result.frame||{}).timestamp_seconds,3)+"s · "+
+    active.map(item=>item.description||"检测到行为事件").join(" | ")+
+    (late?" · 当前画面继续按时间顺序显示。":"")
+}
+function advanceClassification(previous,entry){
+  if(entry.judgment.detected)return {...entry,negativeCount:0};
+  if(previous&&previous.judgment.detected){
+    const negativeCount=(previous.negativeCount||0)+1;
+    if(negativeCount<clearAfterNegatives)return {...previous,negativeCount};
+  }
+  return {...entry,negativeCount:0}
+}
+function mergeSafetyClassification(key,entry){
+  let history=state.classificationHistory.get(key);
+  if(!history){history={entries:[],base:null,through:null};state.classificationHistory.set(key,history)}
+  if(history.through&&compareClassificationFrames(entry.result,history.through)<=0)return;
+  const index=history.entries.findIndex(item=>compareClassificationFrames(item.result,entry.result)===0);
+  if(index>=0)history.entries[index]=entry;else history.entries.push(entry);
+  history.entries.sort((a,b)=>compareClassificationFrames(a.result,b.result));
+  while(history.entries.length>256){
+    const first=history.entries.shift();history.base=advanceClassification(history.base,first);
+    history.through=first.result
+  }
+  let current=history.base;
+  for(const item of history.entries)current=advanceClassification(current,item);
+  if(current)state.classificationJudgments.set(key,current)
+}
+function mergeClassification(result){
+  // Like delayed_overlay.select_overlay, missing inference branches do not mean CLEAR.
+  // Keep SSE's current timing; this state is not a synchronization clock for delayed video.
+  if(!state.classificationResult||compareClassificationFrames(result,state.classificationResult)>=0)
+    state.classificationResult=result;
+  for(const judgment of result.judgments){
+    const key=canonicalEventLabel(judgment&&judgment.event_label);
+    if(!visibleFeatures().includes(key)||typeof judgment.detected!=="boolean")continue;
+    if(safetyEvents.includes(key)){
+      mergeSafetyClassification(key,{judgment:{...judgment,event_label:key},result});continue
+    }
+    const previous=state.classificationJudgments.get(key);
+    if(!previous||compareClassificationFrames(result,previous.result)>=0)
+      state.classificationJudgments.set(key,{judgment:{...judgment,event_label:key},result})
+  }
+}
+function renderClassification(){
+  if(sceneActive()){
+    renderEventStatuses([...state.classificationJudgments.values()].map(entry=>entry.judgment));
+    renderSceneDecision();return
+  }
+  const result=state.classificationResult;if(!result)return;
+  const features=visibleFeatures(),latestTimestamp=Number((result.frame||{}).timestamp_seconds)||0;
+  const entries=features.map(key=>state.classificationJudgments.get(key)).filter(entry=>{
+    if(!entry)return false;
+    // The face branch may skip CPU samples. Match the video's three-second carry
+    // across newer keyframes, while keeping the current keyframe during an inference stall.
+    return entry.judgment.event_label!=="stranger"||
+      latestTimestamp-(Number((entry.result.frame||{}).timestamp_seconds)||0)<=3
+  });
+  const judgments=entries.map(entry=>entry.judgment),pending=features.length-judgments.length;
+  const active=judgments.filter(judgment=>judgment&&judgment.detected===true),yes=active.length>0;
+  // Independent branch observations remain partial in the original JSON.
+  // The capability overview is ready once every selected feature has a result.
+  const incomplete=result.analysis_complete===false&&pending>0;
+  const ids=new Set(entries.filter(entry=>entry.judgment.detected===true).flatMap(entry=>
+    (Array.isArray(entry.judgment.object_ids)?entry.judgment.object_ids:[])
+      .map(id=>String(entry.result.message_id||entry.result.sequence)+":"+id)));
+  const memoryIds=[...new Set(active.flatMap(judgment=>
+    Array.isArray(judgment.matched_memory_ids)?judgment.matched_memory_ids:[]))];
+  const positiveLabels=active.map(judgment=>result.analysis_kind==="face_reference_match"?"UNKNOWN":
+    String(judgment.event_label||"DETECTED").toUpperCase());
+  ui.decision.className="decision "+(yes?"detected":incomplete||pending?"warming":"clear");
+  ui.verdict.textContent=yes?positiveLabels.join(" + "):incomplete?"INCOMPLETE":pending?"WAITING":"CLEAR";
+  ui.confidence.textContent=yes
+    ?active.length+" of "+features.length+" events detected"+(pending?" | "+pending+" pending":"")
+    :incomplete?"Waiting for results from all selected features."
+      :pending?judgments.length+" events clear | "+pending+" pending":"All "+judgments.length+" events clear";
+  ui.description.textContent=(yes
+    ?active.map(judgment=>String(judgment.event_label||"event")+": "+(judgment.description||"Detected.")).join(" | ")
+    :incomplete?"Analysis incomplete.":pending?"Waiting for results from all selected features.":"No target events detected.")+
+    (yes&&incomplete?" | Analysis incomplete.":"")+
+    (memoryIds.length?" | known: "+memoryIds.join(", "):"");
+  const frame=result.frame||{},model=result.model||{};
+  ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | "+ids.size+" bbox"+(ids.size===1?"":"es")+
+    (memoryIds.length?" | "+memoryIds.length+" known reference"+(memoryIds.length===1?"":"s"):"")+
+    " | model "+number(model.latency_seconds,2)+"s";
+  ui.analysisChipLabel.textContent="events";ui.event.textContent=features.length+" selected";ui.eventStatuses.hidden=false;
+  renderEventStatuses(judgments)
+}
+function analysisFace(result){
+  const summary=summarizeFaces(result),frame=result.frame||{},model=result.model||{};
+  if(sceneActive()){
+    ui.faceDiagnosticSummary.textContent="人脸识别 · "+summary.description;
+    ui.faceDiagnosticSummary.className="face-diagnostic"+(summary.unknown.length||summary.unusable.length?" warning":"");
+    clearAnnotation();logFace(result,summary);renderSceneDecision();return
+  }
+  ui.decision.className="decision "+summary.decisionClass;ui.verdict.textContent=summary.verdict;
+  if(result.analysis_complete===false&&summary.decisionClass!=="detected"){
+    ui.decision.className="decision warming";ui.verdict.textContent="INCOMPLETE"
+  }
+  const threshold=Number(state.info&&state.info.face&&state.info.face.threshold);
+  ui.confidence.textContent=(Number.isFinite(summary.best)?"best match "+summary.best.toFixed(3):"no match score")+
+    (Number.isFinite(threshold)?" | threshold "+threshold.toFixed(3):"");
+  ui.description.textContent=result.analysis_complete===false
+    ?"Analysis incomplete. "+summary.description:summary.description;
+  ui.meta.textContent="result "+(result.sequence||"-")+" | frame "+(frame.source_frame_index??"-")+
+    " | video "+number(frame.timestamp_seconds,3)+"s | "+summary.objects.length+" face"+
+    (summary.objects.length===1?"":"s")+" | model "+number(model.latency_seconds,2)+"s";
+  ui.analysisChipLabel.textContent="face";ui.event.textContent="threshold "+number(threshold,2);
+  ui.eventStatuses.hidden=true;clearAnnotation();logFace(result,summary)
+}
+function canonicalEventLabel(value){
+  const key=String(value||"").trim().toLowerCase().replace(/[\s-]+/g,"_");
+  return ({fighting:"fight",smoke:"smoking",falling:"fall",weapon_possession:"weapon",
+    holding_weapon:"weapon",unknown_person:"stranger"})[key]||key
+}
+function renderEventStatuses(judgments){
+  const indexed=new Map();
+  for(const judgment of Array.isArray(judgments)?judgments:[]){
+    const key=canonicalEventLabel(judgment&&judgment.event_label);
+    if(detectionEvents.includes(key))indexed.set(key,judgment)
+  }
+  const stranger=indexed.get("stranger");
+  ui.faceDiagnosticSummary.textContent=stranger
+    ?"Face diagnostics | "+(stranger.detected===true?"STRANGER ALERT":"CLEAR")+" | "+
+      (stranger.description||"No face diagnostic details.")
+    :visibleFeatures().includes("stranger")
+      ?"Face diagnostics | "+(state.classificationJudgments.has("stranger")
+        ?"waiting for a fresh face observation.":"waiting for the first analyzed frame.")
+      :"Face diagnostics | stranger detection is not enabled.";
+  ui.faceDiagnosticSummary.className="face-diagnostic"+(stranger&&stranger.detected===true?(sceneActive()?" warning":" error"):"");
+  if(sceneActive()){renderSceneDecision();return}
+  const existing=new Map([...ui.eventStatuses.children].map(item=>[item.dataset.eventLabel,item]));
+  const items=[];
+  for(const eventLabel of visibleFeatures()){
+    const judgment=indexed.get(eventLabel),item=existing.get(eventLabel)||document.createElement("div");
+    if(!item.children.length){
+      item.dataset.eventLabel=eventLabel;item.append(document.createElement("span"),document.createElement("span"))
+    }
+    item.className="event-state";
+    const [name,status]=item.children;
+    name.textContent=eventLabel;
+    if(!judgment){item.classList.add("pending");status.textContent="WAITING"}
+    else{
+      const detected=judgment.detected===true;
+      if(detected)item.classList.add("detected");
+      status.textContent=(detected?"ALERT ":"CLEAR ")+number(Number(judgment.confidence)*100,1)+"%"
+      const held=state.classificationJudgments.get(eventLabel);
+      if(detected&&held&&held.negativeCount)status.textContent+=" · 待解除 "+held.negativeCount+"/"+clearAfterNegatives
+    }
+    items.push(item)
+  }
+  if(items.length!==ui.eventStatuses.children.length||items.some((item,index)=>item!==ui.eventStatuses.children[index]))
+    ui.eventStatuses.replaceChildren(...items)
+}
+function log(result,judgments,boxes){
+  state.count++;ui.resultCount.textContent=state.count+(state.count===1?" result":" results");
+  const frame=result.frame||{},model=result.model||{},row=document.createElement("tr");
+  const evaluated=judgments.filter(judgment=>judgment&&typeof judgment.detected==="boolean");
+  const observed=new Set(evaluated.map(judgment=>canonicalEventLabel(judgment.event_label)));
+  const missing=visibleFeatures().filter(eventLabel=>!observed.has(eventLabel));
+  const active=evaluated.filter(judgment=>judgment.detected===true);
+  const positiveLabels=active.map(judgment=>result.analysis_kind==="face_reference_match"?"UNKNOWN":
+    String(judgment.event_label||"DETECTED").toUpperCase());
+  const confidences=(active.length?active:evaluated).map(judgment=>Number(judgment.confidence)).filter(Number.isFinite);
+  const aggregateConfidence=confidences.length
+    ?(active.length?Math.max(...confidences):Math.min(...confidences)):null;
+  const description=(active.length
+    ?active.map(judgment=>String(judgment.event_label||"event")+": "+(judgment.description||"Detected.")).join(" | ")
+    :missing.length?(evaluated.length?"Clear in this frame: "+[...observed].join(", ")+".":"No completed feature judgment in this frame.")
+      :"All selected events clear in this frame.")+
+    (missing.length?" | Not analyzed in this frame: "+missing.join(", ")+".":"");
+  const values=["R"+(result.sequence||"-")+" | f"+(frame.source_frame_index??"-"),
+    number(frame.timestamp_seconds,3)+"s",active.length?positiveLabels.join(" + "):missing.length?"PARTIAL":"CLEAR",
+    aggregateConfidence===null?"-":number(aggregateConfidence,3),number(model.latency_seconds,2)+"s",String(boxes),
+    description];
+  values.forEach((value,index)=>{
+    const cell=document.createElement("td");
+    if(index===2){
+      const pill=document.createElement("span");pill.className="pill "+(active.length?"yes":missing.length?"neutral":"no");
+      pill.textContent=value;cell.appendChild(pill)
+    }else cell.textContent=value;
+    row.appendChild(cell)
+  });
+  ui.logBody.prepend(row);while(ui.logBody.children.length>200)ui.logBody.lastChild.remove()
+}
+function logFace(result,summary){
+  state.count++;ui.resultCount.textContent=state.count+(state.count===1?" result":" results");
+  const frame=result.frame||{},model=result.model||{},row=document.createElement("tr");
+  const values=["R"+(result.sequence||"-")+" | f"+(frame.source_frame_index??"-"),
+    number(frame.timestamp_seconds,3)+"s",summary.verdict,
+    Number.isFinite(summary.best)?number(summary.best,3):"-",number(model.latency_seconds,2)+"s",
+    String(summary.objects.length),summary.description];
+  values.forEach((value,index)=>{
+    const cell=document.createElement("td");
+    if(index===2){
+      const pill=document.createElement("span");
+      pill.className="pill "+(summary.verdict==="UNKNOWN"?"yes":summary.verdict==="CLEAR"?"no":"neutral");
+      pill.textContent=value;cell.appendChild(pill)
+    }else cell.textContent=value;
+    row.appendChild(cell)
+  });
+  ui.logBody.prepend(row);while(ui.logBody.children.length>200)ui.logBody.lastChild.remove()
+}
+
+const archiveView={items:new Map(),aliases:new Map(),next:null,stream:null,loading:false,reload:false};
+function renderArchive(){
+  const body=$("archive-body");body.replaceChildren();
+  const events=[...archiveView.items.values()].sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))||String(b.event_id).localeCompare(String(a.event_id)));
+  for(const event of events){
+    const row=document.createElement("tr"),subjects=["person","group"].includes(event.subject_type)?(event.subject_ids||(event.subject_id?[event.subject_id]:[])):[];
+    const evidence=event.evidence||{},available=evidence.available;
+    const values=[event.event_label+" · "+(subjects.join(", ")||"人物未关联"),
+      number(event.start_seconds??event.started_at_seconds??event.first_positive_at,2)+"s – "+
+      number(event.last_detected_seconds??event.last_positive_seconds??event.last_positive_at,2)+"s",
+      ({retracted:"已撤回",unconfirmed:"未确认"}[event.end_reason]||(event.status==="ended"?"已结束":"记录中"))+(event.finalized?"":" · 可修订")];
+    for(const value of values){const cell=document.createElement("td");cell.textContent=value;row.appendChild(cell)}
+    const cell=document.createElement("td"),status=document.createElement("span");
+    status.textContent=({identity_confirmed:"已确认登记身份，误报已撤回",event_retracted:"复核已撤回",event_unconfirmed:"复核未确认"}[evidence.failure_reason]||({pending:"收集画面",collecting:"收集画面",queued:"等待编码",encoding:"生成中",ready:"可播放",failed:"生成失败",expired:"已过期"})[evidence.status])||evidence.status||"等待证据";
+    cell.appendChild(status);
+    if(available&&typeof available.url==="string"&&available.url.startsWith("/v1/events/")){
+      const button=document.createElement("button");button.type="button";button.className="btn";button.style.marginLeft="10px";
+      button.textContent="播放 v"+available.revision;
+      button.onclick=()=>{const player=$("archive-video");player.src=available.url;player.hidden=false;
+        $("archive-video-note").textContent=event.event_label+" · v"+available.revision+
+          (evidence.revision!==available.revision?" · 新版本生成中，当前为已有片段":"")+
+          (available.partial?" · 源视频不足完整3秒":"");player.play().catch(()=>{})};
+      cell.appendChild(button)
+    }
+    row.appendChild(cell);body.appendChild(row)
+  }
+  $("archive-more").hidden=!archiveView.next;
+}
+async function loadEventArchive(append=false){
+  if(archiveView.loading){archiveView.reload=true;return}
+  archiveView.loading=true;
+  try{
+    const params=new URLSearchParams({limit:"50"});
+    if(append&&archiveView.next)params.set("before",archiveView.next);
+    if($("archive-feature").value)params.set("event_label",$("archive-feature").value);
+    if($("archive-subject").value.trim())params.set("subject_id",$("archive-subject").value.trim());
+    const response=await fetch("/v1/events?"+params,{cache:"no-store"});
+    if(!response.ok)throw new Error("unavailable");
+    const page=await response.json();
+    if(!append){archiveView.items.clear();archiveView.aliases.clear()}
+    for(const event of page.events||[])archiveView.items.set(event.event_id,event);
+    archiveView.next=page.next_cursor||null;renderArchive();
+    $("archive-note").textContent=archiveView.items.size?"陌生人按人物保留一段视频证据；其他行为按每次事件分别保留。停止检测后会完成后台复核、合并和证据整理。":"暂无事件记录。";
+    if(!append)connectArchiveEvents(page.epoch+":"+page.cursor)
+  }catch(_){$("archive-note").textContent="事件记录暂不可用，可稍后刷新。"}
+  finally{archiveView.loading=false;if(archiveView.reload){archiveView.reload=false;loadEventArchive()}}
+}
+function connectArchiveEvents(cursor){
+  if(archiveView.stream)archiveView.stream.close();
+  const stream=new EventSource("/v1/events/stream?after="+encodeURIComponent(cursor));archiveView.stream=stream;
+  stream.addEventListener("event_change",message=>{
+    try{
+      const change=JSON.parse(message.data);
+      // The list endpoint chooses one playable stranger episode per person.
+      // Journal changes can include hidden episodes or replace that choice.
+      if($("archive-feature").value||$("archive-subject").value.trim()||
+        (change.events||[]).some(event=>canonicalEventLabel(event.event_label)==="stranger")||
+        (change.aliases||[]).length){loadEventArchive();return}
+      for(const event of change.events||[]){archiveView.aliases.delete(event.event_id);archiveView.items.set(event.event_id,event)}
+      for(const alias of change.aliases||[]){archiveView.aliases.set(alias.event_id,alias.canonical_event_id);archiveView.items.delete(alias.event_id)}
+      if(archiveView.items.size>500){loadEventArchive();return}
+      renderArchive()
+    }catch(_){loadEventArchive()}
+  });
+  stream.addEventListener("reset",()=>{stream.close();loadEventArchive()});
+}
+
+function deploymentEdited(){
+  deploymentSay(state.running||state.pending
+    ?"运行设置尚未保存。请先停止全部分析，再保存修改。"
+    :"Unsaved deployment edits. Save defaults or discard edits.");controls()
+}
+ui.defaultStreamUrl.oninput=deploymentEdited;ui.defaultApiKey.oninput=deploymentEdited;
+ui.trackingNodeKey.oninput=deploymentEdited;ui.clearTrackingNodeKey.onchange=deploymentEdited;
+ui.bufferDelay.oninput=()=>{state.bufferDelayDirty=true};
+ui.saveBufferDelay.onclick=saveBufferDelay;
+$("refresh-events").onclick=()=>loadEventArchive();
+$("archive-more").onclick=()=>loadEventArchive(true);
+$("archive-feature").onchange=()=>loadEventArchive();
+$("archive-subject").onchange=()=>loadEventArchive();
+ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
+ui.inferenceMode.onchange=ui.trackingMode.onchange=()=>{renderLocalGpuSettings();deploymentEdited()};
+for(const field of [ui.inferenceServerUrl,ui.inferenceServerModel,ui.trackingServerUrl,ui.trackingServerCapacity,
+  ui.trackingServerProtocol,ui.trackingSampleFps])
+  field.oninput=()=>{renderLocalGpuSettings();deploymentEdited()};
+ui.localInference.onchange=()=>{ui.inferenceMode.value=ui.localInference.checked?"local":"cloud";renderLocalGpuSettings();deploymentEdited()};
+ui.localTracking.onchange=()=>{ui.trackingMode.value=ui.localTracking.checked?"local":"legacy";renderLocalGpuSettings();deploymentEdited()};
+ui.defaultCameraLayout.onchange=deploymentEdited;
+ui.saveDeployment.onclick=saveDeploymentSettings;
+saveApiKeyButton.onclick=saveApiKey;
+ui.resetDeployment.onclick=()=>loadDeploymentSettings(true);
+ui.clearApiKey.onclick=clearSavedApiKey;
+$("route-check-button").onclick=checkRoutes;
+ui.cameraMode.onclick=()=>mode("camera");ui.streamMode.onclick=()=>mode("stream");
+ui.cameraButton.onclick=camera;
+ui.streamUrl.oninput=()=>{state.runOverridesDirty=true;controls()};
+ui.cameraLayout.onchange=()=>{state.runOverridesDirty=true;controls()};
+ui.dryRun.onchange=()=>{state.runOverridesDirty=true;controls()};
+for(const item of featureInputs)item.onchange=()=>{updateAnalysisUi();controls()};
+ui.enroll.onclick=enrollPerson;ui.refreshGallery.onclick=refreshGallery;
+ui.start.onclick=start;ui.stop.onclick=stop;
+ui.fullscreenButton.onclick=toggleAnnotationFullscreen;
+ui.overlayToggle.onclick=()=>setOverlayCollapsed(!state.overlayCollapsed);
+const fullscreenAvailable=Boolean(ui.analysisWorkspace.requestFullscreen||ui.analysisWorkspace.webkitRequestFullscreen);
+ui.fullscreenButton.hidden=!fullscreenAvailable;
+document.addEventListener("fullscreenchange",syncFullscreenUi);
+document.addEventListener("webkitfullscreenchange",syncFullscreenUi);
+window.addEventListener("resize",()=>{alignAnnotationLayer()});
+if("ResizeObserver" in window)new ResizeObserver(()=>alignAnnotationLayer()).observe(ui.viewport);
+syncFullscreenUi();
+if(!cameraAllowed){
+  ui.warning.hidden=false;
+  ui.warning.textContent="Local camera is unavailable on this origin. Browser camera access requires HTTPS, except on localhost. Open this dashboard through an HTTPS reverse proxy (or localhost); Network stream mode remains available.";
+  ui.cameraNote.textContent="HTTPS or localhost required";ui.cameraNote.className="note error"
+}
+let events=null;
+async function connectResultEvents(){
+  let after=0;
+  try{
+    const latest=await fetch("/v1/results/latest",{cache:"no-store"});
+    const cursor=Number(latest.headers.get("X-Result-Cursor"));
+    if(latest.ok&&Number.isInteger(cursor)&&cursor>=0)after=cursor
+  }catch(_){}
+  events=new EventSource("/v1/results/events?after="+after);
+  events.onopen=()=>setChannel(ui.sseChannel,"Result SSE · connected","good");
+  events.onerror=()=>setChannel(ui.sseChannel,"Result SSE · reconnecting","warn");
+  events.addEventListener("analysis_result",event=>{
+    try{analysis(JSON.parse(event.data))}catch(_){say("Invalid AnalysisResult JSON.",true)}
+  })
+}
+window.addEventListener("beforeunload",()=>{
+  sceneView.closed=true;stopScenePolling();
+  if(archiveView.stream)archiveView.stream.close();
+  if(events)events.close();stopSampler();resetAnnotations();
+  globalThis.GoodvisionCameraDisplay?.BrowserController?.discardWarmup();
+  if(state.cameraStream)state.cameraStream.getTracks().forEach(track=>track.stop());
+  if(state.ws)state.ws.close()
+});
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)stopScenePolling();else{renderScene();startScenePolling()}
+});
+mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
+loadRoutes();setInterval(loadRoutes,1500);
+loadEventArchive();
+</script>
+<script src="/assets/fleet_console.js"></script>
+</body>
+</html>

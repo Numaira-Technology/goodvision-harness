@@ -61,10 +61,90 @@ def test_modes_plan_preserves_model_and_recording_without_paid_default(
     assert paid["settings"]["global_limit"] == 16
 
 
+def test_dashscope_cloud_plan_keeps_endpoint_and_recording(tmp_path, monkeypatch):
+    endpoint = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+    doc = plan(tmp_path, monkeypatch, "--provider", "dashscope", "--endpoint", endpoint)
+    assert doc["settings"]["backend"] == "dashscope"
+    assert doc["settings"]["endpoint"] == endpoint
+    assert doc["settings"]["model"] == "qwen3-vl-30b-a3b-instruct"
+    assert doc["settings"]["record"]
+    assert "dashscope" in doc["execution"]
+
+
+def test_cloud_plan_preserves_grounding_sweep(tmp_path, monkeypatch):
+    doc = plan(tmp_path, monkeypatch, "--modes", "grounding", "--streams", "12",
+               "--grounding-format", "lean-v1", "--grounding-concurrency-sweep",
+               "4", "6", "8", "--duration", "55.798021", "--warmup-seconds", "10",
+               "--http-timeout", "20", "--no-record")
+    assert doc["settings"]["grounding_concurrency_sweep"] == [4, 6, 8]
+    assert doc["settings"]["http_timeout"] == 20
+    assert doc["request_budget"]["total_upper"] == 5052
+
+
+@pytest.mark.parametrize("backend", ["openrouter", "dashscope"])
+def test_cloud_worker_installs_only_selected_key(tmp_path, monkeypatch, backend):
+    from tools.vlm_benchmark import cloud, lock, modes
+    from tools.vlm_benchmark.routes import KEY_ENV, mode_api_key
+
+    doc = plan(tmp_path, monkeypatch, "--provider", backend, "--real", "--no-record")
+    root = tmp_path / "app"
+    root.mkdir()
+    secret = tmp_path / "runtime-key.json"
+    secret.write_text('{"key":"selected-test-only"}', encoding="utf-8")
+    monkeypatch.setattr(cloud, "verify_bundle", lambda _: {"videos": ["video.mp4"]})
+    monkeypatch.setattr(lock, "acquire", lambda _: None)
+    for name in ("INFERENCE_API_KEY", "MODEL_API_KEY", *KEY_ENV.values()):
+        monkeypatch.setenv(name, "stale-key")
+    seen = []
+
+    def capture(args):
+        assert args.backend == backend
+        assert mode_api_key(modes.configure(args).model_api) == "selected-test-only"
+        assert os.environ.get(KEY_ENV[backend]) == "selected-test-only"
+        assert not secret.exists()
+        assert (
+            "INFERENCE_API_KEY" not in os.environ and "MODEL_API_KEY" not in os.environ
+        )
+        assert not any(os.environ.get(v) for k, v in KEY_ENV.items() if k != backend)
+        seen.append(args)
+
+    monkeypatch.setattr(modes, "run", capture)
+    assert cloud_modes.run(root, doc, tmp_path / "results", secret) == 0
+    assert len(seen) == 1
+    assert not any(os.environ.get(name) for name in KEY_ENV.values())
+    assert "selected-test-only" not in (tmp_path / "status.json").read_text()
+
+
+def test_recording_plan_preserves_lean_grounding_and_provider(tmp_path, monkeypatch):
+    result = plan(
+        tmp_path,
+        monkeypatch,
+        "--streams",
+        "12",
+        "--repeats",
+        "1",
+        "--modes",
+        "events",
+        "grounding",
+        "parallel",
+        "--grounding-format",
+        "lean-v1",
+        "--provider-only",
+        "deepinfra",
+        "--http-timeout",
+        "20",
+    )
+    settings = result["settings"]
+    assert settings["modes"] == ["events", "compact", "parallel"]
+    assert settings["record"] and settings["grounding_format"] == "lean-v1"
+    assert settings["provider_only"] == "deepinfra" and settings["http_timeout"] == 20
+
+
 @pytest.mark.skipif(os.name == "nt", reason="cloud POSIX worker")
+@pytest.mark.parametrize("backend", ["openrouter", "dashscope"])
 @pytest.mark.parametrize("record", [False, True])
 def test_uploaded_mode_suite_runs_and_collects_recordings(
-    tmp_path, monkeypatch, record
+    tmp_path, monkeypatch, record, backend
 ):
     if record and not os.environ.get("VLM_MONITOR_BROWSER_TESTS"):
         pytest.skip("opt-in browser integration")
@@ -88,6 +168,8 @@ def test_uploaded_mode_suite_runs_and_collects_recordings(
         monkeypatch,
         "--streams",
         "1",
+        "--provider",
+        backend,
         "--duration",
         "3",
         "--repeats",
@@ -196,6 +278,30 @@ def test_failed_worker_removes_secret_and_does_not_start_measurement(
     assert "must-not-leak" not in json.dumps(summary)
 
 
+def test_recording_preflight_failure_prevents_paid_calls(tmp_path, monkeypatch):
+    from tools.vlm_benchmark import cloud, lock, modes
+
+    doc = plan(tmp_path, monkeypatch, "--real", "--streams", "12")
+    root = tmp_path / "run/app"
+    root.mkdir(parents=True)
+    secret = root.parent / "runtime-key.json"
+    secret.write_text('{"key":"must-not-leak"}')
+    monkeypatch.setattr(cloud, "verify_bundle", lambda _: {"videos": ["clip.mp4"]})
+    # Keep the recording-before-paid-calls contract runnable on Windows too.
+    monkeypatch.setattr(lock, "acquire", lambda _: None)
+    calls = []
+
+    def recording_failure(args):
+        calls.append(args)
+        assert args.real is False and args.record and args.streams == [12]
+        assert args.modes == ["events", "compact", "parallel"]
+        raise RuntimeError("recording incomplete")
+
+    monkeypatch.setattr(modes, "run", recording_failure)
+    assert cloud_modes.run(root, doc, root.parent / "results", secret) == 2
+    assert len(calls) == 1 and not secret.exists()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Linux bootstrap and POSIX lock")
 def test_bootstrap_installs_browser_and_starts_modes_worker(tmp_path, monkeypatch):
     from types import SimpleNamespace
@@ -235,13 +341,15 @@ def test_bootstrap_installs_browser_and_starts_modes_worker(tmp_path, monkeypatc
     assert calls[-1][-2:] == ["--secret", str(root.parent / "runtime-key.json")]
 
 
+@pytest.mark.parametrize("dns", ["system", "tcp"])
 def test_managed_launch_is_one_shot_and_controls_only_its_own_service(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, dns
 ):
     config_dir = tmp_path / "conf.d"
     config_dir.mkdir()
     run = tmp_path / "20261008T190000Z-abcdef01"
     (run / "app").mkdir(parents=True)
+    (run / "plan.json").write_text(json.dumps({"dns_transport": dns}))
     monkeypatch.setattr(
         cloud_modes,
         "Path",
@@ -265,6 +373,7 @@ def test_managed_launch_is_one_shot_and_controls_only_its_own_service(
     assert "startretries=0" in config
     assert "stopasgroup=true" in config and "killasgroup=true" in config
     assert "tools.vlm_benchmark.bootstrap" in config
+    assert ('environment=RES_OPTIONS="use-vc"' in config) == (dns == "tcp")
 
 
 @pytest.mark.parametrize("same_process", [True, False])

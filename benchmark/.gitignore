@@ -1,0 +1,14 @@
+# Local run artifacts — never commit
+__pycache__/
+*.pyc
+caps/
+captures/
+*.predictions.jsonl
+predictions.jsonl
+
+# Benchmark media and assembled clips (large, some private)
+*.mpeg
+*.mp4
+*.avi
+*.mkv
+img1/

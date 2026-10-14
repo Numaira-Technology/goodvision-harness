@@ -196,6 +196,10 @@ def test_response_diagnostics_preserve_only_public_provider_categories():
         "choices_count": 0,
         "provider_category": "DeepInfra",
     }
+    assert _response_shape({"choices": [], "provider": "Novita"}) == {
+        "choices_count": 0,
+        "provider_category": "Novita",
+    }
     result = _response_shape({"choices": [], "provider": "private-provider-sentinel"})
     assert result["provider_category"] == "other"
     assert "private-provider-sentinel" not in str(result)

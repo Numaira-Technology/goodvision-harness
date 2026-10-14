@@ -8,6 +8,7 @@ import math
 from .grounding import SAFETY_EVENT_LABELS
 from .model_api import ModelAPIClient
 from .scene_model import _json, _ResponseValidationError, _strip_json_fence
+from .vlm_event_policy import OUTPUT_FORMAT_MARKER, event_policy_text
 from .vlm_independent_model import IndependentVerdict, IndependentVLMInspector
 
 
@@ -53,7 +54,7 @@ def raw_reply(response):
 
 
 class EventJSONInspector(IndependentVLMInspector):
-    def build_messages(self, job, *, encoded_images=None):
+    def _build_main_event_messages(self, job, *, encoded_images=None):
         messages = super().build_messages(job, encoded_images=encoded_images)
         # Preserve the same sensitivity definitions as the full inspector.
         policy = messages[0]["content"].split(
@@ -72,6 +73,27 @@ class EventJSONInspector(IndependentVLMInspector):
             "with one visible participant; contact is not required. Do not invent "
             "hidden "
             "people, objects or motion. Evaluate EVERY requested event. Return only a "
+            "minified JSON object mapping exactly these keys to true (present), false "
+            "(evaluated absent), or null (insufficient evidence): "
+            + json.dumps(labels)
+            + ". No boxes, person references, confidence, explanations "
+            "or additional fields. Use lowercase JSON true/false/null, double-quoted "
+            "keys, no trailing commas, and no Markdown code fences. "
+            "Do not copy sample answers; evaluate the images independently."
+        )
+        return messages
+
+    def build_messages(self, job, *, encoded_images=None):
+        if self.event_policy == "main-baseline":
+            return self._build_main_event_messages(job, encoded_images=encoded_images)
+        messages = super().build_messages(job, encoded_images=encoded_images)
+        # Render the common policy directly; never extract it from another prompt.
+        policy = event_policy_text(
+            job.request.event_labels, dict(job.event_sensitivities),
+        )
+        labels = list(job.request.event_labels)
+        messages[0]["content"] = policy + (
+            OUTPUT_FORMAT_MARKER + "Return only a "
             "minified JSON object mapping exactly these keys to true (present), false "
             "(evaluated absent), or null (insufficient evidence): "
             + json.dumps(labels)

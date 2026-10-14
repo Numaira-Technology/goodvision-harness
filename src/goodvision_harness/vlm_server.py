@@ -25,6 +25,7 @@ from .model_api import ModelAPIError, ModelAPISettings, model_request_headers
 from .scene_model import TemporalVLMInspector, _json
 from .vlm_compact_model import CompactGroundingInspector, EventJSONInspector
 from .vlm_independent_model import IndependentVLMInspector
+from .vlm_lean_grounding import LeanGroundingInspector
 from .vlm_offload import MAX_COMPLETION_BYTES, MAX_REQUEST_BYTES, decode_inspection
 
 _MAX_STREAM_BYTES = 8 * 1024 * 1024
@@ -209,11 +210,16 @@ class _CapturedEvents(_CaptureMixin, EventJSONInspector):
     pass
 
 
+class _CapturedLean(_CaptureMixin, LeanGroundingInspector):
+    pass
+
+
 _INSPECTORS = {
     "temporal": _CapturedTemporal,
     "full": _CapturedFull,
     "compact": _CapturedCompact,
     "events": _CapturedEvents,
+    "lean-v1": _CapturedLean,
 }
 
 
@@ -278,6 +284,8 @@ def _run_inspection(body, settings, execution, preparation, client_factory):
             api_key=settings.api_key,
             request_parameters=decoded.parameters,
             **decoded.options,
+            **({"event_policy": decoded.event_policy}
+               if decoded.kind != "temporal" else {}),
             execution=execution,
             preparation=preparation,
             client_factory=client_factory,

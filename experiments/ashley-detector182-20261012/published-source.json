@@ -1,0 +1,278 @@
+{
+  "method": "ashley_native_siyu_main_rules_detector_ablation",
+  "branch": "codex/ashley-native-detector-eval-20261012",
+  "previous_native_commit": "cfd6f748023b50932017f5daa924fcb24a9a3372",
+  "native_base_commit": "fca08e118c013d053ff880153dc6008584805e64",
+  "detector_reference_commit": "f9c82f57ad74513f79f44a329717ad9af9aaa497",
+  "frozen_experiment": "detector-ablation182-resume3-20261012",
+  "source_manifest_sha256": "05715013d4eb387eb9c565d39428054650e94212d01c983a2cd0dc97cb718eb3",
+  "models": [
+    "yolo26-s",
+    "rfdetr-l"
+  ],
+  "questions_per_arm": 182,
+  "geometry_only_per_arm": 90,
+  "event_vlm_per_arm": 92,
+  "pilot_per_arm": 20,
+  "files": [
+    {
+      "path": "src/goodvision_harness/config.py",
+      "frozen_path": "source/src/goodvision_harness/config.py",
+      "sha256": "6fff0c4d2eaf6b3bcfa5905e41e2a1ef066082ecfc69fac0d68d864167186c00",
+      "bytes": 39545
+    },
+    {
+      "path": "src/goodvision_harness/deployment_settings.py",
+      "frozen_path": "source/src/goodvision_harness/deployment_settings.py",
+      "sha256": "39cf28af9140c5575750e16c76b632657083b69f5c6d554c96d88d35f97cd149",
+      "bytes": 11838
+    },
+    {
+      "path": "src/goodvision_harness/detector_native_session.py",
+      "frozen_path": "source/src/goodvision_harness/detector_native_session.py",
+      "sha256": "8d0602d5043775d533c3f41930575dd84daa7f360a5ed367dcfe26cd6b7bd549",
+      "bytes": 10293
+    },
+    {
+      "path": "src/goodvision_harness/native_event_audit.py",
+      "frozen_path": "source/src/goodvision_harness/native_event_audit.py",
+      "sha256": "636c73eb7c7f1235641e8f886d010246efdced6a66951a0f199c8e939afd9824",
+      "bytes": 21937
+    },
+    {
+      "path": "src/goodvision_harness/offline_benchmark.py",
+      "frozen_path": "source/src/goodvision_harness/offline_benchmark.py",
+      "sha256": "8080e76e48414bfca3810298ce7ecb972a55ceba4b2f0da9b5e0420e716177ed",
+      "bytes": 13407
+    },
+    {
+      "path": "src/goodvision_harness/perception.py",
+      "frozen_path": "source/src/goodvision_harness/perception.py",
+      "sha256": "b9cd4a664ea0eede67f1ae674973eca8c5efb87ff110e45877d04663311b2534",
+      "bytes": 14240
+    },
+    {
+      "path": "src/goodvision_harness/person_registry.py",
+      "frozen_path": "source/src/goodvision_harness/person_registry.py",
+      "sha256": "38b846f2a2d9c8d73e0b06f8e194a26d0cc7cdcc40c005b9667dec501e2f2933",
+      "bytes": 66469
+    },
+    {
+      "path": "src/goodvision_harness/rich_labeling.py",
+      "frozen_path": "source/src/goodvision_harness/rich_labeling.py",
+      "sha256": "3f7e46b88ef76771f415f85f821aaf5923abf498c6ff5bb7d94928faf3b2043e",
+      "bytes": 50524
+    },
+    {
+      "path": "src/goodvision_harness/sam_tracking_pipeline.py",
+      "frozen_path": "source/src/goodvision_harness/sam_tracking_pipeline.py",
+      "sha256": "4f4f438c2b23b76224d796a71172e99ee34e03762e26a6258da6fb8ec046367e",
+      "bytes": 35299
+    },
+    {
+      "path": "src/goodvision_harness/scene_runtime.py",
+      "frozen_path": "source/src/goodvision_harness/scene_runtime.py",
+      "sha256": "6a1ed269a0157f00260842068ff767e19c0bab375896218b86a6ef418cc69e95",
+      "bytes": 94060
+    },
+    {
+      "path": "src/goodvision_harness/service.py",
+      "frozen_path": "source/src/goodvision_harness/service.py",
+      "sha256": "38211116da571fcefd7b65d7d49572e3b5a532eb1a9565ed0eb30549441a31a2",
+      "bytes": 250717
+    },
+    {
+      "path": "config.yaml",
+      "frozen_path": "source/config.yaml",
+      "sha256": "f5703ad82b3cc1261a49ee076c473ad715c173711b435cb59f656ab3a0e8b9b5",
+      "bytes": 14648
+    },
+    {
+      "path": "event-definitions.json",
+      "frozen_path": "source/event-definitions.json",
+      "sha256": "241f7243b52be5947d2f88ddbd6e3e89fcb3c793135e6bbeeac905cd5bf6aa22",
+      "bytes": 17233
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/analyze.py",
+      "frozen_path": "analyze.py",
+      "sha256": "62a54153b519a30eee6e7eddf3bcfe156c113339ea8c37b45e7c498162c41b0a",
+      "bytes": 27855
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/cohort_prepare.py",
+      "frozen_path": "cohort_prepare.py",
+      "sha256": "bea7deecc5dd49578697acdfb1281601fe1288611b2148535f4d7cf19d9821c4",
+      "bytes": 12515
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/control.py",
+      "frozen_path": "control.py",
+      "sha256": "28a9d32d3f56c2a4df1a23ebfad83c0c4d39f0aeea3ce6bcebb79d3799f0ceb3",
+      "bytes": 5612
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/driver.py",
+      "frozen_path": "driver.py",
+      "sha256": "21de5f3cdcda0ac328ddfa1bc17fcc27b2f1f0c8485c8d58c5f00d93bc3882fd",
+      "bytes": 7996
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extract_result.py",
+      "frozen_path": "extract_result.py",
+      "sha256": "245ab709483bf011f5a2b568fa68d3ade6df312f22f7b46625a2f6dc87739d48",
+      "bytes": 12820
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/native_entry.py",
+      "frozen_path": "native_entry.py",
+      "sha256": "9fd25d744c46096d4cc173340ecb0bca5346980993fd6be9b02b4b00dbca0e96",
+      "bytes": 1920
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/prepare.py",
+      "frozen_path": "prepare.py",
+      "sha256": "cfd60fd48d1ba753a3f5f29b06b8a85d4d18146cd25260d648137d18ce77eb51",
+      "bytes": 4955
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/run_batch.py",
+      "frozen_path": "run_batch.py",
+      "sha256": "6ff7f26f4b439f9eeb107847089af5919c1fa2834d46648d2c7006ca6df2064e",
+      "bytes": 14620
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/start.py",
+      "frozen_path": "start.py",
+      "sha256": "9349575a41165e040d3a56e23b2b42631625073d2266c3d3258c2934d13b9ad1",
+      "bytes": 4958
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/gpu/source/tools/remote_helpers.py",
+      "frozen_path": "gpu/source/tools/remote_helpers.py",
+      "sha256": "131169613de9eed7297a2c75e52652ca86030c9b32ba70746cb16e8985318c75",
+      "bytes": 9762
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/gpu/source/tools/start_detector_eval.py",
+      "frozen_path": "gpu/source/tools/start_detector_eval.py",
+      "sha256": "8602820761b1030be7cb5c0fcfa876ba3c99fbc9b55ad2fbc8a43d0d82105e2a",
+      "bytes": 22827
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/gpu/source/workers/detector/app.py",
+      "frozen_path": "gpu/source/workers/detector/app.py",
+      "sha256": "4a8f3fca53996353e7f482d85c6fe70e79f868d2199f1228fbf0919e4a3ad0bc",
+      "bytes": 9402
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/gpu/source/workers/detector/detectors.py",
+      "frozen_path": "gpu/source/workers/detector/detectors.py",
+      "sha256": "9ffb3d7636e7c491d28d7c4361037f5ce038e2226dc2d769f47e6b81395ee3fa",
+      "bytes": 6011
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/gpu/source/workers/detector/download_weights.py",
+      "frozen_path": "gpu/source/workers/detector/download_weights.py",
+      "sha256": "d614b9c26a658ea94c4212efc2c4df407cc3e4988775d7743104a7173e2a94d0",
+      "bytes": 2553
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/gpu/source/workers/detector/requirements.txt",
+      "frozen_path": "gpu/source/workers/detector/requirements.txt",
+      "sha256": "8be4957884fb9a650ca0f621e358f232bb20e3c1d81ac45bab232a86aeb887cf",
+      "bytes": 560
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/gpu/source/workers/detector/tracker.py",
+      "frozen_path": "gpu/source/workers/detector/tracker.py",
+      "sha256": "657584e755d40114fcc317a73da537d9bd5db0e15e17ce570aacd40f6a97e12c",
+      "bytes": 10947
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/bench/__init__.py",
+      "frozen_path": "extraction/bench/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/bench/capture_live.py",
+      "frozen_path": "extraction/bench/capture_live.py",
+      "sha256": "2774e01c8965d382c3961ccb73083752aee061fcf8be1f4f1809857765178b7e",
+      "bytes": 11357
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/bench/extract.py",
+      "frozen_path": "extraction/bench/extract.py",
+      "sha256": "75dbfe0fc87bf8ea6820668036bd21c51c25ebc950c79360d3cb59002fd75e30",
+      "bytes": 15414
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/bench/from_cli.py",
+      "frozen_path": "extraction/bench/from_cli.py",
+      "sha256": "07ae50893032b690d2e40a3f2cec990e1a038be5befdabab5841a45489301206",
+      "bytes": 4491
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/bench/manifest.py",
+      "frozen_path": "extraction/bench/manifest.py",
+      "sha256": "51e7daee17dd1339f1d922641d6d06f1411e27543b7153836bfa83bc9e6f2bf4",
+      "bytes": 5432
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/bench/run_batch.py",
+      "frozen_path": "extraction/bench/run_batch.py",
+      "sha256": "4842fdc9a04123db135aab761149b890c29a6ba7838518b2c619bb103367fa6b",
+      "bytes": 6797
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/bench/run_bench.py",
+      "frozen_path": "extraction/bench/run_bench.py",
+      "sha256": "b5949da05c7fef408e154b71d1406f7b837eb1de24021e5d623229f2a628669b",
+      "bytes": 3012
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/bench/schema.py",
+      "frozen_path": "extraction/bench/schema.py",
+      "sha256": "ecab28678400cd753c551760f979801bf5c5d994f6ec89be7ec19161b10edc43",
+      "bytes": 7617
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/extraction/event-extract-snapshot.py",
+      "frozen_path": "extraction/event-extract-snapshot.py",
+      "sha256": "8a28733d405e374f8e608ecfa1fce755278dc7c841875a90ba12f4c891591a25",
+      "bytes": 11786
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/scoring/scoring.py",
+      "frozen_path": "scoring/scoring.py",
+      "sha256": "956982bd59015fbd8591c9e8e5e5c58397189ab4d9e908428668094a84c53d43",
+      "bytes": 8681
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/scoring/requirements.txt",
+      "frozen_path": "scoring/requirements.txt",
+      "sha256": "7bd6b8946940b79948c548c8048e545684b91c8edc9444d8dfc0c8f76a97c0a7",
+      "bytes": 13
+    },
+    {
+      "path": "experiments/ashley-detector182-20261012/scoring/provenance.json",
+      "frozen_path": "scoring/provenance.json",
+      "sha256": "e6c7f6179c11dea4501e43e58c4dd0d146b157e3ce774dfd6aeedc98ab7c1605",
+      "bytes": 650
+    }
+  ],
+  "omitted": [
+    "credentials",
+    "media",
+    "weights",
+    "ground_truth",
+    "model_requests",
+    "model_responses",
+    "runtime_ledgers",
+    "outputs",
+    "prior_gpu_resources"
+  ],
+  "note": "源码发布清单；不包含运行结果或测试通过声明。冻结目录不受本次发布影响。",
+  "independent_tests_run": false
+}

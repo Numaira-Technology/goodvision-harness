@@ -17,6 +17,11 @@ from .scene_model import (
     _ResponseValidationError,
     _strip_json_fence,
 )
+from .vlm_event_policy import (
+    EVENT_POLICY_PROFILES,
+    OUTPUT_FORMAT_MARKER,
+    event_policy_text,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +37,13 @@ class IndependentVerdict:
 class IndependentVLMInspector(TemporalVLMInspector):
     """Reuse the existing bounded transport, credentials, timeouts and telemetry."""
 
-    def build_messages(self, job, *, encoded_images=None):
+    def __init__(self, *args, event_policy="main-baseline", **kwargs):
+        if event_policy not in EVENT_POLICY_PROFILES:
+            raise ValueError("invalid event policy profile")
+        self.event_policy = event_policy
+        super().__init__(*args, **kwargs)
+
+    def _build_main_messages(self, job, *, encoded_images=None):
         messages = build_temporal_messages(
             job,
             max_image_side=self._max_image_side,
@@ -96,6 +107,76 @@ class IndependentVLMInspector(TemporalVLMInspector):
             "For ground_litter always use subject_ids=[]: this is a scene condition, "
             "not a person's action; assess it even when subjects is empty. "
             "For ppe_violation reference only the affected people. "
+            "No names, descriptions, commentary or additional fields."
+        )
+        # Empty SAM boxes in the legacy message builder are not evidence that
+        # the image contains no people. The independent model owns localization.
+        for part in messages[1]["content"]:
+            if part["type"] == "text":
+                metadata = json.loads(part["text"])
+                metadata.pop("subject_boxes", None)
+                part["text"] = json.dumps(metadata, separators=(",", ":"))
+        messages[1]["content"][0]["text"] = json.dumps(
+            {
+                "allowed_event_labels": list(job.request.event_labels),
+                "grounding_frame_sequence": job.frames[-1].frame_sequence,
+            }
+        )
+        return messages
+
+    def build_messages(self, job, *, encoded_images=None):
+        if self.event_policy == "main-baseline":
+            return self._build_main_messages(job, encoded_images=encoded_images)
+        messages = build_temporal_messages(
+            job,
+            max_image_side=self._max_image_side,
+            jpeg_quality=self._jpeg_quality,
+            encoded_images=encoded_images,
+        )
+        policy = event_policy_text(
+            job.request.event_labels, dict(job.event_sensitivities),
+        )
+        # Qwen3-VL's native grounding convention is normalized 0..1000. Request
+        # an explicit declaration so the parser never guesses units from size.
+        coordinates = (
+            "normalized_1000" if "qwen3-vl" in self.model.lower() else "normalized_1"
+        )
+        coordinate_rule = (
+            "integers from 0 to 1000, for example [200,100,600,900]"
+            if coordinates == "normalized_1000"
+            else "numbers from 0 to 1, for example [0.2,0.1,0.6,0.9]"
+        )
+        messages[0]["content"] = (
+            policy + OUTPUT_FORMAT_MARKER +
+            "There are no external detections or person identities. Ground visible "
+            "participants yourself in the LAST image, including people doing none "
+            "of the requested actions. Event assessment is the primary task: "
+            "report each event even if you cannot locate its participants. "
+            "Return only compact JSON with bbox_coordinate_system, subjects and "
+            f'verdicts. Set bbox_coordinate_system to "{coordinates}". '
+            "subjects is an array of {subject_id,bbox}: "
+            "assign response-local IDs p1, p2, etc.; bbox is the visible person's "
+            f"normalized [x1,y1,x2,y2] in the last image, using {coordinate_rule}, "
+            "never pixel coordinates; x1<x2 and y1<y2. Use bbox:null if the "
+            "person cannot be located; never invent a box to satisfy the format. "
+            "These are local references, "
+            "not real identities. Do not invent hidden people or reuse an earlier "
+            "position. verdicts is an array of {event_label,subject_ids,detected,"
+            "confidence}. subject_ids identifies the evaluated visible people in "
+            "subjects, including for negative and uncertain verdicts; use [] "
+            "when participants cannot be identified, without omitting the event. "
+            "detected is "
+            "true, false or null; confidence is 0..1 or null. Do not duplicate "
+            "event/participant groups. Explicitly assess EVERY requested event label, "
+            "including negative and uncertain verdicts. Use false for an evaluated "
+            "absent action and null for insufficient evidence under the selected "
+            "sensitivity. Do not omit a label merely because it is negative. "
+            "An empty "
+            "subjects list is allowed, but EVERY event label still needs a verdict. "
+            "For ground_litter always use subject_ids=[]: this is a scene condition, "
+            "not a person's action; assess it even when subjects is empty. "
+            "For positive ppe_violation verdicts reference only affected people; "
+            "negative and uncertain verdicts reference the people evaluated. "
             "No names, descriptions, commentary or additional fields."
         )
         # Empty SAM boxes in the legacy message builder are not evidence that

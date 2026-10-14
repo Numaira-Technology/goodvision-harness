@@ -173,13 +173,17 @@ def test_phase_statistics_include_observed_failures_and_do_not_invent_zeros():
 
 
 @pytest.mark.parametrize("finish_after, drained", [(17.0, True), (25.0, False)])
+@pytest.mark.parametrize("clock_origin", [0.0, 1_000_000_000.0])
 def test_drain_collects_last_timeout_without_extending_request_or_waiting_forever(
-    tmp_path, monkeypatch, finish_after, drained
+    tmp_path, monkeypatch, finish_after, drained, clock_origin
 ):
+    from threading import Event
+
     from tools import vlm_multistream_benchmark as benchmark
+    from tools.vlm_benchmark import source_feeder
 
     class Clock:
-        now = 1000.0
+        now = clock_origin
 
         def monotonic(self):
             return self.now
@@ -189,6 +193,19 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
 
     clock = Clock()
     configs = []
+
+    class ClockEvent(Event):
+        def wait(self, timeout=None):
+            if not self.is_set() and timeout is not None:
+                clock.sleep(timeout)
+            return self.is_set()
+
+    # Source releases and drain deadlines must share both the fake clock and
+    # its wait primitive. Mixing this origin with OS uptime can sleep for hours
+    # on a fresh Linux runner, or silently miss all source frames on a Mac.
+    monkeypatch.setattr(source_feeder, "time", clock)
+    monkeypatch.setattr(source_feeder, "Event", ClockEvent)
+    offered = []
 
     class Branch:
         def __init__(self, config, **kwargs):
@@ -203,6 +220,7 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
             return {"state": "running"}
 
         def offer(self, *args):
+            offered.append(args)
             return True
 
         def finish_source(self):
@@ -240,6 +258,8 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
         request_rate=40, queue_timeout=1, deadline=3,
     )
     result = run_stage(args, base, 1, [[jpeg()]], tmp_path, 1)
+    assert len(offered) == 8  # The drain check cannot pass by missing every frame.
+    assert result["input_timing_valid"]
     assert configs[0].model_settings.timeout_seconds == 15
     assert result["all_drained"] is drained
     assert result["drain_timeout_seconds"] == 20

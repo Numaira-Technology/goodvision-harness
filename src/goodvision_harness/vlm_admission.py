@@ -7,6 +7,7 @@ volume for containers). This is not a distributed/NFS lock or a GPU scheduler.
 
 from __future__ import annotations
 
+import logging
 import math
 import sqlite3
 import time
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Thread
 from uuid import uuid4
+
+MAX_PER_STREAM_CONCURRENCY = 8
 
 
 class AdmissionError(RuntimeError):
@@ -38,7 +41,9 @@ class AdmissionSettings:
             raise ValueError("VLM global concurrency must be in 1..128")
         if type(
             self.per_stream_limit
-        ) is not int or not 1 <= self.per_stream_limit <= min(4, self.global_limit):
+        ) is not int or not 1 <= self.per_stream_limit <= min(
+            MAX_PER_STREAM_CONCURRENCY, self.global_limit
+        ):
             raise ValueError("VLM per-stream concurrency exceeds shared capacity")
         for value, maximum in [
             (self.requests_per_second, 200),
@@ -56,6 +61,7 @@ class SharedAdmission:
     # Leases are renewed while inspect is running. A crashed process keeps its
     # slot conservatively for up to 60 seconds, rather than leaking it forever.
     LEASE_SECONDS = 60.0
+    RELEASE_TIMEOUT_SECONDS = 5.0
 
     def __init__(self, settings: AdmissionSettings):
         self.settings = settings
@@ -86,6 +92,14 @@ class SharedAdmission:
                     "ALTER TABLE tickets ADD COLUMN lane "
                     "TEXT NOT NULL DEFAULT 'default'"
                 )
+            if "pair_id" not in columns:
+                db.execute(
+                    "ALTER TABLE tickets ADD COLUMN pair_id TEXT NOT NULL DEFAULT ''"
+                )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS pair_grants (stream TEXT, pair_id TEXT, "
+                "lane TEXT, expires REAL, PRIMARY KEY(stream,pair_id,lane))"
+            )
             db.execute(
                 "CREATE INDEX IF NOT EXISTS tickets_stream ON tickets(stream, active)"
             )
@@ -119,6 +133,7 @@ class SharedAdmission:
             if latest is not None and latest > time.monotonic() + 1:
                 db.execute("DELETE FROM tickets")
                 db.execute("DELETE FROM streams")
+                db.execute("DELETE FROM pair_grants")
                 db.execute("UPDATE policy SET next_grant=0 WHERE id=1")
 
     @contextmanager
@@ -139,6 +154,7 @@ class SharedAdmission:
     @staticmethod
     def _reap(db, now):
         db.execute("DELETE FROM tickets WHERE expires <= ?", (now,))
+        db.execute("DELETE FROM pair_grants WHERE expires <= ?", (now,))
         db.execute(
             "DELETE FROM streams WHERE touched < ? AND id NOT IN "
             "(SELECT stream FROM tickets)",
@@ -165,15 +181,22 @@ class SharedAdmission:
         )
 
     def _remove(self, token):
-        # A release collision must not replace a valid model result with an
-        # exception. The expiring lease remains a conservative capacity hold.
-        for _ in range(3):
+        # Give a completed request enough time to release its slot during writer
+        # contention. Three 100 ms attempts left 60-second phantom capacity holds.
+        # Never replace a valid model result or its original exception with a
+        # cleanup error; persistent failures remain visible and expire safely.
+        deadline = time.monotonic() + self.RELEASE_TIMEOUT_SECONDS
+        while (remaining := deadline - time.monotonic()) > 0:
             try:
-                with self._transaction() as db:
+                with self._transaction(timeout=min(0.5, remaining)) as db:
                     db.execute("DELETE FROM tickets WHERE id=?", (token,))
-                return
+                return True
             except sqlite3.OperationalError:
-                time.sleep(0.01)
+                time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+        logging.getLogger(__name__).warning(
+            "VLM admission release failed; capacity lease remains until expiry"
+        )
+        return False
 
     def _candidate(self, db, now):
         return db.execute(
@@ -181,8 +204,12 @@ class SharedAdmission:
             "JOIN streams s ON s.id=t.stream "
             "WHERE t.active=0 AND t.expires>? AND (SELECT COUNT(*) FROM tickets a "
             "WHERE a.active=1 AND a.stream=t.stream AND a.expires>?) < ? "
-            "ORDER BY s.last_grant,t.created,t.id LIMIT 1",
-            (now, now, self.settings.per_stream_limit),
+            # Preserve fairness between cameras. Within a camera, finish an
+            # already-started pair before starting another observation window.
+            "ORDER BY s.last_grant, EXISTS(SELECT 1 FROM pair_grants p "
+            "WHERE t.pair_id!='' AND p.stream=t.stream AND p.pair_id=t.pair_id "
+            "AND p.lane!=t.lane AND p.expires>?) DESC,t.created,t.id LIMIT 1",
+            (now, now, self.settings.per_stream_limit, now),
         ).fetchone()
 
     def _may_acquire(self, token):
@@ -209,11 +236,15 @@ class SharedAdmission:
             return candidate is not None and candidate[0] == token
 
     @contextmanager
-    def slot(self, stream, *, stop, source_deadline, lane="default"):
+    def slot(self, stream, *, stop, source_deadline, lane="default", pair_id=""):
         # Only the replacement key includes the lane. Admission/fairness still
         # count all lanes against the same source and global capacity budgets.
         if lane not in {"default", "events", "compact", "full"}:
             raise ValueError("invalid VLM admission lane")
+        if not isinstance(pair_id, str) or len(pair_id) > 128 or (
+            pair_id and lane not in {"events", "compact"}
+        ):
+            raise ValueError("invalid VLM admission pair")
         token = uuid4().hex
         started = time.monotonic()
         deadline = min(source_deadline, started + self.settings.queue_timeout_seconds)
@@ -246,18 +277,21 @@ class SharedAdmission:
                                 "touched=excluded.touched",
                                 (stream, now),
                             )
-                            # One unsent observation per source AND lane. A
-                            # grounding request must not replace its events peer.
-                            db.execute(
-                                "DELETE FROM tickets WHERE stream=? AND lane=? "
-                                "AND active=0",
-                                (stream, lane),
-                            )
+                            # Independent work retains latest-only replacement.
+                            # Paired work is bounded by local worker slots and
+                            # the existing queue/source deadlines; never delete
+                            # its waiting mate when a newer window arrives.
+                            if not pair_id:
+                                db.execute(
+                                    "DELETE FROM tickets WHERE stream=? AND lane=? "
+                                    "AND active=0 AND pair_id=''",
+                                    (stream, lane),
+                                )
                             db.execute(
                                 "INSERT INTO tickets"
-                                "(id,stream,active,created,expires,lane) "
-                                "VALUES(?,?,0,?,?,?)",
-                                (token, stream, now, deadline, lane),
+                                "(id,stream,active,created,expires,lane,pair_id) "
+                                "VALUES(?,?,0,?,?,?,?)",
+                                (token, stream, now, deadline, lane, pair_id),
                             )
                         elif (
                             db.execute(
@@ -280,6 +314,14 @@ class SharedAdmission:
                             and candidate[0] == token
                         )
                         if acquired:
+                            if pair_id:
+                                # Keep this marker after a fast reply releases
+                                # its slot, but never beyond evidence freshness.
+                                db.execute(
+                                    "INSERT OR REPLACE INTO pair_grants "
+                                    "(stream,pair_id,lane,expires) VALUES(?,?,?,?)",
+                                    (stream, pair_id, lane, source_deadline),
+                                )
                             db.execute(
                                 "UPDATE tickets SET active=1,expires=? WHERE id=?",
                                 (now + self.LEASE_SECONDS, token),

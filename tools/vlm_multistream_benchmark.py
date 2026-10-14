@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import sys
 import time
 from dataclasses import replace
@@ -18,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from PIL import Image  # noqa: E402
@@ -29,6 +31,7 @@ from goodvision_harness.event_sensitivity import (  # noqa: E402
 from goodvision_harness.grounding import SAFETY_EVENT_LABELS  # noqa: E402
 from goodvision_harness.model_api import environment_api_key  # noqa: E402
 from goodvision_harness.vlm_admission import (  # noqa: E402
+    MAX_PER_STREAM_CONCURRENCY,
     AdmissionSettings,
     SharedAdmission,
 )
@@ -39,6 +42,11 @@ from goodvision_harness.vlm_independent import (  # noqa: E402
     _inspector,
 )
 from goodvision_harness.vlm_independent_model import IndependentVerdict  # noqa: E402
+from tools.vlm_benchmark.accounting import (  # noqa: E402
+    delivery_counts,
+    reconcile_retention,
+)
+from tools.vlm_benchmark.source_feeder import TimedSourceFeeder  # noqa: E402
 
 # Follow the production safety catalog; stranger uses a separate identity lane.
 LABELS = SAFETY_EVENT_LABELS
@@ -46,6 +54,7 @@ LABELS = SAFETY_EVENT_LABELS
 
 class SimulatedInspector:
     def __init__(self, config):
+        self.last_http_timing = {"http_request_attempted": False}
         self.seconds = (
             config.parameters.get(
                 "simulation_grounding_seconds", config.parameters["simulation_seconds"]
@@ -256,6 +265,15 @@ def summarize(reports, stats, duration, expected, deadline, *, lane=None):
             for r in good
         ),
         "historical_only_results": sum(r.get("historical_only", False) for r in good),
+        "delivery_accounting": delivery_counts(reports, expected),
+        "source_to_completion_seconds": timing(
+            [r["timing"]["source_to_completion_seconds"] for r in good
+             if "source_to_completion_seconds" in r["timing"]]
+        ),
+        "completion_to_publish_seconds": timing(
+            [r["timing"]["completion_to_publish_seconds"] for r in good
+             if "completion_to_publish_seconds" in r["timing"]]
+        ),
         "on_time_valid_results": len(on_time),
         "on_time_coverage": len(on_time) / expected if expected else None,
         "effective_results_per_second": valid_rows / duration,
@@ -288,20 +306,42 @@ def summarize(reports, stats, duration, expected, deadline, *, lane=None):
 def paired_summary(reports_by_camera, expected):
     """Pair only the exact same production window, never nearest timestamps."""
     pairs = {}
+    unpaired_records = duplicates = unknown_http = 0
     for camera, reports in enumerate(reports_by_camera):
         for r in reports:
+            unknown_http += (
+                type(r.get("timing", {}).get("http_request_attempted")) is not bool
+            )
             window = r.get("window_id")
             if window is not None:
-                pairs.setdefault((camera, window), {})[report_lane(r)] = r
+                pair = pairs.setdefault((camera, window), {})
+                lane = report_lane(r)
+                duplicates += lane in pair
+                pair[lane] = r
+            else:
+                unpaired_records += 1
 
     def complete(r):
         return r and r["state"] == "completed" and r["analysis_complete"]
 
+    def attempted(row, key="http_request_attempted"):
+        return (row or {}).get("timing", {}).get(key) is True
+
     both, event_only, grounding_only, differences, full_latency = 0, 0, 0, [], []
+    both_sent = one_sent = both_inspected = 0
+    both_sent_complete = 0
+    complete_peer_unsent = complete_peer_failed = 0
     for pair in pairs.values():
         event, ground = pair.get("events"), pair.get("grounding")
+        sent = int(attempted(event)) + int(attempted(ground))
+        both_sent += sent == 2
+        one_sent += sent == 1
+        both_inspected += attempted(event, "inspection_attempted") and attempted(
+            ground, "inspection_attempted"
+        )
         if complete(event) and complete(ground):
             both += 1
+            both_sent_complete += sent == 2
             e = event["timing"]["source_to_publish_seconds"]
             g = ground["timing"]["source_to_publish_seconds"]
             differences.append(g - e)
@@ -310,6 +350,15 @@ def paired_summary(reports_by_camera, expected):
             event_only += 1
         elif complete(ground):
             grounding_only += 1
+        if bool(complete(event)) != bool(complete(ground)):
+            peer = ground if complete(event) else event
+            complete_peer_failed += attempted(peer)
+            complete_peer_unsent += peer is None or (
+                peer.get("timing", {}).get("http_request_attempted") is False
+            )
+    known = not (
+        unknown_http or unpaired_records or duplicates or len(pairs) > expected
+    )
     return {
         "expected_source_windows": expected,
         "both_complete": both,
@@ -317,6 +366,22 @@ def paired_summary(reports_by_camera, expected):
         "without_both_complete": max(0, expected - both),
         "events_complete_without_grounding": event_only,
         "grounding_complete_without_events": grounding_only,
+        "http_pair_accounting_known": known,
+        "http_attempt_unknown_records": unknown_http,
+        "records_without_window_id": unpaired_records,
+        "duplicate_window_lane_records": duplicates,
+        "both_http_attempted": both_sent,
+        "both_http_attempted_fraction": (
+            both_sent / expected if expected and known else None
+        ),
+        "only_one_http_attempted": one_sent,
+        "neither_http_attempted": expected - both_sent - one_sent if known else None,
+        "both_inspection_attempted": both_inspected,
+        "both_complete_fraction_of_both_http_attempted": (
+            both_sent_complete / both_sent if both_sent and known else None
+        ),
+        "one_complete_peer_http_not_attempted": complete_peer_unsent,
+        "one_complete_peer_http_attempted_without_complete": complete_peer_failed,
         "paired_admission_superseded": sum(
             "events" in pair
             and "grounding" in pair
@@ -359,7 +424,19 @@ def run_stage(
     *,
     inspector_factory=None,
     observer=None,
+    source_wait=None,
 ):
+    api_key = ""
+    if args.real:
+        if getattr(args, "backend", "") in {"openrouter", "dashscope"}:
+            # Match the modes preflight and remote launcher: a generic override
+            # may belong to another API. Never pass an empty key to inspectors,
+            # whose legacy fallback would otherwise read that generic override.
+            api_key = os.environ.get(base.model_api.api_key_env, "").strip()
+            if not api_key:
+                raise ValueError("selected benchmark API credential is unavailable")
+        else:
+            api_key = environment_api_key(base.model_api)
     stage = output / f"streams-{count}-repeat-{repetition}"
     stage.mkdir()
     gate_settings = (
@@ -402,6 +479,7 @@ def run_stage(
                         observer.result(i, payload)
         raw.flush()
 
+    feeder = None
     try:
         for i in range(count):
             cfg = VLMProcessConfig(
@@ -415,7 +493,7 @@ def run_stage(
                     timeout_seconds=base.runtime.scene_timeout_seconds,
                 ),
                 base.inference.model,
-                api_key=environment_api_key(base.model_api) if args.real else "",
+                api_key=api_key,
                 parameters=(
                     dict(base.inference.request_parameters)
                     if args.real
@@ -435,6 +513,10 @@ def run_stage(
                 observation_fps=args.observation_fps,
                 max_in_flight=args.local_concurrency,
                 output_mode=args.output_mode,
+                grounding_format=getattr(args, "grounding_format", "legacy"),
+                parallel_scheduling=getattr(args, "parallel_scheduling", "independent"),
+                event_policy=getattr(args, "event_policy", "main-baseline"),
+                retain_historical_results=True,
                 admission=gate_settings,
             )
             branch = IndependentVLMBranch(
@@ -457,34 +539,23 @@ def run_stage(
         offsets, releases = release_schedule(
             count, args.duration, sample_fps, args.observation_fps, arrival_mode
         )
-        release_lags, sender_missed, offer_rejected = [], 0, [0] * count
-        missed_by_stream = [0] * count
+        # Record startup before a short/virtual source can finish. Status is
+        # collected separately and never enters the paced source release loop.
+        status_log.write(json.dumps({
+            "elapsed": 0.0, "streams": [b.stats() for b in branches],
+        }) + "\n")
+        status_log.flush()
         start = time.monotonic()
         if observer is not None:
             observer.source_started(start, offsets)
-        next_status = start
-        for release_at, actions in releases:
-            due = start + release_at
-            remaining = due - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            lag = time.monotonic() - due
-            release_lags.append(lag)
-            if lag > 1 / sample_fps:
-                sender_missed += 1
-                for camera, _tick in actions:
-                    missed_by_stream[camera] += 1
-                # Do not hide a stalled sender with accelerated catchup.
-                continue
-            for i, tick in actions:
-                frames = framesets[i % len(framesets)]
-                accepted = branches[i].offer(
-                    frames[tick % len(frames)], tick / sample_fps, tick
-                )
-                if not accepted:
-                    offer_rejected[i] += 1
-                if observer is not None:
-                    observer.sample(i, tick, accepted)
+        feeder = TimedSourceFeeder(
+            branches, framesets, releases, start, sample_fps,
+            monotonic=time.monotonic, wait=source_wait,
+        )
+        feeder.start()
+        next_status = start + 1
+        while feeder.thread.is_alive():
+            feeder.notify(observer)
             collect()
             if time.monotonic() >= next_status:
                 status_log.write(
@@ -498,6 +569,13 @@ def run_stage(
                 )
                 status_log.flush()
                 next_status += 1
+            feeder.thread.join(timeout=0.01)
+        feeder.check()
+        feeder.notify(observer)
+        release_lags = feeder.release_lags
+        sender_missed = feeder.missed
+        missed_by_stream = feeder.missed_by_stream
+        offer_rejected = feeder.offer_rejected
         remaining = start + args.duration + max(offsets) - time.monotonic()
         if remaining > 0:
             time.sleep(remaining)
@@ -543,6 +621,7 @@ def run_stage(
             "admission_scope": (
                 "per-stream limit shared by lanes; global limit/rate cover all lanes"
             ),
+            "parallel_scheduling": getattr(args, "parallel_scheduling", "independent"),
             "measurement_kind": "real_model_capacity"
             if args.real
             else "simulated_scheduler_only",
@@ -560,6 +639,7 @@ def run_stage(
             "drain_timeout_seconds": drain_timeout,
             "drain_elapsed_seconds": time.monotonic() - drain_started,
             "result_records_missing": missing_records,
+            "result_retention": reconcile_retention(reports, stats, lanes, report_lane),
             "input_timing_valid": sender_missed == 0
             and max(release_lags, default=0) < 0.25,
             "shared_admission": gate.snapshot() if gate else None,
@@ -584,12 +664,16 @@ def run_stage(
         )
         return result
     finally:
-        raw.close()
-        status_log.close()
-        for branch in branches:
-            branch.close()
-        for branch in branches:
-            branch.close(timeout_seconds=5)
+        try:
+            if feeder is not None:
+                feeder.close()
+        finally:
+            raw.close()
+            status_log.close()
+            for branch in branches:
+                branch.close()
+            for branch in branches:
+                branch.close(timeout_seconds=5)
 
 
 def main():
@@ -619,6 +703,8 @@ def main():
     parser.add_argument("--observation-fps", type=float, default=1.25)
     parser.add_argument("--deadline", type=float, default=3)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--event-policy", choices=["main-baseline", "research-v1"],
+                        default="main-baseline")
     parser.add_argument("--plan-only", action="store_true")
     args = parser.parse_args()
     if (
@@ -627,7 +713,7 @@ def main():
         or any(n < 1 or n > 12 for n in args.streams)
         or len(args.streams) != len(set(args.streams))
         or not 0 < args.observation_fps <= 3
-        or not 1 <= args.local_concurrency <= 4
+        or not 1 <= args.local_concurrency <= MAX_PER_STREAM_CONCURRENCY
         or not 0 <= args.simulated_latency <= 20
         or not 0 < args.deadline <= 30
         or not 0 <= args.global_limit <= 128
@@ -693,10 +779,12 @@ def main():
             "Long runs loop videos; no event accuracy is computed.",
             "Shared SQLite is for one host/shared local container volume only.",
         ],
+        "retain_historical_results": True,
         "source_hashes": {
-            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in [
                 Path(__file__),
+                *sorted((ROOT / "src/goodvision_harness").rglob("*.py")),
                 ROOT / "src/goodvision_harness/vlm_admission.py",
                 ROOT / "src/goodvision_harness/vlm_independent.py",
                 ROOT / "src/goodvision_harness/vlm_compact_model.py",

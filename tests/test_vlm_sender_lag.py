@@ -118,6 +118,7 @@ def test_real_sender_preserves_source_clock_and_exposes_stalled_input(
         [frames],
         tmp_path,
         1,
+        source_wait=clock.sleep,
     )
 
     expected = [tick for tick in range(8) if tick not in skipped]

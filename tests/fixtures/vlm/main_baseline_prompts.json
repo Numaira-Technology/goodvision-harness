@@ -1,0 +1,17 @@
+{
+  "source_revision": "f93b91ead3f369ee20275c12b10279d2395c989a",
+  "system_prompt_sha256": {
+    "IndependentVLMInspector:standard:0": "d2319277281a747ddbc88addab0cb4a0349f2d147cb32d9a35591544a2f329f4",
+    "CompactGroundingInspector:standard:0": "4b3b3dd9bb1217683362a5cccf14525f62b6028932c95d125c7651a385792565",
+    "EventJSONInspector:standard:0": "f0731128db4f2584ca549a15adc051565840a06e6dbd7481fea0f104e2de3fc0",
+    "IndependentVLMInspector:standard:1": "d2319277281a747ddbc88addab0cb4a0349f2d147cb32d9a35591544a2f329f4",
+    "CompactGroundingInspector:standard:1": "f5db3883f3d920b1e90df280831d27b47701065a103f6c20b926a1a3ee3a028d",
+    "EventJSONInspector:standard:1": "f0731128db4f2584ca549a15adc051565840a06e6dbd7481fea0f104e2de3fc0",
+    "IndependentVLMInspector:high:0": "0851746360d092665ab6c26a23492f95e50411e2991e687b4fbedeef74daa5e7",
+    "CompactGroundingInspector:high:0": "3f6a8a050e8141b3314dca84ebfa283c7c55911a0fdb17468b9ecd3dd7af2d20",
+    "EventJSONInspector:high:0": "794f11354091afd1b9640ad8b20f040513a0cc28f496b908958e1e5de40e00af",
+    "IndependentVLMInspector:high:1": "0851746360d092665ab6c26a23492f95e50411e2991e687b4fbedeef74daa5e7",
+    "CompactGroundingInspector:high:1": "35f56a036ee78bd3c66e843ba42c7a9ebd15822e14f432506198352d0b7c12eb",
+    "EventJSONInspector:high:1": "794f11354091afd1b9640ad8b20f040513a0cc28f496b908958e1e5de40e00af"
+  }
+}

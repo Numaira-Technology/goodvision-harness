@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from tools.vlm_benchmark.plan import make_plan, request_budget  # noqa: E402
+from tools.vlm_benchmark.routes import FIXED_OPENROUTER_PROVIDERS  # noqa: E402
 
 REMOTE = "/workspace/goodvision-vlm-tests"
 RUN_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}\Z")
@@ -385,7 +386,7 @@ def watch(ssh, remote):
         time.sleep(5)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=["capacity", "modes"], default="capacity")
     parser.add_argument("--host")
@@ -398,9 +399,15 @@ def main():
     parser.add_argument("--streams", type=int, nargs="+", default=[1, 4, 8, 12])
     parser.add_argument("--provider", choices=["aiclub", "openrouter", "dashscope"])
     parser.add_argument("--model", default="")
+    parser.add_argument(
+        "--endpoint",
+        default="",
+        help="modes suite: DashScope full Chat Completions URL",
+    )
     parser.add_argument("--soak-seconds", type=int)
     parser.add_argument("--global-limit", type=int)
     parser.add_argument("--per-stream-limit", type=int)
+    parser.add_argument("--local-concurrency", type=int, default=4)
     parser.add_argument("--request-rate", type=float)
     parser.add_argument(
         "--real", action="store_true", help="modes suite: call paid API"
@@ -408,20 +415,41 @@ def main():
     parser.add_argument(
         "--modes",
         nargs="+",
-        choices=["events", "compact", "parallel"],
+        choices=["events", "grounding", "compact", "parallel"],
         default=["events", "compact", "parallel"],
     )
     parser.add_argument("--duration", type=float, default=60)
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--warmup-seconds", type=float, default=3)
+    parser.add_argument("--event-policy", choices=["main-baseline", "research-v1"],
+                        default="main-baseline")
+    parser.add_argument(
+        "--grounding-format", choices=["legacy", "lean-v1"], default="legacy"
+    )
+    parser.add_argument(
+        "--grounding-concurrency-sweep", type=int, nargs="+", default=[],
+        help="modes suite: grounding twelve-stream per-stream 4/6/8 comparison",
+    )
+    parser.add_argument("--http-timeout", type=float, default=15)
+    parser.add_argument("--parallel-concurrency-sweep", type=int, nargs="+", default=[])
+    parser.add_argument(
+        "--parallel-scheduling", choices=["independent", "paired"],
+        default="independent",
+    )
+    parser.add_argument("--dns-transport", choices=["system", "tcp"], default="system")
     parser.add_argument("--record", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--monitor-port", type=int, default=8787)
+    parser.add_argument(
+        "--monitor-layout", choices=["evidence", "single-video"], default="evidence"
+    )
+    parser.add_argument("--require-route-match", action="store_true")
+    parser.add_argument("--provider-prefer", choices=["", "alibaba"], default="")
     parser.add_argument("--compare", action="store_true")
     parser.add_argument("--compare-concurrency", action="store_true")
     parser.add_argument("--compare-arrival", action="store_true")
     parser.add_argument("--compare-routing", action="store_true")
     parser.add_argument(
-        "--provider-only", choices=["deepinfra", "parasail", "venice"], default=""
+        "--provider-only", choices=FIXED_OPENROUTER_PROVIDERS, default=""
     )
     parser.add_argument(
         "--provider-sort", choices=["", "throughput", "latency"], default=""
@@ -435,7 +463,7 @@ def main():
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--resume", metavar="RUN_ID")
     action.add_argument("--stop", metavar="RUN_ID")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     mode_suite = args.suite == "modes"
     for name, value in {
         "provider": "openrouter" if mode_suite else "aiclub",
@@ -451,20 +479,35 @@ def main():
         if mode_suite:
             from tools.vlm_benchmark.cloud_modes import make_plan as make_modes_plan
 
-            if args.provider != "openrouter" or any(
+            if args.provider not in {"openrouter", "dashscope"} or any(
                 (
                     args.compare,
                     args.compare_concurrency,
                     args.compare_arrival,
                     args.compare_routing,
-                    args.provider_only,
                     args.provider_sort,
                 )
             ):
-                parser.error("modes suite uses OpenRouter and its fixed routing policy")
+                parser.error(
+                    "modes suite uses OpenRouter or DashScope; "
+                    "capacity comparison flags are unsupported"
+                )
             args.model = args.model or "qwen/qwen3-vl-30b-a3b-instruct"
             plan = make_modes_plan(args)
         else:
+            if args.event_policy != "main-baseline":
+                parser.error("research event policy requires --suite modes")
+            if (
+                args.require_route_match or args.provider_prefer
+                or args.monitor_layout != "evidence"
+            ):
+                parser.error(
+                    "route verification and monitor layout require --suite modes"
+                )
+            if args.grounding_concurrency_sweep:
+                parser.error("grounding concurrency sweep requires --suite modes")
+            if args.endpoint:
+                parser.error("--endpoint is supported by the modes suite only")
             plan = make_plan(
                 provider=args.provider,
                 model=args.model,
@@ -566,13 +609,10 @@ def main():
             )
             print(guide, flush=True)
             if mode_suite:
-                from dotenv import dotenv_values
+                from tools.vlm_benchmark.routes import read_api_key
 
                 key = (
-                    (
-                        os.environ.get("OPENROUTER_API_KEY")
-                        or dotenv_values(ROOT / ".env").get("OPENROUTER_API_KEY")
-                    )
+                    read_api_key(args.provider, ROOT / ".env", required=False)
                     if args.real
                     else ""
                 )

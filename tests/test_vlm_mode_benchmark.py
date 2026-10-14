@@ -17,12 +17,14 @@ from goodvision_harness.vlm_admission import AdmissionSettings, SharedAdmission
 from goodvision_harness.vlm_independent import IndependentVLMBranch
 from tools.vlm_benchmark import lock as suite_lock
 from tools.vlm_benchmark import modes
+from tools.vlm_benchmark.accounting import reconcile_retention
 from tools.vlm_benchmark.mode_report import render_modes
 from tools.vlm_benchmark.telemetry import parse_metrics, server_deltas
 from tools.vlm_multistream_benchmark import (
     LABELS,
     paired_summary,
     release_schedule,
+    report_lane,
     simulated_factory,
     summarize,
 )
@@ -30,6 +32,25 @@ from tools.vlm_multistream_benchmark import (
 
 def lane_report(lane, window, **kwargs):
     return {**report(**kwargs), "vlm_lane": lane, "window_id": window}
+
+
+@pytest.mark.parametrize("provider", ["deepinfra", "novita", "siliconflow"])
+def test_fixed_provider_screen_does_not_exclude_or_fallback(provider):
+    args = modes.parser().parse_args(["--provider-only", provider, "--modes", "events"])
+    modes.validate(args)
+    routing = modes.configure(args).inference.request_parameters["provider"]
+    assert routing["only"] == [provider]
+    assert routing["allow_fallbacks"] is False
+    assert "ignore" not in routing
+
+
+def test_completed_workers_with_residual_admission_are_not_a_valid_trial():
+    stage = dict(input_timing_valid=True, all_drained=True, result_records_missing=0,
+                 lanes={"events": {"complete_valid_results": 384}},
+                 shared_admission={"active": 32, "waiting": 0})
+    assert not modes.usable(stage)
+    stage["shared_admission"]["active"] = 0
+    assert modes.usable(stage)
 
 
 def test_lanes_keep_separate_denominators_and_late_results():
@@ -93,7 +114,7 @@ def test_same_window_queue_replacement_is_visible_separately():
     assert pairs["grounding_complete_without_events"] == 1
 
 
-@pytest.mark.parametrize("failure", ["429", "invalid_soak"])
+@pytest.mark.parametrize("failure", ["429", "invalid_soak", "retention"])
 def test_runner_stops_and_preserves_report_on_failure(tmp_path, monkeypatch, failure):
     args = modes.parser().parse_args(
         [
@@ -140,6 +161,7 @@ def test_runner_stops_and_preserves_report_on_failure(tmp_path, monkeypatch, fai
             "input_timing_valid": True,
             "all_drained": options.duration != 30,
             "result_records_missing": 0,
+            "result_retention": {"valid": failure != "retention"},
             "paired_windows": None,
             "nominal_requests_per_second": 15,
             "rate_limit_below_offered_load": False,
@@ -147,12 +169,12 @@ def test_runner_stops_and_preserves_report_on_failure(tmp_path, monkeypatch, fai
 
     monkeypatch.setattr(modes, "Telemetry", NoTelemetry)
     monkeypatch.setattr(modes, "run_stage", fake_stage)
-    with pytest.raises(RuntimeError, match=r"429|invalid input"):
+    with pytest.raises(RuntimeError, match=r"429|invalid input|result counts disagree"):
         modes.run(args)
     result = json.loads((args.output / "summary.json").read_text(encoding="utf-8"))
     assert result["state"] == "failed"
     assert result["jobs"]
-    if failure == "429":
+    if failure in {"429", "retention"}:
         assert len(calls) == 1
     else:
         assert result["jobs"][-1]["phase"] == "soak"
@@ -346,6 +368,9 @@ def acknowledged_mode_results(args, base, tmp_path, *, inspector_factory=None):
         observation_fps=args.observation_fps,
         max_in_flight=args.local_concurrency,
         output_mode=args.output_mode,
+        grounding_format=getattr(args, "grounding_format", "legacy"),
+        event_policy=getattr(args, "event_policy", "main-baseline"),
+        retain_historical_results=True,
         admission=gate_settings,
     )
     branch = IndependentVLMBranch(
@@ -392,6 +417,7 @@ def acknowledged_mode_results(args, base, tmp_path, *, inspector_factory=None):
     }
     return {
         "all_drained": stats["state"] == "drained",
+        "result_retention": reconcile_retention([rows], [stats], lanes, report_lane),
         # This acknowledged fixture is not a real-time capacity measurement.
         "input_timing_valid": False,
         "result_records_missing": 0,
@@ -413,8 +439,9 @@ def acknowledged_mode_results(args, base, tmp_path, *, inspector_factory=None):
     }
 
 
+@pytest.mark.parametrize("grounding_format", ["legacy", "lean-v1"])
 def test_local_http_endpoint_receives_correct_schemas_and_records_timings(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, grounding_format
 ):
     """Real transport/parse/IPC against a local stub, never paid model inference."""
     monkeypatch.setenv("INFERENCE_API_KEY", "cloud-secret-test-only")
@@ -435,7 +462,24 @@ def test_local_http_endpoint_receives_correct_schemas_and_records_timings(
             seen.append((body, self.headers.get("Authorization")))
             fmt = body["response_format"]
             answer = (
-                {label: False for label in fmt["json_schema"]["schema"]["required"]}
+                {
+                    "v": 1,
+                    "s": [{"i": "p1", "b": [100, 100, 500, 900]}],
+                    "e": {
+                        label: [
+                            {
+                                "p": [] if label == "ground_litter" else ["p1"],
+                                "d": False,
+                                "c": 0.9,
+                            }
+                        ]
+                        for label in modes.LABELS
+                    },
+                }
+                if fmt.get("json_schema", {}).get("name") == "grounding_lean_v1"
+                else {
+                    label: False for label in fmt["json_schema"]["schema"]["required"]
+                }
                 if fmt["type"] == "json_schema"
                 else {"no_events": 0.9}
             )
@@ -464,6 +508,7 @@ def test_local_http_endpoint_receives_correct_schemas_and_records_timings(
     thread.start()
     try:
         args = modes.parser().parse_args(["--backend", "local"])
+        args.grounding_format = grounding_format
         args.endpoint = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
         args.real, args.duration, args.output_mode, args.deadline = (
             True,
@@ -478,10 +523,15 @@ def test_local_http_endpoint_receives_correct_schemas_and_records_timings(
             inspector_factory=modes.mode_inspector,
         )
         assert stage["all_drained"]
+        assert not stage["input_timing_valid"]
+        assert stage["result_retention"]["valid"] is True
         assert stage["paired_windows"]["both_complete"] == 3
         assert len(seen) == 6
         assert all(key is None for _, key in seen)
         for lane in ("events", "grounding"):
+            counts = stage["lanes"][lane]["delivery_accounting"]
+            assert counts["http_attempted"] == counts["http_attempted_complete"] == 3
+            assert counts["http_attempt_unknown_records"] == 0
             phases = stage["lanes"][lane]["request_phase_metrics"]
             assert phases["inspection_timing.request_prepare_seconds"]["count"] == 3
             assert phases["http_timing.completion_tokens"]["p50"] == 20
@@ -583,6 +633,11 @@ def test_production_branch_collects_grounding_bus_and_preserves_old_event_view(
     stage = acknowledged_mode_results(args, load_config(ROOT / "config.yaml"), tmp_path)
     assert stage["all_drained"]
     assert stage["result_records_missing"] == 0
+    assert stage["result_retention"]["valid"] is True
+    for data in stage["lanes"].values():
+        assert data["delivery_accounting"]["http_attempted"] == 0
+        assert data["delivery_accounting"]["http_attempt_unknown_records"] == 0
+        assert data["delivery_accounting"]["http_not_attempted_records"] == 3
     assert stage["lanes"]["grounding"]["complete_valid_results"] == 3
     assert stage["per_stream"][0]["complete_valid_results"] == 3
     if mode == "parallel":
@@ -613,6 +668,7 @@ def test_production_branch_collects_grounding_bus_and_preserves_old_event_view(
     render_modes(tmp_path, document)
     assert "grounding" in (tmp_path / "report.html").read_text(encoding="utf-8")
     assert "模拟调度" in (tmp_path / "report.html").read_text(encoding="utf-8")
+    assert "调用与结果留存" in (tmp_path / "report.html").read_text(encoding="utf-8")
     assert (
         json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))["jobs"][0][
             "result"

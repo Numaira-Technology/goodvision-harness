@@ -89,7 +89,7 @@ goodvision_harness = [
 
 [tool.pytest.ini_options]
 addopts = "-q"
-testpaths = ["tests"]
+testpaths = ["tests", "benchmark/tests"]
 
 [tool.ruff]
 line-length = 88

@@ -1,2 +1,8 @@
 # Keep the reviewed vendor bytes and integrity hash identical on Windows.
 src/goodvision_harness/assets/opencv-4.13.0.js -text -whitespace
+
+# Frozen publication sources are verified byte-for-byte by their SHA256 manifests.
+# Preserve original bytes on Windows and retain historical vendor whitespace.
+experiments/ashley-detector182-20261012/** -text
+experiments/ashley-detector182-20261012/frozen_runtime/** whitespace=-blank-at-eol,-blank-at-eof
+experiments/ashley-detector182-20261012/gpu/source/** whitespace=-blank-at-eof

@@ -32,8 +32,11 @@ checks describe that delivery, not subsequent source changes.
 
 ## Evaluation
 
+The unified research branch workflow is documented in [Research testing](../docs/guides/research-testing.md).
+
 | Tool | Purpose |
 | --- | --- |
+| `../benchmark/run_native.py` | Deterministic native detector/event evaluation against current runtime or frozen Ashley51; use `--plan-only` before real inputs. |
 | `face_provider_benchmark.py` | Compare ONNX Runtime face inference providers. |
 | `face_llm_interop_eval.py` | Check real CPU face inference alongside synthetic remote blocking. |
 | `low_resolution_face_eval.py` | Evaluate local media/models with a disposable face gallery. |

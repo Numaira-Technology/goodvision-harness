@@ -1,0 +1,400 @@
+{
+  "schema": 1,
+  "source_commit": "d167188a4dcca7b2e7fc8fe9c4de121ef7e87b25",
+  "publication_manifest": "published-source.json",
+  "purpose": "Exact historical source, not the updated current-main runtime",
+  "files": [
+    {
+      "path": "config.yaml",
+      "sha256": "f5703ad82b3cc1261a49ee076c473ad715c173711b435cb59f656ab3a0e8b9b5"
+    },
+    {
+      "path": "event-definitions.json",
+      "sha256": "241f7243b52be5947d2f88ddbd6e3e89fcb3c793135e6bbeeac905cd5bf6aa22"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "f91a08d012f06ba5f3724b33df8de5a82a5913ff2fb545c1f11148424039776d"
+    },
+    {
+      "path": "src/goodvision_harness/__init__.py",
+      "sha256": "fb6b952849d188e829f1e94992b0ee6ea17325997b27787642cbbdafd70ea370"
+    },
+    {
+      "path": "src/goodvision_harness/aiclub.py",
+      "sha256": "348999171aaa23ea95ad33eecb2787b240399af43871ac538bc48516424fe2de"
+    },
+    {
+      "path": "src/goodvision_harness/archive_ingress.py",
+      "sha256": "3c8bce1ddba65395450e10e089b7a513a16feb7f92808a64fe7893bc37355b70"
+    },
+    {
+      "path": "src/goodvision_harness/assets/OpenCV-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "src/goodvision_harness/assets/OpenCV-NOTICE.txt",
+      "sha256": "68e0a129403eaeee8ad2e32dd8a49893bb7a0e2b59c1750ef0cefbdf32d8cfa9"
+    },
+    {
+      "path": "src/goodvision_harness/assets/opencv-4.13.0.js",
+      "sha256": "63366510248adf3a7eddf3e793dd825404efb7df3749f4d6f8557c7fa4ca8aa0"
+    },
+    {
+      "path": "src/goodvision_harness/camera_display.js",
+      "sha256": "9761a58713e86bb0e74f23f7552e45d5473f1e392a99db22109dcf58f25ef54d"
+    },
+    {
+      "path": "src/goodvision_harness/camera_display.py",
+      "sha256": "1fb5b6bb7f3987bd0f4a09c375a6f34035af7401b2f90d90e592ecee8f91bf07"
+    },
+    {
+      "path": "src/goodvision_harness/camera_display_dense.js",
+      "sha256": "5f0986c3f7b67b1d344fca477b7d0c2c8c50ba58bc3e7086485d5c4729d5e6e0"
+    },
+    {
+      "path": "src/goodvision_harness/config.py",
+      "sha256": "6fff0c4d2eaf6b3bcfa5905e41e2a1ef066082ecfc69fac0d68d864167186c00"
+    },
+    {
+      "path": "src/goodvision_harness/config.yaml",
+      "sha256": "f5703ad82b3cc1261a49ee076c473ad715c173711b435cb59f656ab3a0e8b9b5"
+    },
+    {
+      "path": "src/goodvision_harness/contracts.py",
+      "sha256": "55d61a640dd015a7de74fbc17355c6e23e592121611655224ea7eb383a568342"
+    },
+    {
+      "path": "src/goodvision_harness/dashboard.html",
+      "sha256": "445c21404582ae9bdd259485258f3928ff42bb0fb3694f0c8c025e4be43e817d"
+    },
+    {
+      "path": "src/goodvision_harness/delayed_overlay.py",
+      "sha256": "0e48d514f55a7b2e5c1c0384f915510c57697cdfe68985cc973e060a2b52f3f0"
+    },
+    {
+      "path": "src/goodvision_harness/delivery.py",
+      "sha256": "d2e711bfbd26740d15ca2f03f0563f019c58debab133dc8930d35786e14b883a"
+    },
+    {
+      "path": "src/goodvision_harness/demo/__init__.py",
+      "sha256": "27dbc662fc427b3ab943cbce3b388bf6d35907613815f8e720ed62c2274f4d30"
+    },
+    {
+      "path": "src/goodvision_harness/demo/server.py",
+      "sha256": "568c168830a73d389ffc472c2fb4210143c9eb7d4b584260be2f58ed24b6c62c"
+    },
+    {
+      "path": "src/goodvision_harness/deployment_settings.py",
+      "sha256": "39cf28af9140c5575750e16c76b632657083b69f5c6d554c96d88d35f97cd149"
+    },
+    {
+      "path": "src/goodvision_harness/detector_native_session.py",
+      "sha256": "8d0602d5043775d533c3f41930575dd84daa7f360a5ed367dcfe26cd6b7bd549"
+    },
+    {
+      "path": "src/goodvision_harness/display_telemetry.py",
+      "sha256": "9deda919a097749a2fb127495799297bc4911acb305beffe7b83b800f6f336f2"
+    },
+    {
+      "path": "src/goodvision_harness/event_archive.py",
+      "sha256": "b9d487d925cc76fe57b96520ded15e42f595562cdf813cda5f723bdf88773838"
+    },
+    {
+      "path": "src/goodvision_harness/event_registry.py",
+      "sha256": "694bff7135cfc99e4fcc828bff850b313a37f131d07af6dcb081dfe2a2e4830c"
+    },
+    {
+      "path": "src/goodvision_harness/event_routes.py",
+      "sha256": "3c993711bc5e199892d294633d214623b13b78727902d76ac91f70a6837da2b0"
+    },
+    {
+      "path": "src/goodvision_harness/event_sensitivity.py",
+      "sha256": "df867f5b0cb19c594db180005298b668a0633117694091c35af32b8e45307365"
+    },
+    {
+      "path": "src/goodvision_harness/event_session.py",
+      "sha256": "d548a60631a5f8bbf8d7d652ae018fe09628880737afc88a04a17b6a909cfb4e"
+    },
+    {
+      "path": "src/goodvision_harness/face_fast.py",
+      "sha256": "3242853750464188274880ed3b9c28c5492fdd3e6391351772055b9a2a9c669c"
+    },
+    {
+      "path": "src/goodvision_harness/face_observation_store.py",
+      "sha256": "d0fb6fc7b33311936f57834c734f7067334976533a7325a140a3165a7c6fda52"
+    },
+    {
+      "path": "src/goodvision_harness/face_recognition.py",
+      "sha256": "70f986a70d4c02f2f1a2cea5449cc42fccca74228b8f4bb695eee86406770979"
+    },
+    {
+      "path": "src/goodvision_harness/face_tracking.py",
+      "sha256": "f39afe03d35e9231ad8cb5c0825b1538b7defbd06343691b3b2c482839cb3ff1"
+    },
+    {
+      "path": "src/goodvision_harness/face_worker.py",
+      "sha256": "87e2bc8bc4648f1488fdc26b7bfbbd637632a3d8c3bdebddad7e115cf3383ae9"
+    },
+    {
+      "path": "src/goodvision_harness/fleet.py",
+      "sha256": "06bdf4f35f892045d5554607fe2c273d8d981be8715c4c5e77e3799413229a81"
+    },
+    {
+      "path": "src/goodvision_harness/fleet_console.js",
+      "sha256": "39b90f35b906796e6408cbf6059af735da1429be1aa77d9d32a0fa86fb6661cb"
+    },
+    {
+      "path": "src/goodvision_harness/fleet_outputs.py",
+      "sha256": "156532ab65348644a4c2ad88e6d5645580ef0f2c04b2fc3ec4e415d3dd4e4751"
+    },
+    {
+      "path": "src/goodvision_harness/fonts/NotoSansCJKsc-Regular.otf",
+      "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b"
+    },
+    {
+      "path": "src/goodvision_harness/fonts/OFL.txt",
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+    },
+    {
+      "path": "src/goodvision_harness/fonts/SOURCE.txt",
+      "sha256": "d25ea99cbe0d6cf0ac76901e7396c2c8b63f8eb1cf6868f1b72338527cece2c0"
+    },
+    {
+      "path": "src/goodvision_harness/frame_crop.py",
+      "sha256": "11a85b4c22dd15954fad3534f6f99b118958d286f346c24d4360e52b679ac8f4"
+    },
+    {
+      "path": "src/goodvision_harness/grounding.py",
+      "sha256": "47ac00e56fd2849fc3587ef0b8f4902972865f5bda5b504c31bd4a4ca54bfb97"
+    },
+    {
+      "path": "src/goodvision_harness/identity_review.py",
+      "sha256": "b008db2676491a531bc98614171a5de517988e9d9e2a8ce2f3e8549fe43ccee8"
+    },
+    {
+      "path": "src/goodvision_harness/identity_review_worker.py",
+      "sha256": "6299023d04be5b6f90a887119359208a1aaafd4a56c12b15672aa4a9fd5b2834"
+    },
+    {
+      "path": "src/goodvision_harness/inference.py",
+      "sha256": "16e97bfa60f6e40dca97b46582a144bf1b47d6a85faf0adb4b840dc808e52045"
+    },
+    {
+      "path": "src/goodvision_harness/latency_trace.py",
+      "sha256": "7e41ead91338262ef97a5a7ce9bff4cee56ee256450138b14e15d113695f4fae"
+    },
+    {
+      "path": "src/goodvision_harness/local_gpu.py",
+      "sha256": "a91568b857e56d2b44690ab0d8bdf9b48d968874fc0aedc45cdb387a6d95a3e1"
+    },
+    {
+      "path": "src/goodvision_harness/model_api.py",
+      "sha256": "c5eb8d8ca9922ba5bb11bf3be4042a5090cb6c56444466d6cfed382a0bdc38f1"
+    },
+    {
+      "path": "src/goodvision_harness/model_routing.py",
+      "sha256": "81c8b5ca652114d05462c11fd55d16fb117e6022c94e8d58837210e7fc6e534c"
+    },
+    {
+      "path": "src/goodvision_harness/native_event_audit.py",
+      "sha256": "636c73eb7c7f1235641e8f886d010246efdced6a66951a0f199c8e939afd9824"
+    },
+    {
+      "path": "src/goodvision_harness/network_display.py",
+      "sha256": "64912d57504d4f3c5ece6f7b2ecc09ca0727bd8009f08ae4626e00038b65d458"
+    },
+    {
+      "path": "src/goodvision_harness/offline_benchmark.py",
+      "sha256": "8080e76e48414bfca3810298ce7ecb972a55ceba4b2f0da9b5e0420e716177ed"
+    },
+    {
+      "path": "src/goodvision_harness/organizer.py",
+      "sha256": "4507488a804ccb3ee9508a41b209f6d8542065c1f2457f7450dfd7c3f5d5c62f"
+    },
+    {
+      "path": "src/goodvision_harness/overlay.py",
+      "sha256": "2ce0b898f519907b0d914e513a1d9fb9c42f96a2cf65499ea0c52c7e1434287c"
+    },
+    {
+      "path": "src/goodvision_harness/overlay_fusion.py",
+      "sha256": "2505149d37a86ef865b204c84cdacf69d167b0eb5015ca19c461ce7f268924bc"
+    },
+    {
+      "path": "src/goodvision_harness/perception.py",
+      "sha256": "b9cd4a664ea0eede67f1ae674973eca8c5efb87ff110e45877d04663311b2534"
+    },
+    {
+      "path": "src/goodvision_harness/person_event_overlay.py",
+      "sha256": "5f3c82955c5cbf26a800f6187b7f1df2e4d233b323e3f5af6c66a33a348ed2eb"
+    },
+    {
+      "path": "src/goodvision_harness/person_identity.py",
+      "sha256": "1a3f359f6d2a001c6e5fd4a6a8d27550f2d444bfb8ce1b741bcdd92cd3ecad53"
+    },
+    {
+      "path": "src/goodvision_harness/person_registry.py",
+      "sha256": "38b846f2a2d9c8d73e0b06f8e194a26d0cc7cdcc40c005b9667dec501e2f2933"
+    },
+    {
+      "path": "src/goodvision_harness/pipeline.py",
+      "sha256": "9e5bc9ba59183f094fd0d8afcb0c229f72a881197bdb66d9c7ef741fbab9f965"
+    },
+    {
+      "path": "src/goodvision_harness/privacy.py",
+      "sha256": "e551b32d90486b91b5fb45419f80f31815a29f8d4c28ba11deaefae31f5276d3"
+    },
+    {
+      "path": "src/goodvision_harness/prompt.py",
+      "sha256": "68e93770937765694576a3025a47ce9ab4b170bccf776cd7ff6d544eac37b61b"
+    },
+    {
+      "path": "src/goodvision_harness/reference_memory.py",
+      "sha256": "38b1ccc75463911c796c3f1ba26055b5f00c7d0d0b52f3db3ab62c328d75fbf4"
+    },
+    {
+      "path": "src/goodvision_harness/result_bus.py",
+      "sha256": "06d296a4d4a453d7af5a32c9bb27ee1dfddadaf36243d7799b85aa8b65918326"
+    },
+    {
+      "path": "src/goodvision_harness/rich_labeling.py",
+      "sha256": "3f7e46b88ef76771f415f85f821aaf5923abf498c6ff5bb7d94928faf3b2043e"
+    },
+    {
+      "path": "src/goodvision_harness/route_probe.py",
+      "sha256": "355a94a42375c487328c9765252d98f102d1a83194c1cd33f7e6ad25083d475b"
+    },
+    {
+      "path": "src/goodvision_harness/run_postprocess.py",
+      "sha256": "70a91bcc02f85b891b3fee8ab405d3e4484d90dc4a80a467e8a5b2aa06ad81ef"
+    },
+    {
+      "path": "src/goodvision_harness/sam_tracking_pipeline.py",
+      "sha256": "4f4f438c2b23b76224d796a71172e99ee34e03762e26a6258da6fb8ec046367e"
+    },
+    {
+      "path": "src/goodvision_harness/sam_tracking_spool.py",
+      "sha256": "6ea027655db56dad77843324fdfd76c5c1315ce57d39cdb9e349afdf918e52f4"
+    },
+    {
+      "path": "src/goodvision_harness/scene_alerts.py",
+      "sha256": "49ff79d5cdabd4a44d9c326612b1f324a5c8584e7173e42dc043450ae342951e"
+    },
+    {
+      "path": "src/goodvision_harness/scene_archive.py",
+      "sha256": "1690101b7881ce5d34f3e5bfeae9c25da9ad8f3bb84aad6fa15799fe9dd789a6"
+    },
+    {
+      "path": "src/goodvision_harness/scene_capture.py",
+      "sha256": "61b1c97586e6f1abbedda4e72703a9e71d0e4f3d5d1e935c45592e43735ae3ac"
+    },
+    {
+      "path": "src/goodvision_harness/scene_delivery.py",
+      "sha256": "c020ae1c2baab62e03cbe129bc151e98b7f0a33c73d0d19919b0b39e28ee78ff"
+    },
+    {
+      "path": "src/goodvision_harness/scene_evidence.py",
+      "sha256": "8e0e3b7cadbaf4cd7732a5b5393eb9669407784c485ded886956f8aabcec67b2"
+    },
+    {
+      "path": "src/goodvision_harness/scene_inspection.py",
+      "sha256": "affb86f4335233c8ec1c9fab49d83b073c0218a38ccdbc14a92a6e5a706b2e2c"
+    },
+    {
+      "path": "src/goodvision_harness/scene_model.py",
+      "sha256": "71f0476e959bc5d2a3ba3e9351d4648f2201012c869e6ada4623a4ba3de077c4"
+    },
+    {
+      "path": "src/goodvision_harness/scene_results.py",
+      "sha256": "46a96caacff76efee712ba8757544bcbb6c0634cb69a7774bbb78a5cf19fb5c3"
+    },
+    {
+      "path": "src/goodvision_harness/scene_runtime.py",
+      "sha256": "6a1ed269a0157f00260842068ff767e19c0bab375896218b86a6ef418cc69e95"
+    },
+    {
+      "path": "src/goodvision_harness/scene_state.py",
+      "sha256": "507b40583a186ea6f2022a0c730d0029c03a4bffeef34c35f6d233e8d19fbb14"
+    },
+    {
+      "path": "src/goodvision_harness/scene_worker.py",
+      "sha256": "3b489209fb67362b52211ddfc7a20cff10bc0865c58163ff1fa0b1147919a64a"
+    },
+    {
+      "path": "src/goodvision_harness/service.py",
+      "sha256": "38211116da571fcefd7b65d7d49572e3b5a532eb1a9565ed0eb30549441a31a2"
+    },
+    {
+      "path": "src/goodvision_harness/service_locations.py",
+      "sha256": "c62276382fb0ff205bfbaeb5543f32605b7a18c01650091979a84cecd08d06dc"
+    },
+    {
+      "path": "src/goodvision_harness/sliding_window.py",
+      "sha256": "735bb44442720dadad34a28239a1dfa765875903633c700e02dc31d95da19136"
+    },
+    {
+      "path": "src/goodvision_harness/stream_adapter.py",
+      "sha256": "1b76f569a3bf9e3439c34004623fbd32a7fa1b93a78b25b609b4f7059c7499d0"
+    },
+    {
+      "path": "src/goodvision_harness/stream_diagnostics.py",
+      "sha256": "dd5cd389340be91dca6cac083bdc8affeb1205d810c76a189d716588754c420f"
+    },
+    {
+      "path": "src/goodvision_harness/streaming_model_api.py",
+      "sha256": "83c74900998ba302ac333d19f5d0ab38899047137eb7ae602e735a32b072dc7d"
+    },
+    {
+      "path": "src/goodvision_harness/temporal_client_pool.py",
+      "sha256": "781cfb815305f128a73c11c070acd762fb4f6ab3f4ef26611d185fd5d8783c89"
+    },
+    {
+      "path": "src/goodvision_harness/video_connection.py",
+      "sha256": "9214d7da863986e201e539bf8501428e0ab818ad0bdec2c570e45cbd03b5a9db"
+    },
+    {
+      "path": "src/goodvision_harness/video_evidence.py",
+      "sha256": "aa6b4afaf7f97e11405f987dc7efd66eeb8ce08b06110238035ee908d08fdef7"
+    },
+    {
+      "path": "src/goodvision_harness/video_to_stream.py",
+      "sha256": "ec53021d2baaa99e361a8a29d3dc8951f5add7af712241b2661d917164246c21"
+    },
+    {
+      "path": "src/goodvision_harness/video_tracking.py",
+      "sha256": "734497205b75e654ce0676a4729f60ca02f5bf6e9945d584bcd3d1d4e95be3c4"
+    },
+    {
+      "path": "src/goodvision_harness/video_tracking_session.py",
+      "sha256": "bd0bc55ea71b805cd8d0b31c7b06e824c1b5d16dd99b9161ed3a508cd5eb4cd5"
+    },
+    {
+      "path": "src/goodvision_harness/video_transport.py",
+      "sha256": "ac2aa61b54bcaedf9c4b092eb19da0969d1682fb6ec9f50664d9e47a65d3ccbb"
+    },
+    {
+      "path": "src/goodvision_harness/vision_result.py",
+      "sha256": "63928d42ea0ae259ae483fd2c36d0b5b9583599ae76bd5e8ec5ebee2ffcb491f"
+    },
+    {
+      "path": "src/goodvision_harness/visual_memory.py",
+      "sha256": "b6277b7bd32b1eff99a590fc8d9e1edb170057b75abf3c13ded3632aeb7920b1"
+    },
+    {
+      "path": "src/goodvision_harness/vlm_object_wire.py",
+      "sha256": "9f230b64001a157cd1710718350c4ddeda8311685a70fa9d9e433f26c60e2789"
+    },
+    {
+      "path": "src/goodvision_harness/vlm_rich_labeling.py",
+      "sha256": "fbe19341b1d0bb6681593747b8a80ebb5e8841ece8d6bf4eb59174c67916c840"
+    },
+    {
+      "path": "src/goodvision_harness/vlm_transport.py",
+      "sha256": "8a3fc515c7cd252759ad6a9fe6a14c97f1f59f4fa03912e415ec89b26dc36953"
+    },
+    {
+      "path": "src/goodvision_harness/vlm_validation.py",
+      "sha256": "5b72dcb9312201ca5dc050e388c92f443ee5d981956359595113753b893417da"
+    }
+  ]
+}

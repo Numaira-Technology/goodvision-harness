@@ -81,6 +81,12 @@ preview independently, then start or stop analysis for all connected cameras.
 - [Separate application, tracking and model services](docs/guides/modular-services.md)
 - [Multi-camera API](docs/reference/multi-camera-api.md)
 
+## Research testing
+
+The `codex/research-testing` branch combines GPU-host analysis, VLM experiments
+and Ashley evaluation. See [Research testing](docs/guides/research-testing.md) for
+source revisions, explicit experiment modes and isolated run outputs.
+
 ## Repository layout
 
 | Path | Purpose |

@@ -164,22 +164,32 @@ def _verdict_rejection_reason(job, verdicts, allowed) -> str:
     return "invalid_or_ungrounded_verdict"
 
 
-def _response_shape(response: object) -> dict[str, object]:
+def _response_shape(response: object, expected_model=None) -> dict[str, object]:
     """Only fixed enums and aggregate sizes; no model text or arbitrary keys."""
     if not isinstance(response, Mapping):
         return {}
     choices = response.get("choices")
-    if not isinstance(choices, list):
-        return {"choices_count": None}
-    result: dict[str, object] = {"choices_count": len(choices)}
+    result: dict[str, object] = {
+        "choices_count": len(choices) if isinstance(choices, list) else None
+    }
+    if expected_model is not None:
+        # Record a closed enum, never an arbitrary server-supplied model string.
+        result["model_match"] = (
+            "unreported" if not isinstance(response.get("model"), str)
+            else "matched" if response["model"] == expected_model else "mismatch"
+        )
     # Known public routing labels only; never preserve arbitrary response text.
     provider = response.get("provider")
     if isinstance(provider, str):
         result["provider_category"] = provider if provider in {
             "Darkbloom", "DeepInfra", "Parasail", "Alibaba", "Alibaba Cloud Int.",
-            "AtlasCloud", "SiliconFlow", "Venice",
+            "AtlasCloud", "SiliconFlow", "Venice", "Novita",
         } else "other"
-    if not choices or not isinstance(choices[0], Mapping):
+    if (
+        not isinstance(choices, list)
+        or not choices
+        or not isinstance(choices[0], Mapping)
+    ):
         return result
     choice = choices[0]
     finish = choice.get("finish_reason")
@@ -390,7 +400,7 @@ class TemporalVLMInspector:
             "outcome": "error",
         }
         with self._call_lock:
-            self.last_http_timing = {}
+            self.last_http_timing = {"http_request_attempted": False}
             self.last_inspection_timing = {}
             timing["inspector_lock_wait_seconds"] = time.monotonic() - started
             try:
@@ -440,6 +450,7 @@ class TemporalVLMInspector:
                 "IndependentVLMInspector": "full",
                 "EventJSONInspector": "events",
                 "CompactGroundingInspector": "compact",
+                "LeanGroundingInspector": "lean-v1",
             }.get(type(self).__name__)
             if kind is None:
                 raise ValueError("unsupported delegated inspector")
@@ -454,6 +465,7 @@ class TemporalVLMInspector:
                     "jpeg_quality": self._jpeg_quality,
                 },
                 deadline_seconds=self.settings.timeout_seconds,
+                event_policy=getattr(self, "event_policy", "main-baseline"),
             )
             encoded_image_bytes = sum(len(frame.jpeg_bytes) for frame in job.frames)
         else:
@@ -531,7 +543,7 @@ class TemporalVLMInspector:
                 # Recheck the small result against this exact source job. No
                 # remote completion may change requested labels or grounding.
             self._record_usage(response)
-            self.last_response_diagnostics = _response_shape(response)
+            self.last_response_diagnostics = _response_shape(response, self.model)
             parse_started = time.monotonic()
             try:
                 verdicts = self._parse(job, response)
@@ -576,7 +588,7 @@ class TemporalVLMInspector:
             # boundary; never attach the model's response or request content.
             error.validation_stage = validation_stage or "response"
             error.validation_reason = validation_reason or "invalid_response_shape"
-            error.response_diagnostics = _response_shape(response)
+            error.response_diagnostics = _response_shape(response, self.model)
             log_timing(
                 "vlm_response_validation",
                 stream_session_id=trace_id(job.stream_session_id),
@@ -587,6 +599,7 @@ class TemporalVLMInspector:
                 parser_kind={
                     "EventJSONInspector": "events",
                     "CompactGroundingInspector": "compact",
+                    "LeanGroundingInspector": "lean-v1",
                     "IndependentVLMInspector": "full",
                     "TemporalVLMInspector": "temporal",
                 }.get(type(self).__name__, "other"),
@@ -603,6 +616,7 @@ class TemporalVLMInspector:
         dispatch_started = upload_completed = None
         timing.update(
             outcome="error",
+            http_request_attempted=False,
             transport_trace_observed=False,
             response_read_seconds=None,
             response_chunks=0,
@@ -692,6 +706,9 @@ class TemporalVLMInspector:
             timing["request_bytes"] = len(request.content)
             timing["request_build_seconds"] = time.monotonic() - started
             dispatch_started = time.monotonic()
+            # A client transport attempt, including connection failures/timeouts;
+            # neither payload construction nor server receipt is implied.
+            timing["http_request_attempted"] = True
             if self.settings.provider == "local":
                 response = await self._http.send(
                     request, stream=True, auth=None, follow_redirects=False,

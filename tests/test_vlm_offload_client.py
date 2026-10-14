@@ -16,6 +16,7 @@ from goodvision_harness.vlm_compact_model import (
     EventJSONInspector,
 )
 from goodvision_harness.vlm_independent_model import IndependentVLMInspector
+from goodvision_harness.vlm_lean_grounding import LeanGroundingInspector
 
 
 @pytest.mark.parametrize(
@@ -39,6 +40,10 @@ from goodvision_harness.vlm_independent_model import IndependentVLMInspector
         ),
         (EventJSONInspector, "events", {"smoking": False}),
         (CompactGroundingInspector, "compact", {"no_events": 0.9}),
+        (LeanGroundingInspector, "lean-v1", {
+            "v": 1, "s": [],
+            "e": {"smoking": [{"p": [], "d": False, "c": 0.9}]},
+        }),
     ],
 )
 def test_all_lanes_send_originals_without_local_image_preparation(

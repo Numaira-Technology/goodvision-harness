@@ -163,7 +163,9 @@ def test_learned_prepare_overlaps_prefix_without_new_arrival(
         result = append(*args, **kwargs)
         if calls == 4:
             busy.set()
-            assert release.wait(3)
+            # The test owns this release; its guard must outlast both bounded
+            # preparation/state waits below, including journal I/O.
+            assert release.wait(10)
         elif calls < 4:
             time.sleep(0.35)
         return result
@@ -185,7 +187,11 @@ def test_learned_prepare_overlaps_prefix_without_new_arrival(
         assert len(coordinator._append_durations) == 3
         submit(coordinator, frames(3, 1))
         assert busy.wait(2)
-        submit(coordinator, frames(4, prefix_frames))
+        # Enqueue the intended prefix atomically. Otherwise the preparation
+        # worker may validly select frame 1 while frames 2/3 are still being
+        # journaled, so prepared_frames can never equal the asserted prefix.
+        with coordinator._condition:
+            submit(coordinator, frames(4, prefix_frames))
         # Real journal I/O and the learned preparation lead can consume the
         # predicted delay before submit returns, especially on shared CI hosts.
         # The deterministic forecast test below checks that positive delays

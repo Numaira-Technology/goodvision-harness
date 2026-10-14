@@ -535,7 +535,7 @@ def test_envelope_failures_have_safe_diagnostics_and_preserve_error_code(
     except ValueError:
         decoded_response = None
     assert error.value.response_diagnostics == scene_model._response_shape(
-        decoded_response
+        decoded_response, inspector.model
     )
     assert "SECRET" not in str(error.value.response_diagnostics)
     assert logs[0]["validation_stage"] == stage
@@ -1008,6 +1008,7 @@ def test_jpeg_quality_and_exact_request_byte_counts_are_safe(
         if part["type"] == "image_url"
     ]
     assert record["request_bytes"] == len(request.content)
+    assert record["http_request_attempted"] is True
     assert record["encoded_image_bytes"] == sum(map(len, images))
     assert record["request_bytes"] > record["encoded_image_bytes"]
     assert record["frame_count"] == len(images) == 2
@@ -1067,6 +1068,7 @@ def test_http_trace_records_body_headers_and_incomplete_upload_safely(
         assert inspector.inspect(_job())[0].detected is True
     (record,) = [fields for name, fields in logs if name == "vlm_http_timing"]
     assert record["request_bytes"] == len(seen[0].content)
+    assert record["http_request_attempted"] is True
     assert record["send_request_body_seconds"] == 0.25
     assert record["request_body_completed"] is not failure
     assert record["transport_trace_observed"] is True
@@ -1075,6 +1077,23 @@ def test_http_trace_records_body_headers_and_incomplete_upload_safely(
         assert record["http_status"] == 200
     assert record["outcome"] == ("error" if failure else "completed")
     assert "SECRET" not in repr(logs)
+
+
+def test_failure_before_send_does_not_reuse_previous_http_attempt(
+    make_inspector, monkeypatch
+):
+    inspector, seen, _ = make_inspector()
+    inspector.inspect(_job())
+    assert inspector.last_http_timing["http_request_attempted"] is True
+
+    def fail_build(*args, **kwargs):
+        raise ValueError("private payload cannot be built")
+
+    monkeypatch.setattr(inspector._http, "build_request", fail_build)
+    with pytest.raises(ModelAPIError):
+        inspector.inspect(_job())
+    assert len(seen) == 1
+    assert inspector.last_http_timing["http_request_attempted"] is False
 
 
 @pytest.mark.parametrize("content,wrapper,reason", [
