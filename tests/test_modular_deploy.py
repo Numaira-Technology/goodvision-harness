@@ -74,13 +74,16 @@ class ModularLauncherTests(unittest.TestCase):
             launcher.main_environment({}, args)["INFERENCE_SERVER_MODEL"], "Qwen3-VL"
         )
 
-    def test_main_starts_n_cpu_runtimes_without_gpu_detection_or_model_validation(self):
+    def test_main_starts_only_gateway_for_remote_gpu(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = io.StringIO()
             with (
                 patch.object(launcher, "ROOT", Path(temporary)),
                 patch.dict(
-                    os.environ, {"INFERENCE_API_KEY": "cloud-secret"}, clear=True
+                    os.environ, {
+                        "INFERENCE_API_KEY": "cloud-secret",
+                        "HARNESS_RELAY_KEY": "gateway-test-auth-key-0123456789abcdef",
+                    }, clear=True
                 ),
                 patch.object(launcher.local, "detect_nvidia_devices") as detect,
                 patch.object(launcher.local, "validate_weights") as weights,
@@ -96,6 +99,8 @@ class ModularLauncherTests(unittest.TestCase):
                         "16",
                         "--tracking-server",
                         "http://sam-host:8092",
+                        "--analysis-server",
+                        "http://sam-host:8080",
                     ]
                 )
             self.assertEqual(code, 0)
@@ -104,6 +109,7 @@ class ModularLauncherTests(unittest.TestCase):
             sam.assert_not_called()
             plan = json.loads(output.getvalue())
             self.assertNotIn("cloud-secret", output.getvalue())
+            self.assertNotIn("gateway-test-auth-key-0123456789abcdef", output.getvalue())
             self.assertEqual(plan["devices"], [])
             self.assertEqual(plan["environment"]["TRACKING_EXECUTION_MODE"], "server")
             self.assertEqual(plan["environment"]["INFERENCE_EXECUTION_MODE"], "cloud")
@@ -112,12 +118,151 @@ class ModularLauncherTests(unittest.TestCase):
             self.assertEqual(
                 run.call_args.kwargs["env"]["INFERENCE_API_KEY"], "cloud-secret"
             )
-            self.assertEqual(plan["command"][-1], "harness-16")
+            self.assertEqual(plan["command"][-1], "harness")
+            self.assertEqual(plan["environment"]["HARNESS_ANALYSIS_URL"], "http://sam-host:8080")
+            self.assertEqual(plan["analysis_location"], "gpu_host")
+            from goodvision_harness.whep_process import DEFAULT_FRAME_CAPACITY
+
+            budget = plan["environment"]["HARNESS_GATEWAY_SHM_SIZE"]
+            self.assertGreater(
+                int(budget.removesuffix("m")) * 1024**2,
+                2 * 16 * DEFAULT_FRAME_CAPACITY,
+            )
+            self.assertEqual(
+                run.call_args.kwargs["env"]["HARNESS_GATEWAY_SHM_SIZE"], budget
+            )
+            self.assertIsNone(plan["fleet_overlay"])
             self.assertNotIn("sam-server", plan["command"])
             self.assertNotIn("vlm-server", plan["command"])
-            self.assertTrue(
+            self.assertFalse(
                 (Path(temporary) / ".goodvision/main-server-compose.yaml").is_file()
             )
+
+    def test_server_only_tracking_keeps_local_analysis_without_an_analysis_server(self):
+        for protocol in ("legacy", "contour"):
+            with (
+                tempfile.TemporaryDirectory() as temporary,
+                self.subTest(protocol=protocol),
+            ):
+                root = Path(temporary)
+                output = io.StringIO()
+                with (
+                    patch.object(launcher, "ROOT", root),
+                    patch.dict(
+                        os.environ, {"TRACKING_SERVER_PROTOCOL": protocol}, clear=True
+                    ),
+                    patch.object(
+                        launcher.local, "read_local_settings", return_value={}
+                    ),
+                    patch.object(launcher.subprocess, "run") as run,
+                    contextlib.redirect_stdout(output),
+                ):
+                    run.return_value.returncode = 0
+                    code = launcher.main(
+                        ["main", "--streams", "2", "--tracking-server", "http://node:8093"]
+                    )
+                self.assertEqual(code, 0)
+                plan = json.loads(output.getvalue())
+                self.assertEqual(plan["analysis_location"], "this_host")
+                self.assertNotIn("HARNESS_ANALYSIS_URL", plan["environment"])
+                self.assertEqual(
+                    plan["environment"]["TRACKING_SERVER_PROTOCOL"], protocol
+                )
+                self.assertEqual(plan["environment"]["TRACKING_SERVER_URL"], "http://node:8093")
+                self.assertIn(str(root / "compose.main-server.yaml"), plan["command"])
+                self.assertEqual(plan["command"][-2:], ["harness", "harness-02"])
+                self.assertIn("camera-02-data:/data", plan["fleet_overlay"])
+                self.assertTrue(
+                    (root / ".goodvision/main-server-compose.yaml").is_file()
+                )
+                self.assertNotIn("HARNESS_ANALYSIS_URL", run.call_args.kwargs["env"])
+
+    def test_saved_contour_profile_survives_default_legacy_launcher_settings(self):
+        from goodvision_harness.deployment_settings import (
+            DeploymentSettings,
+            DeploymentSettingsStore,
+        )
+        from goodvision_harness.service_locations import ServiceLocations
+
+        with tempfile.TemporaryDirectory() as temporary:
+            store = DeploymentSettingsStore(
+                Path(temporary) / "deployment-settings.json"
+            )
+            store.save(DeploymentSettings(
+                "", False, False, tracking_mode="server",
+                tracking_server_url="http://node:8093", tracking_server_capacity=2,
+                tracking_server_protocol="contour",
+            ))
+            output = io.StringIO()
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(launcher.local, "read_local_settings", return_value={}),
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(launcher.main([
+                    "main", "--streams", "2", "--tracking-server", "http://node:8093",
+                    "--dry-run",
+                ]), 0)
+                plan = json.loads(output.getvalue())
+                self.assertEqual(plan["analysis_location"], "this_host")
+                self.assertEqual(
+                    plan["environment"]["TRACKING_SERVER_PROTOCOL"], "legacy"
+                )
+                self.assertIn("camera-01-data:/data", plan["fleet_overlay"])
+                with patch.dict(os.environ, plan["environment"], clear=True):
+                    locations = ServiceLocations.resolve(
+                        store.load(), local_inference=False, local_tracking=False,
+                    )
+                self.assertEqual(locations.tracking_server_protocol, "contour")
+                self.assertEqual(locations.tracking_server_url, "http://node:8093")
+
+    def test_blank_explicit_analysis_origin_is_rejected_before_launch(self):
+        for origin in ("", " ", "\t"):
+            with (
+                self.subTest(origin=repr(origin)),
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(
+                    launcher.local, "read_local_settings",
+                    return_value={"HARNESS_ANALYSIS_URL": "http://configured:8080"},
+                ),
+                patch.object(launcher.subprocess, "run") as run,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(launcher.main([
+                    "main", "--analysis-server", origin, "--dry-run",
+                ]), 2)
+                run.assert_not_called()
+
+    def test_contour_uses_gateway_when_analysis_server_is_explicit(self):
+        origin = "https://analysis.example:9443"
+        for source in ("argument", "environment", "env-file"):
+            output = io.StringIO()
+            settings = {"TRACKING_SERVER_PROTOCOL": "contour"}
+            environment = {}
+            argv = ["main", "--streams", "2", "--tracking-server", "http://node:8093"]
+            if source == "argument":
+                argv.extend(["--analysis-server", origin])
+            elif source == "environment":
+                environment["HARNESS_ANALYSIS_URL"] = origin
+            else:
+                settings["HARNESS_ANALYSIS_URL"] = origin
+            with (
+                self.subTest(source=source),
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(
+                    launcher.local, "read_local_settings", return_value=settings
+                ),
+                contextlib.redirect_stdout(output),
+            ):
+                self.assertEqual(launcher.main([*argv, "--dry-run"]), 0)
+            plan = json.loads(output.getvalue())
+            self.assertEqual(plan["analysis_location"], "gpu_host")
+            self.assertEqual(plan["environment"]["HARNESS_ANALYSIS_URL"], origin)
+            self.assertEqual(plan["environment"]["TRACKING_SERVER_PROTOCOL"], "contour")
+            self.assertIn(str(ROOT / "compose.analysis-gateway.yaml"), plan["command"])
+            self.assertEqual(plan["command"][-1], "harness")
+            self.assertIsNone(plan["fleet_overlay"])
 
     def test_dry_run_does_not_write_or_call_processes(self):
         for argv in (

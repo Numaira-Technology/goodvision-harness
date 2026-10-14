@@ -54,7 +54,7 @@ def wait_for(predicate):
         threading.Event().wait(0.005)
 
 
-def runtime(tmp_path, monkeypatch, *, gate=None):
+def runtime(tmp_path, monkeypatch, *, gate=None, gate_entered=None):
     loaded, calls, finished = [], [], []
 
     class Model:
@@ -69,6 +69,8 @@ def runtime(tmp_path, monkeypatch, *, gate=None):
             calls.append(index)
             try:
                 if gate is not None and index == 0:
+                    if gate_entered is not None:
+                        gate_entered.set()
                     assert gate.wait(8), "test must release first observation"
                 finished.append(index)
                 return [
@@ -97,26 +99,30 @@ def test_parallel_inference_commits_identity_and_facts_in_order(
     tmp_path,
     monkeypatch,
 ):
-    gate = threading.Event()
-    engine, loaded, calls, finished = runtime(tmp_path, monkeypatch, gate=gate)
+    gate, gate_entered = threading.Event(), threading.Event()
+    engine, loaded, calls, finished = runtime(
+        tmp_path, monkeypatch, gate=gate, gate_entered=gate_entered,
+    )
     face = FaceRecognitionSession(
         engine, observation_store_path=tmp_path / "facts.db.sqlite"
     )
     order = []
     try:
-        futures = [
-            face.submit_window(
+        def submit_observation(index):
+            return face.submit_window(
                 window(index),
-                on_admitted=lambda future, index=index: future.add_done_callback(
+                on_admitted=lambda future: future.add_done_callback(
                     lambda done: order.append(done.result().window.index),
                 ),
             )
-            for index in range(16)
-        ]
-        # Submission order does not guarantee inference entry order. Wait for
-        # both the blocked first call and the completed second call before
-        # checking that they required separate model instances.
-        wait_for(lambda: 0 in calls and 1 in finished)
+
+        futures = [submit_observation(0)]
+        # Own the first model slot before admitting other sources. A later
+        # source can otherwise finish and return the same slot before source 0
+        # enters, so two recorded calls alone do not prove parallel inference.
+        assert gate_entered.wait(8), "first observation did not enter its model"
+        futures.extend(submit_observation(index) for index in range(1, 16))
+        wait_for(lambda: 1 in finished)
         assert not futures[0].done() and not futures[1].done()
         assert not futures[0].cancel()
         assert len(loaded) == 2

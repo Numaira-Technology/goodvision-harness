@@ -2,12 +2,19 @@
 # docker compose -f compose.yaml -f compose.sam31-remote.yaml up --build
 services:
   harness:
+    build:
+      target: analysis-gateway
     image: goodvision-harness:sam-remote
     platform: linux/amd64
     depends_on:
       sam-remote:
         condition: service_started
     environment:
+      HARNESS_RELAY_KEY: "${HARNESS_RELAY_KEY:-}"
+      HARNESS_RELAY_KEY_FILE: /relay-auth/key
+      HARNESS_ANALYSIS_URL: http://sam-remote:8094
+      HARNESS_VIDEO_PULL_LOCATION: "${HARNESS_VIDEO_PULL_LOCATION:-local}"
+      HARNESS_GATEWAY_SETTINGS_PATH: /data/gateway-settings.json
       SCENE_ENGINE_MODE: active
       PERSON_TRACKING_ENABLED: "true"
       RICH_LABEL_ENABLED: "true"
@@ -34,6 +41,9 @@ services:
       # Use the source deployment's selected event-model provider.
       HARNESS_INFERENCE_PROFILE: ""
 
+    volumes:
+      - relay-auth-data:/relay-auth:ro
+
   sam-remote:
     build:
       context: .
@@ -43,6 +53,10 @@ services:
     # Starting the controller is free; UI Start explicitly begins a rental.
     restart: "no"
     environment:
+      SAM_ANALYSIS_ENABLED: "true"
+      HARNESS_RELAY_KEY: "${HARNESS_RELAY_KEY:-}"
+      HARNESS_RELAY_KEY_FILE: /relay-auth/key
+      SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND: "${SAM_ANALYSIS_BACKUP_BYTES_PER_SECOND:-1048576}"
       VAST_API_KEY: "${VAST_API_KEY:?Set your Vast team API key in .env}"
       HF_TOKEN: "${HF_TOKEN:?Set your approved SAM Hugging Face token in .env}"
       SAM_SSH_KEY: /run/secrets/sam_ssh_key
@@ -50,8 +64,51 @@ services:
       SAM_GPU_COUNT: "${SAM_GPU_COUNT:-1}"
       SAM31_LIVE_CAMERAS: "${HARNESS_FLEET_CAPACITY:-1}"
       SAM_DISK_GB: "${SAM_DISK_GB:-50}"
+      HARNESS_DRY_RUN: "${HARNESS_DRY_RUN:-false}"
+      HARNESS_STREAM_URL: "${HARNESS_STREAM_URL:-}"
+      RTSP_URL: "${RTSP_URL:-}"
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: "${VIDEO_CAPTURE_OPTIONS-${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}}"
+      INFERENCE_PROVIDER: "${INFERENCE_PROVIDER:-}"
+      INFERENCE_MODEL: "${INFERENCE_MODEL:-}"
+      INFERENCE_ENDPOINT: "${INFERENCE_ENDPOINT:-}"
+      INFERENCE_API_KEY: "${INFERENCE_API_KEY:-}"
+      # Preserve the main application's selected server route after relocation.
+      INFERENCE_EXECUTION_MODE: "${INFERENCE_EXECUTION_MODE:-cloud}"
+      INFERENCE_SERVER_URL: "${INFERENCE_SERVER_URL:-}"
+      INFERENCE_SERVER_MODEL: "${INFERENCE_SERVER_MODEL:-local-vision}"
+      INFERENCE_SERVER_PROTOCOL: "${INFERENCE_SERVER_PROTOCOL:-compatible}"
+      LOCAL_INFERENCE_API_KEY: "${LOCAL_INFERENCE_API_KEY:-}"
+      LOCAL_INFERENCE_MAX_TOKENS: "${LOCAL_INFERENCE_MAX_TOKENS:-1600}"
+      AICLUB_API_KEY: "${AICLUB_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
+      RESULT_WEBHOOK_URL: "${RESULT_WEBHOOK_URL:-}"
+      HARNESS_WEBHOOK_SECRET: "${HARNESS_WEBHOOK_SECRET:-}"
+      LOCAL_TRACKING_FPS: "${LOCAL_TRACKING_FPS:-1.1}"
+      # Import operator-installed face profiles without changing download policy.
+      FACE_MODEL_ROOT: /legacy/face-models
+      FACE_SAMPLE_FPS: "${FACE_SAMPLE_FPS:-1.25}"
+      FACE_INFERENCE_INSTANCES: "${FACE_INFERENCE_INSTANCES:-1}"
+      FACE_INFERENCE_THREADS: "${FACE_INFERENCE_THREADS:-2}"
+      SCENE_MAX_IN_FLIGHT: "${SCENE_MAX_IN_FLIGHT:-4}"
+      SCENE_OBSERVATION_FPS: "${SCENE_OBSERVATION_FPS:-1.25}"
+      SAM31_QUEUE_POLICY: "${SAM31_QUEUE_POLICY:-}"
+      SAM31_BATCH_FRAMES: "4"
+      SAM31_BATCH_SECONDS: "0.5"
+      SAM31_CLIENT_TIMEOUT_SECONDS: "75"
+      SAM31_TRANSPORT_MAX_SIDE: "${SAM31_TRANSPORT_MAX_SIDE:-512}"
+      SAM31_TRANSPORT_CRF: "${SAM31_TRANSPORT_CRF:-23}"
+      SAM31_REALTIME_APPEND_FRAMES: "${SAM31_REALTIME_APPEND_FRAMES:-}"
+      SAM31_REALTIME_PENDING_FRAMES: "${SAM31_REALTIME_PENDING_FRAMES:-}"
+      SAM31_REALTIME_MAX_AGE_SECONDS: "${SAM31_REALTIME_MAX_AGE_SECONDS:-}"
+      SAM31_RESULT_DEADLINE_SECONDS: "${SAM31_RESULT_DEADLINE_SECONDS:-}"
     volumes:
       - cloud-gpu-settings:/data/cloud-gpu
+      - relay-auth-data:/relay-auth
+      - face-data:/legacy/default:ro
+      - face-models:/legacy/face-models:ro
+      - ./config.yaml:/app/config.yaml:ro
+      - ./memory:/app/memory:ro
       - type: bind
         source: "${SAM_SSH_KEY:?Set the absolute SSH private-key path in .env}"
         target: /run/secrets/sam_ssh_key
@@ -61,8 +118,10 @@ services:
     # The tunnel listens on 8092 inside this network, with no published port.
     read_only: true
     tmpfs:
-      - /tmp:size=16m
-    stop_grace_period: 90s
+      - /tmp:size=128m
+    # Cleanup waits for the sized snapshot. Increase this for slower links or
+    # larger retention; UI release + polling completes before Compose shutdown.
+    stop_grace_period: "${SAM_CONTROL_STOP_GRACE_PERIOD:-24h}"
     security_opt:
       - no-new-privileges:true
     logging:
@@ -72,6 +131,7 @@ services:
         max-file: "3"
 
 volumes:
+  relay-auth-data: {}
   cloud-gpu-settings: {}
   face-data:
     name: "${HARNESS_DATA_VOLUME:-${COMPOSE_PROJECT_NAME:-goodvision-harness}_face-data}"

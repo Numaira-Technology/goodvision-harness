@@ -1,0 +1,28 @@
+# This host only forwards console, camera WebSocket and output traffic.
+name: goodvision-main
+services:
+  harness:
+    build:
+      context: .
+      target: analysis-gateway
+    image: goodvision-analysis-gateway:latest
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${HARNESS_BIND_ADDRESS:-127.0.0.1}:${HARNESS_PORT:-8080}:8080"
+    environment:
+      HARNESS_RELAY_KEY: "${HARNESS_RELAY_KEY:-}"
+      HARNESS_ANALYSIS_URL: "${HARNESS_ANALYSIS_URL:-}"
+      HARNESS_VIDEO_PULL_LOCATION: "${HARNESS_VIDEO_PULL_LOCATION:-local}"
+      HARNESS_GATEWAY_SETTINGS_PATH: /data/gateway-settings.json
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: "${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}"
+    volumes:
+      - gateway-data:/data
+    read_only: true
+    # Each local WHEP receiver owns a 32 MiB slot plus multiprocessing metadata.
+    # Launchers scale this reservation with --streams; allow reconnect overlap.
+    shm_size: "${HARNESS_GATEWAY_SHM_SIZE:-128m}"
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+volumes:
+  gateway-data: {}

@@ -1854,7 +1854,8 @@ class HarnessRuntime:
             # Auto-connect only provides a preview. Analysis always starts with
             # the explicit global control, including single-camera deployments.
             # Additional cameras connect through the primary fleet controller.
-            if self.autostart and stream_url and self._fleet_camera_index == 1:
+            if (self.autostart and stream_url and self._fleet_camera_index == 1
+                    and os.environ.get("HARNESS_MANAGED_ANALYSIS") != "true"):
                 self.connect_stream(stream_url)
                 return
             self._update_state(
@@ -2018,6 +2019,7 @@ class HarnessRuntime:
 
     def connect_stream(
         self, stream_url: str | None = None, *, camera_layout: str | None = None,
+        _adapter: Any | None = None,
     ) -> dict[str, Any]:
         """Decode for preview; no analysis session or model client is created."""
         with self._control_lock:
@@ -2037,6 +2039,7 @@ class HarnessRuntime:
                 url, output_fps=self._video_connection_fps(),
                 whep_headers=self.config.stream.whep_headers,
                 frame_crop="left_half" if layout == "stereo" else "none",
+                **({"adapter": _adapter} if _adapter is not None else {}),
             )
             self._video_connection = connection
             self._connection_camera_layout = layout
@@ -4679,6 +4682,10 @@ Protect deployment and enrollment controls using your deployment's access policy
 def create_app(
     runtime_factory: Callable[[], HarnessRuntime] | None = None,
 ) -> FastAPI:
+    if runtime_factory is None and os.environ.get("HARNESS_ANALYSIS_URL"):
+        from .analysis_gateway import create_app as gateway_app
+
+        return gateway_app()
     factory = runtime_factory or HarnessRuntime.from_environment
 
     @asynccontextmanager
@@ -5145,14 +5152,43 @@ def create_app(
     async def connect_video(request: Request) -> dict[str, Any]:
         require_coordinator(request)
         payload = await camera_payload(request)
-        if set(payload) - {"stream_url", "camera_layout"}:
+        if set(payload) - {"stream_url", "camera_layout", "relay"}:
             raise HTTPException(400, "unknown video connection setting")
         if "stream_url" in payload and not isinstance(payload["stream_url"], str):
             raise HTTPException(400, "stream_url must be a string")
+        if "relay" in payload and type(payload["relay"]) is not bool:
+            raise HTTPException(400, "relay must be boolean")
+        if payload.get("relay"):
+            from .relay_auth import require_relay_auth
+            from .video_relay import RelayStreamAdapter
+
+            require_relay_auth(request.headers)
+            runtime = _runtime(request)
+            url = payload.get("stream_url") or runtime.configured_stream_url()
+            try:
+                adapter = RelayStreamAdapter(url)
+            except ValueError:
+                raise HTTPException(400, "invalid stream URL") from None
+            result = await camera_action(
+                runtime.connect_stream, url,
+                camera_layout=payload.get("camera_layout"), _adapter=adapter,
+            )
+            result["video_relay"] = {
+                "id": adapter.token, "stream_url": url,
+                "fps": runtime._video_connection_fps(),
+                "whep_headers": dict(runtime.config.stream.whep_headers),
+            }
+            return result
         return await camera_action(
             _runtime(request).connect_stream,
             payload.get("stream_url"), camera_layout=payload.get("camera_layout"),
         )
+
+    @application.websocket("/v1/video/relay/{token}")
+    async def video_relay_socket(socket: WebSocket, token: str):
+        from .video_relay import receive_relay
+
+        await receive_relay(socket, application.state.runtime, token)
 
     @application.post("/v1/video/disconnect")
     async def disconnect_video(request: Request) -> dict[str, Any]:

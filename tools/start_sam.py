@@ -19,12 +19,18 @@ from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
 if __package__:
+    from . import cloud_analysis
     from .cloud_gpu_settings import CloudGPUSettings
+    from .relay_bootstrap import controller_environment
 else:
     try:
+        import cloud_analysis
         from cloud_gpu_settings import CloudGPUSettings
+        from relay_bootstrap import controller_environment
     except ModuleNotFoundError:
+        from tools import cloud_analysis
         from tools.cloud_gpu_settings import CloudGPUSettings
+        from tools.relay_bootstrap import controller_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = "/workspace/goodvision-sam"
@@ -422,6 +428,8 @@ def release_instance(vast, instance_id: int) -> None:
 def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
                  sam_port: int, settings: CloudGPUSettings | None = None,
                  hybrid_port: int | None = None):
+    if hybrid_port is not None and cloud_analysis.enabled():
+        raise RuntimeError("Hybrid analysis and the analysis gateway cannot run together.")
     settings = settings or CloudGPUSettings()
     print("Waiting for SSH...", flush=True)
     host, ssh_port = wait_for_ssh(vast, instance_id, options)
@@ -455,7 +463,16 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
         f"{REMOTE}/env/bin/python -m uvicorn cloud_pool:app --host 127.0.0.1 --port 8092 --workers 1"
     )
     extra_forwards = []
-    if hybrid_port is not None:
+    scp = ["scp", *options, "-P", str(ssh_port)]
+    if cloud_analysis.enabled():
+        cloud_analysis.prepare(ROOT, REMOTE, ssh, scp, run)
+        worker_command = cloud_analysis.worker_command(REMOTE, environment, worker_command)
+        extra_forwards = [
+            "-L", "0.0.0.0:8094:127.0.0.1:10000",
+            "-L", "127.0.0.1:8095:127.0.0.1:8095",
+            "-R", "127.0.0.1:8096:127.0.0.1:8093",
+        ]
+    elif hybrid_port is not None:
         if __package__:
             from . import hybrid_cloud
         else:
@@ -467,12 +484,15 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
         extra_forwards = hybrid_cloud.forwards(settings.streams, hybrid_port)
     print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
     sam_bind = "127.0.0.1" if hybrid_port is not None else "0.0.0.0"
-    return subprocess.Popen([
+    process = subprocess.Popen([
         *ssh[:-1], "-o", "ExitOnForwardFailure=yes",
         # Direct hybrid mode stays private; Compose needs its internal bind.
         "-L", f"{sam_bind}:{sam_port}:127.0.0.1:8092",
         *extra_forwards, ssh[-1], worker_command,
     ], stdin=subprocess.DEVNULL, start_new_session=True)
+    if cloud_analysis.enabled():
+        process.analysis_connection = (ssh, scp)
+    return process
 
 
 def main() -> int:
@@ -506,6 +526,8 @@ def main() -> int:
     label = f"goodvision-sam-{uuid4().hex[:12]}"
     cleanup_confirmed = True
     failure = None
+    analysis_ready = False
+    backup_failed = False
 
     def report(state, *, clean=False):
         if args.status_file is not None:
@@ -531,6 +553,9 @@ def main() -> int:
                 "Missing controller dependencies; rebuild the sam-remote image with Docker Compose."
             ) from error
         load_dotenv(ROOT / ".env", override=False)
+        os.environ.update(controller_environment(
+            os.environ, cloud_analysis.state_directory(),
+        ))
         defaults = CloudGPUSettings.from_environment().public()
         settings = CloudGPUSettings(**{name: getattr(args, name) if getattr(args, name) is not None
                                       else value for name, value in defaults.items()})
@@ -546,6 +571,8 @@ def main() -> int:
         if args.disk_gb <= 0 or not 1 <= args.sam_port <= 65535:
             raise RuntimeError("Disk size must be positive and the forwarding port must be within 1..65535.")
         if args.hybrid_analysis:
+            if cloud_analysis.enabled():
+                raise RuntimeError("Hybrid analysis and the analysis gateway cannot run together.")
             if __package__:
                 from . import hybrid_cloud
             else:
@@ -570,6 +597,8 @@ def main() -> int:
             ):
                 raise RuntimeError("Resume requires an existing running GoodVision SAM instance.")
             instance_id = args.resume_instance_id
+            # A resumed host can hold the only copy of data before readiness.
+            analysis_ready = cloud_analysis.enabled()
             cleanup_confirmed = False
             report("starting")
             print(f"Recovering existing instance: {instance_id}; no new rental.", flush=True)
@@ -616,6 +645,8 @@ def main() -> int:
                     **({"hybrid_port": args.analysis_port} if args.hybrid_analysis else {}),
                 )
                 wait_for_worker(worker, args.sam_port)
+                if cloud_analysis.enabled():
+                    cloud_analysis.wait_ready(worker)
                 if args.hybrid_analysis:
                     hybrid_cloud.wait_ready(worker, settings.streams, args.analysis_port)
             except Exception as error:
@@ -637,6 +668,7 @@ def main() -> int:
                 label = f"goodvision-sam-{uuid4().hex[:12]}"
                 continue
             break
+        analysis_ready = cloud_analysis.enabled()
         report("ready")
         print(
             "SAM is ready: sam_live passed its GPU health check.\n"
@@ -662,6 +694,17 @@ def main() -> int:
         if vast is not None:
             # Fit lookup + destruction inside Compose's 90-second shutdown grace.
             vast.client.timeout = (5, 20)
+        if analysis_ready:
+            report("stopping")
+            try:
+                cloud_analysis.backup(worker, REMOTE, run)
+            except Exception as error:
+                backup_failed = True
+                failure = (
+                    "Analysis backup failed; instance retained for data recovery. "
+                    + creation_diagnostic({"message": str(error)})
+                )
+                print(failure, file=sys.stderr, flush=True)
         try:
             stop_process(worker)
         except OSError:
@@ -684,7 +727,7 @@ def main() -> int:
                     "An instance may appear after this lookup. Destroy that instance in Vast Instances.",
                     file=sys.stderr, flush=True,
                 )
-        if instance_id is not None:
+        if instance_id is not None and not backup_failed:
             try:
                 release_instance(vast, instance_id)
                 cleanup_confirmed = True

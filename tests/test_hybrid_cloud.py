@@ -216,3 +216,16 @@ def test_hybrid_lanes_preserve_effective_scene_tuning_and_force_cpu_face(monkeyp
     assert config.runtime.scene_max_tokens == 2048
     assert config.runtime.scene_jpeg_quality == 75
     assert config.runtime.scene_timeout_seconds == 12
+
+
+def test_hybrid_and_gateway_modes_rejected_before_remote_setup(monkeypatch):
+    from tools import start_sam
+
+    monkeypatch.setenv("SAM_ANALYSIS_ENABLED", "true")
+    connect = Mock()
+    monkeypatch.setattr(start_sam, "wait_for_ssh", connect)
+    with pytest.raises(RuntimeError, match="cannot run together"):
+        start_sam.start_worker(
+            Mock(), 1, [], hf_token="unused", sam_port=8092, hybrid_port=8280,
+        )
+    connect.assert_not_called()

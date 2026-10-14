@@ -40,10 +40,13 @@
       const unavailable=!data?.available;
       for(const id of ["name","count","disk","script","save"])this.ui[id].disabled=this.busy||unavailable||active;
       this.ui.start.disabled=this.busy||unavailable||active||data?.state==="cleanup_required";
-      this.ui.stop.disabled=this.busy||unavailable||!active;
+      this.ui.stop.disabled=this.busy||unavailable||!active||data?.state==="stopping";
     }
     async request(method,path="",payload){
-      const controller=new this.AbortController(),timer=this.setTimeout(()=>controller.abort(),75000);
+      // Current controllers acknowledge background release immediately. Keep
+      // the longer stop request budget for older synchronous controllers.
+      const timeout=path==="/stop"?480000:75000;
+      const controller=new this.AbortController(),timer=this.setTimeout(()=>controller.abort(),timeout);
       try{
         const response=await this.fetch("/v1/cloud-gpu"+path,{method,cache:"no-store",signal:controller.signal,
           headers:{"Content-Type":"application/json"},...(payload===undefined?{}:{body:JSON.stringify(payload)})});
@@ -58,7 +61,7 @@
         else{
           if(!this.dirty)this.fill({...this.data.settings,streams:this.data.capacity});
           const messages={stopped:"云 GPU 未运行。保存配置后，点击启动租用。",starting:"正在租用并准备模型，首次准备可能需要数十分钟。",
-            ready:"云 GPU 已就绪，可开始全部视频分析。",stopping:"正在释放云 GPU。",degraded:"云 GPU 状态异常，当前租用仍在运行。",
+            ready:"云 GPU 已就绪，可开始全部视频分析。",stopping:"正在停止分析并备份数据，完成后释放云 GPU。",degraded:"云 GPU 状态异常，当前租用仍在运行。",
             cleanup_required:"上次租用未确认释放，请检查云平台实例。处理前禁止再次租用。",error:"云 GPU 启动失败，未保留运行中的实例。"};
           this.say((messages[this.data.state]||"状态待确认")+" 已部署 "+this.data.capacity+" 路视频。"+
             (this.data.error?" "+this.data.error:"")+ (this.data.state==="cleanup_required"?" 实例："+(this.data.instance_id||this.data.label||"请查看控制器日志"):""),["cleanup_required","error","degraded"].includes(this.data.state));

@@ -9,6 +9,7 @@ import io
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -349,32 +350,70 @@ def test_proxy_without_token_budget_sets_bounded_default():
 
 def test_shorter_declared_deadline_keeps_slot_until_cpu_finishes(monkeypatch):
     entered, release = threading.Event(), threading.Event()
+    expired = threading.Event()
     original = scene_inspection._read_image
+    original_await = vlm_server._await_work
+    deadlines = []
+
+    class DeadlineClock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    clock = DeadlineClock()
 
     def blocked(jpeg):
         entered.set()
-        release.wait(1)
+        assert release.wait(5), "test did not release CPU preparation"
         return original(jpeg)
 
+    async def await_cpu_deadline(future, disconnect, deadline):
+        deadlines.append(deadline)
+        if deadline == 0.03:
+            # This case starts the short deadline after CPU preparation is
+            # known to be blocked, rather than racing this host's dispatch.
+            assert await asyncio.to_thread(expired.wait, 3)
+        return await original_await(future, disconnect, deadline)
+
+    monkeypatch.setattr(vlm_server, "time", clock)
+    monkeypatch.setattr(vlm_server, "_await_work", await_cpu_deadline)
     monkeypatch.setattr(scene_inspection, "_read_image", blocked)
     app, seen = _app(lambda _: httpx.Response(200, json=_reply()), max_concurrency=1)
-    with TestClient(app) as client:
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as requests:
         try:
-            started = time.monotonic()
-            result = client.post("/v1/inspections", json=_wire(deadline=0.03))
-            assert entered.is_set()
+            pending = requests.submit(
+                client.post,
+                "/v1/inspections",
+                json=_wire(deadline=0.03),
+            )
+            assert entered.wait(3), "CPU preparation did not start"
+            assert app.state.admission.active == 1
+            assert not pending.done()
+            # The real deadline waiter sees the actual declared 30 ms limit
+            # expire while the CPU thread is still owned by this request.
+            clock.now = 0.04
+            expired.set()
+            result = pending.result(timeout=3)
             assert result.status_code == 504
-            assert time.monotonic() - started < 0.3
+            assert result.json()["code"] == "timeout"
+            assert deadlines == [0.03]
+            assert not release.is_set()
+            assert app.state.admission.active == 1
             assert client.post("/v1/inspections", json=_wire()).status_code == 429
+            assert app.state.admission.active == 1
+            assert not seen
         finally:
+            expired.set()
             release.set()
-        for _ in range(100):
-            if app.state.admission.active == 0:
-                break
+        until = time.monotonic() + 3
+        while app.state.admission.active:
+            assert time.monotonic() < until, "CPU completion did not release its slot"
             time.sleep(0.005)
         assert app.state.admission.active == 0
         assert not seen
         assert client.post("/v1/inspections", json=_wire()).status_code == 200
+        assert len(seen) == 1
 
 
 @pytest.mark.parametrize("path", ["/v1/inspections", "/v1/chat/completions"])

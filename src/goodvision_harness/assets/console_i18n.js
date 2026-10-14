@@ -18,6 +18,7 @@
   "事件与回放": "Events & playback",
   "输出与集成": "Outputs & integrations",
   "部署与设置": "Deployment & settings",
+  "摄像头拉流位置": "Camera pull location",
   "现场视觉工作空间": "Video workspace",
   "视频 · 分析 · 输出": "Video · Analysis · Outputs",
   "工作空间": "Workspace",

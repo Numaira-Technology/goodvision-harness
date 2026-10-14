@@ -19,8 +19,10 @@ from fastapi import FastAPI, HTTPException, Request
 
 if __package__:
     from .cloud_gpu_settings import CloudGPUSettings
+    from .relay_bootstrap import controller_environment
 else:
     from cloud_gpu_settings import CloudGPUSettings
+    from relay_bootstrap import controller_environment
 
 
 class CloudController:
@@ -30,8 +32,12 @@ class CloudController:
         self.config_path = directory / "rental.json"
         self.status_path = directory / "rental-state.json"
         self.process = None
+        self.release_process = None
+        self.release_task = None
+        self.release_error = None
         self.lock = asyncio.Lock()
-        self.directory.mkdir(parents=True, exist_ok=True)
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.child_environment = controller_environment(os.environ, self.directory)
 
     def settings(self):
         return (
@@ -54,9 +60,15 @@ class CloudController:
                 timeout=8,
             ) as response:
                 data = json.load(response)
-            return all(
+            ready = all(
                 data.get(key) is True for key in ("enabled", "ready", "gpu_ready")
             )
+            if ready and os.environ.get("SAM_ANALYSIS_ENABLED") == "true":
+                with build_opener(ProxyHandler({})).open(
+                    "http://127.0.0.1:8095/health", timeout=8,
+                ) as response:
+                    ready = json.load(response).get("ready") is True
+            return ready
         except (URLError, OSError, ValueError):
             return False
 
@@ -67,6 +79,15 @@ class CloudController:
             record["state"] = "cleanup_required"
         elif live and record["state"] == "stopped":
             record["state"] = "stopping"
+        # The child may still report ready immediately after SIGTERM. Block
+        # analysis synchronously while the owned release continues in background.
+        if self.release_task is not None and not self.release_task.done():
+            record["state"] = "stopping"
+        if self.release_error:
+            record.update(
+                state="cleanup_required", cleanup_confirmed=False,
+                error=self.release_error,
+            )
         config = self.settings()
         return {
             "available": True,
@@ -77,7 +98,10 @@ class CloudController:
         }
 
     def save(self, payload):
-        if self.process is not None and self.process.poll() is None:
+        if (
+            (self.process is not None and self.process.poll() is None)
+            or (self.release_task is not None and not self.release_task.done())
+        ):
             raise HTTPException(409, "请先释放当前云 GPU，再修改租用配置")
         settings = CloudGPUSettings.from_payload(payload)
         if settings.streams != self.capacity:
@@ -92,8 +116,11 @@ class CloudController:
 
     def start(self):
         status = self.status()
-        if self.process is not None and self.process.poll() is None:
-            raise HTTPException(409, "云 GPU 已启动或正在启动")
+        if (
+            (self.process is not None and self.process.poll() is None)
+            or (self.release_task is not None and not self.release_task.done())
+        ):
+            raise HTTPException(409, "云 GPU 已启动、正在启动或正在释放")
         if status["state"] == "cleanup_required":
             raise HTTPException(
                 409,
@@ -118,6 +145,7 @@ class CloudController:
                     str(self.status_path),
                 ],
                 stdin=subprocess.DEVNULL,
+                env=self.child_environment,
             )
         except OSError:
             self.status_path.write_text(
@@ -125,19 +153,36 @@ class CloudController:
                 encoding="utf-8",
             )
             raise HTTPException(503, "无法启动云 GPU 租用进程") from None
+        self.release_process = self.release_task = self.release_error = None
         return self.status()
 
+    async def wait_release(self, process):
+        try:
+            # Backup operations have byte-aware budgets. No HTTP request or
+            # fixed fleet-duration timeout can abandon this owned cleanup.
+            await asyncio.to_thread(process.wait)
+        except Exception:
+            self.release_error = "无法确认云 GPU 释放，请检查实例和控制器日志"
+
     async def stop(self):
+        if self.release_process is self.process and self.release_task is not None:
+            return self.status()
         if self.process is not None and self.process.poll() is None:
-            # start_sam owns the SSH process and paid-instance cleanup.
-            self.process.send_signal(signal.SIGTERM)
+            # One signal per rental; repeated stop and lifespan shutdown reuse
+            # this task even if a browser disconnects during the request.
+            self.release_process = self.process
+            self.release_error = None
             try:
-                await asyncio.to_thread(self.process.wait, timeout=65)
-            except subprocess.TimeoutExpired:
-                raise HTTPException(
-                    503, "云 GPU 正在释放，请稍后检查状态；不会启动新的租用"
-                ) from None
+                self.process.send_signal(signal.SIGTERM)
+            except ProcessLookupError:
+                pass  # A naturally exited child can still be reaped safely.
+            self.release_task = asyncio.create_task(self.wait_release(self.process))
         return self.status()
+
+    async def close(self):
+        await self.stop()
+        if self.release_task is not None:
+            await asyncio.shield(self.release_task)
 
 
 def create_app(directory=None, capacity=None):
@@ -149,15 +194,15 @@ def create_app(directory=None, capacity=None):
     @asynccontextmanager
     async def lifespan(app):
         yield
-        await manager.stop()
+        await manager.close()
 
     app = FastAPI(lifespan=lifespan)
     app.state.manager = manager
 
     @app.get("/settings")
-    async def status():
+    async def status(check_health: bool = True):
         state = manager.status()
-        if state["state"] == "ready" and not await asyncio.to_thread(
+        if check_health and state["state"] == "ready" and not await asyncio.to_thread(
             manager.pool_ready
         ):
             state.update(
@@ -198,4 +243,4 @@ def create_app(directory=None, capacity=None):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(create_app(), host="0.0.0.0", port=8093, timeout_graceful_shutdown=75)
+    uvicorn.run(create_app(), host="0.0.0.0", port=8093, timeout_graceful_shutdown=435)

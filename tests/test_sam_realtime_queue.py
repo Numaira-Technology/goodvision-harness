@@ -87,15 +87,27 @@ def test_pending_expires_without_another_arrival_while_request_stays_owned(
     tmp_path, monkeypatch, advance_age, queue_policy
 ):
     received = []
-    server, _, coordinator = setup_pipeline(
+    server, client, coordinator = setup_pipeline(
         tmp_path,
         received.append,
         queue_policy=queue_policy,
         realtime_max_age_seconds=30,
     )
     server.release.clear()
+    append_ready = threading.Event()
+    append = client.append
+
+    def observed_append(*args, **kwargs):
+        append_ready.set()
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(client, "append", observed_append)
     try:
         submit(coordinator, frames(1, 1))
+        # latest_only creates its WAL journal and admits the selected source on
+        # the preparation worker. Wait for those setup writes independently of
+        # the HTTP and expiry watchdogs this test actually exercises.
+        assert append_ready.wait(8), coordinator.stats()
         assert server.entered.wait(2)
         expiry_waiting = threading.Event()
         condition_wait = coordinator._condition.wait
