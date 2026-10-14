@@ -75,8 +75,21 @@ window.PreviewTracking = class {
       if(now-this.lastPaint>100) {this.paint(this.captureCanvas,held);if(!held.length)this.note.textContent="跟踪处理中 · 暂不显示旧框";}
       return;
     }
+    // Detector fetches are long (a GPU round trip under 12-stream load can take
+    // seconds). The browser allows only ~6 concurrent HTTP/1.1 connections per
+    // origin, so 12 lanes fetching at once would starve the evidence-frame image
+    // and video requests on the same server ("正在加载对应证据帧" never resolving).
+    // Cap how many detector fetches are in flight across all lanes, leaving
+    // connections for evidence/video; the server serializes on one GPU anyway,
+    // so this costs no box coverage. Non-detector tracking keeps its old pacing.
+    if(this.detectorMode) {
+      const cls = window.PreviewTracking;
+      if(cls.inflight === undefined) { cls.inflight = 0; cls.maxInflight = 4; }
+      if(cls.inflight >= cls.maxInflight) { this.stats.budgetSkipped=(this.stats.budgetSkipped||0)+1; return; }
+    }
     if(now-this.lastPaint>150) this.paint(this.captureCanvas,held);
     this.busy=true;this.stats.requests++;
+    if(this.detectorMode) window.PreviewTracking.inflight++;
     const generation=this.generation, epoch=this.epoch, started=performance.now();
     const snapshot=document.createElement("canvas");snapshot.width=320;snapshot.height=height;
     snapshot.getContext("2d").drawImage(this.captureCanvas,0,0);
@@ -114,6 +127,6 @@ window.PreviewTracking = class {
         if(this.playing && generation===this.generation && epoch===this.epoch && performance.now()-started<=250) this.paint(snapshot);
         this.note.textContent="跟踪暂不可用 · 不显示旧框";
       }
-    } finally {clearTimeout(timeout);this.busy=false;}
+    } finally {clearTimeout(timeout);this.busy=false;if(this.detectorMode)window.PreviewTracking.inflight--;}
   }
 };

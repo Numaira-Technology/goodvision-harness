@@ -62,13 +62,41 @@ class SimulatedInspector:
             if config.output_mode == "compact"
             else config.parameters["simulation_seconds"]
         )
+        # Demo-only: PREVIEW_DEMO_EVENTS makes the simulator declare an event
+        # "detected" on a staggered duty cycle so the monitor's event chips (and
+        # the YOLO preview boxes, which turn red on an observed event) light up
+        # without a real VLM. It is NOT model recognition and never affects a
+        # real (--real) run. Lanes stagger by source so they do not flip together.
+        self.demo_events = os.environ.get("PREVIEW_DEMO_EVENTS", "").strip().lower() not in {
+            "", "0", "false", "no", "off"
+        }
+        self.demo_offset = (
+            (hash(getattr(config, "source_id", "") or "") % 1000) / 1000.0 * 14.0
+        )
+
+    def _demo_observed_label(self, labels):
+        if not (self.demo_events and labels):
+            return None
+        period, window = 14.0, 5.0  # ~5s "detected" out of every ~14s
+        clock = time.monotonic() + self.demo_offset
+        if clock % period >= window:
+            return None
+        return labels[int(clock // period) % len(labels)]  # rotate which event fires
 
     def inspect(self, job):
         time.sleep(self.seconds)
-        # Complete schema, but explicitly not evidence of model recognition.
+        labels = list(job.request.event_labels)
+        observed = self._demo_observed_label(labels)
+        # Complete schema. Without PREVIEW_DEMO_EVENTS this is explicitly not
+        # evidence of model recognition (every verdict False), as before.
         return tuple(
-            IndependentVerdict(label, (), False, None, (), ("scene_only",))
-            for label in job.request.event_labels
+            IndependentVerdict(
+                label, (),
+                True if label == observed else False,
+                0.9 if label == observed else None,
+                (), ("scene_only",),
+            )
+            for label in labels
         )
 
     def close(self):
