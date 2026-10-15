@@ -361,3 +361,127 @@ def test_person_exiting_side_does_not_leave_a_background_track():
     assert kept > 5
     clipped = anchor(scene(0)[0], [(0, 0, 95, 120)], 3, "side-clipped")
     assert not tracker.advance(scene(0)[0], 3, anchor=clipped)["objects"]
+
+
+@pytest.mark.parametrize(
+    "evidence_size,preview_size",
+    [
+        ((405, 720), (404, 720)),  # 1080x1920: thumbnail vs even H.264 width.
+        ((720, 375), (720, 374)),  # 1920x1000: the height is rounded instead.
+        ((364, 720), (362, 720)),  # Near 1:2, rounding spans three tracker rows.
+        ((720, 191), (720, 190)),  # One row exceeds 1% for a wide landscape.
+    ],
+)
+def test_delayed_anchor_tolerates_proxy_dimension_rounding(evidence_size, preview_size):
+    texture = np.random.default_rng(23).integers(20, 235, (720, 720), np.uint8)
+    evidence = cv2.resize(texture, evidence_size, interpolation=cv2.INTER_AREA)
+    preview = cv2.resize(texture, preview_size, interpolation=cv2.INTER_AREA)
+    frame = preview_tracking.gray_frame(encoded(preview))
+    seed = {
+        "id": "rounded-proxy",
+        "time": 0,
+        "jpeg": encoded(evidence),
+        "objects": [
+            {
+                "label": "person",
+                "bbox": {"x1": 0.25, "y1": 0.2, "x2": 0.75, "y2": 0.8},
+            }
+        ],
+    }
+    tracker = PreviewTracker()
+    tracker.advance(frame, 0)
+    tracker.advance(frame, 1 / 15)
+    result = tracker.advance(frame, 2 / 15, anchor=seed)
+    assert result["status"] == "tracking"
+    assert len(result["objects"]) == 1
+    assert result["replayed_frames"] == 2
+    assert result["objects"][0]["bbox"] == pytest.approx(
+        seed["objects"][0]["bbox"], abs=0.005
+    )
+    assert tracker.advance(frame, 3 / 15, anchor=seed)["objects"]
+
+
+def test_anchor_with_incompatible_aspect_ratio_stays_hidden():
+    texture = np.random.default_rng(23).integers(20, 235, (240, 320), np.uint8)
+    seed = anchor(texture, [(80, 36, 240, 144)])
+    frame = cv2.resize(texture, (320, 180))
+    result = PreviewTracker().advance(frame, 0, anchor=seed)
+    assert result["objects"] == []
+    assert result["status"] == "lost"
+
+    tracker = PreviewTracker()
+    seed = anchor(*scene(0))
+    assert tracker.advance(scene(0)[0], 0, anchor=seed)["objects"]
+    result = tracker.advance(texture, 1 / 15, anchor=seed)
+    assert result["objects"] == []
+    assert result["reason"] == "source_discontinuity"
+
+
+@pytest.mark.skipif(
+    os.environ.get("VLM_MONITOR_BROWSER_TESTS") != "1",
+    reason="opt-in installed Chromium integration",
+)
+def test_portrait_source_tracks_through_real_thumbnail_and_browser_proxy(tmp_path):
+    import time
+    from fractions import Fraction
+
+    import av
+    from PIL import Image
+    from playwright.sync_api import sync_playwright
+
+    from tests.test_vlm_monitor import args, job, result
+    from tools.vlm_benchmark.monitor import LiveMonitor
+    from tools.vlm_multistream_benchmark import decode
+
+    image = np.full((320, 180), 32, np.uint8)
+    image[60:260, 40:140] = np.random.default_rng(23).integers(
+        40, 235, (200, 100), np.uint8
+    )
+    source = tmp_path / "portrait.mp4"
+    with av.open(str(source), "w") as writer:
+        stream = writer.add_stream("libx264", rate=15)
+        stream.width, stream.height, stream.pix_fmt = 1080, 1920, "yuv420p"
+        stream.options = {"preset": "ultrafast", "crf": "18"}
+        original = Image.fromarray(image).resize((1080, 1920)).convert("RGB")
+        for n in range(45):
+            frame = av.VideoFrame.from_image(original)
+            frame.pts, frame.time_base = n, Fraction(1, 15)
+            for packet in stream.encode(frame):
+                writer.mux(packet)
+        for packet in stream.encode():
+            writer.mux(packet)
+    frames = decode(source, 2.5, 720, 90)
+    assert preview_tracking.gray_frame(frames[0]).shape == (569, 320)
+    destination = tmp_path / "monitor"
+    destination.mkdir()
+    with LiveMonitor(destination, [frames], args()) as monitor:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        monitor.begin({**job(), "duration": 2.5}, stage)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                args=["--autoplay-policy=no-user-gesture-required"]
+            )
+            page = browser.new_page(viewport={"width": 1920, "height": 1080})
+            page.goto(monitor.url)
+            page.wait_for_function("window.monitorReady")
+            assert page.locator("video").evaluate(
+                "v => [v.videoWidth, v.videoHeight]"
+            ) == [404, 720]
+            report = result(0, "grounding")
+            bbox = {"x1": 40 / 180, "y1": 60 / 320, "x2": 140 / 180, "y2": 260 / 320}
+            report["objects"] = [{"label": "person", "bbox": bbox}]
+            monitor.result(0, report)
+            monitor.source_started(time.monotonic(), [0])
+            page.wait_for_function(
+                "window.monitorDiagnostics.tracking[0]?.framesWithBoxes >= 5",
+                timeout=5000,
+            )
+            diagnostics = page.evaluate("window.monitorDiagnostics")
+            assert not diagnostics["mediaErrors"]
+            tracking = diagnostics["tracking"][0]
+            assert tracking["errors"] == 0
+            for sample in tracking["samples"]:
+                for obj in sample["objects"]:
+                    assert obj["bbox"] == pytest.approx(bbox, abs=0.01)
+            browser.close()
