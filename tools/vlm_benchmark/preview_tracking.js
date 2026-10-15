@@ -48,7 +48,10 @@ window.PreviewTracking = class {
       ctx.strokeStyle=color; ctx.lineWidth=2; ctx.setLineDash(yolo?[]:[7,3]);
       ctx.strokeRect(x+b.x1*rw,y+b.y1*rh,(b.x2-b.x1)*rw,(b.y2-b.y1)*rh);
       ctx.setLineDash([]);ctx.fillStyle=color;ctx.font="13px sans-serif";
-      const label = yolo ? (object.event_state==="alert" ? `${object.track_id} · 事件` : object.track_id)
+      // A grounded match carries the specific event (object.event); label the
+      // actor's red box with it so the preview shows who is doing what.
+      const label = yolo
+        ? (object.event_state==="alert" ? `${object.track_id} · ${object.event || "事件"}` : object.track_id)
         : `T${Number(object.track_id.split(":").at(-1))+1} · 跟踪估计`;
       ctx.fillText(label,x+b.x1*rw,Math.max(14,y+b.y1*rh-4));
     }

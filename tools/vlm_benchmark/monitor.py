@@ -30,6 +30,54 @@ def lane_name(report):
     )
 
 
+def _normalized_xyxy(bbox):
+    """A report bbox dict -> (x1,y1,x2,y2) in [0,1], or None if not usable."""
+    if not isinstance(bbox, dict):
+        return None
+    try:
+        box = (float(bbox["x1"]), float(bbox["y1"]), float(bbox["x2"]), float(bbox["y2"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (box[0] < box[2] and box[1] < box[3]):
+        return None
+    return box
+
+
+def _iou(a, b):
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter <= 0:
+        return 0.0
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _event_subjects(report):
+    """Fired, grounded events mapped to the subject box doing them.
+
+    Returns [{"event": label, "bbox": (x1,y1,x2,y2)}]. Only observations that
+    the model both detected and grounded to a subject are included; the subject
+    box is looked up from report.objects by id. Empty for scene-only verdicts.
+    """
+    boxes_by_id = {}
+    for obj in report.get("objects", []):
+        box = _normalized_xyxy(obj.get("bbox"))
+        if box is not None and obj.get("object_id"):
+            boxes_by_id[obj["object_id"]] = box
+    subjects = []
+    for obs in report.get("observations", []):
+        if not (obs.get("detected") and obs.get("grounded")):
+            continue
+        for sid in obs.get("subject_ids", []):
+            box = boxes_by_id.get(sid)
+            if box is not None:
+                subjects.append({"event": obs.get("event_label"), "bbox": box})
+    return subjects
+
+
 def media_time(frames, tick, fps):
     index = tick % len(frames)
     times = getattr(frames, "media_seconds", None)
@@ -271,6 +319,12 @@ class LiveMonitor:
                     {"bbox": o.get("bbox"), "label": o.get("label")}
                     for o in report.get("objects", [])
                 ],
+                # Per-subject event grounding: each fired+grounded observation
+                # links an event to a subject whose box is in report.objects.
+                # The preview matches these to YOLO tracks so only the actor's
+                # box turns red (tight VLM<->detector binding), not the whole
+                # lane. Empty when the model only judged the scene (scene_only).
+                "event_subjects": _event_subjects(report),
             }
             current = self.state["cameras"][camera]
             previous = current["lanes"].get(lane)
@@ -414,14 +468,22 @@ class LiveMonitor:
             self.preview_viewers[client] = now
             tracker = self.preview_trackers[key]
             view = self.state["cameras"][camera]["tracking_anchor"]
-            # Box color follows the camera's latest event verdicts: red when any
-            # target event is observed, else green. Drives the preview's YOLO
-            # boxes so they change color the moment an event fires.
-            event_lane = self.state["cameras"][camera].get("lanes", {}).get("events")
-            event_state = "alert" if (
-                event_lane
-                and any(j.get("observed") for j in event_lane.get("judgments", []))
-            ) else "normal"
+            # Box color follows the camera's latest event verdicts. Prefer
+            # per-subject binding: if the model grounded the event to a subject
+            # box, only the YOLO track overlapping that subject turns red (tight
+            # VLM<->detector binding). Fall back to scene-level (whole lane red)
+            # when an event fired but the model only judged the scene.
+            lanes = self.state["cameras"][camera].get("lanes", {})
+            event_subjects = []
+            scene_alert = False
+            for report in lanes.values():
+                if not report:
+                    continue
+                event_subjects.extend(report.get("event_subjects") or [])
+                if any(j.get("observed") for j in report.get("judgments", [])):
+                    scene_alert = True
+            # Scene-level alert only matters as a fallback when nothing grounded.
+            scene_alert = scene_alert and not event_subjects
             frames = self.framesets[camera % len(self.framesets)]
             duration = getattr(
                 frames, "media_duration", len(frames) / self.state["sample_fps"]
@@ -455,21 +517,26 @@ class LiveMonitor:
                 ):
                     raise ValueError("invalid preview dimensions")
             if self.detector_url:
-                return self._yolo_track(key, at, jpeg, event_state)
+                return self._yolo_track(key, at, jpeg, event_subjects, scene_alert)
             return tracker.advance(gray_frame(jpeg), at, epoch=epoch, anchor=anchor)
         finally:
             tracker.lock.release()
 
-    def _yolo_track(self, key, at, jpeg, event_state):
-        """Per-frame YOLO detector boxes (colored by event) for the preview.
+    def _yolo_track(self, key, at, jpeg, event_subjects, scene_alert):
+        """Per-frame YOLO detector boxes, colored by per-subject event binding.
 
         Calls the detector worker's /v1/tracks with this camera's own stable
         session id and a monotonic sequence, so each preview stream keeps stable
         track_ids. Calls are serialized across cameras so a single-GPU worker is
         never flooded with concurrent requests (which it rejects with 429); each
-        stream simply gets boxes in round-robin. Any hiccup degrades to an empty
-        frame (keeping event_state so the UI stays in detector mode), never raises.
+        stream simply gets boxes in round-robin. Each returned track is matched
+        by IoU against the VLM's grounded event subjects: a matched track carries
+        event_state="alert" plus the event label, so only the actor turns red.
+        When the model only judged the scene (scene_alert, no grounded subject)
+        every track turns red as a fallback. Any hiccup degrades to an empty
+        frame, never raises.
         """
+        scene_state = "alert" if scene_alert else "normal"
         with self._detector_lock:
             seq = self._detector_seq.get(key, 0) + 1
             self._detector_seq[key] = seq
@@ -497,17 +564,33 @@ class LiveMonitor:
             except (urllib.error.URLError, OSError, ValueError, TimeoutError):
                 return {
                     "status": "detector_unavailable",
-                    "event_state": event_state,
+                    "event_state": scene_state,
                     "objects": [],
                 }
-        objects = [
-            {"track_id": o["track_id"], "bbox": o["bbox"], "event_state": event_state}
-            for o in snapshot.get("objects", [])
-            if isinstance(o.get("bbox"), dict) and o.get("track_id")
-        ]
+        objects = []
+        for o in snapshot.get("objects", []):
+            bbox = o.get("bbox")
+            if not (isinstance(bbox, dict) and o.get("track_id")):
+                continue
+            track_box = _normalized_xyxy(bbox)
+            state, event = scene_state, None
+            # Tight binding: a track doing a grounded event (best IoU >= 0.3)
+            # turns red and carries that event's label; others stay green even
+            # when another person in the same lane triggered the event.
+            if track_box is not None and event_subjects:
+                best = max(
+                    event_subjects,
+                    key=lambda s: _iou(track_box, s["bbox"]),
+                )
+                if _iou(track_box, best["bbox"]) >= 0.3:
+                    state, event = "alert", best.get("event")
+            entry = {"track_id": o["track_id"], "bbox": bbox, "event_state": state}
+            if event:
+                entry["event"] = event
+            objects.append(entry)
         return {
             "status": "tracking" if objects else "no_person_boxes",
-            "event_state": event_state,
+            "event_state": "alert" if any(o["event_state"] == "alert" for o in objects) else scene_state,
             "objects": objects,
         }
 
