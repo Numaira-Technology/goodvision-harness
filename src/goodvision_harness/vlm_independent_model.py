@@ -61,6 +61,39 @@ class IndependentVLMInspector(TemporalVLMInspector):
                 "mouth alone is insufficient."
             ),
         )
+        if job.event_definitions:
+            definitions = dict(job.event_definitions)
+            policy = (
+                "Evaluate the fixed task-independent event definitions below. "
+                "These definitions apply to every observation; no question or "
+                "answer is supplied. Use visible temporal evidence and report "
+                "null when the evidence is insufficient.\n"
+                + json.dumps(
+                    {label: definitions[label] for label in job.request.event_labels
+                     if label in definitions},
+                    ensure_ascii=False,
+                )
+            )
+        event_guidance = (
+            "A clear boxing/striking gesture counts under the configured fight "
+            "policy even with one visible participant; contact is not required. "
+            "Use the temporal transition to judge a fall; deliberate bending or "
+            "picking objects up remains negative. "
+            if not job.event_definitions else ""
+        )
+        scene_rule = (
+            "For scene-scoped labels always use subject_ids=[]: assess the "
+            "scene without assigning a nearby person, even when subjects is empty. "
+            "Scene-scoped labels: "
+            + json.dumps(sorted(set(job.scene_only_event_labels)
+                                & set(job.request.event_labels))) + ". "
+            if (job.allowed_event_labels is not None
+                or job.scene_only_event_labels != ("ground_litter",)) else
+            "For ground_litter always use subject_ids=[]: this is a scene condition, "
+            "not a person's action; assess it even when subjects is empty. "
+        )
+        if not job.event_definitions:
+            scene_rule += "For ppe_violation reference only the affected people. "
         # Qwen3-VL's native grounding convention is normalized 0..1000. Request
         # an explicit declaration so the parser never guesses units from size.
         coordinates = (
@@ -98,16 +131,10 @@ class IndependentVLMInspector(TemporalVLMInspector):
             "including negative and uncertain verdicts. Use false for an evaluated "
             "absent action and null for insufficient evidence under the selected "
             "sensitivity. Do not omit a label merely because it is negative. "
-            "A clear boxing/striking gesture counts under the configured fight "
-            "policy even with one visible participant; contact is not required. "
-            "Use the temporal transition to judge a fall; deliberate bending or "
-            "picking objects up remains negative. A single-frame absence does not "
+            + event_guidance + "A single-frame absence does not "
             "prove an event ended. Omission is unevaluated, never false. An empty "
             "subjects list is allowed, but EVERY event label still needs a verdict. "
-            "For ground_litter always use subject_ids=[]: this is a scene condition, "
-            "not a person's action; assess it even when subjects is empty. "
-            "For ppe_violation reference only the affected people. "
-            "No names, descriptions, commentary or additional fields."
+            + scene_rule + "No names, descriptions, commentary or additional fields."
         )
         # Empty SAM boxes in the legacy message builder are not evidence that
         # the image contains no people. The independent model owns localization.
@@ -125,6 +152,8 @@ class IndependentVLMInspector(TemporalVLMInspector):
         return messages
 
     def build_messages(self, job, *, encoded_images=None):
+        if job.event_definitions and self.event_policy != "main-baseline":
+            raise ValueError("fixed evaluation definitions cannot use research-v1 policy")
         if self.event_policy == "main-baseline":
             return self._build_main_messages(job, encoded_images=encoded_images)
         messages = build_temporal_messages(
@@ -292,8 +321,8 @@ class IndependentVLMInspector(TemporalVLMInspector):
             for sid in ids:
                 if sid not in boxes:
                     grounding_issues.add(issues.get(sid, "missing_subject"))
-            if label == "ground_litter":
-                ids = []  # Never associate ground waste with nearby people.
+            if label in job.scene_only_event_labels:
+                ids = []  # Scene/object events never borrow a nearby person.
                 grounding_issues.clear()
             elif not ids:
                 grounding_issues.add("unlocalized_event")

@@ -739,11 +739,16 @@ class TemporalVLMInspector:
                                 "timeout", "overloaded", "request_failed",
                             }:
                                 code = candidate
-                raise ModelAPIError(
+                error = ModelAPIError(
                     "temporal model HTTP request failed",
                     code=code,
                     status_code=response.status_code,
                 )
+                # 仅离线评测实例显式挂载；生产默认不保存服务商正文或凭据。
+                observer = getattr(self, "evaluation_error_observer", None)
+                if observer is not None:
+                    error.evaluation_diagnostic = await observer(response)
+                raise error
             body = bytearray()
             read_started = time.monotonic()
             previous_chunk_seconds = 0.0

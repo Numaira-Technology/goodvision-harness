@@ -17,6 +17,7 @@ filename under DETECTOR_WEIGHTS_DIR (default /models). COCO "person" is class 0.
 from __future__ import annotations
 
 import os
+import math
 from typing import Protocol
 
 import numpy as np
@@ -26,6 +27,7 @@ from tracker import Detection, valid_pixel_bbox
 MODEL_REGISTRY: dict[str, tuple[str, str]] = {
     "yolov8-m": ("yolo", "yolov8m.pt"),
     "yolo26-s": ("yolo", "yolo26s.pt"),
+    "yolo26-l": ("yolo", "yolo26l.pt"),
     "rfdetr-l": ("rfdetr", "rfdetr-l.pth"),
     "dummy": ("dummy", ""),
 }
@@ -50,10 +52,22 @@ def _weights_path(model_key: str, default_filename: str) -> str:
 
 
 def _conf_threshold() -> float:
-    try:
-        return float(os.environ.get("DETECTOR_CONF", "0.35"))
-    except ValueError:
-        return 0.35
+    value = float(os.environ.get("DETECTOR_CONF", "0.35"))
+    if not math.isfinite(value) or not 0 < value < 1:
+        raise ValueError("DETECTOR_CONF must be finite and between 0 and 1")
+    return value
+
+
+def clipped_person_box(box, width, height):
+    """先验证，再裁剪；越界本身不再导致整框丢弃。"""
+    if len(box) != 4 or not all(math.isfinite(v) for v in box):
+        return None
+    x1, y1, x2, y2 = box
+    if x1 >= x2 or y1 >= y2:
+        return None
+    clipped = (max(0.0, min(width, x1)), max(0.0, min(height, y1)),
+               max(0.0, min(width, x2)), max(0.0, min(height, y2)))
+    return clipped if valid_pixel_bbox(clipped, width, height) else None
 
 
 def _device() -> str:
@@ -140,17 +154,18 @@ class YoloDetector:
         for box in first.boxes:
             xyxy = [float(v) for v in box.xyxy[0].tolist()]
             conf = float(box.conf[0])
-            if conf < self._conf or not valid_pixel_bbox(xyxy, w, h):
+            clipped = clipped_person_box(xyxy, w, h)
+            if not math.isfinite(conf) or conf < self._conf or clipped is None:
                 continue
-            out.append(Detection(_PERSON, conf, tuple(xyxy)))
+            out.append(Detection(_PERSON, conf, clipped))
         return tuple(out)
 
     @staticmethod
     def _infer_size() -> int:
-        try:
-            return int(os.environ.get("DETECTOR_IMGSZ", "640"))
-        except ValueError:
-            return 640
+        value = int(os.environ.get("DETECTOR_IMGSZ", "640"))
+        if value < 32 or value % 32:
+            raise ValueError("DETECTOR_IMGSZ must be a positive multiple of 32")
+        return value
 
     def warmup(self) -> None:
         try:
@@ -208,9 +223,10 @@ class RFDetrDetector:
                 continue
             box = [float(v) for v in xyxy[i]]
             score = float(conf[i]) if conf is not None else 1.0
-            if score < self._conf or not valid_pixel_bbox(box, w, h):
+            clipped = clipped_person_box(box, w, h)
+            if not math.isfinite(score) or score < self._conf or clipped is None:
                 continue
-            out.append(Detection(_PERSON, score, tuple(box)))
+            out.append(Detection(_PERSON, score, clipped))
         return tuple(out)
 
     def warmup(self) -> None:

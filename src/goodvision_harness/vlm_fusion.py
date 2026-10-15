@@ -206,6 +206,9 @@ class VLMFusion:
                 if eid in done or not observation["accepted"]:
                     done.add(eid)
                     continue
+                if observation["event_label"] not in scene.event_labels:
+                    done.add(eid)
+                    continue
                 if not set(observation["subject_ids"]) <= matches.keys():
                     continue
                 ids = tuple(sorted(matches[sid] for sid in observation["subject_ids"]))
@@ -251,7 +254,7 @@ class VLMFusion:
                         "source_timestamp_seconds": at,
                         "method": (
                             "scene_observation"
-                            if observation["event_label"] == "ground_litter"
+                            if observation["event_label"] in scene.scene_only_event_labels
                             else "source_time_box_overlap"
                         ),
                         "subjects": [
@@ -289,5 +292,8 @@ class VLMFusion:
                         for sid, target in matches.items()
                     ),
                     event_sensitivities=scene.event_sensitivities,
+                    allowed_event_labels=scene.inspection_allowed_event_labels,
+                    scene_only_event_labels=tuple(sorted(scene.scene_only_event_labels)),
+                    event_definitions=scene.event_definitions,
                 )
         return changed

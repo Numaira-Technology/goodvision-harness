@@ -6,7 +6,10 @@ the output reader. Fusion has its own bounded consumer after publication.
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import io
+import json
 import math
 import multiprocessing as mp
 import os
@@ -23,6 +26,7 @@ from uuid import uuid4
 from PIL import Image
 
 from .contracts import PUBLIC_MODEL_NAME
+from .events.state_machine import normalize_event_profile
 from .independent_diagnostics import (
     DIAGNOSTIC_QUEUE_CAPACITY,
     IndependentDiagnostics,
@@ -74,6 +78,9 @@ class VLMProcessConfig:
     parallel_scheduling: str = "independent"
     event_policy: str = "main-baseline"
     retain_historical_results: bool = False
+    allowed_event_labels: tuple[str, ...] | None = None
+    scene_only_event_labels: tuple[str, ...] = ("ground_litter",)
+    event_definitions: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
@@ -88,6 +95,48 @@ class VLMProcessConfig:
             raise ValueError("historical retention must be boolean")
         if not self.stream_session_id or not self.source_id or not self.labels:
             raise ValueError("VLM process requires a scoped source and event labels")
+        production_labels = (
+            "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter",
+        )
+        allowed, scene_only = normalize_event_profile(
+            production_labels if self.allowed_event_labels is None
+            else self.allowed_event_labels,
+            self.scene_only_event_labels,
+        )
+        if (not set(self.labels) <= allowed or "stranger" in allowed
+                or len(self.labels) != len(set(self.labels))):
+            raise ValueError("VLM labels must match its explicit non-identity profile")
+        if (
+            not isinstance(self.event_definitions, tuple)
+            or len(self.event_definitions) > 64
+            or any(
+                not isinstance(item, tuple) or len(item) != 2
+                or not isinstance(item[0], str) or item[0] not in allowed
+                or not isinstance(item[1], str) or not item[1].strip()
+                or len(item[1]) > 4096
+                for item in self.event_definitions
+            )
+        ):
+            raise ValueError("invalid fixed event definitions")
+        definition_labels = {label for label, _ in self.event_definitions}
+        if (len(definition_labels) != len(self.event_definitions)
+                or not (set(self.labels) - set(production_labels)) <= definition_labels):
+            raise ValueError("evaluation VLM labels require unique fixed definitions")
+        if self.event_definitions and not set(self.labels) <= definition_labels:
+            raise ValueError("fixed definitions must cover every VLM event")
+        object.__setattr__(self, "scene_only_event_labels", tuple(sorted(scene_only)))
+        if self.allowed_event_labels is not None:
+            object.__setattr__(self, "allowed_event_labels", tuple(sorted(allowed)))
+        explicit_profile = (
+            self.allowed_event_labels is not None or self.event_definitions
+            or self.scene_only_event_labels != ("ground_litter",)
+        )
+        if explicit_profile and (
+            self.event_policy != "main-baseline" or self.grounding_format != "legacy"
+        ):
+            raise ValueError(
+                "fixed evaluation profiles require main-baseline and legacy grounding"
+            )
         if not 0 < self.observation_fps <= 3 or not math.isfinite(self.observation_fps):
             raise ValueError("VLM cadence must be in (0, 3]")
         if type(self.max_in_flight) is not int or not (
@@ -120,6 +169,30 @@ def _observation_window(history):
     return window
 
 
+def _report_event_policy(job, profile):
+    if not job.event_definitions:
+        return event_policy_snapshot(
+            job.request.event_labels, dict(job.event_sensitivities), profile=profile,
+        )
+    definitions = dict(job.event_definitions)
+    policy = {
+        "version": "fixed-evaluation-events-v1",
+        "profile": "fixed-evaluation",
+        "event_labels": list(job.request.event_labels),
+        "scene_only_event_labels": sorted(
+            set(job.scene_only_event_labels) & set(job.request.event_labels)
+        ),
+        "definitions": {
+            label: definitions[label] for label in job.request.event_labels
+        },
+        "comparison_field": "observed_detected",
+    }
+    digest = hashlib.sha256(
+        json.dumps(policy, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {**policy, "sha256": digest}
+
+
 class IndependentEventState:
     """Publish current observations; the tracked scene owns person-event lifecycles.
 
@@ -141,7 +214,7 @@ class IndependentEventState:
             ids = tuple(
                 sorted(mapping[sid] for sid in verdict.subject_ids if sid in mapping)
             )
-            grounded = verdict.event_label == "ground_litter" or (
+            grounded = verdict.event_label in self.config.scene_only_event_labels or (
                 bool(verdict.subject_ids) and len(ids) == len(verdict.subject_ids)
             )
             evidence_id = f"vlm:{job.request.request_id}:{index}"
@@ -157,6 +230,12 @@ class IndependentEventState:
                     "accepted": grounded,
                     "grounded": grounded,
                     "grounding_issues": list(verdict.grounding_issues),
+                    "scope": "scene" if (
+                        self.config.output_mode == "events"
+                        or verdict.event_label in self.config.scene_only_event_labels
+                        or "scene_only" in verdict.grounding_issues
+                        or (verdict.detected is False and "scene_only_negative" in verdict.grounding_issues)
+                    ) else "subject",
                 }
             )
         reported = {v.event_label for v in verdicts}
@@ -231,10 +310,7 @@ class IndependentEventState:
             "schema_version": "1",
             "type": "vlm_report",
             "analysis_kind": "vlm_event",
-            "event_policy": event_policy_snapshot(
-                job.request.event_labels, dict(job.event_sensitivities),
-                profile=self.config.event_policy,
-            ),
+            "event_policy": _report_event_policy(job, self.config.event_policy),
             "event_scope": "scene"
             if self.config.output_mode == "events"
             else "observation",
@@ -334,16 +410,18 @@ def _inspector(config):
         # (HTTP 400, schema is None), although its text-only route accepts it.
         parameters["response_format"] = {"type": "json_object"}
     if config.output_mode == "events":
-        options["max_tokens"] = 160
-        # The transport uses asyncio.wait_for: expiry cancels the HTTP request
-        # and releases its worker, rather than abandoning a running Future.
-        settings = replace(
-            settings,
-            timeout_seconds=min(
-                settings.timeout_seconds,
-                INFORMATION_HTTP_DEADLINE_SECONDS,
-            ),
-        )
+        if config.allowed_event_labels is None:
+            options["max_tokens"] = 160
+            # The production path keeps its existing five-second deadline.
+            settings = replace(
+                settings,
+                timeout_seconds=min(
+                    settings.timeout_seconds,
+                    INFORMATION_HTTP_DEADLINE_SECONDS,
+                ),
+            )
+        else:
+            options.setdefault("max_tokens", 1600)
     return cls(
         settings,
         model=config.model,
@@ -891,6 +969,9 @@ def run_vlm_process(
                             grounding_required=bool(
                                 grounding_required and grounding_required.is_set()
                             ),
+                            allowed_event_labels=config.allowed_event_labels,
+                            scene_only_event_labels=config.scene_only_event_labels,
+                            event_definitions=config.event_definitions,
                         )
                         dispatched = time.monotonic()
                         for lane in lanes:
@@ -984,10 +1065,17 @@ class IndependentVLMBranch:
         delivery=None,
         camera_callback=None,
         inspector_factory=_inspector,
+        report_observer=None,
+        rejected_report_observer=None,
     ):
+        if report_observer is not None and rejected_report_observer is None:
+            raise ValueError("evaluation recording requires an explicit rejected-report archive")
         self.config, self.connection, self.fusion = config, connection, fusion
         self._display_fusion = display_fusion
         self._delivery = delivery
+        # 正式评测显式接入持久化出口；默认生产不启用。
+        self._report_observer = report_observer
+        self._rejected_report_observer = rejected_report_observer
         self.results = ResultBus(128)
         self.grounding_results = ResultBus(128)
         self._shared_results = results
@@ -1009,6 +1097,7 @@ class IndependentVLMBranch:
         self._grounding_required = context.Event()
         self._startup_ready = context.Event()
         self._stop, self._lock = Event(), Lock()
+        self._cleanup_started = False
         self._source_finished = Event()
         self._process = context.Process(
             target=run_vlm_process,
@@ -1213,6 +1302,16 @@ class IndependentVLMBranch:
                 report.get("stream_session_id") != self.config.stream_session_id
                 or report.get("generation") != self.config.generation
             ):
+                if self._rejected_report_observer is not None:
+                    try:
+                        self._rejected_report_observer(
+                            copy.deepcopy(report), reason="stream_session_or_generation_mismatch"
+                        )
+                    except Exception as exc:
+                        self._capture_failed(exc, "evaluation_rejected_archive_failed")
+                    else:
+                        self._capture_failed(None, "evaluation_report_identity_mismatch")
+                    return
                 continue
             now = time.monotonic()
             report["emitted_at"] = utc_now()
@@ -1230,6 +1329,13 @@ class IndependentVLMBranch:
             information = report.get("vlm_lane") != "grounding"
             grounding = report.get("vlm_lane") != "information"
             (self.results if information else self.grounding_results).publish(report)
+            if self._report_observer is not None:
+                try:
+                    # 原始发布在先；两lane都落盘，之后才允许可选融合。
+                    self._report_observer(copy.deepcopy(report))
+                except Exception as exc:
+                    self._capture_failed(exc, "evaluation_capture_failed")
+                    return
             if information and self._shared_results is not None:
                 self._shared_results.publish(report, expected_epoch=self._shared_epoch)
             if (
@@ -1391,20 +1497,42 @@ class IndependentVLMBranch:
             result["camera_source_dispatch"] = self._camera_dispatch.stats()
         return result
 
+    def _capture_failed(self, exc, code):
+        with self._lock:
+            self._status.update(state="failed", error_code=code)
+            if exc is not None:
+                self._status["capture_error_type"] = type(exc).__name__
+                self._status["capture_error_errno"] = getattr(exc, "errno", None)
+                # 仅本地契约异常的固定原因；不将HTTP／凭据异常原文放进状态。
+                if isinstance(exc, (ValueError, RuntimeError)):
+                    self._status["capture_error_reason"] = str(exc)[:256]
+        self._process_stop.set()
+        self._stop.set()
+        self.close()
+
     def close(self, timeout_seconds=0.0):
-        if not self._stop.is_set():
+        with self._lock:
+            start_cleanup = not self._cleanup_started
+            self._cleanup_started = True
             self._stop.set()
             self._process_stop.set()
-            if self.fusion is not None:
-                self.fusion.close()
-            if self._camera_dispatch is not None:
-                self._camera_dispatch.close()
-            with self._lock:
-                self._status["state"] = "stopping"
-            self._reaper = Thread(
-                target=self._cleanup, name="vlm-process-cleanup", daemon=True
-            )
-            self._reaper.start()
+            if start_cleanup:
+                if self._status.get("state") != "failed":
+                    self._status["state"] = "stopping"
+        if start_cleanup:
+            try:
+                if self.fusion is not None:
+                    self.fusion.close()
+            finally:
+                try:
+                    if self._camera_dispatch is not None:
+                        self._camera_dispatch.close()
+                finally:
+                    with self._lock:
+                        self._reaper = Thread(
+                            target=self._cleanup, name="vlm-process-cleanup", daemon=True
+                        )
+                        self._reaper.start()
         if self._reaper is not None and timeout_seconds > 0:
             self._reaper.join(timeout_seconds)
 
@@ -1432,7 +1560,9 @@ class IndependentVLMBranch:
         with self._lock:
             self._evidence.clear()
             self._evidence_bytes = 0
-            self._status["state"] = "stopped"
+            if self._status.get("state") != "failed":
+                self._status["state"] = "stopped"
+            self._status["cleanup_complete"] = True
 
 
 class CameraSourceDispatch:

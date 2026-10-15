@@ -126,6 +126,13 @@ offline evaluation timing; use the VLM or gateway suites for realtime throughput
 and deployment latency measurements. Raw predictions and audit records preserve
 empty frames, source/session identity and observed versus predicted tracks.
 
+## 三路离线 eval 组件
+
+已筛选并整合的独立采集、证据导出、确定性解析及请求保护模块，见
+[三路离线评测组件的整合范围](unified-eval-components.md)。这些模块与上面的
+native benchmark、VLM research 入口分别保留；本次不附带本地实验数据、
+未批准 SAM 候选或未定的 latency metric 实现，也不代表原 182 题评测已完成。
+
 ## Experiment environments and output
 
 Follow [CONTRIBUTING](../../CONTRIBUTING.md) to create a worktree-local environment.

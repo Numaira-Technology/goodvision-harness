@@ -22,7 +22,7 @@ from ..actions.alerts import apply_alert_policy
 from ..contracts import AnalysisResult, NormalizedBBox
 from ..diagnostics import SceneDiagnostics, note, record
 from ..event_sensitivity import normalize_event_sensitivities
-from ..events.state_machine import SceneState
+from ..events.state_machine import SceneState, normalize_event_profile
 from ..rich_labeling import RichLabelSnapshot
 from ..runtime.scheduling import (
     EvidenceFrame,
@@ -71,6 +71,9 @@ class TemporalInspection:
         default=None, repr=False, compare=False,
     )
     grounding_required: bool = False
+    allowed_event_labels: tuple[str, ...] | None = None
+    scene_only_event_labels: tuple[str, ...] = ("ground_litter",)
+    event_definitions: tuple[tuple[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -155,11 +158,26 @@ class SceneRuntime:
         stranger_enabled: bool = False,
         independent_temporal_inference: bool = False,
         diagnostics: SceneDiagnostics | None = None,
+        allowed_event_labels: Sequence[str] | None = None,
+        scene_only_event_labels: Sequence[str] = ("ground_litter",),
+        event_definitions: tuple[tuple[str, str], ...] = (),
+        max_entities: int = 128,
     ) -> None:
         if mode != "active":
             raise ValueError("scene mode must be active")
-        if not set(event_labels) <= _EVENTS - {"stranger"}:
+        allowed, scene_only = normalize_event_profile(
+            _EVENTS if allowed_event_labels is None else allowed_event_labels,
+            scene_only_event_labels,
+        )
+        if not set(event_labels) <= allowed - {"stranger"}:
             raise ValueError("unsupported temporal event label")
+        self.allowed_event_labels = allowed
+        self.scene_only_event_labels = scene_only
+        self.event_definitions = tuple(event_definitions)
+        self.inspection_allowed_event_labels = (
+            None if allowed_event_labels is None
+            else tuple(sorted(allowed - {"stranger"}))
+        )
         if tracking_mode not in {"immediate", "batch"}:
             raise ValueError("tracking mode must be immediate or batch")
         if native_memory_scope not in {None, "batch", "session"}:
@@ -213,6 +231,7 @@ class SceneRuntime:
         self.scene = SceneState(
             stream_session_id,
             source_id,
+            max_entities=max_entities,
             person_history_size=512 if tracking_mode == "batch" else None,
             person_history_seconds=(
                 self.tracking_history_seconds if tracking_mode == "batch" else None
@@ -221,6 +240,8 @@ class SceneRuntime:
                 64 if temporal_observation_fps is not None else max_pending_inspections
             ),
             retain_pinned_sources=temporal_observation_fps is not None,
+            allowed_event_labels=allowed,
+            scene_only_event_labels=scene_only,
         )
         self.evidence = (
             SceneEvidenceBuffer(
@@ -1175,6 +1196,9 @@ class SceneRuntime:
             self._jobs[request.request_id] = TemporalInspection(
                 self.stream_session_id, self.source_id, request, frames, boxes,
                 self.event_sensitivities, self._temporal_last_endpoint_sequence,
+                allowed_event_labels=self.inspection_allowed_event_labels,
+                scene_only_event_labels=tuple(sorted(self.scene_only_event_labels)),
+                event_definitions=self.event_definitions,
             )
             self._stats["queued_tracking_intervals"] += 1
             self._stats["prepared_inspections"] += 1
@@ -1255,6 +1279,9 @@ class SceneRuntime:
                 frames,
                 interval.subject_boxes,
                 self.event_sensitivities,
+                allowed_event_labels=self.inspection_allowed_event_labels,
+                scene_only_event_labels=tuple(sorted(self.scene_only_event_labels)),
+                event_definitions=self.event_definitions,
             )
             self._inspection_deadlines[request_id] = (
                 monotonic() + _INSPECTION_TIMEOUT_SECONDS
@@ -1347,7 +1374,7 @@ class SceneRuntime:
                 for event in snapshot["events"]
                 if event["event_label"] == label and event["phase"] != "retracted"
             }
-            for label in _EVENTS
+            for label in self.allowed_event_labels
         }
         for result in ordered:
             if self._now - result.frame.timestamp_seconds > 90.0:
@@ -1365,7 +1392,7 @@ class SceneRuntime:
             judgments = {
                 judgment.event_label: judgment
                 for judgment in result.judgments
-                if judgment.event_label in _EVENTS
+                if judgment.event_label in self.allowed_event_labels
             }
             labels = set(judgments) | {
                 label
@@ -1590,7 +1617,8 @@ class SceneRuntime:
                 limit=4,
                 frame_sequences=(
                     None if not request.subject_ids
-                    and "ground_litter" in request.event_labels else sequences
+                    and self.scene_only_event_labels.intersection(request.event_labels)
+                    else sequences
                 ),
             )
             retained = sum(
@@ -1622,6 +1650,9 @@ class SceneRuntime:
                     if frame.frame_sequence == sequence
                 ),
                 self.event_sensitivities,
+                allowed_event_labels=self.inspection_allowed_event_labels,
+                scene_only_event_labels=tuple(sorted(self.scene_only_event_labels)),
+                event_definitions=self.event_definitions,
             )
             frame_times = {
                 frame.frame_sequence: frame.timestamp_seconds for frame in frames
@@ -1703,8 +1734,8 @@ class SceneRuntime:
                     not isinstance(verdict, TemporalVerdict)
                     or not isinstance(verdict.subject_ids, (tuple, list))
                     or (not verdict.subject_ids
-                        and verdict.event_label != "ground_litter")
-                    or (verdict.event_label == "ground_litter"
+                        and verdict.event_label not in self.scene_only_event_labels)
+                    or (verdict.event_label in self.scene_only_event_labels
                         and bool(verdict.subject_ids))
                     or len(verdict.subject_ids) > 128
                     or any(

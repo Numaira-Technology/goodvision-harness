@@ -249,7 +249,11 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
         transport_jpeg_quality: int | None = None,
         transport_codec: str = "jpeg",
         transport_crf: int = 23,
+        max_response_objects: int = 64,
     ):
+        if type(max_response_objects) is not int or not 1 <= max_response_objects <= 4096:
+            raise ValueError("native response object bound must be within 1..4096")
+        self._max_response_objects = max_response_objects
         super().__init__(
             endpoint,
             timeout_seconds=timeout_seconds,
@@ -449,7 +453,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                 "delayed result is not the next accepted source frame",
             )
             _require(
-                len(snapshot.objects) <= min(64, session.limits["max_objects"]),
+                len(snapshot.objects) <= min(self._max_response_objects, session.limits["max_objects"]),
                 "too many native objects",
             )
             seen = set()
