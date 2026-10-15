@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from PIL import Image  # noqa: E402
@@ -39,6 +40,7 @@ from goodvision_harness.vlm_independent import (  # noqa: E402
     _inspector,
 )
 from goodvision_harness.vlm_independent_model import IndependentVerdict  # noqa: E402
+from tools.vlm_benchmark.source_feeder import TimedSourceFeeder  # noqa: E402
 
 # Follow the production safety catalog; stranger uses a separate identity lane.
 LABELS = SAFETY_EVENT_LABELS
@@ -402,6 +404,7 @@ def run_stage(
                         observer.result(i, payload)
         raw.flush()
 
+    feeder = None
     try:
         for i in range(count):
             cfg = VLMProcessConfig(
@@ -457,34 +460,14 @@ def run_stage(
         offsets, releases = release_schedule(
             count, args.duration, sample_fps, args.observation_fps, arrival_mode
         )
-        release_lags, sender_missed, offer_rejected = [], 0, [0] * count
-        missed_by_stream = [0] * count
         start = time.monotonic()
         if observer is not None:
             observer.source_started(start, offsets)
+        feeder = TimedSourceFeeder(branches, framesets, releases, start, sample_fps)
+        feeder.start()
         next_status = start
-        for release_at, actions in releases:
-            due = start + release_at
-            remaining = due - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            lag = time.monotonic() - due
-            release_lags.append(lag)
-            if lag > 1 / sample_fps:
-                sender_missed += 1
-                for camera, _tick in actions:
-                    missed_by_stream[camera] += 1
-                # Do not hide a stalled sender with accelerated catchup.
-                continue
-            for i, tick in actions:
-                frames = framesets[i % len(framesets)]
-                accepted = branches[i].offer(
-                    frames[tick % len(frames)], tick / sample_fps, tick
-                )
-                if not accepted:
-                    offer_rejected[i] += 1
-                if observer is not None:
-                    observer.sample(i, tick, accepted)
+        while True:
+            feeder.notify(observer)
             collect()
             if time.monotonic() >= next_status:
                 status_log.write(
@@ -498,6 +481,17 @@ def run_stage(
                 )
                 status_log.flush()
                 next_status += 1
+            # Even a feeder that finishes before the collector gets CPU must
+            # leave a status sample and deliver its pending notifications.
+            if not feeder.thread.is_alive():
+                break
+            feeder.thread.join(timeout=0.01)
+        feeder.check()
+        feeder.notify(observer)
+        release_lags = feeder.release_lags
+        sender_missed = feeder.missed
+        missed_by_stream = feeder.missed_by_stream
+        offer_rejected = feeder.offer_rejected
         remaining = start + args.duration + max(offsets) - time.monotonic()
         if remaining > 0:
             time.sleep(remaining)
@@ -584,12 +578,16 @@ def run_stage(
         )
         return result
     finally:
-        raw.close()
-        status_log.close()
-        for branch in branches:
-            branch.close()
-        for branch in branches:
-            branch.close(timeout_seconds=5)
+        try:
+            if feeder is not None:
+                feeder.close()
+        finally:
+            raw.close()
+            status_log.close()
+            for branch in branches:
+                branch.close()
+            for branch in branches:
+                branch.close(timeout_seconds=5)
 
 
 def main():

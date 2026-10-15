@@ -103,6 +103,7 @@ def recording_is_complete(
         and measured["duration_seconds"] >= elapsed - 1.0
         and diagnostics["sawPlaying"]
         and diagnostics["finalPainted"]
+        and diagnostics.get("allCamerasVisible", True)
         and diagnostics.get("pendingEvidence") == 0
         and not errors
         and not diagnostics["mediaErrors"]
@@ -110,6 +111,44 @@ def recording_is_complete(
         and diagnostics["maxPlaybackGapSeconds"] < 2.0
         and all(n is None or n > 1 for n in diagnostics["videoFrames"])
     )
+
+
+def playback_quality(diagnostics):
+    """Describe actual playback, not the encoder's nominal frame rate.
+
+    Playback measurements are diagnostic only. They do not change the existing
+    recording-completeness gate or stop subsequent benchmark stages.
+    """
+    if diagnostics.get("layout") != "single-video":
+        return None
+    streams = diagnostics.get("playback") or []
+    checks = []
+    for index, stream in enumerate(streams, 1):
+        stream = stream or {}
+        seconds, frames = stream.get("seconds"), stream.get("frames")
+        measured = (
+            type(seconds) in (int, float)
+            and math.isfinite(seconds)
+            and seconds >= 1.0
+            and type(frames) in (int, float)
+            and math.isfinite(frames)
+            and frames >= 0
+        )
+        fps = frames / seconds if measured else None
+        checks.append(
+            {
+                "stream": index,
+                "fps": fps,
+            }
+        )
+    return {
+        "measurement_complete": bool(checks)
+        and len(checks) == len(diagnostics.get("videoFrames", []))
+        and all(row["fps"] is not None for row in checks),
+        "target_fps": 15,
+        "minimum_sample_seconds": 1.0,
+        "per_stream": checks,
+    }
 
 
 class BrowserRecorder:
@@ -264,6 +303,7 @@ class BrowserRecorder:
                         "final_image": "recording/final.png",
                         "video_probe": measured,
                         "browser": diagnostics,
+                        "playback_quality": playback_quality(diagnostics),
                         "page_errors": errors,
                         "scope": "Live browser capture; preview FPS != VLM throughput.",
                     }

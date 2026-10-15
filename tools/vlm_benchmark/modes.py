@@ -75,6 +75,9 @@ def mode_inspector(config):
 
 
 def validate(args):
+    args.modes = ["compact" if m == "grounding" else m for m in args.modes]
+    if args.monitor_layout not in {"evidence", "single-video"}:
+        raise ValueError("invalid monitor layout")
     if not 0 <= args.monitor_port <= 65535 or (args.headed and not args.record):
         raise ValueError("invalid monitor port or --headed without --record")
     if not args.model.strip() or len(args.model) > 200:
@@ -560,7 +563,9 @@ def parser():
         help="record this as a different deployment",
     )
     p.add_argument("--video", type=Path, action="append", default=[])
-    p.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
+    p.add_argument(
+        "--modes", nargs="+", choices=(*MODES, "grounding"), default=list(MODES)
+    )
     p.add_argument("--streams", nargs="+", type=int, default=[1, 4, 8, 12])
     p.add_argument("--duration", type=float, default=60)
     p.add_argument("--repeats", type=int, default=2)
@@ -587,6 +592,10 @@ def parser():
         "--record",
         action="store_true",
         help="record each measurement/soak browser viewport (implies --monitor)",
+    )
+    p.add_argument(
+        "--monitor-layout", choices=["evidence", "single-video"], default="evidence",
+        help="single-video hides evidence panes and tracking overlays",
     )
     p.add_argument(
         "--headed", action="store_true", help="show the recording Chromium window"

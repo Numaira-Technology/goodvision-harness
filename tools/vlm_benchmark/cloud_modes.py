@@ -69,6 +69,7 @@ def make_plan(options):
         "modes",
     ):
         setattr(args, name, getattr(options, name))
+    args.monitor_layout = getattr(options, "monitor_layout", "evidence")
     args.monitor = True
     args.video = options.video or [Path.home() / "Downloads/output 3.mp4"]
     modes.validate(args)
