@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import bisect
 import copy
 import json
@@ -35,6 +36,7 @@ def media_time(frames, tick, fps):
 class LiveMonitor:
     def __init__(self, output, framesets, args):
         self.output, self.framesets, self.args = Path(output), framesets, args
+        self.layout = getattr(args, "monitor_layout", "evidence")
         self.lock = threading.RLock()
         self.state = {"stage": None, "state": "preparing"}
         self.log = None
@@ -45,6 +47,8 @@ class LiveMonitor:
         self.token = secrets.token_urlsafe(24)
         self.server = None
         self.recorder = None
+        self.preview_trackers = {}
+        self.preview_viewers = {}
 
     def __enter__(self):
         from tools.vlm_benchmark.recording import BrowserRecorder, make_preview
@@ -62,6 +66,8 @@ class LiveMonitor:
                 make_preview(path, preview)
                 self.previews.append(preview)
             else:
+                if self.layout == "single-video":
+                    raise ValueError("single-video monitor requires an actual video")
                 self.previews.append(None)
         self.server = ThreadingHTTPServer(
             ("127.0.0.1", self.args.monitor_port), self.handler()
@@ -78,6 +84,7 @@ class LiveMonitor:
                 "recording": self.args.record,
                 "scope": "live benchmark browser viewport; no retrospective replay",
                 "preview": "15 FPS H.264 proxy; media PTS/inference JPEGs unchanged",
+                "layout": self.layout,
             },
         )
         try:
@@ -113,6 +120,8 @@ class LiveMonitor:
 
         with self.lock:
             self.location = location
+            self.preview_trackers = {}
+            self.preview_viewers = {}
             if self.log:
                 self.log.close()
             self.log = (location / "monitor.jsonl").open("w", encoding="utf-8")
@@ -137,6 +146,8 @@ class LiveMonitor:
                 "model": self.args.model,
                 "real": self.args.real,
                 "backend": self.args.backend,
+                "monitor_layout": self.layout,
+                "preview_fps": 15,
                 "sample_fps": max(2.0, self.args.observation_fps * 2),
                 "observation_fps": self.args.observation_fps,
                 "planned": planned_observations(
@@ -154,6 +165,7 @@ class LiveMonitor:
                         "rejected": 0,
                         "out_of_order": 0,
                         "lanes": {},
+                        "tracking_anchor": None,
                     }
                     for i in range(job["streams"])
                 ],
@@ -245,12 +257,23 @@ class LiveMonitor:
             current = self.state["cameras"][camera]
             previous = current["lanes"].get(lane)
             stale = bool(
-                previous and (tick if valid_tick else -1) < (previous["tick"] or 0)
+                report.get("historical_only")
+                or (previous and (tick if valid_tick else -1) < (previous["tick"] or 0))
             )
             if stale:
                 current["out_of_order"] += 1
             else:
                 current["lanes"][lane] = view
+            anchor = current["tracking_anchor"]
+            if (
+                lane == "grounding"
+                and not stale
+                and complete
+                and not view["error"]
+                and valid_tick
+                and (anchor is None or tick > anchor["tick"])
+            ):
+                current["tracking_anchor"] = view
             self.emit("result", camera=camera + 1, lane=lane, stale=stale, result=view)
 
     def draining(self):
@@ -323,6 +346,86 @@ class LiveMonitor:
             ]
             return data
 
+    def track_preview(self, stage, camera, payload):
+        if self.layout == "single-video":
+            raise ValueError("tracking disabled in single-video layout")
+        from tools.vlm_benchmark.preview_tracking import PreviewTracker, gray_frame
+
+        client = payload.get("client", "")
+        at, epoch = payload.get("time"), payload.get("epoch")
+        if (
+            not isinstance(client, str)
+            or not re.fullmatch(r"[a-f0-9-]{36}", client)
+            or type(at) not in (int, float)
+            or not math.isfinite(at)
+            or at < 0
+            or type(epoch) is not int
+            or not 0 <= epoch <= 100000
+        ):
+            raise ValueError("invalid preview metadata")
+        with self.lock:
+            if (
+                stage != self.state.get("stage")
+                or "grounding" not in self.state.get("lanes", [])
+                or not 0 <= camera < len(self.state["cameras"])
+            ):
+                raise ValueError("unknown preview")
+            now = time.monotonic()
+            expired = {
+                c for c, touched in self.preview_viewers.items() if now - touched > 30
+            }
+            self.preview_trackers = {
+                k: v for k, v in self.preview_trackers.items() if k[0] not in expired
+            }
+            self.preview_viewers = {
+                c: t for c, t in self.preview_viewers.items() if c not in expired
+            }
+            key = (client, camera)
+            # At most two simultaneous viewers; never an unbounded image cache.
+            if key not in self.preview_trackers:
+                clients = {k[0] for k in self.preview_trackers}
+                if client not in clients and len(clients) >= 2:
+                    raise ValueError("too many tracking viewers")
+                self.preview_trackers[key] = PreviewTracker()
+            self.preview_viewers[client] = now
+            tracker = self.preview_trackers[key]
+            view = self.state["cameras"][camera]["tracking_anchor"]
+            frames = self.framesets[camera % len(self.framesets)]
+            duration = getattr(
+                frames, "media_duration", len(frames) / self.state["sample_fps"]
+            )
+            if not epoch * duration <= at <= (epoch + 1) * duration + 0.05:
+                raise ValueError("preview time does not match loop")
+            anchor = None
+            if view is not None:
+                tick = view["tick"]
+                anchor = {
+                    "id": f"{tick}:{view['id']}",
+                    "epoch": tick // len(frames),
+                    "time": (tick // len(frames)) * duration + view["media_seconds"],
+                    "objects": view["objects"],
+                    "jpeg": frames[tick % len(frames)],
+                }
+        if not tracker.lock.acquire(blocking=False):
+            return {"status": "busy", "objects": []}
+        try:
+            jpeg = base64.b64decode(payload.get("jpeg", ""), validate=True)
+            # Check compressed dimensions before allocating an OpenCV image.
+            from io import BytesIO
+
+            from PIL import Image
+
+            with Image.open(BytesIO(jpeg)) as image:
+                if (
+                    image.format != "JPEG"
+                    or not 8 <= min(image.size)
+                    or max(image.size) > 640
+                ):
+                    raise ValueError("invalid preview dimensions")
+            return tracker.advance(gray_frame(jpeg), at, epoch=epoch, anchor=anchor)
+        finally:
+            tracker.lock.release()
+
     def handler(self):
         monitor = self
 
@@ -342,6 +445,31 @@ class LiveMonitor:
                 if not head:
                     self.wfile.write(data)
 
+            def do_POST(self):
+                path = urlsplit(self.path).path
+                prefix = f"/{monitor.token}/tracking/"
+                try:
+                    if not path.startswith(prefix):
+                        raise ValueError("unknown route")
+                    match = re.fullmatch(r"([^/]+)/(\d+)", path[len(prefix) :])
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if (
+                        not match
+                        or not 0 < size <= 192 * 1024
+                        or self.headers.get("Content-Type") != "application/json"
+                    ):
+                        raise ValueError("invalid preview request")
+                    self.connection.settimeout(5)
+                    payload = json.loads(self.rfile.read(size))
+                    if not isinstance(payload, dict):
+                        raise ValueError("invalid preview payload")
+                    result = monitor.track_preview(match[1], int(match[2]), payload)
+                    self.reply(json.dumps(result).encode(), "application/json")
+                except (ValueError, TypeError, OSError):
+                    self.reply(
+                        b'{"error":"invalid tracking request"}', "application/json", 400
+                    )
+
             def do_HEAD(self):
                 self.do_GET(head=True)
 
@@ -353,7 +481,7 @@ class LiveMonitor:
                     return
                 path = path[len(prefix) :]
                 try:
-                    if path in {"", "monitor.js"}:
+                    if path in {"", "monitor.js", "preview_tracking.js"}:
                         name = "monitor.html" if not path else path
                         self.reply(
                             (ASSETS / name).read_bytes(),

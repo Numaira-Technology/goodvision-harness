@@ -26,6 +26,7 @@ from tools.vlm_multistream_benchmark import DecodedFrames, planned_observations
         "poll-stall",
         "playback-stall",
         "frozen-video",
+        "cropped-cameras",
     ],
 )
 def test_truncated_or_frozen_capture_is_not_deliverable(problem):
@@ -60,9 +61,71 @@ def test_truncated_or_frozen_capture_is_not_deliverable(problem):
         d["maxPollGapSeconds"] = 2.1
     elif problem == "playback-stall":
         d["maxPlaybackGapSeconds"] = 2.1
+    elif problem == "cropped-cameras":
+        d["allCamerasVisible"] = False
     else:
         d["videoFrames"][11] = 1
     assert not recording_is_complete(measured, 10, d, errors)
+
+
+@pytest.mark.parametrize(
+    "problem",
+    ["slow-camera", "missing-data", "missing-camera", "no-sample", "nan", "infinite"],
+)
+def test_playback_metrics_do_not_add_a_new_benchmark_stop_condition(problem):
+    from tools.vlm_benchmark.recording import playback_quality, recording_is_complete
+
+    d = {
+        "layout": "single-video",
+        "sawPlaying": True,
+        "finalPainted": True,
+        "pendingEvidence": 0,
+        "mediaErrors": [],
+        "maxPollGapSeconds": 0.2,
+        "maxPlaybackGapSeconds": 0.5,
+        "videoFrames": [420] * 12,
+        "playback": [{"seconds": 30.0, "frames": 420} for _ in range(12)],
+    }
+    measured = {"duration_seconds": 35}
+    assert recording_is_complete(measured, 35, d, [])
+    if problem == "slow-camera":
+        # One camera advances steadily at 2 FPS; a whole-screen average hides it.
+        d["playback"][11]["frames"] = 60
+    elif problem == "missing-data":
+        d.pop("playback")
+    elif problem == "missing-camera":
+        d["playback"].pop()
+    elif problem == "no-sample":
+        d["playback"][11]["seconds"] = 0
+    elif problem == "nan":
+        d["playback"][11]["seconds"] = float("nan")
+    else:
+        d["playback"][11]["frames"] = float("inf")
+    quality = playback_quality(d)
+    assert quality["measurement_complete"] is (problem == "slow-camera")
+    if problem == "slow-camera":
+        assert quality["per_stream"][11]["fps"] == 2
+    assert recording_is_complete(measured, 35, d, [])
+
+
+def test_recording_report_exposes_measured_playback_instead_of_encoder_fps(tmp_path):
+    from tools.vlm_benchmark.mode_report import recording_links
+    from tools.vlm_benchmark.recording import playback_quality
+
+    quality = playback_quality(
+        {
+            "layout": "single-video",
+            "videoFrames": [60, 450],
+            "playback": [{"seconds": 30, "frames": 60}, {"seconds": 30, "frames": 450}],
+        }
+    )
+    text = recording_links(
+        tmp_path,
+        {"id": "stage", "recording": {"complete": False, "playback_quality": quality}},
+    )
+    assert "2.00–15.00 FPS" in text  # noqa: RUF001
+    assert "帧率仅作记录，不作为中止条件" in text  # noqa: RUF001
+    assert "最低 12" not in text
 
 
 def test_input_pts_and_preview_keep_the_original_duration(tmp_path):
@@ -98,6 +161,160 @@ def test_input_pts_and_preview_keep_the_original_duration(tmp_path):
 
 def args():
     return modes.parser().parse_args(["--monitor", "--streams", "1"])
+
+
+@pytest.mark.skipif(
+    os.environ.get("VLM_MONITOR_BROWSER_TESTS") != "1",
+    reason="opt-in installed Chromium integration",
+)
+@pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
+@pytest.mark.parametrize("streams", [1, 4, 12])
+def test_single_video_without_evidence_or_tracking(tmp_path, mode, streams):
+    from fractions import Fraction
+
+    from PIL import Image
+    from playwright.sync_api import sync_playwright
+
+    from tools.vlm_benchmark.recording import playback_quality
+    from tools.vlm_multistream_benchmark import decode
+
+    av = pytest.importorskip("av")
+    source = tmp_path / "source.mp4"
+    with av.open(str(source), "w") as writer:
+        stream = writer.add_stream("libx264", rate=25)
+        stream.width, stream.height, stream.pix_fmt = 96, 64, "yuv420p"
+        for n in range(100):
+            frame = av.VideoFrame.from_image(Image.new("RGB", (96, 64), (n, 0, 0)))
+            frame.pts, frame.time_base = n, Fraction(1, 25)
+            for packet in stream.encode(frame):
+                writer.mux(packet)
+        for packet in stream.encode():
+            writer.mux(packet)
+    options = args()
+    options.monitor_layout = "single-video"
+    frames = decode(source, 2.5, 720, 90)
+    requests = []
+    with LiveMonitor(tmp_path, [frames], options) as monitor:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        monitor.begin({**job(), "streams": streams, "mode": mode, "duration": 3}, stage)
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={"width": 1920, "height": 1080})
+            page.on("request", lambda request: requests.append(request.url))
+            page.goto(monitor.url + "?tracking=on")  # Cannot override the saved layout.
+            page.wait_for_function("window.monitorReady")
+            assert page.locator("video").count() == streams
+            assert page.locator("canvas, img, .tracking-note").count() == 0
+            assert "结果对应的证据帧" not in page.locator("body").inner_text()
+            monitor.source_started(time.monotonic(), [0] * streams)
+            lanes = ["information", "grounding"] if mode == "parallel" else [
+                "information" if mode == "events" else "grounding"
+            ]
+            for camera in range(streams):
+                for lane in lanes:
+                    monitor.result(camera, result(2, lane))
+            page.wait_for_function(
+                "n => document.querySelectorAll('.chip.positive').length === n",
+                arg=streams * len(lanes),
+            )
+            page.wait_for_function(
+                f"window.monitorDiagnostics.videoFrames.length === {streams} && "
+                "window.monitorDiagnostics.videoFrames.every(n => n > 20) && "
+                "window.monitorDiagnostics.playback.every(row => row.seconds >= 2)"
+            )
+            monitor.draining()
+            monitor.finish({"lanes": {}, "input_timing_valid": True,
+                            "all_drained": True, "result_records_missing": 0})
+            page.wait_for_function("window.monitorDiagnostics.phases.includes('finished')")
+            rects = page.locator(".camera, #summary").evaluate_all(
+                "es => es.map(e => ({height:innerHeight, "
+                "bottom:e.getBoundingClientRect().bottom}))"
+            )
+            assert all(r["bottom"] <= r["height"] for r in rects), rects
+            page.wait_for_function("window.finalPainted")
+            d = page.evaluate("window.monitorDiagnostics")
+            assert d["layout"] == "single-video" and not d["trackingEnabled"]
+            assert d["pendingEvidence"] == d["evidenceFramesPainted"] == 0
+            assert d["allCamerasVisible"]
+            assert not d["mediaErrors"]
+            assert all(row["frames"] > 10 and row["fps"] > 10 for row in d["playback"])
+            assert playback_quality(d)["measurement_complete"], d["playback"]
+            assert not any("/frame/" in r or "/tracking/" in r for r in requests)
+            if streams == 1:
+                # Browser resizing must reserve the final summary and both lanes,
+                # not just make the outer camera rectangle fit by clipping it.
+                page.set_viewport_size({"width": 1280, "height": 720})
+                page.wait_for_timeout(250)
+                assert page.locator(
+                    ".camera, .screen, .lane, .camera-foot, #summary, #footer"
+                ).evaluate_all(
+                    "es => es.every(e => {const r=e.getBoundingClientRect();"
+                    "return r.height>0 && r.top>=0 && r.bottom<=innerHeight && "
+                    "r.left>=0 && r.right<=innerWidth;})"
+                )
+                assert page.locator(".screen").evaluate(
+                    "e => e.getBoundingClientRect().height >= 100"
+                )
+            if mode != "events":
+                # Hiding UI boxes does not remove the model's localization record.
+                assert monitor.snapshot()["cameras"][0]["lanes"]["grounding"]["objects"]
+            browser.close()
+
+
+@pytest.mark.skipif(
+    os.environ.get("VLM_MONITOR_BROWSER_TESTS") != "1",
+    reason="opt-in installed Chromium integration",
+)
+def test_single_camera_recordings_finish_in_all_modes(tmp_path):
+    """Exercise the actual suite, BrowserRecorder.finish and MP4 finalization."""
+    from fractions import Fraction
+
+    import av
+    from PIL import Image
+
+    source = tmp_path / "source.mp4"
+    with av.open(str(source), "w") as writer:
+        stream = writer.add_stream("libx264", rate=15)
+        stream.width, stream.height, stream.pix_fmt = 160, 90, "yuv420p"
+        for n in range(60):
+            frame = av.VideoFrame.from_image(Image.new("RGB", (160, 90), (n * 4, 0, 0)))
+            frame.pts, frame.time_base = n, Fraction(1, 15)
+            for packet in stream.encode(frame):
+                writer.mux(packet)
+        for packet in stream.encode():
+            writer.mux(packet)
+    options = modes.parser().parse_args([
+        "--video", str(source), "--output", str(tmp_path / "suite"),
+        "--modes", "events", "grounding", "parallel", "--streams", "1",
+        "--duration", "3", "--warmup-seconds", "3", "--repeats", "1",
+        "--soak-seconds", "0", "--monitor-layout", "single-video", "--record",
+    ])
+    output = modes.run(options)  # Simulation; no network model or credentials.
+    summary = json.loads((output / "summary.json").read_text())
+    assert summary["state"] == "completed"
+    jobs = [j for j in summary["jobs"] if j["phase"] == "measurement"]
+    assert [j["mode"] for j in jobs] == ["events", "compact", "parallel"]
+    for measured in jobs:
+        folder = output / measured["id"] / "recording"
+        record = json.loads((folder / "recording.json").read_text())
+        assert record["complete"] is True, record
+        assert record["browser"]["allCamerasVisible"]
+        assert record["browser"]["finalPainted"]
+        assert record["browser"]["layout"] == "single-video"
+        assert len(record["browser"]["videoFrames"]) == 1
+        assert record["playback_quality"]["measurement_complete"]
+        assert record["video_probe"]["frames"] > 30
+        assert (folder / "viewport.mp4").stat().st_size > 1000
+        assert (folder / "final.png").is_file()
+
+
+def test_single_video_does_not_silently_fall_back_to_sampled_images(tmp_path):
+    options = args()
+    options.monitor_layout = "single-video"
+    with pytest.raises(ValueError, match="actual video"):
+        with LiveMonitor(tmp_path, [[jpeg()]], options):
+            pass
 
 
 def job():
@@ -156,7 +373,10 @@ def test_variable_rate_preview_does_not_round_adjacent_frames_to_same_pts(tmp_pa
         )
 
 
-def test_monitor_keeps_lanes_and_real_frame_mapping_without_backdating(tmp_path):
+@pytest.mark.parametrize("historical_only", [False, True])
+def test_monitor_keeps_lanes_and_real_frame_mapping_without_backdating(
+    tmp_path, historical_only
+):
     frames = DecodedFrames([jpeg()] * 4, "unused.mp4", [0.04, 0.45, 0.83, 1.23], 1.6)
     monitor = LiveMonitor(tmp_path, [frames], args())
     monitor.previews = [None]
@@ -167,7 +387,9 @@ def test_monitor_keeps_lanes_and_real_frame_mapping_without_backdating(tmp_path)
     r = result(5)
     monitor.result(0, r)
     monitor.result(0, r)  # Duplicate polling must not inflate completeness.
-    monitor.result(0, result(2))  # Late old response cannot overwrite newer state.
+    old = result(2)
+    old["historical_only"] = historical_only
+    monitor.result(0, old)  # Late old response cannot overwrite newer state.
     monitor.result(0, result(5, "grounding", seconds=2))
     snapshot = monitor.snapshot()
     camera = snapshot["cameras"][0]

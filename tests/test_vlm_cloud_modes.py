@@ -56,9 +56,20 @@ def test_modes_plan_preserves_model_and_recording_without_paid_default(
     assert settings["record"] and settings["monitor"]
     assert settings["monitor_port"] == 8787
     assert settings["soak_seconds"] == 0
+    assert settings["monitor_layout"] == "evidence"
     paid = plan(tmp_path, monkeypatch, "--real", "--global-limit", "16")
     assert not paid["simulate"] and paid["settings"]["real"]
     assert paid["settings"]["global_limit"] == 16
+
+
+def test_single_video_cloud_plan_keeps_layout_and_grounding_alias(
+    tmp_path, monkeypatch
+):
+    doc = plan(tmp_path, monkeypatch, "--monitor-layout", "single-video",
+               "--modes", "events", "grounding", "parallel")
+    assert doc["settings"]["monitor_layout"] == "single-video"
+    assert doc["settings"]["modes"] == ["events", "compact", "parallel"]
+
 
 
 @pytest.mark.skipif(os.name == "nt", reason="cloud POSIX worker")

@@ -27,8 +27,21 @@ def recording_links(output, job):
             links.append(f"<a href='{href}'>{label}</a>")
     complete = recording.get("complete") and (folder / "viewport.mp4").is_file()
     status = "完整" if complete else "不完整/失败"
+    playback = recording.get("playback_quality")
+    playback_note = ""
+    if playback:
+        rates = [row["fps"] for row in playback["per_stream"] if row["fps"] is not None]
+        measured = f"{min(rates):.2f}–{max(rates):.2f} FPS" if rates else "无有效测量"
+        playback_note = (
+            f" · 逐路实际播放：{measured}；目标 15 FPS，"
+            "帧率仅作记录，不作为中止条件"
+        )
+        if not playback.get("measurement_complete", True):
+            playback_note += "；部分播放测量数据缺失"
     return (
-        f"<p>浏览器录屏：{status} · " + (" · ".join(links) or "尚无可用文件") + "</p>"
+        f"<p>浏览器录屏：{status}{playback_note} · "
+        + (" · ".join(links) or "尚无可用文件")
+        + "</p>"
     )
 
 

@@ -408,7 +408,7 @@ def main():
     parser.add_argument(
         "--modes",
         nargs="+",
-        choices=["events", "compact", "parallel"],
+        choices=["events", "grounding", "compact", "parallel"],
         default=["events", "compact", "parallel"],
     )
     parser.add_argument("--duration", type=float, default=60)
@@ -416,6 +416,9 @@ def main():
     parser.add_argument("--warmup-seconds", type=float, default=3)
     parser.add_argument("--record", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--monitor-port", type=int, default=8787)
+    parser.add_argument(
+        "--monitor-layout", choices=["evidence", "single-video"], default="evidence"
+    )
     parser.add_argument("--compare", action="store_true")
     parser.add_argument("--compare-concurrency", action="store_true")
     parser.add_argument("--compare-arrival", action="store_true")
@@ -465,6 +468,8 @@ def main():
             args.model = args.model or "qwen/qwen3-vl-30b-a3b-instruct"
             plan = make_modes_plan(args)
         else:
+            if args.monitor_layout != "evidence":
+                parser.error("monitor layout requires --suite modes")
             plan = make_plan(
                 provider=args.provider,
                 model=args.model,

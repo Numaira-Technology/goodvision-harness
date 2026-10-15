@@ -120,7 +120,20 @@ key 的读取规则与 Harness 一致，已有 `INFERENCE_API_KEY` 可能覆盖
 实际返回的六类事件结果、对应证据帧和耗时；`--record` 同时把该页面录成 MP4。
 它接收 Harness VLM 分支发布的结果，不会事后把结果提前贴到视频上。
 这是本测试套件的监看页面，不是完整 Harness 产品界面或桌面录屏。
-事件模式不输出框；定位框只画在结果对应的证据帧上，避免把旧框误贴到当前画面。
+`--monitor-layout evidence`（默认）保留左右画面。事件模式不输出框；模型原始定位框
+只画在右侧证据帧上。预览跟踪默认关闭，自动录屏也保持关闭，避免 grounding/parallel
+额外的浏览器截帧、HTTP 和 OpenCV 工作影响三模式的容量与耗时对照。
+仅作可视化检查时，可在监看 URL 后加 `?tracking=on`，让 grounding/parallel 的左侧
+用原始定位作为种子，显示蓝色虚线的帧间跟踪估计；它不是新的检测或人员身份识别，
+不改变六类事件判断。开启跟踪会增加客户端和测试机负载，不应用于容量或耗时对照；
+进行对照测量时，应关闭所有开启跟踪的监看页面。
+跟踪最多保留 8 秒历史、两个同时浏览的客户端；遮挡、交叉、跳转、过期或计算超时会隐藏
+不可靠框。移除 `?tracking=on` 或改为 `?tracking=off` 可关闭跟踪。
+
+`--monitor-layout single-video` 只显示每路一幅连续视频，隐藏右侧证据帧和全部定位/跟踪框，
+仍显示各分支的六类状态、证据时间、耗时和最终统计。单路视频按剩余屏幕高度布局，
+为最终统计预留空间；1、4、12 路均覆盖浏览器回归。实时视频未加入播放缓冲，
+所以当前画面时间仍可能晚于结果对应的证据时间；隐藏框也不会删掉原始结果中的定位信息。
 没有框不表示画面无人，完整输出也不表示已验证的识别准确率。
 
 仅监看不需要 Playwright；录屏额外安装（以下 `python` 应指向上述测试环境）：
@@ -156,6 +169,10 @@ python -m tools.vlm_benchmark.modes --real --backend openrouter --record \
 `--headed` 可在 Mac 上显示正在录制的 Chromium 窗口；省略时仍录制真实浏览器页面。
 视频预览使用预先生成的 H.264、最长边 720、约 15 FPS 副本，保持原时间轴，
 不会改模型使用的 JPEG 样本。预览 FPS 和模型请求频率是两件事。
+逐路实际播放帧率写入 `recording.json`，也显示在报告中；它是诊断数据，不能把编码器
+标称帧率当成实际播放帧率。录屏完成检查仍要求视频确实前进、所有路及最终统计在画面内、
+没有页面/媒体错误。测试送帧独立于监看和日志收集，避免慢浏览器或慢日志拖延输入时钟；
+迟到未送达的帧照常计入统计，不补发伪装成实时输入。
 每阶段运行 `--duration` 指定的时长；短演示只播放前几秒，运行超过素材时长则循环。
 单路录制 60 秒可覆盖本次约 56 秒的完整输入视频。
 
@@ -164,6 +181,18 @@ python -m tools.vlm_benchmark.modes --real --backend openrouter --record \
 `-L 8787:localhost:8787` 转发，然后在本机打开终端给出的含随机路径的地址。
 `run_remote.py --suite modes` 可把同一个三模式入口部署到云端；不带 `--suite modes`
 时仍是原有容量压测入口，不能混用两套默认参数。
+本地和云端入口都接受 `--monitor-layout single-video`；`--modes grounding` 是原有
+`compact` 模式的别名，不改变模型请求或输出规则。
+
+浏览器回归（模拟输入与结果，不调用真实模型）：
+
+```bash
+VLM_MONITOR_BROWSER_TESTS=1 python -m pytest \
+  tests/test_vlm_monitor.py tests/test_vlm_preview_tracking.py -q
+```
+
+CI 的 Preview layouts and live recordings 检查会安装 Chromium 并运行这些回归，
+包含三种模式的单路实际 MP4 录制及结束检查；截图和录屏作为 CI 附件保留。
 
 ### 云实例运行 Harness，OpenRouter 运行模型
 

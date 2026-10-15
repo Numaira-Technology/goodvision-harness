@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from test_vlm_multistream_benchmark import report
 
 from goodvision_harness.config import load_config
 from tools import vlm_multistream_benchmark as benchmark
+from tools.vlm_benchmark import source_feeder
 from tools.vlm_benchmark.modes import usable
 
 
@@ -44,6 +46,13 @@ def test_real_sender_preserves_source_clock_and_exposes_stalled_input(
             self.now += seconds
 
     clock = Clock()
+
+    class ClockEvent(Event):
+        def wait(self, timeout=None):
+            if not self.is_set() and timeout is not None:
+                clock.sleep(timeout)
+            return self.is_set()
+
     offers = []
     branches = []
 
@@ -96,6 +105,11 @@ def test_real_sender_preserves_source_clock_and_exposes_stalled_input(
             self.closes += 1
 
     monkeypatch.setattr(benchmark, "time", clock)
+    # The source loop now runs independently of report collection. Keep its
+    # monotonic clock and interruptible wait on the same controlled timeline;
+    # leave the real feeder/thread and all lag/drop/denominator assertions intact.
+    monkeypatch.setattr(source_feeder, "time", clock)
+    monkeypatch.setattr(source_feeder, "Event", ClockEvent)
     monkeypatch.setattr(benchmark, "IndependentVLMBranch", Branch)
     args = SimpleNamespace(
         real=False,
