@@ -151,7 +151,11 @@ class LiveMonitor:
         )
         try:
             if self.args.record:
-                self.recorder = BrowserRecorder(self.url, self.args.headed)
+                # Tracking overlays are opt-in (?tracking=on). The YOLO detector
+                # preview exists to show boxes, so record it with tracking on;
+                # plain benchmark recordings stay overlay-free as before.
+                record_url = self.url + ("?tracking=on" if self.detector_url else "")
+                self.recorder = BrowserRecorder(record_url, self.args.headed)
             return self
         except BaseException:
             self.__exit__(None, None, None)
