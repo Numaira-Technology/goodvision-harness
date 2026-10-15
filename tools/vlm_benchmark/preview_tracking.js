@@ -28,16 +28,20 @@ window.PreviewTracking = class {
     this.note.textContent=message;
   }
   paint(image, objects=[]) {
+    // Match the source aspect ratio so CSS contains the video and overlay once,
+    // at the same scale, including fixed-height multicamera panes.
+    const height=Math.round(this.canvas.width*image.height/image.width);
+    if(this.canvas.height!==height) this.canvas.height=height;
     const ctx=this.ctx, w=this.canvas.width, h=this.canvas.height;
-    const iw=image.width, ih=image.height, k=Math.min(w/iw,h/ih), rw=iw*k,rh=ih*k,x=(w-rw)/2,y=(h-rh)/2;
-    ctx.clearRect(0,0,w,h); ctx.drawImage(image,x,y,rw,rh);
+    const scale=Math.min(this.canvas.clientWidth/w,this.canvas.clientHeight/h) || 1;
+    ctx.clearRect(0,0,w,h); ctx.drawImage(image,0,0,w,h);
     for(const object of objects) {
       const b=object.bbox;
-      ctx.strokeStyle="#57c7ff"; ctx.lineWidth=2; ctx.setLineDash([7,3]);
-      ctx.strokeRect(x+b.x1*rw,y+b.y1*rh,(b.x2-b.x1)*rw,(b.y2-b.y1)*rh);
-      ctx.setLineDash([]);ctx.fillStyle="#57c7ff";ctx.font="13px sans-serif";
+      ctx.strokeStyle="#57c7ff"; ctx.lineWidth=2/scale; ctx.setLineDash([7/scale,3/scale]);
+      ctx.strokeRect(b.x1*w,b.y1*h,(b.x2-b.x1)*w,(b.y2-b.y1)*h);
+      ctx.setLineDash([]);ctx.fillStyle="#57c7ff";ctx.font=`${13/scale}px sans-serif`;
       const number=Number(object.track_id.split(":").at(-1))+1;
-      ctx.fillText(`T${number} · 跟踪估计`,x+b.x1*rw,Math.max(14,y+b.y1*rh-4));
+      ctx.fillText(`T${number} · 跟踪估计`,b.x1*w,Math.max(14/scale,b.y1*h-4/scale));
     }
     const now=performance.now();
     if(this.lastPaint && this.playing) this.stats.maxPaintGapSeconds=Math.max(this.stats.maxPaintGapSeconds,(now-this.lastPaint)/1000);

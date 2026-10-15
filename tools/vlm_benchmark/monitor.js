@@ -7,7 +7,8 @@
   const seconds = v => Number.isFinite(v) ? `${v.toFixed(2)} s` : "—";
   let state, anchoredAt = 0, cards = [], lastPoll = 0, rafFrames = 0;
   window.trackingClient = crypto.randomUUID();
-  const trackingRequested = new URLSearchParams(location.search).get("tracking") !== "off";
+  // Extra preview work is opt-in so timed mode comparisons share the same load.
+  const trackingRequested = new URLSearchParams(location.search).get("tracking") === "on";
   let singleVideo = false, trackingEnabled = trackingRequested;
   window.currentStage = null; window.monitorReady = false; window.finalPainted = false;
   const resetDiagnostics = () => window.monitorDiagnostics = {sawPlaying:false,finalPainted:false,pendingEvidence:0,maxPollGapSeconds:0,maxPlaybackGapSeconds:0,mediaErrors:[],paintFrames:0,phases:[],videoFrames:[],trackingEnabled,allCamerasVisible:false,evidenceFramesPainted:0,laneRenderUpdates:{}};
@@ -31,7 +32,9 @@
     byId("grid").style.maxWidth = count === 1 ? "1340px" : "none";
     byId("display-note").textContent = singleVideo
       ? "每路显示原速视频（预览目标 15 FPS），不叠加定位或跟踪框。事件状态按返回时刻更新，证据时间与耗时见每条结果；未增加播放缓冲。"
-      : "左侧为原速视频（蓝色虚线=帧间跟踪估计，丢失即隐藏）；右侧为模型返回时才显示的原始证据帧，绿色框为原始定位。跟踪不产生新事件判断，也不验证人员身份。";
+      : trackingEnabled && data.lanes.includes("grounding")
+      ? "左侧为原速视频（蓝色虚线=帧间跟踪估计，丢失即隐藏）；右侧为模型返回时才显示的原始证据帧，绿色框为原始定位。跟踪仅供可视化，增加负载，不用于容量或耗时对照。"
+      : "左侧为原速视频；右侧为模型返回时才显示的原始证据帧，绿色框为原始定位。预览跟踪默认关闭。";
     window.monitorDiagnostics.layout = singleVideo ? "single-video" : "evidence";
     window.monitorDiagnostics.previewTargetFps = data.preview_fps || 15;
     data.cameras.forEach((camera, i) => {

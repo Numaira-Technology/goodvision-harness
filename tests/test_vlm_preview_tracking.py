@@ -222,9 +222,9 @@ def test_monitor_tracking_is_separate_from_inference_and_failed_results(tmp_path
     reason="opt-in installed Chromium integration",
 )
 @pytest.mark.parametrize("streams", [1, 12])
-@pytest.mark.parametrize("tracking_enabled", [False, True])
+@pytest.mark.parametrize("tracking_query", [None, "off", "on"])
 def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
-    tmp_path, streams, tracking_enabled
+    tmp_path, streams, tracking_query
 ):
     import json
     import os
@@ -240,6 +240,7 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
     from tools.vlm_benchmark.monitor import LiveMonitor
     from tools.vlm_multistream_benchmark import DecodedFrames
 
+    tracking_enabled = tracking_query == "on"
     video = tmp_path / "moving.mp4"
     # No overlap here: every visible estimate can be checked against identity GT.
     with av.open(str(video), "w") as writer:
@@ -269,9 +270,16 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
                 args=["--autoplay-policy=no-user-gesture-required"]
             )
             page = browser.new_page(viewport={"width": 1920, "height": 1080})
-            errors = []
+            errors, tracking_requests = [], []
             page.on("pageerror", lambda e: errors.append(str(e)))
-            page.goto(monitor.url + ("" if tracking_enabled else "?tracking=off"))
+            page.on(
+                "request",
+                lambda request: tracking_requests.append(request.url)
+                if "/tracking/" in request.url
+                else None,
+            )
+            query = "" if tracking_query is None else f"?tracking={tracking_query}"
+            page.goto(monitor.url + query)
             page.wait_for_function("window.monitorReady")
             monitor.source_started(time.monotonic(), [0] * streams)
             page.wait_for_timeout(1800)
@@ -296,7 +304,7 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
                     monitor.result(camera, fresh)
             page.wait_for_timeout(600)
             d = page.evaluate("window.monitorDiagnostics")
-            suffix = "" if tracking_enabled else "-off"
+            suffix = "" if tracking_enabled else f"-{tracking_query or 'default'}"
             if folder := os.environ.get("VLM_TRACKING_REVIEW_OUTPUT"):
                 destination = Path(folder)
                 destination.mkdir(parents=True, exist_ok=True)
@@ -307,6 +315,13 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
                     path=str(destination / f"browser-{streams}{suffix}.png")
                 )
             assert not errors and not d["mediaErrors"]
+            assert d["trackingEnabled"] is tracking_enabled
+            assert bool(tracking_requests) is tracking_enabled
+            assert page.locator(".tracking-overlay, .tracking-note").count() == (
+                streams * 2 if tracking_enabled else 0
+            )
+            if not tracking_enabled:
+                assert monitor.preview_trackers == {}
             assert len(d["tracking"]) == streams
             for tracking in d["tracking"]:
                 if not tracking_enabled:
@@ -463,7 +478,7 @@ def test_portrait_source_tracks_through_real_thumbnail_and_browser_proxy(tmp_pat
                 args=["--autoplay-policy=no-user-gesture-required"]
             )
             page = browser.new_page(viewport={"width": 1920, "height": 1080})
-            page.goto(monitor.url)
+            page.goto(monitor.url + "?tracking=on")
             page.wait_for_function("window.monitorReady")
             assert page.locator("video").evaluate(
                 "v => [v.videoWidth, v.videoHeight]"
@@ -484,4 +499,98 @@ def test_portrait_source_tracks_through_real_thumbnail_and_browser_proxy(tmp_pat
             for sample in tracking["samples"]:
                 for obj in sample["objects"]:
                     assert obj["bbox"] == pytest.approx(bbox, abs=0.01)
+            browser.close()
+
+
+@pytest.mark.skipif(
+    os.environ.get("VLM_MONITOR_BROWSER_TESTS") != "1",
+    reason="opt-in installed Chromium integration",
+)
+@pytest.mark.parametrize(
+    "streams,source_size,viewport",
+    [
+        (12, (720, 190), {"width": 1920, "height": 1080}),
+        (2, (180, 320), {"width": 700, "height": 1080}),
+    ],
+    ids=["wide-compact-multicam", "portrait-tall-pane"],
+)
+def test_tracking_boxes_align_with_rendered_video_pixels(
+    tmp_path, streams, source_size, viewport
+):
+    from fractions import Fraction
+    from io import BytesIO
+
+    import av
+    from PIL import Image
+    from playwright.sync_api import sync_playwright
+
+    from tests.test_vlm_monitor import args, job
+    from tools.vlm_benchmark.monitor import LiveMonitor
+    from tools.vlm_multistream_benchmark import DecodedFrames
+
+    width, height = source_size
+    image = np.full((height, width, 3), 32, np.uint8)
+    # A visible rectangle gives an independent pixel reference on the native
+    # video. Comparing normalized tracker boxes alone misses double letterboxing.
+    image[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4] = (240, 30, 30)
+    source = tmp_path / "geometry.mp4"
+    with av.open(str(source), "w") as writer:
+        stream = writer.add_stream("libx264", rate=15)
+        stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
+        for n in range(15):
+            frame = av.VideoFrame.from_image(Image.fromarray(image))
+            frame.pts, frame.time_base = n, Fraction(1, 15)
+            for packet in stream.encode(frame):
+                writer.mux(packet)
+        for packet in stream.encode():
+            writer.mux(packet)
+    frames = DecodedFrames([encoded(image)] * 3, str(source), [0, 0.4, 0.8], 1.0)
+    destination = tmp_path / "monitor"
+    destination.mkdir()
+    with LiveMonitor(destination, [frames], args()) as monitor:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        monitor.begin({**job(), "streams": streams}, stage)
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport=viewport)
+            page.goto(monitor.url + "?tracking=on")
+            page.wait_for_function("window.monitorReady")
+            screen = page.locator(".camera .screen").first
+            before = np.array(Image.open(BytesIO(screen.screenshot())).convert("RGB"))
+            red = (
+                (before[:, :, 0] > 180)
+                & (before[:, :, 1] < 80)
+                & (before[:, :, 2] < 80)
+            )
+            red_y, red_x = np.nonzero(red)
+            assert len(red_x) > 100
+            expected = np.array([red_x.min(), red_y.min(), red_x.max(), red_y.max()])
+            page.evaluate(
+                """() => {
+                  const video=document.querySelector('.camera video');
+                  const canvas=document.querySelector('.camera .tracking-overlay');
+                  const image=document.createElement('canvas');
+                  image.width=320;
+                  image.height=Math.max(8,Math.round(320*video.videoHeight/video.videoWidth));
+                  image.getContext('2d').drawImage(video,0,0,image.width,image.height);
+                  const tracker={
+                    canvas,ctx:canvas.getContext('2d'),stats:{painted:0},lastPaint:0
+                  };
+                  window.PreviewTracking.prototype.paint.call(tracker,image,[{
+                    track_id:'geometry:0',bbox:{x1:.25,y1:.25,x2:.75,y2:.75}
+                  }]);
+                }"""
+            )
+            after = np.array(Image.open(BytesIO(screen.screenshot())).convert("RGB"))
+            # Require a visible cyan border, not just tiny antialiasing changes.
+            cyan = after[:, :, 0] < 150
+            cyan &= after[:, :, 1] > 130
+            cyan &= after[:, :, 2] > 150
+            # Exclude the label above the box; inspect the actual rendered border.
+            cyan[: expected[1] + 3] = False
+            cyan_y, cyan_x = np.nonzero(cyan)
+            assert len(cyan_x) > 10
+            actual = np.array([cyan_x.min(), cyan_x.max(), cyan_y.max()])
+            assert actual == pytest.approx(expected[[0, 2, 3]], abs=2)
             browser.close()
