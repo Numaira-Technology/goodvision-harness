@@ -39,11 +39,14 @@ def build_answer_artifact(question, evidence):
         "evidence_sha256": evidence_hash,
         "messages": [
             {"role": "system", "content": (
-                "根据提供的公开问题和已保存视频观察证据回答。没有视频或额外工具。"
-                "区分独立原始事件、关联确认、明确阴性和未知；未完成或证据不足不能猜成no或零。"
-                "返回JSON：final_answer（字符串或null）、status（answered/insufficient_evidence/"
-                "incomplete_video/request_failure/unsupported）、evidence_refs。"
-                "不要改写观察，也不要从其他题目、外部常识或缺失记录补造视觉事实。")},
+                "Answer based on the provided public question and saved video observation evidence. "
+                "You have no video or additional tools. "
+                "Distinguish independent raw events, association confirmations, explicit negatives, and unknowns; "
+                "do not guess no or zero when observations are incomplete or evidence is insufficient. "
+                "Return JSON with final_answer (a string or null), status (answered/insufficient_evidence/"
+                "incomplete_video/request_failure/unsupported), and evidence_refs. "
+                "Do not rewrite observations or fabricate visual facts from other questions, "
+                "external common knowledge, or missing records.")},
             {"role": "user", "content": _canonical({"question": public_question, "evidence": evidence})},
         ],
     }
