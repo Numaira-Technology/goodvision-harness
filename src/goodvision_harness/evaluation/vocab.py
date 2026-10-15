@@ -1,4 +1,4 @@
-"""固定评测词表；观察配置不能用题目或选项筛选此表。"""
+"""Fixed evaluation vocabulary; do not filter observation labels using questions or options."""
 from __future__ import annotations
 
 import re
@@ -6,7 +6,7 @@ import re
 VOCAB_VERSION = "frozen-ashley-51-plus-native-fight-v1"
 VOCAB_SOURCE = "detector-ablation182-resume6-20261013/source/event-definitions.json"
 
-# 原冻结文件的51个标签逐项保留；同义词也不在此处合并。
+# Preserve the frozen file's 51 labels, including separate synonym entries.
 FROZEN_EVENT_LABELS = (
     "browsing", "leaving_baggage", "drop_down", "shop_exit", "hugging",
     "leaving_object", "shaking_hands_with_somebody", "browsing_newspaper",
@@ -30,7 +30,7 @@ SUPPORTED_EVENT_LABELS = frozenset(OBSERVATION_EVENT_LABELS)
 
 
 def canonical_event_label(value: str) -> str:
-    """只做公开标签的空白/下划线规范化及明确的physical_conflict映射。"""
+    """Normalize label whitespace/underscores and the explicit physical_conflict alias."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError("event label must be non-empty text")
     label = re.sub(r"[\s_]+", "_", value.strip().lower())

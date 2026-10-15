@@ -1,7 +1,8 @@
-"""正式采集的原生运行时接线：源帧→独立发布／人物registry→原生融合。
+"""Wire source frames to independent publication, person registration, and native fusion.
 
-不创建GPU、不读题目/GT、不加载人脸。模型和源读取由显式正式入口负责。
-SAM只接受原生有完成水位的批次；即时检测器不能伪装为SAM批次。
+The entry point supplies models and sources; this module neither allocates GPUs
+nor reads questions/ground truth or loads faces. SAM requires native completion
+batches; immediate detector results cannot stand in for those batches.
 """
 from __future__ import annotations
 
@@ -73,7 +74,7 @@ class UnifiedCaptureSession:
             raise RuntimeError("persistent scene callback failed") from self._callback_error
 
     def source_frame(self, frame):
-        """源图先进入两路；此函数无人物结果参数，不以检测成功为VLM准入条件。"""
+        """Admit source images to both lanes without conditioning VLM admission on person detections."""
         self._check()
         if (not isinstance(frame, VideoFrame)
                 or len(self._submitted) >= len(self._ordered_frames)
@@ -84,7 +85,7 @@ class UnifiedCaptureSession:
         if row["t"] != frame.timestamp_seconds or row["jpeg_sha256"] != digest:
             raise ValueError("source frame timestamp/hash differs from frozen plan")
         if self.observer.pending:
-            # 正式离线背压，绝不将busy的下个窗口丢掉后宣称完整。
+            # Apply offline backpressure rather than dropping a busy window.
             self.observer.drain_window()
         available = time.monotonic()
         sample = SourceSample(EvidenceFrame(self.sid, frame.frame_sequence,
@@ -102,7 +103,7 @@ class UnifiedCaptureSession:
         window = self._windows.get(frame.frame_sequence)
         if window is not None:
             self.observer.submit(window, [self._samples[index] for index in window["frame_sequences"]])
-        # 原图保留到实际跟踪回执；VLM只保留未来固定窗口仍需的源图。
+        # Keep originals until tracking receipts arrive; retain VLM images needed by future windows.
         future_needed = {index for end, plan in self._windows.items() if end > frame.frame_sequence
                          for index in plan["frame_sequences"]}
         self._samples = {index: value for index, value in self._samples.items() if index in future_needed}
@@ -154,7 +155,7 @@ class UnifiedCaptureSession:
         if self.scene.tracking_mode != "batch" or batch.stream_session_id != self.sid:
             raise ValueError("unexpected native tracking batch")
         if not batch.frames:
-            return  # 仅accepted不是completed，不能制造空帧回执。
+            return  # Accepted is not completed; do not fabricate an empty-frame receipt.
         canonical = []
 
         def map_frames(snapshots):
@@ -208,7 +209,7 @@ class UnifiedCaptureSession:
         for key in ("capacity_dropped_reports", "expired_reports", "association_failures", "callback_failures"):
             if stats.get(key, 0):
                 self.recorder.request_failure(stage="fusion", reason=key, detail={"count": stats[key]})
-        # 未关联是观察结果，原生函数已尝试完成；不强配ID，也不删除原始事件。
+        # Preserve unresolved associations without forcing IDs or deleting raw events.
         with self._record_lock:
             result = self.recorder.finish(
                 source_eof=source_eof, tracking_drained=tracking_drained,

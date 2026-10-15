@@ -1,4 +1,4 @@
-"""观察与公开问题入口共用的私有评分字段／凭据隔离。"""
+"""Exclude private scoring fields and credentials from observations and public questions."""
 PRIVATE_FIELDS = frozenset({
     "gt", "answer", "ground_truth", "ground_truth_json", "correct_answer",
     "reference_answer", "expected_answer", "api_key", "authorization",

@@ -1,7 +1,8 @@
-"""一次新SID的正式采集入口：冻结源帧→原生两路→不可覆盖的完整证据。
+"""Capture a new session from frozen source frames through native lanes into immutable evidence.
 
-不负责租机或重试；外层控制器冻结配置、校验独占4090及累计付费账本，
-题级失败留档跳过，共享身份/IO/连接失败交外层恢复。没有健康/预热请求。
+The outer controller owns configuration freezing, exclusive 4090 allocation,
+ledger checks, retries, source skips, and shared identity/I/O/connection recovery.
+This entry point sends no health or warmup requests.
 """
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ def _read_frozen(path, expected):
 
 
 def _tracking_result(result):
-    # 原生attributes深冻结，不能dataclasses.asdict/deepcopy mappingproxy。
+    # Native attributes are deeply frozen; asdict/deepcopy cannot copy mappingproxy values.
     return {field.name: ([frame.as_dict() for frame in result.frames]
                          if field.name == "frames" else getattr(result, field.name))
             for field in fields(result)}
@@ -89,7 +90,7 @@ def capture_source(config_path, *, config_sha256, output, ledger):
     profile = load_profile(base / config["event_definitions"])
     window_plan = fixed_window_plan(frame_plan, profile,
                                     observation_fps=config["observation_fps"])
-    # 原生请求传输被实例级账本包装，不另建未存在的代理或修改生产全局client。
+    # Wrap this inspector's transport with a ledger; leave the global production client untouched.
     settings = ModelAPISettings.from_mapping(config["vlm"]["settings"])
     endpoint = urlparse(settings.endpoint)
     if (settings.inspection_endpoint or settings.max_retries != 0
@@ -206,7 +207,7 @@ def capture_source(config_path, *, config_sha256, output, ledger):
                             "request_start": request_start, "response_complete": response_complete,
                             "ended_monotonic": ended, "clock_domain": session.recorder.clock_domain,
                             "failure_policy": failure_policy(exc), **_failure_detail(exc, credential=credential)}
-                # 即使适配器已poisoned，失败终态仍独立原子留档，不依赖VLM账本。
+                # Persist the terminal failure even if the adapter is poisoned, independent of the VLM ledger.
                 publish_once(root / f"tracking-failure-{frame.frame_sequence:08d}.json", terminal)
                 raise
             session.recorder.timing({"clock_domain": session.recorder.clock_domain,
@@ -234,7 +235,7 @@ def capture_source(config_path, *, config_sha256, output, ledger):
         successful = True
         return outcome
     except Exception as exc:
-        # 检测器请求边界另存detail及原body hash；VLM原回执单独进入累计账本。
+        # Save detector failure details and body hashes here; keep VLM receipts in the cumulative ledger.
         publish_once(root / "outcome.json", {
             "schema_version": "unified-source-outcome-v1", "video_id": config["video_id"],
             "stream_session_id": config["stream_session_id"], "status": "interrupted",
@@ -280,7 +281,7 @@ def capture_source(config_path, *, config_sha256, output, ledger):
                     cleanup["errors"].append({"stage": "client_close", "type": type(exc).__name__})
             if (tracking["mode"] == "native_session" or count_protocol) and not cleanup["remote_cleanup_confirmed"]:
                 cleanup["requires_worker_reset"] = True
-            # 即时路成功后按服务原生SID隔离/LRU回收，不谎称做过远端DELETE。
+            # The immediate service uses native SID isolation/LRU cleanup; no remote DELETE occurred.
             cleanup["immediate_session_policy"] = "new_sid_native_lru" if tracking["mode"] == "immediate" else None
             publish_once(root / "cleanup.json", cleanup)
 

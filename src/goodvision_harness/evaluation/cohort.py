@@ -1,6 +1,7 @@
-"""公开题库批量读取同份正式证据，生成parser原答与未调用的总结请求。
+"""Generate parser answers and unexecuted summary requests from shared saved evidence.
 
-这是无模型的正式答案生成入口，不负责评分，也不把历史Ashley捕获升级成新三路。
+This entry point makes no model calls, performs no scoring, and does not upgrade
+historical Ashley captures into three-lane evidence.
 """
 from __future__ import annotations
 
@@ -58,7 +59,7 @@ def generate_cohort(*, questions_path, index_path, output):
         sources[vid] = {"capture_path": str(capture_path.resolve()),
                         "capture_file_sha256": entry["capture_file_sha256"],
                         "evidence_sha256": evidence.get("evidence_sha256")}
-    # 输出目录不复用，失败不会覆盖已有原答。记录输入身份后才开始逐题发布。
+    # Use a new output directory and record input identities before publishing answers.
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     (output / "answers").mkdir()
@@ -87,7 +88,7 @@ def generate_cohort(*, questions_path, index_path, output):
         else:
             artifact = build_answer_artifact(question, evidence)
             artifact.update(method=method, observation_source=sources[vid])
-        # 文件名不接受题号中的路径，题号仍完整保存在内容中。
+        # Keep question IDs in the content; do not interpret them as filename paths.
         path = f"answers/{position + 1:04d}-{hashlib.sha256(qid.encode()).hexdigest()[:16]}.json"
         digest = publish_once(output / path, artifact)
         result_rows.append({"qa_id": qid, "video_id": vid, "capability": question.get("capability"),
@@ -107,7 +108,7 @@ def generate_cohort(*, questions_path, index_path, output):
 
 
 def main():
-    cli = argparse.ArgumentParser(description="从已保存的新三路证据批量生成原答；不调用模型、不评分")
+    cli = argparse.ArgumentParser(description="Generate answers from saved three-lane evidence without model calls or scoring")
     cli.add_argument("--questions", type=Path, required=True)
     cli.add_argument("--index", type=Path, required=True)
     cli.add_argument("--output", type=Path, required=True)

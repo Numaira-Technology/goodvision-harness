@@ -1,4 +1,4 @@
-"""固定、无题目输入的评测事件配置；不启动服务或调用模型。"""
+"""Fixed, question-independent event profiles without service startup or model calls."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -46,7 +46,7 @@ class EvaluationEventProfile:
                    observation_fps=1.25, max_in_flight=4, route_id=None):
         from ..vlm_independent import VLMProcessConfig
         parameters = dict(parameters or {})
-        # parallel的events与grounding输出结构不同，不能向两者强灌六类events schema。
+        # Events and grounding have different contracts; do not impose a shared six-label schema.
         if "response_format" in parameters:
             raise ValueError("parallel evaluation requires per-lane output contracts, not a shared schema")
         return VLMProcessConfig(
@@ -63,7 +63,7 @@ class EvaluationEventProfile:
 
 
 def load_profile(definitions_path):
-    """读取已冻结51定义，附加生产标准fight定义；不按当前问题裁剪标签。"""
+    """Load 51 frozen definitions plus the standard fight policy without question-based filtering."""
     raw = Path(definitions_path).read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     if digest != DEFINITIONS_SHA256:

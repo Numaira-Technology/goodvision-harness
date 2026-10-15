@@ -1,7 +1,8 @@
-"""正式观察的持久化出口；不调用模型、不读题目、不重新做关联。
+"""Persist observations without model calls, question access, or new association logic.
 
-先保存原始记录再适配；逐条文件不可覆盖，IO/身份错误必须交给控制器处理。
-不能用有限ResultBus历史或最后scene快照替代本出口的完整序列。
+Save raw records before adaptation and refuse overwrites. Send I/O and identity
+errors to the controller. Bounded ResultBus history and final scene snapshots
+cannot replace this complete observation sequence.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ def canonical_bytes(value):
 
 
 def publish_once(path, value):
-    """原子发布且拒绝覆盖；目录由调用方明确创建。"""
+    """Publish atomically without overwrites; the caller must create the directory."""
     path = Path(path)
     raw = canonical_bytes(value)
     fd, temporary = tempfile.mkstemp(prefix=".publishing-", dir=path.parent)
@@ -41,7 +42,7 @@ def publish_once(path, value):
 
 
 class ProductionEvidenceRecorder:
-    """每个新SID一个出口；调用者持有模型、资源和实际EOF/排空责任。"""
+    """Record one new session; the caller owns models, resources, and EOF/drain accounting."""
 
     def __init__(self, directory, *, video_id, stream_session_id, source_id, source,
                  frame_plan, window_plan, provenance):
@@ -94,7 +95,7 @@ class ProductionEvidenceRecorder:
                 reference, cursor = self._record(kind, payload)
                 return operation(reference, cursor)
             except Exception:
-                # 原始记录即使不合契约也保留。禁止继续使用已部分更新的capture。
+                # Preserve malformed raw records, then stop using the partially updated capture.
                 self._poisoned = True
                 raise
 
@@ -108,7 +109,7 @@ class ProductionEvidenceRecorder:
                                subjects=subjects, jpeg_sha256=jpeg_sha256, raw_reference=reference))
 
     def independent_report(self, report):
-        """接IndependentVLMBranch的发布后observer，information/grounding都记录。"""
+        """Record both information and grounding after IndependentVLMBranch publication."""
         def adapt(reference, cursor):
             stamps = [float(frame["timestamp_seconds"]) for frame in report.get("evidence", [])]
             if not stamps:
@@ -121,7 +122,7 @@ class ProductionEvidenceRecorder:
         return self._apply("independent", copy.deepcopy(report), adapt)
 
     def rejected_report(self, report, *, reason):
-        """身份不符的原始报告单独留档，不发布成有效观察，也不再使用该capture。"""
+        """Archive mismatched identities outside valid observations and stop using the capture."""
         def reject(reference, cursor):
             self.capture.request_failure(stage="identity", reference=reference, reason=reason)
             self._poisoned = True
@@ -143,14 +144,14 @@ class ProductionEvidenceRecorder:
         return self._apply("timing", row, lambda reference, cursor: reference)
 
     def operational_record(self, kind, payload):
-        """正式入口的请求元数据/会话回执；不得携带凭据、题干或私有答案。"""
+        """Record request metadata/session receipts without credentials, questions, or private answers."""
         if kind not in {"tracking-request", "tracking-session", "tracking-receipt", "source-eof"}:
             raise ValueError("unknown operational record kind")
         reject_private(payload, observation=True)
         return self._apply(kind, payload, lambda reference, cursor: reference)
 
     def finish(self, *, source_eof, tracking_drained, events_drained, fusion_drained):
-        """仅用调用者实测的终态，未完成可封存但不得伪造true。"""
+        """Seal using measured terminal states; preserve incomplete states as incomplete."""
         states = dict(source_eof=source_eof, tracking_drained=tracking_drained,
                       events_drained=events_drained, fusion_drained=fusion_drained)
         def seal(reference, cursor):

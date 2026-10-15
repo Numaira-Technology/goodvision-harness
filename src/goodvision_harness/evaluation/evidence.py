@@ -1,7 +1,8 @@
-"""已发布生产证据到统一 QA 证据的适配；不执行模型、不读问题或 GT。
+"""Adapt published production evidence for unified QA without models, questions, or ground truth.
 
-调用者须保存每份原始报告，并在源数据计划冻结后逐次调用本类。不能仅从
-ResultBus 的有限最后快照恢复完整视频。缺失窗口/帧保持不完整，不补阴性。
+Callers must preserve raw reports and feed them after freezing the source plan.
+The bounded ResultBus snapshot cannot reconstruct a complete video. Keep missing
+windows and frames incomplete instead of filling them with negative verdicts.
 """
 from __future__ import annotations
 
@@ -25,10 +26,10 @@ def _time(value):
 
 
 class EvidenceCapture:
-    """一次视频观察的双路证据；人脸路径不属于本评测接口。
+    """Collect evidence lanes for one video observation, excluding face processing.
 
-计划不含题干、选项或 GT。原始事件来自独立发布，主体确认来自原生
-SceneState，二者分别保存；不在此重新实现投票、关联或生命周期。
+Plans contain no questions, options, or ground truth. Keep independent raw events
+separate from native SceneState confirmations; reuse its association and lifecycle logic.
 """
 
     def __init__(self, *, video_id, stream_session_id, source_id, source,
@@ -80,7 +81,7 @@ SceneState，二者分别保存；不在此重新实现投票、关联或生命�
 
     def tracking_frame(self, *, frame, timestamp_seconds, subjects, raw_reference,
                        jpeg_sha256):
-        """调用于真实 tracking 响应；包括零人空帧，预测框仍保留状态。"""
+        """Record tracking responses, including empty frames and predicted-box states."""
         self._open()
         plan = next((x for x in self.frame_plan if x["frame"] == frame), None)
         if plan is None or _time(timestamp_seconds) != plan["t"]:
@@ -94,7 +95,7 @@ SceneState，二者分别保存；不在此重新实现投票、关联或生命�
                               "jpeg_sha256": jpeg_sha256, "raw_reference": raw_reference}
 
     def independent_report(self, report, *, window_id, raw_reference, publication_cursor):
-        """只接受已发布记录；不以 accepted/grounded 筛掉场景原始判断。"""
+        """Accept published records without filtering raw scene verdicts by accepted/grounded."""
         self._open()
         self._scope(report)
         lane = report.get("vlm_lane", "combined")
@@ -115,7 +116,7 @@ SceneState，二者分别保存；不在此重新实现投票、关联或生命�
         expected_request = plan.get("request_ids", {}).get(lane, plan.get("request_id"))
         if expected_request and expected_request != report.get("request_id"):
             raise ValueError("independent request identity mismatch")
-        # 原始报告单独存储，避免有限 live 缓存的裁减被误认为完整观察。
+        # Keep raw reports outside the bounded live cache to preserve observation coverage.
         self.reports[report_key] = {"report": copy.deepcopy(report),
                                   "reference": raw_reference,
                                   "publication_cursor": publication_cursor}
@@ -131,8 +132,8 @@ SceneState，二者分别保存；不在此重新实现投票、关联或生命�
         observation_ids = {}
         for observation in observations:
             label, raw_eid = observation["event_label"], observation["evidence_id"]
-            # parallel共用request_id，两个lane的原始index也可能相同。
-            # grounding保留原ID以衔接生产fusion；information仅在评测证据内加命名空间。
+            # Parallel lanes share request_id and may reuse the same raw index.
+            # Keep grounding IDs for fusion; namespace information IDs within evaluation evidence.
             eid = f"information:{raw_eid}" if lane == "information" else raw_eid
             if raw_eid in observation_ids:
                 raise ValueError("duplicate raw evidence ID within one lane")
@@ -182,7 +183,7 @@ SceneState，二者分别保存；不在此重新实现投票、关联或生命�
             }
 
     def scene_snapshot(self, snapshot, *, association_links, raw_reference):
-        """累积原生 confirmed episodes；只接观察到的阴性结束，不把消失当结束。"""
+        """Collect native confirmed episodes; require observed negatives rather than disappearance."""
         self._open()
         scene = snapshot.get("scene", snapshot)
         self._scope(scene)
@@ -214,7 +215,7 @@ SceneState，二者分别保存；不在此重新实现投票、关联或生命�
                         for eid in item.get("evidence_ids", [item.get("evidence_id")]) if eid]
             ids = event.get("subject_ids", [])
             linked = [self.links[eid] for eid in refs if eid in self.links]
-            # 关联来自生产 fusion，不做 nearest-center 等额外匹配。
+            # Reuse production fusion links without extra nearest-center matching.
             matched = bool(ids) and any(
                 set(ids) == {x["subject_id"] for x in link.get("subjects", [])}
                 for link in linked)
@@ -277,5 +278,5 @@ SceneState，二者分别保存；不在此重新实现投票、关联或生命�
                 "event_windows_complete": complete_windows,
                 "frame_plan": self.frame_plan, "window_plan": self.window_plan},
         }
-        # parser 与总结分支均记录这个hash，不能分别重新观察。
+        # Both answer branches record this hash and reuse this observation.
         return copy.deepcopy({**evidence, "evidence_sha256": _digest(evidence)})

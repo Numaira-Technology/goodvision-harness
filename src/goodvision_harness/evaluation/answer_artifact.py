@@ -1,4 +1,4 @@
-"""同一观察证据的 parser／总结消融入口。离线生成，不调用最终模型。"""
+"""Build parser/summary ablation artifacts from the same saved evidence, without model calls."""
 from __future__ import annotations
 
 import argparse
@@ -22,7 +22,7 @@ def _canonical(value):
 
 
 def build_answer_artifact(question, evidence):
-    """无GT入口；总结请求只看到 parser 所使用的同一份冻结证据。"""
+    """Exclude ground truth and give the summary the same frozen evidence as the parser."""
     if evidence.get("schema_version") != "unified-evidence-v2":
         raise ValueError("explicit v2 evidence required; historical capture is not auto-upgraded")
     reject_private(question)
@@ -33,7 +33,7 @@ def build_answer_artifact(question, evidence):
     if evidence.get("evidence_sha256") != evidence_hash:
         raise ValueError("evidence hash mismatch")
     parsed = answer_question(public_question, evidence)
-    # 不把 parser 答案传给总结分支；两者只是读取同一证据。
+    # Share the evidence with the summary branch, not the parser's answer.
     summary_request = {
         "method": "unified_same_evidence_summary_v2", "state": "not_called",
         "evidence_sha256": evidence_hash,
@@ -55,20 +55,20 @@ def build_answer_artifact(question, evidence):
 
 
 def main():
-    cli = argparse.ArgumentParser(description="只读已保存证据，生成确定性答案及未调用的同证据总结请求")
+    cli = argparse.ArgumentParser(description="Read saved evidence and generate deterministic answers and unexecuted same-evidence summary requests")
     cli.add_argument("--questions", required=True, type=Path)
     cli.add_argument("--evidence", required=True, type=Path)
     cli.add_argument("--output", required=True, type=Path)
     args = cli.parse_args()
     evidence = json.loads(args.evidence.read_text())
     questions = [json.loads(line) for line in args.questions.read_text().splitlines() if line.strip()]
-    # 输入应是已分离的公开题目；拒绝含GT的整份评分表，而非仅悄悄忽略GT。
+    # Require public questions; reject scoring tables with ground truth instead of ignoring it.
     reject_private(questions)
     rows = [build_answer_artifact(q, evidence) for q in questions if q.get("video_id") == evidence["video_id"]]
     if not rows:
         raise ValueError("no matching public questions")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    # 临时文件完成后以硬链接原子发布；目标已存在即失败，旧答案绝不覆盖。
+    # Publish the completed temporary file with a hard link; refuse to overwrite an answer.
     fd, temporary = tempfile.mkstemp(prefix=".answers-", dir=args.output.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:

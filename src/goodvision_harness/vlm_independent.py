@@ -1073,7 +1073,7 @@ class IndependentVLMBranch:
         self.config, self.connection, self.fusion = config, connection, fusion
         self._display_fusion = display_fusion
         self._delivery = delivery
-        # 正式评测显式接入持久化出口；默认生产不启用。
+        # Evaluation opts into persistence; production leaves these observers disabled.
         self._report_observer = report_observer
         self._rejected_report_observer = rejected_report_observer
         self.results = ResultBus(128)
@@ -1331,7 +1331,7 @@ class IndependentVLMBranch:
             (self.results if information else self.grounding_results).publish(report)
             if self._report_observer is not None:
                 try:
-                    # 原始发布在先；两lane都落盘，之后才允许可选融合。
+                    # Publish first, persist both lanes, then allow optional fusion.
                     self._report_observer(copy.deepcopy(report))
                 except Exception as exc:
                     self._capture_failed(exc, "evaluation_capture_failed")
@@ -1503,7 +1503,7 @@ class IndependentVLMBranch:
             if exc is not None:
                 self._status["capture_error_type"] = type(exc).__name__
                 self._status["capture_error_errno"] = getattr(exc, "errno", None)
-                # 仅本地契约异常的固定原因；不将HTTP／凭据异常原文放进状态。
+                # Keep local contract reasons, not raw HTTP or credential error text.
                 if isinstance(exc, (ValueError, RuntimeError)):
                     self._status["capture_error_reason"] = str(exc)[:256]
         self._process_stop.set()

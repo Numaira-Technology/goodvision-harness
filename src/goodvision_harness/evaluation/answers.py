@@ -1,6 +1,7 @@
-"""统一答案记录的首个实现：人物路计数；不读取GT、不调用最终LLM。
+"""Initial unified answer implementation: person-lane counts without ground truth or a final LLM.
 
-其他能力在证据适配完成前显式unsupported，不回退到旧Ashley或猜答案。
+Other capabilities remain unsupported until their evidence adapters exist.
+Do not fall back to historical Ashley results or guess answers.
 """
 from __future__ import annotations
 

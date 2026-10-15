@@ -1,4 +1,4 @@
-"""公开14问法的确定性证据解析；不读取GT、不调用模型、不改计数v1。"""
+"""Deterministic evidence parsing for 14 public question forms; no ground truth or model calls."""
 from __future__ import annotations
 
 import math
@@ -9,7 +9,7 @@ from .vocab import SUPPORTED_EVENT_LABELS, canonical_event_label
 
 PARSER_VERSION = "unified-evidence-v2"
 EVIDENCE_SCHEMA = "unified-evidence-v2"
-# 全局预注册；不能根据题号、答案或本视频采样分布重新估计。
+# Preregistered constants; do not fit them to question IDs, answers, or a video's samples.
 TIME_NEIGHBOR_SECONDS = 0.51
 CONTIGUOUS_GAP_SECONDS = 0.51
 LOCATOR_MIN_IOU = 0.30
@@ -51,11 +51,11 @@ GROUNDING_LANES = frozenset({"grounding", "combined"})
 
 
 class EvidenceInsufficient(ValueError):
-    """合法但不足的证据；转换为空答，不制造默认阴性。"""
+    """Valid but insufficient evidence: return no answer, not a default negative."""
 
 
 class SemanticUnsupported(ValueError):
-    """本版本不支持或公开字段冲突且无法明确裁定的语义。"""
+    """Unsupported semantics or unresolved conflicts in public fields."""
 
 
 def _number(value: Any, field: str) -> float:
@@ -161,7 +161,7 @@ def _third(subject: dict) -> int:
 
 
 def _near_frame(frames: list[dict], timestamp: float) -> dict:
-    # 在所有源帧上找相邻时刻，而非先丢掉没有所需人物的帧再寻找远帧。
+    # Find the nearest source frame before filtering for the requested person.
     distances = sorted((abs(f["t"] - timestamp), f["frame"], f) for f in frames)
     if not distances or distances[0][0] > TIME_NEIGHBOR_SECONDS + EPSILON:
         raise EvidenceInsufficient("no_frame_within_registered_time_tolerance")
@@ -225,14 +225,14 @@ def _duration(evidence: dict) -> float:
 
 
 def _negative_video_end(evidence: dict) -> float:
-    """阴性覆盖真实末解码帧，不把帧显示时长的结束点伪造成观察帧。
+    """Bound negative coverage by the last decoded frame, not its display end time.
 
-    新采集必须实际纳入首尾帧，并成功处理全部固定采样窗口。该结论仍是
-    固定采样观察的阴性，不声称覆盖了采样帧之间未观看的图像。
+    New captures must include the first and last frames and complete the fixed
+    windows. Negative coverage applies to sampled observations, not unseen gaps.
     """
     source = evidence.get("source", {})
     if source.get("negative_coverage_domain") != "first_to_last_decoded_frame_pts":
-        return _duration(evidence)  # 旧证据保持旧判定，不追改历史分数。
+        return _duration(evidence)  # Preserve historical evidence semantics and scores.
     terminal = source.get("terminal_frame")
     plan = evidence.get("observation_manifest", {}).get("frame_plan", [])
     if (not isinstance(terminal, dict) or not plan or evidence.get("source_eof") is not True
@@ -303,7 +303,7 @@ def _events(evidence: dict) -> list[dict]:
 
 
 def _native_lane_complete(evidence: dict) -> bool:
-    """information已发布不能代替每个固定窗口的grounding原生终态。"""
+    """Published information cannot replace grounding completion for each fixed window."""
     events = _events(evidence)
     for window in _window_plan(evidence, require_complete=False):
         if not set(window.get("report_lanes", ["combined"])) & GROUNDING_LANES:
@@ -346,7 +346,7 @@ def _presence(evidence: dict, label: str) -> tuple[bool | None, list[dict]]:
             raise ValueError("independent verdict must match planned window")
         if canonical not in {canonical_event_label(v) for v in window["event_labels"]}:
             raise ValueError("independent verdict label not declared in planned vocabulary")
-    # 场景存在性使用已发布独立正判定；不伪造native确认，也不要求人物关联成功。
+    # Use published independent positives for scene presence, without requiring person association.
     if any(e["detected"] is True and e["publication_status"] == "published" for e in relevant):
         return True, refs
     if any(e["detected"] is not False or e["publication_status"] != "published" for e in relevant):
@@ -356,7 +356,7 @@ def _presence(evidence: dict, label: str) -> tuple[bool | None, list[dict]]:
         if canonical not in {canonical_event_label(v) for v in window["event_labels"]}:
             continue
         rows = [e for e in relevant if e["window_id"] == window["window_id"]]
-        # 主体阴性只否定该主体，不能推导全场景阴性。遗漏、unknown及未发布正判定均不为阴性。
+        # A subject negative does not negate the scene; missing/unknown/unpublished evidence is not negative.
         if rows and any(e["scope"] == "scene" for e in rows) and all(
                 e["detected"] is False and e["publication_status"] == "published" for e in rows):
             negative_intervals.append((window["start"], window["end"]))
@@ -367,7 +367,7 @@ def _presence(evidence: dict, label: str) -> tuple[bool | None, list[dict]]:
 
 def _negative_coverage(evidence: dict, label: str, start: float, end: float,
                        subject_ids: list[str] | None = None) -> bool:
-    """证明某时段显式阴性；unknown不能被一个重叠阴性窗口遮盖。"""
+    """Require explicit negative coverage; an overlapping negative cannot hide unknowns."""
     if end <= start + EPSILON:
         return True
     canonical = canonical_event_label(label)
@@ -384,7 +384,7 @@ def _negative_coverage(evidence: dict, label: str, start: float, end: float,
         if subject_ids is not None:
             matched = [e for e in rows if e.get("association_status") == "matched"
                        and set(e.get("associated_subject_ids", [])) == set(subject_ids)]
-            # 其他主体的场景positive不推翻本组已关联的explicit negative。
+            # A scene positive for other subjects does not negate this group's associated negative.
             rows = matched or [e for e in rows if e.get("scope") == "scene"]
         if not rows or not all(e["detected"] is False and e["publication_status"] == "published" for e in rows):
             return False
@@ -395,12 +395,12 @@ def _negative_coverage(evidence: dict, label: str, start: float, end: float,
 
 
 def _verdict_ids(event: dict) -> set[str]:
-    """场景聚合保留原始子观察ID，避免把同一已关联positive误当新事件。"""
+    """Keep child observation IDs so an associated positive is not counted as a new event."""
     return set(event.get("raw_observation_ids") or [event["evidence_id"]])
 
 
 def _positive_verdict_ids(event: dict, known: dict[str, dict]) -> set[str]:
-    """聚合positive只由原始positive支持；unknown/缺引用仍保留供阻断。"""
+    """Support aggregates with raw positives; keep unknowns and missing references as blockers."""
     refs = _verdict_ids(event)
     if event.get("raw_observation_ids") and event["detected"] is True:
         contributors = {eid for eid in refs if eid not in known or known[eid]["detected"] is not False}
@@ -410,7 +410,7 @@ def _positive_verdict_ids(event: dict, known: dict[str, dict]) -> set[str]:
 
 def _prior_episode_coverage(evidence: dict, label: str, episode: dict, *,
                             anchor: float = 0.0, subject_ids: list[str] | None = None) -> bool:
-    """起点前的窗口须阴性，或其正判定已经明确属于同一个首段。"""
+    """Require prior windows to be negative or their positives to belong to the same first episode."""
     end = episode["start"]
     if end <= anchor + EPSILON:
         return True
@@ -432,8 +432,8 @@ def _prior_episode_coverage(evidence: dict, label: str, episode: dict, *,
             scenes = [e for e in rows if e["scope"] == "scene"]
             if matched:
                 relevant_ids = {e["evidence_id"] for e in matched + unbound}
-                # 有本主体阴性时不以其他已关联主体的聚合positive推翻它；
-                # 无法定位的判定仍可能属于本主体，不能绕过。
+                # Other associated subjects' aggregate positives do not override this subject's negative.
+                # Unlocalized verdicts could still refer to this subject and must remain blockers.
                 scenes = [e for e in scenes if not e.get("raw_observation_ids")
                           or bool(_positive_verdict_ids(e, known) & relevant_ids)]
             rows = matched + unbound + scenes
@@ -459,7 +459,7 @@ def _prior_episode_coverage(evidence: dict, label: str, episode: dict, *,
 
 
 def _episode_resolution_window(evidence: dict, label: str, episode: dict) -> dict:
-    """披露首个支持窗口及原生终帧边界；不插值动作起点。"""
+    """Expose the first supporting window and native frame boundary without onset interpolation."""
     canonical = canonical_event_label(label)
     refs = set(episode["evidence_ids"])
     events = _events(evidence)
@@ -512,7 +512,7 @@ def _window_frames(question: dict, frames: list[dict]) -> list[dict]:
     start, end = _number(clip["start_sec"], "clip start"), _number(clip["end_sec"], "clip end")
     if question["question_form"] == "interval_cumulative_region":
         params = ctx["parameters"]
-        # 公开第k秒是[k-1,k)的序号，clip明确给源时间；不用第k秒字段覆盖源PTS。
+        # Public second k denotes [k-1,k); explicit clip times take precedence over that ordinal.
         if abs(_number(params["start_second"], "start second") - 1 - start) > EPSILON or abs(
                 _number(params["end_second"], "end second") - end) > EPSILON:
             raise SemanticUnsupported("conflicting_public_second_interval_and_clip")
@@ -553,7 +553,7 @@ def _count_temporal(question: dict, frames: list[dict]) -> tuple[str, list[dict]
         else:
             run = []
     if not best_rows:
-        # 完整采样中无达标帧可报告观察到的最长span=0，不推断采样间隔中的真实动作。
+        # Complete samples with no qualifying frame yield an observed span of zero, with no gap inference.
         return "0", [_frame_ref(f) for f in rows], {"unrounded_seconds": 0.0, "threshold": threshold}
     return str(int(round(best))), [_frame_ref(f) for f in best_rows], {"unrounded_seconds": best, "threshold": threshold}
 
@@ -706,7 +706,7 @@ def _dispatch(question: dict, evidence: dict, result: dict) -> dict:
             raise EvidenceInsufficient("no_confirmed_event_episode")
         first = episodes[0]
         result["evidence_refs"] = [_episode_ref(first)]
-        # 原始正判定未落入任何确认episode时，无法断言第一个确认段就是第一个真实段。
+        # Unresolved raw positives prevent treating the first confirmed episode as the first actual one.
         covered_ids = {r for e in episodes for r in e["evidence_ids"]}
         events = [e for e in _events(evidence) if e.get("vlm_lane", "combined") in GROUNDING_LANES]
         known = {e["evidence_id"]: e for e in events}
@@ -760,7 +760,7 @@ def _dispatch(question: dict, evidence: dict, result: dict) -> dict:
 
 
 def answer_question(question: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
-    """只接公开题目与同视频统一证据；格式错误抛ValueError，合法空答保留原因。"""
+    """Parse public questions with same-video evidence; raise on malformed input and explain empty answers."""
     form = question.get("question_form")
     result = {"qa_id": question["qa_id"], "final_answer": None, "status": "unsupported",
               "evidence_refs": [], "parser_version": PARSER_VERSION,
@@ -796,7 +796,7 @@ def answer_question(question: dict[str, Any], evidence: dict[str, Any]) -> dict[
     relevant_failures = [f for f in relevant_failures
                          if FAILURE_STAGE_PATHS.get(f.get("stage"), "global") != "events"
                          or f.get("vlm_lane", "combined") in selected_lanes]
-    # 老式全局失败没有分路记录时保守阻断；有记录时只阻断所需路径及全局I/O/hash失败。
+    # Block on legacy global failures; scoped records block required lanes and global I/O/hash failures.
     if relevant_failures or (evidence.get("request_failure") and not failures):
         return {**result, "status": "request_failure", "reason": "recorded_request_failure"}
     if evidence.get("source_eof") is not True:

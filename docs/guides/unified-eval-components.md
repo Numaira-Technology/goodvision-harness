@@ -1,73 +1,89 @@
-# 三路离线评测组件的整合范围
+# Unified evaluation component scope
 
-本次仅整合已有 eval 源码与接口，不启动评测，不发布实验结果。来源是
-`codex/harness-unified-eval-20261013` 在
-`6c28dddd26bed7a7be50762a4c7dd6b796b2dbe3` 上的本地实现；整合起点是团队
-`codex/research-testing` 的 `ea3bdd71e4e03d8b918bfbfa2d68e538ba15a25c`。
-后者是合并基点，不是原实验的修改前基线。新整合版本没有运行测试或评测，
-不能据历史运行结果声称此版本已通过验证。
+This integration publishes existing evaluation code and interfaces. It does not
+run an evaluation or publish experiment results. The source is the local work on
+`codex/harness-unified-eval-20261013`, based on
+`6c28dddd26bed7a7be50762a4c7dd6b796b2dbe3`. The team integration base is
+`codex/research-testing` at `ea3bdd71e4e03d8b918bfbfa2d68e538ba15a25c`.
+That commit is a merge base, not the original pre-experiment Harness baseline.
+No tests or evaluations have run on this integrated version; historical results
+do not establish its correctness.
 
-## 发布的组件
+## Included components
 
-| 类别 | 本次内容与边界 |
+| Area | Scope |
 | --- | --- |
-| 事件配置 | 显式传入固定事件定义、允许标签及场景级标签；默认生产标签不扩大。评测配置含冻结的 51 类及 fight，共 52 类，人脸关闭。 |
-| 三路观察 | 人物跟踪、独立 events、独立 compact；后两路不读题目、GT 或人物检测框，原始报告发布后才进入关联。 |
-| 输入与采集 | 单源入口读取外部冻结配置、JPEG 与源时间戳并核对哈希；离线窗口、背压和末帧处理。它使用原生组件，不是整套生产 HTTP 服务。 |
-| 证据导出 | 保存原始观察、关联记录、来源身份、输入哈希、EOF 与排空状态；失败与不完整不冒充完整证据。 |
-| 请求保护 | 完整输入哈希缓存、逐次请求/回执账本、未知结果封锁、最多三次发送及 429 退避。提交的是实现代码，不是缓存或账本数据。 |
-| 答案 | 14 类问法的确定性解析器；从已保存证据生成原答及状态为 not_called 的同证据总结请求。不调用最终总结模型，不评分。 |
-| 检测适配 | YOLO-L 名称注册、YOLO 参数合法性判断、YOLO/RF 人物框的有限值判断及边界裁剪。没有改变 RF 权重或实现 RF 与 YOLO 的同参数对照。 |
-| 加载与调用边界 | 跟踪客户端可显式配置返回对象上限，默认仍为 64；单源采集支持已有原生会话与计数协议接口。SAM worker 内部算法没有纳入本次修改。 |
+| Event profiles | Explicit fixed definitions, allowed labels, and scene-scoped labels. Production defaults retain their existing labels. The evaluation profile has 51 frozen labels plus fight, with faces disabled. |
+| Three-lane observation | Person tracking, independent events, and independent compact grounding. The VLM lanes receive no questions, ground truth, or detector boxes; association follows raw report publication. |
+| Input and capture | A single-source entry point reads frozen configuration, JPEGs, source timestamps, and hashes. It uses offline windows, backpressure, and terminal-frame handling through native components, not the full production HTTP service. |
+| Evidence export | Raw observations, associations, source identity, input hashes, EOF, and drain states. Failed or incomplete captures remain distinct from complete evidence. |
+| Request safeguards | Full-input hash caching, request/receipt accounting, unknown-outcome blocking, at most three sends per input, and 429 backoff. This integration includes ledger/cache code, not ledger/cache data. |
+| Answers | Deterministic parsing for 14 question forms, plus same-evidence summary requests marked not_called. These entry points do not call a final summary model or score answers. |
+| Detector adapters | YOLO-L registration, YOLO parameter validation, and finite-value checks and clipping for YOLO/RF person boxes. RF weights and the proposed RF/YOLO equal-parameter comparison remain unchanged. |
+| Loading and calls | An explicit tracking-response object limit with the existing default of 64, plus native-session and count-protocol adapters. This integration excludes SAM worker algorithm changes. |
 
-主要入口为 `evaluation.capture_source`（实际单源模型调用）、
-`evaluation.answer_artifact` 与 `evaluation.cohort`（只读证据后生成原答）。
-入口执行需另行明确配置；模块导入不会自动租机或发起评测。
-`profile.load_profile` 需要调用方提供已冻结的事件定义文件，内容须符合代码中
-`DEFINITIONS_SHA256` 与标签顺序。媒体、配置、认证信息、输出目录与该定义文件
-由实际运行方管理；本次不新增实验数据文件。
+Use `evaluation.capture_source` for configured single-source model execution.
+`evaluation.answer_artifact` and `evaluation.cohort` generate answers from saved
+evidence. Imports do not allocate GPUs or start evaluations. Execution requires
+an explicit configuration.
 
-团队已有的 `experiments/ashley-detector182-20261012/frozen_runtime/event-definitions.json`
-与该固定定义哈希一致，可作为显式配置的定义来源；本次没有修改该文件。
-模型账本使用 POSIX 文件锁，实际采集需 Linux/macOS 环境；没有新增 Windows
-采集支持，也没有改变团队已有 Windows 功能。
+`profile.load_profile` requires a frozen definitions file matching
+`DEFINITIONS_SHA256` and the expected label order. The team's existing
+`experiments/ashley-detector182-20261012/frozen_runtime/event-definitions.json`
+matches that hash; this integration does not modify it. The operator supplies
+media, credentials, configuration, and output paths. No new experiment data
+files accompany this integration.
 
-## 与团队现有实现共存
+The model ledger uses POSIX file locks, so capture requires Linux/macOS. This
+integration adds no Windows capture support and leaves the team's existing
+Windows features unchanged.
 
-团队已有的 native benchmark、VLM research、网关和部署入口均保留；
-本次不以新模块替换它们。`benchmark/run_native.py` 与单源三路采集是不同方法，
-前者不是这里的“规则与同证据总结”流程。历史原生 SAM-Ashley、Harness 加总结
-也必须分别命名，不能互换成绩。
+## Compatibility with team workflows
 
-团队的 `research-v1` 事件策略、paired 调度、lean-v1 grounding、最高 8 并发
-及历史结果保留开关继续存在。固定评测定义仅允许
-`main-baseline` 分派路径与 `legacy` grounding 的组合；不支持的交叉组合
-会明确拒绝，避免静默套用六类研究策略。此时实际提示使用固定定义，报告另存
-`fixed-evaluation-events-v1` 策略指纹，不冒充生产策略。
+Keep the existing native benchmark, VLM research, gateway, and deployment entry
+points. `benchmark/run_native.py` and this three-lane capture path represent
+different methods; the former does not implement this rule/same-evidence summary
+ablation. Report historical native SAM-Ashley and Harness-plus-summary results
+under separate names.
 
-没有显式评测 profile 时，events 保留团队原来的 160 token 上限及至多 5 秒超时；
-显式 profile 使用调用方的超时与 token 配置（events 缺省 1600）。
-这不表示已调整任何冻结运行的预算。
+The team retains `research-v1`, paired scheduling, lean-v1 grounding, concurrency
+up to eight, and historical-result retention settings. Fixed evaluation
+definitions require the `main-baseline` dispatch path and `legacy` grounding.
+Unsupported combinations raise an error rather than applying the six-label
+research policy. Fixed-profile prompts use their supplied definitions and
+reports carry a separate `fixed-evaluation-events-v1` fingerprint.
 
-整合时补齐了离线观察器省略顶层 `max_tokens` 时的 1600 默认值，
-避免覆盖预算查找中的 `KeyError`；窗口预算、lane 预算及显式顶层预算的
-优先级不变。历史冻结源码与历史请求未改写。
+Without an explicit evaluation profile, events retain the team's 160-token cap
+and timeout of at most five seconds. Explicit profiles use the caller's timeout
+and token settings, with an events default of 1600. This does not change any
+historical frozen run's budget.
 
-## 未发布的部分
+The integration supplies the native 1600 default when offline observation omits
+top-level `max_tokens`, avoiding a `KeyError` during override lookup. Window,
+lane, and explicit top-level budget precedence stays unchanged. Historical
+frozen code and requests remain untouched.
 
-- 未批准的 SAM `mask_area.py` 和 `streaming_state.py` 候选修改。
-- 尚未采纳的 latency metric 实现。论文评价标准仍是独立研究事项。
-- 旧 `queue.py`、`batch.py` 和 `resources.py` 批量恢复/资源控制入口；
-  它们不能直接代表最后冻结运行版本，时长元数据问题也未解决。
-- 付费最终总结执行入口 `summary.py`、旧专项计数审计报告脚本及其历史报告。
-- 本地输入媒体、权重、数据库、实验配置、结果、请求缓存、费用账本和密钥。
+## Excluded work
 
-团队分支原先已有的 benchmark 数据或冻结参考文件未被删除。
-本地历史工作树、成功响应和运行证据也未被覆盖。
+- Unapproved SAM `mask_area.py` and `streaming_state.py` candidates.
+- The unselected latency metric implementation. Literature-based metric
+  selection remains a separate research task.
+- Old `queue.py`, `batch.py`, and `resources.py` recovery/resource entry points,
+  which differ from the final frozen run and retain unresolved duration metadata.
+- The paid final-summary executor `summary.py`, the old count-audit script, and
+  their historical reports.
+- Local media, weights, databases, experiment configurations, results, request
+  caches, cost ledgers, and secrets.
 
-原 182 题仍是原有题库（157 个视频源），不是新增题目。本次代码整合不表示
-该轮全量评测、RF 同参数尝试或论文 metric 选择已经完成。后续使用此整合版本
-运行时须独立记录新源码、输入和配置指纹，不修改历史原答或借用旧运行身份。
+The team's existing benchmark data and frozen references remain in place, as do
+the local historical worktree, successful responses, and run evidence.
 
-本次未运行测试（未获用户授权）；没有修改测试或 CI 配置。提交使用
-`[skip ci]` 标记，避免此次 push 自动触发仓库测试。
+The original cohort still contains 182 questions from 157 video sources. This
+integration does not complete that evaluation, the RF equal-parameter attempt,
+or metric selection. Future runs must record fresh source, input, and
+configuration fingerprints. Do not rewrite historical answers or reuse a
+historical run identity for this version.
+
+Tests were not run because the user did not authorize them. Test and CI
+configuration remain unchanged. Publication commits use `[skip ci]` to avoid
+triggering repository tests.

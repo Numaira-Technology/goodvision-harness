@@ -1,7 +1,8 @@
-"""固定窗口的正式离线观察调度；沿用原生模型、提示、解析及发布记录。
+"""Schedule fixed offline windows with native models, prompts, parsing, and publication.
 
-这不是生产实时调度器：每个冻结窗口都处理，背压时不丢窗口，不发warmup。
-两条lane独立调用，发布不依赖人物检测完成。付费保护由累计模型账本承担。
+Process frozen windows under backpressure without dropping them or sending warmups.
+The two lanes publish independently of person detection. The cumulative ledger
+guards paid requests. This scheduler is for offline capture, not realtime service.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from ..vlm_independent import IndependentEventState, _inspector, utc_now
 
 
 class ObservationFailure(RuntimeError):
-    """原始失败字段保留给控制器，402/连接故障不能伪作普通题目失败。"""
+    """Preserve failures for the controller; do not recast 402/connection faults as question failures."""
 
     def __init__(self, failures):
         super().__init__("independent_window_failed; see persisted lane reports")
@@ -26,14 +27,14 @@ class ObservationFailure(RuntimeError):
 
 
 def fixed_window_plan(frame_plan, profile, *, observation_fps=1.25):
-    """按公开源PTS冻结窗口；最多四张图，沿用原生0.75秒上下文规则。"""
+    """Freeze up to four source-PTS frames per window with the native 0.75-second context rule."""
     if not 0 < observation_fps <= 3:
         raise ValueError("observation cadence must be within (0, 3]")
     rows, history, next_due, previous = [], [], 0.0, None
     for position, frame in enumerate(frame_plan):
         history.append(frame)
         history = [row for row in history if frame["t"] - row["t"] <= 3.0][-12:]
-        # 真实末帧即使未到常规cadence也要出尾窗；不把end改成未见的媒体duration。
+        # Include the last decoded frame even off cadence; do not substitute an unseen media end time.
         if frame["t"] + 1e-9 < next_due and position + 1 != len(frame_plan):
             continue
         window = history[-4:]
@@ -63,7 +64,7 @@ class FixedWindowObserver:
         self.config = replace(config, options=options)
         self.recorder, self.on_grounding = recorder, on_grounding
         self.factory, self.ledger = inspector_factory, ledger
-        # 固定main的parallel实际为events+compact；不默换成full模型提示。
+        # Preserve main's events+compact parallel lanes rather than switching to full prompts.
         self.results = {lane: ResultBus() for lane in ("events", "compact")}
         self.executors = {lane: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"eval-{lane}")
                           for lane in self.results}
@@ -93,7 +94,7 @@ class FixedWindowObserver:
             scene_only_event_labels=self.config.scene_only_event_labels,
             event_definitions=self.config.event_definitions,
         )
-        # 只传源图及固定profile，人物框/题目/GT均不进入job。
+        # Pass source images and the fixed profile, without person boxes, questions, or ground truth.
         self.pending = [self.executors[lane].submit(self._observe, lane, job, samples[-1])
                         for lane in self.results]
 
@@ -117,8 +118,8 @@ class FixedWindowObserver:
         started, started_at = time.monotonic(), utc_now()
         verdicts, failure = (), None
         backoff_seconds = 0.0
-        # 仅明确429可重新请求；每次发送由累计账本登记，三次完整输入上限仍生效。
-        # 等待在单次75秒HTTP期限之外，不把退避耗时变成取消/unknown。
+        # Retry explicit 429s only; ledger accounting enforces three sends per complete input.
+        # Keep backoff outside the 75-second HTTP deadline to avoid cancellation/unknown outcomes.
         for attempt in range(3):
             try:
                 verdicts = inspector.inspect(job)
@@ -138,7 +139,7 @@ class FixedWindowObserver:
                 waiting = time.monotonic()
                 time.sleep(delay)
                 backoff_seconds += time.monotonic() - waiting
-        # 编程/IO异常不伪装成普通模型错误；future交回控制器恢复。
+        # Return programming/I/O exceptions through the future for controller recovery.
         ended = time.monotonic()
         timing = dict(request_started_at=started_at, request_ended_at=utc_now(),
                       request_started_monotonic=started, model_seconds=ended - started - backoff_seconds,
@@ -197,7 +198,7 @@ class FixedWindowObserver:
         if self.closed:
             return
         self.closed = True
-        # inspect与close在同一lane线程执行，不遗留该线程的asyncio连接池。
+        # Close on the lane's inspect thread to release its asyncio connection pool.
         close_errors = []
         try:
             for future in self.pending:

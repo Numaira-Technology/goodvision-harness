@@ -59,7 +59,7 @@ def _conf_threshold() -> float:
 
 
 def clipped_person_box(box, width, height):
-    """先验证，再裁剪；越界本身不再导致整框丢弃。"""
+    """Validate before clipping; retain valid boxes that extend beyond the image boundary."""
     if len(box) != 4 or not all(math.isfinite(v) for v in box):
         return None
     x1, y1, x2, y2 = box

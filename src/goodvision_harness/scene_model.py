@@ -744,7 +744,7 @@ class TemporalVLMInspector:
                     code=code,
                     status_code=response.status_code,
                 )
-                # 仅离线评测实例显式挂载；生产默认不保存服务商正文或凭据。
+                # Opt-in offline observer; production defaults do not persist provider bodies or credentials.
                 observer = getattr(self, "evaluation_error_observer", None)
                 if observer is not None:
                     error.evaluation_diagnostic = await observer(response)

@@ -1,4 +1,4 @@
-"""单题跳过与共享故障恢复分开；未知错误不能批量伪造成题目失败。"""
+"""Separate source skips from shared recovery; do not turn unknown errors into batch question failures."""
 import httpx
 
 from ..model_api import ModelAPIError

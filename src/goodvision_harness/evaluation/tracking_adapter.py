@@ -1,7 +1,8 @@
-"""正式计数服务到最新Harness证据契约的薄适配，不改变模型或过滤框。
+"""Adapt the count service to Harness evidence contracts without changing models or filtering boxes.
 
-SAM仍运行已冻结的原生因果worker。这里仅根据真实逐帧回执构造完成水位，
-并复用生产sam_live的确认元数据解释；不把普通检测器伪装成SAM。
+SAM retains its frozen native causal worker. Build completion watermarks from
+frame receipts and reuse production sam_live metadata semantics. Keep ordinary
+detectors distinct from SAM.
 """
 import base64
 import hashlib
@@ -44,7 +45,7 @@ class CountProtocolTracker:
                 or evidence.get("sam_internal_patch") is not False
                 or not evidence.get("actual_parameter_device", "").startswith("cuda")):
             raise ValueError("actual CUDA/standard4090/stockSAM mismatch")
-        # 两种旧worker的权重元数据字段保留原样，只核对已冻结的SHA。
+        # Preserve both historical workers' weight metadata fields and check the frozen SHA.
         weight = evidence.get("weights", {})
         actual_sha = weight.get("sha256") if isinstance(weight, dict) else None
         actual_sha = actual_sha or evidence.get("weight_sha256") or evidence.get("weights_sha256")
@@ -85,7 +86,7 @@ class CountProtocolTracker:
         prepared = self.parser.prepare_snapshots({"route_metadata": {
             "route": "sam_live", "confirmation_policy": audit["confirmation_policy"],
             "observations": audit["observations"]}}, (snapshot,))
-        # 冻结worker强制len(outputs)==1且index==本会话已处理数；非accepted-only。
+        # The frozen worker requires one output at the session's processed index, not acceptance alone.
         return VideoSessionTrackingResult(
             video_session_id=self.sid, stream_session_id=self.sid,
             request_id=f"{self.sid}:tracking:{frame_sequence}", predictor_epoch=self.sid,
@@ -105,7 +106,7 @@ class CountProtocolTracker:
 
     def discard(self):
         if self.opened and not self.drained:
-            # 只是结束本SID，并不把不完整源标为完成；失败后由资源层reset。
+            # End this SID without marking an incomplete source complete; resource recovery owns reset.
             self.finish()
 
     def close(self):

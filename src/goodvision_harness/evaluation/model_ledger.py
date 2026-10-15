@@ -1,7 +1,7 @@
-"""正式模型请求的累计账本；沿用完整输入hash、未知付款封锁及成功回执复用。
+"""Cumulative model ledger with full-input hashes, unknown-outcome blocks, and receipt reuse.
 
-只在实际模型请求边界使用，不发探针、不重试、不修改模型返回值。
-请求身份和未知付款保护独立于调用方的资源/费用预算，不可绕过。
+Use at the model request boundary without probes, retries, or response changes.
+Request identity and unknown-payment safeguards apply independently of resource budgets.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def request_without_images(value):
 
 
 def request_digest(request):
-    # 保持既有账本的哈希编码，不以新SID替换提示里的ID。
+    # Preserve the ledger's hash encoding and the IDs in the original prompt.
     raw = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -58,7 +58,7 @@ class ModelLedger:
         self.in_flight, self.blocked, self.counts, self.cache = set(), set(), {}, {}
         self.balance_blocked = False
         try:
-            # 两把锁：整个任务的模型写者与本轮目录；不能另开控制器并发付费。
+            # Lock the task's model writer and this run directory against concurrent paid dispatch.
             for path in (Path(owner_lock_path).resolve(), self.root / "writer.lock"):
                 handle = path.open("a+")
                 self._handles.append(handle)
@@ -135,9 +135,9 @@ class ModelLedger:
             if state != "recorded":
                 self.blocked.add(digest)
             elif response_id:
-                # 已收到的空答/格式错答也不再付款；原样回放后由原生parser裁定。
+                # Cache empty or malformed answers too; replay them unchanged for the native parser.
                 self.cache[digest] = (copy.deepcopy(response), call)
-        # balance-blocked是本轮外部原因，不从历史402永久禁止已恢复账户。
+        # Balance blocks belong to this run; historical 402s do not permanently block a recovered account.
         self.balance_blocked = (self.root / "balance-blocked.jsonl").exists()
 
     def _append(self, name, value):
@@ -207,7 +207,7 @@ class ModelLedger:
             return {**terminal, "cached": False, "paid_dispatch": True}
 
     def attach(self, inspector, context):
-        """仅包装本次原生inspector实例的传输边界，不改变提示、解析或超时。"""
+        """Wrap one inspector's transport without changing prompts, parsing, or timeouts."""
         original, ledger = inspector._request, self
 
         async def error_observer(response):
@@ -255,7 +255,7 @@ class ModelLedger:
         return inspector
 
     def complete(self, client, *, model, messages, parameters, context):
-        """同证据总结的同步边界；模型API自身重试必须关闭。"""
+        """Synchronous same-evidence summary boundary; disable the client's own retries."""
         if client.settings.max_retries != 0:
             raise LedgerBlocked("hidden_model_retry_forbidden")
         payload = {key: value for key, value in parameters.items() if value is not None}
@@ -269,7 +269,7 @@ class ModelLedger:
             return response, self.finish(row, response=response)
         except BaseException as exc:
             error = exc
-            # finish本身的IO失败不能再试写一份冲突的终态。
+            # Do not retry a failed finish write and risk a conflicting terminal record.
             if not self.poisoned:
                 self.finish(row, response=response, error=error)
             raise
