@@ -101,6 +101,13 @@ def test_delayed_anchor_hides_boxes_when_replay_exceeds_budget(monkeypatch):
     assert result["objects"] == []
     assert result["status"] == "lost"
     assert result["replayed_frames"] == 1
+    # A rejected delayed seed must stay hidden until a new localization arrives.
+    assert tracker.advance(scene(32)[0], 32 / 15, anchor=seed)["objects"] == []
+    fresh_image, fresh_boxes = scene(33)
+    fresh = anchor(fresh_image, fresh_boxes, 33 / 15, "fresh")
+    recovered = tracker.advance(fresh_image, 33 / 15, anchor=fresh)
+    assert len(recovered["objects"]) == 2
+    assert all(o["track_id"].startswith("fresh:") for o in recovered["objects"])
 
 
 def test_crossing_drops_ambiguous_boxes_instead_of_swapping_identities():
@@ -272,7 +279,22 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
             r["objects"] = anchor(*scene(12))["objects"]
             for camera in range(streams):
                 monitor.result(camera, r)
-            page.wait_for_timeout(3000)
+            # Keep publishing evidence-aligned localizations, as a running VLM
+            # does. A single delayed seed may correctly exceed the replay budget
+            # on a loaded host; requiring it to survive forever tests CPU speed,
+            # not browser identity/display correctness. Keep the real budget and
+            # the strict per-camera box/IoU assertions, and exercise recovery.
+            for _ in range(3):
+                page.wait_for_timeout(800)
+                media_times = page.locator(".camera video").evaluate_all(
+                    "videos => videos.map(video => video.currentTime)"
+                )
+                tick = min(len(samples) - 1, int(min(media_times) / 0.4))
+                fresh = result(tick, "grounding")
+                fresh["objects"] = anchor(*scene(tick * 6))["objects"]
+                for camera in range(streams):
+                    monitor.result(camera, fresh)
+            page.wait_for_timeout(600)
             d = page.evaluate("window.monitorDiagnostics")
             suffix = "" if tracking_enabled else "-off"
             if folder := os.environ.get("VLM_TRACKING_REVIEW_OUTPUT"):
@@ -292,6 +314,12 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
                     continue
                 assert tracking["errors"] == 0
                 assert tracking["framesWithBoxes"] >= 5
+                assert any(
+                    sample["anchor"] is not None
+                    and sample["anchor"].startswith(f"{tick}:")
+                    and sample["objects"]
+                    for sample in tracking["samples"]
+                )
                 for sample in tracking["samples"]:
                     _, expected = scene(round(sample["time"] * 15))
                     for obj in sample["objects"]:
