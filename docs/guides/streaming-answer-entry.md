@@ -148,6 +148,22 @@ limited to three actual sends. The spawned native process owns the ledger writer
 during observation; final answering obtains that writer after worker cleanup and
 GPU release. Shared failures stop the workflow instead of failing later questions.
 
+The evaluation inspector retries explicit HTTP 429 responses only, on the same
+job and parameters. It waits at least 60 seconds and honors a longer numeric
+`Retry-After` up to 300 seconds. A longer delay returns the failure for outer
+recovery. Each actual send remains separately ledgered, with the cumulative
+three-send limit applying across restarts. Other errors and unknown outcomes
+retain their existing behavior. Backoff is recorded in
+`rate-limit-backoff.jsonl` and in report timing, separately from `model_seconds`;
+`observation_wall_seconds` includes it. HTTP timing describes the last attempt;
+all attempts are available in the model ledger.
+The native process stop event interrupts evaluation backoff and prevents the
+retry loop from continuing after shutdown.
+
+When freezing a recovery configuration, allow the drain window to accommodate
+the retry schedule as well as pending native work. The per-request HTTP timeout
+is unchanged. An already frozen run keeps its original drain limit and code.
+
 The existing PR63 formula, failure denominators and semantic empty-answer policy
 apply. Completion means all scheduled work is terminal, not that every answer is
 correct. A paired streaming trial must be reported separately from full-cohort
@@ -155,6 +171,9 @@ offline scores.
 
 ## Validation status
 
-The native-skip policy is awaiting the specifically authorized short-video path run.
+The specifically authorized short-video native-skip path completed capture,
+resource release, final answering and local scoring on October 16, 2026.
+The explicit-429 recovery change is awaiting observation in the authorized full
+evaluation; that short-video result does not validate this later change.
 Independent tests, lint, compilation and build checks have not been run.
 The completed RF comparison retains its original implementation and results.

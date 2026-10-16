@@ -1,9 +1,12 @@
 """Bind the spawned native VLM process to the existing paid-request ledger."""
 from dataclasses import dataclass, replace
 import logging
+import math
 from threading import Lock
+import time
 from types import MethodType
 
+from ..model_api import ModelAPIError
 from ..vlm_independent import _inspector
 from .model_ledger import ModelLedger
 
@@ -48,6 +51,7 @@ class LedgerInspectorFactory:
             "stream_session_id": config.stream_session_id, "source_id": config.source_id,
             "lane": config.output_mode, "scheduling_mode": "native_streaming"})
         original = inspector.inspect
+        inspector.evaluation_stop_event = None
         default_budget = inspector._parameters["max_tokens"]
         legacy_budgets = transport.get("legacy_window_budgets", {})
 
@@ -63,7 +67,45 @@ class LedgerInspectorFactory:
             instance.evaluation_context = {
                 "request_id": job.request.request_id,
                 "source_frame_sequences": sequences}
-            return original(job)
+            instance.last_rate_limit_backoff_seconds = 0.0
+            # Match the offline evaluation's explicit-429 recovery policy. Each
+            # send still passes through the cumulative three-attempt ledger.
+            # Sleep outside inspect's per-request HTTP deadline, using the same
+            # job, prompt and output budget on every attempt.
+            for attempt in range(3):
+                stop = instance.evaluation_stop_event
+                if stop is not None and stop.is_set():
+                    raise ModelAPIError("evaluation observation stopped", code="cancelled")
+                try:
+                    return original(job)
+                except ModelAPIError as exc:
+                    if exc.status_code != 429 or attempt == 2:
+                        raise
+                    retry_after = getattr(exc, "evaluation_diagnostic", {}).get(
+                        "retry_after_seconds")
+                    delay = max(60.0, retry_after or 0.0)
+                    if not math.isfinite(delay) or delay > 300.0:
+                        raise
+                    receipt = instance.last_ledger_receipt or {}
+                    if receipt.get("attempt", 0) >= 3:
+                        raise
+                    row = {"kind": "vlm_rate_limit_backoff", "lane": config.output_mode,
+                           "request_id": job.request.request_id,
+                           "source_frame_sequences": sequences,
+                           "call_id": receipt.get("call_id"),
+                           "request_sha256": receipt.get("request_sha256"),
+                           "seconds": delay, "started_epoch": time.time(),
+                           "same_job_and_parameters": True}
+                    with _ledger.lock:
+                        _ledger._append("rate-limit-backoff.jsonl", row)
+                    waiting = time.monotonic()
+                    try:
+                        if stop is None:
+                            time.sleep(delay)
+                        elif stop.wait(delay):
+                            raise ModelAPIError("evaluation backoff stopped", code="cancelled")
+                    finally:
+                        instance.last_rate_limit_backoff_seconds += time.monotonic() - waiting
 
         inspector.inspect = MethodType(inspect, inspector)
         # Formal capture performs only ledgered model requests; skip the native

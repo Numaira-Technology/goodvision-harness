@@ -486,6 +486,8 @@ def run_vlm_process(
             thread_state.inspector = inspector_factory(
                 replace(config, output_mode=lane)
             )
+            if hasattr(thread_state.inspector, "evaluation_stop_event"):
+                thread_state.inspector.evaluation_stop_event = stop
             clients.append(thread_state.inspector)
         return thread_state.inspector
 
@@ -659,6 +661,13 @@ def run_vlm_process(
             except Exception:
                 pass  # Separate bounded diagnostics never gate normal reports.
         completed = time.monotonic()
+        # Evaluation inspectors may wait between explicit rate-limit responses.
+        # Keep that wait in wall time, separately from actual inspection time.
+        backoff_seconds = getattr(inspector, "last_rate_limit_backoff_seconds", 0.0)
+        if (type(backoff_seconds) not in (int, float)
+                or not math.isfinite(backoff_seconds) or backoff_seconds < 0):
+            backoff_seconds = 0.0
+        backoff_seconds = min(model_seconds, backoff_seconds)
         return (
             verdicts,
             error,
@@ -666,7 +675,9 @@ def run_vlm_process(
                 "request_started_at": started_at,
                 "request_ended_at": utc_now(),
                 "request_started_monotonic": started,
-                "model_seconds": model_seconds,
+                "model_seconds": model_seconds - backoff_seconds,
+                "observation_wall_seconds": model_seconds,
+                "rate_limit_backoff_seconds": backoff_seconds,
                 "admission_wait_seconds": admission_wait,
                 "validation_reason": validation_reason,
                 "http_status": http_status,
@@ -836,8 +847,7 @@ def run_vlm_process(
                             - sample.received_monotonic,
                             reorder_wait_seconds=max(
                                 0.0,
-                                now - timing["request_started_monotonic"]
-                                - timing["model_seconds"],
+                                now - timing["completion_monotonic"],
                             ),
                         )
                         report = state.report(
