@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from .vocab import SUPPORTED_EVENT_LABELS, canonical_event_label
+from .evidence import NATIVE_SKIP_POLICY, validate_native_frame_accounting
 
 PARSER_VERSION = "unified-evidence-v2"
 EVIDENCE_SCHEMA = "unified-evidence-v2"
@@ -137,7 +138,13 @@ def _frames(evidence: dict) -> list[dict]:
 def _frame_coverage(evidence: dict, frames: list[dict]) -> None:
     manifest = evidence.get("observation_manifest", {})
     plan = manifest.get("frame_plan")
-    if manifest.get("person_frames_complete") is not True or not isinstance(plan, list) or not plan:
+    native_accounted = (evidence.get("provenance", {}).get("coverage_policy") == NATIVE_SKIP_POLICY
+                        and manifest.get("person_frames_accounted") is True)
+    if not isinstance(plan, list) or not plan:
+        raise EvidenceInsufficient("missing_complete_frame_manifest")
+    if native_accounted:
+        validate_native_frame_accounting(plan, frames, manifest["person_frame_accounting"])
+    elif manifest.get("person_frames_complete") is not True:
         raise EvidenceInsufficient("missing_complete_frame_manifest")
     expected = {}
     for row in plan:
@@ -146,6 +153,8 @@ def _frame_coverage(evidence: dict, frames: list[dict]) -> None:
             raise ValueError("invalid or duplicate planned source frame")
         expected[index] = timestamp
     actual = {f["frame"]: f["t"] for f in frames}
+    if native_accounted:
+        expected = {index: stamp for index, stamp in expected.items() if index in actual}
     if actual.keys() != expected.keys() or any(abs(actual[k] - t) > EPSILON for k, t in expected.items()):
         raise EvidenceInsufficient("frame_plan_not_fully_observed")
 

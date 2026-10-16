@@ -32,6 +32,7 @@ from .recording import publish_once
 from .session import UnifiedCaptureSession
 from .stream_ledger import LedgerInspectorFactory
 from .stream_recording import StreamingRecorder
+from .evidence import NATIVE_SKIP_POLICY
 
 
 def effective_config_sha256(harness):
@@ -153,6 +154,11 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
             or config.get("sam_internal_patch") is not False):
         raise ValueError("explicit native stream, VLM choice, stock model and face-disabled identity required")
     resources.prepare(config)
+    coverage_policy = config.get("coverage_policy",
+        "all_delivered_person_frames_and_native_admitted_vlm_windows")
+    if coverage_policy not in {"all_delivered_person_frames_and_native_admitted_vlm_windows",
+                               NATIVE_SKIP_POLICY}:
+        raise ValueError("unknown frozen streaming coverage policy")
     harness_path = base / config["harness_config"]
     if hashlib.sha256(harness_path.read_bytes()).hexdigest() != config["harness_config_sha256"]:
         raise ValueError("Harness config hash changed")
@@ -199,7 +205,7 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
                   "scheduling_mode": "native_streaming",
                   "window_plan_semantics": "independent_native_lanes_v1",
                   "runtime_scope": "production_components_with_timed_file_source",
-                  "coverage_policy": "all_delivered_person_frames_and_native_admitted_vlm_windows",
+                  "coverage_policy": coverage_policy,
                   "source_preprocessing": {"display_fps": harness.display.fps,
                       "model_fps": harness.video.fps, "max_image_side": harness.display.max_image_side,
                       "jpeg_quality": harness.display.jpeg_quality}}

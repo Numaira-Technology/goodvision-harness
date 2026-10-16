@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 import time
 
-from .evidence import EvidenceCapture
+from .evidence import EvidenceCapture, NATIVE_SKIP_POLICY
 from .privacy import reject_private
 from .recording import publish_once
 
@@ -20,7 +20,8 @@ class StreamingRecorder:
 
     Unlike offline capture, windows are selected by the native scheduler at run
     time. Its admission statistics are retained separately from observation
-    completeness. Missing person frames never disappear from the denominator.
+    completeness. Delivered person frames remain in the denominator, with native
+    skips explicitly accounted for under the separately frozen streaming policy.
     """
 
     def __init__(self, directory, *, video_id, stream_session_id, source_id,
@@ -94,10 +95,72 @@ class StreamingRecorder:
     def request_failure(self, *, stage, reason, detail=None):
         self.record("failure", {"stage": stage, "reason": reason, "detail": detail})
 
+    def _person_accounting(self, statistics, runtime_reference):
+        """Reconcile native scheduler counters with the archived input and result IDs."""
+        admissions, processed = {}, []
+        for kind, path, _ in self._references:
+            if kind not in {"admission", "tracking"}:
+                continue
+            row = json.loads(path.read_bytes())["payload"]
+            if kind == "tracking":
+                processed.append(row["frame"])
+            else:
+                index = row["frame_sequence"]
+                if (index in admissions or index not in self.frames
+                        or row["timestamp_seconds"] != self.frames[index]["t"]
+                        or type(row["tracking_admitted"]) is not bool):
+                    raise ValueError("native person admission identity mismatch")
+                admissions[index] = row["tracking_admitted"]
+        source_ids, processed_ids = set(self.frames), set(processed)
+        if (set(admissions) != source_ids or len(processed) != len(processed_ids)
+                or not processed_ids or not processed_ids <= source_ids):
+            raise ValueError("native person admission or saved result coverage missing")
+        stats = statistics["tracking"]
+        if (stats.get("stream_session_id") != self.manifest["stream_session_id"]
+                or stats.get("pending") is not False or stats.get("in_flight") is not False
+                or any(stats.get(key, 0) for key in ("failed", "stale_results", "rejected_session",
+                    "rejected_order", "rejected_capacity", "pending_commits", "transport_recoveries",
+                    "transport_abandoned_frames", "transport_superseded_frames"))
+                or stats.get("recovery_required", False)):
+            raise ValueError("native person worker has unfinished, rejected or failed work")
+        skipped = source_ids - processed_ids
+        if self.manifest["provenance"]["tracking_model"] == "sam3.1":
+            sampled = {index for index, admitted in admissions.items() if not admitted}
+            reasons = stats.get("skipped_by_reason", {})
+            if (set(reasons) != {"superseded", "expired"}
+                    or any(type(value) is not int or value < 0 for value in reasons.values())
+                    or stats.get("state") != "finished" or not sampled <= skipped
+                    or stats.get("session_source_frames") != len(source_ids)
+                    or stats.get("session_sampled_out") != len(sampled)
+                    or stats.get("submitted") != len(source_ids) - len(sampled)
+                    or stats.get("processed_frames") != len(processed_ids)
+                    or stats.get("session_dropped_backpressure") != len(skipped - sampled)
+                    or sum(reasons.values()) != len(skipped - sampled)):
+                raise ValueError("native SAM sampling/skip/result counters differ")
+            skip_counts = {"source_sampling": len(sampled), **reasons}
+        else:
+            if (not all(admissions.values()) or stats.get("resets") != 1
+                    or stats.get("submitted") != len(source_ids)
+                    or stats.get("started") != len(processed_ids)
+                    or stats.get("succeeded") != len(processed_ids)
+                    or stats.get("replaced") != len(skipped)):
+                raise ValueError("native detector replacement/result counters differ")
+            skip_counts = {"pending_frame_replaced": len(skipped)}
+        return {"policy": NATIVE_SKIP_POLICY, "input_count": len(source_ids),
+            "processed_count": len(processed_ids), "skipped_count": len(skipped),
+            "processed_frame_sequences": sorted(processed_ids),
+            "skipped_frame_sequences": sorted(skipped), "skip_reason_counts": skip_counts,
+            "processed_fraction": len(processed_ids) / len(source_ids),
+            "runtime_statistics_reference": runtime_reference,
+            "skip_identity_basis": "delivered_minus_archived_results_reconciled_with_native_counters"}
+
     def finish(self, *, source_eof, tracking_drained, events_drained, fusion_drained,
                runtime_statistics):
         with self._lock:
-            self.record("runtime-final", runtime_statistics)
+            runtime_reference = self.record("runtime-final", runtime_statistics)
+            person_accounting = None
+            if self.manifest["provenance"].get("coverage_policy") == NATIVE_SKIP_POLICY:
+                person_accounting = self._person_accounting(runtime_statistics, runtime_reference)
             windows, report_windows = [], {}
             archived_lanes = Counter()
             for kind, path, cursor in self._references:
@@ -157,7 +220,8 @@ class StreamingRecorder:
                 capture.request_failure(stage="events", reason="no_native_information_window",
                                         reference=str(self.root / "manifest.json"))
             evidence = capture.seal(source_eof=source_eof, tracking_drained=tracking_drained,
-                                    events_drained=events_drained, fusion_drained=fusion_drained)
+                                    events_drained=events_drained, fusion_drained=fusion_drained,
+                                    person_frame_accounting=person_accounting)
             digest = publish_once(self.root / "capture.json", evidence)
             publish_once(self.root / "completion.json", {
                 "capture_file_sha256": digest, "evidence_sha256": evidence["evidence_sha256"],

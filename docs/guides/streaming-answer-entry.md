@@ -118,10 +118,21 @@ finished, published and archived report counts to agree for each lane. The
 answer parser checks each scheduled grounding window independently of the
 information windows; historical paired-window semantics stay unchanged.
 
-Runtime drain and complete observations are separate facts. A source can reach
-EOF and drain all accepted requests while native queues have replaced person
-frames. Those frames stay in the source plan, and the observation remains
-incomplete. Failed or incomplete captures receive no paid final-model answer.
+For newly frozen sources, set
+`coverage_policy="native_processed_and_documented_skips_v1"` to use native
+frame skipping. EOF, drained queues, saved person results and documented native
+skips permit final answering from the actual observations. The source plan keeps
+every delivered frame. The artifact reports input, processed and skipped counts,
+their frame IDs and the native skip-reason counters. `person_frames_complete`
+still describes literal all-frame coverage; `person_frames_accounted` records the
+separate native-streaming accounting. Skipped frames are neither zero-person
+observations nor negative events. Rule answers also use the observed frames,
+with their coverage preserved alongside the answers.
+
+Request failures and unexplained missing records remain failures. Old source
+configurations retain the all-frame policy, and historical artifacts and scores
+remain unchanged. The final model receives the selected detector identity and
+independent VLM observations, together with their actual coverage.
 VLM admission/drop statistics accompany every capture; source cadence and
 observation gaps remain relevant to interpreting a negative event answer.
 
@@ -144,6 +155,6 @@ offline scores.
 
 ## Validation status
 
-Implementation is awaiting the specifically authorized short-video path run.
+The native-skip policy is awaiting the specifically authorized short-video path run.
 Independent tests, lint, compilation and build checks have not been run.
-The currently frozen RF evaluation continues with its original implementation.
+The completed RF comparison retains its original implementation and results.

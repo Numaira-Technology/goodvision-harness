@@ -13,6 +13,26 @@ import math
 
 from .privacy import reject_private
 
+NATIVE_SKIP_POLICY = "native_processed_and_documented_skips_v1"
+
+
+def validate_native_frame_accounting(frame_plan, frames, accounting):
+    """Require an exact partition of delivered inputs into saved and native-skipped frames."""
+    expected = {row["frame"] for row in frame_plan}
+    actual = {row["frame"] for row in frames}
+    processed = accounting["processed_frame_sequences"]
+    skipped = accounting["skipped_frame_sequences"]
+    if (accounting.get("policy") != NATIVE_SKIP_POLICY or not expected or not actual
+            or any(type(x) is not int for x in [*processed, *skipped])
+            or len(set(processed)) != len(processed) or len(set(skipped)) != len(skipped)
+            or set(processed) != actual or actual & set(skipped)
+            or actual | set(skipped) != expected
+            or accounting.get("input_count") != len(expected)
+            or accounting.get("processed_count") != len(actual)
+            or accounting.get("skipped_count") != len(skipped)
+            or not accounting.get("runtime_statistics_reference")):
+        raise ValueError("native person frame accounting does not match saved observations")
+
 
 def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -70,6 +90,7 @@ separate from native SceneState confirmations; reuse its association and lifecyc
         self.failures, self.links = [], {}
         self._closed = False
         self._completion = {}
+        self._person_frame_accounting = None
 
     def _open(self):
         if self._closed:
@@ -239,13 +260,21 @@ separate from native SceneState confirmations; reuse its association and lifecyc
         self._open()
         self.failures.append({"stage": stage, "reference": reference, "reason": reason})
 
-    def seal(self, *, source_eof, tracking_drained, events_drained, fusion_drained):
+    def seal(self, *, source_eof, tracking_drained, events_drained, fusion_drained,
+             person_frame_accounting=None):
         self._open()
         values = (source_eof, tracking_drained, events_drained, fusion_drained)
         if any(type(x) is not bool for x in values):
             raise ValueError("explicit EOF and drain states required")
         self._completion = dict(zip(("source_eof", "tracking_drained", "events_drained",
                                      "fusion_drained"), values))
+        if person_frame_accounting is not None:
+            if (self.provenance.get("scheduling_mode") != "native_streaming"
+                    or self.provenance.get("coverage_policy") != NATIVE_SKIP_POLICY):
+                raise ValueError("native skip accounting requires an explicit frozen streaming policy")
+            validate_native_frame_accounting(self.frame_plan, list(self.frames.values()),
+                                             person_frame_accounting)
+            self._person_frame_accounting = copy.deepcopy(person_frame_accounting)
         for window in self.window_plan:
             for lane in window["report_lanes"]:
                 if (window["window_id"], lane) not in self.reports:
@@ -262,7 +291,8 @@ separate from native SceneState confirmations; reuse its association and lifecyc
                 any(x["window_id"] == row["window_id"] and x["event_label"] == label and x["vlm_lane"] != "grounding"
                     for x in self.events.values()) for label in row["event_labels"])
             for row in self.window_plan if row["report_lanes"] != ["grounding"])
-        complete = (self._closed and all(self._completion.values()) and complete_frames
+        accounted_frames = complete_frames or self._person_frame_accounting is not None
+        complete = (self._closed and all(self._completion.values()) and accounted_frames
                     and complete_windows and not self.failures)
         evidence = {
             "schema_version": "unified-evidence-v2", "video_id": self.video_id,
@@ -278,5 +308,9 @@ separate from native SceneState confirmations; reuse its association and lifecyc
                 "event_windows_complete": complete_windows,
                 "frame_plan": self.frame_plan, "window_plan": self.window_plan},
         }
+        if self._person_frame_accounting is not None:
+            evidence["observation_manifest"].update(
+                person_frames_accounted=True,
+                person_frame_accounting=self._person_frame_accounting)
         # Both answer branches record this hash and reuse this observation.
         return copy.deepcopy({**evidence, "evidence_sha256": _digest(evidence)})

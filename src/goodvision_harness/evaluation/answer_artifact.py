@@ -10,6 +10,7 @@ import tempfile
 
 from .answers_v2 import answer_question
 from .privacy import reject_private
+from .evidence import NATIVE_SKIP_POLICY
 
 PUBLIC_QUESTION_FIELDS = frozenset({
     "qa_id", "video_id", "question", "question_form", "capability", "options", "response_options",
@@ -33,13 +34,22 @@ def build_answer_artifact(question, evidence):
     if evidence.get("evidence_sha256") != evidence_hash:
         raise ValueError("evidence hash mismatch")
     parsed = answer_question(public_question, evidence)
+    streaming_guidance = ""
+    if evidence.get("provenance", {}).get("coverage_policy") == NATIVE_SKIP_POLICY:
+        streaming_guidance = (
+            "This is native streaming evidence. Documented scheduler skips are expected: "
+            "person_frames_complete=false describes frame coverage, while person_frames_accounted=true "
+            "means the recorded processing and skips account for the delivered input. "
+            "Answer from the actual saved observations; a skipped frame is unobserved, not a zero count "
+            "or negative event. Distinguish the named person detector (SAM, YOLO or RF) from independent "
+            "VLM observations. Evaluate their relevance and any disagreement using the supplied records. ")
     # Share the evidence with the summary branch, not the parser's answer.
     summary_request = {
         "method": "unified_same_evidence_summary_v2", "state": "not_called",
         "evidence_sha256": evidence_hash,
         "messages": [
             {"role": "system", "content": (
-                "Answer based on the provided public question and saved video observation evidence. "
+                streaming_guidance + "Answer based on the provided public question and saved video observation evidence. "
                 "You have no video or additional tools. "
                 "Distinguish independent raw events, association confirmations, explicit negatives, and unknowns; "
                 "do not guess no or zero when observations are incomplete or evidence is insufficient. "
