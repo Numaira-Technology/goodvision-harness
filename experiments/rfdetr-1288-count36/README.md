@@ -6,6 +6,8 @@ The reference YOLO26-S arm uses imgsz 1280, confidence 0.10 and max_det 300. The
 
 Use the original RF checkpoint (SHA-256 `86879a31a42ea4c091ee8d758654bf5c8c465f773f08e95a9143653f0f529cba`, 1571684963 bytes), JPEG bytes, PTS, tracker and count parser from `detector-count36-4090-stock-resume3-20261014`. This comparison changes RF resolution and confidence together. It cannot establish the effect of either setting alone.
 
+`download_weights.py MODEL_DIRECTORY` can acquire the same checkpoint on the remote worker when uploading the local copy is too slow. Supply the historical `seed-weights.json` in that directory. The downloader pins the original GCS object generation and ETag, requires the original byte count and SHA-256, and rejects an existing destination or partial file. It does not select newer weights or retry a failed download. Keep the original local checkpoint. Download failure must stop deployment and release the owned GPU; it is not a failed counting question. The 1200-second elapsed limit is checked between chunks, with a 60-second socket timeout; it is not a strict total deadline.
+
 ## Execution contract
 
 `detectors.py` is a separate adapter derived from the frozen count worker. It does not replace a production worker. `run_count.py` consumes the existing read-only `/run/public`, `/run/frames`, `/run/input-manifest.json` and `/run/extraction` mounts and writes new results under `/run/results`. Set `DETECTOR_EXPERIMENT_LABEL` to the exact frozen round label. The gateway must enforce the same label for reset requests.
@@ -19,6 +21,8 @@ The gateway retains its 74-second frame-inference deadline. The HTTP client allo
 Score all 36 questions with the unchanged PR63 rule. Terminal failures receive zero MRA and strict-match credit while retaining null answers. Report full-set MAE as unavailable if any numeric answer is absent. Keep full-set and paired completed-subset results separate. Preserve original answers and historical scores.
 
 This is a person-counting arm, not the three-lane Harness. It makes no event, compact or final-answer model calls.
+
+The unchanged set contains 25 VSCrowd head-count questions, seven MOT17 pedestrian-count questions and four MOT20 pedestrian-count questions. The person detector does not become a head detector because the ground truth counts heads. Disclose this target mismatch and report source and question-form breakdowns; do not rewrite the questions or scoring to remove it.
 
 Tests were not run because the user did not authorize them.
 
