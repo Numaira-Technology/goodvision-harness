@@ -78,7 +78,9 @@ def generate_cohort(*, questions_path, index_path, output):
         evidence = evidence_by_video.get(vid)
         if evidence is None:
             prior = processed.get(vid)
-            missing_status = "request_failure" if prior else "not_started"
+            # Shared interruption is recoverable, not a terminal question failure.
+            missing_status = ("interrupted" if prior and prior.get("status") == "shared_failure"
+                              else "request_failure" if prior else "not_started")
             artifact = {"qa_id": qid, "video_id": vid, "method": method,
                         "parser": {"qa_id": qid, "status": missing_status, "final_answer": None,
                                    "reason": "source_processed_without_complete_capture" if prior else "no_saved_observation",

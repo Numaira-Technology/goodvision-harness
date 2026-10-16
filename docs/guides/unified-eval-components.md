@@ -18,7 +18,9 @@ do not establish its correctness.
 | Input and capture | A single-source entry point reads frozen configuration, JPEGs, source timestamps, and hashes. It uses offline windows, backpressure, and terminal-frame handling through native components, not the full production HTTP service. |
 | Evidence export | Raw observations, associations, source identity, input hashes, EOF, and drain states. Failed or incomplete captures remain distinct from complete evidence. |
 | Request safeguards | Full-input hash caching, request/receipt accounting, unknown-outcome blocking, at most three sends per input, and 429 backoff. This integration includes ledger/cache code, not ledger/cache data. |
-| Answers | Deterministic parsing for 14 question forms, plus same-evidence summary requests marked not_called. These entry points do not call a final summary model or score answers. |
+| Answers | Deterministic parsing for 14 question forms, saved model requests, and a separate final-answer executor that reads those observations after GPU release. |
+| Batch recovery | Hash-pinned source plans, exact terminal-result reuse, original hardware provenance, and source cleanup. Shared faults stop the batch without failing unattempted sources. |
+| Scoring | Local rule/model scoring through the unchanged, hash-pinned PR63 scorer. Terminal failures remain in the denominator; pending work prevents a completed full-cohort score. |
 | Detector adapters | YOLO-L registration, YOLO parameter validation, and finite-value checks and clipping for YOLO/RF person boxes. RF weights and the proposed RF/YOLO equal-parameter comparison remain unchanged. |
 | Loading and calls | An explicit tracking-response object limit with the existing default of 64, plus native-session and count-protocol adapters. This integration excludes SAM worker algorithm changes. |
 
@@ -26,6 +28,12 @@ Use `evaluation.capture_source` for configured single-source model execution.
 `evaluation.answer_artifact` and `evaluation.cohort` generate answers from saved
 evidence. Imports do not allocate GPUs or start evaluations. Execution requires
 an explicit configuration.
+
+Use `evaluation.queue` for batch capture and postprocessing, then
+`evaluation.scoring` for local grading. See [the workflow guide](unified-eval-workflow.md)
+for configuration, recovery, and release requirements. The resource adapter
+operates the model child on an existing controller-owned GPU; it does not rent
+instances or replace the outer controller's release responsibility.
 
 `profile.load_profile` requires a frozen definitions file matching
 `DEFINITIONS_SHA256` and the expected label order. The team's existing
@@ -68,10 +76,12 @@ frozen code and requests remain untouched.
 - Unapproved SAM `mask_area.py` and `streaming_state.py` candidates.
 - The unselected latency metric implementation. Literature-based metric
   selection remains a separate research task.
-- Old `queue.py`, `batch.py`, and `resources.py` recovery/resource entry points,
-  which differ from the final frozen run and retain unresolved duration metadata.
-- The paid final-summary executor `summary.py`, the old count-audit script, and
-  their historical reports.
+- The old experiment-specific controllers and their automatic provisioning,
+  report generation, and duration/latency calculations. The integrated batch
+  and recovery modules adapt the later frozen recovery logic, without those
+  controller features.
+- The old count-audit script and historical reports. The integrated final-answer
+  executor and scoring adapter do not regenerate historical results.
 - Local media, weights, databases, experiment configurations, results, request
   caches, cost ledgers, and secrets.
 
