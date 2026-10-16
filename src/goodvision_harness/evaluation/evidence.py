@@ -62,7 +62,7 @@ separate from native SceneState confirmations; reuse its association and lifecyc
             if not row["event_labels"] or len(set(row["event_labels"])) != len(row["event_labels"]):
                 raise ValueError("explicit fixed window vocabulary required")
             lanes = row.setdefault("report_lanes", ["combined"])
-            if lanes not in (["combined"], ["information"], ["information", "grounding"]):
+            if lanes not in (["combined"], ["information"], ["grounding"], ["information", "grounding"]):
                 raise ValueError("explicit independent report lane plan required")
             self._windows[key] = row
         self.provenance = copy.deepcopy(provenance)
@@ -261,7 +261,7 @@ separate from native SceneState confirmations; reuse its association and lifecyc
             all((row["window_id"], lane) in self.reports for lane in row["report_lanes"] if lane != "grounding") and all(
                 any(x["window_id"] == row["window_id"] and x["event_label"] == label and x["vlm_lane"] != "grounding"
                     for x in self.events.values()) for label in row["event_labels"])
-            for row in self.window_plan)
+            for row in self.window_plan if row["report_lanes"] != ["grounding"])
         complete = (self._closed and all(self._completion.values()) and complete_frames
                     and complete_windows and not self.failures)
         evidence = {

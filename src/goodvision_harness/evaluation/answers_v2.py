@@ -303,9 +303,17 @@ def _events(evidence: dict) -> list[dict]:
 
 
 def _native_lane_complete(evidence: dict) -> bool:
-    """Published information cannot replace grounding completion for each fixed window."""
+    """Require the declared grounding windows, preserving historical paired-window rules."""
     events = _events(evidence)
-    for window in _window_plan(evidence, require_complete=False):
+    plan = _window_plan(evidence, require_complete=False)
+    if evidence.get("provenance", {}).get("window_plan_semantics") == "independent_native_lanes_v1":
+        # The streaming scheduler selects each lane independently. Its capture
+        # adapter reconciles all admitted requests before sealing this plan.
+        plan = [window for window in plan
+                if set(window.get("report_lanes", [])) & GROUNDING_LANES]
+        if not plan:
+            return False
+    for window in plan:
         if not set(window.get("report_lanes", ["combined"])) & GROUNDING_LANES:
             return False
         for label in window["event_labels"]:

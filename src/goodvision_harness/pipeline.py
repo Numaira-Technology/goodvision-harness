@@ -201,6 +201,7 @@ class StreamingSession:
         realtime: bool | None = None,
         source_id: str = "file",
         archive: EventArchive | None = None,
+        stream_session_id: str | None = None,
     ) -> StreamingSession:
         use_realtime = config.video.realtime if realtime is None else realtime
         stream = VideoFileStream(
@@ -222,6 +223,7 @@ class StreamingSession:
             video_stream=stream,
             source_id=source_id,
             archive=archive,
+            stream_session_id=stream_session_id,
         )
 
     @classmethod

@@ -67,6 +67,7 @@ goodvision-harness = "goodvision_harness.service:main"
 goodvision-harness-cli = "goodvision_harness.pipeline:main"
 goodvision-harness-demo = "goodvision_harness.demo.server:main"
 goodvision-event-replay = "goodvision_harness.evaluation.replay:main"
+goodvision-answer = "goodvision_harness.evaluation.answer:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,8 +1,14 @@
 # Three-lane evaluation workflow
 
+For the native timed-source answer entry and its VLM switch, see
+[Streaming answer entry](streaming-answer-entry.md). The commands below describe
+the retained historical offline workflow and remain available for its frozen
+recovery records.
+
 Capture each video once per detector method, then answer questions from the
-saved observations. The three lanes are person tracking, independent events,
-and compact grounding. They are not three detector models. This workflow uses
+saved observations. The Harness system has person tracking, VLM and face lanes;
+face stays disabled for this evaluation. Independent events and compact grounding
+are the two tasks inside the VLM lane. This workflow uses
 native components offline with backpressure; it does not run the production
 HTTP service or measure online response quality.
 
