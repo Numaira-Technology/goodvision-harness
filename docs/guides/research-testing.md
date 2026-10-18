@@ -136,6 +136,20 @@ unselected latency metrics. The original 182-question evaluation remains incompl
 
 ## Experiment environments and output
 
+### Native evaluation request deadlines
+
+The evaluation-only `vlm.inspector_settings.evaluation_transport` object accepts
+`lane_timeout_seconds`, for example `{"events": 75, "compact": 180}`. Each native
+worker receives its lane's HTTP deadline when its inspector is created. Omitted
+lanes retain the configured model API deadline; normal runtime defaults remain
+unchanged. Record the effective deadline with each ledger request.
+
+Freeze deadline changes in a new run. The transport setting is excluded from
+the model payload, so successful response reuse and prior unknown-request
+blocks retain their existing identities. Prompts, output budgets, frame
+admission and native skipping are separate settings. Allow enough queue-drain
+time for the selected deadlines and the existing explicit-429 backoff policy.
+
 Follow [CONTRIBUTING](../../CONTRIBUTING.md) to create a worktree-local environment.
 Use separate pinned environments for archived detector/model stacks. Keep model
 weights and credentials external. Put generated databases, videos, JSONL and

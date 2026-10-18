@@ -38,8 +38,14 @@ class LedgerInspectorFactory:
         transport = options.pop("evaluation_transport", {})
         options["max_tokens"] = transport.get("lane_max_tokens", {}).get(
             config.output_mode, options.get("max_tokens", 1600))
+        settings = config.model_settings
+        lane_timeout = transport.get("lane_timeout_seconds", {}).get(config.output_mode)
+        if lane_timeout is not None:
+            if not math.isfinite(lane_timeout) or lane_timeout <= 0:
+                raise ValueError("evaluation lane timeout must be finite and positive")
+            settings = replace(settings, timeout_seconds=lane_timeout)
         try:
-            inspector = _inspector(replace(config, options=options))
+            inspector = _inspector(replace(config, options=options, model_settings=settings))
         except Exception as exc:
             # Retain a safe diagnostic when the native worker reduces the error
             # to inspection_failed; never log credentials or exception values.
@@ -49,7 +55,8 @@ class LedgerInspectorFactory:
             raise
         inspector = _ledger.attach(inspector, {
             "stream_session_id": config.stream_session_id, "source_id": config.source_id,
-            "lane": config.output_mode, "scheduling_mode": "native_streaming"})
+            "lane": config.output_mode, "scheduling_mode": "native_streaming",
+            "http_timeout_seconds": inspector.settings.timeout_seconds})
         original = inspector.inspect
         inspector.evaluation_stop_event = None
         default_budget = inspector._parameters["max_tokens"]
