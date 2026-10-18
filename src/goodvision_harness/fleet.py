@@ -560,6 +560,19 @@ class FleetController:
                         coordinated=True,
                     )
                     if not 200 <= response.status_code < 300:
+                        try:
+                            failure = json.loads(response.body)
+                        except (ValueError, UnicodeDecodeError):
+                            failure = None
+                        if isinstance(failure, dict) and failure.get("detail") == (
+                            "Person tracking is not configured for this deployment."
+                        ):
+                            raise HTTPException(
+                                409,
+                                f"camera{index:02d} 未配置人物追踪服务。"
+                                "请配置服务或在 Canvas 关闭人物追踪后重试。"
+                                "未启动任何一路分析。",
+                            )
                         raise HTTPException(
                             409, f"Could not prepare workflow for camera{index:02d}. "
                             "No cameras started.",

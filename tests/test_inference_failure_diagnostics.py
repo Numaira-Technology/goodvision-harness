@@ -164,7 +164,9 @@ def test_summary_preserves_http_status_and_recovers_without_private_body(monkeyp
             httpx.Response(401, text="PRIVATE_BODY SECRET"),
             httpx.Response(
                 200,
-                json={"choices": [{"message": {"content": "A synthetic test scene."}}]},
+                json={"choices": [{"message": {"content": json.dumps({
+                    "zh": "模拟测试场景。", "en": "A synthetic test scene.",
+                })}}]},
             ),
         ]
     )

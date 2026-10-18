@@ -974,7 +974,9 @@ def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
         }
         if failure == "invalid":
             assert set(failed_parts) == {"people_left", "people_right"}
-            assert ModelAPIClient.assistant_text(failed_parts["people_right"]) == "invalid"
+            assert (
+                ModelAPIClient.assistant_text(failed_parts["people_right"]) == "invalid"
+            )
             assert failed_parts["people_right"]["choices"][0]["finish_reason"] == "stop"
         elif failure == "cancelled":
             assert set(failed_parts) == {"people_left"}

@@ -32,13 +32,18 @@ _CAMERA = re.compile(r"camera(?:0[1-9]|[1-9][0-9]+)\Z")
 NODE_PORTS = {
     "source": {"inputs": (), "outputs": ("frames",)},
     "face": {"inputs": ("frames",), "outputs": ("faces",)},
+    "tracking": {"inputs": ("frames",), "outputs": ("tracks",)},
     "events": {"inputs": ("frames",), "outputs": ("events",)},
     "summary": {"inputs": ("frames",), "outputs": ("summary",)},
-    "output": {"inputs": ("frames", "faces", "events", "summary"), "outputs": ()},
+    "output": {
+        "inputs": ("frames", "faces", "tracks", "events", "summary"),
+        "outputs": (),
+    },
 }
 _NAMES = {
     "source": "Video source",
     "face": "Face recognition",
+    "tracking": "Person tracking",
     "events": "Safety events",
     "summary": "Scene summary",
     "output": "Output",
@@ -217,7 +222,7 @@ def validate_graph(graph: Any, *, for_apply: bool = False) -> dict:
                 _fail("node coordinates must be finite and within 100000")
             node[axis] = number
         counts[kind] += 1
-        if kind in {"source", "face", "events"} and counts[kind] > 1:
+        if kind in {"source", "face", "tracking", "events"} and counts[kind] > 1:
             _fail(f"only one {kind} component is supported per workflow")
         by_id[nid] = node
         nodes.append(node)
@@ -373,12 +378,14 @@ def compile_graph(
             outputs.append({"node_id": nid, "inputs": inputs})
             consumed.update(binding["node_id"] for binding in inputs)
     features, sensitivities, summaries = set(), {}, []
-    face_id = event_id = None
+    face_id = event_id = tracking_id = None
     for nid in sorted(consumed):
         node, kind = nodes[nid], nodes[nid]["type"]
         if kind == "face":
             face_id = nid
             features.add("stranger")
+        elif kind == "tracking":
+            tracking_id = nid
         elif kind == "events":
             event_id = nid
             features.update(node["config"]["features"])
@@ -404,6 +411,8 @@ def compile_graph(
         "enabled": bool(outputs),
         "face_node_id": face_id,
         "events_node_id": event_id,
+        "tracking_node_id": tracking_id,
+        "tracking_enabled": tracking_id is not None,
     }
 
 
@@ -622,6 +631,24 @@ def _clear_assignment(group: dict) -> None:
     }
 
 
+def _apply_graph(workflow: dict, graph: dict, groups: list[dict]) -> None:
+    nodes = {node["id"] for node in graph["nodes"]}
+    for group in groups:
+        # Stable component ids retain gates; removed components leave no stale
+        # group or per-camera policy behind.
+        group["block_enabled"] = {
+            nid: gate for nid, gate in group["block_enabled"].items() if nid in nodes
+        }
+        for override in group["camera_overrides"].values():
+            override["block_enabled"] = {
+                nid: gate
+                for nid, gate in override["block_enabled"].items()
+                if nid in nodes
+            }
+        group.update(workflow_id=workflow["id"], applied_graph=copy.deepcopy(graph))
+        group["assignment_generation"] += 1
+
+
 class WorkflowStore:
     """Private atomic control document; None explicitly selects an in-memory store."""
 
@@ -729,7 +756,14 @@ class WorkflowStore:
             )
         elif action == "save_workflow":
             value = _workflow(payload)
-            _find(workflows, value["id"], "workflow").update(value)
+            workflow = _find(workflows, value["id"], "workflow")
+            assigned = [
+                group for group in groups if group["workflow_id"] == value["id"]
+            ]
+            if assigned:
+                value["graph"] = validate_graph(value["graph"], for_apply=True)
+            workflow.update(value)
+            _apply_graph(workflow, value["graph"], assigned)
         elif action == "create_group":
             _object(payload, {"name", "camera_ids"}, "create source group")
             groups.append(
@@ -766,35 +800,29 @@ class WorkflowStore:
                 updated["assignment_generation"] += 1
             group.update(updated)
         elif action == "apply":
-            _object(payload, {"workflow_id", "group_ids"}, "Apply")
+            _object(payload, {"workflow_id", "group_ids", "graph"}, "Apply")
             workflow = _find(workflows, payload.get("workflow_id"), "workflow")
-            graph = validate_graph(workflow["graph"], for_apply=True)
+            graph = validate_graph(
+                payload.get("graph", workflow["graph"]), for_apply=True
+            )
             ids = _list(payload.get("group_ids"), MAX_GROUPS, "Apply groups")
             if (
-                not ids
+                (not ids and "graph" not in payload)
                 or any(not isinstance(gid, str) for gid in ids)
                 or len(set(ids)) != len(ids)
             ):
                 _fail("Apply requires unique selected source groups")
             selected = [_find(groups, gid, "source group") for gid in ids]
-            nodes = {n["id"] for n in graph["nodes"]}
-            for group in selected:
-                # Stable ids retain gates; removed draft nodes leave no stale gates.
-                group["block_enabled"] = {
-                    nid: gate
-                    for nid, gate in group["block_enabled"].items()
-                    if nid in nodes
-                }
-                for override in group["camera_overrides"].values():
-                    override["block_enabled"] = {
-                        nid: gate
-                        for nid, gate in override["block_enabled"].items()
-                        if nid in nodes
-                    }
-                group.update(
-                    workflow_id=workflow["id"], applied_graph=copy.deepcopy(graph)
-                )
-                group["assignment_generation"] += 1
+            if "graph" in payload:
+                workflow["graph"] = copy.deepcopy(graph)
+                selected_ids = set(ids)
+                selected = [
+                    group
+                    for group in groups
+                    if group["id"] in selected_ids
+                    or group["workflow_id"] == workflow["id"]
+                ]
+            _apply_graph(workflow, graph, selected)
         elif action == "delete_group":
             _object(payload, {"id"}, "delete source group")
             group = _find(groups, payload.get("id"), "source group")
@@ -811,12 +839,13 @@ class WorkflowStore:
             _object(payload, {"id", "replacement_id", "unassign"}, "delete workflow")
             workflow = _find(workflows, payload.get("id"), "workflow")
             replacement_id = payload.get("replacement_id")
+            replacement = None
             if "unassign" in payload:
                 _boolean(payload["unassign"], "unassign")
             if replacement_id is not None:
                 if replacement_id == workflow["id"] or payload.get("unassign"):
                     _fail("choose a different replacement or explicit unassign")
-                _find(workflows, replacement_id, "replacement workflow")
+                replacement = _find(workflows, replacement_id, "replacement workflow")
             assigned = [g for g in groups if g["workflow_id"] == workflow["id"]]
             if (
                 assigned
@@ -824,14 +853,19 @@ class WorkflowStore:
                 and payload.get("unassign") is not True
             ):
                 _fail("workflow is assigned; choose a replacement or explicit unassign")
+            replacement_graph = (
+                validate_graph(replacement["graph"], for_apply=True)
+                if assigned and replacement is not None
+                else None
+            )
             assignments = []
             for group in assigned:
                 previous = copy.deepcopy(group)
                 if replacement_id is None:
                     _clear_assignment(group)
+                    group["assignment_generation"] += 1
                 else:
-                    group["workflow_id"] = replacement_id
-                group["assignment_generation"] += 1
+                    _apply_graph(replacement, replacement_graph, [group])
                 assignments.append(
                     {
                         "group_id": group["id"],

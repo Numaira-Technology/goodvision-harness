@@ -71,6 +71,30 @@ def graph() -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def tracking_graph() -> dict:
+    value = graph()
+    value["nodes"].append({"id": "tracking", "type": "tracking"})
+    value["edges"].extend(
+        [
+            {
+                "id": "source-tracking",
+                "from_node": "source",
+                "from_port": "frames",
+                "to_node": "tracking",
+                "to_port": "frames",
+            },
+            {
+                "id": "tracking-output",
+                "from_node": "tracking",
+                "from_port": "tracks",
+                "to_node": "output",
+                "to_port": "tracks",
+            },
+        ]
+    )
+    return value
+
+
 def command(store: WorkflowStore, action: str, payload: dict) -> dict:
     before = store.load()
     candidate = store.candidate(action, payload, before["revision"])
@@ -123,27 +147,29 @@ def test_revision_checks_reject_stale_candidates_and_commands() -> None:
     assert store.load()["workflows"][0]["name"] == "First"
 
 
-def test_drafts_and_selective_apply_preserve_other_applied_snapshots() -> None:
+def test_workflow_save_updates_all_assignments_and_legacy_apply_is_selective() -> None:
     store = WorkflowStore()
     workflow_id, first, second = setup_assets(store)
     doc = command(
         store, "apply", {"workflow_id": workflow_id, "group_ids": [first, second]}
     )
-    before = compile_document(doc)
     updated = graph()
     updated["nodes"][3]["config"]["prompt"] = "Count visible people."
-    draft = command(
+    saved = command(
         store, "save_workflow", {"id": workflow_id, "name": "Revised", "graph": updated}
     )
-    assert changed_cameras(doc, draft) == []
-    assert compile_document(draft) == before
+    assert changed_cameras(doc, saved) == ["camera01", "camera02"]
+    assert all(
+        plan["summaries"][0]["prompt"] == "Count visible people."
+        for plan in compile_document(saved).values()
+    )
     applied = command(
         store, "apply", {"workflow_id": workflow_id, "group_ids": [first]}
     )
-    assert changed_cameras(draft, applied) == ["camera01"]
+    assert changed_cameras(saved, applied) == ["camera01"]
     plans = compile_document(applied)
     assert plans["camera01"]["summaries"][0]["prompt"] == "Count visible people."
-    assert plans["camera02"] == before["camera02"]
+    assert plans["camera02"]["summaries"][0]["prompt"] == "Count visible people."
 
 
 def test_apply_validates_every_selected_group_before_candidate_can_commit() -> None:
@@ -170,6 +196,112 @@ def test_identical_reapply_still_marks_target_cameras_affected() -> None:
     assert changed_cameras(before, after) == ["camera01"]
 
 
+def test_apply_graph_updates_current_and_new_groups_in_one_revision():
+    store = WorkflowStore()
+    workflow_id, first, second = setup_assets(store)
+    command(store, "apply", {"workflow_id": workflow_id, "group_ids": [first]})
+    before = command(
+        store,
+        "update_group",
+        {
+            "id": first,
+            "enabled": False,
+            "block_enabled": {"face": False, "events": False},
+            "camera_overrides": {
+                "camera01": {"block_enabled": {"face": False, "summary": None}}
+            },
+        },
+    )
+    value = graph()
+    value["nodes"] = [node for node in value["nodes"] if node["id"] != "face"]
+    value["edges"] = [
+        edge
+        for edge in value["edges"]
+        if "face" not in (edge["from_node"], edge["to_node"])
+    ]
+    value["nodes"][2]["config"]["prompt"] = "Count people now."
+    after = command(
+        store,
+        "apply",
+        {"workflow_id": workflow_id, "group_ids": [second], "graph": value},
+    )
+    assert after["revision"] == before["revision"] + 1
+    normalized = validate_graph(value, for_apply=True)
+    assert after["workflows"][0]["graph"] == normalized
+    assert [group["workflow_id"] for group in after["groups"]] == [
+        workflow_id,
+        workflow_id,
+    ]
+    assert all(group["applied_graph"] == normalized for group in after["groups"])
+    assert all(
+        new["assignment_generation"] == old["assignment_generation"] + 1
+        for old, new in zip(before["groups"], after["groups"], strict=True)
+    )
+    assert after["groups"][0]["enabled"] is False
+    assert after["groups"][0]["block_enabled"] == {"events": False}
+    assert after["groups"][0]["camera_overrides"]["camera01"]["block_enabled"] == {
+        "summary": None
+    }
+
+
+def test_apply_current_graph_can_configure_an_unassigned_workflow_without_groups():
+    store = WorkflowStore()
+    before = command(store, "create_workflow", {"name": "New workflow"})
+    workflow_id = before["workflows"][0]["id"]
+    after = command(
+        store, "apply", {"workflow_id": workflow_id, "group_ids": [], "graph": graph()}
+    )
+    assert after["revision"] == before["revision"] + 1
+    assert after["groups"] == []
+    assert after["workflows"][0]["graph"] == validate_graph(graph(), for_apply=True)
+    with pytest.raises(WorkflowValidationError, match="selected source groups"):
+        store.candidate(
+            "apply", {"workflow_id": workflow_id, "group_ids": []}, after["revision"]
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid", ["disconnected", "unknown_group", "duplicate_group", "null"]
+)
+def test_apply_current_graph_rejects_atomically_before_saving_or_assigning(invalid):
+    store = WorkflowStore()
+    workflow_id, first, second = setup_assets(store)
+    before = command(store, "apply", {"workflow_id": workflow_id, "group_ids": [first]})
+    value = graph()
+    value["nodes"][3]["config"]["prompt"] = "This change must not be saved."
+    groups = [second]
+    if invalid == "disconnected":
+        value["edges"] = []
+    elif invalid == "unknown_group":
+        groups = [second, "missing"]
+    elif invalid == "duplicate_group":
+        groups = [second, second]
+    else:
+        value = None
+    with pytest.raises(WorkflowValidationError):
+        store.candidate(
+            "apply",
+            {"workflow_id": workflow_id, "group_ids": groups, "graph": value},
+            before["revision"],
+        )
+    assert store.load() == before
+
+
+def test_legacy_save_rejects_incomplete_graph_when_workflow_is_assigned():
+    store = WorkflowStore()
+    workflow_id, first, _ = setup_assets(store)
+    before = command(store, "apply", {"workflow_id": workflow_id, "group_ids": [first]})
+    value = graph()
+    value["edges"] = []
+    with pytest.raises(WorkflowValidationError, match="source-to-output"):
+        store.candidate(
+            "save_workflow",
+            {"id": workflow_id, "name": "Incomplete", "graph": value},
+            before["revision"],
+        )
+    assert store.load() == before
+
+
 def test_compiler_preserves_native_node_ids_and_actual_output_bindings() -> None:
     plan = compile_graph(graph())
     assert plan["enabled"] is True
@@ -177,6 +309,8 @@ def test_compiler_preserves_native_node_ids_and_actual_output_bindings() -> None
     assert plan["event_sensitivities"] == {"smoking": "standard"}
     assert plan["face_node_id"] == "face"
     assert plan["events_node_id"] == "events"
+    assert plan["tracking_node_id"] is None
+    assert plan["tracking_enabled"] is False
     assert plan["summaries"] == [
         {"id": "summary", "interval_seconds": 60, "prompt": "Describe the scene."}
     ]
@@ -251,7 +385,165 @@ def test_parent_and_source_gates_cannot_be_bypassed(kwargs: dict) -> None:
         "enabled": False,
         "face_node_id": None,
         "events_node_id": None,
+        "tracking_node_id": None,
+        "tracking_enabled": False,
     }
+
+
+def test_tracking_compiles_its_own_output_without_changing_detection_features():
+    value = tracking_graph()
+    normalized = validate_graph(value, for_apply=True)
+    node = next(node for node in normalized["nodes"] if node["type"] == "tracking")
+    assert node["config"] == {"name": "Person tracking"}
+    plan = compile_graph(value)
+    baseline = compile_graph(graph())
+    assert plan["tracking_node_id"] == "tracking"
+    assert plan["tracking_enabled"] is True
+    assert plan["features"] == baseline["features"]
+    assert plan["event_sensitivities"] == baseline["event_sensitivities"]
+    assert {"node_id": "tracking", "port": "tracks"} in plan["outputs"][0]["inputs"]
+
+
+def test_tracking_only_workflow_does_not_enable_face_or_safety_detection():
+    value = tracking_graph()
+    retained = {"source", "tracking", "output"}
+    value["nodes"] = [node for node in value["nodes"] if node["id"] in retained]
+    value["edges"] = [
+        edge
+        for edge in value["edges"]
+        if edge["from_node"] in retained and edge["to_node"] in retained
+    ]
+    plan = compile_graph(value)
+    assert plan["enabled"] is True
+    assert plan["tracking_enabled"] is True
+    assert plan["tracking_node_id"] == "tracking"
+    assert plan["features"] == []
+    assert plan["event_sensitivities"] == {}
+    assert plan["summaries"] == []
+    assert plan["face_node_id"] is None
+    assert plan["events_node_id"] is None
+    assert plan["outputs"] == [
+        {"node_id": "output", "inputs": [{"node_id": "tracking", "port": "tracks"}]}
+    ]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"enabled": False, "camera_override": {"enabled": True}},
+        {"camera_override": {"enabled": False}},
+        {"block_enabled": {"source": False}},
+        {"block_enabled": {"output": False}},
+        {"block_enabled": {"tracking": False}},
+        {
+            "block_enabled": {"tracking": False},
+            "camera_override": {"block_enabled": {"tracking": True}},
+        },
+        {"camera_override": {"block_enabled": {"tracking": False}}},
+    ],
+)
+def test_tracking_respects_parent_block_and_camera_gates(kwargs):
+    plan = compile_graph(tracking_graph(), **kwargs)
+    assert plan["tracking_enabled"] is False
+    assert plan["tracking_node_id"] is None
+    assert all(
+        binding["port"] != "tracks"
+        for output in plan["outputs"]
+        for binding in output["inputs"]
+    )
+
+
+@pytest.mark.parametrize("camera_gate", [None, True])
+def test_tracking_camera_inherit_or_on_keeps_enabled_parent(camera_gate):
+    plan = compile_graph(
+        tracking_graph(),
+        camera_override={"block_enabled": {"tracking": camera_gate}},
+    )
+    assert plan["tracking_enabled"] is True
+
+
+def test_disabled_tracking_node_cannot_be_reenabled_by_camera_override():
+    value = tracking_graph()
+    value["nodes"][-1]["enabled"] = False
+    plan = compile_graph(value, camera_override={"block_enabled": {"tracking": True}})
+    assert plan["tracking_enabled"] is False
+    assert plan["features"] == compile_graph(graph())["features"]
+
+
+def test_tracking_without_an_effective_output_consumer_does_not_run():
+    value = tracking_graph()
+    value["nodes"].append({"id": "tracks-output", "type": "output"})
+    value["edges"][-1]["to_node"] = "tracks-output"
+    plan = compile_graph(value, block_enabled={"tracks-output": False})
+    assert plan["tracking_enabled"] is False
+    assert plan["tracking_node_id"] is None
+    assert plan["enabled"] is True
+    assert plan["features"] == compile_graph(graph())["features"]
+    value["edges"] = value["edges"][:-1]
+    with pytest.raises(WorkflowValidationError, match="source-to-output"):
+        compile_graph(value)
+
+
+@pytest.mark.parametrize(
+    "config", [{"processing_method": "sam_live"}, {"model": "sam"}, {"fps": 15}]
+)
+def test_tracking_exposes_only_its_instance_name_configuration(config):
+    value = tracking_graph()
+    value["nodes"][-1]["config"] = config
+    with pytest.raises(WorkflowValidationError, match="configuration"):
+        validate_graph(value)
+
+
+def test_tracking_is_singleton_and_requires_typed_connections():
+    value = tracking_graph()
+    value["nodes"].append({"id": "another-tracker", "type": "tracking"})
+    with pytest.raises(WorkflowValidationError, match="one tracking"):
+        validate_graph(value)
+    value = tracking_graph()
+    value["edges"][-1]["to_port"] = "events"
+    with pytest.raises(WorkflowValidationError, match="incompatible"):
+        validate_graph(value)
+    value = tracking_graph()
+    value["edges"][-2]["from_node"] = "face"
+    value["edges"][-2]["from_port"] = "faces"
+    with pytest.raises(WorkflowValidationError, match="incompatible"):
+        validate_graph(value)
+
+
+def test_tracking_applied_snapshot_and_per_camera_override_persist_independently():
+    store = WorkflowStore()
+    document = command(
+        store, "create_workflow", {"name": "Tracking", "graph": tracking_graph()}
+    )
+    workflow_id = document["workflows"][0]["id"]
+    document = command(
+        store,
+        "create_group",
+        {"name": "Entrances", "camera_ids": ["camera01", "camera02"]},
+    )
+    group_id = document["groups"][0]["id"]
+    command(store, "apply", {"workflow_id": workflow_id, "group_ids": [group_id]})
+    document = command(
+        store,
+        "update_group",
+        {
+            "id": group_id,
+            "camera_overrides": {"camera02": {"block_enabled": {"tracking": False}}},
+        },
+    )
+    plans = compile_document(document)
+    assert plans["camera01"]["tracking_enabled"] is True
+    assert plans["camera02"]["tracking_enabled"] is False
+    assert plans["camera01"]["features"] == plans["camera02"]["features"]
+    document = command(
+        store,
+        "save_workflow",
+        {"id": workflow_id, "name": "No tracking", "graph": graph()},
+    )
+    assert all(
+        not plan["tracking_enabled"] for plan in compile_document(document).values()
+    )
+    assert document["groups"][0]["camera_overrides"]["camera02"]["block_enabled"] == {}
 
 
 def test_per_camera_inherit_and_component_off_are_independent() -> None:
@@ -474,7 +766,66 @@ def test_deleted_group_restore_cannot_steal_a_reassigned_camera() -> None:
     assert store.load() == before
 
 
-def test_removed_draft_nodes_prune_only_their_stale_gates_on_apply() -> None:
+def test_delete_replacement_immediately_applies_its_graph_and_prunes_removed_gates():
+    store = WorkflowStore()
+    original, group_id, _ = setup_assets(store)
+    command(store, "apply", {"workflow_id": original, "group_ids": [group_id]})
+    command(
+        store,
+        "update_group",
+        {
+            "id": group_id,
+            "block_enabled": {"face": False, "events": False},
+            "camera_overrides": {"camera01": {"block_enabled": {"face": False}}},
+        },
+    )
+    replacement_graph = graph()
+    replacement_graph["nodes"] = [
+        node for node in replacement_graph["nodes"] if node["id"] != "face"
+    ]
+    replacement_graph["edges"] = [
+        edge
+        for edge in replacement_graph["edges"]
+        if "face" not in (edge["from_node"], edge["to_node"])
+    ]
+    replacement_graph["nodes"][2]["config"]["prompt"] = "Use this replacement now."
+    before = command(
+        store, "create_workflow", {"name": "Replacement", "graph": replacement_graph}
+    )
+    replacement = before["workflows"][-1]["id"]
+    deleted = command(
+        store, "delete_workflow", {"id": original, "replacement_id": replacement}
+    )
+    group = deleted["groups"][0]
+    assert group["workflow_id"] == replacement
+    assert group["applied_graph"] == deleted["workflows"][0]["graph"]
+    assert group["block_enabled"] == {"events": False}
+    assert group["camera_overrides"]["camera01"]["block_enabled"] == {}
+    restored = command(store, "restore", {"id": deleted["trash"][0]["id"]})
+    assert (
+        restored["groups"][0]["applied_graph"] == before["groups"][0]["applied_graph"]
+    )
+    assert (
+        restored["groups"][0]["block_enabled"] == before["groups"][0]["block_enabled"]
+    )
+
+
+def test_delete_replacement_rejects_an_incomplete_replacement_atomically():
+    store = WorkflowStore()
+    original, group_id, _ = setup_assets(store)
+    command(store, "apply", {"workflow_id": original, "group_ids": [group_id]})
+    before = command(store, "create_workflow", {"name": "Incomplete replacement"})
+    replacement = before["workflows"][-1]["id"]
+    with pytest.raises(WorkflowValidationError, match="source and output"):
+        store.candidate(
+            "delete_workflow",
+            {"id": original, "replacement_id": replacement},
+            before["revision"],
+        )
+    assert store.load() == before
+
+
+def test_removed_nodes_prune_only_their_stale_gates_in_atomic_workflow_save() -> None:
     store = WorkflowStore()
     workflow_id, first, _ = setup_assets(store)
     command(store, "apply", {"workflow_id": workflow_id, "group_ids": [first]})
@@ -488,10 +839,9 @@ def test_removed_draft_nodes_prune_only_their_stale_gates_on_apply() -> None:
     value["edges"] = [
         e for e in value["edges"] if "face" not in (e["from_node"], e["to_node"])
     ]
-    command(
+    doc = command(
         store, "save_workflow", {"id": workflow_id, "name": "No faces", "graph": value}
     )
-    doc = command(store, "apply", {"workflow_id": workflow_id, "group_ids": [first]})
     assert doc["groups"][0]["block_enabled"] == {"events": False}
 
 

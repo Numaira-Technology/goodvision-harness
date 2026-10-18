@@ -7,6 +7,7 @@ import copy
 from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 
 import pytest
 from test_video_connection import ControlledAdapter, frame, publish, wait_for
@@ -15,7 +16,16 @@ from test_workflow_summary import Clock
 from goodvision_harness import service
 from goodvision_harness.config import load_config
 from goodvision_harness.deployment_settings import DeploymentSettingsStore
-from goodvision_harness.privacy import PUBLIC_FACE_ERROR
+from goodvision_harness.model_api import (
+    MissingAPIKeyError,
+    ModelAPIError,
+    inference_error_detail,
+)
+from goodvision_harness.privacy import (
+    PUBLIC_ANALYSIS_ERROR,
+    PUBLIC_FACE_ERROR,
+    PUBLIC_MISSING_API_KEY_ERROR,
+)
 from goodvision_harness.workflow_summary import SummaryManager
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -280,6 +290,8 @@ def test_test_returns_real_single_frame_faces_events_summary_without_live_mutati
     assert by_type["face"]["faces"][0]["attributes"]["status"] == "known"
     assert by_type["face"]["observations"][0]["event_label"] == "stranger"
     assert by_type["events"]["observations"][0]["event_label"] == "smoking"
+    assert by_type["face"]["error_detail"] is None
+    assert by_type["events"]["error_detail"] is None
     assert by_type["summary"]["result"]["test"] is True
     assert (
         by_type["summary"]["result"]["stream_session_id"] == result["stream_session_id"]
@@ -316,6 +328,90 @@ def test_test_face_failure_does_not_hide_event_or_summary_result(rig, monkeypatc
     assert by_type["events"]["observations"]
     assert by_type["summary"]["result"]["status"] == "completed"
     assert "PRIVATE_CREDENTIAL" not in str(result)
+
+
+@pytest.mark.parametrize("identity", [False, True])
+@pytest.mark.parametrize("aggregate_error", [None, "PRIVATE_PROVIDER_BODY"])
+def test_single_frame_branch_errors_keep_safe_actionable_details(
+    identity, aggregate_error
+):
+    branch = "stranger" if identity else "safety"
+    response = SimpleNamespace(
+        classification=None,
+        error=aggregate_error,
+        branch_errors=((branch, "http_error"),),
+        branch_error_details={
+            branch: {
+                "code": "http_error",
+                "http_status": 401,
+                "message": "PRIVATE_PROVIDER_BODY TEST_SECRET",
+                "provider_body": "TEST_SECRET",
+            }
+        },
+    )
+    result = service.HarnessRuntime._workflow_test_response(
+        response, node_id="component", identity=identity, context={"test": True}
+    )
+    assert result["error"] == (
+        PUBLIC_FACE_ERROR if identity else PUBLIC_ANALYSIS_ERROR
+    )
+    assert result["error_detail"] == inference_error_detail(
+        code="http_error", http_status=401
+    )
+    assert "authentication" in result["error_detail"]["message"]
+    assert result["observations"] == []
+    assert "PRIVATE_PROVIDER_BODY" not in str(result)
+    assert "TEST_SECRET" not in str(result)
+
+
+@pytest.mark.parametrize(
+    "failure,code,status,message",
+    [
+        (
+            ModelAPIError("TEST_SECRET", code="http_error", status_code=429),
+            "http_error",
+            429,
+            "rate limit",
+        ),
+        (
+            ModelAPIError("TEST_SECRET", code="timeout"),
+            "timeout",
+            None,
+            "timed out",
+        ),
+        (
+            MissingAPIKeyError("TEST_SECRET"),
+            "missing_api_key",
+            None,
+            PUBLIC_MISSING_API_KEY_ERROR,
+        ),
+    ],
+)
+def test_single_frame_event_setup_failure_keeps_other_results_and_safe_reason(
+    rig, monkeypatch, failure, code, status, message
+):
+    from goodvision_harness import grounding
+
+    runtime, _connection, _adapter, _clock = rig
+    original = grounding.build_selected_features_grounding_client
+
+    def client(*args, **kwargs):
+        if kwargs["features"] == ("smoking",):
+            raise failure
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(grounding, "build_selected_features_grounding_client", client)
+    result = runtime.test_workflow(graph("face", "events", "summary"))
+    by_type = {item["type"]: item for item in result["results"]}
+    detail = by_type["events"]["error_detail"]
+    assert detail["code"] == code
+    assert detail["http_status"] == status
+    assert message in detail["message"]
+    assert by_type["events"]["error"] == PUBLIC_ANALYSIS_ERROR
+    assert by_type["face"]["faces"]
+    assert by_type["summary"]["result"]["status"] == "completed"
+    assert "TEST_SECRET" not in str(result)
+    assert not runtime._processing_lifecycle_busy()
 
 
 def publish_result(runtime, label, sequence):

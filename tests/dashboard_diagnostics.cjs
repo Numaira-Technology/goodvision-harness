@@ -88,3 +88,27 @@ test("disabled diagnostics explain state and stop polling until reopened", async
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(calls.length,2);
 });
+
+
+test("expanded diagnostics pause hidden parent requests and images, then resume",async()=>{
+  const vm=require("node:vm"),fs=require("node:fs");
+  let active=false,toggle,resolve;const calls=[],timers=new Map(),images=[];let nextTimer=0;
+  function element(tag){return {children:[],style:{},append(...items){this.children.push(...items);},replaceChildren(){this.children=[];},
+    set src(value){images.push(value);}};}
+  const panel={open:true,addEventListener(_name,fn){toggle=fn;}},content=element("div");
+  const context={AbortController,channelSurfaceActive:()=>active,addEventListener(){},
+    GoodvisionDiagnosticCameraId:"camera02",
+    setTimeout(fn,delay){const id=++nextTimer;timers.set(id,{fn,delay});return id;},clearTimeout:id=>timers.delete(id),
+    document:{hidden:false,addEventListener(){},createElement:element,getElementById:id=>id==="scene-diagnostics"?panel:content},
+    fetch:async url=>{calls.push(url);return new Promise(done=>{resolve=done;});}};
+  vm.runInNewContext(fs.readFileSync(require.resolve("../src/goodvision_harness/assets/scene_diagnostics.js"),"utf8"),context);
+  const wake=()=>{const [id,timer]=[...timers].find(([,value])=>value.delay===2000);timers.delete(id);timer.fn();};
+  const finish=()=>resolve({ok:true,json:async()=>({records:[{images_available:true,frames:[{frame_sequence:1}],request_id:"one"}]})});
+  toggle();assert.deepEqual(calls,[]);
+  active=true;wake();assert.equal(calls.length,1);
+  active=false;finish();await new Promise(done=>setImmediate(done));
+  assert.deepEqual(images,[],"A response that finished after hiding cannot start image requests");
+  wake();assert.equal(calls.length,1);
+  active=true;wake();assert.equal(calls.length,2);finish();await new Promise(done=>setImmediate(done));
+  assert.deepEqual(images,["/v1/fleet/cameras/camera02/scene/diagnostics/one/1.jpg"]);
+});

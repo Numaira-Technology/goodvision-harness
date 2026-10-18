@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -138,9 +139,32 @@ def test_initial_api_reports_real_camera_status_and_catalog(monkeypatch, tmp_pat
         }
         assert all(c["status"]["analysis_state"] == "idle" for c in data["cameras"])
         assert any(item["id"] == "stranger" for item in data["event_catalog"]["events"])
+        assert data["tracking"]["configured"] is False
+        assert data["tracking"]["processing_method"] == "sam_live"
 
 
-def test_draft_save_remains_available_during_analysis(monkeypatch, tmp_path):
+def test_canvas_reports_tracking_configuration_without_exposing_service_secrets(
+    monkeypatch,
+    tmp_path,
+):
+    app = workflow_app(monkeypatch, tmp_path)
+    capability = {
+        "configured": True,
+        "processing_method": "sam_live",
+        "reason": (
+            "Tracking service configured; readiness is checked when analysis starts."
+        ),
+    }
+    app.state.runtime.workflow_tracking_capability = lambda: capability
+    with TestClient(app) as client:
+        response = client.get("/v1/workflows")
+        assert response.status_code == 200
+        assert response.json()["tracking"] == capability
+
+
+def test_workflow_save_rejects_analysis_without_a_hidden_saved_version(
+    monkeypatch, tmp_path
+):
     app = workflow_app(monkeypatch, tmp_path)
     workflow_id, _ = assets(app, applied=True)
     app.state.statuses[2].update(analysis_state="running", pipeline_state="running")
@@ -151,13 +175,8 @@ def test_draft_save_remains_available_during_analysis(monkeypatch, tmp_path):
         response = post_command(
             client, app, "save_workflow", id=workflow_id, name="Draft", graph=value
         )
-        assert response.status_code == 200
-        saved = response.json()["document"]
-        assert saved["groups"] == previous["groups"]
-        assert (
-            saved["workflows"][0]["graph"]["nodes"][3]["config"]["prompt"]
-            == "A draft prompt."
-        )
+        assert response.status_code == 409
+        assert app.state.workflows.store.load() == previous
         assert app.state.statuses[2]["analysis_state"] == "running"
         assert not app.state.bindings
         assert not app.state.own_requests
@@ -380,7 +399,9 @@ def test_fleet_start_clears_every_unmanaged_binding_at_revision_zero(
         )
 
 
-def test_fleet_installs_applied_snapshot_instead_of_newer_draft(monkeypatch, tmp_path):
+def test_fleet_installs_the_same_atomically_saved_and_applied_workflow(
+    monkeypatch, tmp_path
+):
     app = workflow_app(monkeypatch, tmp_path, connected=(1, 2))
     workflow_id, _ = assets(app, applied=True)
     draft = graph()
@@ -400,7 +421,7 @@ def test_fleet_installs_applied_snapshot_instead_of_newer_draft(monkeypatch, tmp
         assert peer_binding["workflow_id"] == workflow_id
         assert (
             peer_binding["graph"]["nodes"][3]["config"]["prompt"]
-            == "Describe the scene."
+            == "Unsaved to groups."
         )
 
 
@@ -419,6 +440,61 @@ def test_failed_binding_sync_starts_no_camera_and_retains_connections(
             for request in app.state.peer_requests
         )
         assert all(status["connected"] for status in app.state.statuses.values())
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Person tracking is not configured for this deployment.",
+        "PRIVATE_CREDENTIAL",
+        "Person tracking is not configured for this deployment. PRIVATE_CREDENTIAL",
+    ],
+)
+def test_fleet_start_explains_only_known_public_tracking_binding_failure(
+    monkeypatch,
+    tmp_path,
+    detail,
+):
+    from fastapi.responses import JSONResponse
+    from test_workflows import tracking_graph
+
+    app = workflow_app(monkeypatch, tmp_path, connected=(1,))
+    workflow_id, group_id = assets(app, cameras=("camera01",))
+    seed(
+        app.state.workflows,
+        "save_workflow",
+        id=workflow_id,
+        name="Tracking",
+        graph=tracking_graph(),
+    )
+    seed(
+        app.state.workflows,
+        "apply",
+        workflow_id=workflow_id,
+        group_ids=[group_id],
+    )
+    fleet = app.state.fleet
+    request_json = fleet.request_json
+
+    async def reject(index, method, path, *args, **kwargs):
+        if path == "/v1/analysis/workflow":
+            return JSONResponse({"detail": detail}, status_code=400)
+        return await request_json(index, method, path, *args, **kwargs)
+
+    monkeypatch.setattr(fleet, "request_json", reject)
+    with TestClient(app) as client:
+        response = client.post("/v1/fleet/analysis/start", json={})
+        assert response.status_code == 409
+        if detail == "Person tracking is not configured for this deployment.":
+            assert "camera01 未配置人物追踪服务" in response.json()["detail"]
+            assert "Canvas 关闭人物追踪" in response.json()["detail"]
+        else:
+            assert response.json()["detail"] == (
+                "Could not prepare workflow for camera01. No cameras started."
+            )
+        assert "PRIVATE_CREDENTIAL" not in response.text
+        assert not app.state.own_requests
+        assert app.state.statuses[1]["connected"]
         assert all(
             status["analysis_state"] == "idle" for status in app.state.statuses.values()
         )
@@ -649,6 +725,111 @@ def test_snapshot_test_uses_coordinator_without_modifying_assets(monkeypatch, tm
         )
 
 
+def test_snapshot_test_releases_fleet_lock_after_admission_for_stop(
+    monkeypatch, tmp_path
+):
+    async def exercise():
+        app = workflow_app(monkeypatch, tmp_path, connected=(2,))
+        workflow_id, group_id = assets(app, applied=True)
+        previous = app.state.workflows.store.load()
+        dispatched, admitted, admit, release = (asyncio.Event() for _ in range(4))
+        stopped = asyncio.Event()
+
+        async def peer(request):
+            index = int(request.url.host.removeprefix("harness-"))
+            if request.url.path == "/v1/analysis/workflow/test":
+                dispatched.set()
+                await admit.wait()
+                app.state.statuses[index].update(
+                    pipeline_state="starting",
+                    analysis_state="starting",
+                    workflow_test_running=True,
+                )
+                admitted.set()
+                await release.wait()
+                app.state.statuses[index].update(
+                    pipeline_state="idle",
+                    analysis_state="idle",
+                    workflow_test_running=False,
+                )
+                return httpx.Response(200, json={"test": True})
+            if request.url.path == "/v1/analysis/stop" and index == 2:
+                stopped.set()
+                # A cancelled model may still be draining. Stop must return
+                # without waiting for that model, and mutations stay blocked.
+                app.state.statuses[index].update(
+                    pipeline_state="stopping", analysis_state="stopping"
+                )
+                return httpx.Response(200, json={"ok": True})
+            return app.state.default_peer(request)
+
+        fleet = app.state.fleet
+        await fleet._peer_client.aclose()
+        fleet._peer_client = httpx.AsyncClient(transport=httpx.MockTransport(peer))
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                testing = asyncio.create_task(
+                    client.post(
+                        "/v1/workflows/test",
+                        json={"camera_id": "camera02", "graph": graph()},
+                    )
+                )
+                stopping = None
+                try:
+                    await asyncio.wait_for(dispatched.wait(), 1)
+                    # Before runtime admission, other fleet controls must not
+                    # overtake this request and allow it to start after Stop.
+                    stopping = asyncio.create_task(
+                        client.post("/v1/fleet/analysis/stop", json={})
+                    )
+                    await asyncio.sleep(0.1)
+                    assert not stopped.is_set()
+                    admit.set()
+                    await asyncio.wait_for(admitted.wait(), 1)
+                    response = await asyncio.wait_for(stopping, 1)
+                    assert response.status_code == 200
+                    assert stopped.is_set()
+                    assert not testing.done()
+                    # The in-flight model still owns this camera lifecycle.
+                    for command in (
+                        {"action": "update_group", "id": group_id, "enabled": False},
+                        {
+                            "action": "apply",
+                            "workflow_id": workflow_id,
+                            "group_ids": [group_id],
+                        },
+                    ):
+                        result = await asyncio.wait_for(
+                            client.post(
+                                "/v1/workflows/command",
+                                json={"revision": previous["revision"], **command},
+                            ),
+                            1,
+                        )
+                        assert result.status_code == 409
+                    result = await asyncio.wait_for(
+                        client.post("/v1/fleet/analysis/start", json={}), 1
+                    )
+                    assert result.status_code == 409
+                    assert app.state.workflows.store.load() == previous
+                    release.set()
+                    assert (await asyncio.wait_for(testing, 1)).status_code == 200
+                finally:
+                    admit.set()
+                    release.set()
+                    await asyncio.gather(
+                        testing,
+                        *([stopping] if stopping is not None else []),
+                        return_exceptions=True,
+                    )
+        finally:
+            await fleet.aclose()
+
+    asyncio.run(exercise())
+
+
 def test_native_workflow_controls_require_coordinator_and_bound_request_bodies(
     monkeypatch, tmp_path
 ):
@@ -698,3 +879,177 @@ def test_native_workflow_controls_require_coordinator_and_bound_request_bodies(
             == 413
         )
         assert len(observed) == 1
+
+
+@pytest.mark.parametrize("action", ["apply", "save_workflow"])
+@pytest.mark.parametrize("unchanged", [False, True])
+@pytest.mark.parametrize(
+    "lifecycle",
+    [
+        {"analysis_state": "running"},
+        {"analysis_state": "starting"},
+        {"analysis_state": "stopping"},
+        {"analysis_state": "draining"},
+        {"analysis_state": "unknown"},
+        {"workflow_test_running": True},
+        {"session_start_pending": True},
+        {"processing_cleanup": "closing"},
+        {"processing_cleanup": "stopping"},
+        {"unreachable": True},
+    ],
+)
+def test_workflow_edit_locks_every_existing_camera_even_when_gated_off_or_unselected(
+    monkeypatch,
+    tmp_path,
+    action,
+    unchanged,
+    lifecycle,
+):
+    app = workflow_app(monkeypatch, tmp_path)
+    workflow_id, old_group = assets(app, applied=True)
+    seed(
+        app.state.workflows,
+        "update_group",
+        id=old_group,
+        enabled=False,
+        block_enabled={"source": False},
+        camera_overrides={"camera02": {"enabled": False}},
+    )
+    created = seed(
+        app.state.workflows, "create_group", name="New target", camera_ids=["camera01"]
+    )
+    new_group = created["groups"][-1]["id"]
+    if lifecycle.get("unreachable"):
+        app.state.unreachable.add(2)
+    else:
+        app.state.statuses[2].update(lifecycle)
+    before = app.state.workflows.store.load()
+    before_bytes = app.state.workflows.store.path.read_bytes()
+    value = graph()
+    if not unchanged:
+        value["nodes"][3]["config"]["prompt"] = "Apply this change directly."
+    payload = (
+        {"workflow_id": workflow_id, "group_ids": [new_group], "graph": value}
+        if action == "apply"
+        else {"id": workflow_id, "name": "Renamed", "graph": value}
+    )
+    with TestClient(app) as client:
+        response = post_command(client, app, action, **payload)
+        assert response.status_code == 409
+        assert app.state.workflows.store.load() == before
+        assert app.state.workflows.store.path.read_bytes() == before_bytes
+        assert not app.state.bindings
+
+
+def test_one_apply_updates_saved_graph_existing_assignment_and_new_group_atomically(
+    monkeypatch,
+    tmp_path,
+):
+    app = workflow_app(monkeypatch, tmp_path)
+    workflow_id, first = assets(app, applied=True)
+    created = seed(
+        app.state.workflows, "create_group", name="New target", camera_ids=["camera01"]
+    )
+    second = created["groups"][-1]["id"]
+    app.state.statuses[3].update(analysis_state="running", pipeline_state="running")
+    before = app.state.workflows.store.load()
+    value = graph()
+    value["nodes"][3]["config"]["prompt"] = "Count people directly."
+    with TestClient(app) as client:
+        response = post_command(
+            client,
+            app,
+            "apply",
+            workflow_id=workflow_id,
+            group_ids=[second],
+            graph=value,
+        )
+        assert response.status_code == 200
+        after = response.json()["document"]
+        assert after["revision"] == before["revision"] + 1
+        canonical = after["workflows"][0]["graph"]
+        assert canonical["nodes"][3]["config"]["prompt"] == "Count people directly."
+        assert {group["id"] for group in after["groups"]} == {first, second}
+        assert all(group["applied_graph"] == canonical for group in after["groups"])
+        assert all(group["workflow_id"] == workflow_id for group in after["groups"])
+        assert app.state.statuses[3]["analysis_state"] == "running"
+        assert not app.state.bindings
+
+
+def test_apply_without_new_group_selection_updates_existing_associations(
+    monkeypatch,
+    tmp_path,
+):
+    app = workflow_app(monkeypatch, tmp_path)
+    workflow_id, _ = assets(app, applied=True)
+    before = app.state.workflows.store.load()
+    value = graph()
+    value["nodes"][3]["config"]["interval_seconds"] = 15
+    with TestClient(app) as client:
+        response = post_command(
+            client, app, "apply", workflow_id=workflow_id, group_ids=[], graph=value
+        )
+        assert response.status_code == 200
+        after = response.json()["document"]
+        assert after["revision"] == before["revision"] + 1
+        assert after["groups"][0]["applied_graph"] == after["workflows"][0]["graph"]
+        assert (
+            after["groups"][0]["applied_graph"]["nodes"][3]["config"][
+                "interval_seconds"
+            ]
+            == 15
+        )
+
+
+def test_apply_unassigned_workflow_allows_empty_groups_despite_unrelated_analysis(
+    monkeypatch,
+    tmp_path,
+):
+    app = workflow_app(monkeypatch, tmp_path)
+    workflow_id, _ = assets(app)
+    app.state.statuses[2].update(analysis_state="running", pipeline_state="running")
+    with TestClient(app) as client:
+        response = post_command(
+            client, app, "apply", workflow_id=workflow_id, group_ids=[], graph=graph()
+        )
+        assert response.status_code == 200
+        assert response.json()["document"]["groups"][0]["workflow_id"] is None
+
+
+@pytest.mark.parametrize("failure", ["invalid", "stale", "write"])
+def test_direct_apply_failure_never_leaves_a_saved_but_unapplied_version(
+    monkeypatch,
+    tmp_path,
+    failure,
+):
+    app = workflow_app(monkeypatch, tmp_path)
+    workflow_id, _ = assets(app, applied=True)
+    before = app.state.workflows.store.load()
+    before_bytes = app.state.workflows.store.path.read_bytes()
+    value = graph()
+    value["nodes"][3]["config"]["prompt"] = "This must not be saved separately."
+    if failure == "invalid":
+        value["edges"] = []
+    elif failure == "write":
+
+        def unavailable(*_):
+            raise PermissionError("private storage failure")
+
+        monkeypatch.setattr(workflow_model.os, "replace", unavailable)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/workflows/command",
+            json={
+                "revision": before["revision"] - (failure == "stale"),
+                "action": "apply",
+                "workflow_id": workflow_id,
+                "group_ids": [],
+                "graph": value,
+            },
+        )
+        assert (
+            response.status_code
+            == {"invalid": 400, "stale": 409, "write": 503}[failure]
+        )
+        assert app.state.workflows.store.load() == before
+        assert app.state.workflows.store.path.read_bytes() == before_bytes

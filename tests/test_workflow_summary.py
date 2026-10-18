@@ -90,6 +90,8 @@ def test_independent_intervals_use_the_latest_frame_and_source_qualified_results
             assert record["connection_id"] == "connection-a"
             assert record["synthetic"] is False
             assert record["status"] == "completed"
+            assert record["summary_translations"] == {}
+            assert record["summary_language"] is None
         assert manager.latest("slow")["source_frame_sequence"] == 9
         assert manager.latest("slow")["timestamp_seconds"] == 0.9
         json.dumps(manager.status(), allow_nan=False)
@@ -273,6 +275,11 @@ def test_dry_run_is_explicitly_synthetic_and_does_not_require_credentials():
     wait_for(lambda: not manager.busy)
     assert result["synthetic"] is True
     assert "no model was called" in result["summary"]
+    assert result["summary_translations"] == {
+        "zh": "模拟运行的示例描述；未调用模型。",  # noqa: RUF001
+        "en": result["summary"],
+    }
+    assert result["summary_language"] == "en"
     assert result["status"] == "completed"
 
 
@@ -314,7 +321,10 @@ def test_http_summary_uses_configured_compatible_route_including_goodvision_loca
     async def handler(request):
         requests.append(request)
         return httpx.Response(
-            200, json={"choices": [{"message": {"content": "A green scene."}}]}
+            200,
+            json={"choices": [{"message": {"content": json.dumps({
+                "zh": "绿色的画面。", "en": "A green scene.",
+            })}}]},
         )
 
     def client():
@@ -354,6 +364,11 @@ def test_http_summary_uses_configured_compatible_route_including_goodvision_loca
     result = manager.run_once("summary-1", snapshot(jpeg=jpeg_bytes()))
     wait_for(lambda: not manager.busy)
     assert result["summary"] == "A green scene."
+    assert result["summary_translations"] == {
+        "zh": "绿色的画面。", "en": "A green scene.",
+    }
+    assert result["summary_language"] == "en"
+    assert len(requests) == 1, "Both UI languages share one scheduled inference"
     assert requests[0].url.path == "/v1/chat/completions"
     assert requests[0].headers["authorization"] == "Bearer selected-key"
     assert "cookie" not in requests[0].headers
@@ -362,10 +377,88 @@ def test_http_summary_uses_configured_compatible_route_including_goodvision_loca
     assert payload["model"] == "chosen-model"
     assert payload["top_p"] == 0.8
     assert payload["stream"] is False
+    assert payload["max_tokens"] == 512
+    assert "Simplified Chinese" in payload["messages"][0]["content"]
+    assert '"en" in English' in payload["messages"][0]["content"]
+    assert "same observations" in payload["messages"][0]["content"]
     assert payload["messages"][1]["content"][0]["text"] == "Describe the picture."
     assert payload["messages"][1]["content"][1]["image_url"]["url"].startswith(
         "data:image/jpeg;base64,"
     )
+
+
+@pytest.mark.parametrize("fence", [False, True])
+def test_http_bilingual_summary_normalizes_both_languages_without_changing_focus(
+    monkeypatch, fence,
+):
+    requests = []
+    content = json.dumps(
+        {"zh": "  一个人站在桌旁。\n", "en": " A person stands by a table. "}
+    )
+    if fence:
+        content = "```json\n" + content + "\n```"
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": content}}]}
+        )
+
+    monkeypatch.setattr(
+        workflow_summary, "create_vlm_http_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    manager = make_manager(
+        [{"id": "summary-a", "prompt": "只关注桌子周围的情况。"}],
+        inference=None, model_settings=ModelAPISettings(provider="local"),
+        model="local-model",
+    )
+    result = manager.run_once("summary-a", snapshot(jpeg=jpeg_bytes()))
+    wait_for(lambda: not manager.busy)
+    assert result["status"] == "completed"
+    assert result["summary_translations"] == {
+        "zh": "一个人站在桌旁。", "en": "A person stands by a table.",
+    }
+    assert result["summary"] == result["summary_translations"]["en"]
+    assert len(requests) == 1
+    assert requests[0]["messages"][1]["content"][0]["text"] == "只关注桌子周围的情况。"
+
+
+@pytest.mark.parametrize("content,finish_reason", [
+    ("A plain English description.", "stop"),
+    ('{"zh":"一个人。","en":"A person.', "length"),
+    ('{"zh":"一个人。","en":"A person."}', "length"),
+    ('{"zh":"一个人。","en":"A person."}', "content_filter"),
+    ('{"en":"A person."}', "stop"),
+    ('{"zh":"一个人。","en":" "}', "stop"),
+    ('{"zh":null,"en":"A person."}', "stop"),
+    ('{"zh":[],"en":"A person."}', "stop"),
+    ('{"zh":"一个人。","en":"A person.","extra":"unexpected"}', "stop"),
+    (json.dumps({"zh": "人" * 8001, "en": "A person."}), "stop"),
+    (json.dumps({"zh": "一个人。", "en": "x" * 8001}), "stop"),
+])
+def test_invalid_or_incomplete_bilingual_output_is_not_published_as_summary(
+    monkeypatch, content, finish_reason,
+):
+    monkeypatch.setattr(
+        workflow_summary, "create_vlm_http_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"choices": [{
+                "finish_reason": finish_reason, "message": {"content": content},
+            }]}),
+        )),
+    )
+    manager = make_manager(
+        inference=None, model_settings=ModelAPISettings(provider="local"),
+        model="local-model",
+    )
+    result = manager.run_once("summary-a", snapshot(jpeg=jpeg_bytes()))
+    wait_for(lambda: not manager.busy)
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "invalid_response"
+    assert result["summary"] is None
+    assert result["summary_translations"] == {}
+    assert result["summary_language"] is None
 
 
 @pytest.mark.parametrize(

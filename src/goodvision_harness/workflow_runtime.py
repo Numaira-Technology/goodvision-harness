@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import copy
 import io
+import time
+from collections.abc import Mapping
+from dataclasses import replace
 from uuid import uuid4
 
 from PIL import Image
 
-from .model_api import MissingAPIKeyError
+from .model_api import MissingAPIKeyError, inference_error_detail
 from .privacy import (
     PUBLIC_ANALYSIS_ERROR,
     PUBLIC_FACE_ERROR,
@@ -33,6 +36,76 @@ class WorkflowRuntimeMixin:
     _workflow_binding_revision = 0
     _workflow_result_context = None
     _workflow_raw_session_id = None
+    _workflow_tracking_baseline = None
+
+    def workflow_tracking_capability(self):
+        baseline = self._workflow_tracking_baseline
+        rich = (
+            baseline["rich_labeling"]
+            if baseline
+            else (self.config.rich_labeling if self.config is not None else None)
+        )
+        configured = rich is not None and rich.backend == "sam31_stream"
+        return {
+            "configured": configured,
+            "processing_method": "sam_live",
+            "reason": None
+            if configured
+            else "Person tracking is not configured for this deployment.",
+        }
+
+    @staticmethod
+    def _workflow_tracking_configuration(configuration, plan, baseline):
+        """Change only runtime tracking policy, retaining all inference settings."""
+        rich = baseline["rich_labeling"]
+        scene_mode = baseline["scene_mode"]
+        if plan is not None:
+            tracking = plan["tracking_enabled"] and rich.backend == "sam31_stream"
+            rich = replace(
+                rich,
+                enabled=False,
+                tracking_enabled=tracking,
+                processing_method="sam_live" if tracking else None,
+            )
+            if tracking:
+                scene_mode = "active"
+            elif not configuration.runtime.scene_independent_vlm:
+                # Native safety inference remains available with tracking off.
+                scene_mode = "disabled"
+        return replace(
+            configuration,
+            rich_labeling=rich,
+            runtime=replace(configuration.runtime, scene_mode=scene_mode),
+        )
+
+    def _set_workflow_tracking(self, plan):
+        if self.config is None:
+            if plan is not None and plan["tracking_enabled"]:
+                raise ValueError(self.workflow_tracking_capability()["reason"])
+            return
+        baseline = self._workflow_tracking_baseline or {
+            "rich_labeling": self.config.rich_labeling,
+            "scene_mode": self.config.runtime.scene_mode,
+        }
+        if plan is not None and plan["tracking_enabled"]:
+            capability = self.workflow_tracking_capability()
+            if not capability["configured"]:
+                raise ValueError(capability["reason"])
+        configuration = self._workflow_tracking_configuration(
+            self.config,
+            plan,
+            baseline,
+        )
+        if (
+            configuration.rich_labeling != self.config.rich_labeling
+            or configuration.runtime.scene_mode != self.config.runtime.scene_mode
+        ):
+            self._replace_processing_method(
+                configuration.rich_labeling.processing_method,
+                config=configuration,
+                suppress_remote_config=True,
+            )
+        self._workflow_tracking_baseline = baseline if plan is not None else None
 
     def configure_workflow(self, payload):
         from .workflows import _identifier, compile_graph
@@ -62,6 +135,7 @@ class WorkflowRuntimeMixin:
         with self._control_lock:
             if self._processing_lifecycle_busy():
                 raise RuntimeError("stop this camera before applying its workflow")
+            self._set_workflow_tracking(plan)
             self._workflow_operation += 1
             self._workflow_binding_revision += 1
             self._workflow_plan = copy.deepcopy(plan)
@@ -69,6 +143,33 @@ class WorkflowRuntimeMixin:
             self._workflow_result_context = None
             self._workflow_summaries = None
             self._workflow_test_manager = None
+            operation = self._workflow_operation
+            revision = self._rich_config_revision
+            binding_revision = self._workflow_binding_revision
+            retiring = self._retiring_rich_labels
+        # Global Start installs bindings immediately before preflight. Finish
+        # the old coordinator's retirement here so switching tracking off does
+        # not require a second Start, without blocking status or cancellation.
+        deadline = (
+            time.monotonic()
+            + max(5.0, min(60.0, self.config.rich_labeling.timeout_seconds + 2.0))
+            if self.config is not None
+            else time.monotonic() + 5.0
+        )
+        while retiring is not None:
+            with self._control_lock:
+                if (
+                    operation != self._workflow_operation
+                    or revision != self._rich_config_revision
+                    or binding_revision != self._workflow_binding_revision
+                    or self._closed
+                ):
+                    raise RuntimeError("workflow change was cancelled; retry")
+                if self._retiring_rich_labels is not retiring:
+                    break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("previous tracking cleanup has not finished; retry")
+            self._rich_probe_stop.wait(0.02)
         return {"configured": True, "managed": plan is not None}
 
     def _workflow_busy(self, *, include_pending_start=True):
@@ -134,11 +235,19 @@ class WorkflowRuntimeMixin:
                 layout = self._connection_camera_layout
                 self._workflow_result_context = None
                 self._workflow_summaries = None
-            if choices["features"]:
+            native = bool(
+                choices["features"]
+                or (
+                    self._workflow_plan is not None
+                    and self._workflow_plan["tracking_enabled"]
+                )
+            )
+            if native:
                 self.start_stream(
                     connection.stream_url,
                     camera_layout=layout,
                     _connection_id=connection.connection_id,
+                    _tracking_only=not choices["features"],
                     **choices,
                 )
             with self._control_lock:
@@ -151,11 +260,11 @@ class WorkflowRuntimeMixin:
                     raise RuntimeError(
                         "analysis start was cancelled or the source changed"
                     )
-                if not choices["features"]:
+                if not native:
                     with self._state_lock:
                         self._generation += 1
                         self._state["generation"] = self._generation
-                session = self._session if choices["features"] else None
+                session = self._session if native else None
                 session_id = (
                     session.stream_session_id if session is not None else uuid4().hex
                 )
@@ -172,6 +281,7 @@ class WorkflowRuntimeMixin:
                     plan is not None
                     and plan["enabled"]
                     and not choices["features"]
+                    and not plan["tracking_enabled"]
                     and not plan["summaries"]
                 ):
                     self._workflow_raw_session_id = session_id
@@ -260,6 +370,8 @@ class WorkflowRuntimeMixin:
                 "workflow_id": self._workflow_binding["workflow_id"],
                 "group_id": self._workflow_binding["group_id"],
                 "enabled": self._workflow_plan["enabled"],
+                "tracking_enabled": self._workflow_plan["tracking_enabled"],
+                "tracking_node_id": self._workflow_plan["tracking_node_id"],
                 "generation": (self._workflow_result_context or {}).get("generation"),
                 "stream_session_id": (self._workflow_result_context or {}).get(
                     "session_id"
@@ -358,6 +470,25 @@ class WorkflowRuntimeMixin:
                                 if records
                                 else None
                             )
+                    elif (
+                        port == "tracks"
+                        and self._workflow_context_valid(context)
+                        and context["generation"] == self._generation
+                    ):
+                        metadata = self._camera_display_metadata.snapshot()
+                        if metadata.get("stream_session_id") == context["session_id"]:
+                            value = {
+                                "node_id": item["node_id"],
+                                "type": "tracking",
+                                "source_id": self.source_id,
+                                "stream_session_id": context["session_id"],
+                                "generation": context["generation"],
+                                "processing_method": "sam_live",
+                                "state": "running"
+                                if metadata.get("anchors")
+                                else ("waiting_for_tracks"),
+                                "metadata": metadata,
+                            }
                     elif port == "events":
                         records = self._workflow_feature_results(
                             [
@@ -395,13 +526,29 @@ class WorkflowRuntimeMixin:
     def _workflow_test_response(response, *, node_id, identity, context):
         classification = response.classification
         judgments = getattr(classification, "judgments", ()) if classification else ()
+        branch = "stranger" if identity else "safety"
+        branch_errors = dict(getattr(response, "branch_errors", ()))
+        failed = bool(response.error or branch in branch_errors)
+        detail = (getattr(response, "branch_error_details", None) or {}).get(branch)
+        detail = detail if isinstance(detail, Mapping) else {}
+        # Rebuild the bounded message rather than forwarding provider text, even
+        # when the branch already supplied diagnostics.
+        error_detail = (
+            inference_error_detail(
+                code=detail.get("code", branch_errors.get(branch, "request_failed")),
+                http_status=detail.get("http_status"),
+            )
+            if failed
+            else None
+        )
         result = {
             **context,
             "node_id": node_id,
             "type": "face" if identity else "events",
             "error": (PUBLIC_FACE_ERROR if identity else PUBLIC_ANALYSIS_ERROR)
-            if response.error
+            if failed
             else None,
+            "error_detail": error_detail,
             "observations": [
                 {
                     "event_label": item.event_label,
@@ -491,6 +638,49 @@ class WorkflowRuntimeMixin:
                 ),
             )
             results = []
+            if plan["tracking_enabled"]:
+                capability = self.workflow_tracking_capability()
+                error = capability["reason"]
+                if capability["configured"]:
+                    probe = None
+                    try:
+                        baseline = self._workflow_tracking_baseline
+                        rich = (
+                            baseline["rich_labeling"]
+                            if baseline
+                            else (self.config.rich_labeling)
+                        )
+                        probe = self._create_tracking_client(
+                            replace(
+                                rich,
+                                enabled=False,
+                                tracking_enabled=True,
+                                processing_method="sam_live",
+                            )
+                        )
+                        if not probe.ready_for_new_session():
+                            error = (
+                                "The configured person tracking service is unavailable."
+                            )
+                    except Exception:
+                        error = "The configured person tracking service is unavailable."
+                    finally:
+                        if probe is not None:
+                            try:
+                                probe.close()
+                            except Exception:
+                                pass
+                check_active()
+                results.append(
+                    {
+                        **context,
+                        "node_id": plan["tracking_node_id"],
+                        "type": "tracking",
+                        "state": "unavailable" if error else "live_analysis_required",
+                        "processing_method": "sam_live",
+                        "error": error,
+                    }
+                )
             for node_id, identity in (
                 (plan["face_node_id"], True),
                 (plan["events_node_id"], False),
@@ -525,7 +715,7 @@ class WorkflowRuntimeMixin:
                     result = self._workflow_test_response(
                         response, node_id=node_id, identity=identity, context=context
                     )
-                except Exception:
+                except Exception as error:
                     result = {
                         **context,
                         "node_id": node_id,
@@ -533,6 +723,15 @@ class WorkflowRuntimeMixin:
                         "error": PUBLIC_FACE_ERROR
                         if identity
                         else PUBLIC_ANALYSIS_ERROR,
+                        "error_detail": (
+                            {
+                                "code": "missing_api_key",
+                                "http_status": None,
+                                "message": PUBLIC_MISSING_API_KEY_ERROR,
+                            }
+                            if isinstance(error, MissingAPIKeyError)
+                            else inference_error_detail(error)
+                        ),
                         "observations": [],
                     }
                     if identity:

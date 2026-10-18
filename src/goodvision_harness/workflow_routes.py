@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -101,6 +102,21 @@ class WorkflowCoordinator:
             "document": self.store.load(),
             "cameras": cameras,
             "event_catalog": event_catalog(),
+            "tracking": (
+                self.application.state.runtime.workflow_tracking_capability()
+                if callable(
+                    getattr(
+                        self.application.state.runtime,
+                        "workflow_tracking_capability",
+                        None,
+                    )
+                )
+                else {
+                    "configured": False,
+                    "processing_method": "sam_live",
+                    "reason": "Person tracking is not configured for this deployment.",
+                }
+            ),
         }
 
     async def require_stopped(self, camera_ids):
@@ -113,7 +129,13 @@ class WorkflowCoordinator:
         for camera_id in camera_ids:
             index = fleet.resolve_camera(camera_id)
             status = statuses.get(index)
-            if status is None or fleet._analysis_state(status) != "idle":
+            if (
+                status is None
+                or status.get("workflow_test_running") is True
+                or status.get("session_start_pending") is True
+                or status.get("processing_cleanup") in {"closing", "stopping"}
+                or fleet._analysis_state(status) != "idle"
+            ):
                 raise HTTPException(
                     409,
                     f"Stop {camera_id} and wait for cleanup "
@@ -169,6 +191,18 @@ def install_workflow_routes(application):
                         if group["id"] in payload["group_ids"]
                         for cid in group["camera_ids"]
                     )
+                if action == "save_workflow" or (
+                    action == "apply" and "graph" in payload
+                ):
+                    workflow_id = payload.get(
+                        "id" if action == "save_workflow" else "workflow_id"
+                    )
+                    affected.update(
+                        cid
+                        for group in previous["groups"]
+                        if group["workflow_id"] == workflow_id
+                        for cid in group["camera_ids"]
+                    )
                 await control.require_stopped(affected)
                 control.store.commit(candidate, expected_revision=revision)
                 return JSONResponse(await control.state(), headers=NO_STORE)
@@ -195,16 +229,51 @@ def install_workflow_routes(application):
             compile_graph(payload["graph"])
         except (ValueError, TypeError) as exc:
             raise HTTPException(400, str(exc)) from None
-        async with fleet.control_lock:
-            await control.require_stopped([payload["camera_id"]])
-            return await fleet.request_json(
-                index,
-                "POST",
-                "/v1/analysis/workflow/test",
-                {"graph": payload["graph"]},
-                timeout=180,
-                coordinated=True,
-            )
+        operation = None
+        try:
+            async with fleet.control_lock:
+                await control.require_stopped([payload["camera_id"]])
+                operation = asyncio.create_task(
+                    fleet.request_json(
+                        index,
+                        "POST",
+                        "/v1/analysis/workflow/test",
+                        {"graph": payload["graph"]},
+                        timeout=180,
+                        coordinated=True,
+                    )
+                )
+                # Keep admission atomic with Apply/Start/Stop, then let Stop
+                # acquire the coordinator lock while inference is in flight.
+                # Releasing before the runtime has admitted the request could
+                # let a queued test begin after a successful Stop.
+                while not operation.done():
+                    await asyncio.wait({operation}, timeout=0.05)
+                    if operation.done():
+                        break
+                    try:
+                        response = await fleet.request_json(
+                            index,
+                            "GET",
+                            "/v1/status?lightweight=true",
+                            timeout=2,
+                        )
+                        status = json.loads(response.body)
+                    except (HTTPException, ValueError):
+                        # Without an admission acknowledgement, retain the
+                        # lock until the bounded proxy request resolves.
+                        continue
+                    if (
+                        response.status_code == 200
+                        and isinstance(status, dict)
+                        and status.get("workflow_test_running") is True
+                    ):
+                        break
+            return await operation
+        finally:
+            if operation is not None and not operation.done():
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
 
     @application.get("/assets/workflow_canvas.js", include_in_schema=False)
     async def script():

@@ -3,14 +3,17 @@
 
 import json
 from pathlib import Path
+from typing import Annotated, Literal
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .fleet_outputs import scoped_payload
 
+DiagnosticView = Literal["results", "events", "diagnostics", "camera"]
 
-def diagnostic_document(camera_id: str) -> str:
+
+def diagnostic_document(camera_id: str, view: DiagnosticView = "diagnostics") -> str:
     # The caller validates the canonical camera ID before rendering. Keeping a
     # separate document per lane also isolates timers, results and unsaved input.
     page = Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
@@ -24,31 +27,17 @@ def diagnostic_document(camera_id: str) -> str:
     # Global settings and the shared gallery stay in the parent console. Their
     # elements remain for the existing UI bindings, but have no write API here.
     setup = """
-<style>
-header,.deployment-panel,#cloud-route-panel,#fleet-panel,#face-controls,
-.console-sidebar,.runtime-strip,.page-heading,.api-directory,.integrations-panel{
-  display:none!important
-}
-body{background:#fff}.console-content{margin:0}
-#console-main{max-width:none;margin:0;padding:12px;display:flex;flex-direction:column}
-#fleet-detail-console{order:-1}
-.fleet-detail-label{position:sticky;top:0;background:#fff;padding:8px 0;z-index:10}
-</style>
 <script>
 globalThis.GoodvisionDiagnostic=true;
 globalThis.GoodvisionDiagnosticCameraId=CAMERA_ID;
+globalThis.GoodvisionDiagnosticView=DIAGNOSTIC_VIEW;
 globalThis.GoodvisionFleet={detailHidden:()=>false,extraBusy:()=>false};
 </script>
 """
-    setup = setup.replace("CAMERA_ID", json.dumps(camera_id))
+    # JSON string encoding keeps values as data in the inline setup script.
+    setup = setup.replace("CAMERA_ID", json.dumps(camera_id).replace("<", "\\u003c"))
+    setup = setup.replace("DIAGNOSTIC_VIEW", json.dumps(view).replace("<", "\\u003c"))
     page = page.replace("</head>", setup + "</head>")
-    page = page.replace(
-        "本机摄像头 / 诊断 · 网络视频请使用上方各路卡片设置，"
-        "并通过顶部统一开始、停止分析。此处保留浏览器摄像头和服务诊断。",
-        f"摄像头 {int(camera_id[6:])} · 本路诊断与播放缓冲设置。"
-        "网络视频和检测项目在本路卡片中调整，分析仍通过顶部统一开始、停止。"
-        "浏览器摄像头按钮仅用于本机预览检查。",
-    )
     return page
 
 
@@ -58,11 +47,14 @@ def install_diagnostic_routes(application, controller, json_body):
     @application.get(
         prefix + "/diagnostics", response_class=HTMLResponse, include_in_schema=False
     )
-    async def document(camera_id: str):
+    async def document(
+        camera_id: str,
+        view: Annotated[DiagnosticView, Query()] = "diagnostics",
+    ):
         index = controller.resolve_camera(camera_id)
         controller.require_enabled(index)
         return HTMLResponse(
-            diagnostic_document(camera_id),
+            diagnostic_document(camera_id, view),
             headers={
                 "Cache-Control": "no-store",
                 "X-Frame-Options": "SAMEORIGIN",

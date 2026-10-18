@@ -1,7 +1,7 @@
 const assert=require("node:assert/strict");
 const vm=require("node:vm");
 const {test}=require("node:test");
-const {html, script} = require("./helpers/dashboard.cjs");
+const {html, script, createDocument} = require("./helpers/dashboard.cjs");
 
 function player(){
   let now=0,id=0;
@@ -146,13 +146,14 @@ test("an old camera encoding cannot enter a restarted capture session",async()=>
 });
 
 function sessionStatus(){
+  const {element}=createDocument();
   const requests=[],sent=[],effects={starts:0,stops:0,summaries:0,connections:0};
   const state={running:false,pending:false,stopping:false,sessionId:null,sessionRevision:0,
     mode:"camera",info:{api_key_present:true},runtimeErrorMessage:""};
   const socket={send:packet=>sent.push(JSON.parse(packet))};
   const ui={dryRun:{checked:true},statusJson:{dataset:{}},service:{},sourceChip:{},readinessChip:{},lastUpdate:{}};
   const noop=()=>{};
-  const context=vm.createContext({state,ui,AbortController,
+  const context=vm.createContext({state,ui,AbortController,$:element,
     detectionEvents:[],sessionBusyStates:new Set(["starting","running","stopping","draining"]),
     setTimeout:()=>1,clearTimeout:noop,
     fetch:()=>new Promise((resolve,reject)=>requests.push({resolve,reject})),
@@ -170,7 +171,7 @@ function sessionStatus(){
     html.slice(html.indexOf("function message(data)"),html.indexOf("function reset(){"))+
     html.slice(html.indexOf("async function status(){"),html.indexOf("function resetOverallDescription(){"))+
     "globalThis.handlers={message,start,stop,status};",context);
-  return {state,context,ui,requests,sent,effects,...context.handlers,
+  return {state,context,ui,requests,sent,effects,element,...context.handlers,
     respond:(request,data)=>request.resolve({ok:true,json:async()=>data})};
 }
 const activeSession=id=>({pipeline_state:"running",stream_session_id:id,input_mode:"camera",
@@ -233,6 +234,8 @@ test("current status still recovers an existing session and stops it on genuine 
   assert.equal(view.state.running,true);assert.equal(view.state.sessionId,"existing");
   const idle=view.status();view.respond(view.requests[1],{pipeline_state:"idle"});await idle;
   assert.equal(view.state.running,false);assert.equal(view.effects.stops,1);
+  assert.equal(view.element("vlm-current-observation").textContent,"任务已停止");
+  assert.equal(view.effects.connections,0,"A genuine idle status must not enter the status-error handler");
   assert.equal(view.effects.summaries,2);assert.equal(view.state.statusLoading,false);
 });
 

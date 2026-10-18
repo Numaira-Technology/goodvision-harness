@@ -58,6 +58,17 @@ test("network run and crop changes dispose prior overlays and metadata cannot cr
   const second=feed.controller;await feed.accept(packet("run-two",3,1));assert.equal(second.closed,true);
   feed.stop();view.controller.stop();
 });
+test("raw network frames report their actual canvas presentation without tracker telemetry",async()=>{
+  const view=browser({globals:{createImageBitmap:async()=>({width:640,height:480,origin:42,close(){}})}});
+  const observed=[];const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",
+    onFrame:value=>observed.push({value,origin:view.canvas.origin})});
+  await feed.accept({connection_id:"connection",config:{stream_session_id:"raw-run",generation:1,crop_version:0,enabled:false,delay_seconds:0},
+    frames:[{source_sequence:1,media_timestamp:1,width:640,height:480,jpeg:new Uint8Array([1])}]});
+  assert.equal(observed.length,1);assert.equal(observed[0].value.presented,true);
+  assert.equal(observed[0].value.buffering,false);assert.equal(observed[0].origin,42);
+  assert.equal(feed.controller,null);feed.stop();view.controller.stop();
+});
+
 function browser({autoAck=true,metadataResponse,config={},globals={},settings:providedSettings,onMotionTrace=null,motionTraceOptions={}}={}){
   let clock=0,next=0;const encodings=[],packets=[],draws=[],labels=[],labelBoxes=[],workerMessages=[],workers=[],raf=new Map(),errors=[],reports=[];
   class Canvas{

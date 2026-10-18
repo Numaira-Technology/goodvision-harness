@@ -43,6 +43,43 @@ input[type=text],input[type=url],input[type=password],input[type=file],input[typ
 .fleet-diagnostics{border-top:1px solid var(--line);background:#fff}
 .fleet-diagnostics[hidden]{display:none}
 .fleet-diagnostics iframe{display:block;width:100%;height:min(85vh,980px);min-height:480px;border:0}
+.fleet-diagnostics[data-view=results] iframe{height:200px;min-height:170px}
+/* A disconnected channel keeps the task entry points and source form in view. */
+.fleet-card[data-connected=false] .fleet-preview{height:150px;min-height:140px;max-height:180px;aspect-ratio:auto}
+.fleet-card>.fleet-card-buttons,.fleet-card>.fleet-card-detail{margin:0;padding:8px 14px}
+.fleet-tools{border-top:0;border-bottom:1px solid var(--line)}
+
+/* Live observation stays beside its source; settings occupy a separate row. */
+.fleet-monitoring-layout{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(360px,1fr);gap:14px;padding:14px;align-items:start}.fleet-video-column{min-width:0}.fleet-insights{min-width:0;background:#fbfcff;border:1px solid var(--line);border-radius:9px;overflow:hidden}.fleet-insights iframe{display:block;width:100%;height:300px;border:0}.fleet-video-column .fleet-preview{border-radius:8px;overflow:hidden}.fleet-video-column>.fleet-card-buttons,.fleet-video-column>.fleet-card-detail{padding:7px 0;margin:0}.fleet-video-column .fleet-preview{max-height:440px}.fleet-grid.compact .fleet-monitoring-layout{display:block;padding:0}.fleet-grid.compact .fleet-insights{display:none}.fleet-grid.compact .fleet-monitoring-layout .fleet-preview{border-radius:0}.fleet-grid[data-single=false]:not(.compact){grid-template-columns:1fr}.fleet-replay-link{margin-left:auto}
+.task-judgment-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}.task-judgment-cards:empty{display:none}.task-judgment-card{display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px;border:1px solid #dce3ec;border-radius:8px;background:#f4f6f9;color:#64748b}.task-judgment-card span{font-size:12px;font-weight:600;overflow-wrap:anywhere}.task-judgment-card strong{font-size:14px;font-weight:750}.task-judgment-card.detected{border-color:#f2b8b8;background:#fff0f0;color:#b4232c}.task-judgment-card.clear{border-color:#b8dfc7;background:#effaf3;color:#187442}.task-judgment-card.uncertain{border-color:#ead18b;background:#fff9e8;color:#90610c}
+#diagnostic-content>#overall-summary,#diagnostic-content>#task-live-judgment,#diagnostic-content>#live-result-log{padding:16px;border:1px solid var(--line);border-radius:8px;background:#fff}body[data-diagnostic-view=results] #console-main,body[data-diagnostic-view=insights] #console-main{padding:10px;background:#fbfcff}#diagnostic-content #live-result-log .scroll{max-height:280px}.frame-summary-head h3{font-size:14px}#diagnostic-content .frame-summary-text{font-size:13px;line-height:1.7}
+.channel-review>.head{align-items:center}.channel-review>.head .field{min-width:200px}.channel-view iframe{width:100%;height:720px;border:0;display:block}.channel-view:empty{min-height:100px}.capability-catalog{margin-top:18px}.capability-catalog .task-pills{margin:18px 0}.face-panel{margin-top:0}
+#console-outputs .api-cards{grid-template-columns:1fr;gap:8px}#console-outputs .api-card{display:grid;grid-template-columns:minmax(170px,.7fr) minmax(0,1.7fr) 120px;gap:4px 16px;padding:12px 14px}#console-outputs .api-card>div:first-child{grid-column:1;grid-row:1}#console-outputs .api-card>p{grid-column:1;grid-row:2;margin:0;min-height:0;font-size:10px;line-height:1.5}#console-outputs .api-card>code{grid-column:2;grid-row:1/3;align-self:center;min-height:0;padding:9px;font-size:11px}#console-outputs .api-card>.api-actions{grid-column:3;grid-row:1/3;margin:0;gap:10px;justify-content:flex-end}#console-outputs .api-card h3{font-size:12px}.api-format{font-size:9px}
+@media(max-width:1100px){.fleet-monitoring-layout{grid-template-columns:minmax(0,1.1fr) minmax(300px,1fr)}#console-outputs .api-card{grid-template-columns:160px minmax(0,1fr) 110px}}
+@media(max-width:850px){.fleet-monitoring-layout{grid-template-columns:1fr}.fleet-insights iframe{height:510px}#console-outputs .api-card{grid-template-columns:minmax(0,1fr) 110px}#console-outputs .api-card>div:first-child{grid-column:1;grid-row:1}#console-outputs .api-card>p{grid-column:1;grid-row:2}#console-outputs .api-card>code{grid-column:1/-1;grid-row:3}#console-outputs .api-card>.api-actions{grid-column:2;grid-row:1/3}.channel-review>.head .field{width:100%}}
+/* Deployment settings keep one save action, with visible task-specific groups. */
+#console-settings .settings-index{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:18px 0 0;padding-bottom:15px;border-bottom:1px solid var(--line)}
+#console-settings .settings-index-link{display:inline-flex;align-items:center;min-height:32px;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:#fff;color:#4b6689;font-size:12px;text-decoration:none}
+#console-settings .settings-index-link:hover{border-color:#91b1ed;background:#f5f8ff;color:#246bfd}
+#console-settings .settings-sections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:18px;align-items:start}
+#console-settings .settings-section{min-width:0;padding:18px;border:1px solid var(--line);border-radius:9px;background:#fbfcfe;scroll-margin-top:18px}
+#console-settings .settings-section-title{margin:0;font-size:14px;font-weight:650;color:#345171}
+#console-settings .settings-section-description{margin:6px 0 17px;line-height:1.65}
+#console-settings .settings-section-body{display:grid;gap:11px;min-width:0}
+#console-settings .settings-section-body .field,#console-settings .settings-section-body .stack,#console-settings .settings-section-body .row{min-width:0}
+#console-settings .settings-section-body .stack{gap:11px}
+#console-settings .settings-section-body .switch{justify-content:flex-start;line-height:1.6;white-space:normal}
+#console-settings .settings-section-body .row{flex-wrap:wrap}
+#console-settings .settings-section-body .secret-status{overflow-wrap:anywhere}
+#console-settings .settings-section-body details{padding-top:8px;border-top:1px solid var(--line);font-size:12px}
+#console-settings .settings-section-body summary{padding:6px 0;cursor:pointer;color:#4b6689}
+#console-settings .settings-section-body details[open]>summary{margin-bottom:8px}
+#console-settings #settings-tracking{grid-column:2;grid-row:1/span 3}
+#console-settings #settings-video,#console-settings #settings-credentials,#console-settings #settings-startup{grid-column:1}
+#console-settings .settings-save-actions{position:sticky;top:0;z-index:4;border-bottom:1px solid var(--line);background:#fff;margin-top:0;padding:12px 0;box-shadow:0 5px 10px #1c335705}#console-settings .settings-save-actions #deployment-note{flex-basis:100%;margin:0;min-height:0}#console-settings .settings-section{scroll-margin-top:115px}
+@media(max-width:1000px){#console-settings .settings-sections{grid-template-columns:minmax(0,1fr)}#console-settings #settings-tracking{grid-column:auto;grid-row:auto}#console-settings #settings-video,#console-settings #settings-credentials,#console-settings #settings-startup{grid-column:auto}}
+@media(max-width:600px){#console-settings .settings-index{gap:6px;margin-top:15px}#console-settings .settings-index-link{flex:1 1 auto;justify-content:center;font-size:11px;padding:6px 8px}#console-settings .settings-section{padding:14px}#console-settings .settings-sections{gap:12px}#console-settings .settings-save-actions .btn{flex:1 1 45%}}
+
 </style>
 <style>
 .fleet-grid.compact{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}.fleet-grid.compact .fleet-card-head{padding:9px 11px}.fleet-grid.compact .fleet-card-head h3{font-size:12px}.fleet-preview{width:100%}
@@ -83,7 +120,37 @@ html:lang(en) .nav-item>span{min-width:0;line-height:1.5}html:lang(en) .module-t
 @media(max-width:1280px){.core-lane small{font-size:10px}.configure-strip>.task-pills{order:3;flex-basis:100%}.configure-strip>.text-button{margin-left:auto}}
 @media(max-width:600px){.console-sidebar{height:74px;gap:10px}.console-content{margin-top:74px}.console-sidebar nav{gap:0}.nav-item{width:auto;flex:1;flex-direction:column;gap:5px;padding:8px 3px}.nav-item>span{display:block;font-size:8px;white-space:nowrap}.nav-item .ui-icon{width:17px;height:17px}.task-pill{font-size:10px}.core-footer{font-size:9px}.topbar-actions .btn{font-size:10px}.runtime-strip .chip:nth-child(n+5){display:none}}
 </style>
+
+<style id="focused-workspace-theme">
+.workspace-guide{margin:0 0 18px;color:var(--muted);font-size:12px;line-height:1.7}
+.fleet-tools{display:flex;gap:4px;flex-wrap:wrap;padding:10px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}.fleet-tools nav,.fleet-tools [role=tablist]{display:flex;gap:4px;overflow-x:auto}
+.fleet-tools button[role=tab]{flex:0 0 auto;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.fleet-tools button[role=tab][aria-selected=true]{background:#edf3ff;color:#205fd8;font-weight:700}.fleet-tools button[role=tab]:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.fleet-tool-panel{padding:16px;min-width:0}.fleet-tool-panel>.fleet-camera-details{border:0;padding:0;background:transparent}.fleet-tool-panel iframe{display:block;width:100%;min-height:420px;height:600px;border:0;background:#fff}
+.fleet-tool-panel .fleet-card-detail{font-size:12px}.fleet-tool-panel .feature-select{margin-bottom:12px}.fleet-tool-panel .fleet-sensitivities{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:12px}
+.fleet-grid.compact .fleet-tools{display:flex}.fleet-grid.compact .fleet-tool-panel:not([hidden]){display:block}.fleet-grid.compact .fleet-tools nav{display:flex}.fleet-grid.compact .fleet-tool-panel{padding:12px}.fleet-grid.compact .fleet-tool-panel .fleet-card-detail{display:block}.fleet-grid.compact .fleet-tool-panel .fleet-card-buttons .btn{display:inline-flex}
+.local-camera-utility{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:18px}.local-camera-utility h2{font-size:15px;margin-bottom:7px}.local-camera-utility .btn{flex:0 0 auto}
+body:not([data-diagnostic-view]) #fleet-detail-console #classification-panel,body:not([data-diagnostic-view]) #fleet-detail-console #scene-panel,body:not([data-diagnostic-view]) #fleet-detail-console #face-diagnostics-panel,body:not([data-diagnostic-view]) #fleet-detail-console #connection-diagnostics,body:not([data-diagnostic-view]) #fleet-detail-console #stream-mode{display:none!important}
+body:not([data-diagnostic-view]) #fleet-detail-console .control-grid,body:not([data-diagnostic-view]) #fleet-detail-console .analysis-workspace{grid-template-columns:1fr}
+@media(max-width:600px){.fleet-tools button[role=tab]{padding:8px;font-size:11px}.fleet-tool-panel{padding:12px}.local-camera-utility{align-items:flex-start;flex-direction:column}.fleet-tool-panel iframe{height:540px}}
+
+body[data-diagnostic-view]{background:#fff;padding:0}
+body[data-diagnostic-view] header,body[data-diagnostic-view] .console-sidebar,body[data-diagnostic-view] .runtime-strip,body[data-diagnostic-view] .page-heading,body[data-diagnostic-view] #secure-warning,body[data-diagnostic-view] #console-main>:not(#diagnostic-content){display:none!important}
+body[data-diagnostic-view] .console-content{margin:0}
+body[data-diagnostic-view] #console-main{max-width:none;margin:0;padding:12px;display:block}
+#diagnostic-content{display:grid;gap:14px;min-width:0}
+#diagnostic-content>.panel,#diagnostic-content>.data,#diagnostic-content>.metrics{margin:0}
+#diagnostic-content .decision{min-height:0;padding:18px;gap:10px}#diagnostic-content .verdict{font-size:34px}
+#diagnostic-content #connection-diagnostics{padding:16px}#diagnostic-content .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+#diagnostic-content .data{grid-template-columns:1fr;margin:0}#diagnostic-content pre{min-height:140px;max-height:300px}
+body[data-diagnostic-view=camera] #classification-panel,body[data-diagnostic-view=camera] #connection-diagnostics,body[data-diagnostic-view=camera] #stream-mode,body[data-diagnostic-view=camera] #stream-controls,body[data-diagnostic-view=camera] #event-controls,body[data-diagnostic-view=camera] #event-sensitivity-controls,body[data-diagnostic-view=camera] .session-actions{display:none!important}
+body:not([data-diagnostic-view]) #fleet-detail-console #source-note,body:not([data-diagnostic-view]) #fleet-detail-console #status-line,body:not([data-diagnostic-view]) #fleet-detail-console #overall-summary,body:not([data-diagnostic-view]) #fleet-detail-console #annotation-note,body:not([data-diagnostic-view]) #fleet-detail-console #rich-annotation-status,body[data-diagnostic-view=camera] #source-note,body[data-diagnostic-view=camera] #status-line,body[data-diagnostic-view=camera] #overall-summary,body[data-diagnostic-view=camera] #annotation-note{display:none!important}
+body[data-diagnostic-view=camera] .control-grid,body[data-diagnostic-view=camera] .analysis-workspace{grid-template-columns:1fr}
+body[data-diagnostic-view=results] .detection-rail-head{display:none}
+@media(max-width:600px){body[data-diagnostic-view] #console-main{padding:8px}#diagnostic-content .scene-grid{grid-template-columns:1fr}}
+</style>
 <link rel="stylesheet" href="/assets/workflow_canvas.css">
+
 <style>
 body.workflow-active{height:100dvh;overflow:hidden;display:flow-root}
 body.workflow-active .console-content{height:100dvh;display:flex;flex-direction:column;min-height:0}
@@ -95,43 +162,25 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
 @media(max-width:600px){body.workflow-active .console-content{height:calc(100dvh - 74px)}body.workflow-active #console-main{padding:6px}}
 </style>
 <script src="/assets/console_i18n.js" defer></script>
+<script data-console-managed>globalThis.GoodvisionConsoleManaged=true;</script>
 </head>
 <body>
 <aside class="console-sidebar" aria-label="控制台导航">
   <a class="console-brand" href="#overview"><span class="brand-mark"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><circle cx="12" cy="12" r="4"/></svg></span><span>GoodVision<small>VISION PLATFORM</small></span></a>
-  <div class="nav-caption">WORKSPACE / 工作空间</div><nav><button type="button" class="nav-item" data-console-go="overview"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>实时工作台</span></button><button type="button" class="nav-item" data-console-go="workflows"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="2" y="8" width="6" height="7" rx="1"/><rect x="16" y="2" width="6" height="7" rx="1"/><rect x="16" y="15" width="6" height="7" rx="1"/><path d="M8 11h4V5h4m-4 6v7h4"/></svg><span>工作流</span></button><button type="button" class="nav-item" data-console-go="capabilities"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5"/></svg><span>能力与规则</span></button><button type="button" class="nav-item" data-console-go="events"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5"/></svg><span>事件与回放</span></button><button type="button" class="nav-item" data-console-go="outputs"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M15 3h6v6M21 3l-8 8M3 15v6h6M3 21l8-8"/></svg><span>输出与集成</span></button><button type="button" class="nav-item" data-console-go="settings"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></svg><span>部署与设置</span></button></nav>
+  <div class="nav-caption">WORKSPACE / 工作空间</div><nav><button type="button" class="nav-item" data-console-go="overview"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>实时工作台</span></button><button type="button" class="nav-item" data-console-go="workflows"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="2" y="8" width="6" height="7" rx="1"/><rect x="16" y="2" width="6" height="7" rx="1"/><rect x="16" y="15" width="6" height="7" rx="1"/><path d="M8 11h4V5h4m-4 6v7h4"/></svg><span>工作流</span></button><button type="button" class="nav-item" data-console-go="capabilities"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5"/></svg><span>人员与能力</span></button><button type="button" class="nav-item" data-console-go="events"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5"/></svg><span>事件与回放</span></button><button type="button" class="nav-item" data-console-go="outputs"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M15 3h6v6M21 3l-8 8M3 15v6h6M3 21l8-8"/></svg><span>输出与集成</span></button><button type="button" class="nav-item" data-console-go="settings"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></svg><span>部署与设置</span></button></nav>
   <div class="sidebar-bottom"><span class="sidebar-status-dot"></span><div>现场视觉工作空间<small>视频 · 分析 · 输出</small></div></div>
-</aside><div class="console-content"><header class="console-topbar"><div class="workspace-breadcrumb">工作空间 <span>/</span> <strong id="console-breadcrumb">实时工作台</strong></div><div class="topbar-actions"><a class="btn subtle" id="gateway-video-settings" href="/gateway" hidden>摄像头拉流位置</a><label class="language-picker" translate="no"><span>Language / 语言</span><select id="console-language" aria-label="Language / 语言"><option value="zh">中文</option><option value="en">English</option></select></label><button type="button" class="btn subtle" data-console-go="settings"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></svg>配置服务</button><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6zM8 12l3 3 5-6"/></svg><span>GoodVision Console</span></div></header>
+</aside><div class="console-content"><header class="console-topbar"><div class="workspace-breadcrumb">工作空间 <span>/</span> <strong id="console-breadcrumb">实时工作台</strong></div><div class="topbar-actions"><a class="btn subtle" id="gateway-video-settings" href="/gateway" hidden>摄像头拉流位置</a><label class="language-picker" translate="no"><span>Language / 语言</span><select id="console-language" aria-label="Language / 语言"><option value="zh">中文</option><option value="en">English</option></select></label><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6zM8 12l3 3 5-6"/></svg><span>GoodVision Console</span></div></header>
 <div class="runtime-strip">  <div class="chips">
     <span class="chip">service <b id="service-chip">loading</b></span>
-    <span class="chip">source <b id="source-chip">waiting</b></span>
-    <span class="chip">readiness <b id="readiness-chip">checking</b></span>
+    <span class="chip" hidden>source <b id="source-chip">waiting</b></span>
+    <span class="chip" hidden>readiness <b id="readiness-chip">checking</b></span>
     <span class="chip" hidden>分析服务 <b id="model-chip">...</b></span>
-    <span class="chip"><span id="analysis-chip-label">events</span> <b id="event-chip">...</b></span>
+    <span class="chip" hidden><span id="analysis-chip-label">events</span> <b id="event-chip">...</b></span>
     <span class="chip">sampling <b id="sampling-chip">...</b></span>
   </div>
 </div><script data-gateway-settings>fetch('/gateway/video-source').then(r=>{if(r.ok)document.getElementById('gateway-video-settings').hidden=false;}).catch(()=>{});</script>
 <div id="secure-warning" class="notice" hidden></div>
-<main id="console-main"><section id="console-overview" class="console-page" data-console-page="overview" aria-labelledby="title-overview"><div class="page-heading"><div><div class="eyebrow-label">LIVE WORKSPACE</div><h1 id="title-overview" tabindex="-1">实时工作台</h1><p>管理视频连接、分析任务和输出接口。</p></div></div><section class="configure-strip" aria-label="任务配置"><div class="configure-label"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></svg><div><strong>检测任务</strong><small>检测项目与敏感度按视频通道保存</small></div></div><div class="task-pills" data-event-presets aria-live="polite">正在读取检测项目…</div><button id="refresh-event-catalog" type="button" class="text-button">刷新检测项目</button><button type="button" class="text-button" data-console-go="overview" data-console-target="fleet-panel">逐路配置 <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6"/></svg></button></section><section class="pipeline-board" aria-label="视觉处理流程">
-  <article class="pipeline-card input-module"><div class="module-kicker">01 / VIDEO INPUTS</div><div class="module-title"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/></svg><h2>视频输入</h2></div><p>连接固定摄像头或机器人视频。</p>
-    <button type="button" class="source-tile" data-console-go="overview" data-console-target="fleet-panel"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/></svg><span><strong>固定摄像头</strong><small>RTSP / RTMP</small></span><span class="available-dot" title="已有接入能力"></span></button>
-    <button type="button" class="source-tile" data-console-go="overview" data-console-target="fleet-panel"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><circle cx="12" cy="12" r="4"/></svg><span><strong>机器人视频</strong><small>WHEP / RTSP</small></span><span class="available-dot" title="已有接入能力"></span></button>
-    <button type="button" class="source-tile future" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5"/></svg><span><strong>现有 VMS</strong><small>直接集成 · 规划中</small></span></button>
-    <div class="module-foot"><strong id="console-connected">—</strong><span>路视频已连接</span><button type="button" class="text-button" data-console-go="overview" data-console-target="fleet-panel">管理输入 ↗</button></div>
-  </article>
-  <article class="pipeline-card core-module"><div class="module-kicker">02 / VISION CORE</div><div class="module-title"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5"/></svg><h2>视觉处理</h2><span class="core-badge">共享视觉核心</span></div><p>人物追踪、事件分析与身份识别。</p>
-    <div class="core-lanes">
-      <button type="button" class="core-lane" data-console-go="settings"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><circle cx="12" cy="12" r="4"/></svg><span><strong>检测与追踪</strong><small>视频采样 · 人物描边 · 连续追踪</small></span><span class="lane-tag">感知</span></button>
-      <button type="button" class="core-lane" data-console-go="overview" data-console-target="fleet-panel"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5"/></svg><span><strong>场景与事件分析</strong><small>全画面描述 · 多任务判断 · 事件关联</small></span><span class="lane-tag">理解</span></button>
-      <button type="button" class="core-lane" data-console-go="capabilities" data-console-target="face-controls"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M4 21v-3a8 8 0 0 1 16 0v3"/></svg><span><strong>身份识别</strong><small>共享人脸库 · 陌生人识别</small></span><span class="lane-tag">识别</span></button>
-    </div><div class="core-footer"><span><i></i>共享视频输入</span><span id="console-analysis">正在读取运行状态</span></div>
-  </article>
-  <article class="pipeline-card output-module"><div class="module-kicker">03 / EVENT OUTPUTS</div><div class="module-title"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M15 3h6v6M21 3l-8 8M3 15v6h6M3 21l8-8"/></svg><h2>事件输出</h2></div><p>查看视频流、分析结果和事件证据。</p>
-    <div class="output-summary"><span><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/></svg>标注视频流 <b>MJPEG</b></span><span><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5"/></svg>事件与分析结果 <b>JSON / SSE</b></span><span><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5"/></svg>画面与元数据 <b>数据包</b></span></div>
-    <div class="output-evidence">类型与置信度 · 人物与时间<br>关键画面 · 事件录像 · 回放</div>
-    <button type="button" class="btn output-cta" data-console-go="outputs">查看输出接口 <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6"/></svg></button>
-  </article>
-</section>  <section id="fleet-panel" class="panel fleet-panel" aria-labelledby="fleet-title">
+<main id="console-main"><section id="console-overview" class="console-page" data-console-page="overview" aria-labelledby="title-overview"><div class="page-heading"><div><div class="eyebrow-label">LIVE WORKSPACE</div><h1 id="title-overview" tabindex="-1">实时工作台</h1><p>查看现场画面，按通道配置检测任务并跟进分析结果。</p></div></div><p class="workspace-guide">连接视频 → 在各路“检测任务”中选择项目 → 开始全部分析。全画面描述与任务实时判断直接显示在视频旁；逐帧记录在“实时结果”中查看。</p>  <section id="fleet-panel" class="panel fleet-panel" aria-labelledby="fleet-title">
     <div class="fleet-toolbar">
       <div class="fleet-heading">
         <div class="section-title"><h2 id="fleet-title">现场视频</h2><span id="fleet-mode" class="fleet-mode">正在检查运行模式</span></div>
@@ -150,16 +199,12 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
     <div id="fleet-analysis-state" class="note" role="status">连接视频后，统一开始所有已连接视频的分析。</div>
     <div id="fleet-grid" class="fleet-grid" aria-label="摄像头画面"></div>
     <div id="fleet-note" class="status fleet-summary" role="status" aria-live="polite"></div>
-    <div class="fleet-detail-bar">
-      <span class="note">连接预览 → 打开“详细控制”选择检测任务 → 开始全部分析。停止分析后视频继续预览。</span>
-      <span class="note">各路的“本机摄像头 / 诊断”保留播放缓冲、实时结果和详细状态。</span>
-      <button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false" hidden>本机摄像头 / 诊断</button>
-    </div>
+    <div class="fleet-detail-bar"><span class="note">停止分析后，视频保持连接。检测任务按通道保存；播放缓存可在分析中调整。</span></div>
   </section>
 
-</section><section id="console-workflows" class="console-page" data-console-page="workflows" aria-label="Workflow builder" hidden><div id="workflow-root"></div></section><section id="console-capabilities" class="console-page" data-console-page="capabilities" aria-labelledby="title-capabilities" hidden><div class="page-heading"><div><div class="eyebrow-label">CAPABILITIES & RULES</div><h1 id="title-capabilities" tabindex="-1">能力与规则</h1><p>已有能力可直接配置；规划中的能力以灰度展示。</p></div></div><div class="capability-grid"><article class="panel capability-card"><div class="module-title"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5"/></svg><h2>视觉任务</h2><span class="scope persistent">已支持</span></div><p>各视频通道独立选择任务与敏感度，统一开始分析。</p><div class="task-pills" data-event-presets aria-live="polite">正在读取检测项目…</div><button type="button" class="text-button" data-console-go="overview" data-console-target="fleet-panel">配置视频通道 ↗</button></article>
-<article class="panel capability-card planned-card"><div class="module-title"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><circle cx="12" cy="12" r="4"/></svg><h2>现场规则</h2><span class="planned-label">规划中</span></div><p>区域、时段和触发条件设置。</p><div class="planned-controls"><button disabled>区域与边界</button><button disabled>时间计划</button><button disabled>访问规则</button><button disabled>触发阈值</button></div><small>概念预览 · 暂未接入</small></article></div>
-<section class="panel roadmap-panel"><div><h2>更多事件能力</h2><p>尚未实现的检测任务。</p></div><button class="future-task" disabled>入侵检测 <span>规划中</span></button><button class="future-task" disabled>物品遗留 <span>规划中</span></button><button class="future-task" disabled>自定义任务 <span>规划中</span></button></section>  <section id="face-controls" class="panel face-panel" aria-labelledby="gallery-title">
+</section><section id="console-workflows" class="console-page" data-console-page="workflows" aria-label="Workflow builder" hidden><div id="workflow-root"></div></section><section id="console-capabilities" class="console-page" data-console-page="capabilities" aria-labelledby="title-capabilities" hidden>
+<div class="page-heading"><div><div class="eyebrow-label">PEOPLE & CAPABILITIES</div><h1 id="title-capabilities" tabindex="-1">人员与能力</h1><p>维护共享人员库，查看当前服务支持的检测能力。</p></div></div>
+<section id="face-controls" class="panel face-panel" aria-labelledby="gallery-title">
     <div class="head">
       <div class="section-title"><h2 id="gallery-title">共享人员库</h2><span class="scope persistent">所有摄像头共用</span></div>
       <div class="gallery-head-actions"><span id="gallery-summary">Loading...</span><button id="refresh-gallery-button" class="btn">刷新</button></div>
@@ -180,94 +225,8 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
       </table>
     </div>
   </section>
-
-</section><section id="console-events" class="console-page" data-console-page="events" aria-labelledby="title-events" hidden><div class="page-heading"><div><div class="eyebrow-label">EVENTS & EVIDENCE</div><h1 id="title-events" tabindex="-1">事件与回放</h1><p>筛选事件记录，查看人物信息和视频证据。</p></div></div>  <section class="panel log" aria-labelledby="event-history-title">
-    <div class="deployment-head section-title"><h2 id="event-history-title">主通道事件记录</h2>
-      <button id="refresh-events" class="btn" type="button">刷新记录</button></div>
-    <p class="note">查看主通道的连续事件与视频证据。其他通道的记录在工作台各路诊断中查看。</p>
-    <div class="control-source-row" style="margin-top:12px">
-      <div class="field"><label for="archive-feature">事件</label><select id="archive-feature" disabled><option value="">全部</option></select></div>
-      <div class="field"><label for="archive-subject">人物 ID</label><input id="archive-subject" type="text" placeholder="subject_id"></div>
-    </div>
-    <p id="archive-note" class="note" role="status">正在读取事件记录…</p>
-    <div class="scroll"><table><thead><tr><th>事件 / 人物</th><th>源时间</th><th>归档状态</th><th>视频证据</th></tr></thead><tbody id="archive-body"></tbody></table></div>
-    <button id="archive-more" class="btn" type="button" hidden>更早记录</button>
-    <video id="archive-video" controls preload="none" hidden style="width:100%;max-height:420px;margin-top:12px"></video>
-    <p id="archive-video-note" class="note"></p>
-  </section>
-
-  <section class="panel log">
-    <div class="head"><h2>Live result log</h2><span id="result-count">0 results</span></div>
-    <div class="note">Each row shows this frame's observations. PARTIAL means some selected features were not analyzed in that frame.</div>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>Result</th><th>Video time</th><th>Frame verdict</th><th>Conf.</th><th>Latency</th><th>Bboxes</th><th>Description</th></tr></thead>
-        <tbody id="log-body"></tbody>
-      </table>
-    </div>
-  </section>
-</section><section id="console-outputs" class="console-page" data-console-page="outputs" aria-labelledby="title-outputs" hidden><div class="page-heading"><div><div class="eyebrow-label">OUTPUTS & INTEGRATIONS</div><h1 id="title-outputs" tabindex="-1">输出与集成</h1><p>视频流、结构化结果和帧数据包，使用现有接口直接接入。</p></div></div><section class="panel api-directory"><div class="api-directory-head"><div><h2>通道输出接口</h2><p>选择视频通道，直接拉流或订阅数据。</p></div><label class="field"><span>输出通道</span><select id="console-output-camera" aria-describedby="console-output-note"><option value="">正在读取通道…</option></select></label></div><p id="console-output-note" class="note" role="status">正在读取已有输出接口…</p><div class="api-cards"><article class="api-card"><div><span class="api-format">MJPEG</span><h3>标注视频流</h3></div><p>连续输出带人物描边与分析标注的视频。</p><code data-output-path="video/annotated/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/annotated/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/annotated/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">MJPEG</span><h3>原始视频流</h3></div><p>拉取源视频的连续画面。</p><code data-output-path="video/live/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/live/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/live/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>最新分析结果</h3></div><p>读取最近一次结构化分析结果。</p><code data-output-path="results/latest">等待通道信息</code><div class="api-actions"><a data-output-link="results/latest" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="results/latest" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">SSE</span><h3>持续结果订阅</h3></div><p>持续接收该通道的分析结果。</p><code data-output-path="results/events">等待通道信息</code><div class="api-actions"><a data-output-link="results/events" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="results/events" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">GVD1</span><h3>显示帧数据包</h3></div><p>获取画面与关联元数据的二进制批次。</p><code data-output-path="video/display/frames">等待通道信息</code><div class="api-actions"><a data-output-link="video/display/frames" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/display/frames" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>显示元数据</h3></div><p>读取显示帧、时间与关联信息。</p><code data-output-path="video/display/metadata">等待通道信息</code><div class="api-actions"><a data-output-link="video/display/metadata" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/display/metadata" disabled>复制地址</button></div></article></div><p id="console-copy-status" class="note" role="status" aria-live="polite"></p></section>
-<section class="panel integrations-panel planned-card" aria-label="规划中的输出策略">
-  <div class="module-title"><h2>输出策略</h2><span class="planned-label">规划中</span></div>
-  <p>预留自动动作与策略配置入口，暂未接入。已有数据输出使用上方接口。</p>
-  <div class="planned-controls"><button type="button" disabled>动作触发</button><button type="button" disabled>Webhook 编排</button><button type="button" disabled>证据留存策略</button><button type="button" disabled>业务访问策略</button></div>
-</section><section class="panel integrations-panel"><div class="module-title"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v5M16 3v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/></svg><h2>业务应用</h2><span class="planned-label">概念预览</span></div><p>以下为规划中的集成入口，暂未接入。</p><div class="integration-grid"><button type="button" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/><circle cx="12" cy="12" r="4"/></svg><strong>机器人控制</strong><small>规划中</small></button><button type="button" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/></svg><strong>安防 / VMS</strong><small>规划中</small></button><button type="button" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5"/></svg><strong>告警中心</strong><small>规划中</small></button><button type="button" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8zM2 12l10 5 10-5M2 16l10 5 10-5"/></svg><strong>企业系统</strong><small>规划中</small></button></div></section>  <section class="panel output-console">
-    <p class="note output-scope-note">以下设置与诊断对应主通道；其他通道请在工作台打开该路诊断。</p>
-    <div class="head debug-head">
-      <div class="section-title"><span class="step">3</span><h2>输出与播放设置</h2></div>
-      <div class="channel-row">
-        <span id="output-channel" class="channel">Annotated output · buffering</span>
-        <span id="last-update" class="channel">Status · waiting</span>
-      </div>
-    </div>
-    <div class="deployment-actions">
-      <label class="field">
-        <span>网络视频缓存（秒）</span>
-        <input id="buffer-delay-seconds" type="number" min="0" max="30" step="any" disabled
-               aria-describedby="buffer-delay-note" placeholder="0">
-      </label>
-      <button id="save-buffer-delay-button" class="btn primary" disabled>应用并保存缓存时间</button>
-      <span id="buffer-delay-current" class="note">正在读取缓存时间…</span>
-    </div>
-    <div id="local-camera-buffer-note" class="note" hidden></div>
-    <div class="note">此设置仅适用于网络视频，额外显示缓存可设为 0–30 秒，运行中可调整，重启后保留。调小后会跳过旧画面、追上最新结果。本机摄像头使用独立的描边缓冲，由部署配置设置。</div>
-    <div id="buffer-delay-note" class="status deployment-note" role="status" aria-live="polite"></div>
-    <div class="metrics">
-      <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
-      <div class="metric"><span class="metric-label">Results published</span><strong id="published-result-count" class="metric-value">0</strong><span id="last-result-note" class="metric-note">No result yet</span></div>
-      <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Each image identifies its source result</span></div>
-      <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">等待首帧描边结果</span></div>
-    </div>
-    <div class="endpoint-grid" aria-label="Output and API shortcuts">
-      <a class="endpoint" href="/v1/video/annotated/stream.mjpeg" target="_blank" rel="noreferrer">Annotated stream <small>MJPEG</small></a>
-      <a id="legacy-evidence-stream" class="endpoint" href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Exact evidence stream <small>MJPEG</small></a>
-      <a class="endpoint" href="/v1/video/live/stream.mjpeg" target="_blank" rel="noreferrer">Raw source stream <small>MJPEG</small></a>
-      <a class="endpoint" href="/v1/video/annotated/latest.jpg" target="_blank" rel="noreferrer">Latest annotated frame <small>JPEG</small></a>
-      <a id="legacy-evidence-latest" class="endpoint" href="/v1/video/latest.jpg" target="_blank" rel="noreferrer">Latest exact evidence <small>JPEG</small></a>
-      <a id="scene-evidence-latest" class="endpoint" href="/v1/scene/evidence" target="_blank" rel="noreferrer" hidden>连续观察证据 <small>JSON · 原始画面</small></a>
-      <a class="endpoint" href="/v1/results/latest" target="_blank" rel="noreferrer">Latest result <small>JSON</small></a>
-      <a class="endpoint" href="/v1/results/events" target="_blank" rel="noreferrer">Result event stream <small>SSE</small></a>
-      <a class="endpoint" href="/v1/status" target="_blank" rel="noreferrer">Runtime status <small>API</small></a>
-    </div>
-  </section>
-
-  <details id="scene-diagnostics" class="panel">
-    <summary>连续场景诊断 · 实际请求图片、失败分类与未分析间隔</summary>
-    <p class="note">模型返回、证据接纳与事件确认分别统计。图片为请求中实际编码的 JPEG；准备完成不等于上传成功。展开时刷新，最近图片仅在内存中保留。</p>
-    <div id="scene-diagnostics-content">展开后读取诊断。</div>
-  </details>
-  <div class="data">
-    <section class="panel">
-      <div class="head"><h2>Service status</h2><a class="muted-link" href="/v1/status" target="_blank" rel="noreferrer">GET /v1/status ↗</a></div>
-      <pre id="status-json" data-interface-copy="true">Loading...</pre>
-    </section>
-    <section class="panel">
-      <div class="head"><h2>Latest AnalysisResult</h2><a class="muted-link" href="/v1/results/events" target="_blank" rel="noreferrer">SSE /v1/results/events ↗</a></div>
-      <pre id="result-json" data-interface-copy="true">Waiting for the first analysis result...</pre>
-    </section>
-  </div>
-
-</section><section id="console-settings" class="console-page" data-console-page="settings" aria-labelledby="title-settings" hidden><div class="page-heading"><div><div class="eyebrow-label">DEPLOYMENT & SERVICES</div><h1 id="title-settings" tabindex="-1">部署与设置</h1><p>统一管理服务部署、连接凭据、视频默认值与线路。</p></div></div>  <section class="panel deployment-panel">
+<section class="panel capability-catalog" aria-labelledby="capability-catalog-title"><div class="head"><h2 id="capability-catalog-title">可用检测能力</h2><button id="refresh-event-catalog" type="button" class="btn">刷新检测项目</button></div><p class="note">检测项目与敏感度按视频通道保存；组合任务在工作流中配置。</p><div class="task-pills" data-event-presets aria-live="polite">正在读取检测项目…</div><button type="button" class="btn" data-console-go="overview" data-console-target="fleet-panel">配置通道检测任务</button></section>
+</section><section id="console-events" class="console-page" data-console-page="events" aria-labelledby="title-events" hidden><div class="page-heading"><div><div class="eyebrow-label">EVENTS & EVIDENCE</div><h1 id="title-events" tabindex="-1">事件与回放</h1><p>按视频通道筛选事件，查看人物信息和视频证据。</p></div></div><section class="panel channel-review"><div class="head"><h2>通道事件记录</h2><label class="field"><span>视频通道</span><select id="console-event-camera" aria-describedby="console-event-note"><option value="">正在读取通道…</option></select></label></div><p id="console-event-note" class="note" role="status">正在读取可用摄像头通道…</p><div id="console-event-view" class="channel-view"></div></section></section><section id="console-outputs" class="console-page" data-console-page="outputs" aria-labelledby="title-outputs" hidden><div class="page-heading"><div><div class="eyebrow-label">OUTPUT INTERFACES</div><h1 id="title-outputs" tabindex="-1">输出与集成</h1><p>选择视频通道，复制视频、分析数据和证据接口。</p></div></div><section class="panel api-directory"><div class="api-directory-head"><h2>通道输出接口</h2><label class="field"><span>输出通道</span><select id="console-output-camera" aria-describedby="console-output-note"><option value="">正在读取通道…</option></select></label></div><p id="console-output-note" class="note" role="status">正在读取已有输出接口…</p><div class="api-cards"><article class="api-card"><div><span class="api-format">MJPEG</span><h3>标注视频流</h3></div><p>连续输出带人物描边与分析标注的视频。</p><code data-output-path="video/annotated/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/annotated/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/annotated/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">MJPEG</span><h3>原始视频流</h3></div><p>拉取源视频的连续画面。</p><code data-output-path="video/live/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/live/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/live/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">MJPEG</span><h3>事件证据视频流</h3></div><p>逐帧对应原始分析结果的视频证据。</p><code data-output-path="video/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JPEG</span><h3>最新标注帧</h3></div><p>读取最近一张标注画面。</p><code data-output-path="video/annotated/latest.jpg">等待通道信息</code><div class="api-actions"><a data-output-link="video/annotated/latest.jpg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/annotated/latest.jpg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JPEG</span><h3>最新证据帧</h3></div><p>读取关联分析结果的证据图片。</p><code data-output-path="video/latest.jpg">等待通道信息</code><div class="api-actions"><a data-output-link="video/latest.jpg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/latest.jpg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>最新分析结果</h3></div><p>读取最近一次结构化分析结果。</p><code data-output-path="results/latest">等待通道信息</code><div class="api-actions"><a data-output-link="results/latest" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="results/latest" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>工作流输出</h3></div><p>读取该通道的工作流和当前流程输出。</p><code data-output-path="workflow/results">等待通道信息</code><div class="api-actions"><a data-output-link="workflow/results" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="workflow/results" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>定时总结记录</h3></div><p>读取该通道的定时总结、时间与运行状态。</p><code data-output-path="workflow/summaries">等待通道信息</code><div class="api-actions"><a data-output-link="workflow/summaries" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="workflow/summaries" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">SSE</span><h3>持续结果订阅</h3></div><p>持续接收该通道的分析结果。</p><code data-output-path="results/events">等待通道信息</code><div class="api-actions"><a data-output-link="results/events" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="results/events" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">GVD1</span><h3>显示帧数据包</h3></div><p>获取画面与关联元数据的二进制批次。</p><code data-output-path="video/display/frames">等待通道信息</code><div class="api-actions"><a data-output-link="video/display/frames" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/display/frames" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>显示元数据</h3></div><p>读取显示帧、时间与关联信息。</p><code data-output-path="video/display/metadata">等待通道信息</code><div class="api-actions"><a data-output-link="video/display/metadata" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/display/metadata" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>连续观察证据</h3></div><p>读取连续观察的请求与原始画面信息。</p><code data-output-path="scene/evidence">等待通道信息</code><div class="api-actions"><a data-output-link="scene/evidence" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="scene/evidence" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>运行状态</h3></div><p>读取该通道的运行状态。</p><code data-output-path="status">等待通道信息</code><div class="api-actions"><a data-output-link="status" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="status" disabled>复制地址</button></div></article></div><p id="console-copy-status" class="note" role="status" aria-live="polite"></p></section></section><section id="console-settings" class="console-page" data-console-page="settings" aria-labelledby="title-settings" hidden><div class="page-heading"><div><div class="eyebrow-label">DEPLOYMENT & SERVICES</div><h1 id="title-settings" tabindex="-1">部署与设置</h1><p>统一管理服务部署、连接凭据、视频默认值与线路。</p></div></div>  <section class="panel deployment-panel">
     <div class="deployment-head">
       <div class="deployment-title">
         <div class="section-title">
@@ -440,12 +399,89 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
     </div>
   </section>
 
-</section>  <div id="fleet-detail-console" hidden>
-  <p class="fleet-detail-label">本机摄像头 / 诊断 · 网络视频请使用上方各路卡片设置，并通过顶部统一开始、停止分析。此处保留浏览器摄像头和服务诊断。</p>
-  <section class="panel control-panel">
+  <section id="local-camera-utility" class="panel local-camera-utility" aria-labelledby="local-camera-utility-title"><div><h2 id="local-camera-utility-title">本机摄像头</h2><p class="note">检查浏览器能否访问本机摄像头，预览本机画面。网络视频在实时工作台按通道管理。</p></div><button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false">打开本机摄像头</button></section>
+</section>  <div id="console-reference-panels" hidden aria-hidden="true"><section id="event-archive-panel" class="panel log" aria-labelledby="event-history-title">
+    <div class="deployment-head section-title"><h2 id="event-history-title">主通道事件记录</h2>
+      <button id="refresh-events" class="btn" type="button">刷新记录</button></div>
+    <p class="note">查看主通道的连续事件与视频证据。其他通道请在实时工作台选择该路的“事件回放”。</p>
+    <div class="control-source-row" style="margin-top:12px">
+      <div class="field"><label for="archive-feature">事件</label><select id="archive-feature" disabled><option value="">全部</option></select></div>
+      <div class="field"><label for="archive-subject">人物 ID</label><input id="archive-subject" type="text" placeholder="subject_id"></div>
+    </div>
+    <p id="archive-note" class="note" role="status">正在读取事件记录…</p>
+    <div class="scroll"><table><thead><tr><th>事件 / 人物</th><th>源时间</th><th>归档状态</th><th>视频证据</th></tr></thead><tbody id="archive-body"></tbody></table></div>
+    <button id="archive-more" class="btn" type="button" hidden>更早记录</button>
+    <video id="archive-video" controls preload="none" hidden style="width:100%;max-height:420px;margin-top:12px"></video>
+    <p id="archive-video-note" class="note"></p>
+  </section><section id="live-result-log" class="panel log">
+    <div class="head"><h2>逐帧分析记录</h2><span id="result-count">0 results</span></div>
+    <div class="note">Each row shows this frame's observations. PARTIAL means some selected features were not analyzed in that frame.</div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Result</th><th>Video time</th><th>Frame verdict</th><th>Conf.</th><th>Latency</th><th>Bboxes</th><th>Description</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+  </section><section id="output-playback-panel" class="panel output-console">
+    <p class="note output-scope-note">以下播放设置对应主通道。其他通道请在实时工作台选择该路的“播放设置”；接口地址使用上方通道选择器。</p>
+    <div class="head debug-head">
+      <div class="section-title"><span class="step">3</span><h2>输出与播放设置</h2></div>
+      <div class="channel-row">
+        <span id="output-channel" class="channel">Annotated output · buffering</span>
+        <span id="last-update" class="channel">Status · waiting</span>
+      </div>
+    </div>
+    <div class="deployment-actions">
+      <label class="field">
+        <span>网络视频缓存（秒）</span>
+        <input id="buffer-delay-seconds" type="number" min="0" max="30" step="any" disabled
+               aria-describedby="buffer-delay-note" placeholder="0">
+      </label>
+      <button id="save-buffer-delay-button" class="btn primary" disabled>应用并保存缓存时间</button>
+      <span id="buffer-delay-current" class="note">正在读取缓存时间…</span>
+    </div>
+    <div id="local-camera-buffer-note" class="note" hidden></div>
+    <div class="note">此设置仅适用于网络视频，额外显示缓存可设为 0–30 秒，运行中可调整，重启后保留。调小后会跳过旧画面、追上最新结果。本机摄像头使用独立的描边缓冲，由部署配置设置。</div>
+    <div id="buffer-delay-note" class="status deployment-note" role="status" aria-live="polite"></div>
+    <div id="output-metrics" class="metrics">
+      <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
+      <div class="metric"><span class="metric-label">Results published</span><strong id="published-result-count" class="metric-value">0</strong><span id="last-result-note" class="metric-note">No result yet</span></div>
+      <div class="metric"><span class="metric-label">Exact evidence frames</span><strong id="analysis-frame-count" class="metric-value">0</strong><span class="metric-note">Each image identifies its source result</span></div>
+      <div class="metric"><span class="metric-label">Display output</span><strong id="annotated-state" class="metric-value">BUFFERING</strong><span id="annotated-note" class="metric-note">等待首帧描边结果</span></div>
+    </div>
+    <div class="endpoint-grid" aria-label="Output and API shortcuts">
+      <a class="endpoint" href="/v1/video/annotated/stream.mjpeg" target="_blank" rel="noreferrer">Annotated stream <small>MJPEG</small></a>
+      <a id="legacy-evidence-stream" class="endpoint" href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Exact evidence stream <small>MJPEG</small></a>
+      <a class="endpoint" href="/v1/video/live/stream.mjpeg" target="_blank" rel="noreferrer">Raw source stream <small>MJPEG</small></a>
+      <a class="endpoint" href="/v1/video/annotated/latest.jpg" target="_blank" rel="noreferrer">Latest annotated frame <small>JPEG</small></a>
+      <a id="legacy-evidence-latest" class="endpoint" href="/v1/video/latest.jpg" target="_blank" rel="noreferrer">Latest exact evidence <small>JPEG</small></a>
+      <a id="scene-evidence-latest" class="endpoint" href="/v1/scene/evidence" target="_blank" rel="noreferrer" hidden>连续观察证据 <small>JSON · 原始画面</small></a>
+      <a class="endpoint" href="/v1/results/latest" target="_blank" rel="noreferrer">Latest result <small>JSON</small></a>
+      <a class="endpoint" href="/v1/results/events" target="_blank" rel="noreferrer">Result event stream <small>SSE</small></a>
+      <a class="endpoint" href="/v1/status" target="_blank" rel="noreferrer">Runtime status <small>API</small></a>
+    </div>
+  </section>
+
+  <details id="scene-diagnostics" class="panel">
+    <summary>连续场景诊断 · 实际请求图片、失败分类与未分析间隔</summary>
+    <p class="note">模型返回、证据接纳与事件确认分别统计。图片为请求中实际编码的 JPEG；准备完成不等于上传成功。展开时刷新，最近图片仅在内存中保留。</p>
+    <div id="scene-diagnostics-content">展开后读取诊断。</div>
+  </details>
+  <div id="runtime-data-panels" class="data">
+    <section class="panel">
+      <div class="head"><h2>Service status</h2><a class="muted-link" href="/v1/status" target="_blank" rel="noreferrer">GET /v1/status ↗</a></div>
+      <pre id="status-json" data-interface-copy="true">Loading...</pre>
+    </section>
+    <section class="panel">
+      <div class="head"><h2>Latest AnalysisResult</h2><a class="muted-link" href="/v1/results/events" target="_blank" rel="noreferrer">SSE /v1/results/events ↗</a></div>
+      <pre id="result-json" data-interface-copy="true">Waiting for the first analysis result...</pre>
+    </section>
+  </div></div><div id="fleet-detail-console" hidden>
+  <p class="fleet-detail-label">本机摄像头 · 浏览器预览检查。网络视频连接、检测任务和分析操作在实时工作台管理。</p>
+  <section id="local-camera-panel" class="panel control-panel">
     <div class="control-grid">
       <div class="control-block">
-        <div class="section-title"><span class="step">1</span><h2>本机摄像头与服务诊断</h2></div>
+        <div class="section-title"><span class="step">1</span><h2>本机摄像头预览</h2></div>
         <div class="control-source-row">
           <div class="seg" aria-label="Video source type">
             <button id="camera-mode">Browser camera</button>
@@ -489,7 +525,7 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
         <div id="status-line" class="status session-note">Loading service information...</div>
         <div id="runtime-error" class="error-banner" hidden></div>
       </div>
-      <aside class="connection-card">
+      <aside id="connection-diagnostics" class="connection-card">
         <div>
           <span class="metric-label">Current connection</span>
           <div class="state-line">
@@ -533,13 +569,13 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
           <div id="raw-badge" class="badge"><span class="dot"></span><span id="raw-badge-text">LIVE</span></div>
         </div>
       </div>
-      <section class="frame-summary" aria-labelledby="overall-description-title">
+      <section id="overall-summary" class="frame-summary" aria-labelledby="overall-description-title">
         <p id="diagnostic-result-error" class="error-banner" role="alert" hidden></p>
         <div class="frame-summary-head">
-          <h3 id="overall-description-title">Overall description · 全画面描述</h3>
-          <span id="overall-description-meta" class="frame-summary-meta">等待分析帧</span>
+          <h3 id="overall-description-title">全画面描述</h3>
+          <span id="overall-description-meta" class="frame-summary-meta">Canvas 定时 Summary</span>
         </div>
-        <p id="overall-description" class="frame-summary-text" data-interface-copy="true">等待当前帧分析… / Waiting for frame analysis…</p>
+        <p id="overall-description" class="frame-summary-text" data-interface-copy="true">等待定时全画面描述</p>
       </section>
       <div id="annotation-note" class="note annotation-note">
         Original video frames inherit the preceding annotation between analysis updates.
@@ -554,11 +590,6 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
         <button id="detection-overlay-toggle" class="overlay-toggle" type="button"
                 aria-controls="decision" aria-expanded="true" hidden>Minimize</button>
       </div>
-      <div class="decision" style="margin-bottom:12px">
-        <div class="eyebrow">本次事件观察 · VLM</div>
-        <div id="vlm-current-observation" class="description" role="status">等待事件判断</div>
-        <div class="meta">先显示当前画面的事件判断；人物关联与连续事件确认分别更新。</div>
-      </div>
       <div id="decision" class="decision">
         <div id="decision-eyebrow" class="eyebrow">Live selected-feature classification</div>
         <div id="verdict" class="verdict">READY</div>
@@ -571,6 +602,13 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
     </section>
   </div>
 
+  <section id="task-live-judgment" class="frame-summary" aria-labelledby="task-live-judgment-title">
+    <div class="frame-summary-head"><h3 id="task-live-judgment-title">任务实时判断</h3><span id="task-judgment-meta" class="frame-summary-meta"></span></div>
+    <div id="task-judgment-cards" class="task-judgment-cards" aria-label="各事件实时判断" aria-live="polite"></div>
+    <div id="vlm-current-observation" class="note" role="status">等待任务判断</div>
+    <p class="note">每个事件独立更新：红色发现，绿色未发现，黄色不确定，灰色等待。</p>
+  </section>
+
   <section id="scene-panel" class="panel scene-panel" aria-labelledby="scene-title" hidden>
     <div class="head"><h2 id="scene-title">连续人物与事件</h2><span id="scene-mode" class="channel"></span></div>
     <p id="scene-status" class="status" role="status" aria-live="polite">等待连续观察证据…</p>
@@ -581,8 +619,8 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
     </div>
   </section>
 
-  <section class="panel face-panel">
-    <div class="section-title"><span class="step">4</span><h2>Face data debug</h2></div>
+  <section id="face-diagnostics-panel" class="panel face-panel">
+    <div class="section-title"><h2>人脸识别诊断</h2></div>
     <div id="face-diagnostic-summary" class="face-diagnostic">Face diagnostics | waiting for the first analyzed frame.</div>
   </section>
 
@@ -593,6 +631,23 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
+if(globalThis.GoodvisionDiagnostic){
+  const query=new URLSearchParams(location.search||""),requestedView=globalThis.GoodvisionDiagnosticView||query.get("view");
+  globalThis.GoodvisionDiagnosticView=requestedView==="results"&&query.get("surface")==="insights"?"insights":
+    ["results","insights","events","diagnostics","camera"].includes(requestedView)?requestedView:"diagnostics";
+}
+function channelSurfaceActive(){
+  if(!globalThis.GoodvisionDiagnostic)return true;
+  try{
+    if(window.parent===window)return true;
+    const parentConsole=window.parent.GoodvisionConsole;
+    if(!parentConsole)return true;
+    const view=globalThis.GoodvisionDiagnosticView;
+    if(view==="events")return parentConsole.currentPage()==="events";
+    const row=window.parent.GoodvisionFleet?.app?.rows?.get(globalThis.GoodvisionDiagnosticCameraId);
+    return parentConsole.currentPage()==="overview"&&(!row||!row.card.hidden);
+  }catch(_){return false;}
+}
 function consoleJson(value){
   const hidden=globalThis.GoodvisionI18n?.text("已隐藏")||"已隐藏";
   return JSON.stringify(value,(key,item)=>{
@@ -862,11 +917,13 @@ function stopScenePolling(){
   if(sceneView.controller)sceneView.controller.abort();sceneView.controller=null
 }
 function startScenePolling(){
-  if(sceneView.closed||sceneView.polling||!sceneView.enabled||document.hidden)return;
+  if(globalThis.GoodvisionDiagnostic&&globalThis.GoodvisionDiagnosticView!=="events")return;
+  if(globalThis.GoodvisionConsoleManaged&&!globalThis.GoodvisionDiagnostic||globalThis.GoodvisionFleet?.app||!channelSurfaceActive()||sceneView.closed||sceneView.polling||!sceneView.enabled||document.hidden)return;
   sceneView.polling=true;const generation=++sceneView.generation;pollScene(generation)
 }
 async function pollScene(generation){
   if(generation!==sceneView.generation||!sceneView.polling)return;
+  if(globalThis.GoodvisionConsoleManaged&&!globalThis.GoodvisionDiagnostic||!channelSurfaceActive()){sceneView.polling=false;sceneView.timer=null;return;}
   const controller=new AbortController();sceneView.controller=controller;
   const session=state.sessionId,timeout=setTimeout(()=>controller.abort(),4000);
   try{
@@ -880,8 +937,9 @@ async function pollScene(generation){
     clearTimeout(timeout);
     if(generation===sceneView.generation){
       sceneView.controller=null;
-      if(sceneView.polling&&!sceneView.closed&&!document.hidden)
-        sceneView.timer=setTimeout(()=>pollScene(generation),750)
+      if(sceneView.polling&&!sceneView.closed&&!document.hidden&&channelSurfaceActive())
+        sceneView.timer=setTimeout(()=>pollScene(generation),750);
+      else sceneView.polling=false
     }
   }
 }
@@ -1352,7 +1410,8 @@ async function pullLatestFrame(generation){
   }
 }
 function openFeed(){
-  if(globalThis.GoodvisionFleet?.detailHidden?.()){
+  if(globalThis.GoodvisionDiagnostic&&globalThis.GoodvisionDiagnosticView!=="camera"||
+    globalThis.GoodvisionFleet?.detailHidden?.()){
     networkVideoDisplay?.stop();networkVideoDisplay=null;
     stopLatestFeed();return;
   }
@@ -1756,6 +1815,7 @@ function renderRoutes(){
   controls()
 }
 async function loadRoutes(){
+  if(globalThis.GoodvisionDiagnostic&&!channelSurfaceActive())return;
   if(localInferenceEnabled()||state.routeLoading||state.routeSubmitting)return;
   const revision=state.routeRevision;
   state.routeLoading=true;
@@ -2167,6 +2227,7 @@ async function stop(){
 function reset(){
   resetSceneView();
   resetOverallDescription();
+  $("vlm-current-observation").textContent="等待首次任务判断";
   resetClassification();
   state.count=0;ui.resultCount.textContent="0 results";ui.logBody.replaceChildren();
   ui.resultJson.dataset.interfaceCopy="true";
@@ -2237,6 +2298,7 @@ function updateRuntimeSummary(data){
 }
 
 async function status(){
+  if(globalThis.GoodvisionDiagnostic&&!channelSurfaceActive())return;
   if(state.statusLoading)return;
   state.statusLoading=true;
   const sessionRevision=state.sessionRevision||0,sessionId=state.sessionId;
@@ -2279,11 +2341,13 @@ async function status(){
         (state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""))
     }else if(state.running&&!state.pending){
       resetOverallDescription();
+      $("vlm-current-observation").textContent="任务已停止";
       state.running=false;state.sessionAnalysisMode=null;state.sessionFeatures=null;stopSampler();closeFeed();updateAnalysisUi()
     }
     if(error)say(error,true);
     else if(previousError&&!active&&!state.pending)say("No active session. Choose a source to start detection.");
-    controls();renderScene()
+    controls();renderScene();
+    if(globalThis.GoodvisionDiagnostic&&globalThis.GoodvisionDiagnosticView==="events")startScenePolling()
   }catch(error){
     if(!current())return;
     ui.service.textContent="状态更新延迟";ui.readinessChip.textContent="正在重试";
@@ -2293,19 +2357,96 @@ async function status(){
 }
 function resetOverallDescription(){
   state.overallResult=null;
+  state.workflowSummaryKey=null;state.workflowSummaryResults=new Map();
   ui.overallDescription.dataset.interfaceCopy="true";
-  ui.overallDescription.textContent="等待当前帧分析… / Waiting for frame analysis…";
-  ui.overallDescriptionMeta.textContent="等待分析帧"
+  ui.overallDescription.textContent="等待定时全画面描述";
+  ui.overallDescriptionMeta.textContent="Canvas 定时 Summary"
 }
-function renderOverallDescription(result){
-  if(state.overallResult&&compareClassificationFrames(result,state.overallResult)<0)return;
-  state.overallResult=result;
-  ui.overallDescription.dataset.interfaceCopy=String(!(typeof result.description==="string"&&result.description.trim()));
-  ui.overallDescription.textContent=typeof result.description==="string"&&result.description.trim()
-    ?result.description:"本帧未提供整体描述 / No overall description for this frame";
-  const frame=result.frame||{};
-  ui.overallDescriptionMeta.textContent="Frame "+(frame.source_frame_index??"-")+
-    " · "+number(frame.timestamp_seconds,3)+"s"
+function overallDescriptionContext(){
+  const status=state.diagnosticStatus||{},workflow=status.workflow,manager=workflow?.summaries;
+  const components=Array.isArray(manager?.components)?manager.components:[];
+  const session=workflow?.stream_session_id||manager?.stream_session_id||null;
+  const generation=workflow?.generation??manager?.generation;
+  const mode=!state.running?"stopped":status.workflow_test_running?"test":
+    !state.diagnosticStatus?"unknown":!workflow?.enabled||!components.length?"disabled":!session?"waiting":"enabled";
+  return {mode,session,generation,components,source:manager?.source_id||status.source_id,
+    key:JSON.stringify([mode,session,generation,components.map(item=>item.node_id)])};
+}
+function overallDescriptionMessage(context){
+  return context.mode==="stopped"?(context.session||state.sessionId?"任务已停止":"等待开始分析"):
+    context.mode==="test"?"工作流测试中，请查看工作流输出":
+    context.mode==="unknown"?"正在读取定时描述配置":
+    context.mode==="disabled"?"当前任务未启用定时全画面描述":"等待首次定时全画面描述";
+}
+function overallDescriptionLanguage(){
+  return globalThis.GoodvisionI18n?.language?.()==="en"?"en":"zh";
+}
+function localizedOverallDescription(result){
+  const language=overallDescriptionLanguage(),translated=result?.summary_translations?.[language];
+  if(typeof translated==="string"&&translated.trim())return translated.trim();
+  if(result?.summary_language===language&&typeof result.summary==="string"&&result.summary.trim())return result.summary.trim();
+  return null;
+}
+function renderOverallDescription(payload,context=overallDescriptionContext(),retry=false){
+  if(state.workflowSummaryKey!==context.key){
+    state.workflowSummaryKey=context.key;state.workflowSummaryResults=new Map();
+  }
+  const saved=state.workflowSummaryResults;
+  const components=Array.isArray(payload?.status?.components)?payload.status.components:context.components;
+  const allowed=new Set(context.components.map(item=>item.node_id));
+  const matches=item=>item?.type==="workflow_summary"&&item.test!==true&&
+    item.stream_session_id===context.session&&item.generation===context.generation&&
+    (!context.source||item.source_id===context.source)&&allowed.has(item.node_id);
+  for(const item of Array.isArray(payload?.items)?payload.items:[]){
+    if(!matches(item)||item.status!=="completed"||typeof item.summary!=="string"||!item.summary.trim())continue;
+    const previous=saved.get(item.node_id);
+    if(!previous||Number(item.source_frame_sequence)>=Number(previous.source_frame_sequence))saved.set(item.node_id,item);
+  }
+  const blocks=[],metadata=[];
+  let missingLanguage=false;
+  for(const component of context.mode==="enabled"?context.components:[]){
+    const result=saved.get(component.node_id);
+    const live=components.find(item=>item.node_id===component.node_id)||component;
+    const localized=localizedOverallDescription(result);
+    if(result&&!localized)missingLanguage=true;
+    if(localized){
+      blocks.push((context.components.length>1?component.node_id+"\n":"")+localized);
+      const seconds=Number(result.timestamp_seconds);
+      metadata.push((context.components.length>1?component.node_id+" · ":"")+"视频 "+
+        (Number.isFinite(seconds)?seconds.toFixed(1):"-")+" 秒");
+    }
+    if(live.state==="error"||live.last_error)metadata.push("描述更新失败，等待重试");
+    else if(live.state==="running")metadata.push("正在生成全画面描述");
+    else if(Number.isFinite(live.next_in_seconds))metadata.push("下次描述约 "+Math.ceil(live.next_in_seconds)+" 秒后");
+  }
+  if(retry)metadata.push("描述更新延迟，正在重试");
+  if(missingLanguage)metadata.push("等待当前语言的全画面描述");
+  ui.overallDescription.dataset.interfaceCopy=String(!blocks.length);
+  ui.overallDescription.lang=overallDescriptionLanguage();
+  ui.overallDescription.textContent=blocks.length?blocks.join("\n\n"):missingLanguage?"等待当前语言的全画面描述":overallDescriptionMessage(context);
+  ui.overallDescriptionMeta.textContent=["Canvas 定时 Summary",...new Set(metadata)].join(" · ");
+}
+async function pollOverallDescription(){
+  const context=overallDescriptionContext();
+  renderOverallDescription(null,context);
+  if(context.mode!=="enabled")return {received:false,unavailable:false};
+  const current=()=>!sceneView.closed&&overallDescriptionContext().key===context.key;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
+  try{
+    const response=await fetch("/v1/workflow/summaries?limit=100",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    const payload=await response.json();
+    if(!current())return {received:false,unavailable:false};
+    // A response from an older workflow cannot fill a newly started summary task.
+    if(payload?.status?.stream_session_id!==context.session||payload.status.generation!==context.generation){
+      renderOverallDescription(null,context,true);return {received:false,unavailable:true};
+    }
+    renderOverallDescription(payload,context);
+    return {received:state.workflowSummaryResults.size>0,unavailable:false};
+  }catch(_){
+    if(current())renderOverallDescription(null,context,true);
+    return {received:false,unavailable:true};
+  }finally{clearTimeout(timer);}
 }
 function compareClassificationFrames(left,right){
   const a=left.frame||{},b=right.frame||{};
@@ -2318,8 +2459,8 @@ function analysis(result){
   if(!state.overallResult||compareClassificationFrames(result,state.overallResult)>=0){
     ui.resultJson.dataset.interfaceCopy="false";
     ui.resultJson.textContent=consoleJson(result);
+    state.overallResult=result;
   }
-  renderOverallDescription(result);
   if(result.analysis_kind==="face_recognition"){
     if(state.overallResult&&compareClassificationFrames(result,state.overallResult)<0)
       logFace(result,summarizeFaces(result));
@@ -2581,6 +2722,7 @@ function renderArchive(){
   $("archive-more").hidden=!archiveView.next;
 }
 async function loadEventArchive(append=false){
+  if(!channelSurfaceActive())return;
   if(archiveView.loading){archiveView.reload=true;return}
   archiveView.loading=true;
   try{
@@ -2675,26 +2817,69 @@ if(!cameraAllowed){
 }
 let events=null;
 const diagnosticResults=new Map();
-async function pollDiagnosticResults(){
-  if(sceneView.closed||globalThis.GoodvisionDiagnostic&&globalThis.GoodvisionDiagnosticView&&!["results","diagnostics"].includes(globalThis.GoodvisionDiagnosticView))return;
-  if(!document.hidden&&(["events","outputs"].includes(globalThis.GoodvisionConsole?.currentPage())||
-    !globalThis.GoodvisionFleet?.detailHidden?.())){
+let diagnosticVlmReport=null;
+function renderQuickTaskJudgment(status,report,message,running=state.running,retry=""){
+  const target=$("vlm-current-observation"),grid=$("task-judgment-cards"),meta=$("task-judgment-meta");
+  const cards=globalThis.GoodvisionCameraDisplay.taskObservationItems(status,report,{running});
+  const existing=new Map([...grid.children].map(item=>[item.dataset.eventLabel,item]));
+  const nodes=cards.map(card=>{
+    const item=existing.get(card.label)||document.createElement("div");
+    item.dataset.eventLabel=card.label;item.dataset.state=card.state;
+    item.className="task-judgment-card "+card.state;
+    if(!item.children.length)item.append(document.createElement("span"),document.createElement("strong"));
+    item.children[0].textContent=card.name;item.children[1].textContent=card.text;
+    return item;
+  });
+  if(nodes.length!==grid.children.length||nodes.some((node,index)=>node!==grid.children[index]))grid.replaceChildren(...nodes);
+  const hasResult=cards.some(card=>["detected","clear","uncertain"].includes(card.state));
+  target.textContent=message;target.hidden=hasResult;
+  const age=hasResult?Math.max(0,(Date.now()-Date.parse(report?.emitted_at))/1000):null;
+  meta.textContent=(hasResult?(Number.isFinite(age)?age.toFixed(1)+" 秒前":"已更新"):"")+(retry?" · "+retry:"");
+}
+async function pollQuickTaskJudgment(){
+  let parentRow=null;
+  try{parentRow=window.parent!==window?window.parent.GoodvisionFleet?.app?.rows?.get(globalThis.GoodvisionDiagnosticCameraId):null;}catch(_){}
+  if(parentRow){
+    const status=parentRow.status||state.diagnosticStatus||{};
+    const running=parentRow.status?["starting","running","stopping","draining"].includes(status.analysis_state||status.pipeline_state):state.running;
+    renderQuickTaskJudgment(status,parentRow.vlmReport,parentRow.vlmEvents.textContent,running,parentRow.vlmRetry);return;
+  }
+  const target=$("vlm-current-observation"),session=state.sessionId,status=state.diagnosticStatus||{},workflowSession=status.workflow?.stream_session_id;
+  const taskResults=globalThis.GoodvisionCameraDisplay,labels=taskResults.taskEventLabels(status);
+  if(!state.running||status.workflow_test_running||labels?.length===0||!status.vlm?.independent&&labels===null){
+    diagnosticVlmReport=null;
+    const message=!state.running?(session?"任务已停止":"等待开始分析"):status.workflow_test_running?"工作流测试中，请查看工作流输出":
+      labels===null?"正在读取任务配置":"当前任务未启用实时事件判断";
+    renderQuickTaskJudgment(status,null,message);return;
+  }
+  if(diagnosticVlmReport?.stream_session_id!==session){diagnosticVlmReport=null;renderQuickTaskJudgment(status,null,"等待首次任务判断");}
+  const current=()=>!sceneView.closed&&state.running&&state.sessionId===session&&
+    state.diagnosticStatus?.workflow?.stream_session_id===workflowSession&&!state.diagnosticStatus?.workflow_test_running;
+  const request=async path=>{
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
     try{
-      let parentRow=null;
-      try{parentRow=window.parent!==window?window.parent.GoodvisionFleet?.app?.rows?.get(globalThis.GoodvisionDiagnosticCameraId):null;}catch(_){}
-      if(parentRow){$("vlm-current-observation").textContent=parentRow.vlmEvents.textContent;}
-      else if(state.diagnosticStatus?.vlm?.independent){
-        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
-        try{
-          const response=await fetch("/v1/vlm/results/latest?allow_empty=true",{cache:"no-store",signal:controller.signal});
-          if(response.ok&&response.status!==204){const result=await response.json();
-            if(result.stream_session_id===state.sessionId)$("vlm-current-observation").textContent=
-              globalThis.GoodvisionCameraDisplay?.eventObservationSummary?.(result)||"等待事件判断";}
-        }finally{clearTimeout(timer);}
-      }
-    }catch(_){}
+      const response=await fetch("/v1/"+path.slice(1),{cache:"no-store",signal:controller.signal});
+      if(response.status===204||response.status===404)return null;
+      if(!response.ok)throw new Error("HTTP "+response.status);
+      return await response.json();
+    }finally{clearTimeout(timer);}
+  };
+  const {report,retry}=await taskResults.readTaskObservation({...status,stream_session_id:session},request,diagnosticVlmReport);
+  if(!current())return;
+  diagnosticVlmReport=report;
+  const message=((report?taskResults.eventObservationSummary(report):"等待首次任务判断")||"等待任务判断")+(retry?" · "+retry:"");
+  renderQuickTaskJudgment(status,report,message,state.running,retry);
+}
+async function pollDiagnosticResults(){
+  if(sceneView.closed||globalThis.GoodvisionDiagnostic&&globalThis.GoodvisionDiagnosticView&&!["results","insights","diagnostics"].includes(globalThis.GoodvisionDiagnosticView))return;
+  if(channelSurfaceActive()&&!document.hidden&&(["events","outputs"].includes(globalThis.GoodvisionConsole?.currentPage())||
+    !globalThis.GoodvisionFleet?.detailHidden?.())){
     let received=false,unavailable=false;
-    for(const feature of ["overall",...detectionEvents]){
+    if(globalThis.GoodvisionDiagnosticView==="insights"){
+      await pollQuickTaskJudgment();
+      ({received,unavailable}=await pollOverallDescription());
+    }
+    for(const feature of globalThis.GoodvisionDiagnosticView==="insights"?[]:["overall",...detectionEvents]){
       if(sceneView.closed)break;
       const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
       try{
@@ -2714,7 +2899,8 @@ async function pollDiagnosticResults(){
 async function connectResultEvents(){
   // Each open lane uses finite requests so N panels cannot exhaust the
   // browser's per-origin HTTP connection limit with persistent event streams.
-  if(globalThis.GoodvisionDiagnostic||globalThis.GoodvisionFleet?.app){await pollDiagnosticResults();return;}
+  if(globalThis.GoodvisionConsoleManaged&&!globalThis.GoodvisionDiagnostic||globalThis.GoodvisionFleet?.app)return;
+  if(globalThis.GoodvisionDiagnostic){await pollDiagnosticResults();return;}
   let after=0;
   try{
     const latest=await fetch("/v1/results/latest",{cache:"no-store"});
@@ -2728,6 +2914,9 @@ async function connectResultEvents(){
     try{analysis(JSON.parse(event.data))}catch(_){say("Invalid AnalysisResult JSON.",true)}
   })
 }
+window.addEventListener("goodvision:language",()=>{
+  if(globalThis.GoodvisionDiagnosticView==="insights"||state.workflowSummaryKey)renderOverallDescription(null);
+});
 window.addEventListener("beforeunload",()=>{
   sceneView.closed=true;stopScenePolling();
   if(archiveView.stream)archiveView.stream.close();
@@ -2741,9 +2930,10 @@ document.addEventListener("visibilitychange",()=>{
 });
 mode("stream");info().finally(loadDeploymentSettings);status().finally(connectResultEvents);setInterval(status,2000);
 loadRoutes();setInterval(loadRoutes,1500);
-loadEventArchive();
+if(globalThis.GoodvisionDiagnostic&&globalThis.GoodvisionDiagnosticView==="events")loadEventArchive();
 setInterval(()=>{
-  if(!document.hidden&&!sceneView.closed&&!archiveView.loading&&
+  if(globalThis.GoodvisionDiagnostic&&globalThis.GoodvisionDiagnosticView==="events"&&channelSurfaceActive()&&
+    !document.hidden&&!sceneView.closed&&!archiveView.loading&&
     (globalThis.GoodvisionConsole?.currentPage()==="events"||!globalThis.GoodvisionFleet?.detailHidden?.()))loadEventArchive();
 },5000);
 </script>
@@ -2756,11 +2946,13 @@ setInterval(()=>{
   const doc=root.document;
   const pages=[...doc.querySelectorAll("[data-console-page]")];
   const links=[...doc.querySelectorAll("[data-console-go]")];
-  const names={overview:"实时工作台",workflows:"工作流",capabilities:"能力与规则",events:"事件与回放",outputs:"输出与集成",settings:"部署与设置"};
+  const names={overview:"实时工作台",workflows:"工作流",capabilities:"人员与能力",events:"事件与回放",outputs:"输出与集成",settings:"部署与设置"};
   let current="overview",app=null,signature="";
   const picker=doc.getElementById("console-output-camera");
   const note=doc.getElementById("console-output-note");
   const copyStatus=doc.getElementById("console-copy-status");
+  const eventPicker=doc.getElementById("console-event-camera"),eventNote=doc.getElementById("console-event-note"),eventHost=doc.getElementById("console-event-view");
+  let eventFrame=null,eventAddress="";
   const paths=[...doc.querySelectorAll("[data-output-path]")];
   const outputLinks=[...doc.querySelectorAll("[data-output-link]")];
   const copyButtons=[...doc.querySelectorAll("[data-output-copy]")];
@@ -2779,7 +2971,7 @@ setInterval(()=>{
     }
     doc.getElementById("console-breadcrumb").textContent=names[name];
     // Switching pages never restarts video or replaces control elements.
-    if(name!=="overview"&&root.GoodvisionFleet?.app?.ui["detail-console"]&&!root.GoodvisionFleet.app.ui["detail-console"].hidden){
+    if(name!=="settings"&&root.GoodvisionFleet?.app?.ui["detail-console"]&&!root.GoodvisionFleet.app.ui["detail-console"].hidden){
       root.GoodvisionFleet.app.showDetail(false);
     }
     if(focus){
@@ -2792,6 +2984,7 @@ setInterval(()=>{
       }
     }
     if(name==="outputs")renderOutputs();
+    if(name==="events")renderEvents();
   }
   function navigate(name,target=""){
     if(!Object.hasOwn(names,name))return;
@@ -2821,6 +3014,24 @@ setInterval(()=>{
     note.textContent=!app?.metadataOk?"暂时无法确认通道信息，请等待服务连接恢复。":camera?
       camera.label+" · 接口由当前服务提供；尚无视频或分析结果时，接口可能返回等待或暂无数据。":"暂无已部署的视频通道。";
   }
+  function renderEvents(){
+    const camera=app?.fleet?.cameras.find(item=>item.id===eventPicker.value&&item.enabled);
+    const address=app?.metadataOk===true&&camera?safeAddress(camera.diagnostics_url):null;
+    if(!address){
+      eventHost.replaceChildren();eventFrame=null;eventAddress="";
+      eventNote.textContent=!app?.metadataOk?"暂时无法确认通道信息，请等待服务连接恢复。":"该通道暂未提供事件回放入口。";return;
+    }
+    const url=new URL(address);url.searchParams.set("view","events");
+    if(eventAddress!==url.href){
+      eventFrame=doc.createElement("iframe");eventFrame.title=camera.label+" 事件回放";eventFrame.src=url.href;
+      eventHost.replaceChildren(eventFrame);eventAddress=url.href;
+    }
+    eventNote.textContent=camera.label+" · 事件记录与视频证据均来自此通道。";
+  }
+  function openEvents(cameraId){
+    if(app?.fleet?.cameras.some(camera=>camera.id===cameraId&&camera.enabled))eventPicker.value=cameraId;
+    navigate("events");
+  }
   function sync(fleetApp){
     app=fleetApp;
     if(!app?.fleet)return;
@@ -2833,25 +3044,54 @@ setInterval(()=>{
         option.textContent=camera.label+(camera.enabled?"":" · 未启用");return option;
       }));
       picker.value=cameras.some(camera=>camera.id===selected)?selected:cameras[0]?.id||"";
+      const eventSelected=eventPicker.value;
+      eventPicker.replaceChildren(...cameras.map(camera=>{
+        const option=doc.createElement("option");option.value=camera.id;option.disabled=!camera.enabled;
+        option.textContent=camera.label+(camera.enabled?"":" · 未启用");return option;
+      }));
+      eventPicker.value=cameras.some(camera=>camera.id===eventSelected&&camera.enabled)?eventSelected:cameras.find(camera=>camera.enabled)?.id||"";
     }
     const rows=[...app.rows.values()];
     const known=app.metadataOk&&rows.every(row=>row.status&&!row.unreachable);
-    doc.getElementById("console-connected").textContent=known?String(rows.filter(row=>row.status.connected===true||row.status.connection_state==="connected").length):"—";
+
     const states={idle:"等待开始分析",starting:"正在开始分析",running:"分析运行中",stopping:"正在停止分析",draining:"正在完成剩余分析",error:"分析状态异常",unknown:"正在确认状态"};
-    doc.getElementById("console-analysis").textContent=app.metadataOk?(states[app.fleet.analysis?.state]||"正在确认状态"):"服务连接中断";
+
     if(current==="outputs")renderOutputs();
+    if(current==="events")renderEvents();
   }
-  root.GoodvisionConsole={currentPage:()=>current,navigate,sync,safeAddress,formatJson:consoleJson};
+  root.GoodvisionConsole={currentPage:()=>current,navigate,openEvents,sync,safeAddress,formatJson:consoleJson};
   if(root.GoodvisionDiagnostic){
-    // Diagnostic documents retain per-camera output, event and buffer controls.
-    for(const page of pages)page.hidden=!["events","outputs"].includes(page.dataset.consolePage);
-    for(const element of doc.querySelectorAll(".output-scope-note"))element.textContent="以下设置与输出均对应当前摄像头。";
+    // Move existing sections so their bound controls and lane-scoped state survive.
+    // Hidden source/settings sections remain in the document for legacy bindings.
+    const views={
+      results:{title:"实时结果",sections:["diagnostic-result-error","live-result-log"]},
+      insights:{title:"全画面描述与任务实时判断",sections:["overall-summary","task-live-judgment"]},
+      events:{title:"事件回放",sections:["scene-panel","event-archive-panel"]},
+      diagnostics:{title:"服务诊断",sections:["connection-diagnostics","output-metrics","runtime-data-panels","scene-diagnostics","face-diagnostics-panel"]},
+      camera:{title:"本机摄像头",sections:["local-camera-panel","analysis-workspace"]}
+    };
+    const configuredView=root.GoodvisionDiagnosticView;
+    const query=new URLSearchParams(root.location.search||""),baseView=configuredView??query.get("view");
+    const requestedView=baseView==="results"&&query.get("surface")==="insights"?"insights":baseView;
+    const view=Object.hasOwn(views,requestedView)?requestedView:"diagnostics";
+    root.GoodvisionDiagnosticView=view;
+    current=view==="events"?"events":"overview";
+    doc.body.dataset.diagnosticView=view;
+    for(const page of pages)page.hidden=true;
+    doc.getElementById("fleet-detail-console").hidden=true;
+    const content=doc.createElement("div");content.id="diagnostic-content";
+    content.setAttribute("aria-label",views[view].title);
+    for(const id of views[view].sections){const section=doc.getElementById(id);if(section)content.append(section);}
+    doc.getElementById("console-main").append(content);
     doc.getElementById("event-history-title").textContent="本路事件记录";
     doc.querySelector("[aria-labelledby='event-history-title'] > .note").textContent="查看当前通道的连续事件与视频证据。";
+    if(view==="camera")doc.getElementById("camera-mode").onclick?.();
+    if(view==="events"&&!configuredView)root.loadEventArchive?.();
     return;
   }
   for(const link of links)link.addEventListener("click",()=>navigate(link.dataset.consoleGo,link.dataset.consoleTarget));
   root.addEventListener("hashchange",()=>show(root.location.hash.slice(1),{focus:true}));
+  eventPicker.addEventListener("change",renderEvents);
   picker.addEventListener("change",()=>{copyStatus.textContent="";renderOutputs();});
   for(const button of copyButtons)button.addEventListener("click",async()=>{
     const address=addresses.get(button.dataset.outputCopy);if(!address)return;
@@ -2866,6 +3106,112 @@ setInterval(()=>{
   show(root.location.hash.slice(1));
   if(root.GoodvisionFleet?.app)sync(root.GoodvisionFleet.app);
 })(globalThis);
+</script>
+<script id="console-sections-script">
+/* Keep service controls mounted while arranging the settings page by task. */
+(function(root){
+  "use strict";
+  const sections=[
+    {key:"analysis",title:"分析服务",description:"选择事件分析的运行位置与服务连接。"},
+    {key:"tracking",title:"人物追踪",description:"配置追踪服务、视频容量与采样帧率。"},
+    {key:"video",title:"视频默认值",description:"设置默认视频源与摄像头画面类型。"},
+    {key:"credentials",title:"凭据",description:"云端 API 的密钥在此单独保存。"},
+    {key:"startup",title:"启动与测试",description:"设置启动行为与分析测试模式。"}
+  ];
+
+  function organizeSettings(doc,{diagnostic=root.GoodvisionDiagnostic===true}={}){
+    if(diagnostic||!doc)return false;
+    const page=doc.getElementById("console-settings"),panel=page?.querySelector(".deployment-panel");
+    if(!panel||panel.dataset.settingsOrganized==="true")return false;
+    const grid=panel.querySelector(".deployment-grid"),fields=grid?.querySelector(".deployment-fields"),options=grid?.querySelector(".deployment-options");
+    if(!grid||!fields||!options)return false;
+    const byId=id=>doc.getElementById(id);
+    const make=(tag,className,text)=>{
+      const element=doc.createElement(tag);if(className)element.className=className;
+      if(text)element.textContent=text;return element;
+    };
+    const group=new Map(),index=make("nav","settings-index");
+    index.setAttribute("aria-label","部署设置分组");
+    for(const section of sections){
+      const card=make("section","settings-section");card.id="settings-"+section.key;
+      const heading=make("h3","settings-section-title",section.title);heading.id=card.id+"-title";
+      card.setAttribute("aria-labelledby",heading.id);card.setAttribute("tabindex","-1");
+      card.append(heading,make("p","note settings-section-description",section.description));
+      const body=make("div","settings-section-body");card.append(body);group.set(section.key,body);
+      const link=make("a","settings-index-link",section.title);link.href="#"+card.id;
+      // Console routes use the URL hash. A section jump must keep #settings intact.
+      link.addEventListener("click",event=>{
+        event.preventDefault();card.focus({preventScroll:true});card.scrollIntoView({block:"start",behavior:"smooth"});
+      });
+      index.append(link);grid.append(card);
+    }
+    function move(id,key,{label=false}={}){
+      const element=byId(id);if(!element)return null;
+      const node=label?element.closest("label")||element:element;
+      group.get(key).append(node);return node;
+    }
+    move("inference-mode","analysis",{label:true});
+    move("inference-server-fields","analysis");
+
+    move("tracking-mode","tracking",{label:true});
+    move("cloud-gpu-panel","tracking");
+    move("tracking-server-fields","tracking");
+    move("tracking-sample-fps","tracking",{label:true});
+    move("tracking-sample-fps-help","tracking");
+    // These hidden compatibility inputs must keep their shared hidden wrapper.
+    const legacy=byId("local-inference-enabled");
+    if(legacy?.parentElement)group.get("tracking").append(legacy.parentElement);
+    move("processing-method-field","tracking");
+    move("richlabel-model-field","tracking");
+    move("richlabel-model-note","tracking");
+    move("local-gpu-status","tracking");
+    move("local-gpu-help","tracking");
+
+    move("default-stream-url","video",{label:true});
+    move("default-stream-status","video");
+    move("default-camera-layout","video",{label:true});
+
+    // Keep the conditional cloud wrapper intact: the existing controller owns
+    // its visibility, and already-bound key save/clear handlers remain attached.
+    const cloud=move("cloud-model-settings","credentials"),clear=byId("clear-api-key-button");
+    if(cloud&&clear){
+      const actions=byId("save-api-key-button")?.parentElement;
+      const help=actions?[...actions.children].filter(element=>element!==byId("save-api-key-button")):[];
+      (actions||cloud).append(clear,...help);
+    }
+
+    const dryRun=byId("default-dry-run")?.closest("label");
+    const dryRunHelp=dryRun?.nextElementSibling;
+    move("default-dry-run","startup",{label:true});
+    if(dryRunHelp?.classList.contains("secret-status"))group.get("startup").append(dryRunHelp);
+    move("default-autostart","startup",{label:true});
+    move("deployment-source-status","startup");
+
+    // Preserve additions from other versions rather than dropping bound nodes.
+    // The old generic column caption is replaced by the five specific headings.
+    for(const element of [...fields.children])group.get("tracking").append(element);
+    for(const element of [...options.children]){
+      if(element.classList.contains("metric-label"))element.remove();
+      else group.get("startup").append(element);
+    }
+    fields.remove();options.remove();
+    grid.classList.add("settings-sections");
+    panel.insertBefore(index,grid);
+    const footer=byId("save-deployment-button")?.parentElement;
+    if(footer){
+      footer.classList.add("settings-save-actions");panel.insertBefore(footer,grid);
+      const note=byId("deployment-note");if(note)footer.append(note);
+    }
+    panel.dataset.settingsOrganized="true";
+    return true;
+  }
+
+  const api={organizeSettings};
+  if(typeof module!=="undefined"&&module.exports)module.exports=api;
+  root.GoodvisionConsoleSections=api;
+  if(root.document&&!root.GoodvisionDiagnostic)organizeSettings(root.document);
+})(typeof globalThis!=="undefined"?globalThis:this);
+
 </script>
 <script src="/assets/workflow_canvas.js"></script>
 </body>

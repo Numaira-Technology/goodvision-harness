@@ -108,19 +108,19 @@ test("VLM health distinguishes recent success, incomplete labels and a failed at
   view.app.close();
 });
 
-test("each lane owns its diagnostic document; closing one leaves the others open",async()=>{
+test("channel views stay scoped and leaving one releases only its document",async()=>{
   const view=fixture({count:37});await view.app.refresh();
   for(const id of ["camera01","camera02","camera37"]){
-    const row=view.app.rows.get(id);row.diagnostics.onclick();
-    assert.equal(row.diagnosticsFrame.src,"/v1/fleet/cameras/"+id+"/diagnostics");
+    const row=view.app.rows.get(id);await row.diagnostics.onclick();
+    assert.equal(row.diagnosticsFrame.src,"/v1/fleet/cameras/"+id+"/diagnostics?view=diagnostics");
     assert.equal(row.diagnosticsPanel.hidden,false);
-    assert.equal(row.diagnostics.attributes["aria-expanded"],"true");
+    assert.equal(row.diagnostics.attributes["aria-selected"],"true");
   }
   const second=view.app.rows.get("camera02"),first=view.app.rows.get("camera01");
-  const original=first.diagnosticsFrame;second.diagnostics.onclick();
+  const original=first.diagnosticsFrame;await view.app.selectTool(second,"tasks");
   assert.equal(second.diagnosticsFrame,null);assert.equal(second.diagnosticsPanel.children.length,0);
   assert.equal(first.diagnosticsFrame,original);
-  second.camera.diagnostics_url=null;second.diagnostics.onclick();
+  second.camera.diagnostics_url=null;await second.diagnostics.onclick();
   assert.equal(second.diagnosticsFrame,null);assert.match(second.error,/诊断入口/);
   view.app.close();assert.equal(first.diagnosticsFrame,null);
 });
@@ -334,7 +334,7 @@ test("single-camera mode still uses explicit global analysis controls",async()=>
   assert.equal(await view.app.analysis("stop"),true);assert.equal(row.stop.disabled,false);
 });
 
-test("each card loads and saves its own preferences, catalog, status, results and scene",async()=>{
+test("each task panel loads and saves only its own preferences and catalog",async()=>{
   const view=fixture();view.prefs.get("camera02").features=["smoking","stranger"];
   await view.app.refresh();view.app.add();const first=view.app.rows.get("camera01"),second=view.app.rows.get("camera02");
   assert.equal(second.detail.hidden,false);await view.app.toggleDetail(second);
@@ -342,8 +342,8 @@ test("each card loads and saves its own preferences, catalog, status, results an
   assert.equal(second.features.get("fight").checked,false);assert.equal(second.features.get("stranger").checked,true);
   assert.equal(second.sensitivities.get("smoking").select.value,"high");
   assert.match(second.sensitivities.get("smoking").note.textContent,/动作和上下文/);
-  assert.match(second.resultJson.textContent,/camera02/);assert.match(second.sceneJson.textContent,/camera02/);
-  assert.match(second.detailSummary.textContent,/视频未连接/);assert.equal(first.prefsLoaded,false);
+  assert.equal(second.diagnosticsFrame,null);assert.equal(first.prefsLoaded,false);
+  assert.equal(view.requests.some(request=>request.url.endsWith("/results/latest")||request.url.endsWith("/scene")),false);
   second.features.get("fall").checked=true;second.features.get("fall").onchange();
   second.sensitivities.get("smoking").select.value="standard";second.sensitivities.get("smoking").select.onchange();
   assert.equal(await view.app.savePreferences(second),true);
@@ -388,11 +388,11 @@ test("global requests immediately lock connection controls, and unknown peer sta
   assert.equal(view.app.ui["analysis-start"].disabled,true);
 });
 
-test("expanded camera details poll only their own result endpoints and sanitize arbitrary text",async()=>{
+test("task panels avoid result polling and reject unsafe endpoint metadata",async()=>{
   const view=fixture({count:24});await view.app.refresh();const row=view.app.rows.get("camera16");
   await view.app.toggleDetail(row);view.requests.length=0;await view.app.pollStatus();
   const detailRequests=view.requests.filter(request=>request.url.endsWith("/results/latest")||request.url.endsWith("/scene"));
-  assert.equal(detailRequests.length,2);assert.ok(detailRequests.every(request=>request.url.includes("camera16")));
+  assert.equal(detailRequests.length,0);
   const normalized=normalizeFleet({analysis_start_url:"//evil/start",analysis_stop_url:"https://evil/stop",cameras:[{id:"x",detail_url:"//evil/detail",results_url:"https://evil/results",scene_url:"/\\evil/scene"}]});
   assert.equal(normalized.analysisStartUrl,null);assert.equal(normalized.analysisStopUrl,null);
   assert.equal(normalized.cameras[0].detail_url,null);assert.equal(normalized.cameras[0].results_url,null);assert.equal(normalized.cameras[0].scene_url,null);
@@ -491,5 +491,194 @@ test("refreshing presets updates clean open channels without replacing another c
   await view.app.refreshPresets();
   assert.equal(first.features.get("fight"),draft);assert.equal(draft.checked,false);
   assert.deepEqual([...second.features.keys()],["smoking"]);
+  view.app.close();
+});
+
+
+test("video side panels stay exposed while tasks and diagnostics preserve independent state",async()=>{
+  const view=fixture({count:2});await view.app.refresh();view.app.add();const row=view.app.rows.get("camera02");
+  const insights=row.insightsFrame;assert.equal(insights.src,row.camera.diagnostics_url+"?view=results&surface=insights");
+  assert.equal(row.toolButtons.has("results"),true);assert.equal(row.toolButtons.has("events"),false);
+  row.input.value="rtsp://draft/live";await view.app.selectTool(row,"tasks");
+  row.features.get("fight").checked=false;row.features.get("fight").onchange();
+  await view.app.selectTool(row,"results");
+  assert.equal(row.diagnosticsFrame.src,row.camera.diagnostics_url+"?view=results");
+  assert.equal(row.insightsFrame,insights);
+  assert.equal(row.diagnosticsPanel.dataset.view,"results");
+  const results=row.diagnosticsFrame;
+  await view.app.selectTool(row,"diagnostics");
+  assert.notEqual(row.diagnosticsFrame,results);
+  assert.equal(row.diagnosticsFrame.src,row.camera.diagnostics_url+"?view=diagnostics");
+  assert.equal(row.insightsFrame,insights);assert.equal(row.detailPanel.hidden,true);
+  assert.equal([...row.toolButtons.values()].filter(button=>button.attributes["aria-selected"]==="true").length,1);
+  await view.app.selectTool(row,"tasks");
+  assert.equal(row.diagnosticsFrame,null);assert.equal(row.features.get("fight").checked,false);assert.equal(row.prefsDirty,true);
+  assert.equal(row.input.value,"rtsp://draft/live");assert.equal(row.detailPanel.hidden,false);
+  view.app.close();assert.equal(row.insightsFrame,null);
+});
+
+test("playback changes use only the selected lane and remain available during analysis",async()=>{
+  const view=fixture({count:2});await view.app.refresh();const row=view.app.rows.get("camera02"),actual=view.app.fetch;
+  let delay=2.5;
+  view.app.fetch=async(url,options={})=>{
+    if(url===view.app.playbackUrl(row)){
+      view.requests.push({url,method:options.method||"GET",body:options.body&&JSON.parse(options.body)});
+      if(options.method==="PUT")delay=JSON.parse(options.body).buffer_delay_seconds;
+      return {ok:true,json:async()=>({buffer_delay_seconds:delay})};
+    }
+    return actual(url,options);
+  };
+  view.data.analysis.state="running";
+  await view.app.selectTool(row,"playback");assert.equal(row.bufferInput.value,"2.5");
+  row.bufferInput.value="8";row.bufferInput.oninput();await view.app.selectTool(row,"input");await view.app.selectTool(row,"playback");
+  assert.equal(row.bufferInput.value,"8");await view.app.savePlayback(row);
+  assert.equal(delay,8);assert.deepEqual(view.requests.at(-1).body,{buffer_delay_seconds:8});
+  assert.equal(view.requests.at(-1).url,"/v1/fleet/cameras/camera02/deployment/settings");
+  const count=view.requests.length;for(const invalid of ["","-1","31","oops"]){row.bufferInput.value=invalid;await view.app.savePlayback(row);}
+  assert.equal(view.requests.length,count);assert.match(row.bufferNote.textContent,/0–30/);
+  row.bufferInput.value="4";view.app.fetch=async()=>{throw Error("offline");};await view.app.savePlayback(row);
+  assert.equal(row.bufferInput.value,"4");assert.equal(row.bufferDirty,false);assert.equal(row.bufferSave.disabled,false);assert.match(row.bufferNote.textContent,/offline/);
+});
+
+test("tabs support keyboard selection and keep one focusable tab per channel",async()=>{
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  let prevented=false;row.toolButtons.get("input").onkeydown({key:"ArrowRight",preventDefault:()=>{prevented=true;}});
+  assert.equal(prevented,true);assert.equal(row.tool,"tasks");assert.equal(row.detail.focused,true);
+  assert.equal([...row.toolButtons.values()].filter(button=>button.tabIndex===0).length,1);
+  row.detail.onkeydown({key:"Home",preventDefault(){}});assert.equal(row.tool,"input");
+});
+
+
+test("opening video input exits compact monitoring so source fields and connect actions are reachable",async()=>{
+  const view=fixture({count:2});await view.app.refresh();view.app.add();const row=view.app.rows.get("camera02");
+  view.app.compact=true;view.app.update();await view.app.selectTool(row,"input");
+  assert.equal(view.app.compact,false);assert.equal(row.sourcePanel.hidden,false);assert.notEqual(row.start.hidden,true);
+});
+
+
+test("connecting without a source opens its input tab before focusing the error",async()=>{
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  await view.app.selectTool(row,"tasks");assert.equal(await view.app.start(row),false);
+  assert.equal(row.tool,"input");assert.equal(row.sourcePanel.hidden,false);assert.equal(row.input.focused,true);
+});
+
+
+test("only visible monitoring channels own one results document and compact view releases it",async()=>{
+  const view=fixture({count:24});await view.app.refresh();
+  assert.equal([...view.app.rows.values()].filter(row=>row.insightsFrame).length,1);
+  view.app.add();assert.equal([...view.app.rows.values()].filter(row=>row.insightsFrame).length,2);
+  view.app.compact=true;view.app.update();assert.equal([...view.app.rows.values()].filter(row=>row.insightsFrame).length,0);
+  view.app.compact=false;view.app.update();assert.equal([...view.app.rows.values()].filter(row=>row.insightsFrame).length,2);
+  const row=view.app.rows.get("camera02");view.app.remove(row);assert.equal(row.insightsFrame,null);
+});
+
+test("quick task judgments retain only completed current-session returns through retries",async(t)=>{
+  const previous=global.GoodvisionCameraDisplay;
+  global.GoodvisionCameraDisplay=require("../src/goodvision_harness/camera_display.js");
+  t.after(()=>{global.GoodvisionCameraDisplay=previous;});
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  row.status={analysis_state:"running",stream_session_id:"task-a",vlm:{independent:true}};
+  const completed={type:"vlm_report",state:"completed",stream_session_id:"task-a",judgments:[{event_label:"smoking",observed_detected:true,detected:null}]};
+  let report=completed;view.app.request=async url=>{assert.match(url,/camera01\/vlm\/results\/latest\?allow_empty=true$/);return report;};
+  await view.app.pollVlm(row);assert.equal(row.vlmReport,completed);assert.match(row.vlmEvents.textContent,/吸烟：发现/);
+  report={...completed,state:"failed",judgments:[]};await view.app.pollVlm(row);
+  assert.equal(row.vlmReport,completed);assert.match(row.vlmEvents.textContent,/吸烟：发现.*正在重试/);
+  view.app.request=async()=>{throw Error("offline");};await view.app.pollVlm(row);
+  assert.match(row.vlmEvents.textContent,/吸烟：发现.*更新延迟/);
+  row.status={...row.status,stream_session_id:"task-b"};
+  view.app.request=async()=>{throw Object.assign(Error("not ready"),{httpStatus:404});};
+  await view.app.pollVlm(row);assert.equal(row.vlmReport,null);assert.equal(row.vlmEvents.textContent,"等待首次任务判断");
+  row.status.analysis_state="idle";await view.app.pollVlm(row);assert.equal(row.vlmEvents.textContent,"任务已停止");
+  row.status.analysis_state="running";row.status.vlm.independent=false;row.status.features=["stranger"];await view.app.pollVlm(row);
+  assert.equal(row.vlmEvents.textContent,"当前任务未启用实时事件判断");view.app.close();
+});
+
+test("a late quick-result failure cannot replace a newer task's state",async()=>{
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  row.status={analysis_state:"running",stream_session_id:"old-task",vlm:{independent:true}};
+  let reject;view.app.request=()=>new Promise((_,fail)=>{reject=fail;});
+  const pending=view.app.pollVlm(row);
+  row.generation++;row.status={...row.status,stream_session_id:"new-task"};row.vlmEvents.textContent="新任务等待返回";
+  reject(Error("old request failed"));await pending;assert.equal(row.vlmEvents.textContent,"新任务等待返回");view.app.close();
+});
+
+test("canvas native events render while the independent VLM worker is disabled",async()=>{
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  row.status={analysis_state:"running",pipeline_state:"running",stream_session_id:"canvas-task",features:["smoking","fight","stranger"],
+    person_tracking_enabled:false,workflow:{enabled:true},vlm:{independent:false,state:"disabled"},
+    pipeline:{branches:{safety:{counts:{completed:17,failed:0}}}}};
+  const urls=[];view.app.request=async url=>{
+    urls.push(url);const feature=url.match(/\/results\/([^/]+)\/latest\?allow_empty=true$/)?.[1];assert.ok(feature);
+    return {type:"analysis_result",stream_session_id:"canvas-task",analysis_complete:false,missing_event_labels:["stranger"],
+      judgments:[{event_label:feature,detected:feature==="smoking",confidence:.95,description:"event branch return"}]};
+  };
+  await view.app.pollVlm(row);view.app.updateRow(row);
+  assert.deepEqual(urls.sort(),["/v1/fleet/cameras/camera01/results/fight/latest?allow_empty=true","/v1/fleet/cameras/camera01/results/smoking/latest?allow_empty=true"]);
+  assert.match(row.vlmEvents.textContent,/吸烟：发现/);assert.match(row.vlmEvents.textContent,/打架：未发现/);
+  assert.doesNotMatch(row.vlmEvents.textContent,/未启用|待确认|陌生人/);assert.match(row.vlmNote.textContent,/识别持续返回/);
+  row.status={...row.status,stream_session_id:"next-task"};
+  view.app.request=async()=>({type:"analysis_result",stream_session_id:"canvas-task",judgments:[{event_label:"smoking",detected:true}]});
+  await view.app.pollVlm(row);assert.equal(row.vlmReport,null);assert.equal(row.vlmEvents.textContent,"等待首次任务判断");
+  row.status.analysis_state="idle";await view.app.pollVlm(row);assert.equal(row.vlmEvents.textContent,"任务已停止");
+  view.app.close();
+});
+
+test("unknown event configuration waits instead of declaring the canvas task disabled",async()=>{
+  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+  row.status={analysis_state:"running",stream_session_id:"canvas-task",vlm:{independent:false}};
+  await view.app.pollVlm(row);assert.equal(row.vlmEvents.textContent,"正在读取任务配置");view.app.close();
+});
+
+
+test("missing task observations use quiet endpoints and accept empty 204 bodies",async()=>{
+  for(const independent of [false,true]){
+    const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
+    row.status={analysis_state:"running",stream_session_id:"new-task",features:["smoking"],vlm:{independent}};
+    const urls=[];view.app.fetch=async url=>{
+      urls.push(url);return {ok:true,status:204,json:async()=>{throw new Error("204 has no JSON body");}};
+    };
+    await view.app.pollVlm(row);
+    assert.deepEqual(urls,["/v1/fleet/cameras/camera01/"+(independent?"vlm/results/latest":"results/smoking/latest")+"?allow_empty=true"]);
+    assert.equal(row.vlmReport,null);assert.equal(row.vlmRetry,"");
+    assert.equal(row.vlmEvents.textContent,"等待首次任务判断");view.app.close();
+  }
+});
+
+
+test("network video recovery clears a startup failure even without tracking metrics",async(t)=>{
+  const previous=global.GoodvisionCameraDisplay;let callbacks;
+  global.GoodvisionCameraDisplay={...previous,NetworkController:class {
+    static supported(){return true;}constructor(options){callbacks=options;}start(){}stop(){}
+  }};
+  t.after(()=>{global.GoodvisionCameraDisplay=previous;});
+  const view=fixture({count:1});view.data.cameras[0].display_url="/v1/fleet/cameras/camera01/video/display/frames";
+  view.statuses.set("camera01",{connection_state:"connected",analysis_state:"idle"});
+  await view.app.refresh();const row=view.app.rows.get("camera01");await view.app.frame(row);
+  const normal="播放目标 15 帧/秒 · 画面与分析独立更新";
+  for(let attempt=0;attempt<2;attempt++){
+    callbacks.onFailure("实时画面暂不可用，正在重新获取。");assert.match(row.displayNote.textContent,/暂不可用/);
+    callbacks.onFrame({buffering:false,presented:true});
+    assert.equal(row.displayNote.textContent,normal);assert.equal(row.placeholder.hidden,true);
+    assert.equal(row.networkPreviewError,false);assert.equal(row.lastPresentedAt,100);
+    view.app.updateRow(row);assert.equal(row.displayNote.textContent,normal);
+  }
+  callbacks.onFailure("another connection error");view.app.releasePreview(row);
+  assert.equal(row.displayNote.textContent,normal);view.app.close();
+});
+
+test("managed tasks hide preserved manual choices and unassign restores the same controls",async()=>{
+  const view=fixture({count:1});const camera=view.data.cameras[0];
+  camera.workflow={group_name:"Summary only",group_id:"group-one"};
+  view.prefs.get(camera.id).features=["fight"];
+  await view.app.refresh();const row=view.app.rows.get(camera.id);await view.app.loadPreferences(row);
+  const controls=[...row.features.values()],choices=controls.map(input=>input.checked);
+  for(const element of [row.featureFields,row.sensitivityFields,row.prefsActions,row.prefsHelp])assert.equal(element.hidden,true);
+  assert.equal(row.workflowLink.hidden,false);
+  row.prefsDirty=true;const before=view.requests.length;
+  assert.equal(await view.app.savePreferences(row,true),true);assert.equal(view.requests.length,before);
+  camera.workflow=null;await view.app.refresh();
+  assert.deepEqual([...row.features.values()],controls);assert.deepEqual(controls.map(input=>input.checked),choices);
+  for(const element of [row.featureFields,row.sensitivityFields,row.prefsActions,row.prefsHelp])assert.equal(element.hidden,false);
+  assert.equal(row.workflowLink.hidden,true);assert.ok(controls.every(input=>!input.disabled));
   view.app.close();
 });

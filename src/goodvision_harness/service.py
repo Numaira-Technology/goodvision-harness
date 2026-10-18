@@ -1013,8 +1013,28 @@ class HarnessRuntime(WorkflowRuntimeMixin):
 
     def _replace_processing_method(
         self, method: str | None, *, config: HarnessConfig | None = None,
+        suppress_remote_config: bool = False,
+        baseline_scene_mode: str | None = None,
     ) -> None:
         """Detach the old plugin under its revision before creating another."""
+        requested_method = method
+        baseline = self._workflow_tracking_baseline
+        if baseline is not None and not suppress_remote_config:
+            # Global changes update the deployment baseline. Keep the managed
+            # graph's policy as a separate, reversible runtime override.
+            baseline = {
+                "rich_labeling": (
+                    config.rich_labeling if config is not None else replace(
+                        baseline["rich_labeling"], processing_method=method,
+                    )
+                ),
+                "scene_mode": baseline_scene_mode or baseline["scene_mode"],
+            }
+            config = self._workflow_tracking_configuration(
+                config or self.config, self._workflow_plan, baseline,
+            )
+            method = config.rich_labeling.processing_method
+            self._workflow_tracking_baseline = baseline
         with self._state_lock:
             previous_method = self._processing_method()
             self._rich_config_revision += 1
@@ -1032,12 +1052,18 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             self.config = config or replace(self.config, rich_labeling=replace(
                 self.config.rich_labeling, processing_method=method,
             ))
-            if (getattr(self, "_service_locations", ServiceLocations()).tracking_mode
-                    == "legacy" and self._remote_config is not None
-                    and not self._detector_model_headers()):
+            if (
+                not suppress_remote_config
+                and getattr(
+                    self, "_service_locations", ServiceLocations()
+                ).tracking_mode == "legacy"
+                and self._remote_config is not None
+                and not self._detector_model_headers()
+            ):
                 self._remote_config = replace(
                     self._remote_config, rich_labeling=replace(
-                        self._remote_config.rich_labeling, processing_method=method,
+                    self._remote_config.rich_labeling,
+                    processing_method=requested_method,
                     ),
                 )
             self._scene_mode = self.config.runtime.scene_mode
@@ -1117,8 +1143,19 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 or previous.rich_labeling != configuration.rich_labeling):
             self._replace_processing_method(
                 configuration.rich_labeling.processing_method, config=configuration,
+                baseline_scene_mode=configuration.runtime.scene_mode,
             )
         else:
+            baseline = self._workflow_tracking_baseline
+            if baseline is not None:
+                baseline = {
+                    "rich_labeling": configuration.rich_labeling,
+                    "scene_mode": configuration.runtime.scene_mode,
+                }
+                self._workflow_tracking_baseline = baseline
+                configuration = self._workflow_tracking_configuration(
+                    configuration, self._workflow_plan, baseline,
+                )
             self.config = configuration
         self._state.update(
             last_error=self.config_error,
@@ -1251,15 +1288,37 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     self._deployment_settings.processing_method
                     if self._deployment_settings is not None else None
                 )
+                processing_configuration = (
+                    local_configuration or rich_configuration or self.config
+                )
+                baseline = self._workflow_tracking_baseline
+                if baseline is not None and processing_configuration is not None:
+                    processing_configuration = replace(
+                        processing_configuration,
+                        rich_labeling=(
+                            processing_configuration.rich_labeling
+                            if local_configuration or rich_configuration
+                            else baseline["rich_labeling"]
+                        ),
+                        runtime=replace(
+                            processing_configuration.runtime,
+                            scene_mode=(
+                                processing_configuration.runtime.scene_mode
+                                if local_configuration is not None
+                                else baseline["scene_mode"]
+                            ),
+                        ),
+                    )
                 if "processing_method" in payload:
                     processing_method = validate_processing_method(
                         payload["processing_method"]
                     )
-                    prospective = local_configuration or rich_configuration
-                    methods = (processing_methods(prospective.rich_labeling)
-                               if prospective is not None
-                               and prospective.runtime.scene_mode == "active"
-                               else self._processing_methods())
+                    methods = (
+                        processing_methods(processing_configuration.rich_labeling)
+                        if processing_configuration is not None
+                        and processing_configuration.runtime.scene_mode == "active"
+                        else []
+                    )
                     if not any(item["id"] == processing_method and item["available"]
                                for item in methods):
                         raise ValueError("此部署暂不支持所选人物处理方式。")
@@ -1270,7 +1329,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     )
                 prospective = local_configuration or rich_configuration
                 if prospective is None and "processing_method" in payload:
-                    prospective = self.config
+                    prospective = processing_configuration
                 if prospective is not None:
                     if processing_method is not None:
                         prospective = replace(prospective, rich_labeling=replace(
@@ -1397,7 +1456,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             if (tracking_key_changed and self.config is not None
                     and self._rich_config_revision == tracking_revision
                     and is_contour_endpoint(self.config.rich_labeling.endpoint)):
-                self._replace_processing_method(self._processing_method())
+                baseline = self._workflow_tracking_baseline
+                self._replace_processing_method(
+                    baseline["rich_labeling"].processing_method
+                    if baseline is not None else self._processing_method(),
+                )
             if not buffer_only:
                 self._update_state(dry_run=self.dry_run)
         return self.deployment_settings()
@@ -1408,6 +1471,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         return {
             "protocol": 1, "transport": "websocket",
             "enabled": (self._scene_mode == "active" and self.config.rich_labeling.backend == "sam31_stream"
+                        and (self._workflow_plan is None
+                             or self._workflow_plan["tracking_enabled"])
                         and os.environ.get("LOCAL_CAMERA_DISPLAY_ENABLED", "false").lower() in {"1", "true", "yes"}),
             "metadata_url": "/v1/video/display/metadata", "metrics_url": "/v1/video/display/metrics",
             "target_fps": _env_bounded_int("LOCAL_CAMERA_TARGET_FPS", 15, 15, 30),
@@ -2057,6 +2122,14 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 self._video_connection.stop()
         return self.status()
 
+    def _independent_events_requested(
+        self, features: Collection[str], *, dry_run: bool,
+    ) -> bool:
+        return bool(
+            self._scene_enabled and self.config.runtime.scene_independent_vlm
+            and not dry_run and set(features).intersection(SAFETY_EVENT_LABELS)
+        )
+
     def prepare_analysis(self) -> dict[str, Any]:
         with self._control_lock:
             if self.config is None or self.config_error is not None or self._closed:
@@ -2069,6 +2142,17 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             if self._route_probe["state"] == "running":
                 raise RuntimeError("wait for the route check before starting analysis")
             features = self._workflow_choices()["features"]
+            tracking = bool(
+                self._workflow_plan is not None
+                and self._workflow_plan["tracking_enabled"]
+            )
+            if tracking:
+                capability = self.workflow_tracking_capability()
+                if not capability["configured"]:
+                    raise ValueError(capability["reason"])
+            independent_events = self._independent_events_requested(
+                features, dry_run=self.dry_run,
+            )
             if (not self.dry_run
                     and (any(item in SAFETY_EVENT_LABELS for item in features)
                          or bool(self._workflow_plan
@@ -2076,7 +2160,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
-        if features:
+        if tracking or (
+            features and self._workflow_plan is None and not independent_events
+        ):
             self._require_processing_ready()
         if not self.dry_run and "stranger" in features:
             self._ensure_face_runtime().warmup()
@@ -2102,6 +2188,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         event_sensitivities: Mapping[str, str] | None = None,
         camera_layout: str | None = None,
         _connection_id: str | None = None,
+        _tracking_only: bool = False,
     ) -> dict[str, Any]:
         if camera_layout is not None:
             validate_camera_layout(camera_layout)
@@ -2121,6 +2208,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             event_sensitivities=event_sensitivities,
             camera_layout=camera_layout,
             video_connection_id=_connection_id,
+            tracking_only=_tracking_only,
         )
 
     def start_camera(
@@ -2179,6 +2267,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         camera_owner: str | None = None,
         camera_layout: str | None = None,
         video_connection_id: str | None = None,
+        tracking_only: bool = False,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
@@ -2195,7 +2284,15 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             raise ValueError("features can only be used with analysis_mode=multi")
 
         if selected_analysis == MULTI_ANALYSIS_MODE:
-            selected_features = _normalize_features(features)
+            if tracking_only:
+                if (features not in ([], ()) or self._workflow_plan is None
+                        or not self._workflow_plan["tracking_enabled"]):
+                    raise ValueError(
+                        "tracking-only capture requires an enabled workflow tracker"
+                    )
+                selected_features = ()
+            else:
+                selected_features = _normalize_features(features)
             label = ",".join(selected_features)
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
         elif selected_analysis == FACE_ANALYSIS_MODE:
@@ -2217,18 +2314,25 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             label = label[:EVENT_LABEL_MAX_CHARS]
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
 
-        sensitivity_labels = selected_features or (label,)
+        sensitivity_labels = (
+            selected_features if selected_features is not None else (label,)
+        )
         if selected_analysis == EVENT_ANALYSIS_MODE and self.config.memory is not None:
             sensitivity_labels = ()
         selected_sensitivities = normalize_event_sensitivities(
             event_sensitivities, sensitivity_labels,
         )
 
-        independent_requested = (
-            self._scene_enabled and self.config.runtime.scene_independent_vlm
-            and not use_dry_run and bool(set(sensitivity_labels).intersection(SAFETY_EVENT_LABELS))
+        independent_requested = self._independent_events_requested(
+            sensitivity_labels, dry_run=use_dry_run,
         )
-        if independent_requested:
+        tracking_required = bool(
+            self._workflow_plan is not None
+            and self._workflow_plan["tracking_enabled"]
+        )
+        if (independent_requested and not tracking_required) or (
+            self._workflow_plan is not None and not tracking_required
+        ):
             # Availability of an optional tracker cannot gate event reporting.
             # Preserve the revision/ownership check below; its errors still matter.
             with self._control_lock:
@@ -3765,6 +3869,13 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         now = time.monotonic()
         if now - last_frame > self.settings.ready_max_frame_age_seconds:
             return False, "frame_stale"
+        plan = self._workflow_plan
+        if plan is not None and plan["tracking_enabled"] and not plan["features"]:
+            metadata = self._camera_display_metadata.snapshot()
+            if (metadata.get("stream_session_id") != session.stream_session_id
+                    or not metadata.get("anchors")):
+                return False, "waiting_for_tracking"
+            return True, "ready"
         if self._scene_is_active() and self._scene.event_labels:
             last_result = self._last_scene_inference_monotonic
         if last_result is None:
