@@ -38,7 +38,7 @@ bash tools/vlm_benchmark/run_remote.sh \
 ```
 
 先按提示输入 SSH 私钥口令（如有），再输入所选提供商的 API key。
-脚本也可读取 `INFERENCE_API_KEY` 或对应的 `AICLUB_API_KEY`、`OPENROUTER_API_KEY`、
+脚本也可读取 `INFERENCE_API_KEY` 或对应的 `OPENROUTER_API_KEY`、
 `DASHSCOPE_API_KEY` 环境变量。无需把密钥发到聊天中。
 
 完整流程：

@@ -182,5 +182,53 @@
     "local_rtsp_relay_stopped": true,
     "both_components_enabled_in_retained_workflow": true,
     "console_retained_for_review": true
+  },
+  "diagnostics_and_route_followup": {
+    "date": "2026-10-17",
+    "timezone": "America/New_York",
+    "removed_provider": "aiclub",
+    "default_provider": "openrouter",
+    "supported_providers": [
+      "openrouter",
+      "dashscope",
+      "local"
+    ],
+    "credential_policy": "Existing OpenRouter record preserved; retired credentials are neither migrated nor used as a fallback.",
+    "old_preview_port_7903_stopped": true,
+    "retained_console_port": 7904,
+    "temporary_error_fixture_stopped": true,
+    "controlled_browser_checks": {
+      "http_401_authentication_reason_visible": true,
+      "http_429_rate_limit_reason_visible": true,
+      "successful_request_clears_error": true,
+      "browser_console_errors_or_warnings": 0,
+      "provider_bodies_or_credentials_exposed": false
+    },
+    "empty_results_contract": {
+      "diagnostic_polling": "allow_empty=true returns 204 without a JSON body",
+      "default_public_contract": "404 retained when no result exists",
+      "invalid_camera": "404 retained"
+    },
+    "real_openrouter_check": {
+      "provider": "openrouter",
+      "model": "qwen/qwen3.5-35b-a3b:nitro",
+      "input": "generated red rectangle on white background; no camera or private media",
+      "status": "completed",
+      "synthetic_inference": false,
+      "summary_characters": 53,
+      "latency_seconds": 0.887692,
+      "error": null
+    },
+    "regressions": {
+      "full_suite_passed": 5651,
+      "full_suite_skipped": 64,
+      "focused_task_checks_passed": 43,
+      "credential_fixture_cleanup_checks_passed": 80,
+      "isolated_staged_dashboard_checks_passed": 36
+    },
+    "scope_note": "This follow-up uses controlled local errors and a real cloud request on a generated image; it does not repeat the earlier live camera matrix.",
+    "cloud_check_used_camera": false,
+    "retained_analysis_state": "idle",
+    "retained_preview_connection": "connected"
   }
 }

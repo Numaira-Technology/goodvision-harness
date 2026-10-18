@@ -58,15 +58,15 @@ def test_deployment_store_round_trip_and_write_only_key(tmp_path: Path) -> None:
     assert store.load_api_key() is None
 
 
-def test_legacy_api_key_record_is_migrated_to_generic_name(tmp_path: Path) -> None:
+def test_retired_api_key_record_is_not_migrated_to_openrouter(tmp_path: Path) -> None:
     store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
     legacy = tmp_path / "openrouter-api-key"
     legacy.write_text("legacy-secret\n", encoding="utf-8")
 
-    assert store.load_api_key() == "legacy-secret"
-    assert store.api_key_path.name == "model-api-key"
-    assert store.api_key_path.read_text(encoding="utf-8").strip() == "legacy-secret"
-    assert not legacy.exists()
+    assert store.load_api_key() is None
+    assert store.api_key_path.name == "model-api-key-2"
+    assert not store.api_key_path.exists()
+    assert legacy.read_text(encoding="utf-8").strip() == "legacy-secret"
 
 
 @pytest.mark.parametrize("seconds", [0, 3.75, 30])
@@ -146,7 +146,7 @@ def test_invalid_buffer_delay_does_not_change_disk_or_runtime(
 
 def test_stored_api_keys_are_independent_for_each_provider(tmp_path: Path) -> None:
     store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
-    providers = ("aiclub", "openrouter", "dashscope")
+    providers = ("openrouter", "dashscope", "local")
     store.save_api_key("default-secret")
     for provider in providers[1:]:
         assert store.load_api_key(provider=provider) is None
@@ -158,9 +158,9 @@ def test_stored_api_keys_are_independent_for_each_provider(tmp_path: Path) -> No
     for provider in providers:
         assert store.load_api_key(provider=provider) == f"secret-{provider}"
 
-    assert store.delete_api_key(provider="openrouter") is True
-    assert store.load_api_key(provider="openrouter") is None
-    assert store.load_api_key() == "secret-aiclub"
+    assert store.delete_api_key(provider="local") is True
+    assert store.load_api_key(provider="local") is None
+    assert store.load_api_key() == "secret-openrouter"
     assert store.load_api_key(provider="dashscope") == "secret-dashscope"
     assert all(
         provider not in path.name
@@ -181,7 +181,7 @@ def test_other_providers_never_migrate_or_delete_legacy_credentials(
     store.save_api_key("new-route-secret", provider=provider)
     assert store.delete_api_key(provider=provider) is True
     assert legacy.read_text(encoding="utf-8").strip() == "legacy-default-secret"
-    assert store.load_api_key() == "legacy-default-secret"
+    assert store.load_api_key() is None
 
 
 @pytest.mark.parametrize("operation", ["load", "save", "delete"])
@@ -199,7 +199,7 @@ def test_api_key_store_rejects_unknown_provider(
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("provider", ["openrouter", "dashscope"])
+@pytest.mark.parametrize("provider", ["dashscope"])
 def test_runtime_console_credentials_remain_scoped_across_route_switches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str,
 ) -> None:
@@ -222,7 +222,7 @@ def test_runtime_console_credentials_remain_scoped_across_route_switches(
     restored = HarnessRuntime(config, deployment_store=store)
     assert restored._aiclub_api_key == "selected-route-secret"
 
-    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "openrouter")
     default = HarnessRuntime(load_config(ROOT / "config.yaml"), deployment_store=store)
     assert default._aiclub_api_key == "default-route-secret"
     restored.update_deployment_settings({"clear_api_key": True})
@@ -239,7 +239,7 @@ def test_deployment_settings_api_persists_without_returning_secrets(
 ) -> None:
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
     monkeypatch.setenv("HARNESS_DRY_RUN", "false")
-    monkeypatch.setenv("AICLUB_API_KEY", "environment-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "environment-key")
     store = DeploymentSettingsStore(tmp_path / "deployment-settings.json")
     runtime = HarnessRuntime(
         load_config(ROOT / "config.yaml"),
@@ -485,7 +485,7 @@ def test_deployment_settings_request_body_is_limited_to_64_kib(
     assert store.load_api_key() is None
 
 
-@pytest.mark.parametrize("provider", ["aiclub", "openrouter", "dashscope"])
+@pytest.mark.parametrize("provider", ["openrouter", "dashscope"])
 def test_persisted_api_key_is_injected_without_changing_model_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -572,7 +572,7 @@ def test_control_errors_do_not_reflect_arbitrary_commands(
 
 
 @pytest.mark.parametrize("legacy", (
-    "AICLUB_API_KEY", "MODEL_API_KEY", "OPENROUTER_API_KEY", "LEGACY_CUSTOM_KEY",
+    "MODEL_API_KEY", "OPENROUTER_API_KEY", "LEGACY_CUSTOM_KEY",
 ))
 def test_neutral_credentials_take_precedence_and_legacy_still_works(
     public_settings_environment: None, monkeypatch: pytest.MonkeyPatch, legacy: str
@@ -601,8 +601,7 @@ def test_saved_credentials_keep_precedence_over_environment(
 @pytest.mark.parametrize(
     ("provider", "key_name"),
     [
-        ("aiclub", "AICLUB_API_KEY"),
-        ("openrouter", "OPENROUTER_API_KEY"),
+                ("openrouter", "OPENROUTER_API_KEY"),
         ("dashscope", "DASHSCOPE_API_KEY"),
     ],
 )
@@ -638,7 +637,6 @@ def test_compose_passes_route_overrides_and_independent_credentials() -> None:
         "INFERENCE_MODEL",
         "INFERENCE_ENDPOINT",
         "INFERENCE_API_KEY",
-        "AICLUB_API_KEY",
         "OPENROUTER_API_KEY",
         "DASHSCOPE_API_KEY",
     ):

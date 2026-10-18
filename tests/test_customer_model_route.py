@@ -66,7 +66,7 @@ def test_customer_requests_keep_the_delivery_route_despite_overrides(
     data = yaml.safe_load((ROOT / "config.delivery.yaml").read_text(encoding="utf-8"))
     service = data["inference_service"]
     service.update({
-        "provider": "aiclub",
+        "provider": "dashscope",
         "endpoint": "https://mounted-config.example/chat",
         "api_key_env": "AICLUB_API_KEY",
         "extra_headers": {"X-Private-Credential": "unrelated-service-secret"},
@@ -168,7 +168,7 @@ def test_customer_profile_does_not_pick_another_channels_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("HARNESS_INFERENCE_PROFILE", "customer-standard")
-    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "dashscope")
     monkeypatch.setenv("AICLUB_API_KEY", "unrelated-aiclub-key")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "unrelated-dashscope-key")
     config = load_config(ROOT / "config.delivery.yaml")
@@ -185,7 +185,7 @@ def test_unknown_deployment_profile_fails_before_a_request(
         load_config(ROOT / "config.delivery.yaml")
 
 
-@pytest.mark.parametrize("provider", ["aiclub", "openrouter", "dashscope"])
+@pytest.mark.parametrize("provider", ["openrouter", "dashscope"])
 def test_development_routes_remain_selectable_without_customer_profile(
     monkeypatch: pytest.MonkeyPatch, provider: str,
 ) -> None:
@@ -226,7 +226,7 @@ def test_customer_console_credential_survives_restart_without_reusing_old_key(
     from goodvision_harness.service import HarnessRuntime, create_app
 
     monkeypatch.setenv("HARNESS_INFERENCE_PROFILE", "customer-standard")
-    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "dashscope")
     monkeypatch.setenv("HARNESS_CONFIG", str(ROOT / "config.delivery.yaml"))
     monkeypatch.setenv(
         "HARNESS_DEPLOYMENT_SETTINGS_PATH", str(tmp_path / "deployment-settings.json"),

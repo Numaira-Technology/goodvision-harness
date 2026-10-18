@@ -236,7 +236,7 @@ def test_qwen_client_applies_the_memory_allowlist() -> None:
     assert response.classification is None
     assert response.error is not None
     assert response.error == "analysis request failed"
-    assert config.inference.model == "qwen3.5-plus"
+    assert config.inference.model == "qwen/qwen3.5-35b-a3b:nitro"
     assert transport.calls[0]["model"] == config.inference.model
     assert transport.calls[0]["model"] != PUBLIC_MODEL_NAME
     assert transport.calls[0]["messages"][1]["content"][0]["text"].startswith(

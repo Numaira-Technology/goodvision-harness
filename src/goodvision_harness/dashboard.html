@@ -534,6 +534,7 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
         </div>
       </div>
       <section class="frame-summary" aria-labelledby="overall-description-title">
+        <p id="diagnostic-result-error" class="error-banner" role="alert" hidden></p>
         <div class="frame-summary-head">
           <h3 id="overall-description-title">Overall description · 全画面描述</h3>
           <span id="overall-description-meta" class="frame-summary-meta">等待分析帧</span>
@@ -2179,7 +2180,8 @@ function runtimeErrorText(data){
   const pipeline=data.pipeline&&typeof data.pipeline==="object"?data.pipeline:{};
   const errors=pipeline.branch_errors&&typeof pipeline.branch_errors==="object"
     &&!Array.isArray(pipeline.branch_errors)?pipeline.branch_errors:{};
-  const branches={safety:"Event analysis",stranger:"Face analysis",analysis:"Analysis"};
+  const branches={safety:"Event analysis",stranger:"Face analysis",generic:"Analysis",analysis:"Analysis"};
+  const details=pipeline.branch_error_details||{};
   const reasons={request_failed:"request failed",timeout:"timed out",connection:"connection failed",
     http_error:"service returned an error",invalid_response:"returned an invalid result",
     empty_response:"returned no result"};
@@ -2189,7 +2191,12 @@ function runtimeErrorText(data){
     const label=Object.prototype.hasOwnProperty.call(branches,branch)?branches[branch]:"Analysis";
     const reason=typeof code==="string"&&Object.prototype.hasOwnProperty.call(reasons,code)
       ?reasons[code]:"request failed";
-    messages.push(label+" "+reason)
+    const detail=details[branch];
+    messages.push(detail&&typeof detail.message==="string"?label+" · "+detail.message:label+" "+reason)
+  }
+  for(const component of data.workflow?.summaries?.components||[]){
+    const failure=component.last_error;
+    if(failure&&typeof failure.message==="string")messages.push("Summary · "+failure.message);
   }
   return messages.length?[...new Set(messages)].join(" | "):String(data.last_error||"").trim()
 }
@@ -2210,6 +2217,8 @@ function updateRuntimeSummary(data){
   setChannel(ui.lastUpdate,"Status · "+new Date().toLocaleTimeString(),data.ready===true?"good":"warn");
   const error=runtimeErrorText(data);
   ui.runtimeError.hidden=!error;ui.runtimeError.textContent=error?"Runtime error · "+error:"";
+  const resultError=$("diagnostic-result-error");
+  if(resultError){resultError.hidden=!error;resultError.textContent=error;}
   if(error||pipeline==="error"||pipeline==="configuration_error"){
     setConnection("Attention required",error||("Runtime state: "+pipeline),"bad")
   }else if(["stopping","draining"].includes(pipeline)){
@@ -2240,6 +2249,7 @@ async function status(){
     const data=await response.json();
     // A response from before a session transition cannot stop or revive its successor.
     if(!current())return;
+    state.diagnosticStatus=data;
     const previousError=state.runtimeErrorMessage,error=runtimeErrorText(data);
     state.runtimeErrorMessage=error;
     ui.statusJson.dataset.interfaceCopy="false";
@@ -2666,35 +2676,38 @@ if(!cameraAllowed){
 let events=null;
 const diagnosticResults=new Map();
 async function pollDiagnosticResults(){
-  if(sceneView.closed)return;
+  if(sceneView.closed||globalThis.GoodvisionDiagnostic&&globalThis.GoodvisionDiagnosticView&&!["results","diagnostics"].includes(globalThis.GoodvisionDiagnosticView))return;
   if(!document.hidden&&(["events","outputs"].includes(globalThis.GoodvisionConsole?.currentPage())||
     !globalThis.GoodvisionFleet?.detailHidden?.())){
     try{
       let parentRow=null;
       try{parentRow=window.parent!==window?window.parent.GoodvisionFleet?.app?.rows?.get(globalThis.GoodvisionDiagnosticCameraId):null;}catch(_){}
       if(parentRow){$("vlm-current-observation").textContent=parentRow.vlmEvents.textContent;}
-      else{
+      else if(state.diagnosticStatus?.vlm?.independent){
         const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
         try{
-          const response=await fetch("/v1/vlm/results/latest",{cache:"no-store",signal:controller.signal});
-          if(response.ok){const result=await response.json();
+          const response=await fetch("/v1/vlm/results/latest?allow_empty=true",{cache:"no-store",signal:controller.signal});
+          if(response.ok&&response.status!==204){const result=await response.json();
             if(result.stream_session_id===state.sessionId)$("vlm-current-observation").textContent=
               globalThis.GoodvisionCameraDisplay?.eventObservationSummary?.(result)||"等待事件判断";}
         }finally{clearTimeout(timer);}
       }
     }catch(_){}
+    let received=false,unavailable=false;
     for(const feature of ["overall",...detectionEvents]){
       if(sceneView.closed)break;
       const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
       try{
-        const response=await fetch("/v1/results/"+feature+"/latest",{cache:"no-store",signal:controller.signal});
+        const response=await fetch("/v1/results/"+feature+"/latest?allow_empty=true",{cache:"no-store",signal:controller.signal});
         if(response.ok&&response.status!==204){
+          received=true;
           const result=await response.json(),id=result.message_id;
           if(id&&diagnosticResults.get(feature)!==id){diagnosticResults.set(feature,id);analysis(result);}
-        }
-      }catch(_){}finally{clearTimeout(timer);}
+        }else if(!response.ok){unavailable=true;}
+      }catch(_){unavailable=true;}finally{clearTimeout(timer);}
     }
-    setChannel(ui.sseChannel,"Results · 本路最新结果（定时刷新）","good");
+    const failure=state.runtimeErrorMessage;
+    setChannel(ui.sseChannel,failure?"Results · "+failure:unavailable?"Results · Could not read results":received?"Results · 本路最新结果（定时刷新）":"Results · Waiting for analysis results",failure?"bad":unavailable||!received?"warn":"good");
   }
   if(!sceneView.closed)setTimeout(pollDiagnosticResults,2000);
 }

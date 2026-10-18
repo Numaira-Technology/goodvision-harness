@@ -35,7 +35,7 @@ def populate_lane(lane: Path, label: str) -> None:
         tracking_server_protocol="contour",
         rich_label_model="contour",
     ))
-    for provider in ("aiclub", "openrouter", "dashscope", "local", "tracking"):
+    for provider in ("openrouter", "dashscope", "local", "tracking"):
         store.save_api_key(f"fixture-{label}-{provider}", provider=provider)
     store.save_model_route(next(iter(ROUTES_BY_ID)))
     store.save_analysis_settings({
@@ -106,7 +106,7 @@ def assert_lane_restored(lane: Path, label: str) -> None:
     assert saved.tracking_server_protocol == "contour"
     assert saved.inference_server_model == "saved-model"
     assert saved.rich_label_model == "contour"
-    for provider in ("aiclub", "openrouter", "dashscope", "local", "tracking"):
+    for provider in ("openrouter", "dashscope", "local", "tracking"):
         assert store.load_api_key(provider=provider) == f"fixture-{label}-{provider}"
     assert store.load_model_route() == next(iter(ROUTES_BY_ID))
     assert store.load_analysis_settings() == {

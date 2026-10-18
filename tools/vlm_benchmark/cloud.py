@@ -236,7 +236,7 @@ def run(root, plan, directory, secret_path=None):
             if name.startswith(("INFERENCE_", "SCENE_", "VLM_")) or name in {
                 "HARNESS_INFERENCE_PROFILE",
                 "MODEL_API_KEY",
-                "AICLUB_API_KEY",
+                "AICLUB_API_KEY",  # Retired credentials must also be cleared.
                 "OPENROUTER_API_KEY",
                 "DASHSCOPE_API_KEY",
             }:

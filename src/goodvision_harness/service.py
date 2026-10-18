@@ -172,7 +172,6 @@ from .stream_adapter import parse_stream_source
 from .temporal_client_pool import TemporalClientPool
 from .video_connection import VideoConnection
 from .video_to_stream import encode_jpeg
-from .workflow_runtime import WorkflowRuntimeMixin
 from .video_tracking import (
     BACKEND as NATIVE_VIDEO_BACKEND,
 )
@@ -193,6 +192,7 @@ from .vlm_admission import AdmissionSettings
 from .vlm_fusion import VLMFusion
 from .vlm_independent import IndependentVLMBranch, VLMProcessConfig
 from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
+from .workflow_runtime import WorkflowRuntimeMixin
 
 LOGGER = logging.getLogger(__name__)
 MJPEG_BOUNDARY = "goodvision-frame"
@@ -5456,10 +5456,14 @@ def create_app(
                             headers={"Cache-Control": "no-store"})
 
     @application.get("/v1/vlm/results/latest")
-    async def independent_vlm_latest(request: Request) -> JSONResponse:
+    async def independent_vlm_latest(
+        request: Request, allow_empty: bool = False,
+    ) -> Response:
         branch = _runtime(request)._vlm_branch
         record = branch.results.latest() if branch is not None else None
         if record is None:
+            if allow_empty:
+                return Response(status_code=204, headers={"Cache-Control": "no-store"})
             raise HTTPException(status_code=404, detail="no independent VLM report yet")
         return JSONResponse(record.payload, headers={"Cache-Control": "no-store",
                             "X-Result-Cursor": str(record.cursor), "X-Result-Stream": branch.results.epoch})
@@ -5479,8 +5483,8 @@ def create_app(
                              "associations": list(branch.fusion.links()) if branch and branch.fusion else []})
 
     @application.get("/v1/results/latest")
-    async def latest_result(request: Request) -> JSONResponse:
-        return _latest_result_response(_runtime(request))
+    async def latest_result(request: Request, allow_empty: bool = False) -> Response:
+        return _latest_result_response(_runtime(request), allow_empty=allow_empty)
 
     @application.get("/v1/rich-labels/latest")
     def latest_rich_labels(request: Request) -> JSONResponse:
@@ -5647,8 +5651,12 @@ def create_app(
         )
 
     @application.get("/v1/results/overall/latest")
-    async def latest_overall_description(request: Request) -> JSONResponse:
-        return _latest_result_response(_runtime(request), overall_only=True)
+    async def latest_overall_description(
+        request: Request, allow_empty: bool = False,
+    ) -> Response:
+        return _latest_result_response(
+            _runtime(request), overall_only=True, allow_empty=allow_empty,
+        )
 
     @application.get("/v1/results/overall/events")
     async def overall_description_events(
@@ -5662,8 +5670,10 @@ def create_app(
     def feature_latest_endpoint(
         feature: str,
     ) -> Callable[[Request], Any]:
-        async def endpoint(request: Request) -> JSONResponse:
-            return _latest_result_response(_runtime(request), feature=feature)
+        async def endpoint(request: Request, allow_empty: bool = False) -> Response:
+            return _latest_result_response(
+                _runtime(request), feature=feature, allow_empty=allow_empty,
+            )
 
         return endpoint
 
@@ -5929,9 +5939,12 @@ def _latest_result_response(
     *,
     feature: str | None = None,
     overall_only: bool = False,
-) -> JSONResponse:
+    allow_empty: bool = False,
+) -> Response:
     record = runtime.results.latest(feature=feature)
     if record is None:
+        if allow_empty:
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
         raise HTTPException(
             status_code=404,
             detail=f"no {feature} result yet" if feature else "no analysis result yet",
@@ -5940,6 +5953,8 @@ def _latest_result_response(
     if feature is not None:
         selected = _feature_result_payload(payload, feature)
         if selected is None:
+            if allow_empty:
+                return Response(status_code=204, headers={"Cache-Control": "no-store"})
             raise HTTPException(
                 status_code=404,
                 detail=f"no {feature} result in the latest analysis",

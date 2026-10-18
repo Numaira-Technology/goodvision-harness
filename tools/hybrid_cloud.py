@@ -26,7 +26,6 @@ ENVIRONMENT_KEYS = frozenset(
     {
         "OPENROUTER_API_KEY",
         "DASHSCOPE_API_KEY",
-        "AICLUB_API_KEY",
         "INFERENCE_PROVIDER",
         "INFERENCE_MODEL",
         "INFERENCE_ENDPOINT",

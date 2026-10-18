@@ -109,7 +109,7 @@ def test_schema_requires_all_events_and_preserves_route_without_mutating_base(ba
     assert dict(base.inference.request_parameters) == original
     assert parameters["provider"] is not base.inference.request_parameters["provider"]
     assert configure_event_json(base, "prompt") is base
-    unsupported = replace(base, aiclub=replace(base.model_api, provider="aiclub"))
+    unsupported = replace(base, aiclub=replace(base.model_api, provider="dashscope"))
     with pytest.raises(ValueError, match="unsupported"):
         configure_event_json(unsupported, "schema")
     for labels in ((), ("fall", "fall"), ("arbitrary",), ("stranger",)):

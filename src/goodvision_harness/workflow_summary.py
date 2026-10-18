@@ -32,6 +32,7 @@ from .model_api import (
     ModelAPIError,
     ModelAPISettings,
     environment_api_key,
+    inference_error_detail,
     model_request_headers,
 )
 from .privacy import public_safe_value
@@ -477,6 +478,7 @@ class SummaryManager:
         text: str | None = None,
         test: bool = False,
         latency: float | None = None,
+        http_status: int | None = None,
     ) -> dict:
         errors = {
             "frame_unavailable": "No connected source frame is available.",
@@ -517,6 +519,12 @@ class SummaryManager:
                 {
                     "code": error_code,
                     "message": errors.get(error_code, "Summary inference failed."),
+                    **(
+                        inference_error_detail(code=error_code, http_status=http_status)
+                        if error_code in {
+                            "http_error", "connection", "timeout", "request_failed",
+                        } else {}
+                    ),
                 }
                 if error_code
                 else None
@@ -588,7 +596,10 @@ class SummaryManager:
                 except (asyncio.TimeoutError, httpx.TimeoutException):
                     record = self._record(spec, snapshot, "timeout", test=not publish)
                 except ModelAPIError as exc:
-                    record = self._record(spec, snapshot, exc.code, test=not publish)
+                    record = self._record(
+                        spec, snapshot, exc.code, test=not publish,
+                        http_status=exc.status_code,
+                    )
                 except _SummaryFailure as exc:
                     record = self._record(spec, snapshot, exc.code, test=not publish)
                 except httpx.HTTPError:

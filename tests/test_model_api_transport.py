@@ -8,15 +8,15 @@ from urllib.request import Request
 import pytest
 
 import goodvision_harness.model_api as model_api_module
-from goodvision_harness.aiclub import (
-    DEFAULT_AICLUB_ENDPOINT,
-    AIClubClient,
-    AIClubError,
-    AIClubSettings,
-    api_key_present,
-)
 from goodvision_harness.config import InferenceSettings
 from goodvision_harness.inference import QwenWindowClient, build_client
+from goodvision_harness.model_api import (
+    DEFAULT_OPENROUTER_ENDPOINT,
+    ModelAPIClient,
+    ModelAPIError,
+    ModelAPISettings,
+    api_key_present,
+)
 
 
 class _FakeResponse:
@@ -35,7 +35,7 @@ class _FakeResponse:
 
 def _http_error(code: int, payload: object) -> HTTPError:
     return HTTPError(
-        url=DEFAULT_AICLUB_ENDPOINT,
+        url=DEFAULT_OPENROUTER_ENDPOINT,
         code=code,
         msg="error",
         hdrs=None,
@@ -43,20 +43,20 @@ def _http_error(code: int, payload: object) -> HTTPError:
     )
 
 
-def test_settings_defaults_target_aiclub() -> None:
-    settings = AIClubSettings.from_mapping({})
+def test_settings_defaults_target_openrouter() -> None:
+    settings = ModelAPISettings.from_mapping({})
 
-    assert settings.endpoint == DEFAULT_AICLUB_ENDPOINT
-    assert settings.api_key_env == "AICLUB_API_KEY"
+    assert settings.endpoint == DEFAULT_OPENROUTER_ENDPOINT
+    assert settings.api_key_env == "OPENROUTER_API_KEY"
     assert settings.timeout_seconds == 90.0
     assert settings.max_retries == 3
 
 
 def test_settings_reject_invalid_endpoint_and_key_name() -> None:
     with pytest.raises(ValueError, match="inference_service.endpoint"):
-        AIClubSettings(endpoint="ftp://example.com/chat")
+        ModelAPISettings(endpoint="ftp://example.com/chat")
     with pytest.raises(ValueError, match="inference_service.api_key_env"):
-        AIClubSettings(api_key_env=" ")
+        ModelAPISettings(api_key_env=" ")
 
 
 def test_api_key_helpers_use_configured_environment(
@@ -64,19 +64,19 @@ def test_api_key_helpers_use_configured_environment(
 ) -> None:
     for name in ("INFERENCE_API_KEY", "MODEL_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("AICLUB_API_KEY", "test-key")
-    assert api_key_present(AIClubSettings())
-    monkeypatch.setenv("AICLUB_API_KEY", "")
-    assert not api_key_present(AIClubSettings())
-    with pytest.raises(AIClubError, match="AICLUB_API_KEY"):
-        AIClubClient(AIClubSettings())
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    assert api_key_present(ModelAPISettings())
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    assert not api_key_present(ModelAPISettings())
+    with pytest.raises(ModelAPIError, match="OPENROUTER_API_KEY"):
+        ModelAPIClient(ModelAPISettings())
 
 
 def test_chat_completion_posts_openai_compatible_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Request] = {}
-    settings = AIClubSettings(max_retries=0)
+    settings = ModelAPISettings(max_retries=0)
 
     def fake_urlopen(request: Request, timeout: float = 0.0) -> _FakeResponse:
         captured["request"] = request
@@ -86,7 +86,7 @@ def test_chat_completion_posts_openai_compatible_json(
         )
 
     monkeypatch.setattr(model_api_module, "urlopen", fake_urlopen)
-    client = AIClubClient(settings, api_key="test-key")
+    client = ModelAPIClient(settings, api_key="test-key")
     response = client.chat_completion(
         model="qwen3.5-plus",
         messages=[{"role": "user", "content": "hello"}],
@@ -96,7 +96,7 @@ def test_chat_completion_posts_openai_compatible_json(
     )
 
     request = captured["request"]
-    assert request.full_url == DEFAULT_AICLUB_ENDPOINT
+    assert request.full_url == DEFAULT_OPENROUTER_ENDPOINT
     assert request.get_method() == "POST"
     assert request.get_header("Authorization") == "Bearer test-key"
     assert request.get_header("Content-type") == "application/json"
@@ -114,7 +114,7 @@ def test_chat_completion_posts_openai_compatible_json(
 
 
 def test_assistant_text_joins_structured_text_blocks() -> None:
-    text = AIClubClient.assistant_text(
+    text = ModelAPIClient.assistant_text(
         {
             "choices": [
                 {
@@ -147,8 +147,8 @@ def test_retryable_http_error_is_retried(
 
     monkeypatch.setattr(model_api_module, "urlopen", fake_urlopen)
     monkeypatch.setattr(model_api_module.time, "sleep", lambda _delay: None)
-    client = AIClubClient(
-        AIClubSettings(max_retries=1, retry_backoff_seconds=0.0),
+    client = ModelAPIClient(
+        ModelAPISettings(max_retries=1, retry_backoff_seconds=0.0),
         api_key="test-key",
     )
 
@@ -161,7 +161,7 @@ def test_retryable_http_error_is_retried(
     assert client.assistant_text(response) == "ok"
 
 
-def test_build_client_uses_aiclub_transport(
+def test_build_client_uses_openrouter_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = InferenceSettings(
@@ -171,20 +171,20 @@ def test_build_client_uses_aiclub_transport(
         prompt="prompt",
     )
 
-    monkeypatch.setenv("AICLUB_API_KEY", "test-key")
-    client = build_client(settings, AIClubSettings())
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    client = build_client(settings, ModelAPISettings())
 
     assert isinstance(client, QwenWindowClient)
-    assert isinstance(client._transport, AIClubClient)
+    assert isinstance(client._transport, ModelAPIClient)
 
 
 def test_neutral_credentials_take_priority_and_legacy_still_works(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AICLUB_API_KEY", "old-test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "old-test-key")
     monkeypatch.setenv("INFERENCE_API_KEY", "new-test-key")
-    settings = AIClubSettings(api_key_env="INFERENCE_API_KEY")
-    assert AIClubClient(settings)._api_key == "new-test-key"
+    settings = ModelAPISettings(api_key_env="INFERENCE_API_KEY")
+    assert ModelAPIClient(settings)._api_key == "new-test-key"
     monkeypatch.delenv("INFERENCE_API_KEY")
     assert api_key_present(settings)
-    assert AIClubClient(settings)._api_key == "old-test-key"
+    assert ModelAPIClient(settings)._api_key == "old-test-key"

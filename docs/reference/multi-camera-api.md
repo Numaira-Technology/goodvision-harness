@@ -66,6 +66,17 @@ C/results/events?after=42
 C/video/display/frames?after=42&connection_id=...&revision=7&stream_session_id=...
 ```
 
+轮询 `C/results/latest`、`C/results/overall/latest`、`C/results/{feature}/latest`
+及 `C/vlm/results/latest` 时，可加 `allow_empty=true`：尚无结果正常返回 **204**，
+不带 JSON；有结果仍返回 200。默认保留原来的 404 行为，不存在的摄像头仍返回 404。
+204 表示等待结果，不能当作检测阴性。
+
+推理失败应查看 `C/status` 的 `pipeline.branch_error_details`：按分支返回固定的
+`code`、可用时的 `http_status` 和操作提示 `message`。例如 HTTP 401 提示核对当前
+服务的密钥，429 提示限流。仅同一分支更新的成功完成可清除该错误。
+总结错误位于 `workflow.summaries.components[].last_error`，也可从
+`C/workflow/summaries` 读取。错误包含安全状态信息，不包含上游响应正文或密钥。
+
 每条 SSE 连接仅输出该通道，分别保存该接口返回的 `id`。重连时发送 `Last-Event-ID`；
 不要把第一路的游标用于第二路，也不要在不同种类的 SSE 之间共用游标。
 结果 SSE 保留 `epoch:cursor` 语义，显式非零 `after` 优先；事件归档 SSE 的

@@ -21,6 +21,7 @@ import pytest
         "dashboard_i18n.cjs",
         "dashboard_event_catalog.cjs",
         "dashboard_diagnostics.cjs",
+        "dashboard_inference_errors.cjs",
         "workflow_canvas.cjs",
     ]
 )

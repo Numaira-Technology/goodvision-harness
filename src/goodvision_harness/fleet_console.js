@@ -351,7 +351,7 @@
       row.input.placeholder=configured?"留空使用已保存的视频地址（不回显）":"RTSP / RTMP / WHEP 地址";
       row.sourceNote.textContent=configured?"已保存视频地址 · 连接时可留空；填写新地址仅用于本次连接，点击保存后重启继续使用。":"未保存视频地址 · 填写后可连接，也可保存以便下次使用。";
       if(!row.layoutDirty&&!active)row.layout.value=(status.camera_layout||status.stream?.camera_layout)==="stereo"?"stereo":"mono";
-      const serverError=typeof status.last_error==="string"?status.last_error:"";
+      const serverError=root.runtimeErrorText?.(status)||(typeof status.last_error==="string"?status.last_error:"");
       row.message.textContent=row.error||serverError||row.notice||(analyzing(status)?"正在按本路已保存设置进行分析":active?(connected(status)?"视频已连接；分析请使用顶部“开始全部分析”。":"正在建立或断开视频连接…"):"连接只接收视频；检测项目可在详细控制中分别设置。");
       row.message.className="fleet-card-detail"+(row.error||serverError?" error":"");
       const show=["connecting","connected"].includes(connectionState(status))&&this.visible.has(row.camera.id);

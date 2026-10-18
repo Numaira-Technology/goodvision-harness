@@ -304,7 +304,7 @@ def jpeg_bytes():
     return buffer.getvalue()
 
 
-@pytest.mark.parametrize("provider", ["local", "aiclub"])
+@pytest.mark.parametrize("provider", ["local", "openrouter"])
 def test_http_summary_uses_configured_compatible_route_including_goodvision_local(
     monkeypatch,
     provider,

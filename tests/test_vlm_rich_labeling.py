@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from goodvision_harness import vlm_rich_labeling as vlm
-from goodvision_harness.aiclub import AIClubClient, AIClubSettings
+from goodvision_harness.model_api import ModelAPIClient, ModelAPISettings
 from goodvision_harness.rich_labeling import (
     RichLabelCoordinator,
     RichLabelProtocolError,
@@ -122,7 +122,7 @@ def test_client_uses_separate_prompt_key_and_downscaled_image(
 
     _mock_completion(monkeypatch, post)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="configured-vlm", api_key=lambda: key[0],
+        ModelAPISettings(), model="configured-vlm", api_key=lambda: key[0],
         max_image_side=160, max_tokens=3000,
     )
     result = client.infer(
@@ -159,7 +159,7 @@ def test_tracks_follow_overlap_not_model_order_and_reset_between_sessions(
         _reply([left]), _reply([left]), _reply([left]),
     ])
     _mock_completion(monkeypatch, lambda _: next(replies))
-    client = vlm.VLMRichLabelClient(AIClubSettings(), model="vlm", api_key="test")
+    client = vlm.VLMRichLabelClient(ModelAPISettings(), model="vlm", api_key="test")
 
     def infer(sequence: int, timestamp: float, session: str = "a") -> Any:
         return client.infer(
@@ -182,9 +182,9 @@ def test_dry_run_never_requires_credentials_or_calls_api(
     def unexpected(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("dry run must not construct an API client")
 
-    monkeypatch.setattr(vlm, "AIClubClient", unexpected)
+    monkeypatch.setattr(vlm, "ModelAPIClient", unexpected)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key=None, dry_run=lambda: True,
+        ModelAPISettings(), model="vlm", api_key=None, dry_run=lambda: True,
     )
     assert client.infer(
         _jpeg(), stream_session_id="dry", frame_sequence=1, timestamp_seconds=0,
@@ -197,7 +197,7 @@ def test_coordinator_keeps_video_fail_open_on_malformed_api_reply(
     _mock_completion(monkeypatch, lambda _: _reply([
         _person(bbox_2d=[100, 100, 50, 50]),
     ]))
-    client = vlm.VLMRichLabelClient(AIClubSettings(), model="vlm", api_key="test")
+    client = vlm.VLMRichLabelClient(ModelAPISettings(), model="vlm", api_key="test")
     coordinator = RichLabelCoordinator(client)
     try:
         assert coordinator.submit(
@@ -215,7 +215,7 @@ def test_truncated_completion_is_rejected(monkeypatch: pytest.MonkeyPatch) -> No
     response = _reply([])
     response["choices"][0]["finish_reason"] = "length"
     _mock_completion(monkeypatch, lambda _: response)
-    client = vlm.VLMRichLabelClient(AIClubSettings(), model="vlm", api_key="test")
+    client = vlm.VLMRichLabelClient(ModelAPISettings(), model="vlm", api_key="test")
     with pytest.raises(RichLabelProtocolError, match="truncated"):
         client.infer(
             _jpeg(), stream_session_id="live", frame_sequence=1, timestamp_seconds=0,
@@ -231,7 +231,7 @@ def test_response_observer_receives_result_before_validation(
     observed: list[Any] = []
     _mock_completion(monkeypatch, lambda _: response)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="test",
+        ModelAPISettings(), model="vlm", api_key="test",
         response_observer=observed.append,
     )
     with pytest.raises(RichLabelProtocolError, match="truncated"):
@@ -253,7 +253,7 @@ def test_configured_request_parameters_preserve_rich_prompt(
 
     _mock_completion(monkeypatch, post)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="test", max_tokens=3000,
+        ModelAPISettings(), model="vlm", api_key="test", max_tokens=3000,
         request_parameters={"response_format": {"type": "json_object"}},
     )
     client.infer(
@@ -270,7 +270,7 @@ def test_configured_request_parameters_preserve_rich_prompt(
 def test_request_parameters_cannot_replace_fixed_fields(key: str) -> None:
     with pytest.raises(ValueError, match="fixed field"):
         vlm.VLMRichLabelClient(
-            AIClubSettings(), model="vlm", request_parameters={key: "override"},
+            ModelAPISettings(), model="vlm", request_parameters={key: "override"},
         )
 
 
@@ -462,7 +462,7 @@ def test_compact_client_accepts_both_response_formats_and_keeps_source_metadata(
 
     _mock_completion(monkeypatch, post)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="test", wire_format="compact",
+        ModelAPISettings(), model="vlm", api_key="test", wire_format="compact",
         max_tokens=1024,
         request_parameters={
             "provider": {"only": ["deepinfra"], "allow_fallbacks": False}
@@ -495,7 +495,7 @@ def test_compact_client_accepts_both_response_formats_and_keeps_source_metadata(
 @pytest.mark.parametrize("wire_format", ["auto", None, False])
 def test_unknown_wire_format_is_rejected(wire_format: Any) -> None:
     with pytest.raises(ValueError, match="wire_format"):
-        vlm.VLMRichLabelClient(AIClubSettings(), model="vlm", wire_format=wire_format)
+        vlm.VLMRichLabelClient(ModelAPISettings(), model="vlm", wire_format=wire_format)
 
 
 @pytest.mark.parametrize("scope,region,labels", [
@@ -550,7 +550,7 @@ def test_invalid_compact_scope_or_region_is_rejected(scope: Any, region: Any) ->
         )
     with pytest.raises(ValueError):
         vlm.VLMRichLabelClient(
-            AIClubSettings(), model="vlm", wire_format="compact",
+            ModelAPISettings(), model="vlm", wire_format="compact",
             scope=scope, person_region=region,
         )
 
@@ -566,14 +566,14 @@ def test_scoped_client_passes_person_region_to_prompt(
 
     _mock_completion(monkeypatch, post)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="test", wire_format="compact",
+        ModelAPISettings(), model="vlm", api_key="test", wire_format="compact",
         scope="people", person_region=(500, 1000),
     )
     client.infer(_jpeg(), stream_session_id="test", frame_sequence=1, timestamp_seconds=1)
     prompt = captured[0]["messages"][1]["content"][0]["text"]
     assert "500 <= (x1+x2)/2 < 1000" in prompt
     with pytest.raises(ValueError, match="requires compact"):
-        vlm.VLMRichLabelClient(AIClubSettings(), model="vlm", scope="people")
+        vlm.VLMRichLabelClient(ModelAPISettings(), model="vlm", scope="people")
     client.close()
 
 
@@ -628,7 +628,7 @@ def test_single_reuses_pool_with_current_key_and_preserves_stream_metrics(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", pool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(timeout_seconds=2, max_retries=9), model="vlm",
+        ModelAPISettings(timeout_seconds=2, max_retries=9), model="vlm",
         api_key=lambda: key[0], wire_format=wire_format,
         max_tokens=1024, response_observer=observed.append,
         request_parameters={"reasoning": {"enabled": False}},
@@ -674,7 +674,7 @@ def test_single_stream_failure_has_no_retry_and_preserves_previous_snapshot(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", _AsyncPool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(max_retries=9), model="vlm", api_key="key",
+        ModelAPISettings(max_retries=9), model="vlm", api_key="key",
     )
     try:
         original = client.infer(
@@ -708,7 +708,7 @@ def test_frame_deadline_includes_image_preparation(
     monkeypatch.setattr(vlm, "encode_jpeg", slow_encode)
     monkeypatch.setattr(vlm.httpx, "AsyncClient", lambda **_: pytest.fail("no pool"))
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(timeout_seconds=0.01), model="vlm", api_key="key",
+        ModelAPISettings(timeout_seconds=0.01), model="vlm", api_key="key",
         wire_format="compact", execution_mode=execution_mode,
     )
     try:
@@ -761,7 +761,7 @@ def test_parallel_reuses_pool_and_frame_key_and_restores_crop_coordinates(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", pool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(timeout_seconds=5), model="vlm", api_key=key,
+        ModelAPISettings(timeout_seconds=5), model="vlm", api_key=key,
         wire_format="compact", execution_mode="parallel", max_image_side=320,
         max_tokens=400, response_observer=observed.append,
         request_parameters={"temperature": 0.7, "top_p": 0.8},
@@ -812,7 +812,7 @@ def test_parallel_reuses_pool_and_frame_key_and_restores_crop_coordinates(
         assert observed[0]["_timing"]["max_part_seconds"] == 0.3
         assert set(observed[0]["parts"]) == {"people_left", "people_right", "items"}
         assert len(vlm.parse_rich_annotation(
-            AIClubClient.assistant_text(observed[0]),
+            ModelAPIClient.assistant_text(observed[0]),
         )) == 11
     finally:
         client.close()
@@ -887,7 +887,7 @@ def test_parallel_restores_and_keeps_right_only_person_left_of_center(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", _AsyncPool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="test", wire_format="compact",
+        ModelAPISettings(), model="vlm", api_key="test", wire_format="compact",
         execution_mode="parallel", structured_output=True,
     )
     try:
@@ -947,7 +947,7 @@ def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", create_pool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(timeout_seconds=0.2), model="vlm", api_key="key",
+        ModelAPISettings(timeout_seconds=0.2), model="vlm", api_key="key",
         wire_format="compact", execution_mode="parallel",
         response_observer=observed.append,
         part_response_observer=lambda name, response: observed_parts.append(
@@ -974,7 +974,7 @@ def test_parallel_failure_awaits_all_parts_and_recovers_without_partial_results(
         }
         if failure == "invalid":
             assert set(failed_parts) == {"people_left", "people_right"}
-            assert AIClubClient.assistant_text(failed_parts["people_right"]) == "invalid"
+            assert ModelAPIClient.assistant_text(failed_parts["people_right"]) == "invalid"
             assert failed_parts["people_right"]["choices"][0]["finish_reason"] == "stop"
         elif failure == "cancelled":
             assert set(failed_parts) == {"people_left"}
@@ -1023,7 +1023,7 @@ def test_close_on_worker_loop_awaits_stream_cleanup(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", pool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="key",
+        ModelAPISettings(), model="vlm", api_key="key",
         wire_format="compact", execution_mode=execution_mode,
     )
     with pytest.raises(vlm.ModelAPIError, match="cancelled"):
@@ -1051,7 +1051,7 @@ def test_dry_run_does_not_create_loop_pool_or_read_key(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", unexpected)
     monkeypatch.setattr(vlm.asyncio, "new_event_loop", unexpected)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key=unexpected, dry_run=True,
+        ModelAPISettings(), model="vlm", api_key=unexpected, dry_run=True,
         wire_format="compact", execution_mode=execution_mode,
     )
     assert client.infer(
@@ -1067,7 +1067,7 @@ def test_dry_run_does_not_create_loop_pool_or_read_key(
 ])
 def test_invalid_execution_mode_combination_is_rejected(kwargs: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
-        vlm.VLMRichLabelClient(AIClubSettings(), model="vlm", **kwargs)
+        vlm.VLMRichLabelClient(ModelAPISettings(), model="vlm", **kwargs)
 
 
 def test_parallel_people_take_priority_within_twelve_object_limit(
@@ -1089,7 +1089,7 @@ def test_parallel_people_take_priority_within_twelve_object_limit(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", _AsyncPool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="key",
+        ModelAPISettings(), model="vlm", api_key="key",
         wire_format="compact", execution_mode="parallel",
     )
     try:
@@ -1108,7 +1108,7 @@ def test_missing_key_does_not_create_pool_or_count_requests(
     monkeypatch.setattr(vlm, "environment_api_key", lambda _: "")
     monkeypatch.setattr(vlm.httpx, "AsyncClient", lambda **_: pytest.fail("no pool"))
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key=None,
+        ModelAPISettings(), model="vlm", api_key=None,
         wire_format="compact", execution_mode=execution_mode,
     )
     with pytest.raises(vlm.ModelAPIError, match="key is missing"):
@@ -1137,7 +1137,7 @@ def test_close_during_decode_prevents_late_client_creation(
     monkeypatch.setattr(vlm.cv2, "imdecode", blocked_decode)
     monkeypatch.setattr(vlm.httpx, "AsyncClient", lambda **_: pytest.fail("no pool"))
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="key",
+        ModelAPISettings(), model="vlm", api_key="key",
         wire_format="compact", execution_mode=execution_mode,
     )
 
@@ -1200,7 +1200,7 @@ def test_concurrent_close_at_frame_completion_returns_and_closes_pool_once(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", pool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="key",
+        ModelAPISettings(), model="vlm", api_key="key",
         wire_format="compact", execution_mode=execution_mode,
         response_observer=observed.append,
     )
@@ -1345,7 +1345,7 @@ def test_single_structured_compact_request_uses_matching_scope_schema(
 
     _mock_completion(monkeypatch, post)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="test", scope=scope,
+        ModelAPISettings(), model="vlm", api_key="test", scope=scope,
         wire_format="compact", structured_output=True,
         request_parameters={"response_format": {"type": "json_object"}, "temperature": 0.7},
     )
@@ -1368,7 +1368,7 @@ def test_parallel_structured_requests_use_people_people_items_schemas(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", _AsyncPool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="test",
+        ModelAPISettings(), model="vlm", api_key="test",
         wire_format="compact", execution_mode="parallel", structured_output=True,
         request_parameters={"response_format": {"type": "json_object"}},
     )
@@ -1391,7 +1391,7 @@ def test_invalid_structured_output_options_are_rejected(
     kwargs: dict[str, Any], exception: type[Exception],
 ) -> None:
     with pytest.raises(exception):
-        vlm.VLMRichLabelClient(AIClubSettings(), model="vlm", **kwargs)
+        vlm.VLMRichLabelClient(ModelAPISettings(), model="vlm", **kwargs)
 
 
 @pytest.mark.parametrize("wire_format", ["objects", "compact"])
@@ -1431,7 +1431,7 @@ def test_client_applies_optional_prompt_cache_to_every_request(
     monkeypatch.setattr(vlm.httpx, "AsyncClient", _AsyncPool)
     monkeypatch.setattr(vlm, "complete_stream", stream)
     client = vlm.VLMRichLabelClient(
-        AIClubSettings(), model="vlm", api_key="key", wire_format="compact",
+        ModelAPISettings(), model="vlm", api_key="key", wire_format="compact",
         execution_mode=execution_mode, prompt_cache=prompt_cache,
     )
     try:
@@ -1457,5 +1457,5 @@ def test_client_applies_optional_prompt_cache_to_every_request(
 def test_prompt_cache_requires_a_boolean(prompt_cache: Any) -> None:
     with pytest.raises(TypeError, match="prompt_cache must be boolean"):
         vlm.VLMRichLabelClient(
-            AIClubSettings(), model="vlm", prompt_cache=prompt_cache,
+            ModelAPISettings(), model="vlm", prompt_cache=prompt_cache,
         )

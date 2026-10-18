@@ -19,16 +19,17 @@ def test_invalid_ports_fail_before_renting(streams, port, sam):
 
 def test_cloud_account_and_model_tokens_do_not_reach_cpu_settings():
     environment = {
-        "AICLUB_API_KEY": "event-token",
+        "AICLUB_API_KEY": "retired-token",
+        "OPENROUTER_API_KEY": "event-token",
         "VAST_API_KEY": "cloud-token",
         "HF_TOKEN": "model-token",
         "SAM_SSH_KEY": "private-key",
-        "INFERENCE_PROVIDER": "aiclub",
+        "INFERENCE_PROVIDER": "openrouter",
         "SCENE_VLM_OUTPUT_MODE": "parallel",
     }
     assert hybrid.inference_environment(environment) == {
-        "AICLUB_API_KEY": "event-token",
-        "INFERENCE_PROVIDER": "aiclub",
+        "OPENROUTER_API_KEY": "event-token",
+        "INFERENCE_PROVIDER": "openrouter",
         "SCENE_VLM_OUTPUT_MODE": "parallel",
     }
 
@@ -105,7 +106,7 @@ def test_readiness_fails_if_supervisor_exits():
 
 def test_failed_child_stops_siblings_and_removes_secret_file(tmp_path, monkeypatch):
     runtime = tmp_path / "runtime.json"
-    runtime.write_text(json.dumps({"AICLUB_API_KEY": "test-token"}))
+    runtime.write_text(json.dumps({"OPENROUTER_API_KEY": "test-token"}))
     monkeypatch.setattr(hybrid, "REMOTE", str(tmp_path))
     monkeypatch.setattr(hybrid.signal, "SIGHUP", 31, raising=False)
     monkeypatch.setattr(hybrid.signal, "signal", lambda *args: None)
