@@ -1,6 +1,5 @@
 from dataclasses import replace
 from itertools import pairwise
-from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -174,14 +173,15 @@ def test_phase_statistics_include_observed_failures_and_do_not_invent_zeros():
 
 
 @pytest.mark.parametrize("finish_after, drained", [(17.0, True), (25.0, False)])
+@pytest.mark.parametrize("host_uptime", [100.0, 2000.0])
 def test_drain_collects_last_timeout_without_extending_request_or_waiting_forever(
-    tmp_path, monkeypatch, finish_after, drained
+    tmp_path, monkeypatch, finish_after, drained, host_uptime
 ):
     from tools import vlm_multistream_benchmark as benchmark
     from tools.vlm_benchmark import source_feeder
 
     class Clock:
-        now = 0.0
+        now = 1000.0
 
         def monotonic(self):
             return self.now
@@ -192,11 +192,39 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
     clock = Clock()
     configs = []
 
-    class ClockEvent(Event):
-        def wait(self, timeout=None):
-            if not self.is_set() and timeout is not None:
-                clock.sleep(timeout)
-            return self.is_set()
+    class SourceFeeder:
+        # Drain budgeting uses a logical clock. Keep source delivery on that
+        # clock too; a real feeder thread would wait against the host's uptime.
+        # Real-time feeder scheduling has its own integration tests.
+        def __init__(self, branches, framesets, releases, started, sample_fps):
+            self.branches, self.framesets = branches, framesets
+            self.releases, self.started = releases, started
+            self.sample_fps = sample_fps
+            self.release_lags = []
+            self.missed = 0
+            self.missed_by_stream = [0] * len(branches)
+            self.offer_rejected = [0] * len(branches)
+            self.thread = SimpleNamespace(is_alive=lambda: False)
+
+        def start(self):
+            for at, actions in self.releases:
+                clock.sleep(max(0, self.started + at - clock.monotonic()))
+                for camera, tick in actions:
+                    frames = self.framesets[camera % len(self.framesets)]
+                    accepted = self.branches[camera].offer(
+                        frames[tick % len(frames)], tick / self.sample_fps, tick
+                    )
+                    self.release_lags.append(0.0)
+                    self.offer_rejected[camera] += int(not accepted)
+
+        def notify(self, observer):
+            assert observer is None
+
+        def check(self):
+            pass
+
+        def close(self):
+            pass
 
     class Branch:
         def __init__(self, config, **kwargs):
@@ -236,10 +264,10 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
             pass
 
     monkeypatch.setattr(benchmark, "time", clock)
-    # Keep the real feeder's clock and interruptible wait on this timeline.
-    # Mixing fake stage time with host uptime can wait for minutes on a fresh VM.
-    monkeypatch.setattr(source_feeder, "time", clock)
-    monkeypatch.setattr(source_feeder, "Event", ClockEvent)
+    monkeypatch.setattr(
+        source_feeder, "time", SimpleNamespace(monotonic=lambda: host_uptime)
+    )
+    monkeypatch.setattr(benchmark, "TimedSourceFeeder", SourceFeeder)
     monkeypatch.setattr(benchmark, "IndependentVLMBranch", Branch)
     monkeypatch.setattr(benchmark, "environment_api_key", lambda settings: "fake-key")
     base = load_config(ROOT / "config.yaml")
@@ -260,6 +288,7 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
     assert result["drain_elapsed_seconds"] == pytest.approx(
         min(finish_after, 20), abs=0.03
     )
+    assert clock.now == pytest.approx(1003 + min(finish_after, 20), abs=0.03)
     lane = result["lanes"]["grounding"]
     assert lane["expected_observations"] == 3
     assert lane["complete_valid_results"] == 0
