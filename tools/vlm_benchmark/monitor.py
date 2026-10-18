@@ -752,7 +752,12 @@ class LiveMonitor:
                 for obj in objects
                 if obj.get("observation_state", "observed") == "observed"
             ]
-            self._maybe_select(key, session["id"], stage, evidence_at, jpeg, raw)
+            # Feed the full-res source frame (not the 320px capture) to the VLM
+            # select query; 320px is too small to read actions (fight/fall).
+            self._maybe_select(
+                key, session["id"], stage, evidence_at,
+                self._hires_frame(key, evidence_at, epoch) or jpeg, raw,
+            )
             tags, selected_scene_alert = self._active_tags(
                 key, session["id"], {track_id for track_id, _ in raw}
             )
@@ -799,6 +804,25 @@ class LiveMonitor:
                 },
                 state["scene_alert"] or bool(set(tags) - observed),
             )
+
+    def _hires_frame(self, key, at, epoch):
+        """The full-res (720px) source JPEG the preview capture came from.
+
+        The browser only uploads a 320px capture, which is too small for the VLM
+        to read actions; the server still holds the decoded source frames, so the
+        select query draws the YOLO boxes on the matching high-res frame instead.
+        Returns None on any mismatch (falls back to the 320px capture).
+        """
+        try:
+            camera = key[1]
+            frames = self.framesets[camera % len(self.framesets)]
+            sample_fps = self.state["sample_fps"]
+            duration = getattr(frames, "media_duration", len(frames) / sample_fps)
+            local = at - epoch * duration if duration else at
+            index = int(round(local * sample_fps)) % len(frames)
+            return frames[index]
+        except (IndexError, KeyError, TypeError, ZeroDivisionError, AttributeError):
+            return None
 
     def _maybe_select(self, key, session_id, stage, evidence_at, jpeg, raw):
         """Reserve a bounded asynchronous selection for a current source frame."""
