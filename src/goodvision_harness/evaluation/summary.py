@@ -13,6 +13,7 @@ from .model_ledger import LedgerBlocked
 from .privacy import reject_private
 from .recording import publish_once
 from .answer_artifact import _canonical
+from .evidence import NATIVE_SKIP_POLICY
 from .summary_input import message_bytes, prepare_summary_messages
 
 STATES = frozenset({"answered", "insufficient_evidence", "incomplete_video",
@@ -56,8 +57,14 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
     previous_request = (json.loads((output / "request.json").read_bytes())
                         if output.exists() else None)
     preparation = None
-    eligible = complete and artifact["parser"]["status"] not in {
-        "request_failure", "incomplete_video", "not_started", "interrupted"}
+    # A rule-level grounding gap is not a failed native capture. The final
+    # model can assess the actual saved evidence and return insufficient evidence.
+    native_grounding_gap = (
+        evidence.get("provenance", {}).get("coverage_policy") == NATIVE_SKIP_POLICY
+        and artifact["parser"]["status"] == "incomplete_video"
+        and artifact["parser"].get("reason") == "grounding_lane_not_complete")
+    eligible = complete and (native_grounding_gap or artifact["parser"]["status"] not in {
+        "request_failure", "incomplete_video", "not_started", "interrupted"})
     if (eligible and len(message_bytes(messages)) > max_input_bytes
             and (previous_request is None or "input_preparation" in previous_request)):
         # Existing terminal outputs retain their representation. Paid original requests
@@ -88,7 +95,7 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         return previous
     output.mkdir(parents=True, exist_ok=False)
     publish_once(output / "request.json", saved_request)
-    if not complete or artifact["parser"]["status"] in {"request_failure", "incomplete_video", "not_started", "interrupted"}:
+    if not eligible:
         result = {**identity, "status": "not_called", "final_answer": None,
                   "reason": "three_lane_observation_failed_or_incomplete",
                   "observation_status": artifact["parser"]["status"], "paid_dispatch": False}
