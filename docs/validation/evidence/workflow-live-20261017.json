@@ -1,0 +1,186 @@
+{
+  "date": "2026-10-17",
+  "timezone": "America/New_York",
+  "source_commit": "4b6bbefac9863cdb55f8741fcccc6b5eb19a5a08",
+  "scope": "One MacBook camera, actual face detection and OpenRouter latest-snapshot summaries; no enrollment or identity matching.",
+  "environment": {
+    "input": "MacBook Pro built-in camera via FFmpeg AVFoundation and localhost-only MediaMTX RTSP",
+    "input_resolution": [
+      1280,
+      720
+    ],
+    "relay_fps": 15,
+    "audio": false,
+    "dry_run": false,
+    "python": "3.12.12",
+    "insightface": "1.0.1",
+    "onnxruntime": "1.31.0",
+    "face_provider": "CPUExecutionProvider",
+    "face_profile": "buffalo_l",
+    "summary_provider": "OpenRouter",
+    "summary_model": "qwen/qwen3.5-35b-a3b:nitro",
+    "summary_interval_seconds": 60,
+    "summary_input": "latest snapshot"
+  },
+  "matrix": {
+    "passed": 16,
+    "total": 16,
+    "success": true,
+    "distinct_sessions": 8,
+    "checks": [
+      {
+        "name": "real_camera_preflight",
+        "status": "passed"
+      },
+      {
+        "name": "temporary_workflow_assets",
+        "status": "passed"
+      },
+      {
+        "name": "real_face_single_frame_test",
+        "status": "passed"
+      },
+      {
+        "name": "both",
+        "status": "passed"
+      },
+      {
+        "name": "no_summary_after_stop_for_more_than_interval",
+        "status": "passed"
+      },
+      {
+        "name": "face_only",
+        "status": "passed"
+      },
+      {
+        "name": "summary_only",
+        "status": "passed"
+      },
+      {
+        "name": "all_blocks_off",
+        "status": "passed"
+      },
+      {
+        "name": "camera_override_face_off",
+        "status": "passed"
+      },
+      {
+        "name": "camera_override_summary_off",
+        "status": "passed"
+      },
+      {
+        "name": "camera_override_inherit",
+        "status": "passed"
+      },
+      {
+        "name": "block_hard_gate_over_child_true",
+        "status": "passed"
+      },
+      {
+        "name": "camera_gate_off",
+        "status": "passed"
+      },
+      {
+        "name": "group_hard_gate_over_child_true",
+        "status": "passed"
+      },
+      {
+        "name": "restart_with_new_session",
+        "status": "passed"
+      },
+      {
+        "name": "cleanup_own_validation_assets",
+        "status": "passed"
+      }
+    ]
+  },
+  "face_detection": {
+    "single_frame_test_face_count": 1,
+    "single_frame_test_synthetic": false,
+    "concurrent_progress": {
+      "revision_before": 3,
+      "revision_after": 154,
+      "source_frame_before": 726,
+      "source_frame_after": 1632
+    },
+    "native_result_note": "face_raw does not include synthetic; actual inference is established by dry_run=false and the real face Test."
+  },
+  "summary_results": [
+    {
+      "case": "both",
+      "synthetic": false,
+      "status": "completed",
+      "latency_seconds": 0.735729,
+      "first_result_after_seconds": 62.053
+    },
+    {
+      "case": "summary_only",
+      "synthetic": false,
+      "status": "completed",
+      "latency_seconds": 0.556661,
+      "first_result_after_seconds": 60.587
+    },
+    {
+      "case": "camera_override_face_off",
+      "synthetic": false,
+      "status": "completed",
+      "latency_seconds": 0.818595,
+      "first_result_after_seconds": 61.618
+    }
+  ],
+  "apply_while_running": {
+    "http_status": 409,
+    "revision_before": 4,
+    "revision_after": 4
+  },
+  "stop": {
+    "observed_seconds": 66.624,
+    "summary_records_unchanged": 1,
+    "summary_request_counts_unchanged": [
+      1
+    ],
+    "source_frames_before": 1629,
+    "source_frames_after": 2628
+  },
+  "ui_checks": {
+    "group_summary_off_face_runs": true,
+    "summary_worker_idle_when_disabled": true,
+    "face_revision_observed": 394,
+    "stop_returns_idle_and_keeps_video_connected": true,
+    "group_summary_restored_enabled": true,
+    "save_and_apply_from_canvas": true,
+    "group_toggle_locked_while_running": true
+  },
+  "limitations": [
+    "No enrollment, known-person matching validation, stranger-classification accuracy validation, or general accuracy benchmark.",
+    "One camera; no multi-camera capacity or GPU performance claim.",
+    "Stop was tested after a completed request, not while a provider call was in flight.",
+    "Face progress across the summary interval does not quantify latency interference during the model call.",
+    "Built-in camera supplied through a local RTSP relay; native browser webcam-to-workflow integration was not tested.",
+    "No event-recognition, webhook, or long-duration soak validation in this run."
+  ],
+  "private_artifacts": "Raw runtime records, credentials, models and any application evidence remain in ignored local directories; this file contains only reviewed aggregates.",
+  "consecutive_cadence": {
+    "success": true,
+    "completion_spacing_seconds": 59.916061,
+    "source_spacing_seconds": 60.0,
+    "source_frame_advance": 900,
+    "face_revision_advance_between_summaries": 151,
+    "face_source_frame_advance_between_summaries": 906,
+    "same_session": true,
+    "same_connection": true,
+    "real_completed_summaries": 2,
+    "latency_seconds": [
+      0.826913,
+      0.744682
+    ]
+  },
+  "cleanup": {
+    "analysis_stopped": true,
+    "video_disconnected": true,
+    "camera_capture_stopped": true,
+    "local_rtsp_relay_stopped": true,
+    "both_components_enabled_in_retained_workflow": true,
+    "console_retained_for_review": true
+  }
+}
