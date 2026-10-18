@@ -8,16 +8,45 @@ import time
 
 from ..model_api import ModelAPIClient, ModelAPIError
 from ..scene_model import _json, _strip_json_fence, _ResponseValidationError
-from .failures import failure_policy
+from .failures import failure_policy, native_report_failure_policy
 from .model_ledger import LedgerBlocked
 from .privacy import reject_private
 from .recording import publish_once
 from .answer_artifact import _canonical
 from .evidence import NATIVE_SKIP_POLICY
 from .summary_input import message_bytes, prepare_summary_messages
+from .rate_limit import wait_after_429
 
 STATES = frozenset({"answered", "insufficient_evidence", "incomplete_video",
                     "request_failure", "unsupported"})
+
+
+def _native_window_gaps_only(evidence):
+    """Separate saved window quality from the source's completed lifecycle."""
+    provenance = evidence.get("provenance", {})
+    manifest = evidence.get("observation_manifest", {})
+    failures = evidence.get("failures", [])
+    if (provenance.get("coverage_policy") != NATIVE_SKIP_POLICY
+            or provenance.get("scheduling_mode") != "native_streaming"
+            or not failures or evidence.get("request_failure") is not True
+            or not all(evidence.get(key) is True for key in
+                       ("source_eof", "tracking_drained", "events_drained", "fusion_drained"))
+            or not (manifest.get("person_frames_complete") is True
+                    or manifest.get("person_frames_accounted") is True)
+            or not (evidence.get("frames") or evidence.get("independent_events")
+                    or evidence.get("fused_episodes"))):
+        return False
+    for failure in failures:
+        if (not failure.get("window_id") or not failure.get("reference")
+                or failure.get("stage") not in {"independent_vlm", "fusion"}
+                or failure.get("vlm_lane") not in {"information", "grounding", "combined"}
+                or failure.get("reason")):
+            return False
+        policy = native_report_failure_policy({"state": "failed", "error_code": failure.get("error"),
+            "timing": {"http_status": failure.get("status_code")}})
+        if policy["scope"] != "window":
+            return False
+    return True
 
 
 def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
@@ -65,6 +94,9 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         and artifact["parser"].get("reason") == "grounding_lane_not_complete")
     eligible = complete and (native_grounding_gap or artifact["parser"]["status"] not in {
         "request_failure", "incomplete_video", "not_started", "interrupted"})
+    if _native_window_gaps_only(evidence) and artifact["parser"]["status"] not in {
+            "not_started", "interrupted"}:
+        eligible = True
     if (eligible and len(message_bytes(messages)) > max_input_bytes
             and (previous_request is None or "input_preparation" in previous_request)):
         # Existing terminal outputs retain their representation. Paid original requests
@@ -108,11 +140,24 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         publish_once(output / "outcome.json", result)
         return result
     started, receipt, text = time.monotonic(), None, None
+    backoff_seconds = 0.0
+    context = {"phase": "same_evidence_summary", "qa_id": artifact["qa_id"],
+               "video_id": artifact["video_id"], "evidence_sha256": artifact["evidence_sha256"]}
     try:
-        response, receipt = ledger.complete(
-            client, model=model, messages=messages, parameters=parameters,
-            context={"phase": "same_evidence_summary", "qa_id": artifact["qa_id"],
-                     "video_id": artifact["video_id"], "evidence_sha256": artifact["evidence_sha256"]})
+        for attempt in range(3):
+            try:
+                response, receipt = ledger.complete(client, model=model, messages=messages,
+                    parameters=parameters, context=context)
+                break
+            except ModelAPIError as exc:
+                receipt = getattr(exc, "evaluation_ledger_receipt", None)
+                if exc.status_code != 429:
+                    raise
+                elapsed, retry_allowed = wait_after_429(exc, ledger=ledger, context=context,
+                                                        receipt=receipt, clock=time)
+                backoff_seconds += elapsed
+                if attempt == 2 or (receipt or {}).get("attempt", 0) >= 3 or not retry_allowed:
+                    raise
         publish_once(output / "response.json", response)
         text = ModelAPIClient.assistant_text(response)
         parsed = _json(_strip_json_fence(text), stage="summary_answer")
@@ -124,7 +169,10 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
             raise _ResponseValidationError("summary_answer_contract", "summary_answer")
         # Preserve original references; do not judge correctness or retry semantic errors.
         result = {**identity, **parsed, "raw_text": text, "ledger_receipt": receipt,
-                  "client_wall_seconds": time.monotonic() - started, "references_validated": False}
+                  "client_wall_seconds": time.monotonic() - started,
+                  "rate_limit_backoff_seconds": backoff_seconds,
+                  "model_seconds": time.monotonic() - started - backoff_seconds,
+                  "references_validated": False}
     except (ModelAPIError, _ResponseValidationError, LedgerBlocked) as exc:
         policy = failure_policy(exc)
         if isinstance(exc, _ResponseValidationError):
@@ -132,7 +180,9 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         result = {**identity,
                   "status": "invalid_answer" if isinstance(exc, _ResponseValidationError) else "request_failure",
                   "final_answer": None, "raw_text": text, "failure_policy": policy,
-                  "ledger_receipt": receipt, "client_wall_seconds": time.monotonic() - started}
+                  "ledger_receipt": receipt, "client_wall_seconds": time.monotonic() - started,
+                  "rate_limit_backoff_seconds": backoff_seconds,
+                  "model_seconds": time.monotonic() - started - backoff_seconds}
         publish_once(output / "outcome.json", result)
         if policy["scope"] == "shared":
             raise

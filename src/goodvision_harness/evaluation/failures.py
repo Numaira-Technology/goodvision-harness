@@ -18,8 +18,9 @@ def native_report_failure_policy(report):
         return None
     status = report.get("timing", {}).get("http_status")
     local = status not in {401, 402, 403} and (
-        code in {"timeout", "connection", "invalid_response", "empty_response",
-                 "admission_timeout", "admission_superseded"}
+        status == 429 or code in {"timeout", "connection", "invalid_response", "empty_response",
+                 "admission_timeout", "admission_superseded",
+                 "unresolved_same_input_request", "same_input_attempts_exhausted"}
         or code == "http_error" and type(status) is int and 400 <= status < 600
     )
     return {"scope": "window" if local else "shared", "code": code,
@@ -38,7 +39,9 @@ def failure_policy(error):
     if isinstance(error, LedgerBlocked):
         row["scope"] = error.scope
     elif isinstance(error, ModelAPIError):
-        if error.status_code not in {401, 402, 403} and error.code in {
+        if error.status_code == 429:
+            row["scope"] = "source"
+        elif error.status_code not in {401, 402, 403} and error.code in {
             "timeout", "invalid_response", "empty_response", "overloaded"
         }:
             row["scope"] = "source"

@@ -144,7 +144,8 @@ separate from native SceneState confirmations; reuse its association and lifecyc
         if report.get("state") != "completed" or report.get("error_code"):
             self.failures.append({"stage": "fusion" if lane == "grounding" else "independent_vlm",
                                   "window_id": window_id, "vlm_lane": lane,
-                                  "error": report.get("error_code"), "reference": raw_reference})
+                                  "error": report.get("error_code"), "reference": raw_reference,
+                                  "status_code": report.get("timing", {}).get("http_status")})
             return
         judgments = {x["event_label"]: x for x in report.get("judgments", [])}
         if len(judgments) != len(report.get("judgments", [])):

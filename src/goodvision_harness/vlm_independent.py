@@ -560,7 +560,10 @@ def run_vlm_process(
             status = getattr(exc, "status_code", None)
             if type(status) is int and 100 <= status <= 599:
                 http_status = status
-            if error not in {
+            # A cumulative per-input refusal is not a broken shared ledger.
+            input_blocked = (getattr(exc, "scope", None) == "source" and error in {
+                "unresolved_same_input_request", "same_input_attempts_exhausted"})
+            if not input_blocked and error not in {
                 "timeout",
                 "connection",
                 "http_error",

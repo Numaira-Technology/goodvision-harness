@@ -9,6 +9,7 @@ from types import MethodType
 from ..model_api import ModelAPIError
 from ..vlm_independent import _inspector
 from .model_ledger import ModelLedger
+from .rate_limit import wait_after_429
 
 _lock = Lock()
 _ledger = None
@@ -86,33 +87,18 @@ class LedgerInspectorFactory:
                 try:
                     return original(job)
                 except ModelAPIError as exc:
-                    if exc.status_code != 429 or attempt == 2:
-                        raise
-                    retry_after = getattr(exc, "evaluation_diagnostic", {}).get(
-                        "retry_after_seconds")
-                    delay = max(60.0, retry_after or 0.0)
-                    if not math.isfinite(delay) or delay > 300.0:
+                    if exc.status_code != 429:
                         raise
                     receipt = instance.last_ledger_receipt or {}
-                    if receipt.get("attempt", 0) >= 3:
-                        raise
-                    row = {"kind": "vlm_rate_limit_backoff", "lane": config.output_mode,
-                           "request_id": job.request.request_id,
-                           "source_frame_sequences": sequences,
-                           "call_id": receipt.get("call_id"),
-                           "request_sha256": receipt.get("request_sha256"),
-                           "seconds": delay, "started_epoch": time.time(),
-                           "same_job_and_parameters": True}
-                    with _ledger.lock:
-                        _ledger._append("rate-limit-backoff.jsonl", row)
                     waiting = time.monotonic()
                     try:
-                        if stop is None:
-                            time.sleep(delay)
-                        elif stop.wait(delay):
-                            raise ModelAPIError("evaluation backoff stopped", code="cancelled")
+                        _, retry_allowed = wait_after_429(exc, ledger=_ledger, receipt=receipt,
+                            context={"lane": config.output_mode, "request_id": job.request.request_id,
+                                     "source_frame_sequences": sequences}, clock=time, stop=stop)
                     finally:
                         instance.last_rate_limit_backoff_seconds += time.monotonic() - waiting
+                    if attempt == 2 or receipt.get("attempt", 0) >= 3 or not retry_allowed:
+                        raise
 
         inspector.inspect = MethodType(inspect, inspector)
         # Formal capture performs only ledgered model requests; skip the native

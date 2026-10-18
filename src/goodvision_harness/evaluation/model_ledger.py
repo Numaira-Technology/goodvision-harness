@@ -185,6 +185,9 @@ class ModelLedger:
             if error is not None:
                 saved["error"] = {"type": type(error).__name__, "code": getattr(error, "code", None),
                                   "status_code": getattr(error, "status_code", None)}
+                retry_after = getattr(error, "retry_after_seconds", None)
+                if retry_after is not None:
+                    saved["error"]["retry_after_seconds"] = retry_after
                 diagnostic = getattr(error, "evaluation_diagnostic", None)
                 if diagnostic is not None:
                     saved["error"]["diagnostic"] = diagnostic
@@ -279,7 +282,8 @@ class ModelLedger:
             error = exc
             # Do not retry a failed finish write and risk a conflicting terminal record.
             if not self.poisoned:
-                self.finish(row, response=response, error=error)
+                receipt = self.finish(row, response=response, error=error)
+                exc.evaluation_ledger_receipt = receipt
             raise
 
     def close(self):

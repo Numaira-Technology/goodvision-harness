@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from collections.abc import Mapping, Sequence
@@ -56,6 +57,7 @@ class ModelAPIError(RuntimeError):
     def __init__(
         self, message: str, *, code: str = "request_failed",
         status_code: int | None = None,
+        retry_after: str | None = None,
     ) -> None:
         super().__init__(message)
         # Only these bounded fields are suitable for diagnostic logs. Exception
@@ -69,6 +71,11 @@ class ModelAPIError(RuntimeError):
             and 100 <= status_code <= 599
             else None
         )
+        try:
+            delay = float(retry_after)
+        except (TypeError, ValueError):
+            delay = float("nan")
+        self.retry_after_seconds = delay if math.isfinite(delay) and delay >= 0 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +339,7 @@ class ModelAPIClient:
                 raise ModelAPIError(
                     f"model API returned HTTP {int(exc.code)}",
                     code="http_error", status_code=int(exc.code),
+                    retry_after=exc.headers.get("Retry-After") if exc.headers is not None else None,
                 ) from exc
             except (URLError, TimeoutError, OSError) as exc:
                 if attempt < self.settings.max_retries:
@@ -404,6 +412,7 @@ class PooledModelAPIClient(ModelAPIClient):
                 raise ModelAPIError(
                     f"model API returned HTTP {response.status_code}",
                     code="http_error", status_code=response.status_code,
+                    retry_after=response.headers.get("Retry-After"),
                 )
             if not response.content.strip():
                 raise ModelAPIError(

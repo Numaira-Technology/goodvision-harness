@@ -148,15 +148,19 @@ limited to three actual sends. The spawned native process owns the ledger writer
 during observation; final answering obtains that writer after worker cleanup and
 GPU release. Shared failures stop the workflow instead of failing later questions.
 
-The evaluation inspector retries explicit HTTP 429 responses only, on the same
-job and parameters. It waits at least 60 seconds and honors a longer numeric
-`Retry-After` up to 300 seconds. A longer delay returns the failure for outer
-recovery. Each actual send remains separately ledgered, with the cumulative
-three-send limit applying across restarts. Other errors and unknown outcomes
-retain their existing behavior. Backoff is recorded in
+The evaluation inspector and final-answer entry retry explicit HTTP 429 responses
+only, on the same input and parameters. Each waits at least 60 seconds and honors
+a longer numeric `Retry-After`. Both final-answer HTTP transports preserve this
+numeric header in the error and ledger receipt. A delay above 300 seconds ends
+this input's retry sequence after that cooldown; an exhausted input also receives
+its last cooldown before the worker moves on. Neither case requires batch recovery.
+Each send remains separately ledgered, with the cumulative three-send limit
+applying across restarts. These are per-worker waits, not an account-wide rate
+limiter. Backoff is recorded in
 `rate-limit-backoff.jsonl` and in report timing, separately from `model_seconds`;
-`observation_wall_seconds` includes it. HTTP timing describes the last attempt;
-all attempts are available in the model ledger.
+`observation_wall_seconds` includes it. Final-answer outcomes retain wall time,
+backoff time and model time. HTTP timing describes the last attempt; all attempts
+are available in the model ledger.
 The native process stop event interrupts evaluation backoff and prevents the
 retry loop from continuing after shutdown.
 
@@ -167,15 +171,23 @@ that report before classifying its failure. `failed_requests` is a counter, not
 a batch-stop signal. Missing/invalid fields, empty responses, request timeouts
 and a single request's connection error remain failed windows while subsequent
 windows continue. HTTP 4xx/5xx responses are also window-local except for
-credential/payment failures (401/402/403); 429 retains the limits above. This
-change adds no retries and does not resend an unknown request.
+credential/payment failures (401/402/403); an explicit 429 remains local even
+if a worker normalized its error code. Other failures receive no new retries.
 Native admission timeouts and superseded windows also stay window-local.
+The native worker preserves the ledger's two known per-input refusals, unresolved
+outcomes and exhausted attempts, without another send or a batch stop. The next
+distinct input can continue. Other ledger errors remain shared interruptions.
 
 After EOF and drain, a source containing failed windows is saved as incomplete.
 Successful windows, failed-window identities, frame ranges and original receipts
-remain available. The next video can be captured on the same GPU. Existing final
-answer eligibility and scoring are unchanged: an incomplete capture is not
-silently promoted to successful evidence or a paid final answer.
+remain available. The next video can be captured on the same GPU. Final answering
+accepts native evidence with classified window-local gaps after EOF, queue drain,
+person-frame accounting and preservation of usable observations. It passes the
+saved gaps to the model, which can answer or report insufficient evidence. The
+archive retains its failed windows and `complete=false`; rule answers and scoring
+remain unchanged. Empty evidence, unfinished source lifecycles, shared failures
+and unclassified archive failures still prevent a final-model call. Existing
+terminal outputs remain unchanged, and unknown requests are not resent.
 
 For YOLO/RF native sources, explicit source-wall or drain timeouts can terminate
 only that source. Before continuing, capture must confirm source, tracking, VLM
@@ -207,9 +219,12 @@ offline scores.
 
 The specifically authorized short-video native-skip path completed capture,
 resource release, final answering and local scoring on October 16, 2026.
-The explicit-429 recovery change is awaiting observation in the authorized full
-evaluation; that short-video result does not validate this later change.
-Independent tests, lint, compilation and build checks have not been run.
-The window/source isolation change has only been reviewed by reading code; its
-runtime behavior has not yet been observed in the authorized evaluation.
+On October 18, the user authorized targeted 429/window-recovery tests; 38 cases
+passed. The local tests cover cooldown and cumulative attempts, persisted-ledger reload, continued
+windows in a real spawned worker, continued final answering, both HTTP clients'
+`Retry-After` propagation, and shared-failure counterexamples. Model transports
+and backoff clocks are controlled; the tests make no provider or GPU requests.
+The test report and source review must not be presented as a measured reduction
+in production resume counts. Frozen resume39 uses the preceding capture-isolation
+commit, not these additions. No full suite, lint, compilation or build was run.
 The completed RF comparison retains its original implementation and results.
