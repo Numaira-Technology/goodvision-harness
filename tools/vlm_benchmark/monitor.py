@@ -160,6 +160,28 @@ class LiveMonitor:
         ).strip()
         self._detector_sessions = {}
         self._detector_lock = threading.Lock()
+        # Per-person event binding via a cheap "which numbered YOLO person is
+        # doing the event" VLM query (PREVIEW_SELECT_EVENTS=1). YOLO supplies the
+        # boxes + track_ids; the VLM only picks a number (~3.4s, vs ~12s for it
+        # to localize from scratch). The chosen track_id is tagged with the event
+        # and a TTL, then followed on the live boxes, so VLM latency never stales
+        # the overlay. Needs OPENROUTER_API_KEY.
+        self._select_events = os.environ.get("PREVIEW_SELECT_EVENTS", "").strip().lower() not in {
+            "", "0", "false", "no", "off"
+        }
+        self._select_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        self._select_model = os.environ.get(
+            "PREVIEW_SELECT_MODEL", "qwen/qwen3-vl-30b-a3b-instruct"
+        ).strip()
+        self._select_labels = (
+            "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter",
+        )
+        self._select_interval = 4.0   # seconds between VLM selects per camera
+        self._select_ttl = 6.0        # seconds a track stays tagged with an event
+        self._event_tags = {}         # key -> {track_id: (event, expiry_monotonic)}
+        self._select_inflight = set()  # keys with a VLM select in flight
+        self._select_last = {}        # key -> last select monotonic
+        self._select_state_lock = threading.Lock()
 
     def __enter__(self):
         from tools.vlm_benchmark.recording import BrowserRecorder, make_preview
@@ -685,22 +707,40 @@ class LiveMonitor:
                     ids.add(track_id)
             except (urllib.error.URLError, OSError, ValueError, TimeoutError):
                 return unavailable
-        matches, unmatched = _event_matches(objects, event_subjects)
-        if unmatched:
-            # An ambiguous/unmatched positive remains a scene alert; it cannot
-            # assign an event name to a particular person.
-            scene_state = "alert"
-        result = []
-        for index, obj in enumerate(objects):
-            events = matches.get(index, [])
-            entry = {
-                "track_id": obj["track_id"],
-                "bbox": obj["bbox"],
-                "event_state": "alert" if events else scene_state,
-            }
-            if events:
-                entry["event"] = ", ".join(events)
-            result.append(entry)
+        if self._select_events:
+            # YOLO supplies boxes + track_ids; a cheap VLM "which numbered person"
+            # query tags a track_id with its event, then we follow that tag on the
+            # live boxes (latency-proof). Fired throttled, in the background.
+            raw = [(o["track_id"], o["bbox"], _normalized_xyxy(o["bbox"])) for o in objects]
+            self._maybe_select(key, jpeg, raw)
+            tags = self._active_tags(key)
+            result = []
+            for obj in objects:
+                entry = {
+                    "track_id": obj["track_id"],
+                    "bbox": obj["bbox"],
+                    "event_state": "normal",
+                }
+                if obj["track_id"] in tags:
+                    entry["event_state"], entry["event"] = "alert", tags[obj["track_id"]]
+                result.append(entry)
+        else:
+            matches, unmatched = _event_matches(objects, event_subjects)
+            if unmatched:
+                # An ambiguous/unmatched positive remains a scene alert; it cannot
+                # assign an event name to a particular person.
+                scene_state = "alert"
+            result = []
+            for index, obj in enumerate(objects):
+                events = matches.get(index, [])
+                entry = {
+                    "track_id": obj["track_id"],
+                    "bbox": obj["bbox"],
+                    "event_state": "alert" if events else scene_state,
+                }
+                if events:
+                    entry["event"] = ", ".join(events)
+                result.append(entry)
         return {
             "status": "tracking" if result else "no_person_boxes",
             "event_state": "alert"
@@ -708,6 +748,111 @@ class LiveMonitor:
             else scene_state,
             "objects": result,
         }
+
+    def _active_tags(self, key):
+        """track_id -> event for still-valid (non-expired) event tags."""
+        now = time.monotonic()
+        with self._select_state_lock:
+            tags = self._event_tags.get(key, {})
+            live = {tid: ev for tid, (ev, exp) in tags.items() if exp > now}
+            self._event_tags[key] = {tid: tags[tid] for tid in live}
+            return live
+
+    def _maybe_select(self, key, jpeg, raw):
+        """Fire the cheap VLM 'which numbered person' query, throttled per camera."""
+        if not (self._select_key and raw):
+            return
+        now = time.monotonic()
+        with self._select_state_lock:
+            if key in self._select_inflight:
+                return
+            if now - self._select_last.get(key, 0.0) < self._select_interval:
+                return
+            self._select_last[key] = now
+            self._select_inflight.add(key)
+        # Snapshot number -> track_id in a stable order for this query.
+        numbered = [(i + 1, tid, box) for i, (tid, _b, box) in enumerate(raw) if box]
+        threading.Thread(
+            target=self._run_select, args=(key, jpeg, numbered), daemon=True
+        ).start()
+
+    def _run_select(self, key, jpeg, numbered):
+        try:
+            tags = self._select_query(jpeg, numbered)
+            if tags:
+                expiry = time.monotonic() + self._select_ttl
+                with self._select_state_lock:
+                    store = self._event_tags.setdefault(key, {})
+                    for track_id, event in tags.items():
+                        store[track_id] = (event, expiry)
+        except Exception:
+            pass
+        finally:
+            with self._select_state_lock:
+                self._select_inflight.discard(key)
+
+    def _select_query(self, jpeg, numbered):
+        """Draw numbered boxes on the frame, ask the VLM which number does what.
+
+        Returns {track_id: event} for people the model says are doing an event.
+        """
+        import urllib.request as _r
+        from io import BytesIO
+
+        from PIL import Image, ImageDraw
+        image = Image.open(BytesIO(jpeg)).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        w, h = image.size
+        num_to_track = {}
+        for number, track_id, box in numbered:
+            num_to_track[number] = track_id
+            x1, y1, x2, y2 = box[0] * w, box[1] * h, box[2] * w, box[3] * h
+            draw.rectangle([x1, y1, x2, y2], outline=(0, 255, 0), width=3)
+            draw.text((x1 + 2, max(0, y1 - 12)), f"#{number}", fill=(255, 255, 0))
+        buf = BytesIO()
+        image.save(buf, "JPEG", quality=90)
+        data = base64.b64encode(buf.getvalue()).decode()
+        prompt = (
+            "People detected by a separate detector are drawn as numbered green "
+            "boxes (#1, #2, ...). For each of these events say whether it is "
+            "happening and WHICH numbered person is doing it (or null): "
+            + ", ".join(self._select_labels)
+            + ". Do NOT output coordinates; only use the given numbers. Return "
+            'compact JSON {event: {happening: bool, person: number or null}}.'
+        )
+        body = json.dumps({
+            "model": self._select_model,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{data}"}},
+            ]}],
+            "max_tokens": 300,
+            "temperature": 0,
+        }).encode()
+        request = _r.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=body, method="POST",
+            headers={"Authorization": f"Bearer {self._select_key}",
+                     "Content-Type": "application/json"},
+        )
+        with _r.urlopen(request, timeout=20.0) as response:
+            payload = json.loads(response.read())
+        text = payload["choices"][0]["message"]["content"]
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            return {}
+        verdicts = json.loads(match.group(0))
+        tags = {}
+        for event, info in verdicts.items():
+            if event not in self._select_labels or not isinstance(info, dict):
+                continue
+            if not info.get("happening"):
+                continue
+            person = info.get("person")
+            track_id = num_to_track.get(person) if isinstance(person, int) else None
+            if track_id:
+                tags[track_id] = event
+        return tags
 
     def handler(self):
         monitor = self
