@@ -13,6 +13,7 @@ from .model_ledger import LedgerBlocked
 from .privacy import reject_private
 from .recording import publish_once
 from .answer_artifact import _canonical
+from .summary_input import message_bytes, prepare_summary_messages
 
 STATES = frozenset({"answered", "insufficient_evidence", "incomplete_video",
                     "request_failure", "unsupported"})
@@ -52,16 +53,30 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
                 and all(evidence.get(key) is True for key in
                         ("source_eof", "tracking_drained", "events_drained", "fusion_drained")))
     output = Path(output)
-    encoded = json.dumps(request["messages"], ensure_ascii=False, separators=(",", ":")).encode()
+    previous_request = (json.loads((output / "request.json").read_bytes())
+                        if output.exists() else None)
+    preparation = None
+    eligible = complete and artifact["parser"]["status"] not in {
+        "request_failure", "incomplete_video", "not_started", "interrupted"}
+    if (eligible and len(message_bytes(messages)) > max_input_bytes
+            and (previous_request is None or "input_preparation" in previous_request)):
+        # Existing terminal outputs retain their representation. Paid original requests
+        # retain their ledger identity, including cached replies and unknown outcomes.
+        if previous_request is not None or not ledger.has_prior_request(
+                model=model, messages=messages, parameters=parameters):
+            messages, preparation = prepare_summary_messages(
+                messages, max_input_bytes=max_input_bytes)
+    encoded = message_bytes(messages)
     identity = {"qa_id": artifact["qa_id"], "video_id": artifact["video_id"],
                 "method": request["method"], "evidence_sha256": artifact["evidence_sha256"],
                 "artifact_sha256": artifact_sha256, "model": model,
                 "messages_sha256": hashlib.sha256(encoded).hexdigest(),
                 "same_evidence_not_historical_question_conditioned_summary": True}
-    saved_request = {**identity, "messages": request["messages"], "parameters": parameters,
+    saved_request = {**identity, "messages": messages, "parameters": parameters,
                      "max_input_bytes": max_input_bytes}
+    if preparation is not None:
+        saved_request["input_preparation"] = preparation
     if output.exists():
-        previous_request = json.loads((output / "request.json").read_bytes())
         previous = json.loads((output / "outcome.json").read_bytes())
         if previous_request != saved_request or any(previous.get(k) != v for k, v in identity.items()):
             raise ValueError("existing final-answer identity changed")
@@ -88,7 +103,7 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
     started, receipt, text = time.monotonic(), None, None
     try:
         response, receipt = ledger.complete(
-            client, model=model, messages=request["messages"], parameters=parameters,
+            client, model=model, messages=messages, parameters=parameters,
             context={"phase": "same_evidence_summary", "qa_id": artifact["qa_id"],
                      "video_id": artifact["video_id"], "evidence_sha256": artifact["evidence_sha256"]})
         publish_once(output / "response.json", response)

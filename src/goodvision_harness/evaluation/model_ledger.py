@@ -254,6 +254,14 @@ class ModelLedger:
         inspector.last_ledger_receipt = None
         return inspector
 
+    def has_prior_request(self, *, model, messages, parameters):
+        """Read existing send history before changing an answer's representation."""
+        payload = {key: value for key, value in parameters.items() if value is not None}
+        payload.update(model=model, messages=messages)
+        digest = request_digest(request_without_images(payload))
+        with self.lock:
+            return digest in self.counts
+
     def complete(self, client, *, model, messages, parameters, context):
         """Synchronous same-evidence summary boundary; disable the client's own retries."""
         if client.settings.max_retries != 0:

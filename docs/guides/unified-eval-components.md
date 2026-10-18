@@ -71,6 +71,48 @@ top-level `max_tokens`, avoiding a `KeyError` during override lookup. Window,
 lane, and explicit top-level budget precedence stays unchanged. Historical
 frozen code and requests remain untouched.
 
+## Lossless final-answer input preparation
+
+The final-answer executor reuses the offline benchmark's shared-value and
+record-schema codecs from commits `266e1b6` and `90c2f9f`. The original
+pre-experiment Harness baseline remains `6c28dddd26bed7a7be50762a4c7dd6b796b2dbe3`;
+these codecs are later evaluation work, now connected to the unified answer path.
+
+After reading the saved complete observations, `evaluation.summary` prepares
+oversized text requests with `evaluation.summary_input`. It first shares repeated
+values, then shared record keys and strings if needed. Each selected representation
+retains every observation, timestamp, numeric value and original text. The public
+question stays outside the encoding. The codec includes instructions for expanding
+its notation, and the final model receives that encoded evidence. The saved
+artifact and deterministic parser continue to use the original evidence.
+
+Requests within the configured byte limit keep their existing messages. For an
+oversized request, the executor selects a smaller lossless representation and
+records its encoding, original/prepared byte counts and candidates under
+`request.json.input_preparation`. Reserved marker collisions retain the preceding
+representation. If all available representations exceed the byte limit, the
+executor preserves a `not_called` outcome with the prepared size. It does not drop
+windows, remove SAM details, paraphrase observations or raise the limit. This
+byte-budget preparation does not measure tokens or establish a provider context
+limit; the old tokenizer and lossy budget fallbacks are outside this integration.
+
+Existing final-answer output directories retain their saved representation and
+terminal outcomes. Requests already present in the cumulative ledger keep their
+original messages, preserving successful-response reuse and unknown-outcome
+blocks. Answering a previously uncalled oversized artifact uses an independent
+output location with the same evidence and cumulative ledger. The actual selected
+messages, rather than the original oversized messages, are saved and dispatched.
+
+This change affects final-answer text preparation only. It retains the one answer
+entry, VLM switch, capture scheduling, native frame skips, detector weights and
+parameters, resource release ordering, prompts for observation, and PR63 scoring.
+Running frozen checkouts remain unchanged. The prior benchmark's grounded-SAM
+budget adapter and its observation-dropping fallbacks are not imported.
+
+Tests were not written or run for this integration because the user did not
+authorize them. Review is limited to source and Git differences; formal recovery
+results must be recorded separately when the new frozen code is used.
+
 ## Excluded work
 
 - Unapproved SAM `mask_area.py` and `streaming_state.py` candidates.
