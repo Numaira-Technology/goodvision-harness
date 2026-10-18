@@ -1546,6 +1546,14 @@ class IndependentVLMBranch:
         if self._reaper is not None and timeout_seconds > 0:
             self._reaper.join(timeout_seconds)
 
+    def close_complete(self):
+        """Confirm process and callback retirement, not just cleanup initiation."""
+        with self._lock:
+            complete = self._status.get("cleanup_complete") is True
+        return (complete and (not self._started or not self._process.is_alive())
+                and all(thread is None or not thread.is_alive() for thread in
+                        (self._reader, self._source, self._diagnostic_reader, self._reaper)))
+
     def _cleanup(self):
         if self._started:
             self._process.join(2.0)

@@ -160,6 +160,40 @@ all attempts are available in the model ledger.
 The native process stop event interrupts evaluation backoff and prevents the
 retry loop from continuing after shutdown.
 
+### Window and source failure boundaries
+
+A model request returns one window, not one video. The native capture archives
+that report before classifying its failure. `failed_requests` is a counter, not
+a batch-stop signal. Missing/invalid fields, empty responses, request timeouts
+and a single request's connection error remain failed windows while subsequent
+windows continue. HTTP 4xx/5xx responses are also window-local except for
+credential/payment failures (401/402/403); 429 retains the limits above. This
+change adds no retries and does not resend an unknown request.
+Native admission timeouts and superseded windows also stay window-local.
+
+After EOF and drain, a source containing failed windows is saved as incomplete.
+Successful windows, failed-window identities, frame ranges and original receipts
+remain available. The next video can be captured on the same GPU. Existing final
+answer eligibility and scoring are unchanged: an incomplete capture is not
+silently promoted to successful evidence or a paid final answer.
+
+For YOLO/RF native sources, explicit source-wall or drain timeouts can terminate
+only that source. Before continuing, capture must confirm source, tracking, VLM
+and fusion shutdown, no shared callback failure, and an accepted completion for
+every started detector request. Shutdown-time stale results do not satisfy this
+condition. The detector already stores tracking state by `stream_session_id`;
+the next source uses a distinct SID. This path does not call an unimplemented
+reset endpoint, restart the detector, or release/reallocate the GPU. It retains
+the partial archive and a source-terminal record. Questions without saved
+evidence remain in the scoring denominator without a final-model call.
+
+Observed shared errors take precedence after shutdown, including errors arriving while
+the main thread waits for drain. Unknown worker exits, authentication/payment
+failures, recording/ledger errors and generic non-EOF source endings are not
+classified as known source-local failures. Unconfirmed
+cleanup stops continuation rather than failing untouched questions. Stateful
+SAM recovery is not covered by the YOLO/RF timeout path.
+
 When freezing a recovery configuration, allow the drain window to accommodate
 the retry schedule as well as pending native work. The per-request HTTP timeout
 is unchanged. An already frozen run keeps its original drain limit and code.
@@ -176,4 +210,6 @@ resource release, final answering and local scoring on October 16, 2026.
 The explicit-429 recovery change is awaiting observation in the authorized full
 evaluation; that short-video result does not validate this later change.
 Independent tests, lint, compilation and build checks have not been run.
+The window/source isolation change has only been reviewed by reading code; its
+runtime behavior has not yet been observed in the authorized evaluation.
 The completed RF comparison retains its original implementation and results.

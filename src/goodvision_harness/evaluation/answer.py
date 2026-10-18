@@ -15,7 +15,7 @@ from .capture_source import _read_frozen
 from .cohort import generate_cohort
 from .evidence import _digest
 from .model_ledger import ModelLedger
-from .native_stream import capture_native_stream
+from .native_stream import NativeSourceFailure, capture_native_stream
 from .privacy import reject_private
 from .queue import _publish_or_match
 from .recording import publish_once
@@ -68,12 +68,52 @@ def _saved_capture(directory, config_sha256):
             or outcome.get("config_sha256") != config_sha256
             or manifest["provenance"].get("run_config_sha256") != config_sha256
             or outcome["evidence_sha256"] != evidence["evidence_sha256"]
+            or cleanup.get("shared_failure", False) is not False
+            or cleanup.get("fusion_stopped", True) is not True
             or any(cleanup.get(key) is not True for key in
                    ("source_stopped", "tracking_stopped", "vlm_stopped"))):
         raise ValueError("saved native source identity or cleanup is incomplete")
     return outcome, {"video_id": outcome["video_id"],
         "capture_path": str((directory / "capture.json").resolve()),
         "capture_file_sha256": completion["capture_file_sha256"]}
+
+
+def _source_failure(directory, source, config_sha256, resources):
+    """Keep a failed source in the denominator without recycling the owned GPU."""
+    directory = Path(directory)
+    failure = json.loads((directory / "failure.json").read_bytes())
+    cleanup = json.loads((directory / "cleanup.json").read_bytes())
+    if (failure.get("failure_scope") != "source"
+            or failure.get("config_sha256") != config_sha256
+            or failure.get("stream_session_id") != source["stream_session_id"]
+            or cleanup.get("shared_failure") is not False
+            or cleanup.get("tracking_session_scope") != "stream_session_id"
+            or cleanup.get("tracking_requests_settled") is not True
+            or any(cleanup.get(key) is not True for key in
+                   ("source_stopped", "tracking_stopped", "vlm_stopped", "fusion_stopped"))):
+        raise RuntimeError("source-local failure cleanup is not confirmed")
+    terminal_path = directory / "source-terminal.json"
+    if terminal_path.exists():
+        terminal = json.loads(terminal_path.read_bytes())
+        if (terminal.get("video_id") != source["video_id"]
+                or terminal.get("stream_session_id") != source["stream_session_id"]
+                or terminal.get("config_sha256") != config_sha256
+                or terminal.get("status") != "skipped"):
+            raise ValueError("saved native source failure identity changed")
+        return terminal
+    # The detector keeps trackers by stream_session_id. With the local request
+    # thread joined and no tracking failure, the next source's fresh SID needs
+    # no model reset or GPU restart. Stateful SAM is not covered by this path.
+    owner = resources.prepare(source)
+    terminal = {"video_id": source["video_id"], "stream_session_id": source["stream_session_id"],
+        "source_id": source["source_id"], "config_sha256": config_sha256,
+        "status": "skipped", "failure_policy": {"scope": "source", "reason": failure["reason"],
+            "action": "preserve_and_skip_after_cleanup"},
+        "capture_directory": str(directory), "resource_instance_id": owner["instance_id"],
+        "continuation": "fresh_stream_session_after_confirmed_local_cleanup",
+        "final_answer_generated": False, "preserve_ledger_and_raw_records": True}
+    publish_once(terminal_path, terminal)
+    return terminal
 
 
 def run(config_path, *, config_sha256, release_path=None, release_sha256=None):
@@ -99,6 +139,7 @@ def run(config_path, *, config_sha256, release_path=None, release_sha256=None):
     if config["vlm_enabled"] and (base / ledger_config["owner_lock"]).resolve() == (base / config["owner_lock_path"]).resolve():
         raise ValueError("workflow and spawned model-ledger ownership locks must be distinct")
     plans = {}
+    sessions = set()
     for arm in arms:
         seen, entries = set(), []
         for row in arm["sources"]:
@@ -108,6 +149,7 @@ def run(config_path, *, config_sha256, release_path=None, release_sha256=None):
             if (source.get("schema_version") != "native-stream-source-v1"
                     or source.get("vlm_enabled") is not config["vlm_enabled"]
                     or source["tracking"]["model"] != arm["model"]
+                    or source["stream_session_id"] in sessions
                     or source["video_id"] in seen):
                 raise ValueError("source model, mode or cohort identity changed")
             if config["vlm_enabled"]:
@@ -118,6 +160,7 @@ def run(config_path, *, config_sha256, release_path=None, release_sha256=None):
                 if source_ledger["seed_manifest_sha256"] != ledger_config["seed_manifest_sha256"]:
                     raise ValueError("native worker ledger seed changed")
             seen.add(source["video_id"])
+            sessions.add(source["stream_session_id"])
             entries.append((row, source_path, source))
         if seen != videos:
             raise ValueError("each model arm must preserve every public video exactly once")
@@ -153,9 +196,19 @@ def run(config_path, *, config_sha256, release_path=None, release_sha256=None):
                     if reuse:
                         destination = (base / reuse["directory"]).resolve()
                         _read_frozen(destination / "completion.json", reuse["completion_sha256"])
-                    elif not destination.exists():
-                        capture_native_stream(source_path, config_sha256=row["config_sha256"],
-                                              output=destination, resources=resources)
+                    else:
+                        if not destination.exists():
+                            try:
+                                capture_native_stream(source_path, config_sha256=row["config_sha256"],
+                                                      output=destination, resources=resources)
+                            except NativeSourceFailure:
+                                outcomes.append(_source_failure(destination, source,
+                                    row["config_sha256"], resources))
+                                continue
+                        elif (destination / "source-terminal.json").exists():
+                            outcomes.append(_source_failure(destination, source,
+                                row["config_sha256"], resources))
+                            continue
                     outcome, observation = _saved_capture(destination, row["config_sha256"])
                     if outcome["video_id"] != source["video_id"]:
                         raise ValueError("saved source video mismatch")
@@ -207,8 +260,10 @@ def run(config_path, *, config_sha256, release_path=None, release_sha256=None):
                     artifact_path = (answers / row["answer_path"]).resolve()
                     if not artifact_path.is_relative_to(answers):
                         raise ValueError("answer path escapes the cohort")
-                    _read_frozen(artifact_path, row["answer_file_sha256"])
-                    if config["vlm_enabled"]:
+                    artifact = _read_frozen(artifact_path, row["answer_file_sha256"])
+                    no_observation = artifact["summary_request"] == {
+                        "state": "not_called", "reason": "no_saved_observation"}
+                    if config["vlm_enabled"] and not no_observation:
                         final = config["final_model"]
                         execute_summary(artifact_path, artifact_sha256=row["answer_file_sha256"],
                             output=directory / "model-answers" / artifact_path.stem,

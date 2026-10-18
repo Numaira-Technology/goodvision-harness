@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import time
 from collections import Counter, OrderedDict
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, current_thread
 
 from .contracts import NormalizedBBox
 from .runtime.scene import TemporalInspection
@@ -91,13 +91,19 @@ class VLMFusion:
         self._finishing.set()
         self._wake.set()
 
-    def close(self):
+    def close(self, timeout_seconds=0.0):
         self._stop.set()
         self._wake.set()
         with self._lock:
             self._stats["cancelled_reports"] += len(self._pending)
             self._pending.clear()
             self._bytes = 0
+        if self._thread is not None and self._thread is not current_thread() and timeout_seconds > 0:
+            self._thread.join(timeout_seconds)
+
+    def close_complete(self):
+        """Confirm that no association callback can outlive the source."""
+        return self._stop.is_set() and (self._thread is None or not self._thread.is_alive())
 
     def stats(self):
         with self._lock:

@@ -33,6 +33,15 @@ from .session import UnifiedCaptureSession
 from .stream_ledger import LedgerInspectorFactory
 from .stream_recording import StreamingRecorder
 from .evidence import NATIVE_SKIP_POLICY
+from .failures import native_report_failure_policy
+
+
+class NativeSourceFailure(RuntimeError):
+    """A source-local interruption, eligible to skip only after confirmed cleanup."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def effective_config_sha256(harness):
@@ -64,6 +73,7 @@ class NativeCapture:
         self._record_lock = RLock()
         self._wake = Event()
         self._callback_error = None
+        self._shared_failure = False
         self._sealed = self._closed = False
         self._submitted, self._tracked = set(), set()
         self._frame_plan = recorder.frames
@@ -83,6 +93,16 @@ class NativeCapture:
             raise
 
     def source(self, jpeg, timestamp, sequence):
+        try:
+            return self._source(jpeg, timestamp, sequence)
+        except BaseException as exc:
+            # StreamingSession exposes a generic end error; retain the cause so
+            # callback/recording failures cannot become source-local timeouts.
+            self._callback_error = exc
+            self._wake.set()
+            raise
+
+    def _source(self, jpeg, timestamp, sequence):
         self._check()
         with self._record_lock:
             self.recorder.source_frame(jpeg, timestamp, sequence)
@@ -99,6 +119,22 @@ class NativeCapture:
 
     def snapshot(self, snapshot):
         return self.callback(UnifiedCaptureSession.tracking_snapshot, self, snapshot)
+
+    def independent_report(self, report):
+        # Archive the original window before acting on its failure scope. The
+        # recorder and evidence adapter retain failed windows as failed, not as
+        # successful observations or negatives.
+        try:
+            reference = self.recorder.independent_report(report)
+            failure = native_report_failure_policy(report)
+            if failure and failure["scope"] == "shared":
+                self.recorder.request_failure(stage="events", reason="shared_window_failure",
+                    detail={**failure, "request_id": report["request_id"], "reference": reference})
+                raise RuntimeError("native window requires shared-service recovery")
+            return reference
+        except BaseException:
+            self._shared_failure = True
+            raise
 
     def batch(self, batch):
         def commit():
@@ -137,7 +173,7 @@ class NativeCapture:
             raise RuntimeError("native tracking worker failed; see saved runtime statistics")
         if self.worker:
             stats = self.worker.stats()
-            if stats.get("state") == "failed" or stats.get("failed_requests", 0):
+            if stats.get("state") == "failed":
                 self.recorder.request_failure(stage="events", reason="native_worker_failed", detail=stats)
                 raise RuntimeError("native VLM worker failed; retain ledger outcomes for recovery")
 
@@ -218,6 +254,7 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
     source_done = Event()
     terminal = {}
     session = None
+    failure = None
     started = time.monotonic()
     try:
         if native_batches:
@@ -256,7 +293,7 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
                 str((base / ledger["seed_manifest"]).resolve()), ledger["seed_manifest_sha256"],
                 str((base / ledger["owner_lock"]).resolve()))
             capture.worker = IndependentVLMBranch(vlm, fusion=capture.fusion,
-                inspector_factory=factory, report_observer=recorder.independent_report,
+                inspector_factory=factory, report_observer=capture.independent_report,
                 rejected_report_observer=recorder.rejected_report)
             capture.worker.start()
 
@@ -273,7 +310,7 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
         while not source_done.wait(.1):
             capture.check_runtime()
             if time.monotonic() - started > config["max_source_wall_seconds"]:
-                raise TimeoutError("native source exceeded its frozen wall-time limit")
+                raise NativeSourceFailure("native_source_wall_time_exceeded")
         capture.check_runtime()
         recorder.record("source-end", terminal)
         if terminal.get("reason") != "eof" or terminal.get("error") is not None:
@@ -297,14 +334,14 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
             if tracks_done and vlm_done:
                 break
             if time.monotonic() >= deadline:
-                raise TimeoutError("native workers exceeded frozen drain limit")
+                raise NativeSourceFailure("native_workers_drain_timeout")
         capture.scene.finish_tracking_sources()
         capture.scene.finish_inspection_sources()
         capture.fusion.finish()
         while capture.fusion.stats()["pending_reports"]:
             capture.check_runtime()
             if time.monotonic() >= deadline:
-                raise TimeoutError("native fusion exceeded frozen drain limit")
+                raise NativeSourceFailure("native_fusion_drain_timeout")
             capture._wake.wait(.1)
             capture._wake.clear()
         capture._capture_scene()
@@ -327,9 +364,7 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
         publish_once(recorder.root / "outcome.json", outcome)
         return outcome
     except BaseException as exc:
-        publish_once(recorder.root / "failure.json", {"error_type": type(exc).__name__,
-            "config_sha256": config_sha256, "stream_session_id": capture.sid,
-            "status": "interrupted", "preserve_ledger_and_raw_records": True})
+        failure = exc
         raise
     finally:
         if session:
@@ -339,11 +374,41 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
             capture.worker.close(timeout_seconds=10)
         if capture.tracker:
             capture.tracker.close(timeout_seconds=10)
-        capture.fusion.close()
+        capture.fusion.close(timeout_seconds=10)
         capture.scene.close()
         capture._closed = True
-        publish_once(recorder.root / "cleanup.json", {
+        tracking_stats = capture.tracker.stats() if capture.tracker else {}
+        vlm_stats = capture.worker.stats() if capture.worker else {}
+        shared_failure = bool(capture._shared_failure or capture._callback_error is not None
+            or tracking_stats.get("failed", 0) or tracking_stats.get("state") == "failed"
+            or vlm_stats.get("state") == "failed"
+            or capture.fusion.stats().get("callback_failures", 0)
+            or capture.fusion.stats().get("association_failures", 0))
+        # A close-time HTTP timeout can be counted as stale instead of failed.
+        # Require a normal accepted completion for every started detector request.
+        tracking_settled = (not native_batches and capture.tracker is not None
+            and tracking_stats.get("started") == tracking_stats.get("succeeded")
+            and tracking_stats.get("in_flight") is False
+            and tracking_stats.get("pending") is False)
+        cleanup = {
             "source_stopped": session is None or not session.running,
             "tracking_stopped": capture.tracker is None or capture.tracker.close_complete(),
-            "vlm_stopped": capture.worker is None or capture.worker.stats().get("cleanup_complete") is True,
-            "gpu_release_owned_by_outer_controller": True})
+            "vlm_stopped": capture.worker is None or capture.worker.close_complete(),
+            "fusion_stopped": capture.fusion.close_complete(),
+            "shared_failure": shared_failure,
+            "tracking_requests_settled": tracking_settled,
+            "tracking_session_scope": "native_session" if native_batches else "stream_session_id",
+            "tracking_statistics": tracking_stats, "vlm_statistics": vlm_stats,
+            "gpu_release_owned_by_outer_controller": True}
+        if failure is not None:
+            # A fatal callback can arrive while the main thread waits for idle.
+            # Decide scope only after shutdown, with shared failures taking precedence.
+            local = (isinstance(failure, NativeSourceFailure) and not shared_failure
+                and tracking_settled and all(cleanup[key] for key in
+                    ("source_stopped", "tracking_stopped", "vlm_stopped", "fusion_stopped")))
+            publish_once(recorder.root / "failure.json", {"error_type": type(failure).__name__,
+                "config_sha256": config_sha256, "stream_session_id": capture.sid,
+                "failure_scope": "source" if local else "shared",
+                "reason": failure.reason if local else "shared_capture_interruption",
+                "status": "interrupted", "preserve_ledger_and_raw_records": True})
+        publish_once(recorder.root / "cleanup.json", cleanup)

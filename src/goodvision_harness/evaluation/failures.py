@@ -6,6 +6,27 @@ from .model_ledger import LedgerBlocked
 from .offline_observer import ObservationFailure
 
 
+def native_report_failure_policy(report):
+    """Classify one archived window, never the worker's cumulative error count.
+
+    One request's connection or provider error does not establish a shared
+    outage. Unknown worker errors, credentials and ledger failures remain
+    shared interruptions; they must not become terminal failures for every video.
+    """
+    code = report.get("error_code")
+    if report.get("state") == "completed" and not code:
+        return None
+    status = report.get("timing", {}).get("http_status")
+    local = status not in {401, 402, 403} and (
+        code in {"timeout", "connection", "invalid_response", "empty_response",
+                 "admission_timeout", "admission_superseded"}
+        or code == "http_error" and type(status) is int and 400 <= status < 600
+    )
+    return {"scope": "window" if local else "shared", "code": code,
+            "status_code": status,
+            "action": "preserve_and_continue" if local else "interrupt_before_more_sources"}
+
+
 def failure_policy(error):
     if isinstance(error, ObservationFailure):
         causes = [failure_policy(item) for item in error.failures]
