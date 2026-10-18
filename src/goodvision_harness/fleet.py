@@ -491,8 +491,25 @@ class FleetController:
                 or status.get("connection_state") == "connected"
             )
         }
+        workflow_control = getattr(self.application.state, "workflows", None)
+        workflow_document, workflow_bindings, workflow_plans = None, {}, {}
+        if workflow_control is not None:
+            try:
+                workflow_document, workflow_bindings, workflow_plans = (
+                    workflow_control.bindings()
+                )
+            except (ValueError, RuntimeError, OSError):
+                raise HTTPException(
+                    503, "Workflow storage is unavailable. No cameras started.",
+                ) from None
+            cohort = {
+                index for index in cohort
+                if workflow_plans.get(f"camera{index:02d}", {}).get("enabled", True)
+            }
         if not cohort:
-            raise HTTPException(400, "请先连接至少一路视频。再开始全部分析。")
+            raise HTTPException(
+                400, "请先连接至少一路视频并启用其分析流程。再开始全部分析。",
+            )
         for index in cohort:
             self.require_enabled(index)
         self._analysis_indices = cohort
@@ -533,6 +550,20 @@ class FleetController:
                     status_code=409,
                     headers=_NO_STORE,
                 )
+            if workflow_document is not None:
+                # Applied snapshots are authoritative on the primary. Install
+                # all plans before preflight; a failed sync starts no cameras.
+                for index in sorted(cohort):
+                    response = await self.request_json(
+                        index, "PUT", "/v1/analysis/workflow",
+                        {"binding": workflow_bindings.get(f"camera{index:02d}")},
+                        coordinated=True,
+                    )
+                    if not 200 <= response.status_code < 300:
+                        raise HTTPException(
+                            409, f"Could not prepare workflow for camera{index:02d}. "
+                            "No cameras started.",
+                        )
             errors = await self._analysis_requests(cohort, "prepare")
             if errors:
                 self._analysis_errors = errors
@@ -716,7 +747,16 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
     async def fleet() -> JSONResponse:
         controller._require_primary()
         await controller.refresh_analysis()
-        return JSONResponse(controller.descriptor(), headers=_NO_STORE)
+        descriptor = controller.descriptor()
+        workflows = getattr(application.state, "workflows", None)
+        if workflows is not None:
+            try:
+                managed = workflows.managed_cameras()
+            except (RuntimeError, ValueError, OSError):
+                raise HTTPException(503, "Workflow storage is unavailable.") from None
+            for camera in descriptor["cameras"]:
+                camera["workflow"] = managed.get(camera["id"])
+        return JSONResponse(descriptor, headers=_NO_STORE)
 
     @application.post("/v1/fleet/analysis/start")
     async def start_analysis(request: Request) -> JSONResponse:
@@ -844,6 +884,19 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
         payload = await _json_body(request)
         async with controller.control_lock:
             controller.require_enabled(index)
+            workflows = getattr(application.state, "workflows", None)
+            if workflows is not None:
+                try:
+                    managed = workflows.managed_cameras()
+                except (RuntimeError, ValueError, OSError):
+                    raise HTTPException(
+                        503, "Workflow storage is unavailable.",
+                    ) from None
+                if camera_id in managed:
+                    raise HTTPException(
+                        409, "Edit this camera's applied workflow in Camera groups, "
+                        "or remove it from the group to use manual settings.",
+                    )
             await controller.assert_connections_mutable()
             return await controller.request_json(
                 index,

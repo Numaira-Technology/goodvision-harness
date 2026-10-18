@@ -172,6 +172,7 @@ from .stream_adapter import parse_stream_source
 from .temporal_client_pool import TemporalClientPool
 from .video_connection import VideoConnection
 from .video_to_stream import encode_jpeg
+from .workflow_runtime import WorkflowRuntimeMixin
 from .video_tracking import (
     BACKEND as NATIVE_VIDEO_BACKEND,
 )
@@ -237,7 +238,7 @@ def _resolved_face_live_scheduler(*, provider: str, configured: str) -> str:
     return configured
 
 
-class HarnessRuntime:
+class HarnessRuntime(WorkflowRuntimeMixin):
     """Own one active stream or browser-camera session."""
 
     def __init__(
@@ -990,6 +991,8 @@ class HarnessRuntime:
 
     def _processing_lifecycle_busy(self, *, include_pending_start: bool = True) -> bool:
         """Capture end and native cleanup both belong to the old session."""
+        if self._workflow_busy(include_pending_start=include_pending_start):
+            return True
         if include_pending_start and self._session_start_pending:
             return True
         if self._retiring_rich_labels is not None:
@@ -2065,13 +2068,16 @@ class HarnessRuntime:
                 raise RuntimeError("stop the active session before starting analysis")
             if self._route_probe["state"] == "running":
                 raise RuntimeError("wait for the route check before starting analysis")
-            features = self._analysis_settings["features"]
+            features = self._workflow_choices()["features"]
             if (not self.dry_run
-                    and any(item in SAFETY_EVENT_LABELS for item in features)
+                    and (any(item in SAFETY_EVENT_LABELS for item in features)
+                         or bool(self._workflow_plan
+                                 and self._workflow_plan["summaries"]))
                     and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
-        self._require_processing_ready()
+        if features:
+            self._require_processing_ready()
         if not self.dry_run and "stranger" in features:
             self._ensure_face_runtime().warmup()
         with self._control_lock:
@@ -2083,17 +2089,7 @@ class HarnessRuntime:
         return {"prepared": True, "connection_id": connection.status()["connection_id"]}
 
     def start_connected_analysis(self) -> dict[str, Any]:
-        self.prepare_analysis()
-        with self._control_lock:
-            connection = self._video_connection
-            if connection is None or not connection.status()["connected"]:
-                raise RuntimeError("视频连接已中断。请重新连接。")
-            choices = copy.deepcopy(self._analysis_settings)
-            layout = self._connection_camera_layout
-        return self.start_stream(
-            connection.stream_url, camera_layout=layout,
-            _connection_id=connection.connection_id, **choices,
-        )
+        return self._start_connected_with_workflow()
 
     def start_stream(
         self,
@@ -2153,6 +2149,9 @@ class HarnessRuntime:
         # Admission remains visible while readiness checks run outside the
         # control lock, even if the caller's HTTP connection disappears.
         with self._control_lock:
+            if (self._workflow_starting
+                    and self._workflow_start_operation != self._workflow_operation):
+                raise RuntimeError("workflow start was cancelled")
             if self._session_start_pending:
                 raise RuntimeError("a harness session is already starting")
             self._session_start_pending = True
@@ -2941,6 +2940,8 @@ class HarnessRuntime:
     def stop_session(self, *, camera_owner: str | None = None) -> bool:
         """Stop capture, then finish accepted review and evidence in the background."""
 
+        if camera_owner is None:
+            self._stop_workflow_summaries()
         with self._control_lock:
             if getattr(self, "_session_start_pending", False) and (
                 camera_owner is None or camera_owner == self._pending_start_owner
@@ -3347,6 +3348,7 @@ class HarnessRuntime:
             })
             if connection is not None and connection.running:
                 payload["camera_layout"] = self._connection_camera_layout
+            self._workflow_status(payload)
             state = payload.get("pipeline_state")
             payload["analysis_state"] = (
                 "stopping" if state in {"stopping", "draining"}
@@ -3425,6 +3427,7 @@ class HarnessRuntime:
         })
         if connection is not None and connection.running:
             payload["camera_layout"] = self._connection_camera_layout
+        self._workflow_status(payload)
         pipeline_state = payload.get("pipeline_state")
         payload["analysis_state"] = (
             "stopping" if pipeline_state in {"stopping", "draining"}
@@ -4450,7 +4453,8 @@ class HarnessRuntime:
                         == session.stream_session_id
                     ):
                         self._last_scene_snapshot = final_snapshot
-                        self._publish_scene_result(final_snapshot)
+                        if final_snapshot is not None:
+                            self._publish_scene_result(final_snapshot)
                         self._last_identity_review = registry.identity_review_stats()
                         self._update_state(scene_drain={"state": "completed"})
         except Exception:
@@ -4711,6 +4715,8 @@ def create_app(
     )
     install_event_routes(application)
     install_fleet_routes(application)
+    from .workflow_routes import install_workflow_routes
+    install_workflow_routes(application)
 
     @application.exception_handler(StarletteHTTPException)
     async def public_http_error(
@@ -5130,7 +5136,7 @@ def create_app(
                 raise HTTPException(413, "camera control body exceeds 64 KiB")
         try:
             value = json.loads(body or b"{}")
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             raise HTTPException(400, "camera control body must be JSON") from None
         if not isinstance(value, dict):
             raise HTTPException(400, "camera control body must be an object")
@@ -5200,6 +5206,59 @@ def create_app(
     @application.get("/v1/analysis/settings")
     def analysis_settings(request: Request) -> dict[str, Any]:
         return _runtime(request).analysis_settings()
+
+    @application.put("/v1/analysis/workflow")
+    async def configure_workflow(request: Request) -> dict[str, Any]:
+        from .workflow_routes import body as workflow_body
+
+        require_coordinator(request)
+        return await camera_action(
+            _runtime(request).configure_workflow, await workflow_body(request),
+        )
+
+    @application.post("/v1/analysis/workflow/test")
+    async def test_workflow(request: Request) -> dict[str, Any]:
+        from .workflow_routes import body as workflow_body
+
+        require_coordinator(request)
+        payload = await workflow_body(request)
+        if set(payload) != {"graph"}:
+            raise HTTPException(400, "workflow test requires a graph")
+        return await camera_action(_runtime(request).test_workflow, payload["graph"])
+
+    @application.get("/v1/workflow/results")
+    def workflow_results(request: Request) -> JSONResponse:
+        return JSONResponse(
+            _runtime(request).workflow_results(), headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/v1/video/source/latest.jpg")
+    def workflow_source_frame(request: Request) -> Response:
+        from .workflow_summary import snapshot_from_connection
+
+        connection = _runtime(request)._video_connection
+        snapshot = (
+            snapshot_from_connection(connection) if connection is not None else None
+        )
+        if snapshot is None:
+            raise HTTPException(404, "no connected source frame")
+        return Response(snapshot.jpeg_bytes, media_type="image/jpeg", headers={
+            "Cache-Control": "no-store",
+            "X-Source-Frame-Sequence": str(snapshot.source_frame_sequence),
+            "X-Source-Timestamp": str(snapshot.timestamp_seconds),
+            "X-Connection-Id": snapshot.connection_id or "",
+        })
+
+    @application.get("/v1/workflow/summaries")
+    def workflow_summaries(
+        request: Request, limit: int = 100, node_id: str | None = None,
+    ) -> JSONResponse:
+        if not 1 <= limit <= 100:
+            raise HTTPException(400, "summary limit must be between 1 and 100")
+        return JSONResponse(
+            _runtime(request).workflow_summary_results(limit=limit, node_id=node_id),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @application.put("/v1/analysis/settings")
     async def update_analysis_settings(request: Request) -> dict[str, Any]:

@@ -52,6 +52,22 @@ function fixture({count=3,allowed=true,mode=allowed?"local":"legacy",usable=allo
   return {app,data,document,requests,statuses,prefs,errors,revoked,scheduled};
 }
 
+test("workflow management locks manual tasks and preserves literal group names",async()=>{
+  const view=fixture({count:1});
+  view.data.cameras[0].workflow={group_name:"吸烟",group_id:"group-1"};
+  await view.app.refresh();
+  const row=view.app.rows.get("camera01");
+  await view.app.loadPreferences(row);
+  assert.equal(row.prefsNote.children[1].textContent,"吸烟");
+  assert.equal(row.prefsNote.children[1].attributes.translate,"no");
+  assert.ok([...row.features.values()].every(input=>input.disabled));
+  row.prefsDirty=true;
+  const before=view.requests.length;
+  assert.equal(await view.app.savePreferences(row,true),true);
+  assert.equal(view.requests.length,before);
+  view.app.close();
+});
+
 test("status request failure does not label a still-playing video offline",async()=>{
   const view=fixture({count:1});await view.app.refresh();
   const row=view.app.rows.get("camera01");

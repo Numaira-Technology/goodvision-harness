@@ -14,7 +14,7 @@ function fixture({hash='',diagnostic=false}={}){
     focus(){this.focused=true;}
     scrollIntoView(){}
   }
-  const names=['overview','capabilities','events','outputs','settings'];
+  const names=['overview','workflows','capabilities','events','outputs','settings'];
   const pages=names.map(name=>new Element({consolePage:name}));
   const links=names.map(name=>Object.assign(new Element({consoleGo:name}),{nav:true}));
   const keys=['video/annotated/stream.mjpeg','results/latest','video/display/frames'];
@@ -23,7 +23,7 @@ function fixture({hash='',diagnostic=false}={}){
   const copyButtons=keys.map(key=>new Element({outputCopy:key}));
   const elements=new Map(),handlers={},copied=[];
   const element=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
-  const document={getElementById:element,createElement:()=>new Element(),querySelector:()=>element('scope-note'),querySelectorAll:selector=>({
+  const document={body:{classList:{toggle(){}}},getElementById:element,createElement:()=>new Element(),querySelector:()=>element('scope-note'),querySelectorAll:selector=>({
     '[data-console-page]':pages,'[data-console-go]':links,'[data-output-path]':paths,
     '[data-output-link]':outputLinks,'[data-output-copy]':copyButtons,'.output-scope-note':[element('output-scope')],
   })[selector]||[],createRange:()=>({selectNodeContents(item){element('selection').value=item.textContent;}})};
@@ -46,7 +46,7 @@ test('navigation preserves existing controls, drafts and camera state and restor
   const input=view.element('inference-server-url');input.value='http://draft:8000';
   for(const link of view.links){link.handlers.click();assert.equal(view.pages.filter(page=>!page.hidden).length,1);}
   assert.equal(view.element('inference-server-url'),input);assert.equal(input.value,'http://draft:8000');
-  assert.equal(view.location.hash,'#settings');assert.equal(view.links[4].attributes['aria-current'],'page');
+  assert.equal(view.location.hash,'#settings');assert.equal(view.links[5].attributes['aria-current'],'page');
   view.location.hash='#outputs';view.handlers.hashchange();assert.equal(view.api.currentPage(),'outputs');
   view.location.hash='#unknown';view.handlers.hashchange();assert.equal(view.api.currentPage(),'overview');
   assert.equal(view.app.fleet.analysis.state,'idle');

@@ -247,6 +247,7 @@
         row=>this.loadPreferences(row));
     }
     async savePreferences(row,forStart=false){
+      if(row.camera.workflow)return true;
       if(!row.prefsLoaded||row.prefsLoading||row.prefsSaving||!forStart&&this.analysisLocked())return false;
       const features=[...row.features].filter(([,input])=>input.checked).map(([key])=>key);
       if(!features.length){row.prefsError="请为该路至少选择一个检测项目。";this.updateRow(row);return false;}
@@ -358,11 +359,16 @@
       row.placeholder.hidden=!!(row.previewUrl||row.networkHasFrame)&&!row.previewError&&!row.networkBuffering;
       row.placeholder.className="fleet-preview-note"+(row.previewUrl&&row.previewError?" over-image":"");
       row.placeholder.textContent=row.previewError?"画面暂不可用，正在重试…":row.networkBuffering?"正在缓冲连续画面…":row.unreachable?"正在重新确认通道状态…":active?"正在等待视频画面…":"连接后在此显示实时画面";
-      const prefsBusy=locked||row.prefsLoading||row.prefsSaving||!row.prefsLoaded;
+      const prefsBusy=locked||row.prefsLoading||row.prefsSaving||!row.prefsLoaded||!!row.camera.workflow;
       for(const [key,input] of row.features){input.disabled=prefsBusy;const sensitivity=row.sensitivities.get(key);if(sensitivity)sensitivity.select.disabled=prefsBusy||!input.checked;}
       row.prefsSave.disabled=prefsBusy||!row.prefsDirty;row.prefsReload.disabled=locked||row.prefsLoading||row.prefsSaving;
       row.prefsNote.textContent=row.prefsError|| (row.prefsLoading?"正在读取该路已保存设置…":row.prefsSaving?"正在保存…":!row.prefsLoaded?"展开时读取该路已保存设置。":row.prefsDirty?"有未保存修改；开始全部分析前会先保存。":"本路检测设置已保存。统一分析会使用这些设置。");
       row.prefsNote.className="fleet-card-detail"+(row.prefsError?" error":"");
+      if(row.camera.workflow){
+        const groupName=this.element("span","",row.camera.workflow.group_name);groupName.setAttribute("translate","no");
+        row.prefsNote.replaceChildren(this.element("span","","此摄像头使用工作流组："),groupName,
+          this.element("span","","。请在工作流的摄像头组中修改；移出组后可恢复手动设置。"));
+      }
       row.detailSummary.textContent="当前状态："+row.state.textContent+" · 已接收 "+(Number(status.source_frames_received)||0)+" 帧 · 已发布 "+(Number(status.results_published)||0)+" 条结果";
     }
     async pollVlm(row){

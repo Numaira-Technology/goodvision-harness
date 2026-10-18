@@ -21,6 +21,7 @@ import pytest
         "dashboard_i18n.cjs",
         "dashboard_event_catalog.cjs",
         "dashboard_diagnostics.cjs",
+        "workflow_canvas.cjs",
     ]
 )
 def test_dashboard_handlers(script_name: str) -> None:

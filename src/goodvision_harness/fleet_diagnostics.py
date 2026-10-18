@@ -19,6 +19,7 @@ def diagnostic_document(camera_id: str) -> str:
         '<div id="fleet-detail-console" hidden>', '<div id="fleet-detail-console">'
     )
     page = page.replace('<script src="/assets/fleet_console.js"></script>', "")
+    page = page.replace('<script src="/assets/workflow_canvas.js"></script>', "")
     page = page.replace("loadRoutes();setInterval(loadRoutes,1500);", "")
     # Global settings and the shared gallery stay in the parent console. Their
     # elements remain for the existing UI bindings, but have no write API here.

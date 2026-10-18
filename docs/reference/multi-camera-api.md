@@ -12,6 +12,9 @@
 | 输出 | 地址 | 格式 |
 | --- | --- | --- |
 | 运行、连接与分析状态 | `C/status` | JSON |
+| 工作流已连接输出 | `C/workflow/results` | JSON |
+| 定时总结及近期历史 | `C/workflow/summaries?limit=100` | JSON |
+| 独立源画面快照 | `C/video/source/latest.jpg` | JPEG |
 | 最新分析结果 / 持续结果 | `C/results/latest` / `C/results/events` | JSON / SSE |
 | 整体描述 / 持续描述 | `C/results/overall/latest` / `C/results/overall/events` | JSON / SSE |
 | 五类检测结果 / 持续结果 | `C/results/{feature}/latest` / `C/results/{feature}/events` | JSON / SSE |
