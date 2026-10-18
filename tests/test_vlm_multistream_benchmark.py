@@ -280,6 +280,8 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
         request_rate=40, queue_timeout=1, deadline=3,
     )
     result = run_stage(args, base, 1, [[jpeg()]], tmp_path, 1)
+    assert result["input_timing_valid"]
+    assert result["sender_missed_samples"] == 0
     assert configs[0].model_settings.timeout_seconds == 15
     assert result["all_drained"] is drained
     assert result["drain_timeout_seconds"] == 20

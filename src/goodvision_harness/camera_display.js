@@ -2027,7 +2027,7 @@
             this.canvas.dataset.frameSequence=String(frame.source_sequence);
             this.canvas.dataset.mediaTimestamp=String(frame.media_timestamp);
           }
-          this.after=frame.source_sequence;this.onFrame({buffering:!!this.controller&&!this.controller.frames.presented});
+          this.after=frame.source_sequence;this.onFrame({buffering:!!this.controller&&!this.controller.frames.presented,presented:!this.controller});
         }finally{bitmap.close();}
       }
       if(data.metadata&&this.controller&&this.controller.receiveMetadata(data.metadata,{transport:"websocket"}))
@@ -2074,13 +2074,82 @@
       clearTimeout(this.timer);this.abort?.abort();this.controller?.stop();this.controller=null;}
   }
 
+  function taskEventLabels(status){
+    if(status?.workflow?.stream_session_id&&status.workflow.stream_session_id!==status.stream_session_id)return [];
+    const selected=Array.isArray(status?.features)?status.features:Array.isArray(status?.event_labels)?status.event_labels:
+      typeof status?.event_label==="string"?status.event_label.split(","):null;
+    if(selected===null)return null;
+    const catalog=globalThis.GoodvisionEvents;
+    return [...new Set(selected.map(value=>catalog?.canonical(value)||String(value).trim()).filter(label=>
+      /^[a-z][a-z0-9_]*$/.test(label)&&!["overall","stranger","unknown_person"].includes(label)&&catalog?.get(label)?.kind!=="identity"))];
+  }
+
+  // Both native frame events and the optional independent VLM worker produce
+  // immediate task judgments. Their transport and completion markers differ.
+  async function readTaskObservation(status,request,previous){
+    const session=status.stream_session_id;
+    const labels=taskEventLabels(status);
+    if(status.workflow_test_running||labels?.length===0)return {report:null,retry:""};
+    const current=previous?.stream_session_id===session?previous:null;
+    if(status.vlm?.independent){
+      try{
+        const report=await request("/vlm/results/latest?allow_empty=true");
+        if(!report||report.stream_session_id!==session)return {report:current,retry:""};
+        return {report:report.state==="completed"?report:current,retry:report.state==="failed"?"新一轮正在重试":""};
+      }catch(error){return {report:current,retry:[404,204].includes(error.httpStatus)?"":"任务结果更新延迟，正在重试"};}
+    }
+    const observations={},retained=current?.type==="task_observation"?current.observations:{};
+    if(!labels)return {report:null,retry:""};
+    let cursor=0,failed=false;
+    // Bound requests per channel; feature snapshots survive faster face results.
+    await Promise.all(Array.from({length:Math.min(2,labels.length)},async()=>{
+      while(cursor<labels.length){
+        const label=labels[cursor++];
+        if(retained?.[label])observations[label]=retained[label];
+        try{
+          const result=await request("/results/"+label+"/latest?allow_empty=true");
+          if(result?.stream_session_id!==session||result?.type!=="analysis_result")continue;
+          const judgment=result.judgments?.find(item=>item.event_label===label);
+          if(!judgment)continue;
+          const old=observations[label],frame=result.frame,oldFrame=old?.frame;
+          if(oldFrame&&frame&&(Number(frame.timestamp_seconds)<Number(oldFrame.timestamp_seconds)||
+            Number(frame.timestamp_seconds)===Number(oldFrame.timestamp_seconds)&&Number(frame.source_frame_index)<Number(oldFrame.source_frame_index)))continue;
+          // A missing face branch can mark the aggregate incomplete even when
+          // this selected event's own judgment is present and valid.
+          observations[label]=result;
+        }catch(error){if(![404,204].includes(error.httpStatus))failed=true;}
+      }
+    }));
+    const records=Object.values(observations),retry=failed?"任务结果更新延迟，正在重试":"";
+    if(!records.length)return {report:null,retry};
+    const dates=records.map(record=>record.emitted_at).filter(value=>Number.isFinite(Date.parse(value))).sort();
+    return {report:{type:"task_observation",state:"completed",stream_session_id:session,observations,emitted_at:dates[0],
+      judgments:labels.map(label=>observations[label]?.judgments.find(item=>item.event_label===label)||{event_label:label,detected:null})},retry};
+  }
+
+  function taskObservationItems(status,report,{running=true}={}){
+    const selected=taskEventLabels(status);
+    const valid=running&&!status?.workflow_test_running&&report?.state==="completed"&&
+      report.stream_session_id===status?.stream_session_id;
+    const canonical=value=>globalThis.GoodvisionEvents?.canonical(value)||value;
+    const judgments=new Map((valid?report.judgments||[]:[]).map(value=>[canonical(value.event_label),value]));
+    const labels=selected??taskEventLabels({features:[...judgments.keys()]});
+    return labels.map(label=>{
+      const judgment=judgments.get(label),observed=judgment&&
+        (Object.hasOwn(judgment,"observed_detected")?judgment.observed_detected:judgment.detected);
+      const missing=!judgment||report?.type==="task_observation"&&!report.observations?.[label];
+      const state=!running?"stopped":missing?"pending":observed===true?"detected":observed===false?"clear":"uncertain";
+      return {label,name:eventName(label),state,text:{stopped:"已停止",pending:"等待判断",detected:"发现",clear:"未发现",uncertain:"不确定"}[state]};
+    });
+  }
+
   function eventObservationSummary(report){
     if(!report||report.state!=="completed")return "等待本次事件判断";
     const judgments=new Map((report.judgments||[]).map(value=>[value.event_label,value]));
     const order=new Map((globalThis.GoodvisionEvents?.list()||[]).map((event,index)=>[event.id,index]));
     const parts=[...judgments].sort(([a],[b])=>(order.get(a)??Infinity)-(order.get(b)??Infinity)).map(([key,value])=>{
       const label=eventName(key),observed=Object.hasOwn(value,"observed_detected")?value.observed_detected:value.detected;
-      let result=observed===true?(report.type==="vlm_report"?"发现":value.confirmation_state==="confirmed"?"已确认":"发现，待确认"):observed===false?"未发现":"待判断";
+      let result=observed===true?(["vlm_report","task_observation"].includes(report.type)?"发现":value.confirmation_state==="confirmed"?"已确认":"发现，待确认"):observed===false?"未发现":"待判断";
       if(observed===true&&["unavailable","partial"].includes(value.localization_state))result+="，定位待确认";
       return label+"："+result;
     });
@@ -2116,5 +2185,5 @@
   }
 
   return {FrameTimeline,ContourHistory,DisplayIdentities,DisplayStreamDecoder,estimateMotion,warpPolygons,packCameraFrame,sameRun,drawSubjectLabel,
-    BrowserController,NetworkController,SharedController,eventObservationSummary,decodeDisplayBatch};
+    BrowserController,NetworkController,SharedController,taskEventLabels,readTaskObservation,taskObservationItems,eventObservationSummary,decodeDisplayBatch};
 });

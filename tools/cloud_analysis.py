@@ -32,7 +32,6 @@ def runtime_environment(environment):
         "LOCAL_CAMERA_",
     )
     names = {
-        "AICLUB_API_KEY",
         "OPENROUTER_API_KEY",
         "DASHSCOPE_API_KEY",
         "HARNESS_DRY_RUN",

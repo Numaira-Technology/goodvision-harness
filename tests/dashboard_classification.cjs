@@ -67,10 +67,11 @@ test("late positives notify without rolling back confirmed clear, current JSON o
   const view=dashboard();view.app.state.sessionFeatures=["smoking"];
   for(let frame=1;frame<=2;frame++)view.app.analysis({...result(frame,{smoking:false}),description:"current "+frame});
   const currentJson=view.element("result-json").textContent;
+  const summary=view.element("overall-description").textContent;
   view.app.analysis({...result(0,{smoking:true}),description:"old smoking frame"});
   assert.equal(view.element("verdict").textContent,"CLEAR");
   assert.equal(view.element("result-json").textContent,currentJson);
-  assert.equal(view.element("overall-description").textContent,"current 2");
+  assert.equal(view.element("overall-description").textContent,summary,"Event descriptions cannot replace the periodic scene summary");
   assert.match(view.element("decision-meta").textContent,/video 2\.000s/);
   assert.equal(view.element("event-notice").hidden,false);
   assert.match(view.element("event-notice").textContent,/迟到事件通知.*SMOKING.*0\.000s/);
@@ -330,20 +331,18 @@ test("v2 partial frame evidence stays incomplete while the capability overview u
     view.app.analysis({...result(1.4,clear),analysis_complete:false,missing_event_labels:["stranger"],description});
     assert.equal(view.element("verdict").textContent,stranger?"STRANGER":"CLEAR");
     assert.doesNotMatch(view.element("description").textContent,/Analysis incomplete/);
-    assert.equal(view.element("overall-description").textContent,description);
+    assert.notEqual(view.element("overall-description").textContent,description);
     assert.equal(JSON.parse(view.element("result-json").textContent).judgments.length,4);
     assert.equal(view.element("log-body").children[0].children[2].children[0].textContent,"PARTIAL");
   }
 });
 
-test("overall description displays the latest frame text",()=>{
+test("event descriptions cannot replace a periodic global scene description",()=>{
   const view=dashboard();
-  const description="画面中发现陌生人。 / An unknown person is visible in the frame.";
-  view.app.analysis({...result(1,{...clear,stranger:true}),description});
-  assert.equal(view.element("overall-description").textContent,description);
-  view.app.analysis({...result(1.4,clear),description:"无异常 / No anomalies detected"});
-  assert.equal(view.element("overall-description").textContent,"无异常 / No anomalies detected");
-  assert.equal(view.element("overall-description-meta").textContent,"Frame 14 · 1.400s");
+  view.element("overall-description").textContent="房间内有两人，桌边摆着椅子。";
+  for(const description of ["画面中发现陌生人。","无异常 / No anomalies detected"])
+    view.app.analysis({...result(1,{...clear,stranger:true}),description});
+  assert.equal(view.element("overall-description").textContent,"房间内有两人，桌边摆着椅子。");
 });
 
 test("incomplete negative results render pending and complete results restore clear",()=>{
@@ -370,37 +369,34 @@ test("incomplete results retain positive alerts",()=>{
   assert.match(view.element("description").textContent,/Analysis incomplete/);
 });
 
-test("overall description ignores older frames and results from other sessions",()=>{
+test("older frames and other sessions cannot overwrite a periodic summary",()=>{
   const view=dashboard();
-  view.app.analysis({...result(2,{...clear,stranger:false}),description:"无异常 / No anomalies detected"});
+  view.element("overall-description").textContent="定时全画面描述";
+  view.element("overall-description-meta").textContent="Canvas 定时 Summary";
   for(const old of [result(1,{smoking:true}),result(2,{smoking:true},{frame:19}),
-    result(3,{smoking:true},{session:"other"})]){
-    view.app.analysis({...old,description:"旧画面异常"});
-    assert.equal(view.element("overall-description").textContent,"无异常 / No anomalies detected");
-    assert.equal(view.element("overall-description-meta").textContent,"Frame 20 · 2.000s");
-  }
+    result(3,{smoking:true},{session:"other"})])view.app.analysis({...old,description:"旧画面异常"});
+  assert.equal(view.element("overall-description").textContent,"定时全画面描述");
+  assert.equal(view.element("overall-description-meta").textContent,"Canvas 定时 Summary");
 });
 
-test("overall description renders face results and treats model text as plain text",()=>{
-  const view=dashboard(),description='<img src=x onerror="alert(1)">';
-  view.app.analysis({...result(1,{stranger:true}),analysis_kind:"face_recognition",
-    objects:[],description});
-  assert.equal(view.element("overall-description").textContent,description);
-  assert.equal(view.element("overall-description").children.length,0);
-  assert.equal(view.element("overall-description-meta").textContent,"Frame 10 · 1.000s");
-});
-
-test("missing overall description is unavailable and session reset clears the old frame",()=>{
+test("face descriptions remain separate from global descriptions",()=>{
   const view=dashboard();
-  view.app.analysis({...result(1,{smoking:true}),description:"吸烟行为"});
-  view.app.analysis(result(2,clear));
-  assert.equal(view.element("overall-description").textContent,"本帧未提供整体描述 / No overall description for this frame");
+  view.element("overall-description").textContent="周期性的场景概述";
+  view.app.analysis({...result(1,{stranger:true}),analysis_kind:"face_recognition",
+    objects:[],description:'<img src=x onerror="alert(1)">'});
+  assert.equal(view.element("overall-description").textContent,"周期性的场景概述");
+  assert.equal(view.element("overall-description").children.length,0);
+});
+
+test("session reset clears the old periodic description",()=>{
+  const view=dashboard();
+  view.element("overall-description").textContent="上个任务的场景概述";
   view.app.message({type:"session",stream_session_id:"session-2",mode:"stream",features:Object.keys(clear)});
-  assert.equal(view.element("overall-description").textContent,"等待当前帧分析… / Waiting for frame analysis…");
-  assert.equal(view.element("overall-description-meta").textContent,"等待分析帧");
+  assert.equal(view.element("overall-description").textContent,"等待定时全画面描述");
+  assert.equal(view.element("overall-description-meta").textContent,"Canvas 定时 Summary");
   view.app.analysis({...result(1,{smoking:true},{session:"session-2"}),description:"吸烟行为"});
   view.app.message({type:"ended",reason:"stopped"});
-  assert.equal(view.element("overall-description").textContent,"等待当前帧分析… / Waiting for frame analysis…");
+  assert.equal(view.element("overall-description").textContent,"等待定时全画面描述");
   assert.equal(view.app.state.overallResult,null);
 });
 

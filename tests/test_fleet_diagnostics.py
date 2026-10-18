@@ -19,8 +19,12 @@ def test_diagnostic_document_is_scoped_and_has_no_global_controls(
         page = client.get(descriptor["diagnostics_url"])
         assert page.status_code == 200
         assert page.headers["x-frame-options"] == "SAMEORIGIN"
-        assert f'const statusUrl="/v1/fleet/cameras/{camera}/status?lightweight=true"' in page.text
+        assert (
+            f'const statusUrl="/v1/fleet/cameras/{camera}/status?lightweight=true"'
+            in page.text
+        )
         assert f'globalThis.GoodvisionDiagnosticCameraId="{camera}"' in page.text
+        assert 'globalThis.GoodvisionDiagnosticView="diagnostics"' in page.text
         assert f'fetch("/v1/fleet/cameras/{camera}/deployment/settings"' in page.text
         assert (
             f'new EventSource("/v1/fleet/cameras/{camera}/results/events' in page.text
@@ -30,6 +34,45 @@ def test_diagnostic_document_is_scoped_and_has_no_global_controls(
         assert 'fetch("/v1/status"' not in page.text
         assert "loadRoutes();setInterval(loadRoutes,1500)" not in page.text
         assert "globalThis.GoodvisionFleet={detailHidden:()=>false" in page.text
+        assert 'src="/assets/workflow_canvas.js"' not in page.text
+
+
+@pytest.mark.parametrize("view", ["results", "events", "diagnostics", "camera"])
+def test_diagnostic_view_is_explicit_and_keeps_api_scope(monkeypatch, view):
+    app = make_app(monkeypatch)
+    with TestClient(app) as client:
+        page = client.get(f"/v1/fleet/cameras/camera02/diagnostics?view={view}")
+        assert page.status_code == 200
+        assert f'globalThis.GoodvisionDiagnosticView="{view}"' in page.text
+        assert 'const statusUrl="/v1/fleet/cameras/camera02/status?' in page.text
+        assert 'fetch("/v1/status"' not in page.text
+        assert "#console-main>:not(#diagnostic-content)" in page.text
+        assert 'src="/assets/fleet_console.js"' not in page.text
+
+
+def test_video_side_surface_uses_existing_scoped_results_route(monkeypatch):
+    app = make_app(monkeypatch)
+    with TestClient(app) as client:
+        page = client.get(
+            "/v1/fleet/cameras/camera02/diagnostics?view=results&surface=insights"
+        )
+        assert page.status_code == 200
+        assert 'globalThis.GoodvisionDiagnosticView="results"' in page.text
+        assert 'fetch("/v1/fleet/cameras/camera02/"+path.slice(1)' in page.text
+        assert 'id="task-live-judgment"' in page.text
+        assert not app.state.peer_requests
+
+
+@pytest.mark.parametrize("view", ["all", "outputs", "", "<script>"])
+def test_unknown_diagnostic_view_is_rejected(monkeypatch, view):
+    app = make_app(monkeypatch)
+    with TestClient(app) as client:
+        page = client.get(
+            "/v1/fleet/cameras/camera02/diagnostics", params={"view": view}
+        )
+        assert page.status_code == 422
+        assert not app.state.peer_requests
+        assert not app.state.own_requests
 
 
 def test_peer_buffer_updates_while_analysis_runs_without_affecting_primary(monkeypatch):

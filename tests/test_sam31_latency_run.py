@@ -228,7 +228,9 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     assert result["ok"] and result["source_evidence_unchanged"]
     assert result["arrival_lateness_seconds"]["peak"] < 1
     assert acknowledged_sequences == {0, 1, 2}
-    assert result["tracking_coverage"]["all_capture_frames_processed"]
+    assert result["tracking_coverage"]["all_capture_frames_processed"], result[
+        "coordinator"
+    ]
     assert result["processing_method"] == method
     assert result["backend"] == perception.METHODS[method].backend
     assert (

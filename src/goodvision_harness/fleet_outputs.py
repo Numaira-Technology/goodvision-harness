@@ -31,6 +31,9 @@ PREFIX = "/v1/fleet/cameras/{camera_id}"
 # Fixed routes precede variable event IDs. This is an allowlist, not a URL proxy.
 OUTPUT_PATHS = (
     "/status",
+    "/workflow/results",
+    "/workflow/summaries",
+    "/video/source/latest.jpg",
     "/results/latest",
     "/results/events",
     "/results/overall/latest",
@@ -79,6 +82,9 @@ _OUTPUT_RE = re.compile(
 )
 _FORWARD_HEADERS = {"range", "if-range", "last-event-id"}
 _RESPONSE_HEADERS = {
+    b"x-source-frame-sequence",
+    b"x-source-timestamp",
+    b"x-connection-id",
     b"content-type",
     b"content-length",
     b"content-range",

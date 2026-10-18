@@ -38,7 +38,7 @@ def validate(plan):
         or sorted(set(plan["streams"])) != plan["streams"]
     ):
         raise ValueError("streams must be an increasing unique subset of 1..12")
-    if plan["provider"] not in {"aiclub", "openrouter", "dashscope"}:
+    if plan["provider"] not in {"openrouter", "dashscope"}:
         raise ValueError("this runner uses an external VLM API")
     if type(plan["compare"]) is not bool or type(plan["simulate"]) is not bool:
         raise ValueError("invalid plan flags")
@@ -122,7 +122,7 @@ def make_plan(**overrides):
     return validate(
         {
             "version": 1,
-            "provider": "aiclub",
+            "provider": "openrouter",
             "model": "",
             "simulate": False,
             "streams": [1, 4, 8, 12],

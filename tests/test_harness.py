@@ -23,7 +23,6 @@ from starlette.requests import Request
 
 import goodvision_harness.config as config_module
 from goodvision_harness import service as service_module
-from goodvision_harness.aiclub import AIClubSettings, api_key_present
 from goodvision_harness.config import load_config
 from goodvision_harness.contracts import (
     PUBLIC_MODEL_NAME,
@@ -46,6 +45,7 @@ from goodvision_harness.grounding import (
     parse_grounded_classification,
 )
 from goodvision_harness.inference import DryRunWindowClient, WindowResponse
+from goodvision_harness.model_api import ModelAPISettings, api_key_present
 from goodvision_harness.pipeline import SessionCallbacks, StreamingSession
 from goodvision_harness.privacy import contains_private_implementation_detail
 from goodvision_harness.prompt import BinaryClassification
@@ -211,12 +211,12 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     ) == (1, 1, False)
     assert config.runtime.max_concurrent_requests == 6
     assert config.model_api.max_retries == 0
-    assert config.model_api.api_key_env == "AICLUB_API_KEY"
-    assert config.model_api.provider == "aiclub"
+    assert config.model_api.api_key_env == "OPENROUTER_API_KEY"
+    assert config.model_api.provider == "openrouter"
     assert config.aiclub is config.model_api
     # Branding is applied only at public serialization boundaries; the
     # provider requests use the selected route's actual model identifier.
-    assert config.inference.model == "qwen3.5-plus"
+    assert config.inference.model == "qwen/qwen3.5-35b-a3b:nitro"
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 7900
     assert config.face.allow_model_download is True
@@ -245,6 +245,11 @@ def test_harness_defaults_and_high_recall_prompt() -> None:
     assert config.inference.request_parameters == {
         "temperature": 0.0,
         "max_tokens": 1200,
+        "reasoning": {"enabled": False},
+        "provider": {
+            "sort": "throughput", "allow_fallbacks": True,
+            "ignore": ["coreweave", "novita"],
+        },
     }
 
 
@@ -1637,7 +1642,7 @@ def test_service_launcher_hides_server_header_and_preserves_capture_precedence(
 def neutral_profile_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(config_module, "find_dotenv", lambda **_: "")
     for key in (
-        "FACE_PROVIDER", "FACE_ACCELERATOR", "INFERENCE_API_KEY", "AICLUB_API_KEY",
+        "FACE_PROVIDER", "FACE_ACCELERATOR", "INFERENCE_API_KEY", "OPENROUTER_API_KEY",
         "OPENROUTER_API_KEY", "DASHSCOPE_API_KEY", "MODEL_API_KEY",
         "INFERENCE_PROVIDER", "INFERENCE_MODEL", "INFERENCE_ENDPOINT",
     ):
@@ -1660,11 +1665,11 @@ def neutral_profile_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
 def test_neutral_profiles_preserve_actual_engines(neutral_profile_config: Path) -> None:
     current = load_config(neutral_profile_config)
-    assert current.inference.model == "qwen3.5-plus"
+    assert current.inference.model == "qwen/qwen3.5-35b-a3b:nitro"
     assert current.face.model_name == "buffalo_l"
     assert current.face.provider == "CUDAExecutionProvider"
     assert current.aiclub.api_key_env == "INFERENCE_API_KEY"
-    assert current.aiclub.endpoint == AIClubSettings().endpoint
+    assert current.aiclub.endpoint == ModelAPISettings().endpoint
     assert current.aiclub.max_retries == 0
     assert current.model_api is current.aiclub
 
@@ -1704,7 +1709,7 @@ def test_mixed_connection_settings_preserve_legacy_key_unless_explicitly_overrid
     new_key_env: str | None,
 ) -> None:
     data = yaml.safe_load(neutral_profile_config.read_text(encoding="utf-8"))
-    data["aiclub"] = {
+    data["openrouter"] = {
         "endpoint": "https://receiver.invalid/v1/chat",
         "api_key_env": "CUSTOM_FIXTURE_KEY",
     }

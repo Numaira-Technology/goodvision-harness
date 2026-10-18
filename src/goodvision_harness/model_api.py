@@ -14,10 +14,6 @@ from urllib.request import Request, urlopen
 
 import httpx
 
-DEFAULT_AICLUB_ENDPOINT = (
-    "https://aiclub.zimaocloud.com/model/openApi/v1/chat/completions"
-)
-DEFAULT_AICLUB_API_KEY_ENV = "AICLUB_API_KEY"
 DEFAULT_OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_DASHSCOPE_ENDPOINT = (
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -26,9 +22,10 @@ DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8000/v1/chat/completions"
 DEFAULT_LOCAL_API_KEY_ENV = "LOCAL_INFERENCE_API_KEY"
 OPENROUTER_EXCLUDED_PROVIDERS = frozenset({"novita", "coreweave"})
 PROVIDER_DEFAULTS = {
-    "aiclub": (DEFAULT_AICLUB_ENDPOINT, DEFAULT_AICLUB_API_KEY_ENV, "qwen3.5-plus"),
     "openrouter": (
-        DEFAULT_OPENROUTER_ENDPOINT, "OPENROUTER_API_KEY", "qwen/qwen3.5-35b-a3b:nitro"
+        DEFAULT_OPENROUTER_ENDPOINT,
+        "OPENROUTER_API_KEY",
+        "qwen/qwen3.5-35b-a3b:nitro",
     ),
     "dashscope": (DEFAULT_DASHSCOPE_ENDPOINT, "DASHSCOPE_API_KEY", "qwen3.5-plus"),
     "local": (DEFAULT_LOCAL_ENDPOINT, DEFAULT_LOCAL_API_KEY_ENV, "local-vision"),
@@ -47,14 +44,25 @@ def nitro_provider_preferences() -> dict[str, Any]:
 class ModelAPIError(RuntimeError):
     """Raised when the selected service cannot return a usable chat completion."""
 
-    _CODES = frozenset({
-        "request_failed", "timeout", "connection", "http_error",
-        "invalid_response", "empty_response", "cancelled", "overloaded",
-        "budget_exhausted",
-    })
+    _CODES = frozenset(
+        {
+            "request_failed",
+            "timeout",
+            "connection",
+            "http_error",
+            "invalid_response",
+            "empty_response",
+            "cancelled",
+            "overloaded",
+            "budget_exhausted",
+        }
+    )
 
     def __init__(
-        self, message: str, *, code: str = "request_failed",
+        self,
+        message: str,
+        *,
+        code: str = "request_failed",
         status_code: int | None = None,
     ) -> None:
         super().__init__(message)
@@ -65,10 +73,70 @@ class ModelAPIError(RuntimeError):
         )
         self.status_code = (
             status_code
-            if isinstance(status_code, int) and not isinstance(status_code, bool)
+            if isinstance(status_code, int)
+            and not isinstance(status_code, bool)
             and 100 <= status_code <= 599
             else None
         )
+
+
+def inference_error_detail(
+    error: Exception | None = None,
+    *,
+    code: str = "request_failed",
+    http_status: int | None = None,
+) -> dict[str, Any]:
+    """Return actionable, bounded diagnostics without vendor text or credentials."""
+    if isinstance(error, ModelAPIError):
+        code, http_status = error.code, error.status_code
+    elif isinstance(error, (ValueError, TypeError)):
+        code = "invalid_response"
+    safe = ModelAPIError("", code=code, status_code=http_status)
+    messages = {
+        "request_failed": "Inference request failed.",
+        "timeout": (
+            "Inference request timed out. Check the service and request timeout."
+        ),
+        "connection": (
+            "Could not connect to the inference service. "
+            "Check its address and network."
+        ),
+        "http_error": "The inference service rejected the request.",
+        "invalid_response": "The inference service returned an invalid result.",
+        "empty_response": "The inference service returned no result.",
+        "cancelled": "Inference request was cancelled.",
+        "overloaded": "The inference service is busy. Retry later.",
+        "budget_exhausted": "The inference request budget was exhausted.",
+    }
+    message = messages[safe.code]
+    if safe.code == "http_error" and safe.status_code is not None:
+        reason = {
+            400: "Invalid inference request. Check the model and request settings.",
+            401: (
+                "Inference authentication failed. Check that the API key "
+                "belongs to the configured service."
+            ),
+            402: "Inference credit or quota is exhausted. Check the service account.",
+            403: "Inference access denied. Check the key and model permissions.",
+            404: (
+                "Inference endpoint or model was not found. "
+                "Check the service address and model."
+            ),
+            408: "The inference service timed out. Retry or check the service.",
+            413: "The inference request is too large. Reduce the image size.",
+            422: "Invalid inference request. Check the model and request settings.",
+            429: (
+                "Inference rate limit reached. "
+                "Reduce request frequency or retry later."
+            ),
+        }.get(
+            safe.status_code,
+            "The inference service is unavailable. Retry later."
+            if safe.status_code >= 500
+            else message,
+        )
+        message = f"{reason} (HTTP {safe.status_code})"
+    return {"code": safe.code, "http_status": safe.status_code, "message": message}
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,14 +149,13 @@ class ModelAPISettings:
     max_retries: int = 3
     retry_backoff_seconds: float = 1.0
     extra_headers: Mapping[str, str] = field(default_factory=dict)
-    provider: str = "aiclub"
+    provider: str = "openrouter"
     inspection_endpoint: str = ""
 
     def __post_init__(self) -> None:
         if self.provider not in PROVIDER_DEFAULTS:
             raise ValueError(
-                "inference_service.provider must be aiclub, openrouter, "
-                "dashscope, or local"
+                "inference_service.provider must be openrouter, dashscope, or local"
             )
         endpoint, api_key_env, _model = PROVIDER_DEFAULTS[self.provider]
         if not self.endpoint:
@@ -98,6 +165,10 @@ class ModelAPISettings:
             # the local server. Local authentication has a dedicated variable.
             object.__setattr__(self, "api_key_env", api_key_env)
         parsed = urlparse(self.endpoint)
+        if parsed.hostname == "aiclub.zimaocloud.com":
+            raise ValueError(
+                "AIClub has been removed; configure an OpenRouter endpoint and key"
+            )
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError(
                 "inference_service.endpoint must be an absolute HTTP(S) URL"
@@ -114,7 +185,8 @@ class ModelAPISettings:
                 or not inspection.hostname
                 or inspection.username is not None
                 or inspection.password is not None
-                or inspection.query or inspection.fragment
+                or inspection.query
+                or inspection.fragment
                 or not valid_port
                 or any(character.isspace() for character in self.inspection_endpoint)
             ):
@@ -141,7 +213,7 @@ class ModelAPISettings:
         return cls(
             endpoint=str(value.get("endpoint", "")),
             api_key_env=str(value.get("api_key_env", "")),
-            provider=str(value.get("provider", "aiclub")).strip().lower(),
+            provider=str(value.get("provider", "openrouter")).strip().lower(),
             timeout_seconds=float(value.get("timeout_seconds", 90.0)),
             max_retries=int(value.get("max_retries", 3)),
             retry_backoff_seconds=float(value.get("retry_backoff_seconds", 1.0)),
@@ -172,19 +244,25 @@ def environment_api_key(settings: ModelAPISettings) -> str:
 
 
 def model_request_headers(
-    settings: ModelAPISettings, api_key: str, *, accept: str = "application/json",
+    settings: ModelAPISettings,
+    api_key: str,
+    *,
+    accept: str = "application/json",
 ) -> dict[str, str]:
     """Build headers with authentication coming only from the selected key."""
 
     headers = {
-        str(key): str(value) for key, value in settings.extra_headers.items()
+        str(key): str(value)
+        for key, value in settings.extra_headers.items()
         if str(key).lower() != "authorization"
     }
-    headers.update({
-        "Content-Type": "application/json",
-        "Accept": accept,
-        "User-Agent": "goodvision-harness/1",
-    })
+    headers.update(
+        {
+            "Content-Type": "application/json",
+            "Accept": accept,
+            "User-Agent": "goodvision-harness/1",
+        }
+    )
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
@@ -331,7 +409,8 @@ class ModelAPIClient:
                     continue
                 raise ModelAPIError(
                     f"model API returned HTTP {int(exc.code)}",
-                    code="http_error", status_code=int(exc.code),
+                    code="http_error",
+                    status_code=int(exc.code),
                 ) from exc
             except (URLError, TimeoutError, OSError) as exc:
                 if attempt < self.settings.max_retries:
@@ -366,9 +445,11 @@ class PooledModelAPIClient(ModelAPIClient):
     def __init__(self, settings: ModelAPISettings, *, api_key: str | None = None):
         super().__init__(settings, api_key=api_key)
         self._http = httpx.Client(
-            http2=False, follow_redirects=False,
+            http2=False,
+            follow_redirects=False,
             limits=httpx.Limits(
-                max_connections=6, max_keepalive_connections=6,
+                max_connections=6,
+                max_keepalive_connections=6,
                 keepalive_expiry=120,
             ),
         )
@@ -380,7 +461,9 @@ class PooledModelAPIClient(ModelAPIClient):
         for attempt in range(self.settings.max_retries + 1):
             try:
                 response = self._http.post(
-                    self.settings.endpoint, headers=self._headers(), json=payload,
+                    self.settings.endpoint,
+                    headers=self._headers(),
+                    json=payload,
                     timeout=self.settings.timeout_seconds,
                 )
             except httpx.RequestError as exc:
@@ -390,20 +473,24 @@ class PooledModelAPIClient(ModelAPIClient):
                 raise ModelAPIError(
                     "model API request failed",
                     code=(
-                        "timeout" if isinstance(exc, httpx.TimeoutException)
+                        "timeout"
+                        if isinstance(exc, httpx.TimeoutException)
                         else "connection"
                     ),
                 ) from exc
             if not 200 <= response.status_code < 300:
-                if (response.status_code in self._RETRYABLE_STATUSES
-                        and attempt < self.settings.max_retries):
+                if (
+                    response.status_code in self._RETRYABLE_STATUSES
+                    and attempt < self.settings.max_retries
+                ):
                     self._sleep_before_retry(
                         attempt, response.headers.get("Retry-After")
                     )
                     continue
                 raise ModelAPIError(
                     f"model API returned HTTP {response.status_code}",
-                    code="http_error", status_code=response.status_code,
+                    code="http_error",
+                    status_code=response.status_code,
                 )
             if not response.content.strip():
                 raise ModelAPIError(

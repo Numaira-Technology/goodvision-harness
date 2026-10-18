@@ -194,6 +194,9 @@ def test_expired_future_and_out_of_order_anchors_cannot_become_current():
 
 
 def test_monitor_tracking_is_separate_from_inference_and_failed_results(tmp_path):
+    from http.client import HTTPConnection
+    from urllib.parse import urlsplit
+
     import httpx
 
     from tests.test_vlm_monitor import args, job, result
@@ -226,10 +229,20 @@ def test_monitor_tracking_is_separate_from_inference_and_failed_results(tmp_path
                 ).status_code
                 == 400
             )
-            assert (
-                client.post("tracking/stage-one/0", content=b"x" * 200000).status_code
-                == 400
-            )
+        # Reject oversized uploads from their headers, before reading the body.
+        # Sending the body too can reset the HTTP/1.0 connection on Windows.
+        target = urlsplit(monitor.url)
+        connection = HTTPConnection(target.hostname, target.port, timeout=2)
+        try:
+            connection.putrequest("POST", target.path + "tracking/stage-one/0")
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Length", "200000")
+            connection.endheaders()
+            response = connection.getresponse()
+            assert response.status == 400
+            assert response.read() == b'{"error":"invalid tracking request"}'
+        finally:
+            connection.close()
         snapshot = monitor.snapshot()
         assert snapshot["cameras"][0]["tracking_anchor"]["tick"] == 0
         assert snapshot["counters"]["grounding"]["complete"] == 1

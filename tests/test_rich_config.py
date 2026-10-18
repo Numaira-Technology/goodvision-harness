@@ -367,7 +367,7 @@ def test_distinct_rich_model_uses_its_provider_without_changing_event_route(
 
 
 @pytest.mark.parametrize("rich_model", [None, "qwen/qwen3-vl-8b-instruct"])
-def test_switching_to_aiclub_removes_old_rich_openrouter_options(
+def test_switching_to_dashscope_removes_old_rich_openrouter_options(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     rich_model: str | None,
@@ -383,7 +383,7 @@ def test_switching_to_aiclub_removes_old_rich_openrouter_options(
                     "reasoning": {"effort": "none"},
                 },
             },
-            "aiclub": {
+            "dashscope": {
                 "model": "qwen3.5-plus",
                 "request_parameters": {"enable_thinking": False},
             },
@@ -402,11 +402,11 @@ def test_switching_to_aiclub_removes_old_rich_openrouter_options(
         "enable_thinking": True,
         "response_format": {"type": "json_object"},
     }
-    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "dashscope")
 
     config = load_config(_write_route_config(tmp_path, payload))
 
-    assert config.model_api.provider == "aiclub"
+    assert config.model_api.provider == "dashscope"
     assert config.inference.model == "qwen3.5-plus"
     assert config.rich_labeling.vlm_request_parameters == {
         "temperature": 0.0,
@@ -424,7 +424,7 @@ def test_switching_to_default_openrouter_inherits_default_reasoning(
     rich_model: str | None,
 ) -> None:
     payload = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-    payload["inference_service"] = {"provider": "aiclub"}
+    payload["inference_service"] = {"provider": "dashscope"}
     payload["inference"]["request_parameters"] = {
         "temperature": 0.0, "max_tokens": 1200, "enable_thinking": False
     }
