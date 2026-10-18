@@ -2,7 +2,9 @@
 
 import importlib.util
 import json
+import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -151,12 +153,17 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     offset = [0.0]
     clock = [time.perf_counter()]
     coordinators = []
+    acknowledged_sequences = set()
+    acknowledgement = threading.Condition()
 
     def capture_sleep(seconds):
-        # This checks route wiring and exact evidence, not host throughput.
-        # The real latest-only policy may correctly supersede a frame when a
-        # busy Windows runner schedules its worker after the next source tick.
-        # Finish each mock operation before advancing the fixture source clock.
+        # A source that expired also leaves the coordinator idle. Require its
+        # actual committed result before advancing this fixture's source clock.
+        expected = coordinators[0].stats()["submitted"]
+        with acknowledgement:
+            assert acknowledgement.wait_for(
+                lambda: len(acknowledged_sequences) == expected, timeout=5
+            )
         assert coordinators[0].wait_until_idle(timeout_seconds=5)
         clock[0] += seconds
 
@@ -170,8 +177,20 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     )
     create_coordinator = runner.create_tracking_coordinator
 
-    def initialize(*args, **kwargs):
-        coordinator = create_coordinator(*args, **kwargs)
+    def initialize(client, settings, on_batch):
+        def acknowledged(batch):
+            on_batch(batch)
+            with acknowledgement:
+                acknowledged_sequences.update(
+                    frame.frame_sequence for frame in batch.frames
+                )
+                acknowledgement.notify_all()
+
+        # This fixture checks route wiring and exact evidence, not host speed.
+        # Keep the real latest-only path while allowing more than the bounded
+        # acknowledgement wait for mock setup/preparation on a busy CI host.
+        settings = replace(settings, video_realtime_max_age_seconds=10)
+        coordinator = create_coordinator(client, settings, acknowledged)
         coordinators.append(coordinator)
         offset[0] += startup_delay
         return coordinator
@@ -208,6 +227,7 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     result = runner.run(args)
     assert result["ok"] and result["source_evidence_unchanged"]
     assert result["arrival_lateness_seconds"]["peak"] < 1
+    assert acknowledged_sequences == {0, 1, 2}
     assert result["tracking_coverage"]["all_capture_frames_processed"]
     assert result["processing_method"] == method
     assert result["backend"] == perception.METHODS[method].backend

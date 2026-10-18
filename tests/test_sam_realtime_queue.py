@@ -50,7 +50,10 @@ def test_overload_replaces_only_unsent_frames_and_preserves_one_epoch(tmp_path):
         tmp_path,
         received.append,
         queue_policy="realtime_latest",
-        realtime_max_age_seconds=10,
+        # The first HTTP request is deliberately held across 19 synchronous
+        # journal admissions/skips. This tests replacement, not disk throughput.
+        client_timeout_seconds=15,
+        realtime_max_age_seconds=30,
     )
     server.release.clear()
     try:
@@ -231,7 +234,10 @@ def test_batch_limits_keep_same_session_and_do_not_wait_to_fill(tmp_path, batch_
         queue_policy="realtime_latest",
         realtime_append_frames=batch_size,
         realtime_pending_frames=8,
-        realtime_max_age_seconds=10,
+        # Nine frames require up to nine durable append/commit rounds. Keep the
+        # real request deadline bounded without making disk speed the assertion.
+        client_timeout_seconds=15,
+        realtime_max_age_seconds=30,
     )
     server.release.clear()
     try:
@@ -240,7 +246,7 @@ def test_batch_limits_keep_same_session_and_do_not_wait_to_fill(tmp_path, batch_
         submit(coordinator, frames(2, 8))
         server.release.set()
         coordinator.flush()
-        assert coordinator.wait_until_idle(3)
+        assert coordinator.wait_until_idle(10), coordinator.stats()
         assert output_sequences(received) == list(range(3, 28, 3))
         assert server.creates == ["camera"]
         assert max(len(r["frames"]) for r in server.requests) == batch_size

@@ -26,7 +26,14 @@
     document.body.classList.toggle("compact", count > 4);
     document.body.classList.toggle("single-video", singleVideo);
     document.body.classList.toggle("parallel-mode", data.mode === "parallel");
-    document.body.classList.toggle("tracking-preview", trackingEnabled && data.lanes.includes("grounding"));
+    // The YOLO detector preview supplies its own boxes, so enable tracking on
+    // the detector flag even without a VLM grounding lane (events-only runs).
+    window.previewHasBoxes = data.lanes.includes("grounding") || !!data.detector;
+    // Detector round-trips are serialized across lanes on one GPU, so a lane's
+    // response can take a few seconds. The tracker uses this to widen its abort
+    // and stale thresholds (and box hold) so slow-but-valid boxes still paint.
+    window.previewDetector = !!data.detector;
+    document.body.classList.toggle("tracking-preview", trackingEnabled && window.previewHasBoxes);
     document.body.classList.toggle("multicam", count > 1);
     byId("grid").style.setProperty("--cols", count > 8 ? 4 : count > 4 ? 3 : count > 1 ? 2 : 1);
     byId("grid").style.maxWidth = count === 1 ? "1340px" : "none";
@@ -46,16 +53,20 @@
       const media = data.media[i % data.media.length]; let video = null, sample = null;
       if(media.url) {
         video = node("video"); video.muted = true; video.playsInline = true; video.preload = "auto"; video.src = media.url;
+        // Detector preview overlays live YOLO boxes per frame. The benchmark's
+        // master-clock resync (see animate) would seek each lane constantly on
+        // one shared GPU and wipe the boxes, so let each lane loop on its own.
+        if(data.detector) video.loop = true;
         video.addEventListener("error", () => window.monitorDiagnostics.mediaErrors.push(`video-${i+1}:decode`));
         sourceScreen.append(video);
       } else { sample = node("img"); sourceScreen.append(sample); }
       const canvas = node("canvas"); canvas.width = 640; canvas.height = 360;
       const empty = node("div","empty","等待对应结果"); evidenceScreen.append(canvas,empty);
       let trackCanvas=null,trackNote=null;
-      if(video && trackingEnabled && data.lanes.includes("grounding")) {
+      if(video && trackingEnabled && window.previewHasBoxes) {
         trackCanvas=node("canvas");trackCanvas.width=640;trackCanvas.height=360;
         trackCanvas.className="tracking-overlay";sourceScreen.append(trackCanvas);
-        source.firstChild.textContent="当前播放 · 蓝框为跟踪估计";
+        source.firstChild.textContent=data.detector ? "当前播放 · YOLO 检测框(按事件变色)" : "当前播放 · 蓝框为跟踪估计";
         evidence.firstChild.textContent="模型原始定位 · 对应证据帧";
         trackNote=node("div","tracking-note","等待视频播放与定位");
       }
@@ -161,9 +172,13 @@
         const pos=time*state.sample_fps, index=Math.floor(pos)%c.media.sample_count;
         const a=c.media.timestamps[index], b=index+1<c.media.sample_count ? c.media.timestamps[index+1] : c.media.duration;
         const media=a+(b-a)*(pos-Math.floor(pos));
-        c.clock.textContent=`视频 ${seconds(media)} · 本轮 ${seconds(Math.max(0,Math.min(time,state.duration)))}`;
+        const shownMedia=state.detector && c.video && Number.isFinite(c.video.currentTime) ? c.video.currentTime : media;
+        c.clock.textContent=`视频 ${seconds(shownMedia)} · 本轮 ${seconds(Math.max(0,Math.min(time,state.duration)))}`;
         if(c.video) {
-          const playing=state.state === "playing" && elapsed>=state.offsets[i] && time<state.duration-.01;
+          // In detector preview each lane loops freely, so it plays for the
+          // whole run instead of stopping at its per-lane duration/offset.
+          const playing=state.detector ? state.state === "playing"
+            : (state.state === "playing" && elapsed>=state.offsets[i] && time<state.duration-.01);
           const quality=c.video.getVideoPlaybackQuality();
           const presented=quality.totalVideoFrames-quality.droppedVideoFrames;
           const now=performance.now();
@@ -177,8 +192,10 @@
           c.lastPresented=presented;
           if(c.video.readyState>=2) {
             if(c.trackCanvas && !c.tracker) c.tracker=new window.PreviewTracking(c.video,c.trackCanvas,c.trackNote,i,c.media);
-            if(c.tracker) {c.tracker.playing=playing;c.tracker.epoch=Math.floor(Math.floor(pos)/c.media.sample_count);}
-            if(Math.abs(c.video.currentTime-media)>.3 && !c.video.seeking) c.video.currentTime=media;
+            // Detector trackers count their own source loops. Only the optical
+            // flow preview follows the benchmark's master-clock epoch.
+            if(c.tracker) {c.tracker.playing=playing;if(!state.detector)c.tracker.epoch=Math.floor(Math.floor(pos)/c.media.sample_count);}
+            if(!state.detector && Math.abs(c.video.currentTime-media)>.3 && !c.video.seeking) c.video.currentTime=media;
             if(playing && c.video.paused && !c.playRequested) {c.playRequested=true;c.video.play().catch(()=>window.monitorDiagnostics.mediaErrors.push(`video-${i+1}:autoplay`)).finally(()=>c.playRequested=false);}
           }
           if(!playing && !c.video.paused) c.video.pause();
