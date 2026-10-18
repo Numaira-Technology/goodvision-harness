@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
+import subprocess
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -13,6 +16,21 @@ import pytest
 
 from tools.vlm_benchmark import preview_tracking
 from tools.vlm_benchmark.preview_tracking import PreviewTracker, iou
+
+
+def test_detector_preview_browser_logic():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for detector preview regression tests")
+    completed = subprocess.run(
+        [node, "--test", str(Path(__file__).with_name("preview_detector.cjs"))],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def encoded(image):

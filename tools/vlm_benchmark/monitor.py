@@ -1,4 +1,4 @@
-"""Loopback-only live view of benchmark input/results, with no inference calls."""
+"""Loopback-only live benchmark view with optional detector preview calls."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ from tools.vlm_benchmark.recording import save_recording
 from tools.vlm_benchmark.report import write_json
 
 ASSETS = Path(__file__).resolve().parent
+# Spatial overlap alone is only a preview estimate near the evidence time.
+EVENT_SUBJECT_MAX_AGE = 0.30
 
 
 def lane_name(report):
@@ -35,10 +37,19 @@ def _normalized_xyxy(bbox):
     if not isinstance(bbox, dict):
         return None
     try:
-        box = (float(bbox["x1"]), float(bbox["y1"]), float(bbox["x2"]), float(bbox["y2"]))
+        box = (
+            float(bbox["x1"]),
+            float(bbox["y1"]),
+            float(bbox["x2"]),
+            float(bbox["y2"]),
+        )
     except (KeyError, TypeError, ValueError):
         return None
-    if not (box[0] < box[2] and box[1] < box[3]):
+    if not (
+        all(math.isfinite(value) and 0 <= value <= 1 for value in box)
+        and box[0] < box[2]
+        and box[1] < box[3]
+    ):
         return None
     return box
 
@@ -78,6 +89,44 @@ def _event_subjects(report):
     return subjects
 
 
+def _event_matches(objects, subjects):
+    """Conservative one-to-one overlap estimates, never person identities."""
+    labels_by_box = {}
+    for subject in subjects:
+        labels_by_box.setdefault(tuple(subject["bbox"]), set()).add(subject["event"])
+    scores = {
+        box: {
+            index: _iou(box, _normalized_xyxy(obj["bbox"]))
+            for index, obj in enumerate(objects)
+            if obj.get("observation_state", "observed") == "observed"
+        }
+        for box in labels_by_box
+    }
+
+    def winner(candidates):
+        ranked = sorted(candidates, key=lambda item: item[0], reverse=True)
+        if (
+            ranked
+            and ranked[0][0] >= 0.3
+            and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 0.15)
+        ):
+            return ranked[0][1]
+        return None
+
+    matches = {}
+    unmatched = set(labels_by_box)
+    for box, values in scores.items():
+        target = winner((score, index) for index, score in values.items())
+        if (
+            target is not None
+            and winner((others[target], other) for other, others in scores.items())
+            == box
+        ):
+            matches[target] = sorted(label for label in labels_by_box[box] if label)
+            unmatched.discard(box)
+    return matches, bool(unmatched)
+
+
 def media_time(frames, tick, fps):
     index = tick % len(frames)
     times = getattr(frames, "media_seconds", None)
@@ -106,10 +155,10 @@ class LiveMonitor:
         self.detector_url = (
             os.environ.get("PREVIEW_DETECTOR_URL", "").strip().rstrip("/")
         )
-        self.detector_model = (
-            os.environ.get("PREVIEW_DETECTOR_MODEL", "yolo26-s").strip()
-        )
-        self._detector_seq = {}
+        self.detector_model = os.environ.get(
+            "PREVIEW_DETECTOR_MODEL", "yolo26-s"
+        ).strip()
+        self._detector_sessions = {}
         self._detector_lock = threading.Lock()
 
     def __enter__(self):
@@ -324,9 +373,9 @@ class LiveMonitor:
                 ],
                 # Per-subject event grounding: each fired+grounded observation
                 # links an event to a subject whose box is in report.objects.
-                # The preview matches these to YOLO tracks so only the actor's
-                # box turns red (tight VLM<->detector binding), not the whole
-                # lane. Empty when the model only judged the scene (scene_only).
+                # Near the evidence time, the preview can estimate which
+                # detector box overlaps the actor. Older or ambiguous evidence
+                # retains a generic scene alert without assigning an actor.
                 "event_subjects": _event_subjects(report),
             }
             current = self.state["cameras"][camera]
@@ -428,6 +477,7 @@ class LiveMonitor:
 
         client = payload.get("client", "")
         at, epoch = payload.get("time"), payload.get("epoch")
+        generation = payload.get("generation", 0)
         if (
             not isinstance(client, str)
             or not re.fullmatch(r"[a-f0-9-]{36}", client)
@@ -436,6 +486,8 @@ class LiveMonitor:
             or at < 0
             or type(epoch) is not int
             or not 0 <= epoch <= 100000
+            or type(generation) is not int
+            or not 0 <= generation <= 1000000
         ):
             raise ValueError("invalid preview metadata")
         with self.lock:
@@ -471,26 +523,39 @@ class LiveMonitor:
             self.preview_viewers[client] = now
             tracker = self.preview_trackers[key]
             view = self.state["cameras"][camera]["tracking_anchor"]
-            # Box color follows the camera's latest event verdicts. Prefer
-            # per-subject binding: if the model grounded the event to a subject
-            # box, only the YOLO track overlapping that subject turns red (tight
-            # VLM<->detector binding). Fall back to scene-level (whole lane red)
-            # when an event fired but the model only judged the scene.
-            lanes = self.state["cameras"][camera].get("lanes", {})
-            event_subjects = []
-            scene_alert = False
-            for report in lanes.values():
-                if not report:
-                    continue
-                event_subjects.extend(report.get("event_subjects") or [])
-                if any(j.get("observed") for j in report.get("judgments", [])):
-                    scene_alert = True
-            # Scene-level alert only matters as a fallback when nothing grounded.
-            scene_alert = scene_alert and not event_subjects
             frames = self.framesets[camera % len(self.framesets)]
             duration = getattr(
                 frames, "media_duration", len(frames) / self.state["sample_fps"]
             )
+            lanes = self.state["cameras"][camera].get("lanes", {})
+            event_subjects = []
+            positive_labels, grounded_labels = set(), set()
+            for report in lanes.values():
+                if not report or not report["complete"] or report["error"]:
+                    continue
+                subjects = report.get("event_subjects") or []
+                positive_labels.update(
+                    judgment.get("label")
+                    for judgment in report.get("judgments", [])
+                    if judgment.get("observed") is True
+                )
+                tick = report["tick"]
+                if tick is None:
+                    continue
+                source_epoch = tick // len(frames)
+                source_time = source_epoch * duration + report["media_seconds"]
+                # Never match a delayed/future/previous-loop rectangle against
+                # somebody now occupying that location. No identity is carried
+                # beyond this short evidence-aligned spatial estimate.
+                if epoch == source_epoch and (
+                    0 <= at - source_time <= EVENT_SUBJECT_MAX_AGE
+                ):
+                    event_subjects.extend(subjects)
+                    grounded_labels.update(subject["event"] for subject in subjects)
+            # Resolve fallback per event across both lanes: grounding smoking
+            # cannot hide a scene-only fight, or make scene-only smoking turn
+            # every person red when its grounding lane supplied a subject.
+            scene_alert = bool(positive_labels - grounded_labels)
             if not epoch * duration <= at <= (epoch + 1) * duration + 0.05:
                 raise ValueError("preview time does not match loop")
             anchor = None
@@ -520,81 +585,128 @@ class LiveMonitor:
                 ):
                     raise ValueError("invalid preview dimensions")
             if self.detector_url:
-                return self._yolo_track(key, at, jpeg, event_subjects, scene_alert)
+                return self._yolo_track(
+                    key,
+                    at,
+                    jpeg,
+                    event_subjects,
+                    scene_alert,
+                    stage=stage,
+                    epoch=epoch,
+                    generation=generation,
+                )
             return tracker.advance(gray_frame(jpeg), at, epoch=epoch, anchor=anchor)
         finally:
             tracker.lock.release()
 
-    def _yolo_track(self, key, at, jpeg, event_subjects, scene_alert):
-        """Per-frame YOLO detector boxes, colored by per-subject event binding.
+    def _yolo_track(
+        self,
+        key,
+        at,
+        jpeg,
+        event_subjects,
+        scene_alert,
+        *,
+        stage=None,
+        epoch=0,
+        generation=0,
+    ):
+        """Detect live preview boxes and apply bounded spatial event estimates.
 
-        Calls the detector worker's /v1/tracks with this camera's own stable
-        session id and a monotonic sequence, so each preview stream keeps stable
-        track_ids. Calls are serialized across cameras so a single-GPU worker is
-        never flooded with concurrent requests (which it rejects with 429); each
-        stream simply gets boxes in round-robin. Each returned track is matched
-        by IoU against the VLM's grounded event subjects: a matched track carries
-        event_state="alert" plus the event label, so only the actor turns red.
-        When the model only judged the scene (scene_alert, no grounded subject)
-        every track turns red as a fallback. Any hiccup degrades to an empty
-        frame, never raises.
+        Worker requests are serialized. Sessions are isolated across stages,
+        loops and seeks, so unrelated source frames cannot share tracker state.
         """
         scene_state = "alert" if scene_alert else "normal"
+        unavailable = {
+            "status": "detector_unavailable",
+            "event_state": "alert" if event_subjects else scene_state,
+            "objects": [],
+        }
         with self._detector_lock:
-            seq = self._detector_seq.get(key, 0) + 1
-            self._detector_seq[key] = seq
-            session_id = f"preview-{key[0]}-{key[1]}"
-            # The detector rejects non-increasing per-session frame metadata.
-            # The preview loops each clip, so replay media time (`at`) rewinds on
-            # every wrap; send a monotonic wall clock instead so the session
-            # keeps accepting frames across loops.
-            timestamp = time.monotonic()
+            now = time.monotonic()
+            self._detector_sessions = {
+                k: value
+                for k, value in self._detector_sessions.items()
+                if now - value["touched"] <= 30
+            }
+            session = self._detector_sessions.get(key)
+            if (
+                session is None
+                or session["stage"] != stage
+                or session["epoch"] != epoch
+                or session["generation"] != generation
+                or at <= session["at"]
+            ):
+                session = {
+                    "id": "preview-" + secrets.token_hex(16),
+                    "sequence": 0,
+                    "stage": stage,
+                    "epoch": epoch,
+                    "generation": generation,
+                }
+                self._detector_sessions[key] = session
+            session.update(sequence=session["sequence"] + 1, at=at, touched=now)
+            # Wall time remains monotonic even when the clip wraps or seeks.
             request = urllib.request.Request(
                 f"{self.detector_url}/v1/tracks",
                 data=jpeg,
                 method="POST",
                 headers={
                     "Content-Type": "image/jpeg",
-                    "x-goodvision-stream-session-id": session_id,
-                    "x-goodvision-frame-sequence": str(seq),
-                    "x-goodvision-timestamp-seconds": repr(timestamp),
+                    "x-goodvision-stream-session-id": session["id"],
+                    "x-goodvision-frame-sequence": str(session["sequence"]),
+                    "x-goodvision-timestamp-seconds": repr(now),
                     "X-GoodVision-Detector-Model": self.detector_model,
                 },
             )
             try:
                 with urllib.request.urlopen(request, timeout=2.0) as response:
-                    snapshot = json.loads(response.read())
+                    payload = response.read(1024 * 1024 + 1)
+                    if len(payload) > 1024 * 1024:
+                        return unavailable
+                    snapshot = json.loads(payload)
+                if not isinstance(snapshot, dict) or not isinstance(
+                    snapshot.get("objects"), list
+                ):
+                    return unavailable
+                objects = snapshot["objects"]
+                ids = set()
+                for obj in objects:
+                    if not isinstance(obj, dict):
+                        return unavailable
+                    track_id = obj.get("track_id")
+                    if (
+                        not isinstance(track_id, str)
+                        or not track_id.strip()
+                        or track_id in ids
+                        or _normalized_xyxy(obj.get("bbox")) is None
+                    ):
+                        return unavailable
+                    ids.add(track_id)
             except (urllib.error.URLError, OSError, ValueError, TimeoutError):
-                return {
-                    "status": "detector_unavailable",
-                    "event_state": scene_state,
-                    "objects": [],
-                }
-        objects = []
-        for o in snapshot.get("objects", []):
-            bbox = o.get("bbox")
-            if not (isinstance(bbox, dict) and o.get("track_id")):
-                continue
-            track_box = _normalized_xyxy(bbox)
-            state, event = scene_state, None
-            # Tight binding: a track doing a grounded event (best IoU >= 0.3)
-            # turns red and carries that event's label; others stay green even
-            # when another person in the same lane triggered the event.
-            if track_box is not None and event_subjects:
-                best = max(
-                    event_subjects,
-                    key=lambda s: _iou(track_box, s["bbox"]),
-                )
-                if _iou(track_box, best["bbox"]) >= 0.3:
-                    state, event = "alert", best.get("event")
-            entry = {"track_id": o["track_id"], "bbox": bbox, "event_state": state}
-            if event:
-                entry["event"] = event
-            objects.append(entry)
+                return unavailable
+        matches, unmatched = _event_matches(objects, event_subjects)
+        if unmatched:
+            # An ambiguous/unmatched positive remains a scene alert; it cannot
+            # assign an event name to a particular person.
+            scene_state = "alert"
+        result = []
+        for index, obj in enumerate(objects):
+            events = matches.get(index, [])
+            entry = {
+                "track_id": obj["track_id"],
+                "bbox": obj["bbox"],
+                "event_state": "alert" if events else scene_state,
+            }
+            if events:
+                entry["event"] = ", ".join(events)
+            result.append(entry)
         return {
-            "status": "tracking" if objects else "no_person_boxes",
-            "event_state": "alert" if any(o["event_state"] == "alert" for o in objects) else scene_state,
-            "objects": objects,
+            "status": "tracking" if result else "no_person_boxes",
+            "event_state": "alert"
+            if any(obj["event_state"] == "alert" for obj in result)
+            else scene_state,
+            "objects": result,
         }
 
     def handler(self):

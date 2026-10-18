@@ -172,7 +172,8 @@
         const pos=time*state.sample_fps, index=Math.floor(pos)%c.media.sample_count;
         const a=c.media.timestamps[index], b=index+1<c.media.sample_count ? c.media.timestamps[index+1] : c.media.duration;
         const media=a+(b-a)*(pos-Math.floor(pos));
-        c.clock.textContent=`视频 ${seconds(media)} · 本轮 ${seconds(Math.max(0,Math.min(time,state.duration)))}`;
+        const shownMedia=state.detector && c.video && Number.isFinite(c.video.currentTime) ? c.video.currentTime : media;
+        c.clock.textContent=`视频 ${seconds(shownMedia)} · 本轮 ${seconds(Math.max(0,Math.min(time,state.duration)))}`;
         if(c.video) {
           // In detector preview each lane loops freely, so it plays for the
           // whole run instead of stopping at its per-lane duration/offset.
@@ -191,14 +192,13 @@
           c.lastPresented=presented;
           if(c.video.readyState>=2) {
             if(c.trackCanvas && !c.tracker) c.tracker=new window.PreviewTracking(c.video,c.trackCanvas,c.trackNote,i,c.media);
-            // Detector mode: hold epoch constant so a free loop wrap does not
-            // invalidate an in-flight detector response, and skip the forced
-            // master-clock resync that would seek (and clear boxes) every frame.
-            if(c.tracker) {c.tracker.playing=playing;c.tracker.epoch=state.detector ? 0 : Math.floor(Math.floor(pos)/c.media.sample_count);}
+            // Detector trackers count their own source loops. Only the optical
+            // flow preview follows the benchmark's master-clock epoch.
+            if(c.tracker) {c.tracker.playing=playing;if(!state.detector)c.tracker.epoch=Math.floor(Math.floor(pos)/c.media.sample_count);}
             if(!state.detector && Math.abs(c.video.currentTime-media)>.3 && !c.video.seeking) c.video.currentTime=media;
             if(playing && c.video.paused && !c.playRequested) {c.playRequested=true;c.video.play().catch(()=>window.monitorDiagnostics.mediaErrors.push(`video-${i+1}:autoplay`)).finally(()=>c.playRequested=false);}
           }
-          if(!state.detector && !playing && !c.video.paused) c.video.pause();
+          if(!playing && !c.video.paused) c.video.pause();
         }
       });
       window.monitorReady=cards.length>0 && cards.every(c=>!c.video || c.video.readyState>=2);

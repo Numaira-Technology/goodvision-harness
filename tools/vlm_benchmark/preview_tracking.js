@@ -32,6 +32,7 @@ window.PreviewTracking = class {
     this.controller?.abort();
   }
   clear(message) {
+    this.lastObjects = []; this.lastObjectsAt = 0;
     this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height);
     this.note.textContent=message;
   }
@@ -68,7 +69,14 @@ window.PreviewTracking = class {
     if(this.closed) return;
     this.callback=this.video.requestVideoFrameCallback((n,m)=>this.frame(n,m));
     if(!this.playing || this.video.seeking || !this.video.videoWidth) return;
-    const local=metadata.mediaTime, at=this.epoch*this.media.duration+local;
+    const local=metadata.mediaTime;
+    let at=this.epoch*this.media.duration+local;
+    // Native clip loops can rewind without a seeking callback. Boxes and an
+    // in-flight response from the previous scene must not survive that wrap.
+    if(at<this.lastTime) {
+      if(this.detectorMode) {this.epoch++;at=this.epoch*this.media.duration+local;}
+      this.generation++;this.clear("画面跳转 · 等待重新定位");
+    }
     if(at===this.lastTime) return;
     this.lastTime=at;this.stats.frames++;
     const height=Math.max(8,Math.round(320*this.video.videoHeight/this.video.videoWidth));
@@ -83,6 +91,9 @@ window.PreviewTracking = class {
       if(now-this.lastPaint>100) {this.paint(this.captureCanvas,held);if(!held.length)this.note.textContent="跟踪处理中 · 暂不显示旧框";}
       return;
     }
+    // Keep the opaque overlay current even while another lane has the request
+    // budget. Otherwise it freezes this lane and can retain expired boxes.
+    if(now-this.lastPaint>150) this.paint(this.captureCanvas,held);
     // Detector fetches are long (a GPU round trip under 12-stream load can take
     // seconds). The browser allows only ~6 concurrent HTTP/1.1 connections per
     // origin, so 12 lanes fetching at once would starve the evidence-frame image
@@ -93,9 +104,15 @@ window.PreviewTracking = class {
     if(this.detectorMode) {
       const cls = window.PreviewTracking;
       if(cls.inflight === undefined) { cls.inflight = 0; cls.maxInflight = 4; }
-      if(cls.inflight >= cls.maxInflight) { this.stats.budgetSkipped=(this.stats.budgetSkipped||0)+1; return; }
+      // A lane that just finished must queue behind lanes already waiting;
+      // synchronized frame callbacks must not let the first four monopolize
+      // every slot. Inactive or stalled lanes must not block healthy lanes.
+      this.budgetFrameAt = now;
+      cls.waiters = (cls.waiters || []).filter(t=>!t.closed && t.playing && !t.video.seeking && now-t.budgetFrameAt<=1000);
+      if(!cls.waiters.includes(this)) cls.waiters.push(this);
+      if(cls.inflight >= cls.maxInflight || cls.waiters[0]!==this) { this.stats.budgetSkipped=(this.stats.budgetSkipped||0)+1; return; }
+      cls.waiters.shift();
     }
-    if(now-this.lastPaint>150) this.paint(this.captureCanvas,held);
     this.busy=true;this.stats.requests++;
     if(this.detectorMode) window.PreviewTracking.inflight++;
     const generation=this.generation, epoch=this.epoch, started=performance.now();
@@ -106,7 +123,7 @@ window.PreviewTracking = class {
     try {
       const response=await fetch(`tracking/${encodeURIComponent(this.stage)}/${this.camera}`,{
         method:"POST",headers:{"Content-Type":"application/json"},signal:this.controller.signal,
-        body:JSON.stringify({client:this.client,time:at,epoch,jpeg})});
+        body:JSON.stringify({client:this.client,time:at,epoch,generation,jpeg})});
       if(!response.ok) throw new Error("tracking HTTP");
       const result=await response.json(), end=performance.now();
       // YOLO runs on a remote GPU, so allow a larger round trip than the local
