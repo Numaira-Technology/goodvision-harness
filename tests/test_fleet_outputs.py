@@ -42,7 +42,9 @@ def test_catalog_covers_all_native_read_outputs_and_documents_queries(monkeypatc
     }
     assert native <= set(OUTPUT_PATHS)
     dashboard = Path(__file__).parents[1] / "src/goodvision_harness/dashboard.html"
-    visible_outputs = re.findall(r'data-output-path="([^"]+)"', dashboard.read_text())
+    visible_outputs = re.findall(
+        r'data-output-path="([^"]+)"', dashboard.read_text(encoding="utf-8")
+    )
     assert {"workflow/results", "workflow/summaries"} <= set(visible_outputs)
     assert {"/" + path for path in visible_outputs} <= set(OUTPUT_PATHS)
     schema = app.openapi()["paths"]

@@ -1,5 +1,6 @@
 from dataclasses import replace
 from itertools import pairwise
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -177,9 +178,10 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
     tmp_path, monkeypatch, finish_after, drained
 ):
     from tools import vlm_multistream_benchmark as benchmark
+    from tools.vlm_benchmark import source_feeder
 
     class Clock:
-        now = 1000.0
+        now = 0.0
 
         def monotonic(self):
             return self.now
@@ -189,6 +191,12 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
 
     clock = Clock()
     configs = []
+
+    class ClockEvent(Event):
+        def wait(self, timeout=None):
+            if not self.is_set() and timeout is not None:
+                clock.sleep(timeout)
+            return self.is_set()
 
     class Branch:
         def __init__(self, config, **kwargs):
@@ -228,6 +236,10 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
             pass
 
     monkeypatch.setattr(benchmark, "time", clock)
+    # Keep the real feeder's clock and interruptible wait on this timeline.
+    # Mixing fake stage time with host uptime can wait for minutes on a fresh VM.
+    monkeypatch.setattr(source_feeder, "time", clock)
+    monkeypatch.setattr(source_feeder, "Event", ClockEvent)
     monkeypatch.setattr(benchmark, "IndependentVLMBranch", Branch)
     monkeypatch.setattr(benchmark, "environment_api_key", lambda settings: "fake-key")
     base = load_config(ROOT / "config.yaml")
@@ -240,6 +252,8 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
         request_rate=40, queue_timeout=1, deadline=3,
     )
     result = run_stage(args, base, 1, [[jpeg()]], tmp_path, 1)
+    assert result["input_timing_valid"]
+    assert result["sender_missed_samples"] == 0
     assert configs[0].model_settings.timeout_seconds == 15
     assert result["all_drained"] is drained
     assert result["drain_timeout_seconds"] == 20

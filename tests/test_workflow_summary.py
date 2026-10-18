@@ -436,6 +436,18 @@ def test_http_bilingual_summary_normalizes_both_languages_without_changing_focus
     ('{"zh":"一个人。","en":"A person.","extra":"unexpected"}', "stop"),
     (json.dumps({"zh": "人" * 8001, "en": "A person."}), "stop"),
     (json.dumps({"zh": "一个人。", "en": "x" * 8001}), "stop"),
+], ids=[
+    "plain-text",
+    "truncated-json",
+    "length-finish-reason",
+    "content-filtered",
+    "missing-chinese",
+    "blank-english",
+    "null-chinese",
+    "non-string-chinese",
+    "unexpected-field",
+    "chinese-too-long",
+    "english-too-long",
 ])
 def test_invalid_or_incomplete_bilingual_output_is_not_published_as_summary(
     monkeypatch, content, finish_reason,

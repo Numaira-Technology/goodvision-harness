@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import time
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +13,7 @@ import httpx
 import numpy as np
 import pytest
 
-from goodvision_harness import perception
+from goodvision_harness import perception, sam_tracking_pipeline
 
 
 def module(name, path):
@@ -151,6 +153,31 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     offset = [0.0]
     clock = [time.perf_counter()]
     coordinators = []
+    real_deadlines = ContextVar("replay_real_deadlines", default=False)
+
+    # Source replay and SAM candidate freshness share the fixture clock. Slow
+    # disk preparation must not expire evidence in this protocol-only check.
+    # Wait/close deadlines still use wall time so a broken worker fails promptly.
+    monkeypatch.setattr(
+        sam_tracking_pipeline,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: time.monotonic()
+            if real_deadlines.get()
+            else clock[0],
+        ),
+    )
+
+    def with_real_deadline(operation):
+        @wraps(operation)
+        def bounded(*args, **kwargs):
+            token = real_deadlines.set(True)
+            try:
+                return operation(*args, **kwargs)
+            finally:
+                real_deadlines.reset(token)
+
+        return bounded
 
     def capture_sleep(seconds):
         # This checks route wiring and exact evidence, not host throughput.
@@ -172,6 +199,12 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
 
     def initialize(*args, **kwargs):
         coordinator = create_coordinator(*args, **kwargs)
+        monkeypatch.setattr(
+            coordinator,
+            "wait_until_idle",
+            with_real_deadline(coordinator.wait_until_idle),
+        )
+        monkeypatch.setattr(coordinator, "close", with_real_deadline(coordinator.close))
         coordinators.append(coordinator)
         offset[0] += startup_delay
         return coordinator
@@ -208,7 +241,9 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     result = runner.run(args)
     assert result["ok"] and result["source_evidence_unchanged"]
     assert result["arrival_lateness_seconds"]["peak"] < 1
-    assert result["tracking_coverage"]["all_capture_frames_processed"]
+    assert result["tracking_coverage"]["all_capture_frames_processed"], result[
+        "coordinator"
+    ]
     assert result["processing_method"] == method
     assert result["backend"] == perception.METHODS[method].backend
     assert (
