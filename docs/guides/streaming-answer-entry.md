@@ -292,5 +292,29 @@ replay. The 69 successful responses used 6–16 output tokens and ended with
 Six explicit 429 responses recovered under the existing cooldown policy. The
 CPU controller exited normally and its exact container was removed; no GPU was
 created. Valid-format answers do not imply correct answers, and these 70 items
-are not the complete 182-question evaluation. The separate three-video wall-time
-trial has not run. No additional unit tests, lint, compilation or build were run.
+are not by themselves the complete 182-question evaluation.
+
+The subsequent human-approved partial-observation recovery loaded `a6df607` and
+answered the remaining 31 questions from 23 interrupted sources without capture.
+All 31 returned valid-format responses with 6–22 output tokens, no new unknown
+outcomes, input-capacity failures or truncation. This does not imply that the
+answers were correct. Sixteen sources had EOF records and seven did not; none
+had a normal drain record. The evidence and prompt disclosed these boundaries
+instead of relabeling the sources as complete. The CPU container was removed.
+The original 182 questions now have terminal request/answer states; their
+historical outputs and original scoring remain unchanged. Multiple frozen
+capture and answer versions are involved, so this is not a single-version
+controlled comparison.
+
+The separately authorized three-video wall-time trial loaded `5b8df7c`. All
+three sources reached EOF and drained; six local invalid windows did not stop
+the batch. Forty HTTP200 responses and one HTTP429 response were recorded, with
+the 429 recovering after the prescribed cooldown. No final-answer phase was
+run. The trial's exact GPU and containers were released before analysis.
+Successful HTTP latency and report publication timing are different quantities.
+The source recorder and post-publication archive permit a same-clock proxy, but
+the raw publication monotonic timestamp was not retained. Consequently these
+records do not establish exact natural-event-onset-to-publication latency.
+Source annotation boundaries and independently confirmed natural action onset
+must also be distinguished. The three-video result is not a full-cohort latency
+estimate. No additional unit tests, lint, compilation or build were run.

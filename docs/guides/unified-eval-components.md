@@ -1,5 +1,52 @@
 # Unified evaluation component scope
 
+## Current contract (October 19, 2026)
+
+Use [the streaming answer entry](streaming-answer-entry.md) for the current
+contract. The integration and codec descriptions below are dated history, not
+instructions to restore hash-based launch arguments or identifier dictionaries.
+The pre-task comparison baseline remains
+`6c28dddd26bed7a7be50762a4c7dd6b796b2dbe3`.
+
+- The supported timed-file path uses the native streaming session and busy-frame
+  replacement policy. The earlier fixed-JPEG, sequential path is an offline
+  method and must be reported separately.
+- Configuration snapshots and explicit source records replace evaluation
+  content-digest checks. The event profile reads the supplied definitions and
+  checks label order and targets; it no longer requires `DEFINITIONS_SHA256`.
+- Final-model evidence contains the original question, timestamped observations,
+  short subject aliases and missing-observation times. UUIDs, hashes, paths and
+  audit metadata do not belong in the prompt. Full local archives remain intact.
+  The timestamp projection is the current path; the earlier dictionary/window
+  codecs below describe the superseded preparation stages.
+- The final response is one short `prediction`, not an explanation or citation
+  list. Input capacity and output truncation are different failure conditions.
+  Local token counts reserve output space and are not provider usage receipts.
+- Explicit request records retain successful responses, sent-invalid answers,
+  cumulative attempts and unknown outcomes. Changing a representation does not
+  authorize replay. Source EOF, drain state, window parsing and answer quality
+  remain separate; the approved partial-observation recovery is explicitly
+  marked and does not fabricate completion.
+- `tools/saved_streaming_recovery.py` and
+  `tools/streaming_walltime_trial.py` provide the bounded recovery/trial owners.
+  The latter is limited to the three approved videos, releases its exact GPU
+  before analysis, and never sends questions or GT to the observation model.
+- Signed Webhook delivery and customer automatic updates/package generation
+  are disabled under the user's decision; they do not fall back to unsigned
+  delivery or unchecked installation. Official checkpoint, manual operations,
+  frozen history and legacy test contracts still contain digest references.
+  This is not a claim that the entire repository is hash-free.
+
+Authorized runtime outcomes are recorded in the streaming entry's validation
+section. They are not unit-test, lint, compilation or build results. No experiment
+media, answers, caches or cost ledgers are published with this document.
+
+## Historical integration snapshot
+
+The following sections describe the initial integration and subsequent codec
+steps before the current timestamp-only model projection. Their no-run statements
+apply to those publication points, not to the completed authorized runs above.
+
 This integration publishes existing evaluation code and interfaces. It does not
 run an evaluation or publish experiment results. The source is the local work on
 `codex/harness-unified-eval-20261013`, based on
