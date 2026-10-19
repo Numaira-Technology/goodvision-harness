@@ -1,4 +1,4 @@
-"""Own the authorized three-video timing run without changing native scheduling.
+"""Own a frozen authorized three-video timing run with native admission policies.
 
 Preparation is offline. Launch owns one standard 24GB RTX 4090 and releases it
 before any offline timing analysis. There is no final-answer or GT input phase.
@@ -24,6 +24,7 @@ from saved_streaming_recovery import (
 
 
 CLIPS = ("0018", "0028", "0002")
+PACED_INPUT_CLIPS = ("0040", "0003", "0030")
 
 
 def import_file(name, path):
@@ -56,14 +57,25 @@ def resources(root):
 def prepare(args):
     root, source, last = args.root.resolve(), args.source_round.resolve(), args.last_answer.resolve()
     staging = load(root / "staging.json")
-    if tuple(row["clip"] for row in staging["selections"]) != CLIPS:
+    evaluation_timing = staging.get("evaluation_timing", False)
+    if type(evaluation_timing) is not bool:
+        raise ValueError("evaluation_timing must be an explicit boolean")
+    clips = PACED_INPUT_CLIPS if evaluation_timing else CLIPS
+    if tuple(row["clip"] for row in staging["selections"]) != clips:
         raise ValueError("Only the authorized three clips belong in this run")
+    prior_timing = args.prior_timing_round.resolve() if args.prior_timing_round else None
+    if evaluation_timing and prior_timing is None:
+        raise ValueError("The instrumented run requires the prior timing resource record")
+    if prior_timing is not None:
+        if (load(prior_timing / "round-outcome.json")["cleanup"] != "confirmed_released"
+                or load(prior_timing / "resources-after.json")["confirmed_released"] is not True):
+            raise ValueError("Release the prior timing resources before preparing another run")
     if any((root / name).exists() for name in ("prepare-intent.json", "ready.json", "launch.json")):
         raise ValueError("This experiment already has a preparation or launch")
     release = require_finished(source, last)
     if load(last / "answer-run-outcome.json").get("resource_state") != "exited_removed":
         raise ValueError("Release the prior CPU answer container first")
-    save(root / "prepare-intent.json", {"epoch": time.time(), "clips": CLIPS,
+    save(root / "prepare-intent.json", {"epoch": time.time(), "clips": clips,
         "model_calls": 0, "gpu_creations": 0, "source_commit": args.commit})
     commit = freeze_source(root, args.worktree.resolve(), args.commit)
     with (root / "checkout/tools/streaming_walltime_trial.py").open("xb") as target:
@@ -80,15 +92,20 @@ def prepare(args):
     shutil.copyfile(adapter / "driver.py", root / "resource-release.py")
     for name in ("logs", "gpu/output", "output"):
         (root / name).mkdir(parents=True, exist_ok=True)
+    previous_authorization = load(prior_timing / "gpu/source/execution-authorization.json"
+        if prior_timing is not None else source / "authorization.json")
     approval = {"status": "explicitly_approved", "approved_by": "human_user",
-        "round": root.name, "approval_quote": "尝试小规模测试 wall time；实在不行可以先做physical conflict",
-        "approval_reference": "Current chat: authorized small wall-time trial, physical conflict first.",
+        "round": root.name, "approval_quote": "按此设计实现" if evaluation_timing else
+        "尝试小规模测试 wall time；实在不行可以先做physical conflict",
+        "approval_reference": "Current chat: approved paced-input and readable-report timing; "
+        "F_8 and two annotated negatives after prerequisite deliverables and push."
+        if evaluation_timing else "Current chat: authorized small wall-time trial, physical conflict first.",
         "maximum_new_create_attempts": None, "maximum_create_attempts_this_round": 1,
-        "creation_budget_id": load(source / "authorization.json")["creation_budget_id"],
-        "new_create_attempts_used_before_round": load(source / "authorization.json")["new_create_attempts_used_before_round"] + 1,
+        "creation_budget_id": previous_authorization["creation_budget_id"],
+        "new_create_attempts_used_before_round": previous_authorization["new_create_attempts_used_before_round"] + 1,
         "required_gpu_name": "RTX 4090", "maximum_simultaneous_gpu_instances": 1,
         "bounded_mask_area": False, "deadline_epoch": None, "gpu_actual_cap_usd": None,
-        "scope": "three_video_native_streaming_walltime", "clips": CLIPS,
+        "scope": "three_video_native_streaming_walltime", "clips": clips,
         "face_enabled": False, "vlm_enabled": True}
     save(root / "gpu/source/execution-authorization.json", approval)
     history = load(source / "gpu/source/prior-resources.json")
@@ -100,6 +117,18 @@ def prepare(args):
             "minimum_observed_charge_usd": str(cost["current_known_charge_floor_usd"]),
             "actual_charge_usd": cost.get("actual_charge_usd"), "released": True,
             "unknown_cost_is_not_zero": True, "final_invoice": False})
+    if prior_timing is not None:
+        prior_deployment = load(prior_timing / "gpu/output/deployment.json")
+        prior_cost = load(prior_timing / "gpu/output/gpu-cost.json")
+        if prior_deployment["instance_id"] not in {row["instance_id"] for row in history["instances"]}:
+            history["instances"].append({
+                "instance_id": prior_deployment["instance_id"], "label": prior_deployment["label"],
+                "started_epoch": prior_deployment["started_epoch"],
+                "stopped_epoch": load(prior_timing / "round-outcome.json")["finished_epoch"],
+                "quoted_dph": str(prior_deployment["offer"]["dph_total"]),
+                "minimum_observed_charge_usd": str(prior_cost["current_known_charge_floor_usd"]),
+                "actual_charge_usd": prior_cost.get("actual_charge_usd"), "released": True,
+                "unknown_cost_is_not_zero": True, "final_invoice": False})
     save(root / "gpu/output/prelaunch-prior-resources.json", history)
     ledger = {"output_directory": str(root / "output/model-ledger"),
               "seed_manifest": str(root / "ledger-seed.json"), "owner_lock": str(root / "model-ledger.lock")}
@@ -116,6 +145,7 @@ def prepare(args):
             "media_path": row["media_path"], "harness_config": str(root / "harness.yaml"),
             "event_definitions": str(root / "event-definitions.json"),
             "face_enabled": False, "vlm_enabled": True, "question_conditioned": False,
+            "evaluation_timing": evaluation_timing,
             "sam_internal_patch": False, "coverage_policy": "native_processed_and_documented_skips_v1",
             "max_source_wall_seconds": max(60, row["duration_seconds"]) + 300,
             "drain_timeout_seconds": previous["drain_timeout_seconds"],
@@ -135,7 +165,9 @@ def prepare(args):
         "prior_release_record": release, "sources": entries, "model_ledger": ledger,
         "final_answer_dispatch": False, "ground_truth_to_model": False,
         "resource_adapter_origin": str(adapter), "gpu_source_origin": str(source / "gpu/source"),
-        "maximum_create_attempts_this_round": 1, "clips": CLIPS}
+        "maximum_create_attempts_this_round": 1, "clips": clips,
+        "evaluation_timing": evaluation_timing,
+        "prior_timing_round": str(prior_timing) if prior_timing is not None else None}
     save(root / "plan.json", plan)
     save(root / "ready.json", {"status": "prepared_not_started", "plan_snapshot": plan,
         "source_commit": commit, "model_calls": 0, "gpu_creations": 0})
@@ -273,7 +305,7 @@ def driver(root):
         c.update(phase="stopped", error=error, cleanup=release)
         save(root / "round-outcome.json", {"finished_epoch": time.time(), "error": error,
             "cleanup": release, "capture_completed": (root / "capture-completion.json").exists(),
-            "source_commit": plan["source_commit"], "clips": CLIPS, "final_answer_dispatch": False})
+            "source_commit": plan["source_commit"], "clips": plan["clips"], "final_answer_dispatch": False})
         for lock in locks:
             lock.close()
 
@@ -294,7 +326,10 @@ def launch(root):
             raise ValueError("This timing experiment already has a launch record")
         require_finished(Path(plan["source_round"]), Path(plan["last_answer"]))
         c = resources(root)
-        for experiment in (root.name, Path(plan["last_answer"]).name, Path(plan["source_round"]).name):
+        experiments = [root.name, Path(plan["last_answer"]).name, Path(plan["source_round"]).name]
+        if plan.get("prior_timing_round"):
+            experiments.append(Path(plan["prior_timing_round"]).name)
+        for experiment in experiments:
             if c.docker("ps", "-a", "--filter", "label=experiment=" + experiment,
                         "--format", "{{.Names}}", timeout=20).stdout.strip():
                 raise RuntimeError("Reconcile the existing exact experiment container before launch")
@@ -318,7 +353,7 @@ def launch(root):
                 env=environment, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 start_new_session=True, pass_fds=tuple(handle.fileno() for handle in locks))
         record = {"epoch": time.time(), "pid": child.pid, "source_commit": plan["source_commit"],
-            "clips": CLIPS, "status": "controller_started_gpu_creation_not_yet_confirmed"}
+            "clips": plan["clips"], "status": "controller_started_gpu_creation_not_yet_confirmed"}
         save(root / "launch.json", record)
         print(json.dumps(record), flush=True)
     finally:
@@ -332,6 +367,7 @@ def main():
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--source-round", type=Path)
     parser.add_argument("--last-answer", type=Path)
+    parser.add_argument("--prior-timing-round", type=Path)
     parser.add_argument("--worktree", type=Path)
     parser.add_argument("--commit")
     args = parser.parse_args()

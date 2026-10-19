@@ -95,6 +95,8 @@ class SessionCallbacks:
     # its own branch. Mixed local-face/safety sessions publish the newest result
     # of each branch independently, always with that branch's exact source frame.
     on_timeline_result: Callable[[AnalysisResult], None] | None = None
+    # Evaluation-only file ingress, before cadence selection and JPEG encoding.
+    on_source_input: Callable[[dict[str, Any]], None] | None = None
 
 
 class StreamingSession:
@@ -214,6 +216,7 @@ class StreamingSession:
             playback_speed=config.video.playback_speed,
             start_seconds=start_seconds,
             realtime=use_realtime,
+            input_observer=callbacks.on_source_input,
         )
         return cls(
             config,

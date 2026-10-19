@@ -1,5 +1,11 @@
 # Three-video native streaming timing run
 
+This document describes the earlier 0018/0028/0002 trial. Its archive clocks
+cannot establish exact raw-input-to-readable-report latency. The separately
+approved evaluation-only instrument and F_8/two-negative cohort are specified
+in [Evaluation-only reaction timing](../evaluation-reaction-timing.md). Preserve
+the earlier run; do not replay it to fill missing clocks.
+
 ## Scope and authority
 
 The user authorized a small wall-time trial, with physical conflict first if

@@ -1079,15 +1079,19 @@ class IndependentVLMBranch:
         inspector_factory=_inspector,
         report_observer=None,
         rejected_report_observer=None,
+        publication_observer=None,
     ):
         if report_observer is not None and rejected_report_observer is None:
             raise ValueError("evaluation recording requires an explicit rejected-report archive")
+        if publication_observer is not None and report_observer is None:
+            raise ValueError("publication timing requires a persisted original report")
         self.config, self.connection, self.fusion = config, connection, fusion
         self._display_fusion = display_fusion
         self._delivery = delivery
         # Evaluation opts into persistence; production leaves these observers disabled.
         self._report_observer = report_observer
         self._rejected_report_observer = rejected_report_observer
+        self._publication_observer = publication_observer
         self.results = ResultBus(128)
         self.grounding_results = ResultBus(128)
         self._shared_results = results
@@ -1340,11 +1344,14 @@ class IndependentVLMBranch:
             # Independent publication precedes every optional fusion/archive action.
             information = report.get("vlm_lane") != "grounding"
             grounding = report.get("vlm_lane") != "information"
-            (self.results if information else self.grounding_results).publish(report)
+            publication = (self.results if information else self.grounding_results).publish(
+                report, measure_publication=self._publication_observer is not None)
             if self._report_observer is not None:
                 try:
                     # Publish first, persist both lanes, then allow optional fusion.
-                    self._report_observer(copy.deepcopy(report))
+                    reference = self._report_observer(copy.deepcopy(report))
+                    if self._publication_observer is not None:
+                        self._publication_observer(publication, report_reference=reference)
                 except Exception as exc:
                     self._capture_failed(exc, "evaluation_capture_failed")
                     return

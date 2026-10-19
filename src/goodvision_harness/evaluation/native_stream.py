@@ -131,6 +131,20 @@ class NativeCapture:
     def snapshot(self, snapshot):
         return self.callback(UnifiedCaptureSession.tracking_snapshot, self, snapshot)
 
+    def source_input(self, payload):
+        return self.callback(self.recorder.record, "frame-input", payload)
+
+    def publication(self, record, *, report_reference):
+        lower, upper = record.readable_monotonic_bounds
+        return self.callback(self.recorder.record, "publication", {
+            "report_reference": report_reference,
+            "lane": record.payload.get("vlm_lane", "combined"),
+            "cursor": record.cursor, "state": record.payload["state"],
+            "readable_monotonic_lower": lower,
+            "readable_monotonic_upper": upper,
+            "boundary_width_seconds": upper - lower,
+        })
+
     def independent_report(self, report):
         # Archive the original window before acting on its failure scope. The
         # recorder and evidence adapter retain failed windows as failed, not as
@@ -210,6 +224,9 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
     base = path.parent
     config = _read_frozen(path)
     reject_private(config, observation=True)
+    evaluation_timing = config.get("evaluation_timing", False)
+    if type(evaluation_timing) is not bool:
+        raise ValueError("evaluation_timing must be an explicit boolean")
     if (config.get("schema_version") != "native-stream-source-v1"
             or type(config.get("vlm_enabled")) is not bool
             or config.get("face_enabled") is not False
@@ -263,6 +280,9 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
                   "window_plan_semantics": "independent_native_lanes_v1",
                   "runtime_scope": "production_components_with_timed_file_source",
                   "coverage_policy": coverage_policy,
+                  "evaluation_timing": evaluation_timing,
+                  "timing_protocol": "paced_raw_input_to_independent_bus_v1"
+                  if evaluation_timing else None,
                   "source_preprocessing": {"display_fps": harness.display.fps,
                       "model_fps": harness.video.fps, "max_image_side": harness.display.max_image_side,
                       "jpeg_quality": harness.display.jpeg_quality}}
@@ -315,7 +335,8 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
                 str((base / ledger["owner_lock"]).resolve()))
             capture.worker = IndependentVLMBranch(vlm, fusion=capture.fusion,
                 inspector_factory=factory, report_observer=capture.independent_report,
-                rejected_report_observer=recorder.rejected_report)
+                rejected_report_observer=recorder.rejected_report,
+                publication_observer=capture.publication if evaluation_timing else None)
             capture.worker.start()
 
         def ended(reason, error):
@@ -324,7 +345,8 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
 
         session = StreamingSession.for_file(harness,
             SceneCaptureClient(harness.inference, profile.labels if config["vlm_enabled"] else ()),
-            SessionCallbacks(on_display_frame=capture.source, on_end=ended),
+            SessionCallbacks(on_display_frame=capture.source, on_end=ended,
+                on_source_input=capture.source_input if evaluation_timing else None),
             video_path=media, realtime=True, source_id=capture.source_id,
             stream_session_id=capture.sid)
         session.start()
@@ -369,6 +391,8 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
         stats = {"tracking": capture.tracker.stats(), "vlm": capture.worker.stats() if capture.worker else None,
                  "fusion": capture.fusion.stats(), "source": terminal,
                  "processing_wall_seconds": time.monotonic() - started}
+        if evaluation_timing:
+            stats["input_timing"] = session.video_stream.input_timing_statistics
         # Skipped associations have already been archived with their source times.
         for key in ("association_failures", "callback_failures"):
             if stats["fusion"].get(key, 0):
@@ -422,6 +446,9 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
             "tracking_session_scope": "native_session" if native_batches else "stream_session_id",
             "tracking_statistics": tracking_stats, "vlm_statistics": vlm_stats,
             "gpu_release_owned_by_outer_controller": True}
+        if evaluation_timing:
+            cleanup["input_timing"] = (session.video_stream.input_timing_statistics
+                                        if session is not None else None)
         if failure is not None:
             # A fatal callback can arrive while the main thread waits for idle.
             # Decide scope only after shutdown, with shared failures taking precedence.
