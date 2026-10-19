@@ -249,6 +249,7 @@ def freeze_source(root, worktree, commit):
 
 def failed_answer_selection(path, sent, questions, *, allow_timeouts):
     """Freeze the requested failure subset without copying GT into the plan."""
+    from goodvision_harness.evaluation.answer_artifact import PUBLIC_QUESTION_FIELDS
     from goodvision_harness.evaluation.model_operation import summary_operation
     from goodvision_harness.evaluation.summary_recovery import SCHEMA
 
@@ -306,7 +307,8 @@ def failed_answer_selection(path, sent, questions, *, allow_timeouts):
             raise ValueError("Historical sends are missing, duplicated or exhausted")
         capture = load(row["source_capture"])
         selected.append({"qa_id": qid, "video_id": video,
-            "public_question": original[qid],
+            "public_question": {key: value for key, value in original[qid].items()
+                                if key in PUBLIC_QUESTION_FIELDS},
             "operation": summary_operation(capture, qid), "prior_call_ids": calls,
             "source_answer": str(outcome_path), "source_capture": row["source_capture"],
             "failure_class": failure, "allow_unknown_timeout": failure == "timeout_without_response",

@@ -62,6 +62,13 @@ legacy outcome receipts and nullable response usage. The former now uses the
 single-dispatch exact-request fallback above; the latter records absent cost as
 unknown without preventing a received response from being saved.
 
+The first authorized input-preparation run stopped before model dispatch because
+the approval copied the raw public-bank row, including benchmark/review metadata,
+while archived prompts used the existing `PUBLIC_QUESTION_FIELDS` projection.
+Preparation now uses that same projection. No question, option or public context
+is removed or changed. The failed input run and logs remain preserved; continue
+from a newly frozen release and independent directory after its container exits.
+
 ## Baseline and limitations
 
 This is an incremental recovery change relative to the preceding integration
