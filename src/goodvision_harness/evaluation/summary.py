@@ -8,7 +8,7 @@ import time
 
 from ..model_api import ModelAPIClient, ModelAPIError
 from ..scene_model import _json, _strip_json_fence, _ResponseValidationError
-from .failures import failure_policy, native_report_failure_policy
+from .failures import failure_policy
 from .model_ledger import LedgerBlocked
 from .privacy import reject_private
 from .recording import publish_once
@@ -16,6 +16,7 @@ from .answer_artifact import _canonical
 from .evidence import NATIVE_SKIP_POLICY
 from .summary_input import message_bytes, prepare_summary_messages
 from .rate_limit import wait_after_429
+from .native_gaps import is_local_gap, disclose_skipped_observations
 
 STATES = frozenset({"answered", "insufficient_evidence", "incomplete_video",
                     "request_failure", "unsupported"})
@@ -36,17 +37,7 @@ def _native_window_gaps_only(evidence):
             or not (evidence.get("frames") or evidence.get("independent_events")
                     or evidence.get("fused_episodes"))):
         return False
-    for failure in failures:
-        if (not failure.get("window_id") or not failure.get("reference")
-                or failure.get("stage") not in {"independent_vlm", "fusion"}
-                or failure.get("vlm_lane") not in {"information", "grounding", "combined"}
-                or failure.get("reason")):
-            return False
-        policy = native_report_failure_policy({"state": "failed", "error_code": failure.get("error"),
-            "timing": {"http_status": failure.get("status_code")}})
-        if policy["scope"] != "window":
-            return False
-    return True
+    return all(is_local_gap(failure, evidence) for failure in failures)
 
 
 def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
@@ -86,6 +77,7 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
     previous_request = (json.loads((output / "request.json").read_bytes())
                         if output.exists() else None)
     preparation = None
+    skip_disclosure = None
     # A rule-level grounding gap is not a failed native capture. The final
     # model can assess the actual saved evidence and return insufficient evidence.
     native_grounding_gap = (
@@ -94,9 +86,24 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         and artifact["parser"].get("reason") == "grounding_lane_not_complete")
     eligible = complete and (native_grounding_gap or artifact["parser"]["status"] not in {
         "request_failure", "incomplete_video", "not_started", "interrupted"})
-    if _native_window_gaps_only(evidence) and artifact["parser"]["status"] not in {
+    native_gaps = _native_window_gaps_only(evidence)
+    if native_gaps and artifact["parser"]["status"] not in {
             "not_started", "interrupted"}:
         eligible = True
+    if eligible and native_gaps and (previous_request is None or "skip_disclosure" in previous_request):
+        # Never use the new note to bypass a paid original or compressed request,
+        # including an unknown receipt. Existing outputs keep their representation.
+        legacy, legacy_preparation = messages, None
+        if len(message_bytes(messages)) > max_input_bytes:
+            legacy, legacy_preparation = prepare_summary_messages(messages, max_input_bytes=max_input_bytes)
+        if previous_request is not None or not ledger.has_prior_request(
+                model=model, messages=messages, parameters=parameters):
+            if previous_request is not None or not ledger.has_prior_request(
+                    model=model, messages=legacy, parameters=parameters):
+                messages = disclose_skipped_observations(messages, evidence)
+                skip_disclosure = "native_skipped_observation_times_v1"
+            else:
+                messages, preparation = legacy, legacy_preparation
     if (eligible and len(message_bytes(messages)) > max_input_bytes
             and (previous_request is None or "input_preparation" in previous_request)):
         # Existing terminal outputs retain their representation. Paid original requests
@@ -115,6 +122,8 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
                      "max_input_bytes": max_input_bytes}
     if preparation is not None:
         saved_request["input_preparation"] = preparation
+    if skip_disclosure is not None:
+        saved_request["skip_disclosure"] = skip_disclosure
     if output.exists():
         previous = json.loads((output / "outcome.json").read_bytes())
         if previous_request != saved_request or any(previous.get(k) != v for k, v in identity.items()):

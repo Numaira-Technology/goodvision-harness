@@ -78,7 +78,8 @@ class NativeCapture:
         self._submitted, self._tracked = set(), set()
         self._frame_plan = recorder.frames
         self._sources = {}
-        self.fusion = VLMFusion(self.scene, on_update=self._capture_scene)
+        self.fusion = VLMFusion(self.scene, on_update=self._capture_scene,
+                                on_skip=self.fusion_skip)
         self.vlm_enabled = vlm_enabled
         self.worker = self.tracker = None
 
@@ -134,6 +135,22 @@ class NativeCapture:
             return reference
         except BaseException:
             self._shared_failure = True
+            raise
+
+    def fusion_skip(self, report, reason):
+        """Archive unavailable association times without discarding other lanes."""
+        try:
+            stamps = report["evidence"]
+            self.recorder.request_failure(stage="fusion", reason=reason, detail={
+                "request_id": report["request_id"], "message_id": report["message_id"],
+                "start": min(item["timestamp_seconds"] for item in stamps),
+                "end": max(item["timestamp_seconds"] for item in stamps),
+                "frame_sequences": [item["frame_sequence"] for item in stamps],
+                "affected_lane": "person_association", "status": "skipped"})
+        except BaseException as exc:
+            self._callback_error = exc
+            self._shared_failure = True
+            self._wake.set()
             raise
 
     def batch(self, batch):
@@ -348,7 +365,8 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
         stats = {"tracking": capture.tracker.stats(), "vlm": capture.worker.stats() if capture.worker else None,
                  "fusion": capture.fusion.stats(), "source": terminal,
                  "processing_wall_seconds": time.monotonic() - started}
-        for key in ("capacity_dropped_reports", "expired_reports", "association_failures", "callback_failures"):
+        # Skipped associations have already been archived with their source times.
+        for key in ("association_failures", "callback_failures"):
             if stats["fusion"].get(key, 0):
                 recorder.request_failure(stage="fusion", reason=key, detail=stats["fusion"][key])
         with capture._record_lock:

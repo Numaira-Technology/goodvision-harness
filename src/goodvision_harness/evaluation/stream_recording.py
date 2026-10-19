@@ -214,7 +214,8 @@ class StreamingRecorder:
                     capture.scene_snapshot(row["snapshot"], association_links=row["association_links"],
                                            raw_reference=reference)
                 elif kind == "failure":
-                    capture.request_failure(stage=row["stage"], reason=row["reason"], reference=reference)
+                    capture.request_failure(stage=row["stage"], reason=row["reason"], reference=reference,
+                                            detail=row.get("detail"))
             if self.manifest["provenance"]["vlm_enabled"] and not any(
                     row["report_lanes"] == ["information"] for row in windows):
                 capture.request_failure(stage="events", reason="no_native_information_window",

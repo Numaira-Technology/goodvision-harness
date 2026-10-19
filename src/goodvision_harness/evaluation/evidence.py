@@ -257,9 +257,12 @@ separate from native SceneState confirmations; reuse its association and lifecyc
             if event.get("phase") == "retracted":
                 self.episodes[key]["confirmed"] = False
 
-    def request_failure(self, *, stage, reference, reason):
+    def request_failure(self, *, stage, reference, reason, detail=None):
         self._open()
-        self.failures.append({"stage": stage, "reference": reference, "reason": reason})
+        row = {"stage": stage, "reference": reference, "reason": reason}
+        if detail is not None:
+            row["detail"] = copy.deepcopy(detail)
+        self.failures.append(row)
 
     def seal(self, *, source_eof, tracking_drained, events_drained, fusion_drained,
              person_frame_accounting=None):

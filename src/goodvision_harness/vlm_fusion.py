@@ -52,8 +52,9 @@ def _unambiguous_matches(boxes, candidates):
 class VLMFusion:
     """Slow scene/archive callbacks run here, never on VLM input/output threads."""
 
-    def __init__(self, scene, on_update=None):
+    def __init__(self, scene, on_update=None, on_skip=None):
         self.scene, self.on_update = scene, on_update
+        self.on_skip = on_skip
         self._lock, self._stop, self._wake = Lock(), Event(), Event()
         self._pending, self._links = OrderedDict(), OrderedDict()
         self._stats = Counter()
@@ -85,7 +86,17 @@ class VLMFusion:
                 _, removed = self._pending.popitem(last=False)
                 self._bytes -= removed[2]
                 self._stats["capacity_dropped_reports"] += 1
+                self._record_skip(removed[0], "capacity_dropped_reports")
         self._wake.set()
+
+    def _record_skip(self, report, reason):
+        # Called under the pending lock, so drain cannot overtake archival.
+        # This records a scheduling decision, without retrying association.
+        if self.on_skip is not None:
+            try:
+                self.on_skip(report, reason)
+            except Exception:
+                self._stats["callback_failures"] += 1
 
     def finish(self):
         self._finishing.set()
@@ -148,6 +159,8 @@ class VLMFusion:
                             self._stats[
                                 "expired_reports" if expired else "completed_reports"
                             ] += 1
+                            if expired:
+                                self._record_skip(report, "expired_reports")
             if changed and not self._stop.is_set() and self.on_update is not None:
                 try:
                     self.on_update()

@@ -189,6 +189,29 @@ remain unchanged. Empty evidence, unfinished source lifecycles, shared failures
 and unclassified archive failures still prevent a final-model call. Existing
 terminal outputs remain unchanged, and unknown requests are not resent.
 
+Expired or capacity-dropped association reports are skipped work, not a reason
+to retry fusion or reject the entire question. New native captures archive the
+report identity and its source-time range when it is dropped; the queue's limits,
+expiry, scheduling and successful associations are unchanged. Final answering
+adds a `skipped_observations` note identifying the affected lane and times, while
+keeping the original evidence and its `complete=false`. A skip in person
+association does not erase independent VLM observations or detector results.
+Historical aggregate records without time ranges are explicitly time-unknown;
+their aggregate record count must not be presented as a window count. Older
+HTTP-error projections can be classified from their identity-matched saved raw
+report when it supplies the missing status; no provider request is made.
+Association exceptions and archival/callback failures are not covered by this
+scheduling-skip allowance.
+
+The note is added only for a new answer representation with no paid original or
+losslessly compressed predecessor. Prior paid requests retain their identity,
+successful cache and unknown-outcome block. Existing answer artifacts, terminal
+outputs, rule answers and scores are not rewritten. A separate recovery may
+answer never-sent questions from already-saved, safely finished captures.
+Release the old deployment through its owner before starting a new frozen round;
+both capture and answer must load the new source version, not just a pushed
+branch. No tests were run for this follow-up change: the user excluded new tests.
+
 For YOLO/RF native sources, explicit source-wall or drain timeouts can terminate
 only that source. Before continuing, capture must confirm source, tracking, VLM
 and fusion shutdown, no shared callback failure, and an accepted completion for
