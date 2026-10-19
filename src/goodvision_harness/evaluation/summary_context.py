@@ -48,6 +48,7 @@ def prepare_context_messages(messages, *, model, parameters, max_input_bytes, bu
     evidence = expand_repeated_evidence(payload["evidence"])
     try:
         window_evidence = compact_window_evidence(evidence)
+        column_evidence = compact_window_evidence(evidence, columnar=True)
     except ValueError as exc:
         return messages, {"method": "lossless_context_input_v1", "encoding": "previous",
                           "input_bytes": original_size, "usage": usage, "budget": budget,
@@ -56,12 +57,16 @@ def prepare_context_messages(messages, *, model, parameters, max_input_bytes, bu
                                "reason": str(exc)}]}
     candidate = [messages[0], {**messages[1], "content": json.dumps(
         {**payload, "evidence": window_evidence}, ensure_ascii=False, separators=(",", ":"), allow_nan=False)}]
+    column_candidate = [messages[0], {**messages[1], "content": json.dumps(
+        {**payload, "evidence": column_evidence}, ensure_ascii=False, separators=(",", ":"), allow_nan=False)}]
     candidates = []
     selected, selected_usage, selected_size, encoding = messages, usage, original_size, "previous"
     # Keep the legacy representation for paid identities; this function handles
     # only never-sent inputs. Compare the new table with its existing schema codec.
     schema, _ = prepare_summary_messages(candidate, max_input_bytes=1)
-    for name, value in (("window_tables", candidate), ("window_tables_schema", schema)):
+    column_schema, _ = prepare_summary_messages(column_candidate, max_input_bytes=1)
+    for name, value in (("window_tables", candidate), ("window_tables_schema", schema),
+                        ("window_columns", column_candidate), ("window_columns_schema", column_schema)):
         size = len(message_bytes(value))
         measured = context_usage(value, model=model, parameters=parameters, budget=budget)
         candidates.append({"encoding": name, "input_bytes": size, "usage": measured})

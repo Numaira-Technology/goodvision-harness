@@ -44,7 +44,7 @@ def is_local_gap(failure, evidence):
     return policy["scope"] == "window"
 
 
-def disclose_skipped_observations(messages, evidence):
+def disclose_skipped_observations(messages, evidence, *, short_answer=False):
     """Add source-time notes outside the immutable evidence and original artifact."""
     windows = {row["window_id"]: row for row in
                evidence.get("observation_manifest", {}).get("window_plan", [])}
@@ -71,8 +71,10 @@ def disclose_skipped_observations(messages, evidence):
          "or a negative event from a skip. A person_association skip does not erase saved "
          "independent VLM observations or person detections. "
          "Historical entries with time_known=false have unknown times; do not invent intervals. "
-         "Answer from the remaining saved evidence despite these local gaps, or report "
-         "insufficient_evidence if it cannot support the requested answer."},
+         "Answer from the remaining saved evidence despite these local gaps, or " +
+         ("return an empty prediction in the required JSON envelope"
+          if short_answer else "report insufficient_evidence") +
+         " if it cannot support the requested answer."},
         {**messages[1], "content": json.dumps(payload, sort_keys=True, separators=(",", ":"),
                                             allow_nan=False)},
     ]

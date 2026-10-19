@@ -1,11 +1,13 @@
 """Lossless window tables and shared identifier fragments for final-answer evidence."""
 from collections import Counter
 import json
+from os.path import commonprefix
 import re
 
 ENCODING = "lossless_window_tables_v1"
+COLUMN_ENCODING = "lossless_window_columns_v2"
 UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
-MARKERS = {"$string", "$join", "$table", "$blocks"}
+MARKERS = {"$string", "$join", "$table", "$blocks", "$columns"}
 
 
 def _json(value):
@@ -13,7 +15,7 @@ def _json(value):
 
 
 def expand_window_evidence(value):
-    if not isinstance(value, dict) or value.get("encoding") != ENCODING:
+    if not isinstance(value, dict) or value.get("encoding") not in {ENCODING, COLUMN_ENCODING}:
         return value
     strings = value["strings"]
 
@@ -29,6 +31,13 @@ def expand_window_evidence(value):
             return "".join(expand(part) for part in item[1])
         if tag == "$blocks":
             return [row for block in item[1] for row in expand(block)]
+        if tag == "$columns":
+            columns, count, specs = item[1:]
+            values = [_expand_column(spec, count, expand) for spec in specs]
+            if len(columns) != len(values) or any(len(column) != count for column in values):
+                raise ValueError("Window column length differs from its record count")
+            return [{key: values[column][row] for column, key in enumerate(columns)}
+                    for row in range(count)]
         if tag == "$table":
             columns, fixed, rows = item[1:]
             varying = [key for key in columns if key not in fixed]
@@ -44,7 +53,61 @@ def expand_window_evidence(value):
     return expand(value["evidence"])
 
 
-def compact_window_evidence(value):
+def _expand_column(spec, count, expand):
+    kind = spec[0]
+    if kind == "values":
+        return [expand(cell) for cell in spec[1]]
+    if kind == "constant":
+        return [expand(spec[1]) for _ in range(count)]
+    if kind == "dictionary":
+        return [expand(spec[1][index]) for index in spec[2]]
+    if kind == "default":
+        values = [expand(spec[1]) for _ in range(count)]
+        for index, cell in spec[2]:
+            values[index] = expand(cell)
+        return values
+    if kind == "affix":
+        return [spec[1] + cell + spec[2]
+                for cell in _expand_column(spec[3], count, expand)]
+    if kind == "integer_strings":
+        return [str(spec[1] + index * spec[2]) for index in range(count)]
+    raise ValueError("Unknown lossless column notation")
+
+
+def _compact_column(values, encode, *, affixes=True):
+    """Share exact column values and ID templates, never infer observation states."""
+    encoded = [encode(value) for value in values]
+    keys = [_json(value) for value in values]
+    if len(set(keys)) == 1:
+        return ["constant", encoded[0]]
+    candidates = [["values", encoded]]
+    indexes, definitions, codes = {}, [], []
+    for key, cell in zip(keys, encoded):
+        if key not in indexes:
+            indexes[key] = len(definitions)
+            definitions.append(cell)
+        codes.append(indexes[key])
+    candidates.append(["dictionary", definitions, codes])
+    default = Counter(keys).most_common(1)[0][0]
+    candidates.append(["default", encoded[keys.index(default)],
+                       [[i, cell] for i, (key, cell) in enumerate(zip(keys, encoded)) if key != default]])
+    if all(isinstance(value, str) for value in values):
+        if all(re.fullmatch(r"-?(?:0|[1-9][0-9]{0,15})", value) for value in values):
+            start, step = int(values[0]), int(values[1]) - int(values[0])
+            if all(str(start + i * step) == value for i, value in enumerate(values)):
+                candidates.append(["integer_strings", start, step])
+        if affixes:
+            prefix = commonprefix(values)
+            tails = [value[len(prefix):] for value in values]
+            suffix = commonprefix([tail[::-1] for tail in tails])[::-1]
+            if prefix or suffix:
+                middles = [tail[:-len(suffix)] if suffix else tail for tail in tails]
+                candidates.append(["affix", prefix, suffix,
+                                   _compact_column(middles, encode, affixes=False)])
+    return min(candidates, key=lambda candidate: len(_json(candidate)))
+
+
+def compact_window_evidence(value, *, columnar=False):
     """Factor storage repetition, never merge observations or infer missing values."""
     counts = Counter()
 
@@ -71,6 +134,9 @@ def compact_window_evidence(value):
 
     def table(rows):
         columns = list(rows[0])
+        if columnar:
+            return ["$columns", columns, len(rows),
+                    [_compact_column([row[key] for row in rows], encode) for key in columns]]
         fixed = {key: encode(rows[0][key]) for key in columns
                  if all(_json(row[key]) == _json(rows[0][key]) for row in rows[1:])}
         varying = [key for key in columns if key not in fixed]
@@ -112,7 +178,8 @@ def compact_window_evidence(value):
             start = end
         return ["$blocks", blocks]
 
-    packed = {"encoding": ENCODING, "strings": strings, "evidence": encode(value),
+    packed = {"encoding": COLUMN_ENCODING if columnar else ENCODING,
+              "strings": strings, "evidence": encode(value),
               "record_format": (
                   'LOSSLESS notation: ["$string",i] is strings[i]; ["$join",parts] '
                   'concatenates expanded string parts without separators. '
@@ -123,6 +190,19 @@ def compact_window_evidence(value):
                   'observation at its original time, even if all fields repeat. '
                   'No value, precision, text, ID, null, empty list or record is omitted. '
                   'Shared UUID fragments do not merge identities or events.')}
-    if expand_window_evidence(packed) != value:
+    if columnar:
+        packed["record_format"] += (
+            ' ["$columns",names,count,specs] stores count separate objects in source order; '
+            'specs has one column specification per name. ["values",cells] lists every value; '
+            '["constant",v] repeats v count times; ["dictionary",values,indexes] selects '
+            'values[indexes[row]]; ["default",v,overrides] repeats v except at each '
+            '[zero_based_row,value] override. ["affix",prefix,suffix,middles] concatenates '
+            'prefix + each expanded middle + suffix, without separators. '
+            '["integer_strings",start,step] means the exact decimal strings of '
+            'start + row*step, not numeric observations. Expand nested encoded values normally. '
+            'A stored default is an exact repeated source value, never an inferred missing value. '
+            'false, null, empty lists, absent fields and every occurrence remain distinct.'
+        )
+    if _json(expand_window_evidence(packed)) != _json(value):
         raise ValueError("Window tables cannot reconstruct their input")
     return packed

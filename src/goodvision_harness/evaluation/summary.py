@@ -12,7 +12,7 @@ from .failures import failure_policy
 from .model_ledger import LedgerBlocked
 from .privacy import reject_private
 from .recording import publish_once
-from .answer_artifact import _canonical
+from .answer_artifact import _canonical, ANSWER_CONTRACT, ANSWER_INSTRUCTION, short_answer_messages
 from .evidence import NATIVE_SKIP_POLICY
 from .summary_input import message_bytes, prepare_summary_messages
 from .rate_limit import wait_after_429
@@ -42,7 +42,7 @@ def _native_window_gaps_only(evidence):
 
 
 def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
-                    model, parameters, max_input_bytes, context_budget=None):
+                    model, parameters, max_input_bytes, context_budget=None, prepare_only=False):
     raw = Path(artifact_path).read_bytes()
     if hashlib.sha256(raw).hexdigest() != artifact_sha256:
         raise ValueError("summary artifact file hash mismatch")
@@ -80,6 +80,7 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
     preparation = None
     context_preparation = None
     prior_identity_error = None
+    prior_dispatched = False
     skip_disclosure = None
     # A rule-level grounding gap is not a failed native capture. The final
     # model can assess the actual saved evidence and return insufficient evidence.
@@ -131,17 +132,31 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
                     raise
                 prior, prior_identity_error = None, exc
             if prior is not None:
+                prior_dispatched = True
                 messages, preparation, skip_disclosure = prior["messages"], None, None
-            elif prior_identity_error is None and context_budget is not None:
-                messages, context_preparation = prepare_context_messages(messages,
-                    model=model, parameters=parameters, max_input_bytes=max_input_bytes,
-                    budget=context_budget)
+            elif prior_identity_error is None:
+                # Upgrade only never-dispatched answers, including saved old artifacts.
+                # A new prompt must never bypass a successful, invalid or unknown receipt.
+                messages = short_answer_messages(question, evidence)
+                preparation, skip_disclosure = None, None
+                if native_gaps:
+                    messages = disclose_skipped_observations(messages, evidence, short_answer=True)
+                    skip_disclosure = "native_skipped_observation_times_v1"
+                if len(message_bytes(messages)) > max_input_bytes:
+                    messages, preparation = prepare_summary_messages(messages, max_input_bytes=max_input_bytes)
+                if context_budget is not None:
+                    messages, context_preparation = prepare_context_messages(messages,
+                        model=model, parameters=parameters, max_input_bytes=max_input_bytes,
+                        budget=context_budget)
     encoded = message_bytes(messages)
     identity = {"qa_id": artifact["qa_id"], "video_id": artifact["video_id"],
                 "method": request["method"], "evidence_sha256": artifact["evidence_sha256"],
                 "artifact_sha256": artifact_sha256, "model": model,
                 "messages_sha256": hashlib.sha256(encoded).hexdigest(),
                 "same_evidence_not_historical_question_conditioned_summary": True}
+    short_contract = ANSWER_INSTRUCTION in messages[0]["content"]
+    if short_contract:
+        identity["answer_contract"] = ANSWER_CONTRACT
     saved_request = {**identity, "messages": messages, "parameters": parameters,
                      "max_input_bytes": max_input_bytes}
     if preparation is not None:
@@ -150,6 +165,16 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         saved_request["skip_disclosure"] = skip_disclosure
     if context_preparation is not None:
         saved_request["context_preparation"] = context_preparation
+    if prepare_only:
+        reason = ("prior_summary_identity_blocked" if prior_identity_error is not None else
+                  "existing_answer_output_preserved" if previous_request is not None else
+                  "previously_dispatched_answer_preserved" if prior_dispatched else
+                  "three_lane_observation_failed_or_incomplete" if not eligible else
+                  "frozen_input_size_limit" if len(encoded) > max_input_bytes else
+                  "model_context_limit" if context_preparation is not None
+                  and not context_preparation["usage"]["fits"] else None)
+        return {"prepared_request": saved_request, "ready_for_dispatch": reason is None,
+                "reason": reason, "input_bytes": len(encoded), "paid_dispatch": False}
     if output.exists():
         previous = json.loads((output / "outcome.json").read_bytes())
         if previous_request != saved_request or any(previous.get(k) != v for k, v in identity.items()):
@@ -206,8 +231,22 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
                     raise
         publish_once(output / "response.json", response)
         text = ModelAPIClient.assistant_text(response)
+        if response.get("choices", [{}])[0].get("finish_reason") == "length":
+            raise _ResponseValidationError("output_truncated", "summary_answer")
         parsed = _json(_strip_json_fence(text), stage="summary_answer")
-        if (not isinstance(parsed, dict) or set(parsed) != {"status", "final_answer", "evidence_refs"}
+        if short_contract:
+            predictions = parsed.get("predictions") if isinstance(parsed, dict) else None
+            if (not isinstance(parsed, dict) or set(parsed) != {"predictions"}
+                    or not isinstance(predictions, list) or len(predictions) != 1
+                    or not isinstance(predictions[0], dict)
+                    or set(predictions[0]) != {"qa_id", "prediction"}
+                    or predictions[0]["qa_id"] != artifact["qa_id"]
+                    or not isinstance(predictions[0]["prediction"], str)):
+                raise _ResponseValidationError("short_answer_contract", "summary_answer")
+            answer = predictions[0]["prediction"]
+            parsed = {"status": "answered" if answer.strip() else "insufficient_evidence",
+                      "final_answer": answer if answer.strip() else None, "evidence_refs": []}
+        elif (not isinstance(parsed, dict) or set(parsed) != {"status", "final_answer", "evidence_refs"}
                 or not isinstance(parsed["status"], str) or parsed["status"] not in STATES
                 or not isinstance(parsed["evidence_refs"], list)
                 or (parsed["final_answer"] is not None and not isinstance(parsed["final_answer"], str))
