@@ -60,8 +60,12 @@ Paths resolve relative to the workflow file unless absolute. Model settings use
 `ModelAPISettings` fields: HTTPS `endpoint`, `provider`, credential environment
 variable name `api_key_env`, `timeout_seconds`, `max_retries=0`, and an empty
 `inspection_endpoint`. Keep secrets outside configuration. Do not include
-`model`, `messages`, or `stream` in `summary.parameters`. Setting
-`defer_postprocessing=true` blocks final-model execution.
+`model`, `messages`, or `stream` in `summary.parameters`. The legacy
+`defer_postprocessing` field no longer blocks final-model execution. Record
+duration discrepancies as advisory provenance and continue with the original
+questions, metadata, observations, and scoring. Do not filter an answer cohort
+using the legacy flag or silently replace a duration. Existing resource-release,
+evidence, context-budget, and paid-request safeguards remain in force.
 
 Each arm's plan uses `unified-capture-batch-v1`, with `method` and a `sources`
 list. Each source contains `config` and `config_sha256`, with an optional `reuse`

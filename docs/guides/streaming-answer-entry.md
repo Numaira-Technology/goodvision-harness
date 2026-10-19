@@ -73,8 +73,19 @@ the file containing them. Every source in a workflow uses the same cumulative
 ledger paths and seed hash. Its owner lock must differ from the workflow owner
 lock because the spawned observation process owns the ledger. Model settings
 require HTTPS and `max_retries=0`.
-Keep credentials in the selected environment variable. A frozen
-`defer_postprocessing=true` stops final answering and scoring.
+Keep credentials in the selected environment variable. The legacy
+`defer_postprocessing` field is no longer an answering or scoring gate.
+Duration discrepancies are advisory: retain the original question, source
+metadata, saved observations, and scoring policy without replacing durations.
+Batch wrappers must not filter sources using this legacy flag. Resource release,
+evidence eligibility, context capacity, and paid-request deduplication still apply.
+
+Do not hot-edit a running frozen batch to remove a historical wrapper filter.
+After its controller finishes and the exact GPU is released, use a separate
+saved-observation answer run for the affected, never-sent questions. Keep the
+original capture and workflow files immutable, seed the cumulative ledger from
+the finished run, and do not replay successful or unknown requests. No new
+capture or GPU allocation is needed for this answer-only correction.
 
 Each source configuration uses schema `native-stream-source-v1` with:
 

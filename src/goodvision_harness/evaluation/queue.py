@@ -137,8 +137,7 @@ def run_phase(config_path, *, config_sha256, phase, release_path=None, release_s
                     run_sources(plan, plan_sha256=arm["plan_sha256"], output=directory,
                                 ledger=ledger, resources=resources)
             else:
-                if config.get("defer_postprocessing", False):
-                    raise RuntimeError("this workflow explicitly defers final-model answers")
+                # Legacy duration-review flags do not defer original-question answers.
                 settings = ModelAPISettings.from_mapping(config["summary"]["settings"])
                 endpoint = urlparse(settings.endpoint)
                 if (settings.max_retries != 0 or settings.inspection_endpoint
