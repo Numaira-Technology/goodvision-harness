@@ -44,6 +44,8 @@ def state(control, name, experiment):
 def source_mounts(plan):
     """Mount only capture directories and local scoring files, not whole workspaces."""
     sources = {str(Path(group["capture"]).parent) for group in plan["groups"]}
+    sources.update(group["partial_record_directory"] for group in plan["groups"]
+                   if group.get("partial_record_directory"))
     # Seed rows are copied locally; original cumulative ledgers need no runtime mount.
     return sorted(sources)
 

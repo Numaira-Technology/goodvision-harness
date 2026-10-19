@@ -148,6 +148,10 @@ def prepare_answer_view(messages, evidence):
     else:
         coverage["planned_frame_times"] = [row["t"] for row in frame_plan]
     coverage["window_plan"] = [clean(row) for row in manifest.get("window_plan", [])]
+    partial = evidence.get("partial_recovery")
+    if partial is not None:
+        coverage["partial_recording"] = clean({key: value for key, value in partial.items()
+            if key not in {"policy", "record_directory", "record_count"}})
     view = {
         "source": {key: clean(value) for key, value in evidence.get("source", {}).items()
                    if key in SOURCE_FIELDS},
@@ -178,6 +182,13 @@ def prepare_answer_view(messages, evidence):
         "A person_association skip leaves independent observations and successful associations usable. "
         "Unknown skip times remain unknown. "
     )
+    if partial is not None:
+        guidance += (
+            "This is a partial recording, not a completed capture. Use only its saved results. "
+            "No normal queue drain was recorded; unpublished window times are unknown. "
+            "If EOF was not recorded, later video content is unavailable. Do not infer complete "
+            "coverage from the metadata duration or from the last saved input timestamp. "
+        )
     result = [{"role": "system", "content": guidance + INSTRUCTION},
               {"role": "user", "content": json.dumps(data, ensure_ascii=False,
                separators=(",", ":"), allow_nan=False)}]

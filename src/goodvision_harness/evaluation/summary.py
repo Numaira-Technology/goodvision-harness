@@ -19,6 +19,7 @@ from .native_gaps import is_local_gap, disclose_skipped_observations
 from .summary_context import prepare_context_messages
 from .summary_view import prepare_answer_view, CONTRACT as VIEW_CONTRACT, INSTRUCTION as VIEW_INSTRUCTION
 from .model_operation import summary_operation, operation_for_request, question_for_request
+from .partial_recording import partial_answer_eligible
 
 STATES = frozenset({"answered", "insufficient_evidence", "incomplete_video",
                     "request_failure", "unsupported"})
@@ -43,7 +44,8 @@ def _native_window_gaps_only(evidence):
 
 
 def execute_summary(artifact_path, *, output, client, ledger, model, parameters,
-                    max_input_bytes, context_budget=None, prepare_only=False, artifact_sha256=None):
+                    max_input_bytes, context_budget=None, prepare_only=False, artifact_sha256=None,
+                    partial_observation_approval=None):
     raw = Path(artifact_path).read_bytes()
     artifact = json.loads(raw)
     request = artifact["summary_request"]
@@ -122,6 +124,9 @@ def execute_summary(artifact_path, *, output, client, ledger, model, parameters,
     eligible = complete and (native_grounding_gap or artifact["parser"]["status"] not in {
         "request_failure", "incomplete_video", "not_started", "interrupted"})
     native_gaps = _native_window_gaps_only(evidence)
+    partial = partial_answer_eligible(evidence, artifact["qa_id"], partial_observation_approval)
+    if partial:
+        eligible = True
     if native_gaps and artifact["parser"]["status"] not in {
             "not_started", "interrupted"}:
         eligible = True
@@ -144,7 +149,7 @@ def execute_summary(artifact_path, *, output, client, ledger, model, parameters,
             # A new prompt must never bypass a successful, invalid or unknown receipt.
             messages = short_answer_messages(question, evidence)
             preparation, skip_disclosure = None, None
-            if native_gaps:
+            if native_gaps or partial:
                 messages = disclose_skipped_observations(messages, evidence, short_answer=True)
                 skip_disclosure = "native_skipped_observation_times_v1"
             messages, input_view = prepare_answer_view(messages, evidence)
@@ -159,6 +164,8 @@ def execute_summary(artifact_path, *, output, client, ledger, model, parameters,
                 "method": request["method"], "operation": operation,
                 "artifact_path": str(Path(artifact_path).resolve()), "model": model,
                 "same_evidence_not_historical_question_conditioned_summary": True}
+    if partial:
+        identity["observation_scope"] = "human_approved_partial_saved_observations"
     short_contract = ANSWER_INSTRUCTION in messages[0]["content"]
     view_contract = VIEW_INSTRUCTION in messages[0]["content"]
     if view_contract:

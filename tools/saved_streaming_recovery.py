@@ -1,4 +1,4 @@
-"""Prepare and answer never-sent questions from a complete saved-streaming scope.
+"""Prepare and answer never-sent questions from the original saved-streaming scope.
 
 Run each phase once under the experiment controller. This tool does not rent a
 GPU, capture media, reconcile unknown receipts or change historical artifacts.
@@ -268,12 +268,38 @@ def prepare(args):
     needed_videos = {question["video_id"] for question in questions if question["qa_id"] not in sent}
     by_video = {video: saved_source(reference, video) for video, reference in catalog.items()
                 if video in needed_videos}
+    partial_approval = None
+    if args.partial_approval is not None:
+        partial_approval = load(args.partial_approval)
+        sys.path.insert(0, str(root / "checkout/src"))
+        from goodvision_harness.evaluation.partial_recording import approved_source, export_partial_recording
+        selected_videos = [row["video_id"] for row in partial_approval["sources"]]
+        approved_ids = [qid for row in partial_approval["sources"] for qid in row["question_ids"]]
+        expected_ids = {question["qa_id"] for question in questions
+                        if question["video_id"] in selected_videos and question["qa_id"] not in sent}
+        if (len(set(selected_videos)) != len(selected_videos)
+                or len(set(approved_ids)) != len(approved_ids)
+                or set(approved_ids) != expected_ids
+                or not set(selected_videos) <= set(failures)):
+            raise ValueError("Partial approval must match the never-sent interrupted question scope")
+        for number, video in enumerate(selected_videos, 1):
+            selection = approved_source(partial_approval, video)
+            output = root / "partial-sources" / f"{number:04d}" / "evidence.json"
+            output.parent.mkdir(parents=True)
+            evidence = export_partial_recording(selection["record_directory"], output=output,
+                video_id=video, approval=partial_approval)
+            by_video[video] = {"state": "approved_partial_saved_source", "capture": str(output),
+                "partial_record_directory": selection["record_directory"],
+                "historical_source_state": failures[video],
+                **{key: evidence[key] for key in ("video_id", "source_id", "stream_session_id")}}
+        save(root / "partial-approval.json", partial_approval)
     inventory, groups_by_video = [], defaultdict(list)
     for position, question in enumerate(questions, 1):
         qid, video = question["qa_id"], question["video_id"]
         source = by_video.get(video) or catalog.get(video) or failures[video]
         state = ("prior_final_dispatch_preserved" if qid in sent else
-                 "saved_answer_candidate" if source["state"] == "saved_source_ended" else source["state"])
+                 "saved_answer_candidate" if source["state"] in {
+                     "saved_source_ended", "approved_partial_saved_source"} else source["state"])
         inventory.append({"position": position, "qa_id": qid, "video_id": video,
             "capability": question["capability"], "state": state,
             "source": source, "prior_final_requests": sent.get(qid, [])})
@@ -292,6 +318,7 @@ def prepare(args):
             "processed_sources": []})
         groups.append({"group": name, "video_id": video, "source_id": source["source_id"],
             "capture": source["capture"], "public": str(public), "index": str(index),
+            "partial_record_directory": source.get("partial_record_directory"),
             "qa_ids": [question["qa_id"] for question in selected]})
     write_questions(root / "public/questions-all182.jsonl", questions)
     shutil.copytree(last_answer / "assets", root / "assets")
@@ -304,6 +331,7 @@ def prepare(args):
         "inventory": inventory, "states": dict(Counter(row["state"] for row in inventory)),
         "final_model": final, "scoring": {key: scoring[key] for key in ("truth", "scorer")},
         "prior_release_record": release, "legacy_duration_deferral_applied": False,
+        "partial_observation_approval": partial_approval,
         "historical_dispatches_preserved": True, "new_observation_calls": 0, "new_gpu_creations": 0}
     save(root / "plan.json", plan)
     save(root / "ready.json", {"source_commit": commit, "prepared_epoch": time.time(),
@@ -399,7 +427,8 @@ def run_phase(args):
                         group["group"] / artifact.stem, client=client, ledger=ledger,
                         model=final["model"], parameters=final["parameters"],
                         max_input_bytes=final["max_input_bytes"], context_budget=final["context_budget"],
-                        prepare_only=args.phase == "inputs")
+                        prepare_only=args.phase == "inputs",
+                        partial_observation_approval=plan.get("partial_observation_approval"))
                     if args.phase == "inputs":
                         path = root / "output/prepared-inputs" / group["group"] / (artifact.stem + ".json")
                         save(path, result)
@@ -436,6 +465,8 @@ def main():
     cli.add_argument("--last-answer", type=Path)
     cli.add_argument("--worktree", type=Path)
     cli.add_argument("--commit")
+    cli.add_argument("--partial-approval", type=Path,
+                     help="Explicit human-approved source/question list for partial saved observations")
     cli.add_argument("--dependencies", type=Path,
                      help="Container-only temporary dependency directory for the frozen tokenizer wheel")
     args = cli.parse_args()
