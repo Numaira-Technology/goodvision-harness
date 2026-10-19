@@ -31,6 +31,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+evaluation = [
+  "tokenizers==0.22.2",
+]
 vlm = [
   "httpx[http2]>=0.27,<1",
 ]

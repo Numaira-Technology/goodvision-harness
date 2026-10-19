@@ -145,7 +145,7 @@ def run_phase(config_path, *, config_sha256, phase, release_path=None, release_s
                         or endpoint.scheme != "https" or endpoint.username or endpoint.password
                         or endpoint.query or endpoint.fragment):
                     raise ValueError("final model requires an explicit HTTPS route without hidden retries")
-                client = ModelAPIClient(settings)
+                client = ModelAPIClient(settings, capture_error_details=True)
                 for arm in arms:
                     completion = _answers(base, config, output, arm)
                     if completion is None:
@@ -160,7 +160,8 @@ def run_phase(config_path, *, config_sha256, phase, release_path=None, release_s
                             output=output / (arm["model"] + "-summary") / artifact.stem,
                             client=client, ledger=ledger, model=config["summary"]["model"],
                             parameters=config["summary"]["parameters"],
-                            max_input_bytes=config["summary"]["max_input_bytes"])
+                            max_input_bytes=config["summary"]["max_input_bytes"],
+                            context_budget=config["summary"].get("context_budget"))
             _publish_or_match(output / (phase + "-completion.json"), {
                 "phase": phase, "workflow_sha256": config_sha256,
                 "processed_not_all_answered": True})

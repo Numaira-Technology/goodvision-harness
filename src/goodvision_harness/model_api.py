@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -220,8 +221,10 @@ class ModelAPIClient:
         settings: ModelAPISettings,
         *,
         api_key: str | None = None,
+        capture_error_details: bool = False,
     ) -> None:
         self.settings = settings
+        self.capture_error_details = capture_error_details
         self._api_key = (api_key or environment_api_key(settings)).strip()
         if not self._api_key and settings.provider != "local":
             raise MissingAPIKeyError(
@@ -292,6 +295,27 @@ class ModelAPIClient:
     def _headers(self) -> dict[str, str]:
         return model_request_headers(self.settings, self._api_key)
 
+    def _http_error(self, status, retry_after, body=b"", *, truncated=False):
+        error = ModelAPIError(f"model API returned HTTP {status}", code="http_error",
+                              status_code=status, retry_after=retry_after)
+        if self.capture_error_details:
+            text = body[:4096].decode("utf-8", errors="replace")
+            for secret in [self._api_key, *self.settings.extra_headers.values()]:
+                if not isinstance(secret, str) or not secret:
+                    continue
+                text = text.replace(secret, "[REDACTED]")
+                # A bounded read can end in the middle of a credential.
+                for size in range(min(len(secret) - 1, len(text)), 7, -1):
+                    if text.endswith(secret[:size]):
+                        text = text[:-size] + "[REDACTED]"
+                        break
+            text = re.sub(r"(?i)\bbearer\s+[^\s\"\\]+|\bsk-[a-z0-9_-]*", "[REDACTED]", text)
+            error.evaluation_diagnostic = {
+                "http_status": status, "body_excerpt_redacted": text,
+                "body_truncated": truncated or len(body) > 4096,
+                "retry_after_seconds": error.retry_after_seconds}
+        return error
+
     def _post_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         request = Request(
@@ -324,9 +348,16 @@ class ModelAPIClient:
                     )
                 return decoded
             except HTTPError as exc:
-                # Consume the provider body so the connection can be released,
-                # but never copy vendor details into logs or public records.
-                exc.read()
+                # Opt-in evaluation details stay on the private ledger exception,
+                # never in its public message. Close even if reading the body fails.
+                detail = b""
+                try:
+                    if self.capture_error_details:
+                        detail = exc.read(4097)
+                except (OSError, TimeoutError):
+                    pass
+                finally:
+                    exc.close()
                 if (
                     exc.code in self._RETRYABLE_STATUSES
                     and attempt < self.settings.max_retries
@@ -336,11 +367,9 @@ class ModelAPIClient:
                         retry_after = exc.headers.get("Retry-After")
                     self._sleep_before_retry(attempt, retry_after)
                     continue
-                raise ModelAPIError(
-                    f"model API returned HTTP {int(exc.code)}",
-                    code="http_error", status_code=int(exc.code),
-                    retry_after=exc.headers.get("Retry-After") if exc.headers is not None else None,
-                ) from exc
+                raise self._http_error(int(exc.code),
+                    exc.headers.get("Retry-After") if exc.headers is not None else None,
+                    detail) from exc
             except (URLError, TimeoutError, OSError) as exc:
                 if attempt < self.settings.max_retries:
                     self._sleep_before_retry(attempt, None)
@@ -371,8 +400,9 @@ class ModelAPIClient:
 class PooledModelAPIClient(ModelAPIClient):
     """Shared, thread-safe verified HTTPS pool for route probes and live runs."""
 
-    def __init__(self, settings: ModelAPISettings, *, api_key: str | None = None):
-        super().__init__(settings, api_key=api_key)
+    def __init__(self, settings: ModelAPISettings, *, api_key: str | None = None,
+                 capture_error_details: bool = False):
+        super().__init__(settings, api_key=api_key, capture_error_details=capture_error_details)
         self._http = httpx.Client(
             http2=False, follow_redirects=False,
             limits=httpx.Limits(
@@ -409,11 +439,8 @@ class PooledModelAPIClient(ModelAPIClient):
                         attempt, response.headers.get("Retry-After")
                     )
                     continue
-                raise ModelAPIError(
-                    f"model API returned HTTP {response.status_code}",
-                    code="http_error", status_code=response.status_code,
-                    retry_after=response.headers.get("Retry-After"),
-                )
+                raise self._http_error(response.status_code, response.headers.get("Retry-After"),
+                    response.content[:4097] if self.capture_error_details else b"")
             if not response.content.strip():
                 raise ModelAPIError(
                     "model API returned an empty response", code="empty_response"

@@ -56,6 +56,7 @@ class ModelLedger:
         self._handles = []
         self.lock, self.poisoned, self.closed = RLock(), False, False
         self.in_flight, self.blocked, self.counts, self.cache = set(), set(), {}, {}
+        self.summary_requests = {}
         self.balance_blocked = False
         try:
             # Lock the task's model writer and this run directory against concurrent paid dispatch.
@@ -98,6 +99,7 @@ class ModelLedger:
                         raise LedgerBlocked("duplicate_call_identity_mismatch")
                     continue
                 requests[call] = row
+                self._remember_summary(row)
                 self.counts[digest] = self.counts.get(digest, 0) + 1
         for path in paths["model-responses.jsonl"]:
             for row in _rows(path):
@@ -150,6 +152,24 @@ class ModelLedger:
             self.poisoned = True
             raise
 
+    def _remember_summary(self, row):
+        context = row.get("context", {})
+        if context.get("phase") == "same_evidence_summary":
+            key = (context.get("qa_id"), context.get("evidence_sha256"))
+            self.summary_requests[key] = row["request"]
+
+    def prior_summary_request(self, *, qa_id, evidence_sha256, model, parameters):
+        """Keep paid answer identity stable across later lossless input encodings."""
+        with self.lock:
+            request = self.summary_requests.get((qa_id, evidence_sha256))
+            if request is None:
+                return None
+            expected = {key: value for key, value in parameters.items() if value is not None}
+            expected["model"] = model
+            if {key: value for key, value in request.items() if key != "messages"} != expected:
+                raise LedgerBlocked("summary_parameters_changed_after_dispatch", scope="source")
+            return copy.deepcopy(request)
+
     def begin(self, payload, context):
         request = request_without_images(payload)
         digest = request_digest(request)
@@ -174,6 +194,7 @@ class ModelLedger:
             self._append("attempt-ledger.jsonl", {key: row[key] for key in
                          ("call_id", "request_sha256", "attempt", "context")} | {"state": "dispatching"})
             self.counts[digest] = attempt
+            self._remember_summary(row)
             self.in_flight.add(digest)
             return row, None, None
 

@@ -17,6 +17,7 @@ from .evidence import NATIVE_SKIP_POLICY
 from .summary_input import message_bytes, prepare_summary_messages
 from .rate_limit import wait_after_429
 from .native_gaps import is_local_gap, disclose_skipped_observations
+from .summary_context import prepare_context_messages
 
 STATES = frozenset({"answered", "insufficient_evidence", "incomplete_video",
                     "request_failure", "unsupported"})
@@ -41,7 +42,7 @@ def _native_window_gaps_only(evidence):
 
 
 def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
-                    model, parameters, max_input_bytes):
+                    model, parameters, max_input_bytes, context_budget=None):
     raw = Path(artifact_path).read_bytes()
     if hashlib.sha256(raw).hexdigest() != artifact_sha256:
         raise ValueError("summary artifact file hash mismatch")
@@ -77,6 +78,8 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
     previous_request = (json.loads((output / "request.json").read_bytes())
                         if output.exists() else None)
     preparation = None
+    context_preparation = None
+    prior_identity_error = None
     skip_disclosure = None
     # A rule-level grounding gap is not a failed native capture. The final
     # model can assess the actual saved evidence and return insufficient evidence.
@@ -112,6 +115,27 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
                 model=model, messages=messages, parameters=parameters):
             messages, preparation = prepare_summary_messages(
                 messages, max_input_bytes=max_input_bytes)
+    if eligible:
+        if previous_request is not None and context_budget is not None:
+            if "context_preparation" in previous_request:
+                context_preparation = previous_request["context_preparation"]
+                if context_preparation["budget"] != context_budget:
+                    raise ValueError("Existing final-answer token budget changed")
+                messages = previous_request["messages"]
+        elif previous_request is None:
+            try:
+                prior = ledger.prior_summary_request(qa_id=artifact["qa_id"],
+                    evidence_sha256=artifact["evidence_sha256"], model=model, parameters=parameters)
+            except LedgerBlocked as exc:
+                if exc.scope != "source":
+                    raise
+                prior, prior_identity_error = None, exc
+            if prior is not None:
+                messages, preparation, skip_disclosure = prior["messages"], None, None
+            elif prior_identity_error is None and context_budget is not None:
+                messages, context_preparation = prepare_context_messages(messages,
+                    model=model, parameters=parameters, max_input_bytes=max_input_bytes,
+                    budget=context_budget)
     encoded = message_bytes(messages)
     identity = {"qa_id": artifact["qa_id"], "video_id": artifact["video_id"],
                 "method": request["method"], "evidence_sha256": artifact["evidence_sha256"],
@@ -124,6 +148,8 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         saved_request["input_preparation"] = preparation
     if skip_disclosure is not None:
         saved_request["skip_disclosure"] = skip_disclosure
+    if context_preparation is not None:
+        saved_request["context_preparation"] = context_preparation
     if output.exists():
         previous = json.loads((output / "outcome.json").read_bytes())
         if previous_request != saved_request or any(previous.get(k) != v for k, v in identity.items()):
@@ -136,6 +162,11 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         return previous
     output.mkdir(parents=True, exist_ok=False)
     publish_once(output / "request.json", saved_request)
+    if prior_identity_error is not None:
+        result = {**identity, "status": "request_failure", "final_answer": None,
+                  "failure_policy": failure_policy(prior_identity_error), "paid_dispatch": False}
+        publish_once(output / "outcome.json", result)
+        return result
     if not eligible:
         result = {**identity, "status": "not_called", "final_answer": None,
                   "reason": "three_lane_observation_failed_or_incomplete",
@@ -146,6 +177,12 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         result = {**identity, "status": "not_called", "final_answer": None,
                   "reason": "frozen_input_size_limit", "input_bytes": len(encoded),
                   "max_input_bytes": max_input_bytes, "paid_dispatch": False}
+        publish_once(output / "outcome.json", result)
+        return result
+    if context_preparation is not None and not context_preparation["usage"]["fits"]:
+        result = {**identity, "status": "not_called", "final_answer": None,
+                  "reason": "model_context_limit", "paid_dispatch": False,
+                  "context_usage": context_preparation["usage"]}
         publish_once(output / "outcome.json", result)
         return result
     started, receipt, text = time.monotonic(), None, None

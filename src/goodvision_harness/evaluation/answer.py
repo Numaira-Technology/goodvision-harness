@@ -243,7 +243,7 @@ def run(config_path, *, config_sha256, release_path=None, release_sha256=None):
                     seed_manifest_path=base / ledger_config["seed_manifest"],
                     seed_manifest_sha256=ledger_config["seed_manifest_sha256"],
                     owner_lock_path=base / ledger_config["owner_lock"])
-                client = ModelAPIClient(settings)
+                client = ModelAPIClient(settings, capture_error_details=True)
             for arm in arms:
                 directory = root / arm["model"]
                 index = directory / "observation-index.json"
@@ -268,7 +268,8 @@ def run(config_path, *, config_sha256, release_path=None, release_sha256=None):
                         execute_summary(artifact_path, artifact_sha256=row["answer_file_sha256"],
                             output=directory / "model-answers" / artifact_path.stem,
                             client=client, ledger=ledger, model=final["model"],
-                            parameters=final["parameters"], max_input_bytes=final["max_input_bytes"])
+                            parameters=final["parameters"], max_input_bytes=final["max_input_bytes"],
+                            context_budget=final.get("context_budget"))
                 scoring = config["scoring"]
                 for mode in (("rule", "model") if config["vlm_enabled"] else ("rule",)):
                     result = directory / f"scores-{mode}.json"

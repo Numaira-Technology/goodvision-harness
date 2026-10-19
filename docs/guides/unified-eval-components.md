@@ -113,6 +113,45 @@ Tests were not written or run for this integration because the user did not
 authorize them. Review is limited to source and Git differences; formal recovery
 results must be recorded separately when the new frozen code is used.
 
+## Token-aware final-answer recovery (2026-10-19)
+
+Independently frozen recoveries can opt into `final_model.context_budget` with
+`model`, `context_tokens`, `margin_tokens`, `tokenizer_path`, and
+`tokenizer_source`. The supported route is the existing Qwen3-VL-8B-Instruct
+two-message text answer, with only temperature and max_tokens parameters. A
+local official tokenizer counts the text chat template, including the assistant
+prefix. Output tokens and an explicit safety margin are reserved. This is a
+local input count, not a claim about the provider's actual usage. The existing
+byte limit remains in force. Install the evaluation extra and supply the frozen
+tokenizer file during evaluation preparation; there is no runtime download.
+
+For never-sent inputs that exceed either budget, `summary_encoding` adds a
+lossless window-table candidate. Consecutive records share fixed fields without
+merging rows; repeated strings and UUID fragments are defined once. The decoder
+preserves row order, nulls, empty collections, numeric values, and all original
+text. The new table and its legacy dictionary encoding are compared by actual
+local token count and byte size. Unfittable inputs remain explicitly not_called;
+no lossy filtering, truncation, larger byte cap, or multi-call summarization is
+introduced. The question and skipped-time disclosure are outside the codec.
+
+The cumulative ledger now also remembers dispatched question/evidence pairs.
+Changing an encoding never creates permission to replay a paid answer: the
+original dispatched messages are reused, with success caching and unknown
+blocks unchanged. Historical request files and results remain immutable.
+
+Evaluation clients opt into bounded HTTP diagnostics: at most 4096 response
+bytes are decoded and credential-redacted into the private ledger error field.
+The public exception remains generic. This applies to both synchronous
+transports; it cannot recover bodies discarded by historical clients, and an
+HTTP400 is not reclassified as a free or safe-to-retry request.
+
+This extends the earlier final-answer input adapter, not the observation model,
+weights, media, detector parameters, scheduling, or PR63 scoring. Cumulative
+changes still compare to pre-task Harness `6c28dddd26bed7a7be50762a4c7dd6b796b2dbe3`,
+not to a recovery copy or the current team branch. No tests were written or run
+for this change under the current user restrictions. Static review and actual
+authorized evaluation outcomes must be reported separately.
+
 ## Excluded work
 
 - Unapproved SAM `mask_area.py` and `streaming_state.py` candidates.
