@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import hashlib
 import json
 import math
 import os
@@ -324,7 +323,6 @@ def image_metadata(encoded: bytes) -> dict[str, Any]:
     if image is None:
         raise ValueError("image cannot be decoded")
     return {
-        "sha256": hashlib.sha256(encoded).hexdigest(),
         "dimensions": [image.shape[1], image.shape[0]],
         "bytes": len(encoded),
     }

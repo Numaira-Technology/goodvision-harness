@@ -578,20 +578,18 @@ LLM 和本地人脸识别的采样频率不变，不等待下一次推理来补�
 人物关联和告警保持规则见
 [连续事件与证据](docs/architecture/event-evidence.md#people-and-continuity)。
 
-## 可选 Webhook
+## Optional webhook
 
-在环境中设置接收地址和可选签名密钥：
+Signed webhooks are disabled in this research branch. A configured nonempty
+signing secret causes an explicit error before a sender or delivery queue is
+created. Disable the webhook configuration if it requires a signature; do not
+remove its secret to bypass that refusal. No unsigned fallback occurs.
 
-```dotenv
-RESULT_WEBHOOK_URL=http://host.docker.internal:9000/events
-HARNESS_WEBHOOK_SECRET=replace-with-a-shared-secret
-```
-
-示例地址用于容器访问同宿主机接收器，其他部署应替换为实际可达地址。
-每次 POST 使用 `message_id` 作为 `Idempotency-Key`。设置密钥时，
-`X-Harness-Signature-256` 为对原始请求体计算的 HMAC-SHA256 签名。
-队列位于内存且容量有限，失败重试次数也有限；容器重启后不保留待发队列。
-需要持久记录时由接收方保存结果；SSE 续传同样只覆盖服务仍保留的内存历史。
+Existing configurations that intentionally use unsigned delivery remain
+supported through `RESULT_WEBHOOK_URL`. Each POST uses `message_id` as
+`Idempotency-Key`. The bounded in-memory queue and retry limits are unchanged.
+Receivers must persist results when durable storage is required. SSE replay
+covers only the history that the running service retains in memory.
 
 ## 启动、停止与能力选择
 

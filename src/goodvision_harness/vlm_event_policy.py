@@ -1,12 +1,11 @@
 """One evidence/decision policy for independent events, grounding and evaluation.
 
-Output formats are deliberately excluded from the fingerprint. Reference labels
+Output formats are deliberately excluded from the policy values. Reference labels
 must use this policy too; old annotations must not be relabelled from predictions.
 """
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping, Sequence
 
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
@@ -85,7 +84,7 @@ def event_policy_snapshot(
             EVENT_POLICY_VERSION if profile == "research-v1" else "main-baseline"
         ),
         "profile": profile,
-        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "decision_rules": text,
         "event_labels": list(selected),
         "sensitivities": selected,
         "comparison_field": "observed_detected",
@@ -99,18 +98,18 @@ def annotation_policy(
     """Export the very same rules for independent reference annotation."""
     return {
         **event_policy_snapshot(labels, sensitivities, profile=profile),
-        "decision_rules": event_policy_text(labels, sensitivities, profile=profile),
         "annotation_instructions": [
             "View original frames in source-time order without model predictions.",
             "Use the exact evidence window, last-frame time and whole-scene scope.",
             "Apply the exported event sensitivities, including HIGH suspicion rules.",
             "Record true/false/null for every requested event; preserve uncertainty.",
-            "Record video SHA-256, evidence timestamps and this policy SHA-256.",
+            "Record the source-video reference, evidence timestamps and the "
+            "exported policy values and decision rules.",
             "Unlabelled intervals are not negative; approximate segment boundaries "
             "do not label a window crossing the boundary.",
             "Missing/failed model requests are delivery failures, not false judgments.",
             "AI reference agreement is not verified real-world accuracy.",
             "Do not relabel old references from model predictions. References with "
-            "a missing/different policy fingerprint need independent re-annotation.",
+            "missing or different policy values/rules need independent re-annotation.",
         ],
     }

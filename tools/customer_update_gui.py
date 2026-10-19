@@ -18,6 +18,7 @@ from tkinter import ttk
 if __package__:
     from .customer_update import (
         CustomerError,
+        DISABLED_MESSAGE,
         find_named_installations,
         find_projects,
         install,
@@ -26,6 +27,7 @@ if __package__:
 else:
     from customer_update import (
         CustomerError,
+        DISABLED_MESSAGE,
         find_named_installations,
         find_projects,
         install,
@@ -440,6 +442,11 @@ class UpdateWindow:
                     self.manual_choices = {}
                     self.status.set("The update needs your attention.")
                     self.detail.set(value)
+                    if value == DISABLED_MESSAGE:
+                        self.status.set("Customer automatic updates are disabled.")
+                        self.show_manual_input(False)
+                        self.action_button.pack_forget()
+                        continue
                     self.action_button.configure(
                         text="Retry",
                         command=self.retry_manual

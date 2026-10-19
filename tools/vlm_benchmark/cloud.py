@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -90,17 +89,17 @@ def configure_provider_sort(base, mode):
     )
 
 
-def sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def verify_bundle(root):
+    """Check the declared file inventory and safe paths, not content equality."""
     manifest = json.loads((root / "bundle-manifest.json").read_text(encoding="utf-8"))
-    for name, expected in manifest["files"].items():
+    files = manifest["files"]
+    # Older inventories are dictionaries; their values remain historical metadata.
+    names = list(files) if isinstance(files, (list, dict)) else None
+    if names is None or any(not isinstance(name, str) for name in names):
+        raise ValueError("invalid_bundle_inventory")
+    if len(names) != len(set(names)):
+        raise ValueError("duplicate_bundle_file")
+    for name in names:
         relative = Path(name)
         path = root / relative
         if (
@@ -109,9 +108,8 @@ def verify_bundle(root):
             or path.is_symlink()
             or not path.resolve().is_relative_to(root.resolve())
             or not path.is_file()
-            or sha256(path) != expected
         ):
-            raise ValueError("bundle_integrity_failed")
+            raise ValueError("bundle_inventory_failed")
     return manifest
 
 

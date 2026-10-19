@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,7 +13,7 @@ def redact_images(value):
         return {
             key: (
                 {
-                    "image_base64_sha256": hashlib.sha256(item.encode()).hexdigest(),
+                    "image_omitted": True,
                     "base64_characters": len(item),
                 }
                 if key in {"jpeg_base64", "image_base64"} and isinstance(item, str)
@@ -26,7 +25,7 @@ def redact_images(value):
         return [redact_images(item) for item in value]
     if isinstance(value, str) and value.startswith("data:image/"):
         return {
-            "image_data_url_sha256": hashlib.sha256(value.encode()).hexdigest(),
+            "image_omitted": True,
             "data_url_characters": len(value),
         }
     return value

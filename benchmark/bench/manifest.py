@@ -4,7 +4,7 @@ Two operator-facing tables, both derived purely from the public questions/media
 (no answers, no GPU):
 
 * **fetch manifest** — every media item the run needs, with its download handle
-  (Google Drive id or R2 path), sha256 to verify, and, for image sequences, the
+  (Google Drive id or R2 path), recorded size and, for image sequences, the
   frame rate the clip must be assembled at (fps varies: MOT17-05 is 14, MOT20 is
   25, MOT17-02 is 30). vscrowd sequences carry no clip; counting is fps-agnostic
   so they default to 25.
@@ -74,7 +74,6 @@ def fetch_rows(media_rows: list[dict], fps: dict[str, float]) -> list[dict]:
             "media_type": md["media_type"],
             "path_or_name": md.get("path_or_name", ""),
             "drive_file_id": md.get("drive_file_id", ""),
-            "sha256": md.get("sha256", ""),
             "bytes": md.get("bytes", ""),
             "assemble_fps": (fps.get(vid, _DEFAULT_SEQ_FPS) if seq else ""),
         })
@@ -108,9 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     _write_tsv(
         args.fetch_out,
         ["video_id", "dataset", "media_type", "path_or_name", "drive_file_id",
-         "sha256", "bytes", "assemble_fps"],
+         "bytes", "assemble_fps"],
         [[r[k] for k in ("video_id", "dataset", "media_type", "path_or_name",
-                         "drive_file_id", "sha256", "bytes", "assemble_fps")] for r in fr],
+                         "drive_file_id", "bytes", "assemble_fps")] for r in fr],
     )
 
     buckets: dict[str, int] = {}

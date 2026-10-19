@@ -7,7 +7,6 @@ the output reader. Fusion has its own bounded consumer after publication.
 from __future__ import annotations
 
 import copy
-import hashlib
 import io
 import json
 import math
@@ -187,10 +186,7 @@ def _report_event_policy(job, profile):
         },
         "comparison_field": "observed_detected",
     }
-    digest = hashlib.sha256(
-        json.dumps(policy, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    return {**policy, "sha256": digest}
+    return policy
 
 
 class IndependentEventState:
@@ -562,7 +558,10 @@ def run_vlm_process(
                 http_status = status
             # A cumulative per-input refusal is not a broken shared ledger.
             input_blocked = (getattr(exc, "scope", None) == "source" and error in {
-                "unresolved_same_input_request", "same_input_attempts_exhausted"})
+                "unresolved_same_input_request", "same_input_attempts_exhausted",
+                "unresolved_legacy_answer_scope", "unresolved_legacy_window_scope",
+                "model_operation_scope_missing", "operation_payload_changed_after_dispatch",
+                "conflicting_operation_payloads"})
             if not input_blocked and error not in {
                 "timeout",
                 "connection",

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import random
 import sys
@@ -19,6 +18,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -72,14 +72,6 @@ class MeasuredTransport(ModelAPIClient):
         self.local.finish_reason = choices[0].get("finish_reason")
         self.local.raw_text = self.assistant_text(result)
         return result
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def prepare_frame(path: Path, timestamp: float, long_side: int, quality: int):
@@ -223,13 +215,32 @@ def main() -> int:
         parser.error(f"{len(jobs)} requests exceed explicit bound {args.max_requests}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     journal = args.output.with_suffix(".jsonl")
+    route = urlsplit(config.model_api.endpoint)
     run_metadata = {
+        "schema_version": 2,
         "entrypoint": "legacy_single_frame",
         "event_sensitivities": sensitivities,
-        "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
-        "config_sha256": hashlib.sha256(
-            (ROOT / "config.yaml").read_bytes()
-        ).hexdigest(),
+        "manifest_file": str(args.manifest.resolve()),
+        "sample_inventory": [
+            {
+                "clip_id": clip["id"], "source_file": clip["path"],
+                "timestamp": float(sample["timestamp"]), "long_side": size,
+                "include_actors": include_actors,
+                "expected": sample.get("expected", {}),
+            }
+            for clip, sample, size, include_actors in jobs
+        ],
+        "config_file": str((ROOT / "config.yaml").resolve()),
+        "inference_settings": {
+            "event_label": config.inference.event_label,
+            "system_prompt": config.inference.system_prompt,
+            "prompt": config.inference.prompt,
+            "multi_event_prompt": config.inference.multi_event_prompt,
+            "request_parameters": dict(config.inference.request_parameters),
+        },
+        "transport_origin": {
+            "scheme": route.scheme, "host": route.hostname, "port": route.port,
+        },
         "model": config.inference.model,
         "provider": config.model_api.provider,
         "sizes": sizes,
@@ -237,25 +248,38 @@ def main() -> int:
         "actor_mode": args.actor_mode,
         "timeout": args.timeout,
         "workers": args.workers,
-        "code_sha256": {
-            name: file_sha256(ROOT / name)
-            for name in (
+        "source_files": [
+            name for name in (
                 "tools/low_resolution_model_eval.py",
                 "src/goodvision_harness/grounding.py",
                 "src/goodvision_harness/model_api.py",
             )
-        },
-        "source_sha256": {
-            clip["id"]: file_sha256(Path(clip["path"])) for clip in manifest["clips"]
-        },
+        ],
+        "sources": [
+            {"clip_id": clip["id"], "path": clip["path"]}
+            for clip in manifest["clips"]
+        ],
     }
     metadata_path = args.output.with_suffix(".run.json")
+    if not args.resume and any(
+        path.exists() for path in (args.output, journal, metadata_path)
+    ):
+        parser.error("output artifacts already exist; preserve them and use --resume")
+    if args.resume and not journal.exists() and any(
+        path.exists() for path in (args.output, metadata_path)
+    ):
+        parser.error("resume journal is absent; prior request state requires review")
     if args.resume and journal.exists():
-        if (
-            not metadata_path.exists()
-            or json.loads(metadata_path.read_text(encoding="utf-8")) != run_metadata
-        ):
-            parser.error("resume metadata differs or is absent; use a new output path")
+        if not metadata_path.exists():
+            parser.error("resume metadata is absent; preserve request state for migration")
+        previous_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if previous_metadata.get("schema_version") != 2:
+            parser.error(
+                "legacy resume metadata lacks explicit settings; "
+                "preserve the journal and migrate from original evidence"
+            )
+        if previous_metadata != run_metadata:
+            parser.error("resume settings differ; preserve the journal for review")
     metadata_path.write_text(json.dumps(run_metadata, indent=2), encoding="utf-8")
     records = []
     if args.resume and journal.exists():
@@ -323,7 +347,6 @@ def main() -> int:
             "height": height,
             "original_dimensions": list(original),
             "jpeg_bytes": len(jpeg),
-            "image_sha256": hashlib.sha256(jpeg).hexdigest(),
             "latency_seconds": response.latency_seconds,
             "error": response.error,
             "branch_errors": list(response.branch_errors),
@@ -384,12 +407,10 @@ def main() -> int:
             "Real configured visual-event model on listed public samples; "
             "no local face inference"
         ),
-        "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
+        "manifest_file": str(args.manifest.resolve()),
         "config_model": config.inference.model,
         "configured_provider": config.model_api.provider,
-        "config_sha256": hashlib.sha256(
-            (ROOT / "config.yaml").read_bytes()
-        ).hexdigest(),
+        "config_file": str((ROOT / "config.yaml").resolve()),
         "request_parameters": dict(config.inference.request_parameters),
         "elapsed_seconds_this_run": time.monotonic() - started,
         "workers": args.workers,

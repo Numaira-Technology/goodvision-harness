@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import json
 from collections import Counter, deque
-from hashlib import sha256
+from itertools import count
 from threading import Lock
 
 from .contracts import NormalizedBBox
@@ -23,13 +23,35 @@ def _box(value):
     return NormalizedBBox(*(value[key] for key in ("x1", "y1", "x2", "y2")))
 
 
-def display_subject_id(epoch, track_id):
-    return "sam-" + sha256(json.dumps([epoch, track_id]).encode()).hexdigest()[:32]
+class DisplaySubjectIDs:
+    """One source-session map shared by display projection and fusion."""
+
+    _scopes = count(1)
+    _scope_lock = Lock()
+
+    def __init__(self):
+        with self._scope_lock:
+            self._scope = next(self._scopes)
+        self._lock = Lock()
+        self._subjects = {}
+
+    def resolve(self, epoch, track_id):
+        # Keep full typed identity values locally; never truncate native IDs.
+        key = json.dumps([epoch, track_id], separators=(",", ":"))
+        with self._lock:
+            if key not in self._subjects:
+                self._subjects[key] = f"sam-{self._scope}-{len(self._subjects) + 1}"
+            return self._subjects[key]
+
+
+def display_subject_id(epoch, track_id, *, subject_ids):
+    return subject_ids.resolve(epoch, track_id)
 
 
 class SAMDisplayFusion:
     def __init__(self, session_id, source_id, *, stranger_enabled=False):
         self.session_id, self.source_id = session_id, source_id
+        self.subject_ids = DisplaySubjectIDs()
         self.stranger_enabled = stranger_enabled
         self._inbox_lock = Lock()
         self._inbox = {kind: deque(maxlen=128) for kind in ("face", "vlm")}
@@ -96,9 +118,8 @@ class SAMDisplayFusion:
     def allow_identity(self, person_id):
         self._forgotten.discard(person_id)
 
-    @staticmethod
-    def _subject(epoch, track_id):
-        return display_subject_id(epoch, track_id)
+    def _subject(self, epoch, track_id):
+        return display_subject_id(epoch, track_id, subject_ids=self.subject_ids)
 
     def advance(self, frames):
         """Consume a newly accepted SAM batch; never call either inference path."""

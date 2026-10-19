@@ -7,11 +7,11 @@ credentials; predecoded videos isolate VLM work from decoding and networking.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import json
 import math
 import os
+import re
 import sys
 import time
 from dataclasses import replace
@@ -62,9 +62,10 @@ def preview_demo_requested():
 
 
 def preview_demo_offset(source_id):
-    # Stable across processes, PYTHONHASHSEED values, machines and reruns.
-    digest = hashlib.sha256(source_id.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") % 1000 / 1000 * DEMO_PERIOD_SECONDS
+    # Camera numbers are explicit source identities; unnamed sources start at zero.
+    match = re.fullmatch(r"camera([0-9]+)", source_id)
+    index = int(match.group(1)) - 1 if match else 0
+    return index % 1000 / 1000 * DEMO_PERIOD_SECONDS
 
 
 def preview_demo_settings(real, requested=None, streams=0):
@@ -74,11 +75,11 @@ def preview_demo_settings(real, requested=None, streams=0):
     return {
         "requested": requested,
         "enabled": requested and not real,
-        "algorithm": "source-time-sha256-v1",
+        "algorithm": "source-time-camera-index-v2",
         "period_seconds": DEMO_PERIOD_SECONDS,
         "positive_window_seconds": DEMO_POSITIVE_WINDOW_SECONDS,
         "clock": "last_evidence_frame_source_seconds",
-        "phase_hash": "SHA-256(source_id UTF-8), first 8 bytes big-endian modulo 1000",
+        "phase_rule": "zero-based camera number modulo 1000; other sources use zero",
         "source_phase_offsets_seconds": {
             f"camera{i + 1:02d}": preview_demo_offset(f"camera{i + 1:02d}")
             for i in range(streams)
@@ -850,7 +851,7 @@ def main():
             if k != "video"
         },
         "videos": [
-            {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+            {"path": str(p)}
             for p in args.video
         ],
         "image_side": base.runtime.scene_max_image_side,
@@ -862,8 +863,8 @@ def main():
             "Shared SQLite is for one host/shared local container volume only.",
         ],
         "retain_historical_results": True,
-        "source_hashes": {
-            p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        "source_files": [
+            p.relative_to(ROOT).as_posix()
             for p in [
                 Path(__file__),
                 *sorted((ROOT / "src/goodvision_harness").rglob("*.py")),
@@ -873,7 +874,7 @@ def main():
                 ROOT / "src/goodvision_harness/event_sensitivity.py",
                 ROOT / "src/goodvision_harness/config.py",
             ]
-        },
+        ],
     }
     (output / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"

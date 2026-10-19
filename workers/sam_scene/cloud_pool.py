@@ -17,9 +17,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 if __package__:
-    from .continuous import _session_ref, _timing_log, _trace_identifier
+    from .continuous import _timing_log, _trace_identifier
 else:
-    from continuous import _session_ref, _timing_log, _trace_identifier
+    from continuous import _timing_log, _trace_identifier
 
 LOGGER = logging.getLogger("goodvision.sam31.pool")
 
@@ -233,9 +233,9 @@ def create_app(gpu_count: int, streams: int, *, launch_workers=True, transport=N
             "camera_id": camera_id,
             "worker_camera_id": worker_camera_id,
             "gpu_index": gpu,
-            "session_ref": _session_ref(
-                session_match[1] if session_match else None
-            ),
+            # The session path contains a capability token, not a diagnostic ID.
+            # Correlate proxy timings through the existing transport/attempt IDs;
+            # the worker owns its separate non-secret session reference.
             "timing_basis": "host_wall_clock",
         }
 

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +10,7 @@ import tempfile
 from .answers_v2 import answer_question
 from .privacy import reject_private
 from .evidence import NATIVE_SKIP_POLICY
+from .model_operation import summary_operation
 
 PUBLIC_QUESTION_FIELDS = frozenset({
     "qa_id", "video_id", "question", "question_form", "capability", "options", "response_options",
@@ -64,21 +64,21 @@ def build_answer_artifact(question, evidence):
     reject_private(question)
     reject_private(evidence, observation=True)
     public_question = {k: v for k, v in question.items() if k in PUBLIC_QUESTION_FIELDS}
-    payload = {k: v for k, v in evidence.items() if k != "evidence_sha256"}
-    evidence_hash = hashlib.sha256(_canonical(payload).encode()).hexdigest()
-    if evidence.get("evidence_sha256") != evidence_hash:
-        raise ValueError("evidence hash mismatch")
+    if public_question["video_id"] != evidence["video_id"]:
+        raise ValueError("question and observation video differ")
+    operation = summary_operation(evidence, public_question["qa_id"])
     parsed = answer_question(public_question, evidence)
     # Share the evidence with the summary branch, not the parser's answer.
     summary_request = {
         "method": "unified_same_evidence_summary_v2", "state": "not_called",
-        "evidence_sha256": evidence_hash,
+        "operation": operation,
         "answer_contract": ANSWER_CONTRACT,
         "messages": short_answer_messages(public_question, evidence),
     }
     return {
         "qa_id": public_question["qa_id"], "video_id": public_question["video_id"],
-        "evidence_sha256": evidence_hash, "parser": parsed, "summary_request": summary_request,
+        "operation": operation, "public_question": public_question,
+        "parser": parsed, "summary_request": summary_request,
         "comparison_scope": "same_saved_observation_not_historical_question_conditioned_summary",
     }
 

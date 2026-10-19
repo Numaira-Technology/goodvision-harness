@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import json
 import logging
 import os
@@ -63,7 +62,7 @@ from .delayed_overlay import (
     OverlaySelection,
     is_face_object,
 )
-from .delivery import WebhookDelivery
+from .delivery import SignedWebhookDisabledError, WebhookDelivery
 from .deployment_settings import (
     DeploymentSettings,
     DeploymentSettingsStore,
@@ -1870,6 +1869,8 @@ class HarnessRuntime:
             )
         except ProcessingMethodUnavailableError as exc:
             self._update_state(pipeline_state="idle", last_error=str(exc), ready=False)
+        except SignedWebhookDisabledError as exc:
+            self._update_state(pipeline_state="error", last_error=str(exc), ready=False)
         except Exception:
             LOGGER.error("could not start harness runtime")
             self._update_state(
@@ -2700,19 +2701,21 @@ class HarnessRuntime:
 
                     parallel = self.config.rich_labeling.backend == "sam31_stream"
                     size = self.config.runtime.scene_max_in_flight if parallel else 1
-                    fingerprint = hashlib.sha256(json.dumps({
-                        "settings": asdict(model_settings), "model": model,
-                        "parameters": parameters, "api_key": api_key, **options,
-                        "transport_environment": {
-                            name: os.environ.get(name) for name in (
+                    # Compare private snapshots in memory; never serialize or log
+                    # this configuration, which contains credentials.
+                    client_configuration = (
+                        asdict(model_settings), model,
+                        copy.deepcopy(parameters), api_key, copy.deepcopy(options),
+                        tuple(
+                            (name, os.environ.get(name)) for name in (
                                 "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
                                 "http_proxy", "https_proxy", "all_proxy", "no_proxy",
                                 "SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE",
                             )
-                        },
-                    }, sort_keys=True, allow_nan=False).encode()).hexdigest()
+                        ),
+                    )
                     leases = iter(self._temporal_clients.prepare(
-                        fingerprint, build_inspector, size,
+                        client_configuration, build_inspector, size,
                         accept=lambda job, scene=next_scene: scene.inspection_active(
                             job.request.request_id
                         ),
@@ -3197,7 +3200,7 @@ class HarnessRuntime:
                 }
                 receipt = (
                     stream_session_id, generation, crop_version, source_sequence,
-                    media_timestamp, hashlib.sha256(jpeg).digest(),
+                    media_timestamp,
                 )
                 # Positive receipts outlive later admissions: pipelined ACK loss
                 # must not offer an earlier source to either branch twice.
@@ -3207,7 +3210,7 @@ class HarnessRuntime:
                          (generation, crop_version) !=
                          (current["generation"], current["crop_version"]))):
                     return False
-                if receipt in self._camera_receipts:
+                if self._camera_receipts.get(receipt) == jpeg:
                     timing["outcome"] = "duplicate"
                     return True
                 if not self._camera_display_metadata.accept_source(
@@ -3217,7 +3220,7 @@ class HarnessRuntime:
                 # Hold later sources behind a capacity refusal. Otherwise a
                 # retry can become obsolete when a later packet takes the slot.
                 if (self._camera_blocked_receipt is not None
-                        and receipt != self._camera_blocked_receipt):
+                        and (receipt, jpeg) != self._camera_blocked_receipt):
                     return False
                 sequence, timestamp = source_sequence, media_timestamp
             else:
@@ -3237,14 +3240,18 @@ class HarnessRuntime:
                     jpeg, width=width, height=height,
                     timestamp_seconds=timestamp, source_frame_index=sequence,
                 ):
-                    self._camera_blocked_receipt = receipt
+                    self._camera_blocked_receipt = (
+                        (receipt, jpeg) if receipt is not None else None
+                    )
                     return False
                 phase("source_metadata")
                 while self._camera_next_sample_at <= timestamp + 1e-9:
                     self._camera_next_sample_at += self._camera_sample_period
             if source_header is not None:
                 self._camera_display_metadata.accept_source(source_header)
-                self._camera_receipts[receipt] = None
+                # Keep the immutable source bytes by reference for exact retry
+                # equality; matching dimensions or sizes do not establish identity.
+                self._camera_receipts[receipt] = jpeg
                 while len(self._camera_receipts) > 64:
                     self._camera_receipts.popitem(last=False)
                 self._camera_blocked_receipt = None

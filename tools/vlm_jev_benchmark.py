@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import math
 import os
@@ -318,11 +317,6 @@ async def run(args):
         max_image_side=args.side,
         jpeg_quality=args.quality,
     )
-    with args.video.open("rb") as stream:
-        hasher = hashlib.sha256()
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(chunk)
-        digest = hasher.hexdigest()
     manifest = {
         "model": args.model,
         "max_tokens": args.max_tokens,
@@ -331,11 +325,17 @@ async def run(args):
         "smoking_sensitivity": args.smoking,
         "repeats": args.repeats,
         "endpoints": endpoints,
-        "video_sha256": digest,
+        "source_video": str(args.video),
         "frames": [
             {
                 "endpoint": j.request.end_seconds,
-                "sha256": [hashlib.sha256(f.jpeg_bytes).hexdigest() for f in j.frames],
+                "frames": [
+                    {
+                        "frame_sequence": f.frame_sequence,
+                        "timestamp_seconds": f.timestamp_seconds,
+                    }
+                    for f in j.frames
+                ],
             }
             for j in jobs
         ],

@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import base64
 import copy
-import hashlib
 import json
 import math
 import os
@@ -312,10 +311,6 @@ async def run(args):
         )
         for case in selected
     }
-    hasher = hashlib.sha256()
-    with args.video.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(chunk)
     manifest = {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "cases": {case: CASES[case] for case in selected},
@@ -325,10 +320,14 @@ async def run(args):
         "endpoints": ends,
         "context": CONTEXT,
         "questions": questions(),
-        "source_video_sha256": hasher.hexdigest(),
+        "source_video": str(args.video),
         "frames": {
             str(job.request.end_seconds): [
-                hashlib.sha256(f.jpeg_bytes).hexdigest() for f in job.frames
+                {
+                    "frame_sequence": f.frame_sequence,
+                    "timestamp_seconds": f.timestamp_seconds,
+                }
+                for f in job.frames
             ]
             for job in jobs
         },

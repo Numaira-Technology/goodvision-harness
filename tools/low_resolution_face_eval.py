@@ -8,7 +8,6 @@ person. No images, embeddings or enrollment names are included in the report.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.metadata
 import json
 import statistics
@@ -454,9 +453,8 @@ def main(argv: list[str] | None = None) -> int:
             "temporary_gallery_samples": sum(
                 person.sample_count for person in runtime.list_people()
             ),
-            "source_gallery_sha256": hashlib.sha256(original_gallery).hexdigest()
-            if original_gallery
-            else None,
+            "source_gallery": str(args.gallery_input.resolve())
+            if args.gallery_input else None,
             "warmup_seconds": warmup_seconds,
             "notes": [
                 "Input dimensions and face_width_input_px/face_height_input_px "

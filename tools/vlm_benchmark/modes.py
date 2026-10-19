@@ -8,7 +8,6 @@ Local GPU telemetry is meaningful only for an explicitly selected local deployme
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import json
 import math
@@ -65,7 +64,7 @@ DEFAULT_MODEL = "qwen/qwen3-vl-30b-a3b-instruct"
 
 
 def checkout_revision():
-    # Uploaded bundles have source hashes but need neither a .git directory nor git.
+    # Uploaded bundles need neither a .git directory nor git.
     if not shutil.which("git"):
         return ""
     return subprocess.run(
@@ -440,13 +439,6 @@ def _run(args):
     monitor = None
     resources = ExitStack()
 
-    def sha(p):
-        digest = hashlib.sha256()
-        with Path(p).open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-
     def trial(job):
         job["preview_demo_events"] = preview_demo_settings(
             args.real, args.preview_demo_events, job["streams"],
@@ -639,8 +631,8 @@ def _run(args):
             "deployment_metadata": (
                 "operator-declared; endpoint does not attest GPU/quantization"
             ),
-            "source_hashes": {
-                str(p.relative_to(ROOT)): sha(p)
+            "source_files": [
+                str(p.relative_to(ROOT))
                 for p in [
                     *sorted((ROOT / "src/goodvision_harness").rglob("*.py")),
                     *sorted((ROOT / "tools/vlm_benchmark").glob("*.py")),
@@ -648,8 +640,8 @@ def _run(args):
                     ROOT / "tools/vlm_benchmark/preview_tracking.js",
                     ROOT / "tools/vlm_multistream_benchmark.py",
                 ]
-            },
-            "videos": [{"path": str(p), "sha256": sha(p)} for p in args.video],
+            ],
+            "videos": [{"path": str(p)} for p in args.video],
         }
         write_json(output / "manifest.json", manifest)
         write_json(output / "event-policy.json", annotation_policy(

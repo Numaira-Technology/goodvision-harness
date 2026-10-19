@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-import zlib
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
@@ -26,6 +27,10 @@ _RICH_COLORS: tuple[tuple[int, int, int], ...] = (
     (94, 202, 255),
     (174, 238, 77),
 )
+_TRACK_COLORS: OrderedDict[str, tuple[int, int, int]] = OrderedDict()
+_TRACK_COLORS_LOCK = threading.Lock()
+_TRACK_COLOR_LIMIT = 4096
+_NEXT_TRACK_COLOR = 0
 _PERSON_LABELS = frozenset({"person", "human", "pedestrian"})
 _ALERT_COLOR = (40, 40, 220)
 _FACE_COLORS = {
@@ -451,8 +456,21 @@ def _stable_key(value: Any) -> str:
 
 
 def _rich_track_color(value: Any) -> tuple[int, int, int]:
-    checksum = zlib.crc32(_stable_key(value).encode("utf-8", "replace"))
-    return _RICH_COLORS[checksum % len(_RICH_COLORS)]
+    global _NEXT_TRACK_COLOR
+    key = _stable_key(value)
+    if len(key) > 256:
+        return _RICH_COLORS[0]
+    with _TRACK_COLORS_LOCK:
+        color = _TRACK_COLORS.get(key)
+        if color is None:
+            color = _RICH_COLORS[_NEXT_TRACK_COLOR]
+            _NEXT_TRACK_COLOR = (_NEXT_TRACK_COLOR + 1) % len(_RICH_COLORS)
+            _TRACK_COLORS[key] = color
+            if len(_TRACK_COLORS) > _TRACK_COLOR_LIMIT:
+                _TRACK_COLORS.popitem(last=False)
+        else:
+            _TRACK_COLORS.move_to_end(key)
+        return color
 
 
 def _draw_corner_bbox(

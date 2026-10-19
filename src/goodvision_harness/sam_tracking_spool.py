@@ -41,7 +41,7 @@ class TrackingSpool:
                     PRIMARY KEY (generation, sequence));
                 CREATE TABLE IF NOT EXISTS batches (
                     request_id TEXT PRIMARY KEY, generation INTEGER,
-                    ordinal INTEGER, state TEXT, payload BLOB, payload_hash TEXT,
+                    ordinal INTEGER, state TEXT, payload BLOB,
                     result BLOB, error_type TEXT);
                 CREATE TABLE IF NOT EXISTS skipped_sources (
                     generation INTEGER, sequence INTEGER, reason TEXT,
@@ -219,7 +219,7 @@ class TrackingSpool:
             if self._usage(db) + 512 > self.max_bytes:
                 raise TrackingSpoolFull("SAM batch journal capacity exhausted")
             db.execute(
-                "INSERT INTO batches VALUES (?,?,?,?,NULL,NULL,NULL,NULL)",
+                "INSERT INTO batches (request_id,generation,ordinal,state) VALUES (?,?,?,?)",
                 (request_id, generation, ordinal, "preparing"),
             )
             db.executemany(
@@ -227,14 +227,14 @@ class TrackingSpool:
                 [(request_id, generation, sequence) for sequence in sequences],
             )
 
-    def prepared(self, request_id, body, digest):
+    def prepared(self, request_id, body):
         with self._lock, self._connect() as db:
             if self._usage(db) + len(body) > self.max_bytes:
                 raise TrackingSpoolFull("SAM prepared journal capacity exhausted")
             db.execute(
-                "UPDATE batches SET payload=?,payload_hash=?,state='prepared' "
+                "UPDATE batches SET payload=?,state='prepared' "
                 "WHERE request_id=?",
-                (body, digest, request_id),
+                (body, request_id),
             )
 
     def result(self, request_id, result):

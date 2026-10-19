@@ -8,7 +8,6 @@ live lag separately from EOF drain and saves exact-source tracking observations.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import math
@@ -93,7 +92,7 @@ def load_source(video, *, fps, max_seconds):
                     "timestamp_seconds": timestamp,
                     "original_frame_sequence": original,
                     "original_timestamp_seconds": original / native_fps,
-                    "source_sha256": hashlib.sha256(jpeg).hexdigest(),
+                    "source_jpeg_file": f"source-frames/frame-{sequence:06d}.jpg",
                     "source_jpeg_bytes": len(jpeg),
                 }
             )
@@ -213,6 +212,30 @@ def summarize_observations(rows, tracks, capture_count):
     }
 
 
+def source_jpeg_bytes(output, source):
+    """Read retained source values; legacy metadata alone cannot prove equality."""
+    name = source.get("source_jpeg_file")
+    if not isinstance(name, str) or not name:
+        raise ValueError("saved source lacks retained JPEG values; migration is required")
+    root = Path(output).resolve()
+    relative = Path(name)
+    path = root / relative
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or path.is_symlink()
+        or not path.resolve().is_relative_to(root)
+        or not path.is_file()
+        or path.stat().st_size > 64 * 1024 * 1024
+    ):
+        raise ValueError("invalid retained source JPEG path or size")
+    with path.open("rb") as source_file:
+        data = source_file.read(64 * 1024 * 1024 + 1)
+    if len(data) > 64 * 1024 * 1024:
+        raise ValueError("retained source JPEG exceeds byte budget")
+    return data
+
+
 def render_annotations(frames, mapping, tracks, *, output, fps):
     """Offline exact-source review; a missing result never reuses an old box."""
     output = Path(output)
@@ -246,11 +269,9 @@ def render_annotations(frames, mapping, tracks, *, output, fps):
             if (source["frame_sequence"], source["timestamp_seconds"]) != (
                 frame.frame_sequence,
                 frame.timestamp_seconds,
-            ) or hashlib.sha256(frame.jpeg_bytes).hexdigest() != source[
-                "source_sha256"
-            ]:
+            ) or frame.jpeg_bytes != source_jpeg_bytes(output, source):
                 raise ValueError(
-                    "annotation original differs from recorded source hash"
+                    "annotation original differs from retained source JPEG values"
                 )
             match = available.get(frame.frame_sequence)
             if match:
@@ -311,7 +332,7 @@ def render_annotations(frames, mapping, tracks, *, output, fps):
                     "output_timestamp_seconds": index / fps,
                     "source_frame_sequence": frame.frame_sequence,
                     "source_timestamp_seconds": frame.timestamp_seconds,
-                    "source_sha256": source["source_sha256"],
+                    "source_jpeg_file": source["source_jpeg_file"],
                     "state": "observed" if match else "not_processed",
                     "subject_ids": [item.track_id for item in snapshot.objects],
                     "source_to_result_seconds": row.get("source_to_result_seconds"),
@@ -544,7 +565,7 @@ def _replay(args, frames, mapping, fps, client, output):
                     [row["ingest_seconds"] for row in mapping]
                 ),
                 "source_evidence_unchanged": all(
-                    hashlib.sha256(frame.jpeg_bytes).hexdigest() == row["source_sha256"]
+                    frame.jpeg_bytes == source_jpeg_bytes(output, row)
                     for frame, row in zip(frames, mapping, strict=True)
                 ),
                 "online_transport_preparation": True,
@@ -618,6 +639,9 @@ def run(args):
     )
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
+    (output / "source-frames").mkdir()
+    for frame, source in zip(frames, mapping, strict=True):
+        (output / source["source_jpeg_file"]).write_bytes(frame.jpeg_bytes)
     client = None
     try:
         client = MeasuredClient(create_tracking_client(replay_settings(args, fps)))

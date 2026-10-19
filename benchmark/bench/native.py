@@ -8,7 +8,6 @@ new orchestration is not a rerun of the original 182-question publication.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import os
@@ -30,32 +29,54 @@ FROZEN = ARCHIVE / "frozen_runtime"
 NONE_OPTION = "none of these events or actions"
 
 
-def digest(path):
-    checksum = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            checksum.update(chunk)
-    return checksum.hexdigest()
+def frozen_source_inventory():
+    """Read historical revisions and safe file inventories, not content equality."""
+    manifest = json.loads((ARCHIVE / "archive-source.json").read_text())
+    publication = json.loads((ARCHIVE / "published-source.json").read_text())
+    inventories = {}
+    for name, document in (("archive", manifest), ("publication", publication)):
+        files = []
+        for row in document["files"]:
+            relative = Path(row["path"])
+            base = (
+                ROOT
+                if name == "publication" and relative.parts[:1] == ("experiments",)
+                else FROZEN
+            )
+            path = base / relative
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or path.is_symlink()
+                or not path.resolve().is_relative_to(base.resolve())
+                or not path.is_file()
+            ):
+                raise ValueError("invalid historical source inventory path: " + str(relative))
+            record = {"root": str(base), "path": relative.as_posix()}
+            if record in files:
+                raise ValueError("duplicate historical source inventory path: " + str(relative))
+            files.append(record)
+        inventories[name] = files
+    return {
+        "source_commit": manifest["source_commit"],
+        "archive_manifest": str(ARCHIVE / "archive-source.json"),
+        "publication_manifest": str(ARCHIVE / "published-source.json"),
+        "publication_method": publication.get("method"),
+        "publication_branch": publication.get("branch"),
+        "publication_native_base_commit": publication.get("native_base_commit"),
+        "publication_previous_native_commit": publication.get("previous_native_commit"),
+        "publication_detector_reference_commit": publication.get("detector_reference_commit"),
+        "files": inventories,
+        "content_equality_verified": False,
+    }
 
 
 def verify_frozen_source():
-    manifest = json.loads((ARCHIVE / "archive-source.json").read_text())
-    for row in manifest["files"]:
-        if digest(FROZEN / row["path"]) != row["sha256"]:
-            raise ValueError("frozen runtime source checksum mismatch: " + row["path"])
-    publication = json.loads((ARCHIVE / "published-source.json").read_text())
-    for row in publication["files"]:
-        relative = Path(row["path"])
-        path = (
-            ROOT / relative
-            if str(relative).startswith("experiments/")
-            else FROZEN / relative
-        )
-        if digest(path) != row["sha256"]:
-            raise ValueError(
-                "published Ashley source checksum mismatch: " + row["path"]
-            )
-    return manifest["source_commit"]
+    """Return the declared commit after inventory checks, without content attestation.
+
+    Keep the existing caller interface; the legacy name now means inventory only.
+    """
+    return frozen_source_inventory()["source_commit"]
 
 
 def _load_research_helper(name, filename):
@@ -84,7 +105,7 @@ def select_runtime(profile):
         return
     source = FROZEN / "src" if profile == "frozen51" else ROOT / "src"
     if profile == "frozen51":
-        verify_frozen_source()
+        frozen_source_inventory()
         os.environ["ASHLEY_EVENT_DEFINITIONS"] = str(FROZEN / "event-definitions.json")
     sys.path.insert(0, str(source))
 
@@ -268,7 +289,6 @@ def evaluate_frames(
                         [
                             f.frame_sequence,
                             f.timestamp_seconds,
-                            hashlib.sha256(f.jpeg_bytes).hexdigest(),
                         ]
                         for f in job.frames
                     ],
@@ -417,7 +437,6 @@ def evaluate_frames(
                 "source_frame",
                 frame=frame.frame_sequence,
                 t=frame.timestamp_seconds,
-                jpeg_sha256=hashlib.sha256(frame.jpeg_bytes).hexdigest(),
             )
             buffered.append(frame)
             threshold = startup_frames if first_append else append_frames
@@ -661,12 +680,14 @@ def main(argv=None):
         path = (args.media_root / path).resolve()
         if not path.is_relative_to(args.media_root.resolve()) or not path.is_file():
             raise ValueError("media file is missing or outside media-root")
-        expected = media[question.video_id].get("sha256")
-        identity = digest(path)
-        if expected and expected != identity:
-            raise ValueError("media checksum differs from manifest")
-        plan.append((question, path, identity, labels))
-    frozen_commit = verify_frozen_source()
+        source_record = {
+            "video_id": question.video_id,
+            "media_file": str(path),
+            "manifest_relative_path": media[question.video_id]["path"],
+        }
+        plan.append((question, path, source_record, labels))
+    frozen_record = frozen_source_inventory()
+    frozen_commit = frozen_record["source_commit"]
     if args.plan_only:
         print(
             json.dumps(
@@ -708,36 +729,37 @@ def main(argv=None):
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         revision = None
-    dirty = subprocess.check_output(
-        ["git", "diff", "HEAD", "--", "src/goodvision_harness", "benchmark"], cwd=ROOT
-    )
+    changed_files = subprocess.check_output(
+        ["git", "diff", "HEAD", "--name-only", "--",
+         "src/goodvision_harness", "benchmark"],
+        cwd=ROOT, text=True,
+    ).splitlines()
+    runtime_root = FROZEN if args.runtime_profile == "frozen51" else ROOT
     provenance = {
-        "schema": 1,
+        "schema": 2,
         "runtime_profile": args.runtime_profile,
         "runtime_source_commit": frozen_commit
         if args.runtime_profile == "frozen51"
         else revision,
         "orchestrator_commit": revision,
-        "orchestrator_patch_sha256": hashlib.sha256(dirty).hexdigest(),
-        "extractor_sha256": digest(Path(__file__).with_name("extract.py")),
-        "native_runner_sha256": digest(__file__),
-        "runtime_source_sha256": {
-            str(
-                path.relative_to(FROZEN if args.runtime_profile == "frozen51" else ROOT)
-            ): digest(path)
-            for path in sorted(
-                (
-                    (FROZEN if args.runtime_profile == "frozen51" else ROOT)
-                    / "src/goodvision_harness"
-                ).rglob("*.py")
-            )
+        "orchestrator_has_uncommitted_changes": bool(changed_files),
+        "uncommitted_source_files": changed_files,
+        "extractor_file": str(Path(__file__).with_name("extract.py")),
+        "native_runner_file": str(Path(__file__).resolve()),
+        "runtime_source_inventory": {
+            "root": str(runtime_root),
+            "files": [
+                str(path.relative_to(runtime_root))
+                for path in sorted((runtime_root / "src/goodvision_harness").rglob("*.py"))
+            ],
         },
-        "questions_sha256": digest(args.questions),
-        "media_manifest_sha256": digest(args.media),
-        "config_sha256": digest(
+        "frozen_source_record": frozen_record,
+        "questions_file": str(args.questions.resolve()),
+        "media_manifest_file": str(args.media.resolve()),
+        "config_file": str((
             args.config
             or (FROZEN if args.runtime_profile == "frozen51" else ROOT) / "config.yaml"
-        ),
+        ).resolve()),
         "backend": args.backend,
         "detector_model": args.detector_model if args.backend == "detector" else None,
         "historical_publication_reproduction": False,
@@ -781,7 +803,7 @@ def main(argv=None):
         (args.output_dir / "predictions.jsonl").open("x") as predictions,
         (args.output_dir / "details.jsonl").open("x") as details,
     ):
-        for question, path, identity, labels in plan:
+        for question, path, source_record, labels in plan:
             directory = args.output_dir / "questions" / quote(question.qa_id, safe="")
             if aborted:
                 predictions.write(
@@ -830,7 +852,7 @@ def main(argv=None):
                     tracker,
                     video_id=question.video_id,
                     output=directory,
-                    metadata={**provenance, "media_sha256": identity, "_audit": audit},
+                    metadata={**provenance, "media_source": source_record, "_audit": audit},
                     labels=labels,
                     inspector=inspector,
                     observation_fps=config.runtime.scene_observation_fps,

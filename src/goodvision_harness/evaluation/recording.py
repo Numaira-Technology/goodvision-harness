@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -38,7 +37,7 @@ def publish_once(path, value):
         os.link(temporary, path)
     finally:
         os.unlink(temporary)
-    return hashlib.sha256(raw).hexdigest()
+    return str(path.resolve())
 
 
 class ProductionEvidenceRecorder:
@@ -56,7 +55,6 @@ class ProductionEvidenceRecorder:
         (self.root / "records").mkdir()
         self._lock = RLock()
         self._sequence = 0
-        self._previous_sha256 = None
         self._poisoned = False
         self._closed = False
         self.clock_domain = f"{stream_session_id}:pid-{os.getpid()}:monotonic"
@@ -83,9 +81,8 @@ class ProductionEvidenceRecorder:
         row = {"sequence": self._sequence, "kind": kind,
                "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
                "recorded_monotonic": time.monotonic(), "clock_domain": self.clock_domain,
-               "previous_record_sha256": self._previous_sha256, "payload": payload}
-        digest = publish_once(self.root / relative, row)
-        self._previous_sha256 = digest
+               "payload": payload}
+        publish_once(self.root / relative, row)
         return str(self.root / relative), self._sequence
 
     def _apply(self, kind, payload, operation):
@@ -99,14 +96,14 @@ class ProductionEvidenceRecorder:
                 self._poisoned = True
                 raise
 
-    def tracking_frame(self, *, frame, timestamp_seconds, subjects, jpeg_sha256,
-                       raw_response):
+    def tracking_frame(self, *, frame, timestamp_seconds, subjects, raw_response,
+                       jpeg_sha256=None):
         payload = dict(frame=frame, timestamp_seconds=timestamp_seconds, subjects=subjects,
-                       jpeg_sha256=jpeg_sha256, raw_response=raw_response)
+                       raw_response=raw_response)
         return self._apply("tracking", payload, lambda reference, cursor:
                            self.capture.tracking_frame(
                                frame=frame, timestamp_seconds=timestamp_seconds,
-                               subjects=subjects, jpeg_sha256=jpeg_sha256, raw_reference=reference))
+                               subjects=subjects, raw_reference=reference))
 
     def independent_report(self, report):
         """Record both information and grounding after IndependentVLMBranch publication."""
@@ -156,12 +153,12 @@ class ProductionEvidenceRecorder:
                       events_drained=events_drained, fusion_drained=fusion_drained)
         def seal(reference, cursor):
             evidence = self.capture.seal(**states)
-            capture_sha = publish_once(self.root / "capture.json", evidence)
+            publish_once(self.root / "capture.json", evidence)
             publish_once(self.root / "completion.json", {
                 "schema_version": "production-evidence-completion-v1", **states,
                 "video_id": self.capture.video_id, "stream_session_id": self.capture.session_id,
-                "records": self._sequence, "last_record_sha256": self._previous_sha256,
-                "capture_file_sha256": capture_sha, "evidence_sha256": evidence["evidence_sha256"],
+                "source_id": self.capture.source_id,
+                "records": self._sequence, "capture_path": str(self.root / "capture.json"),
                 "manifest_complete": evidence["observation_manifest"]["complete"],
                 "failures": len(evidence["failures"]),
             })

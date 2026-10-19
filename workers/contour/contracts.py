@@ -90,7 +90,7 @@ class Attributes(Record):
 
 
 class TrackedObject(Record):
-    track_id: Annotated[str, Field(pattern=r"^ct-[a-f0-9]{32}$")]
+    track_id: Annotated[str, Field(pattern=r"^ct-[a-f0-9]{32}:\d{1,20}$")]
     label: Literal["person"]
     bbox: Box
     confidence: Coordinate

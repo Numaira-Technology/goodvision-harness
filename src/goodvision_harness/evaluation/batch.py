@@ -6,7 +6,6 @@ new frozen plan and output directory; completed sources keep their original IDs.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 
@@ -22,27 +21,27 @@ def _ownership(receipt):
             or type(receipt.get("gpu_memory_mib")) is not int
             or not 23000 <= receipt["gpu_memory_mib"] <= 26000
             or receipt.get("num_gpus") != 1 or not receipt.get("instance_id")
-            or not receipt.get("experiment_label") or not receipt.get("source_manifest_sha256")
+            or not receipt.get("experiment_label")
             or receipt.get("sam_internal_patch") is not False):
         raise ValueError("actual owned standard24GB single4090 and stockSAM receipt required")
     return receipt
 
 
-def run_sources(plan_path, *, plan_sha256, output, ledger, resources):
+def run_sources(plan_path, *, output, ledger, resources, plan_sha256=None):
     """Use owned resource receipts; stop shared failures before the next source.
 
     prepare(config) and recover(config, failure, cleanup) perform resource actions,
     not health probes. Recovery must confirm cleanup on the same owned instance.
     """
     plan_path = Path(plan_path).resolve()
-    plan = _read_frozen(plan_path, plan_sha256)
+    plan = _read_frozen(plan_path)
     reject_private(plan, observation=True)
     if plan.get("schema_version") != "unified-capture-batch-v1":
         raise ValueError("explicit formal source batch required")
     entries, sids, videos = [], set(), set()
     for row in plan["sources"]:
         path = plan_path.parent / row["config"]
-        config = _read_frozen(path, row["config_sha256"])
+        config = _read_frozen(path)
         reject_private(config, observation=True)
         sid, vid = config["stream_session_id"], config["video_id"]
         if sid in sids or vid in videos:
@@ -62,7 +61,7 @@ def run_sources(plan_path, *, plan_sha256, output, ledger, resources):
     root.mkdir(parents=True, exist_ok=False)
     (root / "sources").mkdir()
     (root / "progress").mkdir()
-    publish_once(root / "run.json", {"method": plan["method"], "plan_sha256": plan_sha256,
+    publish_once(root / "run.json", {"method": plan["method"], "plan_path": str(plan_path), "plan": plan,
                                      "sources": len(entries), "started_at_utc": datetime.now(timezone.utc).isoformat()})
     outcomes, observations = list(plan.get("input_skips", [])), []
     try:
@@ -74,7 +73,7 @@ def run_sources(plan_path, *, plan_sha256, output, ledger, resources):
                 terminal = import_reused_source(reused, config, source_root)
                 publish_once(root / 'progress' / f'{position:04d}-resource.json', owner)
                 publish_once(root / 'progress' / f'{position:04d}-reuse.json', {
-                    'origin_round': reused['origin_round'], 'source_files_sha256': reused['files_sha256'],
+                    'origin_round': reused['origin_round'], 'source_directory': reused['source_directory'],
                     'original_instance_id': owner['instance_id'], 'new_inference_performed': False})
                 if reused.get('recovery'):
                     publish_once(root / 'progress' / f'{position:04d}-recovery.json', reused['recovery'])
@@ -82,15 +81,13 @@ def run_sources(plan_path, *, plan_sha256, output, ledger, resources):
                 outcomes.append(terminal)
                 capture = source_root / 'capture.json'
                 if capture.exists():
-                    observations.append({'video_id': config['video_id'], 'capture_path': str(capture),
-                        'capture_file_sha256': hashlib.sha256(capture.read_bytes()).hexdigest()})
+                    observations.append({'video_id': config['video_id'], 'capture_path': str(capture)})
                 continue
             owner = _ownership(resources.prepare(config))
             publish_once(root / "progress" / f"{position:04d}-resource.json", owner)
             failure, outcome = None, None
             try:
-                outcome = capture_source(path, config_sha256=row["config_sha256"],
-                                         output=source_root, ledger=ledger)
+                outcome = capture_source(path, output=source_root, ledger=ledger)
             except Exception as exc:
                 failure = failure_policy(exc)
                 # Shared I/O and identity errors stop the batch without failing unattempted sources.
@@ -114,8 +111,7 @@ def run_sources(plan_path, *, plan_sha256, output, ledger, resources):
             outcomes.append(terminal)
             capture = source_root / "capture.json"
             if capture.exists():
-                observations.append({"video_id": config["video_id"], "capture_path": str(capture),
-                                     "capture_file_sha256": hashlib.sha256(capture.read_bytes()).hexdigest()})
+                observations.append({"video_id": config["video_id"], "capture_path": str(capture)})
     except Exception as exc:
         if not any(row["video_id"] == config["video_id"] for row in outcomes):
             outcomes.append({"video_id": config["video_id"], "stream_session_id": config["stream_session_id"],

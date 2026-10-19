@@ -8,13 +8,14 @@ or segmentation accuracy. No model download or active-service mutation occurs.
 from __future__ import annotations
 
 import argparse
-import hashlib
+import base64
 import importlib
 import json
 import math
 import random
 import sys
 import time
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,7 +74,16 @@ def signature(index, output):
     return {
         "frame": index,
         "ids": ids.tolist(),
-        "mask_sha256": [hashlib.sha256(mask.tobytes()).hexdigest() for mask in masks],
+        "mask_values": {
+            "shape": list(masks.shape),
+            "dtype": masks.dtype.str,
+            "encoding": "packbits-little-zlib-base64"
+            if masks.dtype == np.bool_ else "raw-zlib-base64",
+            "data": base64.b64encode(zlib.compress(
+                np.packbits(masks, bitorder="little").tobytes()
+                if masks.dtype == np.bool_ else masks.tobytes()
+            )).decode("ascii"),
+        },
         "scores": scores.tolist(),
     }
 
@@ -125,16 +135,16 @@ def measure_case(backend, session_type, paths, lanes, batch_frames, max_side, ca
                     size = image.size
                 for lane, session in enumerate(sessions):
                     began = time.perf_counter()
-                    hash_seconds = 0.0
+                    encoding_seconds = 0.0
                     count = 0
                     outputs = backend.run(session, images, final=False)
                     try:
                         for index, output in outputs:
                             if index != offset + count:
                                 raise RuntimeError("invalid native source prefix")
-                            hash_started = time.perf_counter()
+                            encoding_started = time.perf_counter()
                             case["outputs"][lane].append(signature(index, output))
-                            hash_seconds += time.perf_counter() - hash_started
+                            encoding_seconds += time.perf_counter() - encoding_started
                             count += 1
                     finally:
                         outputs.close()
@@ -147,9 +157,9 @@ def measure_case(backend, session_type, paths, lanes, batch_frames, max_side, ca
                     case["appends"].append({
                         "lane": lane + 1, "first_frame": offset, "frames": count,
                         "native_and_retention_seconds": (
-                            time.perf_counter() - began - hash_seconds
+                            time.perf_counter() - began - encoding_seconds
                         ),
-                        "output_hash_seconds_excluded": hash_seconds,
+                        "observation_encoding_seconds_excluded": encoding_seconds,
                     })
                 case["memory_samples"].append({
                     "frames_per_lane": offset + len(images), **memory_stats(backend),
@@ -171,8 +181,8 @@ def measure_case(backend, session_type, paths, lanes, batch_frames, max_side, ca
             saturated_native_fps=lanes * len(paths) / sum(durations),
             steady_saturated_native_fps=steady_frames / steady_seconds,
             steady_native_fps_per_lane=steady_frames / steady_seconds / lanes,
-            # No claim about end-to-end latency: IO and hashing are excluded above.
-            probe_wall_seconds_including_io_hash_and_eof=time.perf_counter() - started,
+            # IO and observation encoding are excluded from native timings above.
+            probe_wall_seconds_including_io_encoding_and_eof=time.perf_counter() - started,
             memory_before_release=memory_stats(backend),
             ok=True,
         )
@@ -234,14 +244,11 @@ def main(argv=None):
             report.update(
                 sam3_commit=sam31.SAM3_COMMIT, torch_version=torch.__version__,
                 worker_sources={
-                    module.__name__: hashlib.sha256(
-                        Path(module.__file__).read_bytes()
-                    ).hexdigest()
+                    module.__name__: str(Path(module.__file__).resolve())
                     for module in (sam31, continuous, live)
                 },
                 sources=[{
                     "file": path.name,
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 } for path in paths],
             )
             settings = {"enabled": True, "checkpoint_path": args.checkpoint}

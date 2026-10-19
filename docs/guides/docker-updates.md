@@ -4,72 +4,31 @@
 
 ## Customer updates on Windows
 
-Keep Docker Desktop running, extract the supplied Windows update ZIP completely,
-and double-click **`Update.exe`**; no Git, Python or terminal commands are needed.
-The window finds the installed component (asks you to choose if several
-installations exist), stops local harness analysis, installs the update and shows
-progress and the result; it restores your saved autostart setting afterward.
+The research branch retires the signed automatic-update package protocol as of
+2026-10-19, following the user's approval. The customer update window displays a
+disabled-feature notice. Package loading, discovery and installation entry points
+raise an error before file access or Docker operations. They do not stop analysis,
+load images, alter startup settings or install an unchecked package.
 
-If automatic detection finds nothing, paste the exact container or image name
-shown in Docker Desktop into **Container or image name**, then select
-**Find installation**. The updater checks that the matching container is running
-GoodVision before offering it. If an image matches several installations, choose
-the installation to update from the list. A match in a recognized installation
-updates all its main lanes. Otherwise, choosing a main container updates only
-that container. **Retry** checks the name again before trying another update.
-
-Your models, data and configuration are retained, and you can continue opening
-GoodVision as usual. For Contour on another
-computer, stop analysis in the main console first and run the Contour update
-package on that computer.
+This change does not modify an already distributed executable or a deployed
+customer installation. Maintainers must not distribute an old updater as if it
+implemented this branch's retirement policy.
 
 ## Maintainer and source-deployment tools
 
-The commands below are for maintainers and source deployments. Customers use
-the packaged Windows updater above.
+Maintainer-operated source deployment remains separate from the retired customer
+automatic updater. Its existing integrity protocol is unchanged. Evaluation
+controllers do not use the customer updater.
 
 ### Package a Windows customer update
 
-Prepare and validate the candidate **Linux/amd64** images locally before
-packaging. On a Windows build machine with Python 3.10 or later, install
-PyInstaller in the maintainer environment and package the selected component:
+`tools/package_customer_docker_update.py` now exits with a disabled-feature error.
+Its library entry points reject executable builds, archive inspection and package
+generation before side effects. Maintainers cannot produce a new automatic-update
+bundle through this entry point. No unsigned or unchecked replacement is provided.
 
-```powershell
-python -m pip install pyinstaller
-python tools/package_customer_docker_update.py --output dist/goodvision-harness-update-next.zip --release next --component harness --image harness=goodvision-harness:next
-python tools/package_customer_docker_update.py --output dist/goodvision-contour-update-next.zip --release next --component contour --image contour=goodvision-contour:next --image engine=goodvision-contour-runtime:next
-```
-
-Replace `next` with a new release label and use the corresponding validated
-image tags. The packager builds a standalone Windows `Update.exe`, exports the
-selected images, and creates a ZIP containing the executable, `images.tar.gz`,
-`update-package.json` and short customer instructions. It also writes a ZIP
-checksum alongside the output. It never overwrites an existing output ZIP.
-Packaging does not build product images or include customer models, data or keys.
-
-The harness package contains one `harness` image that the window applies to every
-lane in a recognized project, whether discovered automatically or selected by
-name. A main container without recognized workload labels is updated individually.
-The Contour package requires both `contour` and `engine`
-images. Deliver the matching package to each host; customers extract it and
-double-click the executable. Neither Python nor PyInstaller is required on the
-customer machine. To reuse a previously built Windows updater, pass
-`--executable /path/to/Update.exe`; this also permits packaging on another build
-host without rebuilding the executable.
-
-Customer updates use inspected runtime snapshots, preserving `Config`,
-`HostConfig`, networks, custom container names and original image tags. This keeps
-existing environment values, port bindings, mounts and network aliases when an
-older updater changed the running container without changing its Compose files.
-Project/service-labeled historical Docker runs are supported even when their
-original Compose files are unavailable. The source CLI below still uses Compose.
-
-Original launchers reopen the updated version automatically. The customer updater
-refuses image tags shared by another installation. For legacy harness
-installations with `RELEASE.json`, the candidate
-must retain every file in the original source inventory; launcher metadata is
-verified and refreshed from the actual candidate source hashes. Packages for an
-incompatible edition or with missing inventory files are refused.
+The compatibility evidence below documents the retired implementations. It is
+historical reference, not a statement that this branch supports automatic updates.
 
 ### Historical compatibility evidence and limits
 

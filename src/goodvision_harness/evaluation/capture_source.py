@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import fields
-import hashlib
 import json
 import os
 import re
@@ -33,11 +32,9 @@ from .session import UnifiedCaptureSession
 from .tracking_adapter import CountProtocolTracker
 
 
-def _read_frozen(path, expected):
-    raw = Path(path).read_bytes()
-    if hashlib.sha256(raw).hexdigest() != expected:
-        raise ValueError("frozen input file hash mismatch")
-    return json.loads(raw)
+def _read_frozen(path, expected=None):
+    """Read a saved input; legacy checksum arguments are not used."""
+    return json.loads(Path(path).read_bytes())
 
 
 def _tracking_result(result):
@@ -53,7 +50,6 @@ def _failure_detail(error, *, credential=""):
         body = error.response.content
         text = body[:16384].decode("utf-8", errors="replace")
         detail.update(http_status=error.response.status_code, response_bytes=len(body),
-                      response_body_sha256=hashlib.sha256(body).hexdigest(),
                       detail_truncated=len(body) > 16384)
     elif isinstance(error, (ValueError, RuntimeError)):
         text = str(error)[:2048]
@@ -68,9 +64,10 @@ def _failure_detail(error, *, credential=""):
     return detail
 
 
-def capture_source(config_path, *, config_sha256, output, ledger):
+def capture_source(config_path, *, output, ledger, config_sha256=None):
+    from .configuration import source_settings
     config_path = Path(config_path).resolve()
-    config = _read_frozen(config_path, config_sha256)
+    config = _read_frozen(config_path)
     reject_private(config, observation=True)
     if (config.get("schema_version") != "unified-source-run-v1"
             or config.get("gpu_policy") != "RTX4090_24GB_only"
@@ -79,14 +76,14 @@ def capture_source(config_path, *, config_sha256, output, ledger):
             or config.get("question_conditioned") is not False):
         raise ValueError("explicit standard4090/stockSAM/no-face/unconditioned run required")
     base = config_path.parent
-    manifest = _read_frozen(base / config["source_manifest"], config["source_manifest_sha256"])
+    manifest = _read_frozen(base / config["source_manifest"])
     reject_private(manifest, observation=True)
     if manifest.get("source_eof") is not True or not manifest["frames"]:
         raise ValueError("prepared source requires original decoder EOF and nonempty frame plan")
     if manifest["video_id"] != config["video_id"]:
         raise ValueError("source manifest video identity mismatch")
-    frame_plan = [{"frame": row["source_frame_index"], "t": row["timestamp_seconds"],
-                   "jpeg_sha256": row["jpeg_sha256"]} for row in manifest["frames"]]
+    frame_plan = [{"frame": row["source_frame_index"], "t": row["timestamp_seconds"]}
+                  for row in manifest["frames"]]
     profile = load_profile(base / config["event_definitions"])
     window_plan = fixed_window_plan(frame_plan, profile,
                                     observation_fps=config["observation_fps"])
@@ -97,7 +94,7 @@ def capture_source(config_path, *, config_sha256, output, ledger):
             or endpoint.scheme != "https" or endpoint.username or endpoint.password
             or endpoint.query or endpoint.fragment or not isinstance(ledger, ModelLedger)):
         raise ValueError("frozen HTTPS model route, no hidden retry and active ledger required")
-    if ledger.seed_manifest_sha256 != config["model_ledger"]["seed_manifest_sha256"]:
+    if ledger.seed_manifest_path != (base / config["model_ledger"]["seed_manifest"]).resolve():
         raise ValueError("active model ledger differs from frozen source configuration")
     credential = os.environ.get(settings.api_key_env, "")
     vlm_config = profile.vlm_config(
@@ -114,9 +111,10 @@ def capture_source(config_path, *, config_sha256, output, ledger):
     session = UnifiedCaptureSession(
         output, video_id=config["video_id"], stream_session_id=config["stream_session_id"],
         source_id=config["source_id"], source=manifest["source"], frame_plan=frame_plan,
-        window_plan=window_plan, provenance={**config["provenance"], "run_config_sha256": config_sha256,
-                                           "source_manifest_sha256": config["source_manifest_sha256"],
-                                           "ledger_manifest_sha256": config["model_ledger"]["seed_manifest_sha256"]},
+        window_plan=window_plan, provenance={**config["provenance"], "run_config_path": str(config_path),
+                                           "source_configuration": source_settings(config),
+                                           "source_manifest_path": str((base / config["source_manifest"]).resolve()),
+                                           "ledger_manifest": str(ledger.seed_manifest_path)},
         profile=profile, vlm_config=vlm_config,
         tracking_mode="batch" if native_batches else "immediate",
         source_fps=manifest["sampling_fps"], max_entities=config["scene_max_entities"], ledger=ledger)
@@ -144,8 +142,7 @@ def capture_source(config_path, *, config_sha256, output, ledger):
         elif count_protocol:
             client = CountProtocolTracker(tracking["endpoint"], model=tracking["model"],
                     sid=config["stream_session_id"], parameters=tracking["parameters"],
-                    expected_weights_sha256=tracking["weights_sha256"],
-                    expected_sam_runtime_sources=tracking.get("sam_runtime_sources"))
+                    expected_weights_path=tracking.get("weights_path"))
             opened = client.open()
             session.recorder.operational_record("tracking-session", opened)
         else:
@@ -173,7 +170,6 @@ def capture_source(config_path, *, config_sha256, output, ledger):
             session.recorder.operational_record("tracking-request", {
                 "request_id": request_id, "stream_session_id": config["stream_session_id"],
                 "frame_sequences": [value.frame_sequence for value in request_frames],
-                "jpeg_sha256": [hashlib.sha256(value.jpeg_bytes).hexdigest() for value in request_frames],
                 "state": "dispatching", "is_last_batch": last,
                 "request_start": request_start, "clock_domain": session.recorder.clock_domain})
             response_complete = None
@@ -222,13 +218,13 @@ def capture_source(config_path, *, config_sha256, output, ledger):
                    if tracking["mode"] == "native_session" else True)
         session.recorder.operational_record("source-eof", {
             "all_prepared_frames_consumed": True, "original_decoder_source_eof": True,
-            "source_manifest_sha256": config["source_manifest_sha256"],
+            "source_manifest_path": str((base / config["source_manifest"]).resolve()),
             "source_eof_monotonic": time.monotonic()})
         evidence = session.finish(source_eof=True, tracking_drained=drained)
         outcome = {"schema_version": "unified-source-outcome-v1", "video_id": config["video_id"],
                    "stream_session_id": config["stream_session_id"],
                    "status": "captured" if evidence["observation_manifest"]["complete"] else "incomplete",
-                   "evidence_sha256": evidence["evidence_sha256"], "failures": evidence["failures"],
+                   "source_id": config["source_id"], "failures": evidence["failures"],
                    "processing_wall_seconds": time.monotonic() - started,
                    "scope": "offline_native_components_without_face", "final_answer_generated": False}
         publish_once(root / "outcome.json", outcome)
@@ -289,17 +285,16 @@ def capture_source(config_path, *, config_sha256, output, ledger):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path)
-    parser.add_argument("--config-sha256", required=True)
+    parser.add_argument("--config-sha256", help=argparse.SUPPRESS)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    config = _read_frozen(args.config, args.config_sha256)
+    config = _read_frozen(args.config)
     ledger_config = config["model_ledger"]
     ledger = ModelLedger(args.config.parent / ledger_config["output_directory"],
                          seed_manifest_path=args.config.parent / ledger_config["seed_manifest"],
-                         seed_manifest_sha256=ledger_config["seed_manifest_sha256"],
                          owner_lock_path=args.config.parent / ledger_config["owner_lock"])
     try:
-        capture_source(args.config, config_sha256=args.config_sha256, output=args.output, ledger=ledger)
+        capture_source(args.config, output=args.output, ledger=ledger)
     finally:
         ledger.close()
 

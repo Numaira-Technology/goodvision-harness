@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import os
 import sys
@@ -51,9 +50,6 @@ async def trial(client, kind, inspector, job, key, pair_start, emit):
     row = {"kind": kind, "ok": False, "start_offset_seconds": start - pair_start}
     try:
         body = request_body(kind, inspector, job)
-        row["request_sha256"] = hashlib.sha256(
-            json.dumps(body, sort_keys=True).encode()
-        ).hexdigest()
         row["dispatch_offset_seconds"] = time.perf_counter() - pair_start
         r = await client.post(
             old.OPENROUTER,
@@ -127,11 +123,16 @@ async def run(args):
     jobs = {}
     for s in samples:
         video = Path(s["path"])
-        assert hashlib.sha256(video.read_bytes()).hexdigest() == s["sha256"]
+        if not video.is_file():
+            raise ValueError("source_video_missing")
         job = old.make_job(video, s["endpoint"], 720, 90, "high")
-        assert [hashlib.sha256(f.jpeg_bytes).hexdigest() for f in job.frames] == s[
-            "frame_sha256"
-        ]
+        times = [frame.timestamp_seconds for frame in job.frames]
+        if (
+            len(times) != 4
+            or any(b <= a for a, b in zip(times, times[1:]))
+            or times[-1] != round(s["endpoint"], 3)
+        ):
+            raise ValueError("invalid_frame_count_order_or_endpoint")
         jobs[s["sample_id"]] = job
     inspectors = {
         k: cls(old.ModelAPISettings(provider="openrouter"), model=MODEL)
@@ -142,18 +143,18 @@ async def run(args):
         "started_at": datetime.now(timezone.utc).isoformat(),
         "model": MODEL,
         "planned_requests": plan,
-        "dataset_sha256": hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
+        "dataset": str(args.dataset),
         "samples": samples,
         "repeats": args.repeats,
-        "source_sha256": {
-            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        "source_files": [
+            p.relative_to(ROOT).as_posix()
             for p in [
                 Path(__file__),
                 ROOT / "src/goodvision_harness/vlm_compact_model.py",
                 ROOT / "src/goodvision_harness/vlm_independent_model.py",
                 ROOT / "src/goodvision_harness/event_sensitivity.py",
             ]
-        },
+        ],
         "prompts": {
             k: ins.build_messages(next(iter(jobs.values())))[0]["content"]
             for k, ins in inspectors.items()

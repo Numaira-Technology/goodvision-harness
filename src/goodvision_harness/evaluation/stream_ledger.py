@@ -22,7 +22,6 @@ class LedgerInspectorFactory:
 
     directory: str
     seed_manifest: str
-    seed_sha256: str
     owner_lock: str
 
     def __call__(self, config):
@@ -30,7 +29,6 @@ class LedgerInspectorFactory:
         with _lock:
             if _ledger is None:
                 _ledger = ModelLedger(self.directory, seed_manifest_path=self.seed_manifest,
-                                      seed_manifest_sha256=self.seed_sha256,
                                       owner_lock_path=self.owner_lock)
                 _identity = self
             elif _identity != self:
@@ -70,7 +68,7 @@ class LedgerInspectorFactory:
             if type(budget) is not int or not 1 <= budget <= 16384:
                 raise ValueError("temporal output token budget must be bounded")
             # Each native worker thread owns its inspector. Apply the frozen
-            # window budget before payload construction and ledger hashing.
+            # window budget before payload construction and ledger dispatch.
             instance._parameters["max_tokens"] = budget
             instance.evaluation_context = {
                 "request_id": job.request.request_id,

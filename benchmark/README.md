@@ -76,7 +76,7 @@ tracking.
 - A configured event model route + API key (for the temporal VLM; not a GPU cost).
 - `ffmpeg` and the `mediamtx` binary (github.com/bluenviron/mediamtx).
 - The two media items from `bench_v1_sample/how_to_feed.md`:
-  - Video A `sample_91ffb5b98379cc5a`: the `.mpeg` file (verify `media.sha256`).
+  - Video A `sample_91ffb5b98379cc5a`: the `.mpeg` file identified by the media manifest.
   - Video B `crowd_mot17_mot17_02`: the MOT17-02 `img1/` frame folder.
 
 ## Step 1 — prepare the videos
@@ -138,8 +138,9 @@ event/temporal-via-episode answers.
 If the online media (private R2 / Drive) is unavailable, point the scripts at
 local copies in the repo folder — e.g. the fight `.mpeg` file and the MOT17
 `img1/` frame directory (assemble the latter with `assemble_mot17.sh` first).
-Verify each against the `media.jsonl` `sha256` before trusting a result. Media
-files are gitignored and never committed.
+Record the original source handle and selected local path from `media.jsonl`.
+The fetch manifest does not perform a byte-integrity check; recorded size alone
+is not proof of identical content. Media files are gitignored and never committed.
 
 ## Step 3 — run harness sessions + capture (concurrent)
 
@@ -212,8 +213,9 @@ python -m bench.manifest \
   --fetch-out fetch_manifest.tsv --report-out answerability.tsv
 ```
 
-`fetch_manifest.tsv` lists each media item's `drive_file_id` / path + `sha256` to
-download and verify. **fps varies per sequence** (MOT17-02=30, MOT17-05=14,
+`fetch_manifest.tsv` lists each media item's `drive_file_id` / path and recorded
+size for download provenance, without exporting legacy checksums.
+**fps varies per sequence** (MOT17-02=30, MOT17-05=14,
 MOT20=25) — always assemble at the manifest's `assemble_fps`, or every
 location/temporal timestamp shifts.
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 
@@ -34,11 +33,10 @@ else:
     )
 
 
-def runtime_fingerprint(container):
+def runtime_configuration(container):
     # Docker-assigned IDs and addresses are excluded by replacement_config.
-    # Only the digest is recorded; runtime settings and keys stay in memory.
-    config = replacement_config(container, container["Image"])
-    return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    # Compare settings directly in memory; never persist settings or secrets.
+    return replacement_config(container, container["Image"])
 
 
 def runtime_update(docker, deployment, images, *, finish=None, timeout=900):
@@ -121,7 +119,7 @@ def runtime_update(docker, deployment, images, *, finish=None, timeout=900):
         "containers": {},
         "retained_backups": retained_backups,
     }
-    fingerprints = {s: runtime_fingerprint(c) for s, c in originals.items()}
+    original_configs = {s: runtime_configuration(c) for s, c in originals.items()}
     # Validate every runtime before creating any container. Static IPs and legacy
     # links need a migration; the existing verified updater refuses them too.
     configs = {s: replacement_config(c, images[s]) for s, c in originals.items()}
@@ -173,12 +171,11 @@ def runtime_update(docker, deployment, images, *, finish=None, timeout=900):
                 "name": names[service],
                 "old_id": originals[service]["Id"],
                 "new_id": identity,
-                "configuration": fingerprints[service],
             }
         fresh = current_containers(docker, deployment)
         if any(
             fresh[s]["Id"] != originals[s]["Id"]
-            or runtime_fingerprint(fresh[s]) != fingerprints[s]
+            or runtime_configuration(fresh[s]) != original_configs[s]
             for s in originals
         ):
             raise UpdateError("Installed settings changed while preparing the update.")

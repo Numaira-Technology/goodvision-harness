@@ -43,7 +43,7 @@ stream variable takes precedence over the legacy RTSP variable:
 | `HARNESS_AUTOSTART` | Start the configured network stream when the service starts; set false for local camera testing. |
 | `HARNESS_SOURCE_ID` | Stable customer-facing source identifier. |
 | `RESULT_WEBHOOK_URL` | Optional result-push destination. |
-| `HARNESS_WEBHOOK_SECRET` | Optional webhook HMAC secret. |
+| `HARNESS_WEBHOOK_SECRET` | Signed webhooks are disabled in this branch. A nonempty secret with a webhook destination causes an explicit error before delivery. Disable that webhook configuration; do not clear its secret to bypass the refusal. |
 | `HARNESS_BIND_ADDRESS` | Host bind address used by Compose. |
 | `HARNESS_PORT` | Host HTTP port used by Compose. |
 | `FACE_MODEL_ROOT` | Root containing operator-supplied face-analysis files. |

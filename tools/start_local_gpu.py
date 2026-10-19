@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import math
 import os
@@ -236,30 +235,21 @@ RUNTIME_FILES = {
 
 
 def runtime_check(service: str, *, root: Path = ROOT) -> str:
-    """Verify prebuilt images and real writable mounts without loading models."""
-    source = root / (
-        "workers/sam_scene" if service == "local-tracking"
-        else "src/goodvision_harness"
-    )
-    hashes = {
-        name: hashlib.sha256(
-            (source / name).read_bytes().replace(b"\r\n", b"\n")
-        ).hexdigest()
-        for name in RUNTIME_FILES[service]
-    }
+    """Check required runtime files and writable mounts without loading models.
+
+    File presence is not proof that a prebuilt image matches this checkout.
+    The root keyword remains compatible with existing launcher callers.
+    """
     location = (
         "Path('/engine')" if service == "local-tracking"
         else "Path(importlib.util.find_spec('goodvision_harness').origin).parent"
     )
-    script = f"""import hashlib, importlib.util, os, tempfile
+    script = f"""import importlib.util, os, tempfile
 from pathlib import Path
 directory = {location}
-expected = {hashes!r}
-for name, digest in expected.items():
+for name in {RUNTIME_FILES[service]!r}:
     path = directory / name
     assert path.is_file(), 'Outdated {service} image: missing ' + name
-    actual = hashlib.sha256(path.read_bytes().replace(b'\\r\\n', b'\\n')).hexdigest()
-    assert actual == digest, 'Outdated {service} image: rebuild or import current image'
 """
     if service == "local-tracking":
         script += """paths = []

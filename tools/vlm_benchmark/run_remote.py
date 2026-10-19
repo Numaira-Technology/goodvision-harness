@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import hashlib
 import json
 import os
 import re
@@ -29,14 +28,6 @@ REMOTE = "/workspace/goodvision-vlm-tests"
 RUN_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}\Z")
 
 
-def digest(path):
-    result = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            result.update(block)
-    return result.hexdigest()
-
-
 def bundle(
     root, videos, destination, *, include_video=True, scope="external_vlm_api_only"
 ):
@@ -52,7 +43,8 @@ def bundle(
         for p in (root / "tools/vlm_benchmark").iterdir()
         if p.suffix in {".py", ".sh", ".json", ".txt", ".html", ".js"}
     ]
-    manifest = {"files": {}, "videos": [], "scope": scope}
+    manifest = {"schema_version": 2, "files": [], "videos": [],
+                "video_sources": {}, "scope": scope}
     with tempfile.TemporaryDirectory(prefix="vlm-package-") as temp:
         stage = Path(temp)
         for source in sorted(set(files)):
@@ -67,7 +59,7 @@ def bundle(
             target = stage / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
-            manifest["files"][relative.as_posix()] = digest(target)
+            manifest["files"].append(relative.as_posix())
         for index, source in enumerate(videos, 1):
             source = Path(source)
             if not source.is_file() or source.is_symlink():
@@ -78,7 +70,12 @@ def bundle(
             if include_video:
                 shutil.copyfile(source, target)
             manifest["videos"].append(name)
-            manifest["files"][name] = digest(source)
+            manifest["files"].append(name)
+            info = source.stat()
+            manifest["video_sources"][name] = {
+                "path": str(source.resolve()), "bytes": info.st_size,
+                "modified_ns": info.st_mtime_ns,
+            }
         (stage / "bundle-manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
@@ -230,7 +227,12 @@ if len(sys.argv)>2 and sys.argv[2]:
  import shutil
  previous=pathlib.Path(sys.argv[2])/'app'
  manifest=json.loads((app/'bundle-manifest.json').read_text())
+ old_manifest=json.loads((previous/'bundle-manifest.json').read_text())
+ sources=manifest.get('video_sources',{})
+ old_sources=old_manifest.get('video_sources',{})
  for name in manifest['videos']:
+  if name not in sources or sources[name]!=old_sources.get(name):
+   raise ValueError('reusable video source differs or lacks explicit provenance; upload the selected video')
   source=previous/name; target=app/name
   if (not source.is_file() or source.is_symlink()
    or not source.resolve().is_relative_to(previous)):

@@ -1,7 +1,6 @@
 """Execute final answers from saved observations, preserving replies and ledger identity."""
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 import time
@@ -12,12 +11,14 @@ from .failures import failure_policy
 from .model_ledger import LedgerBlocked
 from .privacy import reject_private
 from .recording import publish_once
-from .answer_artifact import _canonical, ANSWER_CONTRACT, ANSWER_INSTRUCTION, short_answer_messages
+from .answer_artifact import ANSWER_CONTRACT, ANSWER_INSTRUCTION, short_answer_messages
 from .evidence import NATIVE_SKIP_POLICY
 from .summary_input import message_bytes, prepare_summary_messages
 from .rate_limit import wait_after_429
 from .native_gaps import is_local_gap, disclose_skipped_observations
 from .summary_context import prepare_context_messages
+from .summary_view import prepare_answer_view, CONTRACT as VIEW_CONTRACT, INSTRUCTION as VIEW_INSTRUCTION
+from .model_operation import summary_operation, operation_for_request, question_for_request
 
 STATES = frozenset({"answered", "insufficient_evidence", "incomplete_video",
                     "request_failure", "unsupported"})
@@ -41,18 +42,15 @@ def _native_window_gaps_only(evidence):
     return all(is_local_gap(failure, evidence) for failure in failures)
 
 
-def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
-                    model, parameters, max_input_bytes, context_budget=None, prepare_only=False):
+def execute_summary(artifact_path, *, output, client, ledger, model, parameters,
+                    max_input_bytes, context_budget=None, prepare_only=False, artifact_sha256=None):
     raw = Path(artifact_path).read_bytes()
-    if hashlib.sha256(raw).hexdigest() != artifact_sha256:
-        raise ValueError("summary artifact file hash mismatch")
     artifact = json.loads(raw)
     request = artifact["summary_request"]
     reject_private(request)
     if (request.get("state") != "not_called"
-            or request.get("method") != "unified_same_evidence_summary_v2"
-            or request["evidence_sha256"] != artifact["evidence_sha256"]):
-        raise ValueError("summary must read an unchanged same-evidence request artifact")
+            or request.get("method") != "unified_same_evidence_summary_v2"):
+        raise ValueError("summary must read a saved same-evidence request artifact")
     if type(max_input_bytes) is not int or max_input_bytes < 1:
         raise ValueError("frozen summary input size limit required")
     if {"model", "messages", "stream"} & parameters.keys():
@@ -62,14 +60,15 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         raise ValueError("expected the saved two-message answer request")
     payload = json.loads(messages[1]["content"])
     evidence, question = payload["evidence"], payload["question"]
-    evidence_hash = hashlib.sha256(_canonical({k: v for k, v in evidence.items()
-                                               if k != "evidence_sha256"}).encode()).hexdigest()
-    if (evidence_hash != artifact["evidence_sha256"]
-            or evidence.get("evidence_sha256") != evidence_hash
+    operation = summary_operation(evidence, artifact["qa_id"])
+    if (("operation" in artifact and artifact["operation"] != operation)
+            or ("operation" in request and request["operation"] != operation)
             or question["qa_id"] != artifact["qa_id"]
             or question["video_id"] != artifact["video_id"]
             or evidence["video_id"] != artifact["video_id"]):
         raise ValueError("final answer request evidence or question identity mismatch")
+    if "public_question" in artifact and artifact["public_question"] != question:
+        raise ValueError("saved answer artifact question content changed")
     complete = (evidence.get("request_failure") is False and not evidence.get("failures")
                 and evidence.get("observation_manifest", {}).get("complete") is True
                 and all(evidence.get(key) is True for key in
@@ -77,11 +76,43 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
     output = Path(output)
     previous_request = (json.loads((output / "request.json").read_bytes())
                         if output.exists() else None)
+    if previous_request is not None:
+        context = {"phase": "same_evidence_summary", "qa_id": artifact["qa_id"],
+                   "video_id": artifact["video_id"]}
+        if "operation" in previous_request:
+            context["operation"] = previous_request["operation"]
+        previous_operation = operation_for_request(context, previous_request)
+        if (previous_operation != operation
+                or question_for_request(previous_request) != question_for_request(request)
+                or previous_request["model"] != model
+                or previous_request["parameters"] != parameters
+                or previous_request["max_input_bytes"] != max_input_bytes):
+            raise ValueError("existing final-answer operation or settings changed")
+        previous_budget = previous_request.get("context_preparation")
+        if previous_budget is not None and previous_budget["budget"] != context_budget:
+            raise ValueError("existing final-answer token budget changed")
+        if prepare_only:
+            return {"prepared_request": previous_request, "ready_for_dispatch": False,
+                    "reason": "existing_answer_output_preserved",
+                    "input_bytes": len(message_bytes(previous_request["messages"])),
+                    "paid_dispatch": False}
+        previous = json.loads((output / "outcome.json").read_bytes())
+        if (previous.get("qa_id") != artifact["qa_id"]
+                or previous.get("video_id") != artifact["video_id"]
+                or ("operation" in previous and previous["operation"] != operation)):
+            raise ValueError("existing final-answer outcome has different scope")
+        if (previous.get("status") == "interrupted"
+                or (previous.get("failure_policy") or {}).get("scope") == "shared"):
+            raise RuntimeError("final answer requires independent recovery with the cumulative ledger")
+        if previous.get("status") not in STATES | {"invalid_answer", "not_called"}:
+            raise ValueError("unknown final-answer terminal state")
+        return previous
     preparation = None
     context_preparation = None
     prior_identity_error = None
     prior_dispatched = False
     skip_disclosure = None
+    input_view = None
     # A rule-level grounding gap is not a failed native capture. The final
     # model can assess the actual saved evidence and return insufficient evidence.
     native_grounding_gap = (
@@ -94,70 +125,47 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
     if native_gaps and artifact["parser"]["status"] not in {
             "not_started", "interrupted"}:
         eligible = True
-    if eligible and native_gaps and (previous_request is None or "skip_disclosure" in previous_request):
-        # Never use the new note to bypass a paid original or compressed request,
-        # including an unknown receipt. Existing outputs keep their representation.
-        legacy, legacy_preparation = messages, None
-        if len(message_bytes(messages)) > max_input_bytes:
-            legacy, legacy_preparation = prepare_summary_messages(messages, max_input_bytes=max_input_bytes)
-        if previous_request is not None or not ledger.has_prior_request(
-                model=model, messages=messages, parameters=parameters):
-            if previous_request is not None or not ledger.has_prior_request(
-                    model=model, messages=legacy, parameters=parameters):
-                messages = disclose_skipped_observations(messages, evidence)
-                skip_disclosure = "native_skipped_observation_times_v1"
-            else:
-                messages, preparation = legacy, legacy_preparation
-    if (eligible and len(message_bytes(messages)) > max_input_bytes
-            and (previous_request is None or "input_preparation" in previous_request)):
-        # Existing terminal outputs retain their representation. Paid original requests
-        # retain their ledger identity, including cached replies and unknown outcomes.
-        if previous_request is not None or not ledger.has_prior_request(
-                model=model, messages=messages, parameters=parameters):
-            messages, preparation = prepare_summary_messages(
-                messages, max_input_bytes=max_input_bytes)
     if eligible:
-        if previous_request is not None and context_budget is not None:
-            if "context_preparation" in previous_request:
-                context_preparation = previous_request["context_preparation"]
-                if context_preparation["budget"] != context_budget:
-                    raise ValueError("Existing final-answer token budget changed")
-                messages = previous_request["messages"]
-        elif previous_request is None:
-            try:
-                prior = ledger.prior_summary_request(qa_id=artifact["qa_id"],
-                    evidence_sha256=artifact["evidence_sha256"], model=model, parameters=parameters)
-            except LedgerBlocked as exc:
-                if exc.scope != "source":
-                    raise
-                prior, prior_identity_error = None, exc
-            if prior is not None:
-                prior_dispatched = True
-                messages, preparation, skip_disclosure = prior["messages"], None, None
-            elif prior_identity_error is None:
-                # Upgrade only never-dispatched answers, including saved old artifacts.
-                # A new prompt must never bypass a successful, invalid or unknown receipt.
-                messages = short_answer_messages(question, evidence)
-                preparation, skip_disclosure = None, None
-                if native_gaps:
-                    messages = disclose_skipped_observations(messages, evidence, short_answer=True)
-                    skip_disclosure = "native_skipped_observation_times_v1"
-                if len(message_bytes(messages)) > max_input_bytes:
-                    messages, preparation = prepare_summary_messages(messages, max_input_bytes=max_input_bytes)
-                if context_budget is not None:
-                    messages, context_preparation = prepare_context_messages(messages,
-                        model=model, parameters=parameters, max_input_bytes=max_input_bytes,
-                        budget=context_budget)
+        # Resolve paid state before encoding. Do not compress the audit artifact
+        # only to discard it when constructing a never-dispatched answer view.
+        try:
+            prior = ledger.prior_summary_request(operation=operation, model=model, parameters=parameters)
+        except LedgerBlocked as exc:
+            if exc.scope != "source":
+                raise
+            prior, prior_identity_error = None, exc
+        if prior is not None:
+            if question_for_request(prior) != question_for_request(request):
+                raise ValueError("previously dispatched answer has different question content")
+            prior_dispatched = True
+            messages, preparation, skip_disclosure = prior["messages"], None, None
+        elif prior_identity_error is None:
+            # Upgrade only never-dispatched answers, including saved old artifacts.
+            # A new prompt must never bypass a successful, invalid or unknown receipt.
+            messages = short_answer_messages(question, evidence)
+            preparation, skip_disclosure = None, None
+            if native_gaps:
+                messages = disclose_skipped_observations(messages, evidence, short_answer=True)
+                skip_disclosure = "native_skipped_observation_times_v1"
+            messages, input_view = prepare_answer_view(messages, evidence)
+            if context_budget is None and len(message_bytes(messages)) > max_input_bytes:
+                messages, preparation = prepare_summary_messages(messages, max_input_bytes=max_input_bytes)
+            if context_budget is not None:
+                messages, context_preparation = prepare_context_messages(messages,
+                    model=model, parameters=parameters, max_input_bytes=max_input_bytes,
+                    budget=context_budget, optimize=True)
     encoded = message_bytes(messages)
     identity = {"qa_id": artifact["qa_id"], "video_id": artifact["video_id"],
-                "method": request["method"], "evidence_sha256": artifact["evidence_sha256"],
-                "artifact_sha256": artifact_sha256, "model": model,
-                "messages_sha256": hashlib.sha256(encoded).hexdigest(),
+                "method": request["method"], "operation": operation,
+                "artifact_path": str(Path(artifact_path).resolve()), "model": model,
                 "same_evidence_not_historical_question_conditioned_summary": True}
     short_contract = ANSWER_INSTRUCTION in messages[0]["content"]
-    if short_contract:
+    view_contract = VIEW_INSTRUCTION in messages[0]["content"]
+    if view_contract:
+        identity["answer_contract"] = VIEW_CONTRACT
+    elif short_contract:
         identity["answer_contract"] = ANSWER_CONTRACT
-    saved_request = {**identity, "messages": messages, "parameters": parameters,
+    saved_request = {**identity, "messages": messages, "public_question": question, "parameters": parameters,
                      "max_input_bytes": max_input_bytes}
     if preparation is not None:
         saved_request["input_preparation"] = preparation
@@ -165,9 +173,10 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         saved_request["skip_disclosure"] = skip_disclosure
     if context_preparation is not None:
         saved_request["context_preparation"] = context_preparation
+    if input_view is not None:
+        saved_request["input_view"] = input_view
     if prepare_only:
         reason = ("prior_summary_identity_blocked" if prior_identity_error is not None else
-                  "existing_answer_output_preserved" if previous_request is not None else
                   "previously_dispatched_answer_preserved" if prior_dispatched else
                   "three_lane_observation_failed_or_incomplete" if not eligible else
                   "frozen_input_size_limit" if len(encoded) > max_input_bytes else
@@ -175,16 +184,6 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
                   and not context_preparation["usage"]["fits"] else None)
         return {"prepared_request": saved_request, "ready_for_dispatch": reason is None,
                 "reason": reason, "input_bytes": len(encoded), "paid_dispatch": False}
-    if output.exists():
-        previous = json.loads((output / "outcome.json").read_bytes())
-        if previous_request != saved_request or any(previous.get(k) != v for k, v in identity.items()):
-            raise ValueError("existing final-answer identity changed")
-        if (previous.get("status") == "interrupted"
-                or (previous.get("failure_policy") or {}).get("scope") == "shared"):
-            raise RuntimeError("final answer requires independent recovery with the cumulative ledger")
-        if previous.get("status") not in STATES | {"invalid_answer", "not_called"}:
-            raise ValueError("unknown final-answer terminal state")
-        return previous
     output.mkdir(parents=True, exist_ok=False)
     publish_once(output / "request.json", saved_request)
     if prior_identity_error is not None:
@@ -213,7 +212,7 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
     started, receipt, text = time.monotonic(), None, None
     backoff_seconds = 0.0
     context = {"phase": "same_evidence_summary", "qa_id": artifact["qa_id"],
-               "video_id": artifact["video_id"], "evidence_sha256": artifact["evidence_sha256"]}
+               "video_id": artifact["video_id"], "operation": operation}
     try:
         for attempt in range(3):
             try:
@@ -234,7 +233,14 @@ def execute_summary(artifact_path, *, artifact_sha256, output, client, ledger,
         if response.get("choices", [{}])[0].get("finish_reason") == "length":
             raise _ResponseValidationError("output_truncated", "summary_answer")
         parsed = _json(_strip_json_fence(text), stage="summary_answer")
-        if short_contract:
+        if view_contract:
+            if (not isinstance(parsed, dict) or set(parsed) != {"prediction"}
+                    or not isinstance(parsed["prediction"], str)):
+                raise _ResponseValidationError("single_answer_contract", "summary_answer")
+            answer = parsed["prediction"]
+            parsed = {"status": "answered" if answer.strip() else "insufficient_evidence",
+                      "final_answer": answer if answer.strip() else None, "evidence_refs": []}
+        elif short_contract:
             predictions = parsed.get("predictions") if isinstance(parsed, dict) else None
             if (not isinstance(parsed, dict) or set(parsed) != {"predictions"}
                     or not isinstance(predictions, list) or len(predictions) != 1

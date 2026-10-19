@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import ipaddress
 import json
 import math
@@ -341,14 +340,14 @@ async def run_benchmark(
         pending_after_drain=pending_after_drain,
         elapsed=time.perf_counter() - start,
     )
-    fingerprints = {
-        hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
-        for row in requests
-    }
-    result["distinct_request_templates"] = len(fingerprints)
+    distinct_templates = []
+    for request in requests:
+        if not any(request == previous for previous in distinct_templates):
+            distinct_templates.append(request)
+    result["distinct_request_templates"] = len(distinct_templates)
     result["workload_note"] = (
         "Repeated request; prefix/image caches may overstate diverse camera throughput."
-        if len(fingerprints) == 1
+        if len(distinct_templates) == 1
         else "Templates rotate; use production prompts, image sizes, and output limits."
     )
     return result

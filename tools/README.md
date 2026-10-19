@@ -22,9 +22,9 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | `customer_check.py` | Installed check dispatcher; mode comes from its installed filename. |
 | `runtime_gateway.py` | Runtime process supervisor and customer diagnostic filtering. |
 | `update_docker.py` | Update an installed Compose harness or Contour deployment from source or loaded images, with readiness checks and image rollback. [Usage](../docs/guides/docker-updates.md). |
-| `customer_update.py` | Verify a customer package, stop local analysis, and restore startup settings for the update window. |
-| `customer_update_gui.py` | Windows customer update window; distributed as `Update.exe` with prepared images so customers can update by double-clicking. [Customer steps](../docs/guides/docker-updates.md#customer-updates-on-windows). |
-| `package_customer_docker_update.py` | Package validated images and a standalone Windows updater in a customer ZIP. [Maintainer steps](../docs/guides/docker-updates.md#package-a-windows-customer-update). |
+| `customer_update.py` | Retired automatic-update protocol. Entry points raise a disabled-feature error before package or Docker access. |
+| `customer_update_gui.py` | Displays the automatic-update retirement notice; no installation or retry action. [Details](../docs/guides/docker-updates.md#customer-updates-on-windows). |
+| `package_customer_docker_update.py` | Retired automatic-update builder. Exits with an error without building, exporting images or creating a package. |
 
 See [release development](../docs/guides/release.md) and the
 [customer deployment guide](../DEPLOY.md). Recorded image tags and release
@@ -85,8 +85,10 @@ recorded configuration, latency scope, observed misses and comparison limits.
 
 `vlm_simple_jev_dataset_benchmark.py` reuses exactly the same model request and
 decode functions for multiple videos. A dataset JSON contains `samples` with
-neutral `sample_id` values, local `path`, `endpoint`, video `sha256`, four
-`frame_sha256` values, `group`, and separate `expected` labels. References must be
+neutral `sample_id` values, local `path`, `endpoint`, `group`, and separate
+`expected` labels. Selected frames retain their sequence and source timestamp
+in the local manifest; the runner does not generate or compare media checksums.
+References must be
 visually reviewed and marked `annotation_status: verified_before_inference`
 before the runner will accept them. Filenames, groups and reference annotations
 are never inserted into model messages.
@@ -98,8 +100,10 @@ python tools/vlm_simple_jev_dataset_benchmark.py --dataset path/to/dataset.json 
 
 With 30 videos, this runs 450 measured requests, five warmups and one blank
 control. It interleaves fall, daily-activity and smoking groups, rotates route
-order, keeps inference serial and never retries. The preflight only verifies
-media/frame fingerprints and writes a manifest. Output directories must be new.
+order, keeps inference serial and never retries. Preparation reads the selected
+media, checks frame order and endpoints, and writes a manifest. File paths and
+timestamps are provenance, not proof of byte-content integrity. Output
+directories must be new.
 Unknown predictions and request errors remain separate from negative answers;
 repetitions of a clip are not independent samples.
 

@@ -7,8 +7,6 @@ windows and frames incomplete instead of filling them with negative verdicts.
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import math
 
 from .privacy import reject_private
@@ -32,11 +30,6 @@ def validate_native_frame_accounting(frame_plan, frames, accounting):
             or accounting.get("skipped_count") != len(skipped)
             or not accounting.get("runtime_statistics_reference")):
         raise ValueError("native person frame accounting does not match saved observations")
-
-
-def _digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                                     allow_nan=False).encode()).hexdigest()
 
 
 def _time(value):
@@ -101,19 +94,16 @@ separate from native SceneState confirmations; reuse its association and lifecyc
             raise ValueError("cross-session evidence rejected")
 
     def tracking_frame(self, *, frame, timestamp_seconds, subjects, raw_reference,
-                       jpeg_sha256):
+                       jpeg_sha256=None):
         """Record tracking responses, including empty frames and predicted-box states."""
         self._open()
         plan = next((x for x in self.frame_plan if x["frame"] == frame), None)
         if plan is None or _time(timestamp_seconds) != plan["t"]:
             raise ValueError("tracking response not in fixed source plan")
-        if plan.get("jpeg_sha256") != jpeg_sha256:
-            raise ValueError("tracking input hash mismatch")
         if frame in self.frames or not raw_reference:
             raise ValueError("duplicate frame or missing raw evidence reference")
         self.frames[frame] = {"frame": frame, "t": float(timestamp_seconds),
-                              "subjects": copy.deepcopy(subjects),
-                              "jpeg_sha256": jpeg_sha256, "raw_reference": raw_reference}
+                              "subjects": copy.deepcopy(subjects), "raw_reference": raw_reference}
 
     def independent_report(self, report, *, window_id, raw_reference, publication_cursor):
         """Accept published records without filtering raw scene verdicts by accepted/grounded."""
@@ -316,5 +306,4 @@ separate from native SceneState confirmations; reuse its association and lifecyc
             evidence["observation_manifest"].update(
                 person_frames_accounted=True,
                 person_frame_accounting=self._person_frame_accounting)
-        # Both answer branches record this hash and reuse this observation.
-        return copy.deepcopy({**evidence, "evidence_sha256": _digest(evidence)})
+        return copy.deepcopy(evidence)

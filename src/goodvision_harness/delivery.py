@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import queue
 import threading
@@ -18,6 +16,10 @@ import httpx
 from .privacy import public_safe_value
 
 _RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+class SignedWebhookDisabledError(ValueError):
+    """A public-safe refusal of the retired signed delivery protocol."""
 
 
 @dataclass(slots=True)
@@ -53,6 +55,11 @@ class WebhookDelivery:
         queue_size: int = 100,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        if secret:
+            raise SignedWebhookDisabledError(
+                "Signed webhook delivery is disabled in this branch. "
+                "Disable the webhook configuration; no unsigned fallback is allowed."
+            )
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("webhook URL must be an absolute HTTP(S) URL")
@@ -65,7 +72,6 @@ class WebhookDelivery:
         if queue_size < 1:
             raise ValueError("queue_size must be positive")
         self.url = url
-        self.secret = secret.encode("utf-8") if secret else None
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
@@ -189,14 +195,6 @@ class WebhookDelivery:
             "Idempotency-Key": item.message_id,
             "User-Agent": "goodvision-harness/1",
         }
-        if self.secret is not None:
-            signature = hmac.new(
-                self.secret,
-                item.body,
-                hashlib.sha256,
-            ).hexdigest()
-            headers["X-Harness-Signature-256"] = f"sha256={signature}"
-
         last_error = "delivery failed"
         for attempt in range(self.max_retries + 1):
             try:

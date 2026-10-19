@@ -37,10 +37,10 @@ def context_usage(messages, *, model, parameters, budget):
             "count_method": "local_qwen_text_chat_template_not_provider_receipt"}
 
 
-def prepare_context_messages(messages, *, model, parameters, max_input_bytes, budget):
+def prepare_context_messages(messages, *, model, parameters, max_input_bytes, budget, optimize=False):
     usage = context_usage(messages, model=model, parameters=parameters, budget=budget)
     original_size = len(message_bytes(messages))
-    if original_size <= max_input_bytes and usage["fits"]:
+    if not optimize and original_size <= max_input_bytes and usage["fits"]:
         return messages, {"method": "lossless_context_input_v1", "encoding": "unchanged",
                           "input_bytes": original_size, "usage": usage, "budget": budget,
                           "records_omitted": 0, "candidates": []}

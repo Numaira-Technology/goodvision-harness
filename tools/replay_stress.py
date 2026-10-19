@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import math
 import os
@@ -293,12 +292,36 @@ def read_tracks(path):
     return records
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+@contextmanager
+def _source_snapshot(path):
+    """Retain exact local values with one-MiB buffers, never content identities."""
+    if path is None:
+        yield None
+        return
+    with path.open("rb") as source, tempfile.TemporaryFile() as retained:
+        remaining = path.stat().st_size
+        while remaining:
+            block = source.read(min(remaining, 1024 * 1024))
+            if not block:
+                raise RuntimeError("replay input changed while retaining source values")
+            retained.write(block)
+            remaining -= len(block)
+        if source.read(1):
+            raise RuntimeError("replay input grew while retaining source values")
+        retained.seek(0)
+        yield retained
+
+
+def _same_source(path, retained):
+    retained.seek(0)
+    with path.open("rb") as source:
+        while True:
+            expected = retained.read(1024 * 1024)
+            actual = source.read(1024 * 1024)
+            if actual != expected:
+                return False
+            if not expected:
+                return True
 
 
 def _write_json(path, payload, *, replace_existing):
@@ -359,7 +382,17 @@ def _reserve_output(path):
         reservation.unlink(missing_ok=True)
 
 
-def replay_clip(
+def replay_clip(clip, config, **options):
+    """Keep original input values through cleanup without changing replay options."""
+    with _source_snapshot(clip.path) as source_values:
+        with _source_snapshot(clip.tracks) as track_values:
+            return _replay_clip(
+                clip, config, source_values=source_values, track_values=track_values,
+                **options,
+            )
+
+
+def _replay_clip(
     clip,
     config,
     *,
@@ -372,6 +405,8 @@ def replay_clip(
     realtime=True,
     sample_fps=None,
     drain_seconds=60,
+    source_values,
+    track_values,
 ):
     if not math.isfinite(speed) or speed <= 0:
         raise ValueError("speed must be positive and finite")
@@ -386,8 +421,6 @@ def replay_clip(
     sample_fps = config.rich_labeling.max_fps if sample_fps is None else sample_fps
     if not math.isfinite(sample_fps) or not 0 < sample_fps <= 30:
         raise ValueError("sample fps must be in (0,30]")
-    source_sha256 = _sha256(clip.path)
-    tracks_sha256 = _sha256(clip.tracks) if clip.tracks else None
     tracks = read_tracks(clip.tracks)
     if not synthetic_tracks and not tracks:
         raise ValueError("recorded tracks are empty")
@@ -569,8 +602,8 @@ def replay_clip(
         worker.close(timeout_seconds=drain_seconds)
         if worker.stats()["state"] != "stopped":
             raise TimeoutError("replay worker did not stop before report generation")
-        if _sha256(clip.path) != source_sha256 or (
-            clip.tracks is not None and _sha256(clip.tracks) != tracks_sha256
+        if not _same_source(clip.path, source_values) or (
+            clip.tracks is not None and not _same_source(clip.tracks, track_values)
         ):
             raise RuntimeError("replay input changed while it was being evaluated")
         report = {
@@ -592,8 +625,9 @@ def replay_clip(
             "missing_track_frames": missing_tracks,
             "max_arrival_lag_seconds": max_arrival_lag,
             "event_sensitivities": dict(scene.event_sensitivities),
-            "source_sha256": source_sha256,
-            "tracks_sha256": tracks_sha256,
+            "source_file": str(clip.path),
+            "tracks_file": str(clip.tracks) if clip.tracks else None,
+            "source_values_unchanged": True,
             "configuration": {
                 "sample_fps": sample_fps,
                 "observation_fps": config.runtime.scene_observation_fps,
@@ -753,9 +787,9 @@ def main(argv=None):
             "schema_version": 1,
             "status": "incomplete",
             "estimated_requests": estimate,
-            "manifest_sha256": _sha256(args.manifest),
-            "config_sha256": _sha256(args.config),
-            "replay_tool_sha256": _sha256(Path(__file__)),
+            "manifest_file": str(args.manifest),
+            "config_file": str(args.config),
+            "replay_tool_file": str(Path(__file__).resolve()),
             "runs": [],
         }
         try:

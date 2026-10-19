@@ -14,7 +14,7 @@ from threading import RLock
 from .latency_trace import log_timing
 from .privacy import public_safe_value
 from .rich_labeling import validate_mask_contours
-from .sam_display_fusion import display_subject_id
+from .sam_display_fusion import DisplaySubjectIDs, display_subject_id
 
 
 class CameraSocketChannel:
@@ -230,6 +230,9 @@ class CameraDisplayMetadata:
             self._reset_revision = self.metadata_revision
             self._native_token = native_token
             self._fusion = fusion
+            self._display_subject_ids = (
+                fusion.subject_ids if fusion is not None else DisplaySubjectIDs()
+            )
             self._native_epoch = None
             self._retired_epochs = set()
             self._anchor_revisions = {}
@@ -608,11 +611,12 @@ class CameraDisplayMetadata:
                            if item["media_timestamp"] <= timestamp), None)
             identities, events = self.identities, self.events
             now, session_id = self._scene_timestamp, self.session_id
+            subject_ids = self._display_subject_ids
         people, alerts = [], []
         if anchor is not None:
             for subject in anchor["subjects"]:
                 epoch, track_id = anchor["epoch"], subject["track_id"]
-                sid = display_subject_id(epoch, track_id)
+                sid = display_subject_id(epoch, track_id, subject_ids=subject_ids)
                 confirmed = subject["tracking_confirmation"] == "confirmed"
                 name = next((item for item in reversed(identities)
                              if confirmed and item["epoch"] == epoch

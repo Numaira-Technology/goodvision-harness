@@ -1,4 +1,4 @@
-"""Cumulative model ledger with full-input hashes, unknown-outcome blocks, and receipt reuse.
+"""Cumulative model ledger with explicit operation scopes and receipt reuse.
 
 Use at the model request boundary without probes, retries, or response changes.
 Request identity and unknown-payment safeguards apply independently of resource budgets.
@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import copy
 import fcntl
-import hashlib
 import json
 import os
 import math
@@ -16,7 +15,8 @@ from pathlib import Path
 from threading import RLock
 import time
 from types import MethodType
-from uuid import uuid4
+
+from .model_operation import operation_for_request, operation_key, validate_operation
 
 
 class LedgerBlocked(RuntimeError):
@@ -27,19 +27,15 @@ class LedgerBlocked(RuntimeError):
 
 def request_without_images(value):
     if isinstance(value, dict):
+        if set(value) == {"image_data_url_sha256", "data_url_characters"}:
+            # Read the old archive without computing or trusting its image digest.
+            return {"image_omitted": True, "data_url_characters": value["data_url_characters"]}
         return {key: request_without_images(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [request_without_images(item) for item in value]
     if isinstance(value, str) and value.startswith("data:image/"):
-        return {"image_data_url_sha256": hashlib.sha256(value.encode()).hexdigest(),
-                "data_url_characters": len(value)}
+        return {"image_omitted": True, "data_url_characters": len(value)}
     return value
-
-
-def request_digest(request):
-    # Preserve the ledger's hash encoding and the IDs in the original prompt.
-    raw = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def _rows(path):
@@ -50,13 +46,17 @@ def _rows(path):
 
 
 class ModelLedger:
-    def __init__(self, root, *, seed_manifest_path, seed_manifest_sha256, owner_lock_path):
+    def __init__(self, root, *, seed_manifest_path, owner_lock_path, seed_manifest_sha256=None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._handles = []
         self.lock, self.poisoned, self.closed = RLock(), False, False
         self.in_flight, self.blocked, self.counts, self.cache = set(), set(), {}, {}
         self.summary_requests = {}
+        self.requests_by_operation = {}
+        self.unresolved_legacy_contexts = []
+        self.conflicting_operations = set()
+        self._call_sequence = 0
         self.balance_blocked = False
         try:
             # Lock the task's model writer and this run directory against concurrent paid dispatch.
@@ -66,18 +66,17 @@ class ModelLedger:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             manifest_path = Path(seed_manifest_path).resolve()
             raw = manifest_path.read_bytes()
-            if hashlib.sha256(raw).hexdigest() != seed_manifest_sha256:
-                raise LedgerBlocked("seed_manifest_hash_mismatch")
-            self.seed_manifest_sha256 = seed_manifest_sha256
+            self.seed_manifest_path = manifest_path
+            # Temporary input compatibility for old launchers. This value is not
+            # an identity or a check; new launchers must omit the legacy keyword.
             manifest = json.loads(raw)
-            if manifest.get("schema_version") != "unified-model-ledger-seed-v1":
+            if manifest.get("schema_version") not in {"unified-model-ledger-seed-v1",
+                                                       "unified-model-ledger-seed-v2"}:
                 raise LedgerBlocked("seed_manifest_schema_mismatch")
             paths = {}
             for name in ("model-requests.jsonl", "model-responses.jsonl", "attempt-ledger.jsonl"):
                 entry = manifest["files"][name]
                 path = (manifest_path.parent / entry["path"]).resolve()
-                if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
-                    raise LedgerBlocked("seed_file_hash_mismatch")
                 paths[name] = [path]
                 current = self.root / name
                 if current.exists():
@@ -88,25 +87,36 @@ class ModelLedger:
             raise
 
     def _load(self, paths):
-        requests, responses, terminal = {}, {}, {}
+        requests, responses, terminal, operations = {}, {}, {}, {}
         for path in paths["model-requests.jsonl"]:
             for row in _rows(path):
-                call, digest = row["call_id"], request_digest(row["request"])
-                if row["request_sha256"] != digest:
-                    raise LedgerBlocked("request_hash_mismatch")
+                call = row["call_id"]
                 if call in requests:
-                    if requests[call]["request"] != row["request"]:
+                    if (requests[call]["request"] != row["request"]
+                            or requests[call].get("context") != row.get("context")):
                         raise LedgerBlocked("duplicate_call_identity_mismatch")
                     continue
                 requests[call] = row
-                self._remember_summary(row)
-                self.counts[digest] = self.counts.get(digest, 0) + 1
+                try:
+                    operation = operation_for_request(row.get("context", {}), row["request"])
+                    if "operation" in row and operation != validate_operation(row["operation"]):
+                        raise ValueError("Saved operation differs from its context")
+                except (ValueError, KeyError, TypeError, IndexError):
+                    if "operation" in row or "operation" in row.get("context", {}):
+                        raise LedgerBlocked("saved_operation_invalid") from None
+                    self.unresolved_legacy_contexts.append(row.get("context", {}))
+                    operations[call] = None
+                    continue
+                operations[call] = operation
+                key = operation_key(operation)
+                self._remember_request(key, operation, row["request"])
+                self.counts[key] = self.counts.get(key, 0) + 1
         for path in paths["model-responses.jsonl"]:
             for row in _rows(path):
                 call = row["call_id"]
                 sent = requests.get(call)
                 if (not sent or sent["request"] != row["request"]
-                        or sent["request_sha256"] != row["request_sha256"]):
+                        or ("operation" in row and row["operation"] != operations[call])):
                     raise LedgerBlocked("receipt_request_mismatch")
                 if call in responses and responses[call] != row:
                     raise LedgerBlocked("duplicate_receipt_mismatch")
@@ -115,7 +125,8 @@ class ModelLedger:
         for path in paths["attempt-ledger.jsonl"]:
             for row in _rows(path):
                 call = row["call_id"]
-                if (call not in requests or row["request_sha256"] != requests[call]["request_sha256"]
+                if (call not in requests
+                        or ("operation" in row and row["operation"] != operations[call])
                         or row["state"] not in {"dispatching", "recorded", "outcome_unknown"}):
                     raise LedgerBlocked("attempt_identity_mismatch")
                 if row["state"] == "dispatching":
@@ -127,18 +138,25 @@ class ModelLedger:
         if dispatched != requests.keys():
             raise LedgerBlocked("attempt_dispatch_missing")
         for call, sent in requests.items():
-            digest, receipt = sent["request_sha256"], responses.get(call)
+            operation, receipt = operations[call], responses.get(call)
             state = terminal.get(call)
             response = receipt.get("response") if receipt else None
             response_id = response.get("id") if isinstance(response, dict) else None
             known_rejection = receipt and receipt.get("error", {}).get("status_code") in (402, 429)
             if state == "recorded" and not (response_id or known_rejection):
                 raise LedgerBlocked("recorded_attempt_missing_receipt")
+            if operation is None:
+                continue
+            key = operation_key(operation)
             if state != "recorded":
-                self.blocked.add(digest)
+                self.blocked.add(key)
             elif response_id:
                 # Cache empty or malformed answers too; replay them unchanged for the native parser.
-                self.cache[digest] = (copy.deepcopy(response), call)
+                self.cache[key] = (copy.deepcopy(response), call)
+        prefix = str(self.root / "call-")
+        prior_sequences = [int(call[len(prefix):]) for call in requests
+                           if call.startswith(prefix) and call[len(prefix):].isdigit()]
+        self._call_sequence = max([len(requests), *prior_sequences])
         # Balance blocks belong to this run; historical 402s do not permanently block a recovered account.
         self.balance_blocked = (self.root / "balance-blocked.jsonl").exists()
 
@@ -152,16 +170,42 @@ class ModelLedger:
             self.poisoned = True
             raise
 
-    def _remember_summary(self, row):
-        context = row.get("context", {})
-        if context.get("phase") == "same_evidence_summary":
-            key = (context.get("qa_id"), context.get("evidence_sha256"))
-            self.summary_requests[key] = row["request"]
+    def _remember_request(self, key, operation, request):
+        normalized = request_without_images(request)
+        previous = self.requests_by_operation.get(key)
+        if previous is not None and previous != normalized:
+            self.conflicting_operations.add(key)
+        self.requests_by_operation.setdefault(key, normalized)
+        if operation["kind"] == "summary":
+            self.summary_requests.setdefault(key, request)
 
-    def prior_summary_request(self, *, qa_id, evidence_sha256, model, parameters):
+    def _check_legacy_scope(self, operation):
+        for context in self.unresolved_legacy_contexts:
+            if context.get("phase") == "same_evidence_summary":
+                if operation["kind"] != "summary":
+                    continue
+                known = [(context.get(field), operation[target]) for field, target in
+                         (("qa_id", "question"), ("video_id", "video"))
+                         if isinstance(context.get(field), str) and context[field]]
+                # Missing scope never authorizes another paid answer. Use any
+                # surviving question/video fields to keep the refusal narrow.
+                if not known or all(saved == current for saved, current in known):
+                    raise LedgerBlocked("unresolved_legacy_answer_scope", scope="source")
+            elif context.get("stream_session_id") == operation["session"]:
+                raise LedgerBlocked("unresolved_legacy_window_scope", scope="source")
+            elif not context.get("stream_session_id"):
+                # There is no trustworthy narrow scope for this old dispatch.
+                raise LedgerBlocked("legacy_dispatch_scope_missing")
+
+    def prior_summary_request(self, *, operation, model, parameters):
         """Keep paid answer identity stable across later lossless input encodings."""
         with self.lock:
-            request = self.summary_requests.get((qa_id, evidence_sha256))
+            operation = validate_operation(operation)
+            self._check_legacy_scope(operation)
+            key = operation_key(operation)
+            if key in self.conflicting_operations:
+                raise LedgerBlocked("conflicting_operation_payloads", scope="source")
+            request = self.summary_requests.get(key)
             if request is None:
                 return None
             expected = {key: value for key, value in parameters.items() if value is not None}
@@ -172,30 +216,41 @@ class ModelLedger:
 
     def begin(self, payload, context):
         request = request_without_images(payload)
-        digest = request_digest(request)
+        try:
+            operation = operation_for_request(context, request)
+        except (ValueError, KeyError, TypeError, IndexError):
+            raise LedgerBlocked("model_operation_scope_missing", scope="source") from None
+        key = operation_key(operation)
         with self.lock:
             if self.closed or self.poisoned or self.balance_blocked:
                 raise LedgerBlocked("model_ledger_unavailable")
-            if digest in self.blocked or digest in self.in_flight:
+            self._check_legacy_scope(operation)
+            if key in self.blocked or key in self.in_flight:
                 raise LedgerBlocked("unresolved_same_input_request", scope="source")
-            if digest in self.cache:
-                response, call = self.cache[digest]
-                receipt = {"call_id": call, "request_sha256": digest,
+            if (key in self.conflicting_operations or
+                    (key in self.requests_by_operation and self.requests_by_operation[key] != request)):
+                raise LedgerBlocked("operation_payload_changed_after_dispatch", scope="source")
+            if key in self.cache:
+                response, call = self.cache[key]
+                receipt = {"call_id": call, "operation": operation, "attempt": self.counts[key],
                            "response_id": response["id"], "cached": True,
                            "paid_dispatch": False, "context": context, "state": "recorded"}
                 self._append("cache-hits.jsonl", receipt)
                 return None, copy.deepcopy(response), receipt
-            if self.counts.get(digest, 0) >= 3:
+            if self.counts.get(key, 0) >= 3:
                 raise LedgerBlocked("same_input_attempts_exhausted", scope="source")
-            attempt = self.counts.get(digest, 0) + 1
-            row = {"call_id": str(uuid4()), "request_sha256": digest, "request": request,
-                   "attempt": attempt, "context": context, "started_epoch": time.time()}
+            attempt = self.counts.get(key, 0) + 1
+            self._call_sequence += 1
+            call = str(self.root / ("call-" + str(self._call_sequence)))
+            row = {"call_id": call, "operation": operation, "request": request,
+                   "attempt": attempt, "context": {**context, "operation": operation},
+                   "started_epoch": time.time()}
             self._append("model-requests.jsonl", row)
             self._append("attempt-ledger.jsonl", {key: row[key] for key in
-                         ("call_id", "request_sha256", "attempt", "context")} | {"state": "dispatching"})
-            self.counts[digest] = attempt
-            self._remember_summary(row)
-            self.in_flight.add(digest)
+                         ("call_id", "operation", "attempt", "context")} | {"state": "dispatching"})
+            self.counts[key] = attempt
+            self._remember_request(key, operation, request)
+            self.in_flight.add(key)
             return row, None, None
 
     def finish(self, row, *, response=None, error=None):
@@ -215,16 +270,16 @@ class ModelLedger:
             response_id = response.get("id") if isinstance(response, dict) else None
             known_rejection = saved.get("error", {}).get("status_code") in (402, 429)
             state = "recorded" if response_id or known_rejection else "outcome_unknown"
-            terminal = {key: row[key] for key in ("call_id", "request_sha256", "attempt")}
+            terminal = {key: row[key] for key in ("call_id", "operation", "attempt")}
             terminal.update(state=state, response_id=response_id)
             self._append("model-responses.jsonl", saved)
             self._append("attempt-ledger.jsonl", terminal)
-            digest = row["request_sha256"]
-            self.in_flight.discard(digest)
+            key = operation_key(row["operation"])
+            self.in_flight.discard(key)
             if state == "outcome_unknown":
-                self.blocked.add(digest)
+                self.blocked.add(key)
             elif response_id:
-                self.cache[digest] = (copy.deepcopy(response), row["call_id"])
+                self.cache[key] = (copy.deepcopy(response), row["call_id"])
             if saved.get("error", {}).get("status_code") == 402:
                 self.balance_blocked = True
                 self._append("balance-blocked.jsonl", terminal)
@@ -253,7 +308,7 @@ class ModelLedger:
             except ValueError:
                 delay = float("nan")
             return {"http_status": response.status_code, "body_excerpt_redacted": text,
-                    "body_truncated": truncated, "body_sha256": hashlib.sha256(body).hexdigest(),
+                    "body_truncated": truncated,
                     "retry_after_seconds": delay if math.isfinite(delay) and delay >= 0 else None}
 
         inspector.evaluation_error_observer = error_observer
@@ -277,14 +332,6 @@ class ModelLedger:
         inspector._request = MethodType(recorded, inspector)
         inspector.last_ledger_receipt = None
         return inspector
-
-    def has_prior_request(self, *, model, messages, parameters):
-        """Read existing send history before changing an answer's representation."""
-        payload = {key: value for key, value in parameters.items() if value is not None}
-        payload.update(model=model, messages=messages)
-        digest = request_digest(request_without_images(payload))
-        with self.lock:
-            return digest in self.counts
 
     def complete(self, client, *, model, messages, parameters, context):
         """Synchronous same-evidence summary boundary; disable the client's own retries."""

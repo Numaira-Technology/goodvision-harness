@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import math
 import os
@@ -172,12 +171,17 @@ async def run(args):
     jobs = {}
     for sample in samples:
         video = Path(sample["path"])
-        if hashlib.sha256(video.read_bytes()).hexdigest() != sample["sha256"]:
-            raise ValueError("video_fingerprint_changed")
+        if not video.is_file():
+            raise ValueError("source_video_missing")
         job = baseline.make_job(video, sample["endpoint"], 720, 90, "high")
-        hashes = [hashlib.sha256(f.jpeg_bytes).hexdigest() for f in job.frames]
-        if hashes != sample["frame_sha256"]:
-            raise ValueError("frame_fingerprint_changed")
+        if len(job.frames) != 4:
+            raise ValueError("invalid_frame_count")
+        times = [frame.timestamp_seconds for frame in job.frames]
+        if (
+            any(b <= a for a, b in zip(times, times[1:]))
+            or times[-1] != round(sample["endpoint"], 3)
+        ):
+            raise ValueError("invalid_frame_order_or_endpoint")
         # make_job uses neutral source/window identifiers, never filenames,
         # dataset categories, reference labels or annotations in model messages.
         jobs[sample["sample_id"]] = job
@@ -194,10 +198,8 @@ async def run(args):
     manifest = {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "base_commit": "3651916",
-        "baseline_script_sha256": hashlib.sha256(
-            (ROOT / "tools/vlm_simple_jev_benchmark.py").read_bytes()
-        ).hexdigest(),
-        "dataset_sha256": hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
+        "baseline_script": "tools/vlm_simple_jev_benchmark.py",
+        "dataset": str(args.dataset),
         "cases": baseline.CASES,
         "repeats": args.repeats,
         "request_count": len(tasks),

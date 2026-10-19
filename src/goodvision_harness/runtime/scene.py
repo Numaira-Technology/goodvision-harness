@@ -8,11 +8,11 @@ inspections; face observations supply identities and stranger judgments.
 
 from __future__ import annotations
 
+import json
 import math
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from hashlib import sha256
 from threading import RLock
 from time import monotonic
 from typing import Any
@@ -283,6 +283,8 @@ class SceneRuntime:
         self._accepted: OrderedDict[tuple[str, str, str], _AcceptedEvidence] = (
             OrderedDict()
         )
+        self._association_evidence_ids: dict[tuple[str, str, str], str] = {}
+        self._association_evidence_sequence = 0
         self._processed: OrderedDict[str, tuple[float, int]] = OrderedDict()
         self._forgotten_identities: set[str] = set()
         self._identities_disabled = False
@@ -1430,7 +1432,7 @@ class SceneRuntime:
                         # A whole-frame negative applies only where its source
                         # people were truly observed, enforced by SceneState.
                         for ids in event_groups[label]:
-                            slot = "group:" + sha256(repr(ids).encode()).hexdigest()
+                            slot = "group:" + json.dumps(ids, separators=(",", ":"))
                             desired[slot] = (ids, False, judgment.confidence)
                     if label == "stranger" and not judgment.detected:
                         known = {
@@ -1462,6 +1464,13 @@ class SceneRuntime:
                     ) == (ids, detected, confidence):
                         continue
                     revision = 0 if previous is None else previous.revision + 1
+                    # Preserve identity beyond the accepted-result cache. A
+                    # repeated slot must not acquire a fresh evidence identity.
+                    if key not in self._association_evidence_ids:
+                        self._association_evidence_sequence += 1
+                        self._association_evidence_ids[key] = (
+                            f"association-{self._association_evidence_sequence}"
+                        )
                     accepted = self.scene.revise_event_evidence(
                         label,
                         ids,
@@ -1469,7 +1478,7 @@ class SceneRuntime:
                         frame_sequence=sequence,
                         detected=detected,
                         confidence=confidence,
-                        evidence_id=sha256(repr(key).encode()).hexdigest(),
+                        evidence_id=self._association_evidence_ids[key],
                         revision=revision,
                     )
                     if accepted:
@@ -2045,6 +2054,7 @@ class SceneRuntime:
             self._claimed.clear()
             self._inspection_deadlines.clear()
             self._pending_results.clear()
+            self._association_evidence_ids.clear()
             self.evidence.reset()
             self._tracking_frames.clear()
             self._tracking_intervals.clear()

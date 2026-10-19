@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 import math
 import threading
@@ -188,7 +187,7 @@ class PreparedSessionAppend:
     request_id: str
     frames: tuple[VideoFrame, ...]
     payload: SerializedVideoPayload
-    payload_hash: str
+    prepared_body: bytes
     deadline: float
 
 
@@ -613,7 +612,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
         return PreparedSessionAppend(
             session.video_session_id, stream_session_id, request_id, frames,
             SerializedVideoPayload(body, metadata, time.monotonic() - started, metrics),
-            hashlib.sha256(body).hexdigest(), deadline,
+            body, deadline,
         )
 
     def append(
@@ -696,8 +695,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                         and prepared.stream_session_id == stream_session_id
                         and prepared.video_session_id == session.video_session_id
                         and prepared.request_id == request_id
-                        and hashlib.sha256(prepared.payload.body).hexdigest()
-                        == prepared.payload_hash,
+                        and prepared.payload.body == prepared.prepared_body,
                         "prepared append source/session mismatch",
                     )
                     deadline = min(deadline, prepared.deadline)

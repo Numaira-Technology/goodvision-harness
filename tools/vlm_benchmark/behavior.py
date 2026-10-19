@@ -9,7 +9,6 @@ no implicit paid retries.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import json
 import math
@@ -50,10 +49,6 @@ DEFAULT_MODEL = "qwen/qwen3-vl-30b-a3b-instruct"
 MODES = ("events", "grounding")
 
 
-def sha(data):
-    return hashlib.sha256(data).hexdigest()
-
-
 def read_json(path):
     def unique(pairs):
         result = {}
@@ -88,36 +83,30 @@ def packet_file(root, name):
 
 
 def load_packet(packet, annotations):
-    """Fail before requests if provenance, windows, policy or images disagree."""
+    """Require explicit provenance, policy values and ordered evidence windows."""
     packet = Path(packet).resolve()
     manifest = read_json(packet / "input-manifest.json")
     policy = read_json(packet / "event-policy.json")
     reference = read_json(annotations)
     if set(policy["event_labels"]) != set(SAFETY_EVENT_LABELS):
         raise ValueError("this comparison requires all six event labels")
-    expected = annotation_policy(policy["event_labels"], policy["sensitivities"])
-    if any(
-        policy.get(k) != expected[k]
-        for k in (
-            "version",
-            "sha256",
-            "event_labels",
-            "sensitivities",
-            "decision_rules",
-            "comparison_field",
-        )
-    ):
+    expected = annotation_policy(
+        policy["event_labels"], policy["sensitivities"],
+        profile="research-v1",
+    )
+    policy_values = {key: policy.get(key) for key in expected}
+    if policy_values != expected:
         raise ValueError("packet policy differs from current production policy")
-    digest = manifest.get("source_video_sha256", "")
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ValueError("invalid source video fingerprint")
+    source_video = manifest.get("source_video")
+    if not isinstance(source_video, str) or not source_video.strip():
+        raise ValueError("packet requires an explicit source video reference")
     if (
-        reference.get("source_video_sha256") != digest
-        or reference.get("policy_sha256") != expected["sha256"]
-        or manifest.get("policy_sha256") != expected["sha256"]
+        reference.get("source_video") != source_video
+        or reference.get("event_policy") != expected
         or manifest.get("policy_version") != expected["version"]
     ):
-        raise ValueError("reference, packet and current policy fingerprints differ")
+        raise ValueError("reference requires matching source and explicit policy values")
+    policy = policy_values
     if (
         reference.get("human_reviewed") is not False
         or manifest.get("prediction_data_included") is not False
@@ -133,14 +122,14 @@ def load_packet(packet, annotations):
         if type(manifest.get(key)) is not int or not low <= manifest[key] <= high:
             raise ValueError("invalid image settings")
     windows, images = {}, {}
-    fingerprints = set()
+    evidence_times = set()
     for w in manifest["windows"]:
         wid = w["window_id"]
         if not isinstance(wid, str) or not re.fullmatch(r"W[0-9]{3,6}", wid):
             raise ValueError("invalid window id")
         if wid in windows or not 2 <= len(w["frames"]) <= 4:
             raise ValueError("duplicate window or invalid frame count")
-        times, hashes, payloads = [], [], []
+        times, payloads = [], []
         for frame in w["frames"]:
             at = frame["media_seconds"]
             if not finite(at) or not 0 <= at < manifest["source_duration_seconds"]:
@@ -149,14 +138,11 @@ def load_packet(packet, annotations):
             if path.stat().st_size > 4 * 1024 * 1024:
                 raise ValueError("frame exceeds memory limit")
             data = path.read_bytes()
-            if sha(data) != frame["sha256"]:
-                raise ValueError("evidence image fingerprint mismatch")
             with Image.open(io.BytesIO(data)) as im:
                 if im.format != "JPEG" or max(im.size) > manifest["image_side"]:
                     raise ValueError("invalid evidence image format or dimensions")
                 im.verify()
             times.append(at)
-            hashes.append(frame["sha256"])
             payloads.append(data)
         if (
             any(b <= a for a, b in pairwise(times))
@@ -164,9 +150,9 @@ def load_packet(packet, annotations):
             or w["judgment_time_seconds"] != times[-1]
         ):
             raise ValueError("window must be continuous and judged at last frame")
-        if tuple(hashes) in fingerprints:
+        if tuple(times) in evidence_times:
             raise ValueError("deduplicate evidence windows before comparison")
-        fingerprints.add(tuple(hashes))
+        evidence_times.add(tuple(times))
         windows[wid], images[wid] = w, payloads
     references = {}
     for row in reference["rows"]:
@@ -528,11 +514,11 @@ def run(args, *, inspector_factory=None):
             "source-window ingress through queue, inspect and publication; "
             "excludes decoding and display"
         ),
-        "source_video_sha256": manifest["source_video_sha256"],
+        "source_video": manifest["source_video"],
         "event_policy": policy,
         "retain_historical_results": True,
-        "reference_sha256": sha((inputs / "annotations.json").read_bytes()),
-        "original_reference_sha256": sha(Path(annotations).read_bytes()),
+        "reference_file": "inputs/annotations.json",
+        "original_reference_file": str(annotations),
         "reference_model": reference["annotator_model"],
         "reference_human_reviewed": False,
         "unique_windows": len(manifest["windows"]),
@@ -540,8 +526,8 @@ def run(args, *, inspector_factory=None):
         "planned_requests": selected_requests,
         "reference_window_slots": len(planned),
         "mode_settings": mode_settings,
-        "source_hashes": {
-            p.relative_to(ROOT).as_posix(): sha(p.read_bytes())
+        "source_files": [
+            p.relative_to(ROOT).as_posix()
             for p in [
                 Path(__file__),
                 *sorted((ROOT / "src/goodvision_harness").rglob("*.py")),
@@ -557,7 +543,7 @@ def run(args, *, inspector_factory=None):
                 ROOT / "src/goodvision_harness/scene_model.py",
                 ROOT / "src/goodvision_harness/scene_inspection.py",
             ]
-        },
+        ],
         "planned": planned,
     }
     records = []

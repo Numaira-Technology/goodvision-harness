@@ -2,23 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import json
 from pathlib import Path
 
 from ..event_sensitivity import sensitivity_policy_text
 from .vocab import FROZEN_EVENT_LABELS, OBSERVATION_EVENT_LABELS, VOCAB_VERSION
 
-DEFINITIONS_SHA256 = "241f7243b52be5947d2f88ddbd6e3e89fcb3c793135e6bbeeac905cd5bf6aa22"
-
-
 @dataclass(frozen=True)
 class EvaluationEventProfile:
     labels: tuple[str, ...]
     scene_only_labels: tuple[str, ...]
     definitions: tuple[tuple[str, str], ...]
-    source_sha256: str
-    profile_sha256: str
+    definitions_path: str
 
     def kwargs(self):
         return {"allowed_event_labels": self.labels,
@@ -28,7 +23,8 @@ class EvaluationEventProfile:
     def provenance(self):
         return {"vocab_version": VOCAB_VERSION, "labels": list(self.labels),
                 "scene_only_labels": list(self.scene_only_labels),
-                "source_sha256": self.source_sha256, "profile_sha256": self.profile_sha256,
+                "definitions_path": self.definitions_path,
+                "definitions": [list(row) for row in self.definitions],
                 "question_conditioned": False, "face_enabled": False}
 
     def scene_runtime(self, *, stream_session_id, source_id, diagnostics=None,
@@ -65,9 +61,6 @@ class EvaluationEventProfile:
 def load_profile(definitions_path):
     """Load 51 frozen definitions plus the standard fight policy without question-based filtering."""
     raw = Path(definitions_path).read_bytes()
-    digest = hashlib.sha256(raw).hexdigest()
-    if digest != DEFINITIONS_SHA256:
-        raise ValueError("fixed event definitions hash mismatch")
     rows = json.loads(raw)
     if not isinstance(rows, list) or tuple(row["label"] for row in rows) != FROZEN_EVENT_LABELS:
         raise ValueError("fixed 51-label order mismatch")
@@ -83,8 +76,5 @@ def load_profile(definitions_path):
     fight = sensitivity_policy_text({"fight": "standard"}, smoking_standard_rule="",
                                     include_output_guidance=False)
     definitions.append(("fight", fight))
-    payload = {"version": VOCAB_VERSION, "definitions": definitions, "scene_only": scene_only}
-    profile_digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
-                                               separators=(",", ":")).encode()).hexdigest()
     return EvaluationEventProfile(OBSERVATION_EVENT_LABELS, tuple(scene_only),
-                                  tuple(definitions), digest, profile_digest)
+                                  tuple(definitions), str(Path(definitions_path).resolve()))

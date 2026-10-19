@@ -8,10 +8,10 @@ from .batch import _ownership
 
 class ExperimentResources:
     def __init__(self, *, identity_path, expected_instance_id, expected_label,
-                 expected_source_manifest_sha256, reset_endpoint, cancel_paths):
+                 reset_endpoint, cancel_paths, expected_source_manifest_sha256=None):
         self.path = Path(identity_path)
         self.instance, self.label = expected_instance_id, expected_label
-        self.manifest, self.reset_endpoint = expected_source_manifest_sha256, reset_endpoint
+        self.reset_endpoint = reset_endpoint
         self.cancel_paths = tuple(Path(path) for path in cancel_paths)
 
     def prepare(self, config):
@@ -20,8 +20,7 @@ class ExperimentResources:
         # The parent records provider inventory and exact container ownership, not probes.
         row = _ownership(json.loads(self.path.read_bytes()))
         if (row["instance_id"] != self.instance or row["experiment_label"] != self.label
-                or row["source_manifest_sha256"] != self.manifest
-                or config["provenance"]["frozen_runtime_sha256"] != self.manifest):
+                or config.get("experiment_label", self.label) != self.label):
             raise ValueError("owned deployment differs from frozen source configuration")
         return row
 

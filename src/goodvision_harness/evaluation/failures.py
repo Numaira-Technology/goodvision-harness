@@ -20,7 +20,10 @@ def native_report_failure_policy(report):
     local = status not in {401, 402, 403} and (
         status == 429 or code in {"timeout", "connection", "invalid_response", "empty_response",
                  "admission_timeout", "admission_superseded",
-                 "unresolved_same_input_request", "same_input_attempts_exhausted"}
+                 "unresolved_same_input_request", "same_input_attempts_exhausted",
+                 "unresolved_legacy_answer_scope", "unresolved_legacy_window_scope",
+                 "model_operation_scope_missing", "operation_payload_changed_after_dispatch",
+                 "conflicting_operation_payloads"}
         or code == "http_error" and type(status) is int and 400 <= status < 600
     )
     return {"scope": "window" if local else "shared", "code": code,

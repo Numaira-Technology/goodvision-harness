@@ -8,13 +8,14 @@ Run separately from the serving process to measure its own CUDA memory footprint
 from __future__ import annotations
 
 import argparse
+import base64
 import gc
-import hashlib
 import inspect
 import json
 import math
 import sys
 import time
+import zlib
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import fields, is_dataclass, replace
@@ -230,7 +231,14 @@ def signature(output, *, width, height, max_objects):
     return {
         "ids": [int(value) for value in ids],
         "scores": [float(value) for value in scores],
-        "mask_sha256": [hashlib.sha256(mask.tobytes()).hexdigest() for mask in masks],
+        "mask_values": {
+            "shape": list(masks.shape),
+            "dtype": masks.dtype.str,
+            "encoding": "packbits-little-zlib-base64",
+            "data": base64.b64encode(
+                zlib.compress(np.packbits(masks, bitorder="little").tobytes())
+            ).decode("ascii"),
+        },
         "mask_areas": [int(mask.sum()) for mask in masks],
     }
 
@@ -414,7 +422,7 @@ def compare(reference, candidate):
         actual = candidate["frames"][index]
         if (
             expected["ids"] != actual["ids"]
-            or expected["mask_sha256"] != actual["mask_sha256"]
+            or expected["mask_values"] != actual["mask_values"]
         ):
             mismatches.append(index)
     return {

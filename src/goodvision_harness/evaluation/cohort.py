@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 
@@ -16,6 +15,24 @@ from .answer_artifact import build_answer_artifact
 from .answers_v2 import PARSER_VERSION
 from .recording import publish_once
 from .privacy import reject_private
+from .configuration import settings_record
+
+
+def observation_index_record(index_path):
+    """Bind an index to its current source/session records without content hashes."""
+    index_path = Path(index_path)
+    index = settings_record(json.loads(index_path.read_bytes()))
+    scopes = []
+    for entry in index["observations"]:
+        path = Path(entry["capture_path"])
+        if not path.is_absolute():
+            path = index_path.parent / path
+        evidence = json.loads(path.read_bytes())
+        scope = {key: evidence[key] for key in ("video_id", "stream_session_id", "source_id")}
+        if any(key in entry and entry[key] != value for key, value in scope.items()):
+            raise ValueError("observation index and saved source scope differ")
+        scopes.append({"capture_path": str(path.resolve()), **scope})
+    return {"index": index, "observation_scopes": scopes}
 
 
 def generate_cohort(*, questions_path, index_path, output):
@@ -45,8 +62,6 @@ def generate_cohort(*, questions_path, index_path, output):
         if not capture_path.is_absolute():
             capture_path = index_path.parent / capture_path
         raw = capture_path.read_bytes()
-        if hashlib.sha256(raw).hexdigest() != entry["capture_file_sha256"]:
-            raise ValueError("capture file hash mismatch")
         evidence = json.loads(raw)
         reject_private(evidence, observation=True)
         if evidence.get("schema_version") != "unified-evidence-v2" or evidence.get("video_id") != vid:
@@ -57,8 +72,8 @@ def generate_cohort(*, questions_path, index_path, output):
             raise ValueError("explicit question-independent observation required")
         evidence_by_video[vid] = evidence
         sources[vid] = {"capture_path": str(capture_path.resolve()),
-                        "capture_file_sha256": entry["capture_file_sha256"],
-                        "evidence_sha256": evidence.get("evidence_sha256")}
+                        "stream_session_id": evidence["stream_session_id"],
+                        "source_id": evidence["source_id"]}
     # Use a new output directory and record input identities before publishing answers.
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -66,8 +81,9 @@ def generate_cohort(*, questions_path, index_path, output):
     publish_once(output / "run.json", {
         "schema_version": "unified-cohort-artifacts-v1", "method": method,
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
-        "questions_sha256": hashlib.sha256(question_bytes).hexdigest(),
-        "observation_index_sha256": hashlib.sha256(index_bytes).hexdigest(),
+        "questions_path": str(questions_path.resolve()), "public_questions": questions,
+        "observation_index_path": str(index_path.resolve()),
+        "observation_index": observation_index_record(index_path),
         "questions": len(questions), "videos": len(videos), "parser_version": PARSER_VERSION,
         "new_model_calls": 0, "summary_execution": "not_called", "scoring": "not_run",
         "scope": "saved_observations_only_no_automatic_historical_upgrade",
@@ -82,6 +98,7 @@ def generate_cohort(*, questions_path, index_path, output):
             missing_status = ("interrupted" if prior and prior.get("status") == "shared_failure"
                               else "request_failure" if prior else "not_started")
             artifact = {"qa_id": qid, "video_id": vid, "method": method,
+                        "public_question": question,
                         "parser": {"qa_id": qid, "status": missing_status, "final_answer": None,
                                    "reason": "source_processed_without_complete_capture" if prior else "no_saved_observation",
                                    "source_outcome": prior, "parser_version": PARSER_VERSION,
@@ -91,11 +108,11 @@ def generate_cohort(*, questions_path, index_path, output):
             artifact = build_answer_artifact(question, evidence)
             artifact.update(method=method, observation_source=sources[vid])
         # Keep question IDs in the content; do not interpret them as filename paths.
-        path = f"answers/{position + 1:04d}-{hashlib.sha256(qid.encode()).hexdigest()[:16]}.json"
-        digest = publish_once(output / path, artifact)
+        path = f"answers/{position + 1:04d}.json"
+        publish_once(output / path, artifact)
         result_rows.append({"qa_id": qid, "video_id": vid, "capability": question.get("capability"),
                             "question_form": question.get("question_form"), "answer_path": path,
-                            "answer_file_sha256": digest, "status": artifact["parser"]["status"]})
+                            "status": artifact["parser"]["status"]})
     totals = dict(Counter(row["status"] for row in result_rows))
     per_capability = {
         str(capability): dict(Counter(row["status"] for row in result_rows if row["capability"] == capability))

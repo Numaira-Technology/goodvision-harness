@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import json
 from pathlib import Path
@@ -297,8 +296,7 @@ def main():
         changes.append(
             {
                 "path": str(path),
-                "before_sha256": hashlib.sha256(before).hexdigest(),
-                "after_sha256": hashlib.sha256(after).hexdigest(),
+                "content_changed": before != after,
             }
         )
     Path("/opt/notices/jetson-patches.json").write_text(

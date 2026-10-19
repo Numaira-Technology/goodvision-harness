@@ -662,7 +662,6 @@ class PipelinedVideoSessionTrackingCoordinator(VideoSessionTrackingCoordinator):
                 self._journal().prepared(
                     work.request_id,
                     work.prepared.payload.body,
-                    work.prepared.payload_hash,
                 )
                 with self._condition:
                     if self._current(work) and not self._failed_session:

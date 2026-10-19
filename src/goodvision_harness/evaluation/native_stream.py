@@ -6,7 +6,6 @@ continues while inference runs; native admission and replacement policies apply.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -34,6 +33,7 @@ from .stream_ledger import LedgerInspectorFactory
 from .stream_recording import StreamingRecorder
 from .evidence import NATIVE_SKIP_POLICY
 from .failures import native_report_failure_policy
+from .configuration import source_settings
 
 
 class NativeSourceFailure(RuntimeError):
@@ -44,11 +44,21 @@ class NativeSourceFailure(RuntimeError):
         self.reason = reason
 
 
-def effective_config_sha256(harness):
-    """Bind resolved settings, including environment overrides, without exporting secrets."""
-    encoded = json.dumps(asdict(harness), sort_keys=True, separators=(",", ":"),
-                         ensure_ascii=False, default=str, allow_nan=False).encode()
-    return hashlib.sha256(encoded).hexdigest()
+def effective_config_snapshot(harness):
+    """Record evaluation settings, excluding service and source credentials."""
+    names = ("video", "display", "rich_labeling", "sliding_window", "inference", "runtime")
+    values = {name: asdict(getattr(harness, name)) for name in names}
+    def redact(value):
+        if isinstance(value, dict):
+            return {key: ("[REDACTED]" if key.lower() in {
+                "api_key", "authorization", "password", "secret", "token", "headers"}
+                else redact(item)) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [redact(item) for item in value]
+        return value
+    # Endpoints belong to the separately checked transport, not this snapshot.
+    values["rich_labeling"].pop("endpoint", None)
+    return json.loads(json.dumps(redact(values), default=str, allow_nan=False))
 
 
 class NativeCapture:
@@ -195,10 +205,10 @@ class NativeCapture:
                 raise RuntimeError("native VLM worker failed; retain ledger outcomes for recovery")
 
 
-def capture_native_stream(config_path, *, config_sha256, output, resources):
+def capture_native_stream(config_path, *, output, resources, config_sha256=None):
     path = Path(config_path).resolve()
     base = path.parent
-    config = _read_frozen(path, config_sha256)
+    config = _read_frozen(path)
     reject_private(config, observation=True)
     if (config.get("schema_version") != "native-stream-source-v1"
             or type(config.get("vlm_enabled")) is not bool
@@ -213,10 +223,10 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
                                NATIVE_SKIP_POLICY}:
         raise ValueError("unknown frozen streaming coverage policy")
     harness_path = base / config["harness_config"]
-    if hashlib.sha256(harness_path.read_bytes()).hexdigest() != config["harness_config_sha256"]:
-        raise ValueError("Harness config hash changed")
     harness = load_config(harness_path)
-    if effective_config_sha256(harness) != config["effective_harness_config_sha256"]:
+    effective = effective_config_snapshot(harness)
+    if ("effective_harness_config" in config
+            and effective != config["effective_harness_config"]):
         raise ValueError("resolved Harness settings differ from the frozen effective configuration")
     if (harness.video.realtime is not True or harness.video.playback_speed != 1.0
             or harness.video.max_sampled_frames is not None or harness.memory is not None):
@@ -226,13 +236,6 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError("explicit finite source and drain time limits required")
     media = base / config["media_path"]
-    media_digest = hashlib.sha256()
-    with media.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            media_digest.update(chunk)
-    digest = media_digest.hexdigest()
-    if digest != config["media_sha256"]:
-        raise ValueError("media file hash changed")
     profile = load_profile(base / config["event_definitions"])
     rich = harness.rich_labeling
     if not rich.enabled:
@@ -249,9 +252,10 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
         raise ValueError("native SAM capture requires the explicit causal sam_live route")
     if rich.backend == "sam31":
         raise ValueError("batch-reset SAM is not the continuous native method")
-    provenance = {**config["provenance"], "run_config_sha256": config_sha256,
-                  "media_sha256": digest, "harness_config_sha256": config["harness_config_sha256"],
-                  "effective_harness_config_sha256": config["effective_harness_config_sha256"],
+    provenance = {**config["provenance"], "run_config_path": str(path),
+                  "source_configuration": source_settings(config),
+                  "media_path": str(media.resolve()), "harness_config_path": str(harness_path.resolve()),
+                  "effective_harness_config": effective,
                   "question_conditioned": False, "face_enabled": False,
                   "vlm_enabled": config["vlm_enabled"], "event_profile": profile.provenance(),
                   "tracking_model": config["tracking"]["model"],
@@ -307,7 +311,7 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
             vlm = replace(vlm, retain_historical_results=True)
             ledger = config["model_ledger"]
             factory = LedgerInspectorFactory(str((base / ledger["output_directory"]).resolve()),
-                str((base / ledger["seed_manifest"]).resolve()), ledger["seed_manifest_sha256"],
+                str((base / ledger["seed_manifest"]).resolve()),
                 str((base / ledger["owner_lock"]).resolve()))
             capture.worker = IndependentVLMBranch(vlm, fusion=capture.fusion,
                 inspector_factory=factory, report_observer=capture.independent_report,
@@ -376,7 +380,7 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
             capture._sealed = True
         outcome = {"status": "captured" if evidence["observation_manifest"]["complete"] else "incomplete",
                    "video_id": config["video_id"], "stream_session_id": capture.sid,
-                   "config_sha256": config_sha256, "evidence_sha256": evidence["evidence_sha256"],
+                   "config_path": str(path), "source_id": capture.source_id,
                    "vlm_enabled": config["vlm_enabled"], "scope": "native_streaming",
                    "final_answer_generated": False}
         publish_once(recorder.root / "outcome.json", outcome)
@@ -425,7 +429,7 @@ def capture_native_stream(config_path, *, config_sha256, output, resources):
                 and tracking_settled and all(cleanup[key] for key in
                     ("source_stopped", "tracking_stopped", "vlm_stopped", "fusion_stopped")))
             publish_once(recorder.root / "failure.json", {"error_type": type(failure).__name__,
-                "config_sha256": config_sha256, "stream_session_id": capture.sid,
+                "config_path": str(path), "stream_session_id": capture.sid,
                 "failure_scope": "source" if local else "shared",
                 "reason": failure.reason if local else "shared_capture_interruption",
                 "status": "interrupted", "preserve_ledger_and_raw_records": True})

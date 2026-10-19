@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import hashlib
 import json
 import logging
 import math
@@ -55,11 +54,6 @@ def _trace_identifier(value):
     return value if isinstance(value, str) and re.fullmatch(
         r"[A-Za-z0-9_.:-]{1,160}", value
     ) else None
-
-
-def _session_ref(token):
-    # Session tokens authorize operations: correlate them without logging them.
-    return hashlib.sha256(token.encode()).hexdigest()[:16] if token else None
 
 
 def _timing_log(message, fields, *, level=logging.INFO, logger=LOGGER):
@@ -171,7 +165,7 @@ class _PreparedAppend:
 
     batch: VideoBatch
     final: bool
-    digest: str
+    payload_bytes: bytes
     images: list = field(default_factory=list)
     source_sizes: list = field(default_factory=list)
 
@@ -311,7 +305,7 @@ class Session:
     sources: dict[int, SourceFrame] = field(default_factory=dict)
     cancel: threading.Event = field(default_factory=threading.Event)
     last_request_id: str | None = None
-    last_payload_hash: str | None = None
+    last_payload: bytes | None = None
     last_response: bytes | None = None
 
 
@@ -499,10 +493,8 @@ def parse_append(payload, settings, *, h264_enabled=False, diagnostics=None):
             ).encode(),
             settings,
         )
-    digest = hashlib.sha256(
-        json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    return batch, raw["is_last_batch"], digest
+    payload_bytes = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+    return batch, raw["is_last_batch"], payload_bytes
 
 
 class NativeContinuation:
@@ -739,6 +731,14 @@ class SessionEngine:
             raise HTTPException(404, "unknown video session")
         return self.session
 
+    def session_reference(self, token):
+        """Use the non-secret epoch for diagnostics, never the capability token."""
+        with self._mutex:
+            session = self.session
+            if session is None or token != session.video_session_id:
+                return None
+            return _trace_identifier(session.predictor_epoch)
+
     def expire(self):
         # Caller holds the shared admission slot; never runs concurrently with CUDA.
         with self._mutex:
@@ -757,11 +757,13 @@ class SessionEngine:
                 self.session.cancel.set()
                 self.session.status = "invalidated"
                 self.session.last_response = None
+                self.session.last_payload = None
 
     def _discard(self, session):
         had_state = session.status == "active" or session.native_state is not None
         self.backend.discard(session)
         session.sources.clear()
+        session.last_payload = None
         session.status = "closed"
         if had_state and self.registry is not None:
             self.registry.note_state_discarded()
@@ -782,12 +784,12 @@ class SessionEngine:
             self.session = None
         self.backend.close()
 
-    def _check_append(self, session, batch, final, digest):
+    def _check_append(self, session, batch, final, payload_bytes):
         """Read-only checks, repeated under GPU admission before committing."""
         if batch.stream_session_id != session.stream_session_id:
             raise HTTPException(409, "source_session_mismatch")
         if session.last_request_id == batch.batch_id:
-            if digest != session.last_payload_hash:
+            if payload_bytes != session.last_payload:
                 raise HTTPException(409, "request_id_conflict")
             if session.last_response is not None:
                 return session.last_response
@@ -858,15 +860,15 @@ class SessionEngine:
 
     def prepare_append(self, token, payload, *, decode_jpeg, check, diagnostics):
         check()
-        batch, final, digest = parse_append(
+        batch, final, payload_bytes = parse_append(
             payload, self.video.settings, h264_enabled=self.settings.h264_enabled,
             diagnostics=diagnostics,
         )
-        prepared = _PreparedAppend(batch, final, digest)
+        prepared = _PreparedAppend(batch, final, payload_bytes)
         # Do not expire/discard state here: those operations can access CUDA.
         with self._mutex:
             session = self._get(token)
-            replay = self._check_append(session, batch, final, digest)
+            replay = self._check_append(session, batch, final, payload_bytes)
             over_quota = (
                 session.total_frames + len(batch.frames)
                 > self.settings.max_session_frames
@@ -891,7 +893,7 @@ class SessionEngine:
         timing = _AppendTiming(
             self.profile.route if self.profile else "sam31_session", diagnostics
         )
-        timing.fields["session_ref"] = _session_ref(token)
+        timing.fields["session_ref"] = self.session_reference(token)
         outcome, status_code = "completed", 200
         try:
             return self._append(
@@ -918,12 +920,12 @@ class SessionEngine:
 
     def _append(self, token, payload, *, deadline, decode_jpeg, timing, prepared=None):
         if prepared is None:
-            batch, final, digest = parse_append(
+            batch, final, payload_bytes = parse_append(
                 payload, self.video.settings, h264_enabled=self.settings.h264_enabled,
                 diagnostics=timing.fields,
             )
         else:
-            batch, final, digest = prepared.batch, prepared.final, prepared.digest
+            batch, final, payload_bytes = prepared.batch, prepared.final, prepared.payload_bytes
             timing.fields.update(request_id=batch.batch_id, is_last_batch=final)
         timing.fields.update(
             input_frames=len(batch.frames),
@@ -938,7 +940,7 @@ class SessionEngine:
             self.expire()
             session = self._get(token)
             timing.observe_session(session)
-            replay = self._check_append(session, batch, final, digest)
+            replay = self._check_append(session, batch, final, payload_bytes)
             if replay is not None:
                 session.touched = time.monotonic()
                 timing.mark("response_build")
@@ -953,7 +955,7 @@ class SessionEngine:
                 raise HTTPException(409, "reset_required")
         owns_prepared = prepared is None
         if owns_prepared:
-            prepared = _PreparedAppend(batch, final, digest)
+            prepared = _PreparedAppend(batch, final, payload_bytes)
         began_native = False
         committed_inputs = False
         try:
@@ -1110,7 +1112,7 @@ class SessionEngine:
                 # acquiring this lock. It must never be resurrected by replay.
                 check()
                 session.last_request_id = batch.batch_id
-                session.last_payload_hash = digest
+                session.last_payload = payload_bytes
                 session.last_response = encoded
                 session.touched = time.monotonic()
             return response
@@ -1198,7 +1200,7 @@ def register_session_routes(
             "http_attempt_id": _trace_identifier(
                 request.headers.get("X-Goodvision-HTTP-Attempt-ID")
             ),
-            "session_ref": _session_ref(token),
+            "session_ref": engine.session_reference(token),
         }
         if match := re.search(r"/cameras/(camera-\d+)/", api_prefix):
             diagnostics["camera_id"] = match.group(1)
@@ -1403,7 +1405,7 @@ def register_session_routes(
             )
             processing_finished = time.perf_counter()
             if operation == "create":
-                diagnostics["session_ref"] = _session_ref(result["video_session_id"])
+                diagnostics["session_ref"] = _trace_identifier(result["predictor_epoch"])
             phase = "response_encode"
             class TimedResponse(JSONResponse):
                 async def __call__(self, scope, receive, send):

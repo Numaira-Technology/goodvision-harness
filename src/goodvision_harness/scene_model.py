@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import json
 import math
 import re
@@ -89,9 +88,7 @@ def _reply_diagnostics(content: str) -> dict[str, object]:
     stripped = content.strip()
     body = _strip_json_fence(content)
     result: dict[str, object] = {
-        "content_sha256": hashlib.sha256(
-            content.encode("utf-8", errors="replace")
-        ).hexdigest(),
+        "content_characters": len(content),
         "json_wrapper": (
             "complete_fence" if body != stripped else
             "unrecognized_fence" if stripped.startswith("```") else "none"
@@ -822,9 +819,7 @@ class TemporalVLMInspector:
             if isinstance(generation_id, str) and re.fullmatch(
                 r"gen-[A-Za-z0-9-]{1,156}", generation_id
             ):
-                timing["generation_ref"] = hashlib.sha256(
-                    generation_id.encode()
-                ).hexdigest()
+                timing["generation_id"] = generation_id
             usage = decoded.get("usage")
             if isinstance(usage, Mapping):
                 for field in ("prompt_tokens", "completion_tokens"):

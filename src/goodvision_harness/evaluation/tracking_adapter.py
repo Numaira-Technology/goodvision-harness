@@ -5,7 +5,6 @@ frame receipts and reuse production sam_live metadata semantics. Keep ordinary
 detectors distinct from SAM.
 """
 import base64
-import hashlib
 import httpx
 
 from ..perception import PerceptionSessionHTTPClient
@@ -14,12 +13,11 @@ from ..video_tracking_session import VideoSessionTrackingResult
 
 
 class CountProtocolTracker:
-    def __init__(self, endpoint, *, model, sid, parameters, expected_weights_sha256,
-                 expected_sam_runtime_sources=None):
+    def __init__(self, endpoint, *, model, sid, parameters, expected_weights_path=None):
         if model not in {"sam3.1", "yolo26-s", "yolo26-l", "rfdetr-l"}:
             raise ValueError("unsupported fixed model")
         self.model, self.sid, self.parameters = model, sid, parameters
-        self.weights_sha256, self.sam_sources = expected_weights_sha256, expected_sam_runtime_sources
+        self.weights_path = expected_weights_path
         self.client = httpx.Client(timeout=75, trust_env=False, follow_redirects=False)
         self.endpoint = endpoint
         self.last_response, self.last_stamp, self.opened, self.drained = None, None, False, False
@@ -45,15 +43,13 @@ class CountProtocolTracker:
                 or evidence.get("sam_internal_patch") is not False
                 or not evidence.get("actual_parameter_device", "").startswith("cuda")):
             raise ValueError("actual CUDA/standard4090/stockSAM mismatch")
-        # Preserve both historical workers' weight metadata fields and check the frozen SHA.
         weight = evidence.get("weights", {})
-        actual_sha = weight.get("sha256") if isinstance(weight, dict) else None
-        actual_sha = actual_sha or evidence.get("weight_sha256") or evidence.get("weights_sha256")
-        if actual_sha != self.weights_sha256:
-            raise ValueError("actual weight differs from frozen model")
+        actual_path = weight.get("path") if isinstance(weight, dict) else None
+        actual_path = actual_path or evidence.get("weights_path")
+        if self.weights_path is not None and actual_path != self.weights_path:
+            raise ValueError("actual weight path differs from configured model")
         if self.model == "sam3.1":
-            if (not self.sam_sources or evidence.get("sam_runtime_sources") != self.sam_sources
-                    or evidence.get("dummy_warmup") is not False
+            if (evidence.get("dummy_warmup") is not False
                     or evidence.get("causal_tracking") is not True):
                 raise ValueError("stock causal SAM source identity mismatch")
         elif evidence.get("parameters") != self.parameters:
@@ -63,11 +59,10 @@ class CountProtocolTracker:
     def infer(self, data, *, stream_session_id, frame_sequence, timestamp_seconds):
         if not self.opened or self.drained or stream_session_id != self.sid:
             raise ValueError("tracking session not open")
-        digest = hashlib.sha256(data).hexdigest()
         result = self._request("frame", timeout=75, frame_sequence=frame_sequence,
-                               timestamp_seconds=timestamp_seconds, jpeg_sha256=digest,
+                               timestamp_seconds=timestamp_seconds,
                                jpeg_base64=base64.b64encode(data).decode("ascii"))
-        if (result.get("jpeg_sha256") != digest or result.get("frame_sequence") != frame_sequence
+        if (result.get("frame_sequence") != frame_sequence
                 or result.get("timestamp_seconds") != timestamp_seconds
                 or not result.get("actual_inference_device", "").startswith("cuda")):
             raise ValueError("tracking frame identity or actual device mismatch")

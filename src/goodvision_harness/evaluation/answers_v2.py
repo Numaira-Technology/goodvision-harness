@@ -247,7 +247,6 @@ def _negative_video_end(evidence: dict) -> float:
     if (not isinstance(terminal, dict) or not plan or evidence.get("source_eof") is not True
             or abs(plan[0]["t"]) > EPSILON
             or plan[-1]["frame"] != terminal.get("frame")
-            or plan[-1]["jpeg_sha256"] != terminal.get("jpeg_sha256")
             or abs(plan[-1]["t"] - _number(terminal.get("t"), "terminal frame time")) > EPSILON):
         raise EvidenceInsufficient("real_terminal_frame_not_observed")
     return _number(terminal["t"], "terminal frame time")

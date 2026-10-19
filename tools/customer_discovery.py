@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -15,6 +14,8 @@ if __package__:
         check_host,
         discover,
         selected_service,
+        update_lock,
+        write_json,
     )
 else:
     from update_docker import (
@@ -24,11 +25,76 @@ else:
         check_host,
         discover,
         selected_service,
+        update_lock,
+        write_json,
     )
 
 
 class NameLookupError(UpdateError):
     """A customer-readable lookup problem."""
+
+
+def manual_project(docker, component, names, containers, directory):
+    """Retain installed project labels or allocate an explicit local sequence."""
+    installed = []
+    for service, container in containers.items():
+        labels = container["Config"].get("Labels") or {}
+        project = labels.get("goodvision.update.manual_project")
+        if project:
+            if (not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project)
+                    or labels.get("goodvision.update.manual_role") != service):
+                raise NameLookupError("Installed manual project labels are inconsistent.")
+            installed.append(project)
+    if installed:
+        if len(installed) != len(containers) or len(set(installed)) != 1:
+            raise NameLookupError("Installed manual project labels are inconsistent.")
+    registry = Deployment(component, "manual-installations", directory, (), (), {})
+    with update_lock(registry):
+        path = registry.state_dir / "projects.json"
+        rows = json.loads(path.read_text("utf-8")) if path.exists() else []
+        if not isinstance(rows, list):
+            raise NameLookupError("Manual installation registry needs recovery.")
+        projects, scopes = set(), set()
+        selected = None
+        for row in rows:
+            if (not isinstance(row, dict)
+                    or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", str(row.get("project", "")))
+                    or row.get("component") not in {"harness", "contour"}
+                    or not isinstance(row.get("names"), dict)
+                    or any(not isinstance(k, str) or not isinstance(v, str)
+                           for k, v in row["names"].items())):
+                raise NameLookupError("Manual installation registry needs recovery.")
+            scope = (row["component"], tuple(sorted(row["names"].items())))
+            if row["project"] in projects or scope in scopes:
+                raise NameLookupError("Manual installation registry contains duplicates.")
+            projects.add(row["project"])
+            scopes.add(scope)
+            if row["component"] == component and row["names"] == names:
+                selected = row["project"]
+        if selected is not None:
+            if installed and selected != installed[0]:
+                raise NameLookupError("Installed project differs from its saved registry.")
+            return selected
+        if installed:
+            project = installed[0]
+            if project in projects:
+                raise NameLookupError("Installed project belongs to another saved installation.")
+        else:
+            # A rebuilt registry must not reassign another live installation's name.
+            projects.update(
+                label for container in inventory(docker)
+                if isinstance(label := (container["Config"].get("Labels") or {}).get(
+                    "goodvision.update.manual_project"), str)
+            )
+            sequence = max((int(p.split("-")[1]) for p in projects
+                            if re.fullmatch(r"manual-[1-9][0-9]*", p)), default=0) + 1
+            project = f"manual-{sequence}"
+            while (registry.state_dir.parent / project).exists():
+                sequence += 1
+                project = f"manual-{sequence}"
+        write_json(path, [*rows, {"component": component, "names": dict(names),
+                                 "project": project}])
+        return project
 
 
 def running(container):
@@ -272,8 +338,8 @@ def named_deployment(docker, component, selection, *, state_directory):
                 and engine is not None
                 and engine["Id"] == containers["engine"]["Id"]
             )
-        key = json.dumps({"component": component, "names": names}, sort_keys=True)
-        project = "manual-" + hashlib.sha256(key.encode()).hexdigest()[:16]
+        if not valid or selection.get("ids") != {s: c["Id"] for s, c in containers.items()}:
+            raise NameLookupError("That installation changed. Find it again.")
         location = next(iter(containers.values()))["Config"].get("Labels") or {}
         directory = location.get(LABEL + "project.working_dir")
         directory = (
@@ -281,6 +347,7 @@ def named_deployment(docker, component, selection, *, state_directory):
             if directory and Path(directory).is_dir()
             else Path(state_directory)
         )
+        project = manual_project(docker, component, names, containers, directory)
         deployment = Deployment(
             component, project, directory, (), (), containers, manual_names=dict(names)
         )

@@ -6,7 +6,6 @@ epoch; it does not claim SAM video memory or invent detections on empty frames.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -131,16 +130,13 @@ class ResearchDetectorHTTPClient(RichLabelHTTPClient):
         if payload.pop("detector_model", None) != self.model:
             raise RichLabelProtocolError("detector model receipt mismatch")
         provenance = payload.pop("detector_provenance", None)
-        if not isinstance(provenance, dict) or set(provenance) != {
+        if not isinstance(provenance, dict) or not {
             "detector_model",
-            "weights_sha256",
             "actual_parameter_device",
-        }:
+        }.issubset(provenance):
             raise RichLabelProtocolError("missing detector provenance")
         if (
             provenance["detector_model"] != self.model
-            or not isinstance(provenance["weights_sha256"], str)
-            or re.fullmatch(r"[0-9a-f]{64}", provenance["weights_sha256"]) is None
             or not isinstance(provenance["actual_parameter_device"], str)
             or re.fullmatch(r"cuda(?::[0-9]+)?", provenance["actual_parameter_device"])
             is None
@@ -156,7 +152,11 @@ class ResearchDetectorHTTPClient(RichLabelHTTPClient):
             or any(item.observation_state is None for item in snapshot.objects)
         ):
             raise RichLabelProtocolError("detector source identity mismatch")
-        self.last_detector_provenance = dict(provenance)
+        self.last_detector_provenance = {
+            key: provenance[key] for key in
+            ("detector_model", "actual_parameter_device", "weights_path")
+            if key in provenance
+        }
         return snapshot
 
 
@@ -230,7 +230,6 @@ class DetectorNativeSessionAdapter:
                     [
                         f.frame_sequence,
                         f.timestamp_seconds,
-                        hashlib.sha256(f.jpeg_bytes).hexdigest(),
                     ]
                     for f in frames
                 ],
@@ -245,7 +244,7 @@ class DetectorNativeSessionAdapter:
             request_id,
             frames,
             payload,
-            hashlib.sha256(body).hexdigest(),
+            body,
             time.monotonic() + self._timeout_seconds,
         )
 
@@ -279,8 +278,7 @@ class DetectorNativeSessionAdapter:
                     or prepared.stream_session_id != stream_session_id
                     or prepared.request_id != request_id
                     or prepared.frames != frames
-                    or hashlib.sha256(prepared.payload.body).hexdigest()
-                    != prepared.payload_hash
+                    or prepared.payload.body != prepared.prepared_body
                 ):
                     raise RichLabelProtocolError("prepared detector append changed")
             if (

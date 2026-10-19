@@ -18,7 +18,7 @@ def wait_after_429(error, *, ledger, context, receipt, clock, stop=None):
     delay = max(60.0, retry_after)
     receipt = receipt or {}
     row = {"kind": "vlm_rate_limit_backoff", **context,
-           "call_id": receipt.get("call_id"), "request_sha256": receipt.get("request_sha256"),
+           "call_id": receipt.get("call_id"), "operation": receipt.get("operation"),
            "seconds": delay, "started_epoch": clock.time(), "same_job_and_parameters": True}
     with ledger.lock:
         ledger._append("rate-limit-backoff.jsonl", row)

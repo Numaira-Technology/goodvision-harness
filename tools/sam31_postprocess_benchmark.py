@@ -3,15 +3,15 @@
 
 Run independently of active serving/inference. One strict-loaded model is shared
 by both profiles. The same sixteen local JPEGs run through fresh sessions, then
-empty EOF; file loading, output hashing and network are outside timed stages.
+empty EOF; file loading, observation encoding and network are outside timed stages.
 This is a finite performance/equivalence diagnostic, not an accuracy benchmark.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import gc
-import hashlib
 import importlib
 import io
 import json
@@ -20,6 +20,7 @@ import random
 import sys
 import time
 import traceback
+import zlib
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,7 +88,6 @@ def load_images(directory, *, start_index=0, max_side=512):
             sources.append(
                 {
                     "file": path.name,
-                    "sha256": hashlib.sha256(data).hexdigest(),
                     "jpeg_bytes": len(data),
                     "source_dimensions": source_size,
                     "model_source_dimensions": image.size,
@@ -126,7 +126,14 @@ def frame_signature(index, output, image_size):
         "frame_sequence": index,
         "ids": [int(value) for value in ids],
         "scores": [float(value) for value in scores],
-        "mask_sha256": [hashlib.sha256(mask.tobytes()).hexdigest() for mask in masks],
+        "mask_values": {
+            "shape": list(masks.shape),
+            "dtype": masks.dtype.str,
+            "encoding": "packbits-little-zlib-base64",
+            "data": base64.b64encode(
+                zlib.compress(np.packbits(masks, bitorder="little").tobytes())
+            ).decode("ascii"),
+        },
         "mask_areas": [int(mask.sum()) for mask in masks],
     }
 
@@ -138,14 +145,14 @@ def compare(first, second):
         return {"equal_ids_and_masks": False, "different_frames": "frame_count"}
     for one, four in zip(a, b, strict=True):
         if any(
-            one[key] != four[key] for key in ("frame_sequence", "ids", "mask_sha256")
+            one[key] != four[key] for key in ("frame_sequence", "ids", "mask_values")
         ):
             differences.append(one["frame_sequence"])
     return {"equal_ids_and_masks": not differences, "different_frames": differences}
 
 
 def measure_session(backend, session_type, images, *, deadline):
-    """Time real adapter stages; signatures are computed after every CUDA stage."""
+    """Time real adapter stages; observations are encoded after every CUDA stage."""
     torch = backend.video.backend._torch
     session = session_type("benchmark", "benchmark", "benchmark", time.monotonic())
     stages = {}
@@ -190,14 +197,14 @@ def measure_session(backend, session_type, images, *, deadline):
     elapsed = time.perf_counter() - started
     peak_allocated = torch.cuda.max_memory_allocated()
     after_allocated = torch.cuda.memory_allocated()
-    hash_started = time.perf_counter()
+    encoding_started = time.perf_counter()
     signatures = [
         frame_signature(index, output, images[index].size) for index, output in outputs
     ]
     return {
         "stages": stages,
         "native_session_seconds": elapsed,
-        "hash_seconds_excluded": time.perf_counter() - hash_started,
+        "observation_encoding_seconds_excluded": time.perf_counter() - encoding_started,
         "emitted_before_eof": emitted_before_eof,
         "emitted_at_empty_eof": len(outputs) - emitted_before_eof,
         "cuda_allocated_before": before_allocated,
@@ -331,7 +338,8 @@ def run(args):
         report["caveat"] = (
             "Times include native state initialization, person prompt, propagation, "
             "mask postprocessing, pruning, EOF and CUDA sync; exclude JPEG loading, "
-            "hashing and HTTP. Exact equality on this clip does not establish accuracy."
+            "observation encoding and HTTP. Exact equality on this clip does not "
+            "establish accuracy."
         )
         return report
     except BaseException as error:

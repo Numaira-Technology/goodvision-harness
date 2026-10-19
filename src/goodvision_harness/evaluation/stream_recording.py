@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,7 +35,6 @@ class StreamingRecorder:
         self.profile = profile
         self._lock = RLock()
         self._sequence = 0
-        self._previous = None
         self._poisoned = False
         self._closed = False
         self.frames = {}
@@ -58,8 +56,8 @@ class StreamingRecorder:
                 row = {"sequence": self._sequence, "kind": kind,
                        "recorded_monotonic": time.monotonic(),
                        "clock_domain": self.clock_domain,
-                       "previous_record_sha256": self._previous, "payload": payload}
-                self._previous = publish_once(path, row)
+                       "payload": payload}
+                publish_once(path, row)
                 self._references.append((kind, path, self._sequence))
                 return str(path)
             except BaseException:
@@ -71,8 +69,7 @@ class StreamingRecorder:
             if self.frames and (sequence <= max(self.frames)
                                 or timestamp <= self.frames[max(self.frames)]["t"]):
                 raise ValueError("native source frame order changed")
-            row = {"frame": sequence, "t": timestamp,
-                   "jpeg_sha256": hashlib.sha256(jpeg).hexdigest()}
+            row = {"frame": sequence, "t": timestamp}
             self.record("source", row)
             self.frames[sequence] = row
 
@@ -223,10 +220,12 @@ class StreamingRecorder:
             evidence = capture.seal(source_eof=source_eof, tracking_drained=tracking_drained,
                                     events_drained=events_drained, fusion_drained=fusion_drained,
                                     person_frame_accounting=person_accounting)
-            digest = publish_once(self.root / "capture.json", evidence)
+            publish_once(self.root / "capture.json", evidence)
             publish_once(self.root / "completion.json", {
-                "capture_file_sha256": digest, "evidence_sha256": evidence["evidence_sha256"],
-                "record_count": self._sequence, "last_record_sha256": self._previous,
+                "capture_path": str(self.root / "capture.json"),
+                "video_id": evidence["video_id"], "source_id": evidence["source_id"],
+                "stream_session_id": evidence["stream_session_id"],
+                "record_count": self._sequence,
                 "runtime_statistics": runtime_statistics,
                 "complete": evidence["observation_manifest"]["complete"]})
             self._closed = True

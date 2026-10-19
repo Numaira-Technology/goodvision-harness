@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import os
 import platform
@@ -29,11 +28,6 @@ PROGRAM = "qwen-vlm"
 
 def profile():
     return json.loads((HERE / "local_model_profile.json").read_text())
-
-
-def digest(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def run(command, *, timeout=120, capture=False, stdout_only=False, env=None):
@@ -149,7 +143,12 @@ def load_install(root):
         raise RuntimeError(
             "deployment missing or profile changed; use a new model root"
         )
-    if data["engine_requirements_sha256"] != digest(HERE / "model-requirements.txt"):
+    if "engine_requirements" not in data:
+        raise RuntimeError(
+            "legacy deployment lacks explicit engine requirements; "
+            "review the original installation before migrating its record"
+        )
+    if data["engine_requirements"] != (HERE / "model-requirements.txt").read_text():
         raise RuntimeError("engine lock changed; use a new model root")
     if data["repo"] != str(ROOT):
         raise RuntimeError("deployment belongs to another checkout")
@@ -359,7 +358,7 @@ def install(args):
             "gpu": gpu,
             "port": args.port,
             "model_path": str(model_path),
-            "engine_requirements_sha256": digest(HERE / "model-requirements.txt"),
+            "engine_requirements": (HERE / "model-requirements.txt").read_text(),
         }
         installed["serve_command"] = serve_command(root, installed)
         (root / "supervisord.conf").write_text(supervisor_config(root))

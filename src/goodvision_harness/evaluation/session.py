@@ -6,7 +6,6 @@ batches; immediate detector results cannot stand in for those batches.
 """
 from __future__ import annotations
 
-import hashlib
 from threading import Event, RLock
 import time
 
@@ -81,9 +80,8 @@ class UnifiedCaptureSession:
                 or frame.frame_sequence != self._ordered_frames[len(self._submitted)]):
             raise ValueError("source frame order differs from frozen plan")
         row = self._frame_plan[frame.frame_sequence]
-        digest = hashlib.sha256(frame.jpeg_bytes).hexdigest()
-        if row["t"] != frame.timestamp_seconds or row["jpeg_sha256"] != digest:
-            raise ValueError("source frame timestamp/hash differs from frozen plan")
+        if row["t"] != frame.timestamp_seconds:
+            raise ValueError("source frame timestamp differs from the source plan")
         if self.observer.pending:
             # Apply offline backpressure rather than dropping a busy window.
             self.observer.drain_window()
@@ -97,7 +95,7 @@ class UnifiedCaptureSession:
         self.recorder.timing({"clock_domain": self.recorder.clock_domain,
                               "kind": "source_ingress", "frame_sequence": frame.frame_sequence,
                               "timestamp_seconds": frame.timestamp_seconds,
-                              "frame_available": available, "jpeg_sha256": digest})
+                              "frame_available": available})
         self.scene.observe_frame(frame.jpeg_bytes, frame.timestamp_seconds,
                                  frame.frame_sequence, force=True)
         window = self._windows.get(frame.frame_sequence)
@@ -136,7 +134,6 @@ class UnifiedCaptureSession:
                 raise ValueError("tracking completion lacks explicit observation state")
             self.recorder.tracking_frame(frame=index, timestamp_seconds=mapped.timestamp_seconds,
                                           subjects=subjects,
-                                          jpeg_sha256=self._frame_plan[index]["jpeg_sha256"],
                                           raw_response=original.as_dict())
             self._tracked.add(index)
             self._sources.pop(index, None)

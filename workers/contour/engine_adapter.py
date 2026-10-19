@@ -7,7 +7,6 @@ Keep implementation identifiers here and retain upstream license files.
 from __future__ import annotations
 
 import copy
-import hashlib
 
 from .contracts import SessionAppended, SessionCreated, SessionDeleted
 
@@ -45,8 +44,7 @@ def project_response(operation: str, payload: dict) -> dict:
                 native["backend"] = PUBLIC_BACKEND
                 # Stable across retries/restarts; includes epoch, never joins people
                 # across independent model sessions. Caller identifiers stay intact.
-                identity = f"{native['epoch']}:{native['object_id']}".encode()
-                item["track_id"] = "ct-" + hashlib.sha256(identity).hexdigest()[:32]
+                item["track_id"] = f"ct-{native['epoch']}:{native['object_id']}"
     contract = {
         "create": SessionCreated,
         "append": SessionAppended,

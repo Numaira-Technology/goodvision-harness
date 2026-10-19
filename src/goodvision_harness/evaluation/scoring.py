@@ -1,4 +1,4 @@
-"""Score immutable three-lane answers locally using the unchanged, hash-pinned PR63 scorer.
+"""Score immutable three-lane answers locally using the unchanged PR63 scorer.
 
 Ground truth is read only here. This module does not import or call model clients.
 Terminal failures contribute zero quality, never a fabricated numeric prediction.
@@ -8,28 +8,25 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-import hashlib
 import importlib.util
 import json
 from pathlib import Path
 
 from .recording import publish_once
+from .answer_artifact import PUBLIC_QUESTION_FIELDS
+from .model_operation import operation_for_request, question_for_request
 
-SCORER_SHA256 = "956982bd59015fbd8591c9e8e5e5c58397189ab4d9e908428668094a84c53d43"
 PENDING = frozenset({"not_started", "interrupted", "shared_failure"})
 TERMINAL = frozenset({"answered", "insufficient_evidence", "unsupported", "invalid_answer",
                       "request_failure", "incomplete_video", "skipped", "not_called"})
 
 
-def _read(path, expected):
-    raw = Path(path).read_bytes()
-    if hashlib.sha256(raw).hexdigest() != expected:
-        raise ValueError(f"input file hash mismatch: {Path(path).name}")
-    return raw
+def _read(path):
+    return Path(path).read_bytes()
 
 
-def _jsonl(path, expected):
-    values = [json.loads(line) for line in _read(path, expected).splitlines() if line.strip()]
+def _jsonl(path):
+    values = [json.loads(line) for line in _read(path).splitlines() if line.strip()]
     result = {row["qa_id"]: row for row in values}
     if not values or len(result) != len(values):
         raise ValueError("nonempty unique question IDs required")
@@ -58,28 +55,40 @@ def _aggregate(rows):
     return totals
 
 
-def score_cohort(*, questions_path, questions_sha256, truth_path, truth_sha256,
-                 cohort_path, cohort_sha256, mode, output, scorer_path, summary_root=None):
+def require_saved_score_inputs(result, *, questions_path, truth_path):
+    """Do not reuse a score solely because its input file paths still match."""
+    questions, truths = _jsonl(questions_path), _jsonl(truth_path)
+    rows = result["questions"]
+    if len(rows) != len(questions) or {row["qa_id"] for row in rows} != set(questions):
+        raise ValueError("existing score question scope changed")
+    for row in rows:
+        qid = row["qa_id"]
+        if row["question"] != questions[qid] or row["ground_truth"] != truths[qid]["ground_truth"]:
+            raise ValueError("existing score question or ground truth changed")
+
+
+def score_cohort(*, questions_path, truth_path, cohort_path, mode, output, scorer_path,
+                 summary_root=None, questions_sha256=None, truth_sha256=None, cohort_sha256=None):
     if mode not in {"rule", "model"}:
         raise ValueError("mode must be rule or model")
     if mode == "model" and summary_root is None:
         raise ValueError("model scoring requires the final-answer directory")
     scorer_path = Path(scorer_path).resolve()
-    _read(scorer_path, SCORER_SHA256)
     spec = importlib.util.spec_from_file_location("unified_pr63_scoring", scorer_path)
     scorer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scorer)
-    questions = _jsonl(questions_path, questions_sha256)
-    truths = _jsonl(truth_path, truth_sha256)
+    questions = _jsonl(questions_path)
+    truths = _jsonl(truth_path)
     if not questions.keys() <= truths.keys():
         raise ValueError("missing private ground truth")
     cohort_path = Path(cohort_path).resolve()
-    cohort = json.loads(_read(cohort_path, cohort_sha256))
+    cohort = json.loads(_read(cohort_path))
     indexed = {row["qa_id"]: row for row in cohort["rows"]}
     if len(indexed) != len(cohort["rows"]) or indexed.keys() != questions.keys():
         raise ValueError("cohort must retain every question exactly once")
     run = json.loads((cohort_path.parent / "run.json").read_bytes())
-    if run["questions_sha256"] != questions_sha256:
+    saved_questions = run.get("public_questions")
+    if saved_questions is not None and saved_questions != list(questions.values()):
         raise ValueError("cohort was generated from different questions")
     rows = []
     for qid, question in questions.items():
@@ -87,19 +96,36 @@ def score_cohort(*, questions_path, questions_sha256, truth_path, truth_sha256,
         artifact_path = (cohort_path.parent / entry["answer_path"]).resolve()
         if not artifact_path.is_relative_to(cohort_path.parent):
             raise ValueError("answer path escapes cohort directory")
-        artifact = json.loads(_read(artifact_path, entry["answer_file_sha256"]))
+        artifact = json.loads(_read(artifact_path))
         if (artifact["qa_id"] != qid or artifact["video_id"] != question["video_id"]
                 or entry["video_id"] != question["video_id"]):
             raise ValueError("answer/question identity mismatch")
+        saved_question = artifact.get("public_question")
+        saved_request = artifact.get("summary_request", {})
+        if saved_question is None and "messages" in saved_request:
+            saved_question = json.loads(saved_request["messages"][1]["content"])["question"]
+        if saved_question is not None and saved_question != {
+                key: value for key, value in question.items() if key in PUBLIC_QUESTION_FIELDS}:
+            raise ValueError("answer was prepared for different public question content")
         answer, source = artifact["parser"], artifact_path
         if mode == "model":
             source = Path(summary_root) / artifact_path.stem / "outcome.json"
             if source.exists():
                 answer = json.loads(source.read_bytes())
-                if (answer["qa_id"] != qid or answer["video_id"] != question["video_id"]
-                        or answer.get("artifact_sha256") != entry["answer_file_sha256"]
-                        or answer.get("evidence_sha256") != artifact.get("evidence_sha256")):
+                if (answer["qa_id"] != qid or answer["video_id"] != question["video_id"]):
                     raise ValueError("final-model answer does not belong to this exact artifact")
+                if "messages" in saved_request:
+                    context = {"phase": "same_evidence_summary", "qa_id": qid,
+                               "video_id": question["video_id"]}
+                    expected_operation = operation_for_request(context, saved_request)
+                    final_request = json.loads((source.parent / "request.json").read_bytes())
+                    final_context = dict(context)
+                    if "operation" in final_request:
+                        final_context["operation"] = final_request["operation"]
+                    if (operation_for_request(final_context, final_request) != expected_operation
+                            or question_for_request(final_request) != question_for_request(saved_request)
+                            or ("operation" in answer and answer["operation"] != expected_operation)):
+                        raise ValueError("final-model answer has a different observation scope")
             else:
                 observation = artifact["parser"]["status"]
                 answer = {"status": "not_called" if observation in {"request_failure", "incomplete_video"}
@@ -131,9 +157,7 @@ def score_cohort(*, questions_path, questions_sha256, truth_path, truth_sha256,
         rows.append({"qa_id": qid, "video_id": question["video_id"], "question": question,
                      "ground_truth": truth, "status": status, "score_state": "pending" if pending else "terminal",
                      "prediction": prediction, "original_answer": answer, "metrics": metrics,
-                     "artifact_path": str(artifact_path), "artifact_sha256": entry["answer_file_sha256"],
-                     "answer_path": str(source),
-                     "answer_file_sha256": hashlib.sha256(source.read_bytes()).hexdigest() if source.exists() else None})
+                     "artifact_path": str(artifact_path), "answer_path": str(source)})
     groups = {}
     for field in ("capability", "question_form", "source_group"):
         values = sorted({str(row["question"].get(field, "unspecified")) for row in rows})
@@ -145,8 +169,9 @@ def score_cohort(*, questions_path, questions_sha256, truth_path, truth_sha256,
         groups["ground_truth_label"][value] = _aggregate([row for row in rows
             if row["question"]["capability"] == "event_recognition" and str(row["ground_truth"]["value"]) == value])
     result = {"schema_version": "unified-pr63-results-v1", "method": cohort["method"], "mode": mode,
-              "scorer_sha256": SCORER_SHA256, "scorer_merge_commit": "253935fc944fd8ff05ae84c1f3a987c035141578",
-              "questions_sha256": questions_sha256, "truth_sha256": truth_sha256, "cohort_sha256": cohort_sha256,
+              "scorer_path": str(scorer_path), "scorer_source": "evaluation PR63",
+              "questions_path": str(Path(questions_path).resolve()),
+              "truth_path": str(Path(truth_path).resolve()), "cohort_path": str(cohort_path),
               "full_cohort": _aggregate(rows), "breakdowns": groups, "questions": rows,
               "new_model_calls": 0, "historical_answers_modified": False}
     output = Path(output)
@@ -159,16 +184,15 @@ def main():
     cli = argparse.ArgumentParser(description=__doc__)
     for name in ("questions", "truth", "cohort"):
         cli.add_argument("--" + name, type=Path, required=True)
-        cli.add_argument("--" + name + "-sha256", required=True)
+        cli.add_argument("--" + name + "-sha256", help=argparse.SUPPRESS)
     cli.add_argument("--mode", choices=("rule", "model"), required=True)
     cli.add_argument("--summary-root", type=Path)
     cli.add_argument("--scorer", type=Path, default=Path(__file__).resolve().parents[3] /
                      "experiments/ashley-detector182-20261012/scoring/scoring.py")
     cli.add_argument("--output", type=Path, required=True)
     args = cli.parse_args()
-    result = score_cohort(questions_path=args.questions, questions_sha256=args.questions_sha256,
-        truth_path=args.truth, truth_sha256=args.truth_sha256, cohort_path=args.cohort,
-        cohort_sha256=args.cohort_sha256, mode=args.mode, summary_root=args.summary_root,
+    result = score_cohort(questions_path=args.questions, truth_path=args.truth,
+        cohort_path=args.cohort, mode=args.mode, summary_root=args.summary_root,
         scorer_path=args.scorer, output=args.output)
     print(json.dumps(result["full_cohort"], ensure_ascii=False))
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import bisect
 import copy
-import hashlib
 import json
 import math
 import os
@@ -63,6 +62,20 @@ class LiveMonitor:
             os.environ.get("PREVIEW_DETECTOR_MODEL", "yolo26-s").strip()
         )
         self._detector_seq = {}
+        self._detector_stage_scopes_path = self.output / "detector-stage-scopes.json"
+        self._detector_stage_scopes = (
+            json.loads(self._detector_stage_scopes_path.read_text())
+            if self._detector_stage_scopes_path.exists()
+            else {}
+        )
+        scopes = self._detector_stage_scopes
+        if (
+            not isinstance(scopes, dict)
+            or any(not isinstance(k, str) for k in scopes)
+            or any(type(v) is not int or v < 1 for v in scopes.values())
+            or len(set(scopes.values())) != len(scopes)
+        ):
+            raise ValueError("invalid detector stage scope inventory")
         self._detector_lock = threading.Lock()
 
     def __enter__(self):
@@ -497,7 +510,14 @@ class LiveMonitor:
                 else 1
             )
             self._detector_seq[key] = (stage, epoch, seq)
-            scope = hashlib.sha256(stage.encode()).hexdigest()[:16]
+            if stage not in self._detector_stage_scopes:
+                updated_scopes = dict(self._detector_stage_scopes)
+                updated_scopes[stage] = (
+                    max(self._detector_stage_scopes.values(), default=0) + 1
+                )
+                write_json(self._detector_stage_scopes_path, updated_scopes)
+                self._detector_stage_scopes = updated_scopes
+            scope = self._detector_stage_scopes[stage]
             session_id = f"preview-{scope}-{key[0]}-{key[1]}-e{epoch}"
             request = urllib.request.Request(
                 f"{self.detector_url}/v1/tracks",
