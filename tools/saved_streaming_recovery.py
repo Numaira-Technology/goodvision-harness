@@ -1,4 +1,4 @@
-"""Prepare and answer never-sent questions from the original saved-streaming scope.
+"""Prepare saved-streaming answers, including explicitly approved failure recovery.
 
 Run each phase once under the experiment controller. This tool does not rent a
 GPU, capture media, reconcile unknown receipts or change historical artifacts.
@@ -247,6 +247,77 @@ def freeze_source(root, worktree, commit):
     return resolved
 
 
+def failed_answer_selection(path, sent, questions, *, allow_timeouts):
+    """Freeze the requested failure subset without copying GT into the plan."""
+    from goodvision_harness.evaluation.model_operation import summary_operation
+    from goodvision_harness.evaluation.summary_recovery import SCHEMA
+
+    original = {row["qa_id"]: row for row in questions}
+    selected = []
+    report = load(path)
+    candidates = [row for row in report["questions"]
+                  if row["status"] in {"request_failure", "invalid_answer"}]
+    historical = [request for row in candidates for request in sent[row["qa_id"]]]
+    wanted = {request["call_id"] for request in historical}
+    archived = {}
+    for ledger_path in {request["ledger"] for request in historical}:
+        for request in rows(ledger_path):
+            if request["call_id"] in wanted:
+                if (request["call_id"] in archived
+                        and archived[request["call_id"]] != request["request"]):
+                    raise ValueError("Conflicting historical request records")
+                archived[request["call_id"]] = request["request"]
+    for row in candidates:
+        qid, video = row["qa_id"], row["video_id"]
+        outcome_path = Path(row["source_answer"])
+        outcome = load(outcome_path)
+        if (original[qid]["video_id"] != video or outcome["qa_id"] != qid
+                or outcome["video_id"] != video or outcome["status"] != row["status"]):
+            raise ValueError("Historical failed-answer selection disagrees with its source")
+        error = outcome.get("failure_policy") or {}
+        if outcome["status"] == "invalid_answer":
+            response = load(outcome_path.parent / "response.json")
+            if response.get("choices", [{}])[0].get("finish_reason") != "length":
+                raise ValueError("This recovery covers truncated outputs, not other invalid answers")
+            failure = "output_truncated"
+        elif error.get("status_code") == 400:
+            failure = "http400_response"
+        elif error.get("code") == "timeout" and allow_timeouts:
+            failure = "timeout_without_response"
+        else:
+            raise ValueError("Historical failure is outside the explicit recovery scope")
+        history = [request["call_id"] for request in sent[qid]]
+        terminal_call = (outcome.get("ledger_receipt") or {}).get("call_id")
+        if terminal_call is None and len(history) == 1:
+            # Some legacy failures omitted the call receipt from outcome.json.
+            # Match their saved request to the only old dispatch. Any later
+            # dispatch makes this fallback ineligible, including a new timeout.
+            terminal_call = history[0]
+        if terminal_call not in history:
+            raise ValueError("The selected old outcome must identify its final historical call")
+        saved = load(outcome_path.parent / "request.json")
+        expected = {"model": saved["model"], "messages": saved["messages"], **saved["parameters"]}
+        if archived.get(terminal_call) != expected:
+            raise ValueError("The selected old outcome does not match its archived request")
+        calls = history[:history.index(terminal_call) + 1]
+        if calls != history:
+            raise ValueError("A later dispatch exists beyond the selected old failure; preserve it")
+        if len(calls) not in {1, 2} or len(set(calls)) != len(calls):
+            raise ValueError("Historical sends are missing, duplicated or exhausted")
+        capture = load(row["source_capture"])
+        selected.append({"qa_id": qid, "video_id": video,
+            "public_question": original[qid],
+            "operation": summary_operation(capture, qid), "prior_call_ids": calls,
+            "source_answer": str(outcome_path), "source_capture": row["source_capture"],
+            "failure_class": failure, "allow_unknown_timeout": failure == "timeout_without_response",
+            "remaining_sends": 3 - len(calls)})
+    if len(selected) != 41 or len({row["qa_id"] for row in selected}) != 41:
+        raise ValueError("The authorized historical recovery must contain exactly 41 questions")
+    return {"schema_version": SCHEMA, "authorization": "human_requested_failed41_recovery_20261019",
+            "max_cumulative_sends": 3, "scope_source": str(path.resolve()), "questions": selected,
+            "historical_outcomes_and_costs_unchanged": True}
+
+
 def prepare(args):
     root, source_round, last_answer = args.root.resolve(), args.source_round.resolve(), args.last_answer.resolve()
     if root.exists():
@@ -265,9 +336,26 @@ def prepare(args):
         "last_answer": str(last_answer), "paid_dispatch": False, "gpu_creations": 0})
     commit = freeze_source(root, args.worktree, args.commit)
     sent = copy_ledger(root, last_answer)
-    needed_videos = {question["video_id"] for question in questions if question["qa_id"] not in sent}
+    recovery = None
+    if args.recover_failed_answers is not None:
+        if args.partial_approval is not None:
+            raise ValueError("Keep failed-answer and partial-observation recovery selections separate")
+        sys.path.insert(0, str(root / "checkout/src"))
+        recovery = failed_answer_selection(args.recover_failed_answers, sent, questions,
+                                           allow_timeouts=args.allow_selected_timeout_recovery)
+        save(root / "failed-answer-authorization.json", recovery)
+    selected_ids = ({row["qa_id"] for row in recovery["questions"]} if recovery is not None
+                    else {question["qa_id"] for question in questions if question["qa_id"] not in sent})
+    needed_videos = {question["video_id"] for question in questions if question["qa_id"] in selected_ids}
     by_video = {video: saved_source(reference, video) for video, reference in catalog.items()
                 if video in needed_videos}
+    if recovery is not None:
+        for entry in recovery["questions"]:
+            source = by_video[entry["video_id"]]
+            if (Path(source["capture"]).resolve() != Path(entry["source_capture"]).resolve()
+                    or any(source[field] != entry["operation"][target] for field, target in
+                           (("source_id", "source"), ("stream_session_id", "session")))):
+                raise ValueError("Failed-answer recovery must use the original saved observations")
     partial_approval = None
     if args.partial_approval is not None:
         partial_approval = load(args.partial_approval)
@@ -297,7 +385,7 @@ def prepare(args):
     for position, question in enumerate(questions, 1):
         qid, video = question["qa_id"], question["video_id"]
         source = by_video.get(video) or catalog.get(video) or failures[video]
-        state = ("prior_final_dispatch_preserved" if qid in sent else
+        state = ("prior_final_dispatch_preserved" if qid in sent and qid not in selected_ids else
                  "saved_answer_candidate" if source["state"] in {
                      "saved_source_ended", "approved_partial_saved_source"} else source["state"])
         inventory.append({"position": position, "qa_id": qid, "video_id": video,
@@ -332,6 +420,7 @@ def prepare(args):
         "final_model": final, "scoring": {key: scoring[key] for key in ("truth", "scorer")},
         "prior_release_record": release, "legacy_duration_deferral_applied": False,
         "partial_observation_approval": partial_approval,
+        "failed_answer_recovery": recovery,
         "historical_dispatches_preserved": True, "new_observation_calls": 0, "new_gpu_creations": 0}
     save(root / "plan.json", plan)
     save(root / "ready.json", {"source_commit": commit, "prepared_epoch": time.time(),
@@ -408,7 +497,8 @@ def run_phase(args):
     save(root / (args.phase + "-intent.json"), {"epoch": time.time(),
         "source_commit": plan["source_commit"], "paid_dispatch_enabled": args.phase == "answer"})
     ledger = ModelLedger(root / "output/model-ledger", seed_manifest_path=root / "ledger-seed.json",
-                         owner_lock_path=root / "model-ledger.lock")
+                         owner_lock_path=root / "model-ledger.lock",
+                         summary_recovery=plan.get("failed_answer_recovery"))
     results, final = [], plan["final_model"]
     try:
         client = (None if args.phase == "inputs" else ModelAPIClient(
@@ -467,6 +557,10 @@ def main():
     cli.add_argument("--commit")
     cli.add_argument("--partial-approval", type=Path,
                      help="Explicit human-approved source/question list for partial saved observations")
+    cli.add_argument("--recover-failed-answers", type=Path,
+                     help="Explicitly recover the 41 historical failures selected from this score report")
+    cli.add_argument("--allow-selected-timeout-recovery", action="store_true",
+                     help="Human authorization includes the selected six unknown timeout receipts")
     cli.add_argument("--dependencies", type=Path,
                      help="Container-only temporary dependency directory for the frozen tokenizer wheel")
     args = cli.parse_args()

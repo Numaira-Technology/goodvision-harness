@@ -12,6 +12,7 @@ failure/interruption records. Every original question appears in `plan.json`.
 
 - Any earlier final-answer dispatch is preserved, including invalid answers and
   unknown receipts. A new prompt does not make that question payable again.
+  The explicit human-authorized 41-question recovery below is a narrow exception.
 - Never-sent questions with saved, safely ended streaming sources enter input
   preparation. Local window failures and duration notes are not blanket gates.
 - Terminal capture failure, shared interruption, missing capture and unresolved
@@ -56,6 +57,24 @@ launch, intent, container and atomic outputs first; use a separate recovery
 decision rather than removing markers or sending again.
 
 ## Controller responsibilities
+
+### Explicit historical failure recovery
+
+The human authorized rerunning 41 historical failures on 2026-10-19, including
+six timeout requests whose response/payment status remains unknown. Prepare
+with `--recover-failed-answers SCORE_REPORT --allow-selected-timeout-recovery`.
+The report selects 24 HTTP400 responses, six timeouts and 11 truncated outputs;
+the runner verifies the saved outcomes, questions, observation operations and
+exact old call lists before permitting new dispatch. It does not copy GT into
+the prepared plan or model prompts.
+
+Every old send still counts toward the maximum of three. Prior rows and costs
+are unchanged; 0215 counting has only one send remaining. The same short-answer
+and timestamp-only observation contracts apply. A new success is cached, a new
+unknown receipt is blocked, and an old authorization cannot bypass a later run.
+See [the implementation contract](../design/2026-10-19-failed-answer-recovery.md).
+
+### Resource ownership
 
 `tools/saved_streaming_controller.py` owns the existing two host-wide evaluation
 locks. Before launch it confirms the prior capture/answer terminal records, the

@@ -17,6 +17,7 @@ import time
 from types import MethodType
 
 from .model_operation import operation_for_request, operation_key, validate_operation
+from .summary_recovery import recovery_calls
 
 
 class LedgerBlocked(RuntimeError):
@@ -46,7 +47,8 @@ def _rows(path):
 
 
 class ModelLedger:
-    def __init__(self, root, *, seed_manifest_path, owner_lock_path, seed_manifest_sha256=None):
+    def __init__(self, root, *, seed_manifest_path, owner_lock_path, seed_manifest_sha256=None,
+                 summary_recovery=None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._handles = []
@@ -58,6 +60,9 @@ class ModelLedger:
         self.conflicting_operations = set()
         self._call_sequence = 0
         self.balance_blocked = False
+        self.summary_recovery = summary_recovery
+        self.recovery_selections = {}
+        self.response_errors = set()
         try:
             # Lock the task's model writer and this run directory against concurrent paid dispatch.
             for path in (Path(owner_lock_path).resolve(), self.root / "writer.lock"):
@@ -109,7 +114,6 @@ class ModelLedger:
                     continue
                 operations[call] = operation
                 key = operation_key(operation)
-                self._remember_request(key, operation, row["request"])
                 self.counts[key] = self.counts.get(key, 0) + 1
         for path in paths["model-responses.jsonl"]:
             for row in _rows(path):
@@ -137,22 +141,34 @@ class ModelLedger:
                     terminal[call] = row["state"]
         if dispatched != requests.keys():
             raise LedgerBlocked("attempt_dispatch_missing")
+        try:
+            superseded, self.recovery_selections = recovery_calls(self.summary_recovery,
+                requests=requests, responses=responses, terminal=terminal, operations=operations,
+                root=self.root)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise LedgerBlocked("invalid_explicit_summary_recovery") from exc
         for call, sent in requests.items():
             operation, receipt = operations[call], responses.get(call)
             state = terminal.get(call)
             response = receipt.get("response") if receipt else None
             response_id = response.get("id") if isinstance(response, dict) else None
-            known_rejection = receipt and receipt.get("error", {}).get("status_code") in (402, 429)
-            if state == "recorded" and not (response_id or known_rejection):
+            status = receipt.get("error", {}).get("status_code") if receipt else None
+            http_response = type(status) is int and 400 <= status < 600
+            if state == "recorded" and not (response_id or http_response):
                 raise LedgerBlocked("recorded_attempt_missing_receipt")
             if operation is None:
                 continue
             key = operation_key(operation)
+            if call in superseded:
+                continue
+            self._remember_request(key, operation, sent["request"])
             if state != "recorded":
                 self.blocked.add(key)
             elif response_id:
                 # Cache empty or malformed answers too; replay them unchanged for the native parser.
                 self.cache[key] = (copy.deepcopy(response), call)
+            elif http_response and status not in {402, 429}:
+                self.response_errors.add(key)
         prefix = str(self.root / "call-")
         prior_sequences = [int(call[len(prefix):]) for call in requests
                            if call.startswith(prefix) and call[len(prefix):].isdigit()]
@@ -227,6 +243,8 @@ class ModelLedger:
             self._check_legacy_scope(operation)
             if key in self.blocked or key in self.in_flight:
                 raise LedgerBlocked("unresolved_same_input_request", scope="source")
+            if key in self.response_errors:
+                raise LedgerBlocked("http_response_requires_explicit_recovery", scope="source")
             if (key in self.conflicting_operations or
                     (key in self.requests_by_operation and self.requests_by_operation[key] != request)):
                 raise LedgerBlocked("operation_payload_changed_after_dispatch", scope="source")
@@ -245,6 +263,10 @@ class ModelLedger:
             row = {"call_id": call, "operation": operation, "request": request,
                    "attempt": attempt, "context": {**context, "operation": operation},
                    "started_epoch": time.time()}
+            recovery = self.recovery_selections.get(operation.get("question"))
+            if recovery is not None:
+                row["context"].update(recovery_authorization=recovery["authorization"],
+                    prior_call_ids=recovery["prior_call_ids"])
             self._append("model-requests.jsonl", row)
             self._append("attempt-ledger.jsonl", {key: row[key] for key in
                          ("call_id", "operation", "attempt", "context")} | {"state": "dispatching"})
@@ -268,8 +290,16 @@ class ModelLedger:
                 if diagnostic is not None:
                     saved["error"]["diagnostic"] = diagnostic
             response_id = response.get("id") if isinstance(response, dict) else None
-            known_rejection = saved.get("error", {}).get("status_code") in (402, 429)
-            state = "recorded" if response_id or known_rejection else "outcome_unknown"
+            status = saved.get("error", {}).get("status_code")
+            http_response = type(status) is int and 400 <= status < 600
+            state = "recorded" if response_id or http_response else "outcome_unknown"
+            usage = response.get("usage") if isinstance(response, dict) else None
+            cost = usage.get("cost") if isinstance(usage, dict) else None
+            cost_known = type(cost) in {int, float} and math.isfinite(cost) and cost >= 0
+            saved.update(request_state="response_received" if response_id or http_response else "outcome_unknown",
+                         response_kind="http_error" if http_response else "completion" if response_id else None,
+                         cost_status="reported" if cost_known else "unknown",
+                         reported_cost_usd=cost if cost_known else None)
             terminal = {key: row[key] for key in ("call_id", "operation", "attempt")}
             terminal.update(state=state, response_id=response_id)
             self._append("model-responses.jsonl", saved)
@@ -280,6 +310,8 @@ class ModelLedger:
                 self.blocked.add(key)
             elif response_id:
                 self.cache[key] = (copy.deepcopy(response), row["call_id"])
+            elif http_response and status not in {402, 429}:
+                self.response_errors.add(key)
             if saved.get("error", {}).get("status_code") == 402:
                 self.balance_blocked = True
                 self._append("balance-blocked.jsonl", terminal)

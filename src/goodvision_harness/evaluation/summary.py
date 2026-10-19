@@ -145,8 +145,9 @@ def execute_summary(artifact_path, *, output, client, ledger, model, parameters,
             prior_dispatched = True
             messages, preparation, skip_disclosure = prior["messages"], None, None
         elif prior_identity_error is None:
-            # Upgrade only never-dispatched answers, including saved old artifacts.
-            # A new prompt must never bypass a successful, invalid or unknown receipt.
+            # Use the compact contract for never-dispatched answers or old calls
+            # released by explicit recovery approval. Prompt changes alone never
+            # bypass a successful, invalid or unknown receipt.
             messages = short_answer_messages(question, evidence)
             preparation, skip_disclosure = None, None
             if native_gaps or partial:
@@ -166,6 +167,10 @@ def execute_summary(artifact_path, *, output, client, ledger, model, parameters,
                 "same_evidence_not_historical_question_conditioned_summary": True}
     if partial:
         identity["observation_scope"] = "human_approved_partial_saved_observations"
+    recovery = getattr(ledger, "recovery_selections", {}).get(artifact["qa_id"])
+    if recovery is not None:
+        identity["historical_recovery"] = {key: recovery[key] for key in
+            ("authorization", "prior_call_ids", "source_answer", "failure_class")}
     short_contract = ANSWER_INSTRUCTION in messages[0]["content"]
     view_contract = VIEW_INSTRUCTION in messages[0]["content"]
     if view_contract:
