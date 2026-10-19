@@ -67,6 +67,11 @@ class EventJSONInspector(IndependentVLMInspector):
             "counts under the configured fight policy even with one visible "
             "participant; contact is not required. "
         )
+        if labels == ["fight"] and not job.event_definitions:
+            event_guidance = (
+                "A clear boxing/striking gesture counts under the configured fight "
+                "policy even with one visible participant; contact is not required. "
+            )
         messages[0]["content"] = policy + (
             "\n\nInspect all original images in source-time order "
             "as one temporal observation. "

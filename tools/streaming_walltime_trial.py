@@ -19,7 +19,7 @@ import sys
 import time
 
 from saved_streaming_recovery import (
-    copy_ledger, freeze_source, git, load, require_finished, save, write_questions,
+    copy_ledger, freeze_source, git, load, require_finished, save,
 )
 
 
@@ -57,6 +57,8 @@ def resources(root):
 def prepare(args):
     root, source, last = args.root.resolve(), args.source_round.resolve(), args.last_answer.resolve()
     staging = load(root / "staging.json")
+    if staging.get("capture_mode", "physical_conflict") != "physical_conflict":
+        raise ValueError("New timing preparations use physical-conflict event tracking only")
     evaluation_timing = staging.get("evaluation_timing", False)
     if type(evaluation_timing) is not bool:
         raise ValueError("evaluation_timing must be an explicit boolean")
@@ -83,8 +85,7 @@ def prepare(args):
     copy_ledger(root, last)
     shutil.copytree(source / "gpu/source", root / "gpu/source",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "execution-authorization.json"))
-    for name in ("harness.yaml", "event-definitions.json"):
-        shutil.copyfile(source / name, root / name)
+    shutil.copyfile(source / "harness.yaml", root / "harness.yaml")
     (root / "cohort").mkdir()
     shutil.copyfile(source / "cohort/seed-weights.json", root / "cohort/seed-weights.json")
     adapter = root.parent / "detector-rf-count36-1288-resume5-20261016"
@@ -106,7 +107,8 @@ def prepare(args):
         "required_gpu_name": "RTX 4090", "maximum_simultaneous_gpu_instances": 1,
         "bounded_mask_area": False, "deadline_epoch": None, "gpu_actual_cap_usd": None,
         "scope": "three_video_native_streaming_walltime", "clips": clips,
-        "face_enabled": False, "vlm_enabled": True}
+        "face_enabled": False, "vlm_enabled": True,
+        "capture_mode": "physical_conflict", "event_labels": ["fight"]}
     save(root / "gpu/source/execution-authorization.json", approval)
     history = load(source / "gpu/source/prior-resources.json")
     deployment, cost = load(source / "gpu/output/deployment.json"), load(source / "gpu/output/gpu-cost.json")
@@ -137,14 +139,17 @@ def prepare(args):
     for row in staging["selections"]:
         previous = load(row["source_configuration_reference"])
         vlm = previous["vlm"]
-        vlm["inspector_settings"]["evaluation_transport"]["legacy_window_budgets"] = {}
+        vlm["inspector_settings"]["max_tokens"] = 160
+        vlm["inspector_settings"]["evaluation_transport"] = {
+            "lane_max_tokens": {"events": 160},
+            "lane_timeout_seconds": {"events": 5.0}, "legacy_window_budgets": {}}
         configuration = {"schema_version": "native-stream-source-v1", "video_id": row["video_id"],
             "source_id": "clip-" + row["clip"], "stream_session_id": stamp + "-" + row["clip"],
             "source": {**row["source"], "negative_coverage_domain": "first_to_last_decoded_frame_pts",
                        "sampling_limitation": "native_processed_and_documented_skips"},
             "media_path": row["media_path"], "harness_config": str(root / "harness.yaml"),
-            "event_definitions": str(root / "event-definitions.json"),
             "face_enabled": False, "vlm_enabled": True, "question_conditioned": False,
+            "capture_mode": "physical_conflict",
             "evaluation_timing": evaluation_timing,
             "sam_internal_patch": False, "coverage_policy": "native_processed_and_documented_skips_v1",
             "max_source_wall_seconds": max(60, row["duration_seconds"]) + 300,
@@ -159,14 +164,13 @@ def prepare(args):
         save(destination, configuration)
         entries.append({"clip": row["clip"], "config": str(destination),
                         "video_id": row["video_id"], "media_path": row["media_path"]})
-    # This capture-only cohort contains video identities, never questions or GT.
-    write_questions(root / "public/videos.jsonl", [{"video_id": row["video_id"]} for row in entries])
     plan = {"source_commit": commit, "source_round": str(source), "last_answer": str(last),
         "prior_release_record": release, "sources": entries, "model_ledger": ledger,
         "final_answer_dispatch": False, "ground_truth_to_model": False,
         "resource_adapter_origin": str(adapter), "gpu_source_origin": str(source / "gpu/source"),
         "maximum_create_attempts_this_round": 1, "clips": clips,
         "evaluation_timing": evaluation_timing,
+        "capture_mode": "physical_conflict", "event_labels": ["fight"],
         "prior_timing_round": str(prior_timing) if prior_timing is not None else None}
     save(root / "plan.json", plan)
     save(root / "ready.json", {"status": "prepared_not_started", "plan_snapshot": plan,
@@ -176,8 +180,11 @@ def prepare(args):
 
 
 def capture(root):
-    from goodvision_harness.evaluation.answer import run
     plan, owner = load(root / "plan.json"), load(root / "owned-resource.json")
+    if plan.get("capture_mode") == "physical_conflict":
+        return capture_events(root, plan, owner)
+    # Frozen historical plans retain their original capture workflow.
+    from goodvision_harness.evaluation.answer import run
     workflow = {"schema_version": "native-answer-workflow-v1", "vlm_enabled": True,
         "face_enabled": False, "experiment_label": owner["experiment_label"],
         "public_questions": str(root / "public/videos.jsonl"),
@@ -189,6 +196,55 @@ def capture(root):
     save(root / "workflow.json", workflow)
     result = run(root / "workflow.json")
     save(root / "capture-completion.json", {"finished_epoch": time.time(), "result": result})
+
+
+def capture_events(root, plan, owner):
+    """Run native event tracking directly, without questions or answer exports."""
+    from goodvision_harness.evaluation.native_stream import capture_native_stream, NativeSourceFailure
+    from goodvision_harness.evaluation.resources import ExperimentResources
+
+    resource_owner = ExperimentResources(identity_path=root / "owned-resource.json",
+        expected_instance_id=owner["instance_id"], expected_label=owner["experiment_label"],
+        reset_endpoint="http://detector-remote:8093/v1/reset",
+        cancel_paths=[root / "output/capture/cancel-requested.json"])
+    directory = root / "output/capture/yolo26-s"
+    directory.mkdir(parents=True, exist_ok=True)
+    outcomes, sessions = [], set()
+    with (root / "workflow.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for position, row in enumerate(plan["sources"], 1):
+            source = load(row["config"])
+            if (source.get("capture_mode") != "physical_conflict"
+                    or source["tracking"]["model"] != "yolo26-s"
+                    or source["video_id"] != row["video_id"]
+                    or source["stream_session_id"] in sessions):
+                raise ValueError("physical-conflict source identity differs from its plan")
+            for key in ("output_directory", "seed_manifest", "owner_lock"):
+                if Path(source["model_ledger"][key]).resolve() != Path(plan["model_ledger"][key]).resolve():
+                    raise ValueError("physical-conflict capture must preserve its model ledger")
+            sessions.add(source["stream_session_id"])
+            destination = directory / f"{position:04d}"
+            try:
+                outcome = capture_native_stream(row["config"], output=destination, resources=resource_owner)
+            except NativeSourceFailure:
+                cleanup, failure = load(destination / "cleanup.json"), load(destination / "failure.json")
+                if (failure.get("failure_scope") != "source"
+                        or failure.get("stream_session_id") != source["stream_session_id"]
+                        or cleanup.get("shared_failure") is not False
+                        or cleanup.get("tracking_requests_settled") is not True
+                        or cleanup.get("tracking_session_scope") != "stream_session_id"
+                        or any(cleanup.get(key) is not True for key in
+                               ("source_stopped", "tracking_stopped", "vlm_stopped", "fusion_stopped"))):
+                    raise RuntimeError("source-local event capture cleanup is not confirmed")
+                resource_owner.prepare(source)
+                outcome = {"video_id": source["video_id"], "status": "skipped",
+                    "failure_scope": "source", "reason": failure["reason"],
+                    "capture_directory": str(destination), "final_answer_generated": False}
+                save(destination / "source-terminal.json", outcome)
+            outcomes.append(outcome)
+        save(root / "capture-completion.json", {"finished_epoch": time.time(),
+            "result": {"scope": "physical_conflict_event_tracking", "sources": outcomes,
+                       "final_answer_generated": False, "answer_evidence_exported": False}})
 
 
 def start_gpu(c):
@@ -239,7 +295,10 @@ def run_capture(c, plan):
         "-e", "INFERENCE_PROVIDER=openrouter", "-e", "INFERENCE_MODEL=qwen/qwen3-vl-8b-instruct",
         "-e", "HARNESS_INFERENCE_PROFILE=", "-e", "PYTHONPATH=" + str(root / "checkout/src"),
         "-v", str(root) + ":" + str(root)]
-    for item in ("checkout", "gpu/source", "seed-ledger", "sources", "public", "harness.yaml", "event-definitions.json"):
+    items = ["checkout", "gpu/source", "seed-ledger", "sources", "harness.yaml"]
+    if plan.get("capture_mode") != "physical_conflict":
+        items += ["public", "event-definitions.json"]
+    for item in items:
         args += ["-v", str(root / item) + ":" + str(root / item) + ":ro"]
     for row in plan["sources"]:
         args += ["-v", row["media_path"] + ":" + row["media_path"] + ":ro"]

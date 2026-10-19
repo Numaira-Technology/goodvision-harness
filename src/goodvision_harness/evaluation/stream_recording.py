@@ -33,6 +33,7 @@ class StreamingRecorder:
                              source_id=source_id, source=source, provenance=provenance)
         reject_private(self.manifest, observation=True)
         self.profile = profile
+        self.event_tracking_only = profile.event_tracking_only
         self._lock = RLock()
         self._sequence = 0
         self._poisoned = False
@@ -40,7 +41,8 @@ class StreamingRecorder:
         self.frames = {}
         self._references = []
         publish_once(self.root / "manifest.json", {
-            "schema_version": "native-stream-recording-v1", **self.manifest,
+            "schema_version": "native-event-tracking-recording-v1" if self.event_tracking_only
+            else "native-stream-recording-v1", **self.manifest,
             "clock_domain": self.clock_domain, "face_enabled": False,
             "question_conditioned": False,
             "window_plan_origin": "native_runtime_admission_not_offline_preregistration"})
@@ -49,6 +51,10 @@ class StreamingRecorder:
         with self._lock:
             if self._poisoned or self._closed:
                 raise RuntimeError("stream recording is closed or failed")
+            if self.event_tracking_only and kind not in {
+                    "frame-input", "publication", "independent", "rejected", "failure",
+                    "source-end", "runtime-final"}:
+                return None
             try:
                 reject_private(payload, observation=True)
                 self._sequence += 1
@@ -155,6 +161,26 @@ class StreamingRecorder:
                runtime_statistics):
         with self._lock:
             runtime_reference = self.record("runtime-final", runtime_statistics)
+            if self.event_tracking_only:
+                states = {"source_eof": source_eof, "tracking_drained": tracking_drained,
+                          "events_drained": events_drained, "fusion_drained": fusion_drained}
+                report_states = Counter()
+                for kind, path, _ in self._references:
+                    if kind != "independent":
+                        continue
+                    report = json.loads(path.read_bytes())["payload"]
+                    report_states[report["state"]] += 1
+                completion = {"schema_version": "native-event-tracking-completion-v1",
+                    "video_id": self.manifest["video_id"], "source_id": self.manifest["source_id"],
+                    "stream_session_id": self.manifest["stream_session_id"], **states,
+                    "execution_complete": all(states.values()), "record_count": self._sequence,
+                    "event_report_states": dict(report_states),
+                    "failure_records": sum(kind == "failure" for kind, _, _ in self._references),
+                    "runtime_statistics_reference": runtime_reference,
+                    "answer_evidence_exported": False, "final_answer_generated": False}
+                publish_once(self.root / "completion.json", completion)
+                self._closed = True
+                return completion
             person_accounting = None
             if self.manifest["provenance"].get("coverage_policy") == NATIVE_SKIP_POLICY:
                 person_accounting = self._person_accounting(runtime_statistics, runtime_reference)

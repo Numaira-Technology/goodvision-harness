@@ -26,7 +26,7 @@ from ..vlm_fusion import VLMFusion
 from ..vlm_independent import IndependentVLMBranch
 from .capture_source import _read_frozen
 from .privacy import reject_private
-from .profile import load_profile
+from .profile import load_profile, physical_conflict_profile
 from .recording import publish_once
 from .session import UnifiedCaptureSession
 from .stream_ledger import LedgerInspectorFactory
@@ -67,7 +67,10 @@ class NativeCapture:
     _check = UnifiedCaptureSession._check
     _canonicalize = UnifiedCaptureSession._canonicalize
     _persist_tracks = UnifiedCaptureSession._persist_tracks
-    _capture_scene = UnifiedCaptureSession._capture_scene
+
+    def _capture_scene(self):
+        if not self.recorder.event_tracking_only:
+            return UnifiedCaptureSession._capture_scene(self)
 
     def __init__(self, recorder, *, profile, source_fps, native_batches, vlm_enabled):
         self.recorder = recorder
@@ -224,6 +227,11 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
     base = path.parent
     config = _read_frozen(path)
     reject_private(config, observation=True)
+    capture_mode = config.get("capture_mode", "benchmark")
+    if capture_mode not in {"benchmark", "physical_conflict"}:
+        raise ValueError("unknown native capture mode")
+    if capture_mode == "physical_conflict" and config.get("vlm_enabled") is not True:
+        raise ValueError("physical conflict tracking requires the native event lane")
     evaluation_timing = config.get("evaluation_timing", False)
     if type(evaluation_timing) is not bool:
         raise ValueError("evaluation_timing must be an explicit boolean")
@@ -253,7 +261,8 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError("explicit finite source and drain time limits required")
     media = base / config["media_path"]
-    profile = load_profile(base / config["event_definitions"])
+    profile = (physical_conflict_profile() if capture_mode == "physical_conflict"
+               else load_profile(base / config["event_definitions"]))
     rich = harness.rich_labeling
     if not rich.enabled:
         raise ValueError("native answer capture requires its selected tracker enabled")
@@ -275,6 +284,7 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
                   "effective_harness_config": effective,
                   "question_conditioned": False, "face_enabled": False,
                   "vlm_enabled": config["vlm_enabled"], "event_profile": profile.provenance(),
+                  "capture_mode": capture_mode,
                   "tracking_model": config["tracking"]["model"],
                   "scheduling_mode": "native_streaming",
                   "window_plan_semantics": "independent_native_lanes_v1",
@@ -402,10 +412,14 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
             evidence = recorder.finish(source_eof=True, tracking_drained=True, events_drained=True,
                                        fusion_drained=True, runtime_statistics=stats)
             capture._sealed = True
-        outcome = {"status": "captured" if evidence["observation_manifest"]["complete"] else "incomplete",
+        complete = (evidence["execution_complete"] if profile.event_tracking_only
+                    else evidence["observation_manifest"]["complete"])
+        outcome = {"status": "captured" if complete else "incomplete",
                    "video_id": config["video_id"], "stream_session_id": capture.sid,
                    "config_path": str(path), "source_id": capture.source_id,
-                   "vlm_enabled": config["vlm_enabled"], "scope": "native_streaming",
+                   "vlm_enabled": config["vlm_enabled"],
+                   "scope": "physical_conflict_event_tracking" if profile.event_tracking_only
+                   else "native_streaming",
                    "final_answer_generated": False}
         publish_once(recorder.root / "outcome.json", outcome)
         return outcome

@@ -14,6 +14,7 @@ class EvaluationEventProfile:
     scene_only_labels: tuple[str, ...]
     definitions: tuple[tuple[str, str], ...]
     definitions_path: str
+    event_tracking_only: bool = False
 
     def kwargs(self):
         return {"allowed_event_labels": self.labels,
@@ -21,6 +22,12 @@ class EvaluationEventProfile:
                 "event_definitions": self.definitions}
 
     def provenance(self):
+        if self.event_tracking_only:
+            return {"vocab_version": "native-physical-conflict-v1", "labels": ["fight"],
+                    "event_policy": "main-baseline", "sensitivity": "standard",
+                    "output_mode": "events", "information_http_deadline_seconds": 5.0,
+                    "max_output_tokens": 160, "question_conditioned": False,
+                    "face_enabled": False}
         return {"vocab_version": VOCAB_VERSION, "labels": list(self.labels),
                 "scene_only_labels": list(self.scene_only_labels),
                 "definitions_path": self.definitions_path,
@@ -50,11 +57,14 @@ class EvaluationEventProfile:
             labels=self.labels, model_settings=model_settings, model=model, api_key=api_key,
             parameters=parameters, options=dict(options or {}), admission=admission,
             observation_fps=observation_fps, max_in_flight=max_in_flight, route_id=route_id,
-            output_mode="parallel", **self.kwargs())
+            output_mode="events" if self.event_tracking_only else "parallel",
+            **({} if self.event_tracking_only else self.kwargs()))
 
     def window(self, *, window_id, start, end, request_ids=None):
         return {"window_id": window_id, "start": start, "end": end,
-                "event_labels": list(self.labels), "report_lanes": ["information", "grounding"],
+                "event_labels": list(self.labels),
+                "report_lanes": ["information"] if self.event_tracking_only
+                else ["information", "grounding"],
                 "request_ids": dict(request_ids or {})}
 
 
@@ -78,3 +88,8 @@ def load_profile(definitions_path):
     definitions.append(("fight", fight))
     return EvaluationEventProfile(OBSERVATION_EVENT_LABELS, tuple(scene_only),
                                   tuple(definitions), str(Path(definitions_path).resolve()))
+
+
+def physical_conflict_profile():
+    """Use the native fight policy and fast event lane without benchmark labels."""
+    return EvaluationEventProfile(("fight",), (), (), "native:standard-fight", True)

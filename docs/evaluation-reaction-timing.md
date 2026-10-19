@@ -5,7 +5,56 @@ N_251_0_0_1_0 and N_478_0_0_1_0 (80 seconds in total). Launch follows the
 prerequisite source/annotation deliverables and publication of this change.
 One positive clip supports a case latency, not a population p90.
 
+## Physical-conflict event tracking
+
+New preparations from `tools/streaming_walltime_trial.py` use
+`capture_mode: physical_conflict`. This selects the existing native `events`
+lane with only `fight` and its standard `main-baseline` sensitivity. The 51
+additional benchmark definitions and the compact grounding lane are absent.
+The response contract is exactly `{"fight":true}`, `{"fight":false}`, or
+`{"fight":null}`. A valid fight result does not require unrelated label keys.
+The native information limit of 160 output tokens and five-second HTTP
+deadline applies. Five seconds is a request deadline, not a guaranteed correct
+reaction time; expired requests remain failures. The model, original image
+preprocessing, source sampling, native temporal window scheduler and in-flight
+limit retain their current settings. Person tracking remains an internal
+Harness component; no separate counting, location, duration or final QA is
+dispatched.
+
+The timing controller calls `capture_native_stream` directly for this mode.
+It creates no public-question file, answer workflow, observation index,
+`capture.json` QA evidence, or final answer/score. It records only raw input
+timestamps and dispositions, event reports, readable publication boundaries,
+source end/runtime summaries, and failures/rejected reports. Per-frame person
+results, admissions, and scene snapshots are not exported. Native tracking
+and scene updates still execute internally. Completion records distinguish
+actual EOF/drain from event-report quality, including all-failed or uncertain
+windows; local output errors are not zero-frame-completeness gates.
+
+Without this explicit capture mode, the complete benchmark profile and its
+existing evidence recorder retain their behavior. Frozen historical checkouts
+and artifacts are not changed. This source change does not launch another
+trial or claim an observed latency reduction. No tests, model calls, GPU
+creation, preparation or launch were run for this change.
+
+The saved 15.58968-second F_8 case contains 1.70146 seconds from source onset
+to the last window image, 13.30816 seconds in the HTTP exchange, and a residual
+0.58007 seconds for all other pre/post-request work. The HTTP exchange returned
+419 tokens for 52 fields. Its 1.88005-second header boundary and 11.42800-second
+body wait do not isolate server inference from queuing and transfer. A later
+window returned only `fight=true` in nine tokens with a 1.74333-second HTTP
+exchange; the old 52-field contract rejected it. Its historical 7.45987-second
+arrival remains a diagnostic, not a replacement for the original result. The
+two requests used different windows, so their difference is not a controlled
+measurement of the new mode. Compact waits of 165.93/180 seconds prolonged
+drain, not the measured independent first-report endpoint. Final QA was already
+disabled in that historical run.
+
 ## Method and publication scope
+
+The remaining sections describe the original `091f41d` timing instrument.
+The physical-conflict mode above supersedes its benchmark labels, paired
+grounding and QA export only when explicitly selected.
 
 This is the Harness evaluation method, not historical native SAM-Ashley. The
 pre-task Harness baseline remains `6c28ddd`; cumulative changes are recorded in
