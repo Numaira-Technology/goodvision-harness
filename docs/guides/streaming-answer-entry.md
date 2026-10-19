@@ -35,7 +35,7 @@ count-worker wire protocol is not a native streaming endpoint.
 ## Invocation and lifecycle
 
 ```sh
-goodvision-answer --config /run/answer.json --config-sha256 CONFIG_SHA256
+goodvision-answer --config /run/answer.json
 ```
 
 The first invocation captures all scheduled sources and returns
@@ -44,7 +44,7 @@ exact GPU and confirms its absence with the provider and local cleanup. Resume
 the same entry with that receipt:
 
 ```sh
-goodvision-answer --config /run/answer.json --config-sha256 CONFIG_SHA256 --release /run/resources-after.json --release-sha256 RELEASE_SHA256
+goodvision-answer --config /run/answer.json --release /run/resources-after.json
 ```
 
 The second invocation reads saved observations, answers and scores. It makes no
@@ -59,18 +59,20 @@ Use schema `native-answer-workflow-v1`. Required fields:
 | Field | Meaning |
 | --- | --- |
 | `vlm_enabled`, `face_enabled` | Explicit boolean choice; face must be false. |
-| `experiment_label`, `frozen_runtime_sha256` | Exact outer deployment identity. |
-| `public_questions`, `public_questions_sha256` | Unchanged public JSONL, without truth. |
+| `experiment_label` | Exact outer deployment identity. |
+| `public_questions` | Unchanged public JSONL, without truth. |
 | `output_directory`, `owner_lock_path` | Immutable artifacts and shared task ownership lock. |
-| `resources` | Existing `identity_path`, `identity_sha256`, `instance_id`, `reset_endpoint`. |
-| `arms` | Ordered model names and source descriptors (`config`, `config_sha256`). |
-| `scoring` | Local private `truth`, `truth_sha256` and existing PR63 `scorer` path. |
+| `resources` | Existing `identity_path`, `instance_id`, `reset_endpoint`. |
+| `arms` | Ordered model names and source descriptors (`config`). |
+| `scoring` | Local private `truth` and existing PR63 `scorer` path. |
 
 When VLM is enabled, also supply `model_ledger` with `output_directory`,
-`seed_manifest`, `seed_manifest_sha256`, `owner_lock`; and `final_model` with
+`seed_manifest`, `owner_lock`; and `final_model` with
 `settings`, `model`, `parameters`, `max_input_bytes`. All paths resolve against
 the file containing them. Every source in a workflow uses the same cumulative
-ledger paths and seed hash. Its owner lock must differ from the workflow owner
+ledger paths. New seed manifests use `unified-model-ledger-seed-v2` with explicit
+file paths; legacy archives remain readable without recomputing their hashes.
+Its owner lock must differ from the workflow owner
 lock because the spawned observation process owns the ledger. Model settings
 require HTTPS and `max_retries=0`.
 Keep credentials in the selected environment variable. The legacy
@@ -91,9 +93,9 @@ Each source configuration uses schema `native-stream-source-v1` with:
 
 - `video_id`, fresh `stream_session_id`, `source_id`, and original public source
   metadata in `source`;
-- `media_path`, `media_sha256`, `harness_config`, `harness_config_sha256`, and
-  `effective_harness_config_sha256` from `effective_config_sha256(load_config(path))`
-  in the intended execution environment during formal preparation;
+- `media_path`, `harness_config`, and an `effective_harness_config` snapshot from
+  `effective_config_snapshot(load_config(path))` in the intended execution
+  environment during formal preparation;
 - fixed `event_definitions`, `tracking.model`, `tracking.backend`,
   `tracking.endpoint`, and `provenance` containing the
   frozen runtime and original model/weight identity;
@@ -108,9 +110,11 @@ playback must have `realtime=true`, `playback_speed=1`, no frame-count truncatio
 and no reference memory. The VLM model is `qwen/qwen3-vl-8b-instruct`.
 The source runtime imports no face recognizer. Existing service defaults and
 historical frozen configurations are preserved.
-The resolved configuration hash binds environment-derived settings as well as
-the YAML. A changed endpoint, provider, cadence, queue or transport setting stops
-capture. The digest is saved without exporting credentials. `rich_labeling.model`
+The resolved configuration snapshot records environment-derived settings as well
+as the YAML, with credential fields redacted. When supplied, it must match the
+runtime snapshot. A changed endpoint, provider, cadence, queue or transport
+setting therefore stops capture. New launchers omit legacy checksum arguments;
+their compatibility parameters do not perform integrity checks. `rich_labeling.model`
 must match the selected detector. `sam3.1` uses `sam31_stream`; `yolo26-s`, `yolo26-l`
 and `rfdetr-l` use the generic `paddle` HTTP client contract, with the actual
 detector/weights supplied and recorded by the outer deployment owner.
@@ -119,8 +123,8 @@ request header, so a worker's default model cannot silently replace the selectio
 
 ## Coverage and recovery
 
-Raw callbacks are append-only, hash-chained records. They include every delivered
-source frame hash/time, tracking completion, independently published report,
+Raw callbacks are append-only, sequential records. They include every delivered
+source frame number/time, tracking completion, independently published report,
 scene update, admission decision and final runtime statistics. Native VLM
 windows are selected during streaming; they are recorded as runtime-admitted
 windows, separately from offline preregistered windows.
@@ -147,9 +151,10 @@ independent VLM observations, together with their actual coverage.
 VLM admission/drop statistics accompany every capture; source cadence and
 observation gaps remain relevant to interpreting a negative event answer.
 
-Completed source directories are reused only under the exact source configuration
-hash and confirmed worker cleanup. A recovery workflow may reference a completed
-source using `reuse.directory` and `reuse.completion_sha256`; it keeps the
+Completed source directories are reused only under matching declared source
+settings, resolved Harness settings, event profile and confirmed worker cleanup.
+The saved record sequence and source/session/video identity must also agree.
+A recovery workflow may reference a completed source using `reuse.directory`; it keeps the
 original method/session/GPU identity. An interrupted source requires an independent
 frozen recovery configuration. Original records remain in place.
 
@@ -249,6 +254,21 @@ apply. Completion means all scheduled work is terminal, not that every answer is
 correct. A paired streaming trial must be reported separately from full-cohort
 offline scores.
 
+## Final-model input and output
+
+The answer projection contains the original question/options, timestamped
+observations, short subject aliases and explicit gaps. Bookkeeping UUIDs, hashes,
+paths and audit metadata are not model evidence. Full archives and receipt
+records remain local. Reducing serialization overhead does not authorize
+dropping observations or replacing them with an unapproved multi-stage summary.
+
+The final response contract is one `prediction` string containing the requested
+option, count, time point, interval or short answer. It requires no copied
+observations, citation list or explanation. Input capacity and output truncation
+are separate conditions; raising the output ceiling is not the remedy for an
+unnecessary output contract. Prior successful, invalid and unknown requests are
+not resent merely because the prompt representation changes.
+
 ## Validation status
 
 The specifically authorized short-video native-skip path completed capture,
@@ -262,3 +282,15 @@ The test report and source review must not be presented as a measured reduction
 in production resume counts. Frozen resume39 uses the preceding capture-isolation
 commit, not these additions. No full suite, lint, compilation or build was run.
 The completed RF comparison retains its original implementation and results.
+
+On October 19, the separately authorized saved-answer run loaded published
+commit `bedcb7807692bdf1479cbce2aa9e0cda08fa87d4`. All 70 never-dispatched
+candidate questions fit the prepared input budget. It ended with 69 valid-format
+answers and one 75-second final-answer timeout, retained as unknown without
+replay. The 69 successful responses used 6–16 output tokens and ended with
+`finish_reason=stop`; this run had no input-capacity or output-truncation outcome.
+Six explicit 429 responses recovered under the existing cooldown policy. The
+CPU controller exited normally and its exact container was removed; no GPU was
+created. Valid-format answers do not imply correct answers, and these 70 items
+are not the complete 182-question evaluation. The separate three-video wall-time
+trial has not run. No additional unit tests, lint, compilation or build were run.
