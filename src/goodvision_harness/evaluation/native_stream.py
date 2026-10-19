@@ -15,6 +15,8 @@ from threading import Event, RLock
 import time
 from urllib.parse import urlparse
 
+import cv2
+
 from ..config import load_config
 from ..perception import create_tracking_client, create_tracking_coordinator
 from ..person_registry import PersonRegistry
@@ -359,6 +361,20 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
                 on_source_input=capture.source_input if evaluation_timing else None),
             video_path=media, realtime=True, source_id=capture.source_id,
             stream_session_id=capture.sid)
+        file_frames = session.video_stream.frames
+
+        def media_frames():
+            try:
+                yield from file_frames()
+            except (OSError, ValueError, cv2.error):
+                # The session's public end error also covers non-media failures.
+                # Mark only file-iterator errors; recording callbacks retain their
+                # own fatal cause and must never become source-local skips.
+                if capture._callback_error is None:
+                    terminal["source_failure_reason"] = "native_file_decode_interrupted"
+                raise
+
+        session.video_stream.frames = media_frames
         session.start()
         while not source_done.wait(.1):
             capture.check_runtime()
@@ -367,6 +383,8 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
         capture.check_runtime()
         recorder.record("source-end", terminal)
         if terminal.get("reason") != "eof" or terminal.get("error") is not None:
+            if terminal.get("source_failure_reason") == "native_file_decode_interrupted":
+                raise NativeSourceFailure("native_file_decode_interrupted")
             raise RuntimeError("native source ended without decoder EOF")
         if capture.worker:
             capture.worker.finish_source()

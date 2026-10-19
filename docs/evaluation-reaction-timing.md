@@ -31,6 +31,15 @@ and scene updates still execute internally. Completion records distinguish
 actual EOF/drain from event-report quality, including all-failed or uncertain
 windows; local output errors are not zero-frame-completeness gates.
 
+File-iterator `OSError`, `ValueError`, and OpenCV decode exceptions retain the
+source-local reason `native_file_decode_interrupted`. The controller may
+continue only after the existing cleanup record confirms stopped workers,
+settled tracking requests, and no shared failure. Recording callbacks retain
+their fatal cause, and unknown session errors remain shared failures. Initial
+media probing and a decoder returning `read_ok=false` keep their existing
+behavior; this change adds neither a new completeness gate nor a claim that
+all truncated files can be detected.
+
 Without this explicit capture mode, the complete benchmark profile and its
 existing evidence recorder retain their behavior. Frozen historical checkouts
 and artifacts are not changed. This source change does not launch another
