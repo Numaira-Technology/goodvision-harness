@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import time
 
@@ -23,6 +24,41 @@ from .partial_recording import partial_answer_eligible
 
 STATES = frozenset({"answered", "insufficient_evidence", "incomplete_video",
                     "request_failure", "unsupported"})
+
+
+def parse_summary_answer(text, *, question, answer_contract=None):
+    """Parse a saved or live reply without dispatching or evaluating correctness."""
+    parsed = _json(_strip_json_fence(text), stage="summary_answer")
+    if answer_contract == VIEW_CONTRACT:
+        if not isinstance(parsed, dict) or set(parsed) != {"prediction"}:
+            raise _ResponseValidationError("single_answer_contract", "summary_answer")
+        answer, reason = parsed["prediction"], "single_answer_contract"
+    elif answer_contract == ANSWER_CONTRACT:
+        predictions = parsed.get("predictions") if isinstance(parsed, dict) else None
+        if (not isinstance(parsed, dict) or set(parsed) != {"predictions"}
+                or not isinstance(predictions, list) or len(predictions) != 1
+                or not isinstance(predictions[0], dict)
+                or set(predictions[0]) != {"qa_id", "prediction"}
+                or predictions[0]["qa_id"] != question["qa_id"]):
+            raise _ResponseValidationError("short_answer_contract", "summary_answer")
+        answer, reason = predictions[0]["prediction"], "short_answer_contract"
+    else:
+        if (not isinstance(parsed, dict) or set(parsed) != {"status", "final_answer", "evidence_refs"}
+                or not isinstance(parsed["status"], str) or parsed["status"] not in STATES
+                or not isinstance(parsed["evidence_refs"], list)
+                or (parsed["final_answer"] is not None and not isinstance(parsed["final_answer"], str))
+                or (parsed["status"] == "answered" and not parsed["final_answer"])):
+            raise _ResponseValidationError("summary_answer_contract", "summary_answer")
+        return parsed
+    if isinstance(answer, str):
+        return {"status": "answered" if answer.strip() else "insufficient_evidence",
+                "final_answer": answer if answer.strip() else None, "evidence_refs": []}
+    # Numeric serialization is not a model error. Preserve the number, including
+    # zero, without rounding or extracting a substitute from other text.
+    if (question.get("answer_type") in {"numeric_count", "numeric_seconds"}
+            and (type(answer) is int or type(answer) is float and math.isfinite(answer))):
+        return {"status": "answered", "final_answer": answer, "evidence_refs": []}
+    raise _ResponseValidationError(reason, "summary_answer")
 
 
 def _native_window_gaps_only(evidence):
@@ -244,32 +280,8 @@ def execute_summary(artifact_path, *, output, client, ledger, model, parameters,
         text = ModelAPIClient.assistant_text(response)
         if response.get("choices", [{}])[0].get("finish_reason") == "length":
             raise _ResponseValidationError("output_truncated", "summary_answer")
-        parsed = _json(_strip_json_fence(text), stage="summary_answer")
-        if view_contract:
-            if (not isinstance(parsed, dict) or set(parsed) != {"prediction"}
-                    or not isinstance(parsed["prediction"], str)):
-                raise _ResponseValidationError("single_answer_contract", "summary_answer")
-            answer = parsed["prediction"]
-            parsed = {"status": "answered" if answer.strip() else "insufficient_evidence",
-                      "final_answer": answer if answer.strip() else None, "evidence_refs": []}
-        elif short_contract:
-            predictions = parsed.get("predictions") if isinstance(parsed, dict) else None
-            if (not isinstance(parsed, dict) or set(parsed) != {"predictions"}
-                    or not isinstance(predictions, list) or len(predictions) != 1
-                    or not isinstance(predictions[0], dict)
-                    or set(predictions[0]) != {"qa_id", "prediction"}
-                    or predictions[0]["qa_id"] != artifact["qa_id"]
-                    or not isinstance(predictions[0]["prediction"], str)):
-                raise _ResponseValidationError("short_answer_contract", "summary_answer")
-            answer = predictions[0]["prediction"]
-            parsed = {"status": "answered" if answer.strip() else "insufficient_evidence",
-                      "final_answer": answer if answer.strip() else None, "evidence_refs": []}
-        elif (not isinstance(parsed, dict) or set(parsed) != {"status", "final_answer", "evidence_refs"}
-                or not isinstance(parsed["status"], str) or parsed["status"] not in STATES
-                or not isinstance(parsed["evidence_refs"], list)
-                or (parsed["final_answer"] is not None and not isinstance(parsed["final_answer"], str))
-                or (parsed["status"] == "answered" and not parsed["final_answer"])):
-            raise _ResponseValidationError("summary_answer_contract", "summary_answer")
+        parsed = parse_summary_answer(text, question=question,
+                                      answer_contract=identity.get("answer_contract"))
         # Preserve original references; do not judge correctness or retry semantic errors.
         result = {**identity, **parsed, "raw_text": text, "ledger_receipt": receipt,
                   "client_wall_seconds": time.monotonic() - started,
