@@ -1,9 +1,76 @@
 # Evaluation-only reaction timing
 
-The approved first run uses UBI F_8_1_0_0_0 and the negative clips
-N_251_0_0_1_0 and N_478_0_0_1_0 (80 seconds in total). Launch follows the
-prerequisite source/annotation deliverables and publication of this change.
-One positive clip supports a case latency, not a population p90.
+The approved run of UBI F_8_1_0_0_0 and the negative clips N_251_0_0_1_0
+and N_478_0_0_1_0 (80 seconds in total) finished using application revision
+`091f41d`. Its resources were released. It used the historical 52-label,
+parallel events/compact profile, not the later fight-only mode. One positive
+clip supports a case latency, not a population p90. The later mode is published
+source without a new prepared, deployed, or measured run. Do not replay the
+completed run to fill that distinction.
+
+## Release and runtime correspondence
+
+Git source, a prepared runtime, and an observed result are separate records.
+Documentation-only commits after the application revisions below do not create
+another runtime or latency result.
+
+| Component | Completed 80-second run | Later fight-only source |
+| --- | --- | --- |
+| Application and controller | `091f41d`; frozen under the workspace experiment `detector-reaction-ubi3-20261019/checkout` | Introduced by `a07b27f`, source-error classification refined by `8c3e5fb`; no new frozen experiment |
+| Native capture mode | Historical benchmark profile; 52 event labels with compact grounding; final QA disabled | Explicit `capture_mode: physical_conflict`; fight events only; no compact or QA export |
+| VLM route and budgets | Qwen3-VL-8B-Instruct through OpenRouter; events 1600 tokens/75 seconds, compact 8192 tokens/180 seconds | Same model route; events 160 tokens/5 seconds; actual future provider and latency remain unobserved |
+| Person detection | YOLO26-S, explicit size 1280 and confidence 0.10; source provenance declares max_det 300, while the worker leaves that argument to the SDK default; internal `/v1/tracks` protocol | Same native internal tracking path, not the separate `/v1/count` evaluation protocol |
+| Input and output evidence | Original source configurations, `plan.json`, `ready.json`, `launch.json`, per-frame input and publication records, `round-outcome.json`, `resources-after.json` | Source and documented contract only; no corresponding new runtime evidence |
+
+The native tracking client in [native_stream.py](../src/goodvision_harness/evaluation/native_stream.py)
+selects `RichLabelHTTPClient(mode="tracks")`. The client rewrites the configured
+labels endpoint to `/v1/tracks`; the tracked
+[detector worker](../workers/detector_rich_label/app.py) implements both routes.
+The completed run's frozen detector `app.py` and `detectors.py` have the same
+text as those two current tracked worker files. This two-file correspondence
+does not establish that the full deployment bundle is interchangeable. The
+separate historical `/v1/count` service is not a dependency of native event
+tracking; its integration gap must not be used to block this mode.
+The frozen worker log contains completed `/v1/tracks` requests. That evidence
+is stronger than its Uvicorn-only startup receipt, but is still historical
+execution, not a new deployment of the fight-only source. The worker's
+`model.predict` call does not explicitly pass `max_det`; this review did not
+recover the installed SDK default from the remote environment or change it.
+
+### Dependencies outside the application revision
+
+The published [timing controller](../tools/streaming_walltime_trial.py) still
+prepares a runtime by copying several existing workspace artifacts. A checkout
+of the application commit alone is therefore not a self-contained deployment.
+
+| Runtime component | Controller source or completed-run evidence | Boundary |
+| --- | --- | --- |
+| Application freeze | `freeze_source` in [saved_streaming_recovery.py](../tools/saved_streaming_recovery.py) archives committed `src` and two saved-streaming helpers; the controller copies its committed entry separately | The helper does not archive the detector deployment tree, images, or every run input |
+| GPU service and configuration | `prepare` copies `source_round/gpu/source`, `harness.yaml`, and `cohort/seed-weights.json`; the completed run names `detector-streaming182-yolo-s-resume41-20261019` as that source | These are separate frozen workspace artifacts, not implied by the application Git revision |
+| Resource control and release | `prepare` copies `control.py` and `driver.py` from `detector-rf-count36-1288-resume5-20261016` into `resource-control.py` and `resource-release.py` | The adapter retains local Docker image references, a dedicated network, and host tooling; no portable image build is established by this document |
+| Detector environment and weights | Frozen `gpu/source/workers/detector/requirements.txt`, deployment bootstrap, `cohort/seed-weights.json`, and `gpu/output/weights/weights.json` | Requirements include Ultralytics 8.4.0 and Torch 2.7.1; `yolo26s.pt` declares the Ultralytics assets v8.4.0 source. The installed environment and staged weight receipt are runtime evidence, not a new build result |
+| Source configuration and media | Three `sources` files, original media paths, staging selections, and model-ledger seed in the private experiment | Media, credentials, ledgers, and experiment data are not repository release contents; GT remains offline |
+
+The completed run's `plan.json` names these origins. `ready.json` embeds that
+plan, and launch compares the plan snapshot; it is not a full dependency-content
+freeze. There is no separate whole-runtime source manifest in that run.
+Application publication, successful historical execution, and standalone
+reconstruction must not be reported as the same achievement.
+
+The local launch wrapper uses `sys.executable`, and the two local containers
+use their image's `python`. The saved launch record does not identify the
+wrapper interpreter's actual path/version. The remote bootstrap creates a
+Python 3.12 environment and saves installed Python packages, but uses dynamic
+OS package installation and does not preserve a complete OS/Python-build
+lock. These are additional reconstruction limits, not evidence that the
+completed run failed.
+
+This inventory documents the existing dependency boundary without migrating
+the resource adapter, changing the detector, rebuilding an image, or starting
+another run. A later portable release would need to include or explicitly
+version those deployment dependencies and record its actual preparation and
+execution separately. It is not claimed here. No tests were run (no user
+authorization).
 
 ## Physical-conflict event tracking
 
