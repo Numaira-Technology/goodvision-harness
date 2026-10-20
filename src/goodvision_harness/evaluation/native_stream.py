@@ -28,7 +28,7 @@ from ..vlm_fusion import VLMFusion
 from ..vlm_independent import IndependentVLMBranch
 from .capture_source import _read_frozen
 from .privacy import reject_private
-from .profile import load_profile, physical_conflict_profile
+from .profile import load_profile, native_four_events_profile, physical_conflict_profile
 from .recording import publish_once
 from .session import UnifiedCaptureSession
 from .stream_ledger import LedgerInspectorFactory
@@ -230,10 +230,10 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
     config = _read_frozen(path)
     reject_private(config, observation=True)
     capture_mode = config.get("capture_mode", "benchmark")
-    if capture_mode not in {"benchmark", "physical_conflict"}:
+    if capture_mode not in {"benchmark", "physical_conflict", "native_four_events"}:
         raise ValueError("unknown native capture mode")
-    if capture_mode == "physical_conflict" and config.get("vlm_enabled") is not True:
-        raise ValueError("physical conflict tracking requires the native event lane")
+    if capture_mode in {"physical_conflict", "native_four_events"} and config.get("vlm_enabled") is not True:
+        raise ValueError("native event tracking requires the event lane")
     evaluation_timing = config.get("evaluation_timing", False)
     if type(evaluation_timing) is not bool:
         raise ValueError("evaluation_timing must be an explicit boolean")
@@ -263,7 +263,8 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError("explicit finite source and drain time limits required")
     media = base / config["media_path"]
-    profile = (physical_conflict_profile() if capture_mode == "physical_conflict"
+    profile = (native_four_events_profile() if capture_mode == "native_four_events"
+               else physical_conflict_profile() if capture_mode == "physical_conflict"
                else load_profile(base / config["event_definitions"]))
     rich = harness.rich_labeling
     if not rich.enabled:
@@ -436,7 +437,8 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
                    "video_id": config["video_id"], "stream_session_id": capture.sid,
                    "config_path": str(path), "source_id": capture.source_id,
                    "vlm_enabled": config["vlm_enabled"],
-                   "scope": "physical_conflict_event_tracking" if profile.event_tracking_only
+                   "scope": "native_four_events_event_tracking" if capture_mode == "native_four_events"
+                   else "physical_conflict_event_tracking" if profile.event_tracking_only
                    else "native_streaming",
                    "final_answer_generated": False}
         publish_once(recorder.root / "outcome.json", outcome)

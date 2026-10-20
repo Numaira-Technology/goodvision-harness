@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-from ..event_sensitivity import sensitivity_policy_text
+from ..event_sensitivity import EVENT_SENSITIVITY_DEFAULTS, sensitivity_policy_text
 from .vocab import FROZEN_EVENT_LABELS, OBSERVATION_EVENT_LABELS, VOCAB_VERSION
 
 @dataclass(frozen=True)
@@ -23,11 +23,17 @@ class EvaluationEventProfile:
 
     def provenance(self):
         if self.event_tracking_only:
-            return {"vocab_version": "native-physical-conflict-v1", "labels": ["fight"],
+            result = {"vocab_version": "native-physical-conflict-v1", "labels": list(self.labels),
                     "event_policy": "main-baseline", "sensitivity": "standard",
                     "output_mode": "events", "information_http_deadline_seconds": 5.0,
                     "max_output_tokens": 160, "question_conditioned": False,
                     "face_enabled": False}
+            if self.labels != ("fight",):
+                result["vocab_version"] = "native-four-events-v1"
+                result.pop("sensitivity")
+                result["event_sensitivities"] = {
+                    label: EVENT_SENSITIVITY_DEFAULTS[label] for label in self.labels}
+            return result
         return {"vocab_version": VOCAB_VERSION, "labels": list(self.labels),
                 "scene_only_labels": list(self.scene_only_labels),
                 "definitions_path": self.definitions_path,
@@ -93,3 +99,9 @@ def load_profile(definitions_path):
 def physical_conflict_profile():
     """Use the native fight policy and fast event lane without benchmark labels."""
     return EvaluationEventProfile(("fight",), (), (), "native:standard-fight", True)
+
+
+def native_four_events_profile():
+    """Reuse the native event lane for the approved four-event paired control."""
+    return EvaluationEventProfile(("fight", "smoking", "fall", "weapon"), (), (),
+                                  "native:four-safety-events", True)

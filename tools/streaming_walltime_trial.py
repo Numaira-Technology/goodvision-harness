@@ -6,6 +6,7 @@ before any offline timing analysis. There is no final-answer or GT input phase.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from datetime import datetime, timezone
 import fcntl
 import importlib.util
@@ -26,6 +27,12 @@ from saved_streaming_recovery import (
 CLIPS = ("0018", "0028", "0002")
 PACED_INPUT_CLIPS = ("0040", "0003", "0030")
 PHYSICAL_CONFLICT_CLIPS = tuple(f"{index:04d}" for index in range(1, 51))
+EVENT_TRACKING_MODES = {"physical_conflict": ["fight"],
+                        "native_four_events": ["fight", "smoking", "fall", "weapon"]}
+PAIRED_SOURCE_KEYS = ("schema_version", "video_id", "source_id", "source", "media_path",
+    "face_enabled", "vlm_enabled", "question_conditioned", "evaluation_timing",
+    "sam_internal_patch", "coverage_policy", "max_source_wall_seconds",
+    "drain_timeout_seconds", "tracking", "vlm")
 
 
 def import_file(name, path):
@@ -58,8 +65,9 @@ def resources(root):
 def prepare(args):
     root, source, last = args.root.resolve(), args.source_round.resolve(), args.last_answer.resolve()
     staging = load(root / "staging.json")
-    if staging.get("capture_mode", "physical_conflict") != "physical_conflict":
-        raise ValueError("New timing preparations use physical-conflict event tracking only")
+    mode = staging.get("capture_mode", "physical_conflict")
+    if mode not in EVENT_TRACKING_MODES:
+        raise ValueError("New timing preparations require an approved native event profile")
     evaluation_timing = staging.get("evaluation_timing", False)
     if type(evaluation_timing) is not bool:
         raise ValueError("evaluation_timing must be an explicit boolean")
@@ -68,6 +76,8 @@ def prepare(args):
         raise ValueError("Unknown authorized event-timing cohort")
     if cohort == "physical_conflict50" and not evaluation_timing:
         raise ValueError("The 50-video event cohort requires actual input timing")
+    if mode == "native_four_events" and cohort != "physical_conflict50":
+        raise ValueError("The four-event control is authorized only for the complete fixed 50")
     clips = (PHYSICAL_CONFLICT_CLIPS if cohort == "physical_conflict50" else
              PACED_INPUT_CLIPS if evaluation_timing else CLIPS)
     if tuple(row["clip"] for row in staging["selections"]) != clips:
@@ -81,6 +91,38 @@ def prepare(args):
         if (load(prior_timing / "round-outcome.json")["cleanup"] != "confirmed_released"
                 or load(prior_timing / "resources-after.json")["confirmed_released"] is not True):
             raise ValueError("Release the prior timing resources before preparing another run")
+    paired = None
+    if mode == "native_four_events":
+        baseline_plan = load(prior_timing / "plan.json")
+        baseline_outcome = load(prior_timing / "round-outcome.json")
+        baseline_capture = load(prior_timing / "capture-completion.json")["result"]["sources"]
+        if (Path(staging["comparison_baseline_round"]).resolve() != prior_timing
+                or baseline_plan.get("capture_mode") != "physical_conflict"
+                or baseline_plan.get("event_labels") != ["fight"]
+                or baseline_plan.get("cohort") != "physical_conflict50"
+                or tuple(baseline_plan["clips"]) != PHYSICAL_CONFLICT_CLIPS
+                or len(baseline_plan["sources"]) != len(PHYSICAL_CONFLICT_CLIPS)
+                or baseline_outcome.get("capture_completed") is not True
+                or [row["video_id"] for row in baseline_capture]
+                   != [row["video_id"] for row in baseline_plan["sources"]]):
+            raise ValueError("Complete the exact single-fight 50 baseline before its paired control")
+        require_finished(prior_timing, last)
+        for row, baseline in zip(staging["selections"], baseline_plan["sources"]):
+            previous = load(baseline["config"])
+            if (row["clip"] != baseline["clip"] or row["video_id"] != baseline["video_id"]
+                    or row["media_path"] != baseline["media_path"]
+                    or Path(row["source_configuration_reference"]).resolve() != Path(baseline["config"]).resolve()
+                    or row["source"] != previous["source"]
+                    or row["tracking"] != previous["tracking"]
+                    or row["duration_seconds"] != previous["source"]["duration_seconds"]):
+                raise ValueError("The paired control must reuse each baseline media and source configuration")
+        paired = {"baseline_round": str(prior_timing), "baseline_commit": baseline_plan["source_commit"],
+            "baseline_capture_completion": str(prior_timing / "capture-completion.json"),
+            "baseline_resource_release": str(prior_timing / "resources-after.json"),
+            "baseline_harness_config": str(prior_timing / "harness.yaml"),
+            "controlled_change": {"event_labels_before": ["fight"], "event_labels_after": EVENT_TRACKING_MODES[mode]},
+            "unchanged_source_keys": list(PAIRED_SOURCE_KEYS), "scored_event_labels": ["fight"],
+            "actual_provider_and_native_admission_may_vary": True}
     if any((root / name).exists() for name in ("prepare-intent.json", "ready.json", "launch.json")):
         raise ValueError("This experiment already has a preparation or launch")
     release = require_finished(source, last)
@@ -92,11 +134,12 @@ def prepare(args):
     with (root / "checkout/tools/streaming_walltime_trial.py").open("xb") as target:
         target.write(git(args.worktree, "show", commit + ":tools/streaming_walltime_trial.py"))
     copy_ledger(root, last)
-    shutil.copytree(source / "gpu/source", root / "gpu/source",
+    settings_source = prior_timing if paired is not None else source
+    shutil.copytree(settings_source / "gpu/source", root / "gpu/source",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "execution-authorization.json"))
-    shutil.copyfile(source / "harness.yaml", root / "harness.yaml")
+    shutil.copyfile(settings_source / "harness.yaml", root / "harness.yaml")
     (root / "cohort").mkdir()
-    shutil.copyfile(source / "cohort/seed-weights.json", root / "cohort/seed-weights.json")
+    shutil.copyfile(settings_source / "cohort/seed-weights.json", root / "cohort/seed-weights.json")
     adapter = root.parent / "detector-rf-count36-1288-resume5-20261016"
     shutil.copyfile(adapter / "control.py", root / "resource-control.py")
     shutil.copyfile(adapter / "driver.py", root / "resource-release.py")
@@ -108,7 +151,9 @@ def prepare(args):
         "round": root.name, "approval_quote": staging.get("approval_quote") or
         ("按此设计实现" if evaluation_timing else
          "尝试小规模测试 wall time；实在不行可以先做physical conflict"),
-        "approval_reference": "Current chat: explicitly approved the complete fixed 50-video "
+        "approval_reference": "Current chat: complete the single-fight 50 first, then enable "
+        "fight, smoking, fall and weapon on the same 50 with other settings unchanged; compare fight outcomes."
+        if mode == "native_four_events" else "Current chat: explicitly approved the complete fixed 50-video "
         "physical-conflict cohort with the established fight-only version and actual reaction timing."
         if cohort == "physical_conflict50" else
         "Current chat: approved paced-input and readable-report timing; "
@@ -119,10 +164,11 @@ def prepare(args):
         "new_create_attempts_used_before_round": previous_authorization["new_create_attempts_used_before_round"] + 1,
         "required_gpu_name": "RTX 4090", "maximum_simultaneous_gpu_instances": 1,
         "bounded_mask_area": False, "deadline_epoch": None, "gpu_actual_cap_usd": None,
-        "scope": "physical_conflict50_native_streaming_walltime" if cohort == "physical_conflict50"
+        "scope": "native_four_events50_paired_walltime" if mode == "native_four_events"
+        else "physical_conflict50_native_streaming_walltime" if cohort == "physical_conflict50"
         else "three_video_native_streaming_walltime", "clips": clips,
         "face_enabled": False, "vlm_enabled": True,
-        "capture_mode": "physical_conflict", "event_labels": ["fight"]}
+        "capture_mode": mode, "event_labels": EVENT_TRACKING_MODES[mode]}
     save(root / "gpu/source/execution-authorization.json", approval)
     history = load(prior_timing / "gpu/output/prelaunch-prior-resources.json"
                    if prior_timing is not None else source / "gpu/source/prior-resources.json")
@@ -153,7 +199,7 @@ def prepare(args):
     entries = []
     for row in staging["selections"]:
         previous = load(row["source_configuration_reference"])
-        vlm = previous["vlm"]
+        vlm = deepcopy(previous["vlm"])
         vlm["inspector_settings"]["max_tokens"] = 160
         vlm["inspector_settings"]["evaluation_transport"] = {
             "lane_max_tokens": {"events": 160},
@@ -164,7 +210,7 @@ def prepare(args):
                        "sampling_limitation": "native_processed_and_documented_skips"},
             "media_path": row["media_path"], "harness_config": str(root / "harness.yaml"),
             "face_enabled": False, "vlm_enabled": True, "question_conditioned": False,
-            "capture_mode": "physical_conflict",
+            "capture_mode": mode,
             "evaluation_timing": evaluation_timing,
             "sam_internal_patch": False, "coverage_policy": "native_processed_and_documented_skips_v1",
             "max_source_wall_seconds": max(60, row["duration_seconds"]) + 300,
@@ -175,6 +221,8 @@ def prepare(args):
                 "method": staging["method"], "original_duration_metadata_preserved": True,
                 "tracking_parameters": {"imgsz": 1280, "confidence": 0.1, "max_det": 300},
                 "weights": {"filename": "yolo26s.pt", "upstream": "ultralytics/assets release v8.4.0"}}}
+        if paired is not None and any(configuration.get(key) != previous.get(key) for key in PAIRED_SOURCE_KEYS):
+            raise ValueError("An unchanged paired source setting differs from the single-fight baseline")
         destination = root / "sources" / (row["clip"] + ".json")
         save(destination, configuration)
         entries.append({"clip": row["clip"], "config": str(destination),
@@ -182,12 +230,14 @@ def prepare(args):
     plan = {"source_commit": commit, "source_round": str(source), "last_answer": str(last),
         "prior_release_record": release, "sources": entries, "model_ledger": ledger,
         "final_answer_dispatch": False, "ground_truth_to_model": False,
-        "resource_adapter_origin": str(adapter), "gpu_source_origin": str(source / "gpu/source"),
+        "resource_adapter_origin": str(adapter), "gpu_source_origin": str(settings_source / "gpu/source"),
         "maximum_create_attempts_this_round": 1, "clips": clips,
         "evaluation_timing": evaluation_timing, "cohort": cohort,
         "total_media_seconds": sum(row["duration_seconds"] for row in staging["selections"]),
-        "capture_mode": "physical_conflict", "event_labels": ["fight"],
+        "capture_mode": mode, "event_labels": EVENT_TRACKING_MODES[mode],
         "prior_timing_round": str(prior_timing) if prior_timing is not None else None}
+    if paired is not None:
+        plan["paired_comparison"] = paired
     save(root / "plan.json", plan)
     save(root / "ready.json", {"status": "prepared_not_started", "plan_snapshot": plan,
         "source_commit": commit, "model_calls": 0, "gpu_creations": 0})
@@ -197,7 +247,7 @@ def prepare(args):
 
 def capture(root):
     plan, owner = load(root / "plan.json"), load(root / "owned-resource.json")
-    if plan.get("capture_mode") == "physical_conflict":
+    if plan.get("capture_mode") in EVENT_TRACKING_MODES:
         return capture_events(root, plan, owner)
     # Frozen historical plans retain their original capture workflow.
     from goodvision_harness.evaluation.answer import run
@@ -230,7 +280,7 @@ def capture_events(root, plan, owner):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         for position, row in enumerate(plan["sources"], 1):
             source = load(row["config"])
-            if (source.get("capture_mode") != "physical_conflict"
+            if (source.get("capture_mode") != plan["capture_mode"]
                     or source["tracking"]["model"] != "yolo26-s"
                     or source["video_id"] != row["video_id"]
                     or source["stream_session_id"] in sessions):
@@ -259,7 +309,7 @@ def capture_events(root, plan, owner):
                 save(destination / "source-terminal.json", outcome)
             outcomes.append(outcome)
         save(root / "capture-completion.json", {"finished_epoch": time.time(),
-            "result": {"scope": "physical_conflict_event_tracking", "sources": outcomes,
+            "result": {"scope": plan["capture_mode"] + "_event_tracking", "sources": outcomes,
                        "final_answer_generated": False, "answer_evidence_exported": False}})
 
 
@@ -312,7 +362,7 @@ def run_capture(c, plan):
         "-e", "HARNESS_INFERENCE_PROFILE=", "-e", "PYTHONPATH=" + str(root / "checkout/src"),
         "-v", str(root) + ":" + str(root)]
     items = ["checkout", "gpu/source", "seed-ledger", "sources", "harness.yaml"]
-    if plan.get("capture_mode") != "physical_conflict":
+    if plan.get("capture_mode") not in EVENT_TRACKING_MODES:
         items += ["public", "event-definitions.json"]
     for item in items:
         args += ["-v", str(root / item) + ":" + str(root / item) + ":ro"]
@@ -321,7 +371,8 @@ def run_capture(c, plan):
     args += ["--entrypoint", "python", c.IMAGE, "-B", "-u",
              str(root / "checkout/tools/streaming_walltime_trial.py"), "capture", "--root", str(root)]
     c.docker(*args)
-    c.update(phase="physical_conflict50_native_capture" if plan.get("cohort") == "physical_conflict50"
+    c.update(phase="native_four_events50_capture" if plan.get("capture_mode") == "native_four_events"
+             else "physical_conflict50_native_capture" if plan.get("cohort") == "physical_conflict50"
              else "three_video_native_capture")
     while True:
         c.stop_loss()

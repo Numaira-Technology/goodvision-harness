@@ -243,6 +243,69 @@ Do not count multiple overlapping positive windows as separate source events,
 or treat an unknown observation as a correct negative. The released 80-second
 fight-only run remains a separate historical result, not the complete cohort.
 
+## Paired four-event control on the same 50 videos
+
+The human approved a sequential comparison: finish the current single-fight
+50-video round, confirm its actual resource release, and then run the identical
+50 members with `fight`, `smoking`, `fall`, and `weapon` enabled together. Only
+fight outcomes are scored. The other three labels are additional requested
+outputs, not new claims of annotated accuracy on these videos.
+
+`capture_mode: native_four_events` selects a separate native event-only profile,
+with those four labels in that order and no benchmark definitions. It does not
+select the historical 52-label `benchmark` profile. Both arms use the existing
+`events` inspector, strict JSON parser, 160-token output limit, five-second HTTP
+deadline, main-baseline policy, source sampling, temporal window scheduler and
+native admission. Fight remains standard sensitivity. The other native defaults
+remain smoking high, fall standard and weapon standard. The response still maps
+each requested label to true, false or null. Missing or invalid keys reject the
+whole response under the unchanged parser; a readable raw fight value is not
+retroactively accepted. One shared failed call is not four fight failures.
+
+The four-event preparation requires `comparison_baseline_round` and
+`--prior-timing-round` to identify the same completed single-fight 50. It retains
+the baseline commit, complete source list and resource-release references. The
+baseline must have terminal outcomes for all 50, not zero failed windows. Each
+staging selection references its corresponding frozen baseline source config,
+and preserves media path, order, metadata, duration and tracker settings.
+Preparation copies the actual baseline Harness YAML, detector deployment source
+and seed weights; it compares the declared unchanged source fields directly,
+without new hash computations or media checks. New session identities, output
+paths and the new application commit remain separate run metadata.
+
+No model, detector, preprocessing, frame cadence, concurrency, source/drain limit,
+face setting, compact lane, QA phase, GT or scoring rule is changed for this
+control. The actual source manifest must confirm the four-label profile and the
+same effective Harness configuration, while request receipts confirm the actual
+lane, model, timeout and token cap. Source configuration claims alone do not
+establish the runtime model parameters or detector SDK defaults.
+
+The same OpenRouter route is retained; it does not pin the actual remote
+supplier, queue or hardware. A replacement standard 24GB RTX 4090 is also not
+necessarily the same physical machine. Record observed providers and HTTP
+distributions rather than claiming that all service conditions were isolated.
+Native windows may differ because request latency changes busy admission; do
+not replay frozen windows to force an artificial match.
+
+Analyze each arm independently using the same offline GT and timing protocol.
+Keep all 50 videos and 41 source intervals with their missing-time, startup,
+conversion-conflict, continuous-split, ambiguity, input and clock statuses.
+Pair events by member and source event ordinal, not request or window IDs.
+Report full-denominator outcome transitions alongside the subset with reliable
+latency in both arms. For four-event minus single-fight delay, subtract each
+arm's already-computed bounds as `[four_lower - single_upper,
+four_upper - single_lower]`; never subtract clocks from different runs.
+Unknown observations, request failures, invalid outputs, truncation and unknown
+receipts remain separate. A no-positive video with some valid negatives can
+also contain unknowns and failures, so its coarse category is not a visual-miss
+diagnosis. Preserve original artifacts and all uncertain costs.
+
+The current single-fight round is immutable. Adding this entry and publishing
+its source does not start the four-event run or prove its results. The paired
+launch follows actual single-fight completion and release, once per prepared
+directory, with one owned GPU at a time. Independent software tests, lint,
+syntax checks, builds and health probes are not authorized or run.
+
 Preparation inherits the latest timing round's cumulative prior-resource
 inventory before appending its direct GPU. This preserves earlier timing GPU
 identities and recorded charges, including unknown amounts, instead of falling
