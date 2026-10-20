@@ -177,12 +177,15 @@ class LiveMonitor:
             "ppe_violation",
             "ground_litter",
         )
-        self._select_interval = 4.0
-        self._select_ttl = 6.0
+        # Tunable for dense coverage on many streams: with N cameras sharing
+        # _select_max_inflight slots and each select ~3s, a camera refreshes every
+        # ~N/max_inflight*3s; TTL must exceed that gap or the overlay flickers.
+        self._select_interval = float(os.environ.get("PREVIEW_SELECT_INTERVAL", "4"))
+        self._select_ttl = float(os.environ.get("PREVIEW_SELECT_TTL", "6"))
         self._select_states = {}
         self._select_waiters = {}
         self._select_inflight = set()
-        self._select_max_inflight = 4
+        self._select_max_inflight = int(os.environ.get("PREVIEW_SELECT_MAX_INFLIGHT", "4"))
         self._select_closed = False
         self._select_state_lock = threading.Lock()
 
