@@ -1,4 +1,4 @@
-"""Own a frozen authorized three-video timing run with native admission policies.
+"""Own a frozen authorized event-timing cohort with native admission policies.
 
 Preparation is offline. Launch owns one standard 24GB RTX 4090 and releases it
 before any offline timing analysis. There is no final-answer or GT input phase.
@@ -25,6 +25,7 @@ from saved_streaming_recovery import (
 
 CLIPS = ("0018", "0028", "0002")
 PACED_INPUT_CLIPS = ("0040", "0003", "0030")
+PHYSICAL_CONFLICT_CLIPS = tuple(f"{index:04d}" for index in range(1, 51))
 
 
 def import_file(name, path):
@@ -62,9 +63,17 @@ def prepare(args):
     evaluation_timing = staging.get("evaluation_timing", False)
     if type(evaluation_timing) is not bool:
         raise ValueError("evaluation_timing must be an explicit boolean")
-    clips = PACED_INPUT_CLIPS if evaluation_timing else CLIPS
+    cohort = staging.get("cohort", "three_video")
+    if cohort not in {"three_video", "physical_conflict50"}:
+        raise ValueError("Unknown authorized event-timing cohort")
+    if cohort == "physical_conflict50" and not evaluation_timing:
+        raise ValueError("The 50-video event cohort requires actual input timing")
+    clips = (PHYSICAL_CONFLICT_CLIPS if cohort == "physical_conflict50" else
+             PACED_INPUT_CLIPS if evaluation_timing else CLIPS)
     if tuple(row["clip"] for row in staging["selections"]) != clips:
-        raise ValueError("Only the authorized three clips belong in this run")
+        raise ValueError("The source list must match the authorized cohort in member order")
+    if cohort == "physical_conflict50" and not staging.get("approval_quote"):
+        raise ValueError("Preserve the explicit 50-video human approval in staging")
     prior_timing = args.prior_timing_round.resolve() if args.prior_timing_round else None
     if evaluation_timing and prior_timing is None:
         raise ValueError("The instrumented run requires the prior timing resource record")
@@ -96,9 +105,13 @@ def prepare(args):
     previous_authorization = load(prior_timing / "gpu/source/execution-authorization.json"
         if prior_timing is not None else source / "authorization.json")
     approval = {"status": "explicitly_approved", "approved_by": "human_user",
-        "round": root.name, "approval_quote": "按此设计实现" if evaluation_timing else
-        "尝试小规模测试 wall time；实在不行可以先做physical conflict",
-        "approval_reference": "Current chat: approved paced-input and readable-report timing; "
+        "round": root.name, "approval_quote": staging.get("approval_quote") or
+        ("按此设计实现" if evaluation_timing else
+         "尝试小规模测试 wall time；实在不行可以先做physical conflict"),
+        "approval_reference": "Current chat: explicitly approved the complete fixed 50-video "
+        "physical-conflict cohort with the established fight-only version and actual reaction timing."
+        if cohort == "physical_conflict50" else
+        "Current chat: approved paced-input and readable-report timing; "
         "F_8 and two annotated negatives after prerequisite deliverables and push."
         if evaluation_timing else "Current chat: authorized small wall-time trial, physical conflict first.",
         "maximum_new_create_attempts": None, "maximum_create_attempts_this_round": 1,
@@ -106,11 +119,13 @@ def prepare(args):
         "new_create_attempts_used_before_round": previous_authorization["new_create_attempts_used_before_round"] + 1,
         "required_gpu_name": "RTX 4090", "maximum_simultaneous_gpu_instances": 1,
         "bounded_mask_area": False, "deadline_epoch": None, "gpu_actual_cap_usd": None,
-        "scope": "three_video_native_streaming_walltime", "clips": clips,
+        "scope": "physical_conflict50_native_streaming_walltime" if cohort == "physical_conflict50"
+        else "three_video_native_streaming_walltime", "clips": clips,
         "face_enabled": False, "vlm_enabled": True,
         "capture_mode": "physical_conflict", "event_labels": ["fight"]}
     save(root / "gpu/source/execution-authorization.json", approval)
-    history = load(source / "gpu/source/prior-resources.json")
+    history = load(prior_timing / "gpu/output/prelaunch-prior-resources.json"
+                   if prior_timing is not None else source / "gpu/source/prior-resources.json")
     deployment, cost = load(source / "gpu/output/deployment.json"), load(source / "gpu/output/gpu-cost.json")
     if deployment["instance_id"] not in {row["instance_id"] for row in history["instances"]}:
         history["instances"].append({"instance_id": deployment["instance_id"], "label": deployment["label"],
@@ -169,7 +184,8 @@ def prepare(args):
         "final_answer_dispatch": False, "ground_truth_to_model": False,
         "resource_adapter_origin": str(adapter), "gpu_source_origin": str(source / "gpu/source"),
         "maximum_create_attempts_this_round": 1, "clips": clips,
-        "evaluation_timing": evaluation_timing,
+        "evaluation_timing": evaluation_timing, "cohort": cohort,
+        "total_media_seconds": sum(row["duration_seconds"] for row in staging["selections"]),
         "capture_mode": "physical_conflict", "event_labels": ["fight"],
         "prior_timing_round": str(prior_timing) if prior_timing is not None else None}
     save(root / "plan.json", plan)
@@ -305,7 +321,8 @@ def run_capture(c, plan):
     args += ["--entrypoint", "python", c.IMAGE, "-B", "-u",
              str(root / "checkout/tools/streaming_walltime_trial.py"), "capture", "--root", str(root)]
     c.docker(*args)
-    c.update(phase="three_video_native_capture")
+    c.update(phase="physical_conflict50_native_capture" if plan.get("cohort") == "physical_conflict50"
+             else "three_video_native_capture")
     while True:
         c.stop_loss()
         state = c.owned(name)

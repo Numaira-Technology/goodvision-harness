@@ -222,3 +222,28 @@ answer, or original score is changed by this instrument.
 
 No standalone tests, test edits, lint, compilation, builds, or health probes
 are authorized for this change. Source/diff review is not a passing test.
+
+## Authorized complete conflict cohort
+
+The human subsequently authorized the same fight-only observation version on
+all 50 members of the current fixed conflict benchmark. The preparation entry
+accepts `cohort=physical_conflict50` only with actual input timing and the exact
+ordered members 0001 through 0050. The historical three-video selection remains
+the default. This extends the cohort configuration, not the observation code,
+model, prompt, native scheduling, sampling, or events-only 160-token/5-second
+request settings. Each source retains its media duration and the existing
+duration-plus-300-second source limit rather than inheriting the short clip's
+360-second value. Ground truth stays offline and is not mounted as model input.
+
+The fixed 50 videos are a selected benchmark cohort, not the total upstream
+physical-conflict inventory. Report source-time reaction delays, left-censored
+events, missing or conflicting time references, unmatched events, video-level
+negative false reports, unknown observations and request failures separately.
+Do not count multiple overlapping positive windows as separate source events,
+or treat an unknown observation as a correct negative. The released 80-second
+fight-only run remains a separate historical result, not the complete cohort.
+
+Preparation inherits the latest timing round's cumulative prior-resource
+inventory before appending its direct GPU. This preserves earlier timing GPU
+identities and recorded charges, including unknown amounts, instead of falling
+back to the older capture-only inventory. No historical record is rewritten.
