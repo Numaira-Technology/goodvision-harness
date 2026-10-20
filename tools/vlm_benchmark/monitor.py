@@ -1045,7 +1045,13 @@ class LiveMonitor:
         message = choice.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
             raise ValueError("invalid selection message")
-        verdicts = json.loads(message["content"], object_pairs_hook=unique)
+        # Models sometimes wrap the JSON in markdown fences or prose; extract the
+        # outermost object so a cosmetic wrapper does not drop the whole verdict.
+        content = message["content"]
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        verdicts = json.loads(
+            match.group(0) if match else content, object_pairs_hook=unique
+        )
         if not isinstance(verdicts, dict) or set(verdicts) != set(self._select_labels):
             raise ValueError("incomplete selection verdicts")
         tags, scene_alert = {}, False
