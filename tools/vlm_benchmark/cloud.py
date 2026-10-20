@@ -40,7 +40,7 @@ def configure_event_json(base, mode):
         return base
     if mode != "schema" or base.model_api.provider != "openrouter":
         raise ValueError("unsupported event JSON mode/provider")
-    from goodvision_harness.vlm_compact_model import event_response_format
+    from tools.benchmark_runtime.vlm_compact_model import event_response_format
     from tools.vlm_multistream_benchmark import LABELS
 
     parameters = copy.deepcopy(dict(base.inference.request_parameters))

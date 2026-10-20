@@ -31,6 +31,10 @@ body.single-video:not(.multicam) .camera>*{flex-shrink:0}
 body.single-video:not(.multicam) .framepair{flex:1;min-height:0;grid-template-rows:minmax(0,1fr)}
 body.single-video:not(.multicam) .framepair>div{display:flex;flex-direction:column;min-height:0}
 body.single-video:not(.multicam) .screen{flex:1;min-height:0;aspect-ratio:auto}
+body.single-video.person-ids .evidence-note{display:block;white-space:normal;height:32px;overflow:auto}
+body.single-video.compact.person-ids .screen{height:92px}
+body.single-video.compact.person-ids.parallel-mode .screen{height:78px}
+body.single-video.compact.person-ids.parallel-mode .evidence-note{height:20px}
 </style></head><body>
 <header><div><h1>Harness / VLM 实时测试监看</h1><div id="model" class="muted">等待测试开始</div></div><div id="badge">准备中</div></header>
 <div id="toolbar"><div id="stage">正在连接测试</div><div id="clock">00:00</div></div>

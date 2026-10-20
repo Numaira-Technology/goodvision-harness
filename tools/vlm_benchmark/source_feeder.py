@@ -6,12 +6,15 @@ from threading import Event, Thread
 
 
 class TimedSourceFeeder:
-    def __init__(self, branches, framesets, releases, started, sample_fps):
+    def __init__(
+        self, branches, framesets, releases, started, sample_fps, *, source_hook=None
+    ):
         self.branches = branches
         self.framesets = framesets
         self.releases = releases
         self.started = started
         self.sample_fps = sample_fps
+        self.source_hook = source_hook
         # At most one small notification per planned source sample. Frames and
         # model results stay in their existing bounded production transports.
         self.samples = Queue(maxsize=max(1, sum(len(a) for _, a in releases)))
@@ -46,6 +49,16 @@ class TimedSourceFeeder:
                     accepted = self.branches[camera].offer(
                         frames[tick % len(frames)], tick / self.sample_fps, tick
                     )
+                    if self.source_hook is not None:
+                        # Enqueue only; detector I/O must never block source release.
+                        # Branch ingress precedes detection, so latency includes it.
+                        self.source_hook(
+                            camera,
+                            self.branches[camera].config.stream_session_id,
+                            tick,
+                            tick / self.sample_fps,
+                            frames[tick % len(frames)],
+                        )
                     self.offer_rejected[camera] += int(not accepted)
                     self.samples.put_nowait((camera, tick, accepted))
         except BaseException as exc:

@@ -25,22 +25,31 @@ sys.path.insert(0, str(ROOT / "src"))
 from PIL import Image  # noqa: E402
 
 from goodvision_harness.config import load_config  # noqa: E402
-from goodvision_harness.event_sensitivity import (  # noqa: E402
-    EVENT_SENSITIVITY_DEFAULTS,
-)
 from goodvision_harness.grounding import SAFETY_EVENT_LABELS  # noqa: E402
 from goodvision_harness.model_api import environment_api_key  # noqa: E402
-from goodvision_harness.vlm_admission import (  # noqa: E402
+from tools.benchmark_runtime.event_sensitivity import (  # noqa: E402
+    EVENT_SENSITIVITY_DEFAULTS,
+)
+from tools.benchmark_runtime.vlm_admission import (  # noqa: E402
+    MAX_PER_STREAM_CONCURRENCY,
     AdmissionSettings,
     SharedAdmission,
 )
-from goodvision_harness.vlm_independent import (  # noqa: E402
+from tools.benchmark_runtime.vlm_independent import (  # noqa: E402
     INFORMATION_HTTP_DEADLINE_SECONDS,
     IndependentVLMBranch,
     VLMProcessConfig,
     _inspector,
 )
-from goodvision_harness.vlm_independent_model import IndependentVerdict  # noqa: E402
+from tools.benchmark_runtime.vlm_independent_model import (  # noqa: E402
+    IndependentVerdict,
+)
+from tools.vlm_benchmark.accounting import (  # noqa: E402
+    delivery_counts,
+    reconcile_retention,
+)
+from tools.vlm_benchmark.admission_storage import admission_database  # noqa: E402
+from tools.vlm_benchmark.provider_diagnostics import ProviderDiagnosticBus  # noqa: E402
 from tools.vlm_benchmark.source_feeder import TimedSourceFeeder  # noqa: E402
 
 # Follow the production safety catalog; stranger uses a separate identity lane.
@@ -49,6 +58,7 @@ LABELS = SAFETY_EVENT_LABELS
 
 class SimulatedInspector:
     def __init__(self, config):
+        self.last_http_timing = {"http_request_attempted": False}
         self.seconds = (
             config.parameters.get(
                 "simulation_grounding_seconds", config.parameters["simulation_seconds"]
@@ -61,9 +71,10 @@ class SimulatedInspector:
         # the YOLO preview boxes, which turn red on an observed event) light up
         # without a real VLM. It is NOT model recognition and never affects a
         # real (--real) run. Lanes stagger by source so they do not flip together.
-        self.demo_events = os.environ.get("PREVIEW_DEMO_EVENTS", "").strip().lower() not in {
-            "", "0", "false", "no", "off"
-        }
+        self.demo_events = (
+            os.environ.get("PREVIEW_DEMO_EVENTS", "").strip().lower()
+            not in {"", "0", "false", "no", "off"}
+        )
         self.demo_offset = (
             (hash(getattr(config, "source_id", "") or "") % 1000) / 1000.0 * 14.0
         )
@@ -137,9 +148,9 @@ def release_schedule(count, duration, sample_fps, observation_fps, mode):
     ]
 
 
-def planned_observations(duration, observation_fps):
+def planned_observations(duration, observation_fps, sample_fps=None):
     """Count integer observation slots on the same source clock as run_stage."""
-    sample_fps = max(2.0, observation_fps * 2)
+    sample_fps = sample_fps if sample_fps is not None else max(2.0, observation_fps * 2)
     ticks = math.ceil(duration * sample_fps)
     first = math.ceil(0.75 * sample_fps) / sample_fps
     last = (ticks - 1) / sample_fps
@@ -225,7 +236,7 @@ def summarize(reports, stats, duration, expected, deadline, *, lane=None):
         if wrapper:
             format_counts[wrapper] = format_counts.get(wrapper, 0) + 1
     phase_metrics = {}
-    for section in ("http_timing", "inspection_timing"):
+    for section in ("http_timing", "inspection_timing", "admission_diagnostics"):
         names = {name for row in reports for name in row["timing"].get(section, {})}
         for name in sorted(names):
             values = [
@@ -237,6 +248,12 @@ def summarize(reports, stats, duration, expected, deadline, *, lane=None):
                 "count": len(values),
                 **timing(values),
             }
+            # Concurrent requests observe the same occupied slots. Adding their
+            # peaks would invent a concurrency value larger than the real cap.
+            if section == "admission_diagnostics" and name.endswith("_peak_observed"):
+                phase_metrics[f"{section}.{name}"]["aggregation"] = "maximum"
+            else:
+                phase_metrics[f"{section}.{name}"]["sum"] = sum(values)
     for name in (
         "source_to_request_seconds",
         "dispatch_wait_seconds",
@@ -287,6 +304,15 @@ def summarize(reports, stats, duration, expected, deadline, *, lane=None):
             for r in good
         ),
         "historical_only_results": sum(r.get("historical_only", False) for r in good),
+        "delivery_accounting": delivery_counts(reports, expected),
+        "source_to_completion_seconds": timing(
+            [r["timing"]["source_to_completion_seconds"] for r in good
+             if "source_to_completion_seconds" in r["timing"]]
+        ),
+        "completion_to_publish_seconds": timing(
+            [r["timing"]["completion_to_publish_seconds"] for r in good
+             if "completion_to_publish_seconds" in r["timing"]]
+        ),
         "on_time_valid_results": len(on_time),
         "on_time_coverage": len(on_time) / expected if expected else None,
         "effective_results_per_second": valid_rows / duration,
@@ -319,20 +345,42 @@ def summarize(reports, stats, duration, expected, deadline, *, lane=None):
 def paired_summary(reports_by_camera, expected):
     """Pair only the exact same production window, never nearest timestamps."""
     pairs = {}
+    unpaired_records = duplicates = unknown_http = 0
     for camera, reports in enumerate(reports_by_camera):
         for r in reports:
+            unknown_http += (
+                type(r.get("timing", {}).get("http_request_attempted")) is not bool
+            )
             window = r.get("window_id")
             if window is not None:
-                pairs.setdefault((camera, window), {})[report_lane(r)] = r
+                pair = pairs.setdefault((camera, window), {})
+                lane = report_lane(r)
+                duplicates += lane in pair
+                pair[lane] = r
+            else:
+                unpaired_records += 1
 
     def complete(r):
         return r and r["state"] == "completed" and r["analysis_complete"]
 
+    def attempted(row, key="http_request_attempted"):
+        return (row or {}).get("timing", {}).get(key) is True
+
     both, event_only, grounding_only, differences, full_latency = 0, 0, 0, [], []
+    both_sent = one_sent = both_inspected = 0
+    both_sent_complete = 0
+    complete_peer_unsent = complete_peer_failed = 0
     for pair in pairs.values():
         event, ground = pair.get("events"), pair.get("grounding")
+        sent = int(attempted(event)) + int(attempted(ground))
+        both_sent += sent == 2
+        one_sent += sent == 1
+        both_inspected += attempted(event, "inspection_attempted") and attempted(
+            ground, "inspection_attempted"
+        )
         if complete(event) and complete(ground):
             both += 1
+            both_sent_complete += sent == 2
             e = event["timing"]["source_to_publish_seconds"]
             g = ground["timing"]["source_to_publish_seconds"]
             differences.append(g - e)
@@ -341,6 +389,15 @@ def paired_summary(reports_by_camera, expected):
             event_only += 1
         elif complete(ground):
             grounding_only += 1
+        if bool(complete(event)) != bool(complete(ground)):
+            peer = ground if complete(event) else event
+            complete_peer_failed += attempted(peer)
+            complete_peer_unsent += peer is None or (
+                peer.get("timing", {}).get("http_request_attempted") is False
+            )
+    known = not (
+        unknown_http or unpaired_records or duplicates or len(pairs) > expected
+    )
     return {
         "expected_source_windows": expected,
         "both_complete": both,
@@ -348,6 +405,22 @@ def paired_summary(reports_by_camera, expected):
         "without_both_complete": max(0, expected - both),
         "events_complete_without_grounding": event_only,
         "grounding_complete_without_events": grounding_only,
+        "http_pair_accounting_known": known,
+        "http_attempt_unknown_records": unknown_http,
+        "records_without_window_id": unpaired_records,
+        "duplicate_window_lane_records": duplicates,
+        "both_http_attempted": both_sent,
+        "both_http_attempted_fraction": (
+            both_sent / expected if expected and known else None
+        ),
+        "only_one_http_attempted": one_sent,
+        "neither_http_attempted": expected - both_sent - one_sent if known else None,
+        "both_inspection_attempted": both_inspected,
+        "both_complete_fraction_of_both_http_attempted": (
+            both_sent_complete / both_sent if both_sent and known else None
+        ),
+        "one_complete_peer_http_not_attempted": complete_peer_unsent,
+        "one_complete_peer_http_attempted_without_complete": complete_peer_failed,
         "paired_admission_superseded": sum(
             "events" in pair
             and "grounding" in pair
@@ -366,7 +439,15 @@ def drain_budget_seconds(args, base):
     """Allow the final fresh request to expire and publish, without extending it."""
     if args.real:
         request_timeout = base.runtime.scene_timeout_seconds
-        if args.output_mode == "events":
+        if (
+            getattr(args, "backend", "") == "openai_decisions"
+            or getattr(args, "self_hosted_qwen35", False)
+            or getattr(args, "self_hosted_fp8_yolo", False)
+            or getattr(args, "videojev_native", False)
+            or getattr(args, "tracked_cloud_candidate", False)
+        ):
+            request_timeout = 20
+        elif args.output_mode == "events":
             request_timeout = min(request_timeout, INFORMATION_HTTP_DEADLINE_SECONDS)
     else:
         request_timeout = args.simulated_latency
@@ -390,12 +471,56 @@ def run_stage(
     *,
     inspector_factory=None,
     observer=None,
+    source_hook=None,
 ):
+    api_key = _stage_api_key(args, base)
     stage = output / f"streams-{count}-repeat-{repetition}"
     stage.mkdir()
+    with admission_database(
+        stage, getattr(args, "admission_storage", "workspace"),
+        enabled=bool(args.global_limit),
+    ) as database:
+        result = _run_stage(
+            args, base, count, framesets, output, repetition, stage, database,
+            api_key=api_key, inspector_factory=inspector_factory, observer=observer,
+            source_hook=source_hook,
+        )
+    result["admission_storage"] = dict(database.metadata)
+    (stage / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
+    if database.metadata["ephemeral"] and database.workers_may_be_alive:
+        raise RuntimeError("admission database retained: worker shutdown unconfirmed")
+    return result
+
+
+def _stage_api_key(args, base):
+    api_key = ""
+    if args.real:
+        if (
+            getattr(args, "self_hosted_qwen35", False)
+            or getattr(args, "self_hosted_fp8_yolo", False)
+        ):
+            return ""
+        if getattr(args, "backend", "") in {
+            "openrouter", "dashscope", "openai_decisions"
+        }:
+            # Match the modes preflight and remote launcher: a generic override
+            # may belong to another API. Never pass an empty key to inspectors,
+            # whose legacy fallback would otherwise read that generic override.
+            api_key = os.environ.get(base.model_api.api_key_env, "").strip()
+            if not api_key:
+                raise ValueError("selected benchmark API credential is unavailable")
+        else:
+            api_key = environment_api_key(base.model_api)
+    return api_key
+
+
+def _run_stage(
+    args, base, count, framesets, output, repetition, stage, database,
+    *, api_key, inspector_factory=None, observer=None, source_hook=None,
+):
     gate_settings = (
         AdmissionSettings(
-            str((stage / "admission.sqlite").resolve()),
+            str(database.path),
             args.global_limit,
             args.per_stream_limit,
             args.request_rate,
@@ -435,6 +560,7 @@ def run_stage(
 
     feeder = None
     try:
+        database.workers_may_be_alive = True
         for i in range(count):
             cfg = VLMProcessConfig(
                 f"load-{output.name}-{count}-{repetition}-{i}",
@@ -447,7 +573,7 @@ def run_stage(
                     timeout_seconds=base.runtime.scene_timeout_seconds,
                 ),
                 base.inference.model,
-                api_key=environment_api_key(base.model_api) if args.real else "",
+                api_key=api_key,
                 parameters=(
                     dict(base.inference.request_parameters)
                     if args.real
@@ -465,12 +591,23 @@ def run_stage(
                 },
                 sensitivities=tuple(EVENT_SENSITIVITY_DEFAULTS.items()),
                 observation_fps=args.observation_fps,
+                source_sample_fps=getattr(args, "source_sample_fps", None),
                 max_in_flight=args.local_concurrency,
                 output_mode=args.output_mode,
+                grounding_format=getattr(args, "grounding_format", "legacy"),
+                grounding_source=getattr(args, "grounding_source", "vlm"),
+                detector_broker_url=getattr(args, "detector_broker_url", None),
+                parallel_scheduling=getattr(args, "parallel_scheduling", "independent"),
                 admission=gate_settings,
+                admission_diagnostics_enabled=getattr(
+                    args, "admission_diagnostics", False,
+                ),
             )
             branch = IndependentVLMBranch(
                 cfg,
+                # Operator records retain enum labels; live snapshots keep
+                # the application's existing privacy filtering.
+                result_bus_factory=ProviderDiagnosticBus,
                 inspector_factory=(inspector_factory or _inspector)
                 if args.real
                 else simulated_factory,
@@ -484,7 +621,9 @@ def run_stage(
             ):
                 raise RuntimeError("VLM branch startup failed")
             time.sleep(0.02)
-        sample_fps = max(2.0, args.observation_fps * 2)
+        sample_fps = getattr(args, "source_sample_fps", None) or max(
+            2.0, args.observation_fps * 2
+        )
         arrival_mode = getattr(args, "arrival_mode", "aligned")
         offsets, releases = release_schedule(
             count, args.duration, sample_fps, args.observation_fps, arrival_mode
@@ -492,7 +631,9 @@ def run_stage(
         start = time.monotonic()
         if observer is not None:
             observer.source_started(start, offsets)
-        feeder = TimedSourceFeeder(branches, framesets, releases, start, sample_fps)
+        feeder = TimedSourceFeeder(
+            branches, framesets, releases, start, sample_fps, source_hook=source_hook,
+        )
         feeder.start()
         next_status = start
         while True:
@@ -537,7 +678,7 @@ def run_stage(
                 break
             time.sleep(0.02)
         collect()
-        expected = planned_observations(args.duration, args.observation_fps)
+        expected = planned_observations(args.duration, args.observation_fps, sample_fps)
         stats = [b.stats() for b in branches]
         lanes = (
             ("events", "grounding")
@@ -566,6 +707,17 @@ def run_stage(
             "admission_scope": (
                 "per-stream limit shared by lanes; global limit/rate cover all lanes"
             ),
+            "admission_diagnostic_scope": (
+                "poll counts are overlapping observations, not lost requests; "
+                "occupancy peaks use max, not sum; "
+                "read/transaction times include OS scheduling and database work; "
+                "transaction_begin_seconds is inside transaction_seconds"
+            ),
+            "admission_diagnostics_enabled": getattr(
+                args, "admission_diagnostics", False,
+            ),
+            "admission_storage": dict(database.metadata),
+            "parallel_scheduling": getattr(args, "parallel_scheduling", "independent"),
             "measurement_kind": "real_model_capacity"
             if args.real
             else "simulated_scheduler_only",
@@ -574,6 +726,7 @@ def run_stage(
             "source_phase_offsets_seconds": offsets,
             "input_schedule_span_seconds": args.duration + max(offsets),
             "observation_fps": args.observation_fps,
+            "source_sample_fps": sample_fps,
             "deadline_seconds": args.deadline,
             "sender_missed_samples": sender_missed,
             "sender_missed_samples_by_stream": missed_by_stream,
@@ -583,6 +736,7 @@ def run_stage(
             "drain_timeout_seconds": drain_timeout,
             "drain_elapsed_seconds": time.monotonic() - drain_started,
             "result_records_missing": missing_records,
+            "result_retention": reconcile_retention(reports, stats, lanes, report_lane),
             "input_timing_valid": sender_missed == 0
             and max(release_lags, default=0) < 0.25,
             "shared_admission": gate.snapshot() if gate else None,
@@ -617,6 +771,9 @@ def run_stage(
                 branch.close()
             for branch in branches:
                 branch.close(timeout_seconds=5)
+            database.workers_may_be_alive = any(
+                branch.health()["state"] != "stopped" for branch in branches
+            )
 
 
 def main():
@@ -643,6 +800,10 @@ def main():
     parser.add_argument("--local-concurrency", type=int, default=4)
     parser.add_argument("--request-rate", type=float, default=20)
     parser.add_argument("--queue-timeout", type=float, default=1)
+    parser.add_argument("--admission-diagnostics", action="store_true")
+    parser.add_argument(
+        "--admission-storage", choices=["workspace", "memory"], default="workspace"
+    )
     parser.add_argument("--observation-fps", type=float, default=1.25)
     parser.add_argument("--deadline", type=float, default=3)
     parser.add_argument("--output", type=Path)
@@ -654,7 +815,7 @@ def main():
         or any(n < 1 or n > 12 for n in args.streams)
         or len(args.streams) != len(set(args.streams))
         or not 0 < args.observation_fps <= 3
-        or not 1 <= args.local_concurrency <= 4
+        or not 1 <= args.local_concurrency <= MAX_PER_STREAM_CONCURRENCY
         or not 0 <= args.simulated_latency <= 20
         or not 0 < args.deadline <= 30
         or not 0 <= args.global_limit <= 128
@@ -724,10 +885,10 @@ def main():
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in [
                 Path(__file__),
-                ROOT / "src/goodvision_harness/vlm_admission.py",
-                ROOT / "src/goodvision_harness/vlm_independent.py",
-                ROOT / "src/goodvision_harness/vlm_compact_model.py",
-                ROOT / "src/goodvision_harness/event_sensitivity.py",
+                ROOT / "tools/benchmark_runtime/vlm_admission.py",
+                ROOT / "tools/benchmark_runtime/vlm_independent.py",
+                ROOT / "tools/benchmark_runtime/vlm_compact_model.py",
+                ROOT / "tools/benchmark_runtime/event_sensitivity.py",
                 ROOT / "src/goodvision_harness/config.py",
             ]
         },

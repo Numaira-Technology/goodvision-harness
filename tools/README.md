@@ -1,5 +1,10 @@
 # Tools
 
+Decisions API, VideoJev and self-hosted Qwen benchmarks retain their historical
+protocols in `tools/benchmark_runtime/`. Production grounding stays on main; these
+benchmark results are not measurements of the restored product path. See
+[scope and provenance](../docs/guides/pr48-49-person-grounding-integration.md).
+
 Run command-line tools from the repository root in an activated development
 environment. Most support `python tools/<name>.py --help`; runtime helpers are
 used through their documented callers. See [CONTRIBUTING.md](../CONTRIBUTING.md)
@@ -47,6 +52,9 @@ checks describe that delivery, not subsequent source changes.
 | `rich_label_benchmark.py` | Benchmark the JPEG `/v1/labels` worker on local video. |
 | `vlm_speed_matrix.py` | Measure the native rich client with an explicit local `--cases` JSON file. |
 | `vlm_benchmark/modes.py` | Compare events, compact grounding, and parallel with per-lane results and optional telemetry. `--monitor` shows live inputs/results; `--record` saves the browser viewport as MP4. [Guide](../docs/guides/vlm-mode-benchmark.md). |
+| `tracked_decisions` | `python -m tools.tracked_decisions plan` plans the frozen twelve-stream YOLO26-S + native Decisions suite offline. Explicit `--execute` is required for API runs. [Guide](../docs/guides/yolo-decisions-benchmark.md). |
+| `tracked_grounding` | Frozen YOLO26-S + Qwen35B reference flow and shared detector/ID monitor. [Guide](../docs/guides/yolo-qwen-tracked-grounding.md). |
+| `decisions_benchmark` | Native Decisions scene-event adapter, standalone events runner and source-only packaging. [Guide](../docs/guides/decisions-api-benchmark.md). |
 | `vlm_benchmark/local_model.sh` | Package/install/start/check a pinned local Qwen3.8 27B W4A16 service on a 4090, then run the mode benchmark. [Guide](../docs/guides/vlm-local-model.md). |
 | `vlm_simple_jev_benchmark.py` | Compare Simple Jev direct vision with Qwen event-only and full JSON; see below. |
 | `vlm_delivery_probe.py` | Independently receive real VLM/general/event SSE, poll SAM/face progress, and pull live/annotated MJPEG; preserve arrival times and pending positive observations. |
@@ -138,8 +146,10 @@ The isolated runtime defaults to `SCENE_VLM_OUTPUT_MODE=parallel`; `full` and
 interfaces. The grounding lane alone supplies display/person-event evidence and
 is retained separately on `branch.grounding_results`. When both lanes admit a window they share `request_id` and
 `window_id`. Each lane admits independently; a full grounding lane does not block
-new information windows. Information completes out of order and discards superseded
-late results, with an HTTP timeout capped at five seconds; grounding remains ordered.
+new information windows. Both lanes publish completed replies without waiting for slower earlier calls.
+Superseded replies remain in history and accounting but cannot overwrite live
+state. The default Qwen information HTTP timeout remains capped at five seconds;
+the opt-in native Decisions suite uses its separately frozen twenty-second limit.
 Each lane allows `SCENE_MAX_IN_FLIGHT` requests (up to eight total in parallel mode).
 Before replay, verify `/v1/vlm/status` reports `output_mode=parallel`,
 `state=running`, and both `events` and `compact` lanes. Stop a mismatched run
@@ -162,3 +172,5 @@ Use a new output directory. `--description-style temporal` tests per-frame prose
 `--smoking standard` changes that sensitivity. Qwen receives the authorized images,
 TypeSafe receives descriptions only; both services require configured credentials.
 See [recognition findings](../docs/validation/recognition-quality.md).
+
+- [Vast FP8 本地部署与十二路测试](../docs/guides/vast-fp8-yolo.md)：固定模型和镜像、持久卷、离线预检与六轮入口；默认只打印计划。

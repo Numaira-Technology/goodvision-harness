@@ -123,8 +123,12 @@ def render_modes(output, document):
         if not document["settings"]["real"]
         else "自部署端点，硬件与模型精度见 manifest；GPU 采样只对应运行脚本的主机"
         if document["settings"]["backend"] == "local"
+        else "OpenAI Decisions 直连 API；本机 GPU 不执行 VLM 推理"
+        if document["settings"]["backend"] == "openai_decisions"
         else "外部 OpenRouter API；本机 GPU 不执行 VLM 推理"
     )
+    if document["settings"]["backend"] == "openai_decisions":
+        scope += "；固定服务商：OpenAI；允许其他供应商接替：False"
     monitor_on = bool(
         document["settings"].get("monitor") or document["settings"].get("record")
     )
