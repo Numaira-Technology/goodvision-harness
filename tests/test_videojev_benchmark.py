@@ -5,6 +5,10 @@ from functools import partial
 
 import httpx
 import pytest
+from benchmark_runtime_fixtures import (
+    assert_admission_drained,
+    configure_ephemeral_admission,
+)
 from test_tracked_grounding import jpeg
 from test_videojev_probe import responses
 
@@ -16,6 +20,8 @@ from tools.vlm_multistream_benchmark import drain_budget_seconds, report_lane, r
 
 
 def offline_inspector(config, *, broker_url):
+    configure_ephemeral_admission(config)
+
     def respond(request):
         assert request.url.host == "127.0.0.1"
         assert "authorization" not in request.headers
@@ -92,7 +98,12 @@ def test_twelve_camera_native_route(tmp_path, monkeypatch, mode):
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48
     for lane in result["lanes"].values():
-        assert lane["complete_valid_results"] == 12, lane["errors"]
+        assert lane["complete_valid_results"] == 12, (
+            lane["errors"],
+            lane["request_phase_metrics"],
+            result["shared_admission"],
+        )
+    assert_admission_drained(result, args, 12 * len(result["lanes"]))
     rows = [
         json.loads(s)["report"]
         for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")

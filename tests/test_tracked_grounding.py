@@ -11,7 +11,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
-from benchmark_runtime_fixtures import BOX, config, job, jpeg, report
+from benchmark_runtime_fixtures import (
+    BOX,
+    assert_admission_drained,
+    config,
+    configure_ephemeral_admission,
+    job,
+    jpeg,
+    report,
+)
 
 from goodvision_harness.model_api import ModelAPISettings
 from tools.benchmark_runtime.scene_model import _ResponseValidationError
@@ -448,6 +456,11 @@ def fake_models():
     thread.join()
 
 
+def offline_inspector(config, *, broker_url):
+    configure_ephemeral_admission(config)
+    return inspector(config, broker_url=broker_url)
+
+
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 @pytest.mark.parametrize("load_profile", ["historical", "four-second"])
 def test_twelve_sources_through_http_broker_and_spawned_workers(
@@ -480,7 +493,7 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
             [[jpeg()] * frame_count],
             tmp_path,
             1,
-            inspector_factory=partial(inspector, broker_url=broker.endpoint),
+            inspector_factory=partial(offline_inspector, broker_url=broker.endpoint),
             source_hook=broker.submit,
         )
         # Model windows can finish before the detector-only source tail.
@@ -488,6 +501,7 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
     assert result["input_timing_valid"]
     assert result["all_drained"] and result["result_records_missing"] == 0
     assert result["result_retention"]["valid"]
+    expected = 24 if low_rate else 12
     assert detector_counts == {
         "submitted": frame_count * 12,
         "ready": frame_count * 12,
@@ -497,9 +511,13 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
     )  # Same 2.5 FPS detector stream, independent of VLM cadence or lane count.
     assert len(set(calls["detector"])) == frame_count * 12
     for lane in result["lanes"].values():
-        expected = 24 if low_rate else 12
         assert lane["expected_observations"] == expected
-        assert lane["complete_valid_results"] == expected, lane["errors"]
+        assert lane["complete_valid_results"] == expected, (
+            lane["errors"],
+            lane["request_phase_metrics"],
+            result["shared_admission"],
+        )
+    assert_admission_drained(result, args, expected * len(result["lanes"]))
     if low_rate:
         assert result["source_sample_fps"] == 2.5
         assert result["nominal_requests_per_second"] == (6 if mode == "parallel" else 3)

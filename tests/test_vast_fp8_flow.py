@@ -5,6 +5,10 @@ from functools import partial
 
 import httpx
 import pytest
+from benchmark_runtime_fixtures import (
+    assert_admission_drained,
+    configure_ephemeral_admission,
+)
 from test_tracked_grounding import answer, jpeg
 from test_vast_vlm import stream
 
@@ -16,6 +20,7 @@ from tools.vlm_multistream_benchmark import report_lane, run_stage
 
 def offline_inspector(config, *, broker_url):
     assert config.api_key == ""
+    configure_ephemeral_admission(config)
 
     def respond(request):
         if request.method == "HEAD":
@@ -84,8 +89,11 @@ def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequ
     assert len(calls) == len(set(calls)) == 48
     for lane in result["lanes"].values():
         assert lane["expected_observations"] == lane["complete_valid_results"] == 12, (
-            lane["errors"]
+            lane["errors"],
+            lane["request_phase_metrics"],
+            result["shared_admission"],
         )
+    assert_admission_drained(result, args, 12 * len(result["lanes"]))
     records = [
         json.loads(s)["report"]
         for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")

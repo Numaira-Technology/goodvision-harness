@@ -5,6 +5,10 @@ from functools import partial
 
 import httpx
 import pytest
+from benchmark_runtime_fixtures import (
+    assert_admission_drained,
+    configure_ephemeral_admission,
+)
 from test_decisions_benchmark import response_body
 from test_tracked_grounding import jpeg
 
@@ -20,6 +24,7 @@ def offline_inspector(config, *, broker_url, audit_dir):
     # This factory runs inside each spawned process. Production transport is
     # replaced only here, so no API call or real credential is possible.
     assert config.api_key == "offline-native-key"
+    configure_ephemeral_admission(config)
 
     def respond(request):
         if request.method == "HEAD":
@@ -90,7 +95,12 @@ def test_twelve_sources_native_decisions_and_person_reports(
     assert len(calls) == len(set(calls)) == 48
     for lane in result["lanes"].values():
         assert lane["expected_observations"] == 12
-        assert lane["complete_valid_results"] == 12, lane["errors"]
+        assert lane["complete_valid_results"] == 12, (
+            lane["errors"],
+            lane["request_phase_metrics"],
+            result["shared_admission"],
+        )
+    assert_admission_drained(result, args, 12 * len(result["lanes"]))
     records = [
         json.loads(s)["report"]
         for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")
