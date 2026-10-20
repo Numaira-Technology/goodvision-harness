@@ -709,6 +709,15 @@ def run_vlm_process(
                 },
                 "content_kind": {"text", "parts", "missing", "other"},
                 "content_wrapper": {"code_fence", "none"},
+                "native_service_error": {
+                    "cuda_shared_failure", "cuda_recovery_failed", "result_log_failure",
+                    "gpu_worker_stopped", "cpu_worker_stopped", "invalid_response",
+                    "preprocess_failed", "window_failed", "cuda_out_of_memory",
+                    "queue_full", "superseded", "expired_before_preprocess",
+                    "expired_before_gpu", "client_timeout_before_start",
+                    "request_deadline", "service_unavailable", "service_shutdown",
+                    "cancelled_before_start",
+                },
             }.items():
                 value = shape.get(key)
                 if isinstance(value, str) and value in allowed:

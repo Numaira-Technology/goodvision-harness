@@ -24,6 +24,16 @@ from .vlm_transport import create_vlm_http_client
 
 _MAX_RESPONSE_BYTES = 256 * 1024
 _MAX_REQUEST_BYTES = 23 * 1024 * 1024
+NATIVE_SHARED_ERRORS = frozenset((
+    "cuda_shared_failure", "cuda_recovery_failed", "result_log_failure",
+    "gpu_worker_stopped", "cpu_worker_stopped",
+))
+_NATIVE_SERVICE_ERRORS = NATIVE_SHARED_ERRORS | frozenset((
+    "invalid_response", "preprocess_failed", "window_failed", "cuda_out_of_memory",
+    "queue_full", "superseded", "expired_before_preprocess", "expired_before_gpu",
+    "client_timeout_before_start", "request_deadline", "service_unavailable",
+    "service_shutdown", "cancelled_before_start",
+))
 _SERVICE_METRICS = frozenset((
     "preprocess_seconds", "visual_encode_seconds", "decision_seconds",
     "model_pipeline_seconds", "gpu_pipeline_seconds", "server_queue_seconds",
@@ -243,6 +253,11 @@ class VideoJevInspector:
                         except (ValueError, TypeError, RecursionError):
                             detail = None
                         if isinstance(detail, dict):
+                            service_error = detail.get("error")
+                            if service_error in _NATIVE_SERVICE_ERRORS:
+                                self.last_response_diagnostics = {
+                                    "native_service_error": service_error,
+                                }
                             if detail.get("error") == "invalid_response":
                                 code = "invalid_response"
                             service = detail.get("timings")
@@ -252,11 +267,13 @@ class VideoJevInspector:
                                             and type(value) in (int, float)
                                             and math.isfinite(value) and value >= 0):
                                         timing["videojev_" + name] = value
-                        raise ModelAPIError(
+                        failure = ModelAPIError(
                             "VideoJev service request failed", code=code,
                             status_code=response.status_code,
                             retry_after=response.headers.get("Retry-After"),
                         )
+                        failure.response_diagnostics = dict(self.last_response_diagnostics)
+                        raise failure
                     return _json(raw, stage="native_scoring_response")
                 finally:
                     timing["response_json_decode_seconds"] = time.monotonic() - decode_started
