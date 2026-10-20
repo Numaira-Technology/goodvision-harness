@@ -500,6 +500,22 @@ class LiveMonitor:
                 }
                 for i, frames in enumerate(self.framesets)
             ]
+            # Surface the real per-person select events (YOLO boxes + cheap VLM
+            # "which number" query) onto each camera so the chips reflect them,
+            # not just the box colour, and flag that a real model is in use.
+            if self._select_events:
+                data["select_active"] = True
+                now = time.monotonic()
+                per_camera = {}
+                with self._select_state_lock:
+                    for (_client, camera), state in self._select_states.items():
+                        if state["expires"] <= now:
+                            continue
+                        events = per_camera.setdefault(camera, set())
+                        for labels in state["tags"].values():
+                            events.update(labels)
+                for i, cam in enumerate(data.get("cameras", [])):
+                    cam["select_events"] = sorted(per_camera.get(i, ()))
             return data
 
     def track_preview(self, stage, camera, payload):
