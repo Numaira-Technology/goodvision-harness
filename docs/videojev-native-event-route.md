@@ -174,7 +174,11 @@ independently phased second sampler is not applied. Files use the existing
 VideoFileStream pacing and IndependentVLMBranch scheduling and publication.
 
 Per stream, buffered `inputs.jsonl` retains raw frame number, source time, actual
-arrival, selection, and lateness. `reports.jsonl` saves original reports;
+arrival, selection, and lateness. `reports.jsonl` saves original reports.
+Decoder-reported frame position and milliseconds are retained beside the nominal
+frame grid, including after a seek. Missing or disagreeing decoder positions must
+be reported during offline time matching, not assumed to establish alignment.
+These values are recording fields, not additional model context.
 `publication.jsonl` links them to ResultBus readable-time bounds. `completion.json`
 separates requested-range completion, original-media EOF, event-queue drain,
 cleanup, and errors. The run-level completion includes every stream, not just

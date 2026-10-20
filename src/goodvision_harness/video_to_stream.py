@@ -189,7 +189,16 @@ class VideoFileStream:
                 # Evaluation timestamps actual paced input, including frames
                 # excluded by cadence. Decoding ahead is not input arrival.
                 ingress = None
+                decoder_frame_index = decoder_timestamp_msec = None
                 if self._input_observer is not None:
+                    # Keep decoder-reported positions beside the nominal frame
+                    # grid; a seek request alone does not establish alignment.
+                    decoder_next = capture.get(cv2.CAP_PROP_POS_FRAMES)
+                    decoder_pts = capture.get(cv2.CAP_PROP_POS_MSEC)
+                    if math.isfinite(decoder_next) and decoder_next >= 1:
+                        decoder_frame_index = decoder_next - 1
+                    if math.isfinite(decoder_pts) and decoder_pts >= 0:
+                        decoder_timestamp_msec = decoder_pts
                     target = started_wall + (timestamp - self.start_seconds)
                     if not _sleep_until(target, self._stop):
                         break
@@ -206,6 +215,8 @@ class VideoFileStream:
                     try:
                         self._input_observer({
                             "raw_frame_index": source_index - 1,
+                            "decoder_frame_index": decoder_frame_index,
+                            "decoder_timestamp_msec": decoder_timestamp_msec,
                             "timestamp_seconds": timestamp,
                             "ingress_monotonic": ingress,
                             "scheduled_monotonic": target,
