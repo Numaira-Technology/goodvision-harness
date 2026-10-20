@@ -63,6 +63,9 @@ def test_twelve_camera_native_route(tmp_path, monkeypatch, mode):
     args = suite.arguments()
     args.real = True
     args.duration, args.output_mode, args.deadline = 1.6, mode, 3
+    # This checks offline routing/accounting, not the host journal throughput.
+    # Keep production source freshness and the real shared gate unchanged.
+    args.queue_timeout = 3
     args.admission_storage = "workspace"
     base = modes.configure(suite.arguments())
     calls = []
@@ -220,3 +223,66 @@ def test_cancelled_queue_work_is_skipped_and_running_work_keeps_scorer_healthy(
         json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()
     ]
     assert [row["status"] for row in rows] == ["completed", "cancelled_before_gpu"]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_unused_question_metadata_is_rejected_before_queueing(
+    tmp_path, value
+):
+    from tools.videojev_benchmark.server import Scorer
+
+    class Runtime:
+        def predict(self, images, fps, qs):
+            return responses(qs, 2), {}
+
+    scorer = Scorer(Runtime(), tmp_path / "audit.jsonl")
+    body = server_body()
+    body["questions"][0]["metadata"] = {"unused": [value]}
+    with pytest.raises(ValueError, match="finite JSON"):
+        scorer.submit(body)
+    assert scorer.queue.unfinished_tasks == 0
+    assert scorer.submit(server_body()).result(timeout=2)["request_id"] == "test"
+    scorer.queue.join()
+    assert scorer.healthy
+
+
+def test_nonfinite_runtime_metadata_fails_request_without_killing_worker(tmp_path):
+    from tools.videojev_benchmark.server import Scorer
+
+    class Runtime:
+        calls = 0
+
+        def predict(self, images, fps, qs):
+            self.calls += 1
+            return responses(qs, 2), {
+                "decision_seconds": float("nan") if self.calls == 1 else 0.01
+            }
+
+    audit = tmp_path / "audit.jsonl"
+    scorer = Scorer(Runtime(), audit)
+    with pytest.raises(ValueError, match="JSON compliant"):
+        scorer.submit(server_body()).result(timeout=2)
+    assert scorer.submit(server_body()).result(timeout=2)["request_id"] == "test"
+    scorer.queue.join()
+    assert scorer.healthy
+    rows = [json.loads(line) for line in audit.read_text().splitlines()]
+    assert [row["status"] for row in rows] == ["failed", "completed"]
+
+
+def test_audit_write_failure_fails_request_and_health_without_losing_queue_task(
+    tmp_path,
+):
+    from tools.videojev_benchmark.server import Scorer
+
+    class Runtime:
+        def predict(self, images, fps, qs):
+            return responses(qs, 2), {}
+
+    scorer = Scorer(Runtime(), tmp_path / "audit.jsonl")
+    scorer.audit = tmp_path  # Opening an existing directory must fail on every OS.
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        scorer.submit(server_body()).result(timeout=2)
+    scorer.queue.join()
+    assert not scorer.healthy
+    with pytest.raises(RuntimeError, match="unhealthy"):
+        scorer.submit(server_body())

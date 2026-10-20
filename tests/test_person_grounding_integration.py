@@ -216,6 +216,6 @@ def test_production_grounding_keeps_main_bbox_inspector():
 
 def test_production_has_no_dependency_on_benchmark_runtime():
     for path in (ROOT / "src/goodvision_harness").rglob("*.py"):
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         assert "tools.benchmark_runtime" not in source, str(path)
         assert "grounding_source" not in source, str(path)

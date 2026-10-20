@@ -283,7 +283,7 @@ def test_model_suite_credentials_and_preflight_boundary(
     )
     assert result["state"] == "completed"
     assert len(calls) == (2 if preflight_only else 14)
-    manifest = json.loads((output / "manifest.json").read_text())
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["execute"] is True
     if profile == "fp8":
         assert manifest["settings"]["quantization"] == "FP8"
@@ -346,7 +346,7 @@ def test_exported_bundle_imports_without_original_checkout(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (stage / "workers/detector_rich_label/tracker.py").is_file()
     assert (stage / "tools/vast_vlm/setup-yolo.sh").is_file()
-    manifest = json.loads((stage / "bundle-manifest.json").read_text())
+    manifest = json.loads((stage / "bundle-manifest.json").read_text(encoding="utf-8"))
     assert manifest["source_identity"]["integration"] == (
         "main-grounding-isolated-benchmarks-v3"
     )

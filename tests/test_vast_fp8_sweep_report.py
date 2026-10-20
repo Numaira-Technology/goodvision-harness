@@ -100,6 +100,46 @@ def test_v1_history_is_read_without_rewriting_or_changing_scores(arms):
     assert all(path.read_bytes() == data for path, data in saved.items())
 
 
+def test_explicit_frozen_stage_load_matches_historical_defaults(arms):
+    roots, reference = arms
+    expected = fp8_sweep.compare(roots, reference)
+    for root in roots:
+        path = root / "summary.json"
+        summary = json.loads(path.read_text())
+        for job in summary["jobs"]:
+            job["result"].update(
+                streams=12,
+                duration_seconds=fp8_profile.FROZEN["duration"],
+                observation_fps=fp8_profile.FROZEN["observation_fps"],
+                source_sample_fps=2.5,
+            )
+        runtime.write_json(path, summary)
+    assert fp8_sweep.compare(roots, reference) == expected
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("streams", 1),
+        ("duration_seconds", 10),
+        ("observation_fps", 0.25),
+        ("source_sample_fps", 1),
+    ],
+)
+def test_comparison_rejects_stage_load_that_changes_report_denominator(
+    arms, field, value
+):
+    roots, reference = arms
+    path = roots[0] / "summary.json"
+    summary = json.loads(path.read_text())
+    # Keep job load and the saved 828-window lane counter unchanged. Neither
+    # alone protects the denominator used by the shared report.
+    summary["jobs"][0]["result"][field] = value
+    runtime.write_json(path, summary)
+    with pytest.raises(ValueError, match="frozen stage load"):
+        fp8_sweep.compare(roots, reference)
+
+
 @pytest.mark.parametrize(
     "problem",
     [

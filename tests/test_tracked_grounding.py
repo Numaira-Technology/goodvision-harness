@@ -459,6 +459,9 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
     low_rate = load_profile == "four-second"
     args.duration, args.output_mode, args.deadline = 5.6 if low_rate else 1.6, mode, 3
     frame_count = 14 if low_rate else 4
+    # This checks offline routing/accounting, not the host journal throughput.
+    # Keep production source freshness and the real shared gate unchanged.
+    args.queue_timeout = 3
     args.admission_storage = (
         "workspace"  # Portable offline fixture, not formal profile.
     )

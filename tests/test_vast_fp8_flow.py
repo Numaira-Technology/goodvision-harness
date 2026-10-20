@@ -55,6 +55,9 @@ def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequ
     base = modes.configure(args)
     # Offline fixture shortens media duration; formal load is tested separately.
     args.duration, args.output_mode, args.deadline = 1.6, mode, 3
+    # This checks offline routing/accounting, not the host journal throughput.
+    # Keep production source freshness and the real shared gate unchanged.
+    args.queue_timeout = 3
     args.admission_storage = "workspace"
     calls = []
 

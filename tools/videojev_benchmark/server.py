@@ -69,6 +69,12 @@ class Scorer:
             ids.append(question["id"])
         if len(set(ids)) != len(ids):
             raise ValueError("duplicate question IDs")
+        try:
+            # json.loads accepts NaN/Infinity, including in unused question keys.
+            # Such values must not reach the strict JSON audit writer.
+            json.dumps(body, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("request must contain finite JSON data") from exc
         future = Future()
         self.queue.put_nowait((time.monotonic(), body, future))
         return future
@@ -81,48 +87,61 @@ class Scorer:
             audit.update(
                 question_count=len(body["questions"]), queue_seconds=start - arrival
             )
+            value, failure = None, None
             try:
                 # Atomically claim work: a client may cancel a queued request,
                 # but cannot race result publication once GPU execution starts.
                 if not future.set_running_or_notify_cancel():
                     audit["status"] = "cancelled_before_gpu"
-                    continue
-                if not self.healthy or start - arrival >= 19.5:
+                elif not self.healthy or start - arrival >= 19.5:
                     audit["status"] = "expired_before_gpu"
-                    future.set_exception(TimeoutError())
-                    continue
-                images = [base64.b64decode(v, validate=True) for v in body["images"]]
-                raw, timings = self.runtime.predict(images, 2.5, body["questions"])
-                parse_choices(raw, body["questions"])
-                timings["server_queue_seconds"] = start - arrival
-                value = dict(
-                    model=MODEL,
-                    revision=REVISION,
-                    request_id=body["request_id"],
-                    raw=raw,
-                    timings=timings,
-                )
-                audit.update(
-                    status="completed",
-                    raw=raw,
-                    timings=timings,
-                    questions=body["questions"],
-                )
-                if not future.done():
-                    future.set_result(value)
+                    failure = TimeoutError()
+                else:
+                    images = [
+                        base64.b64decode(v, validate=True) for v in body["images"]
+                    ]
+                    raw, timings = self.runtime.predict(images, 2.5, body["questions"])
+                    parse_choices(raw, body["questions"])
+                    timings["server_queue_seconds"] = start - arrival
+                    value = dict(
+                        model=MODEL,
+                        revision=REVISION,
+                        request_id=body["request_id"],
+                        raw=raw,
+                        timings=timings,
+                    )
+                    # Validate model metadata as well as choices before exposing
+                    # a success or incorporating it into the durable audit row.
+                    json.dumps(value, allow_nan=False)
+                    audit.update(
+                        status="completed",
+                        raw=raw,
+                        timings=timings,
+                        questions=body["questions"],
+                    )
             except Exception as exc:
                 audit.update(
                     status="failed", error=type(exc).__name__, detail=str(exc)[:1200]
                 )
                 if isinstance(exc, RuntimeError):
                     self.healthy = False
-                if not future.done():
-                    future.set_exception(exc)
+                failure = exc
             finally:
                 audit["elapsed_seconds"] = time.monotonic() - arrival
-                with self.audit.open("a") as f:
-                    f.write(json.dumps(audit, allow_nan=False) + "\n")
-                self.queue.task_done()
+                try:
+                    with self.audit.open("a") as f:
+                        f.write(json.dumps(audit, allow_nan=False) + "\n")
+                except Exception:
+                    self.healthy = False
+                    failure = RuntimeError("scorer audit write failed")
+                try:
+                    if not future.done():
+                        if failure is not None:
+                            future.set_exception(failure)
+                        else:
+                            future.set_result(value)
+                finally:
+                    self.queue.task_done()
 
 
 def handler(scorer):

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import tarfile
 from dataclasses import replace
 from types import SimpleNamespace
@@ -194,7 +195,7 @@ def test_native_payload_frames_policy_usage_and_audit(monkeypatch, tmp_path):
     finally:
         inspector.close()
     assert len(seen) == 1
-    audit_text = next(tmp_path.glob("*.jsonl")).read_text()
+    audit_text = next(tmp_path.glob("*.jsonl")).read_text(encoding="utf-8")
     assert "test-key" not in audit_text and "must-not-log" not in audit_text
     audit = json.loads(audit_text)
     assert audit["complete"] and audit["headers"]["openai_request_id"] == "req_test123"
@@ -274,7 +275,7 @@ def test_http_failures_no_retry_no_redirect(monkeypatch, tmp_path, status):
     finally:
         inspector.close()
     assert len(calls) == 1
-    text = next(tmp_path.glob("*.jsonl")).read_text()
+    text = next(tmp_path.glob("*.jsonl")).read_text(encoding="utf-8")
     assert "test-key" not in text and "must-not-log" not in text
     assert json.loads(text)["complete"] is False
 
@@ -296,7 +297,12 @@ def test_total_deadline_cancels_and_audits(monkeypatch, tmp_path):
         assert exc.value.code == "timeout"
     finally:
         inspector.close()
-    assert json.loads(next(tmp_path.glob("*.jsonl")).read_text())["complete"] is False
+    assert (
+        json.loads(next(tmp_path.glob("*.jsonl")).read_text(encoding="utf-8"))[
+            "complete"
+        ]
+        is False
+    )
 
 
 @pytest.mark.parametrize("status", [401, 403, 429])
@@ -341,7 +347,7 @@ def test_received_http_status_survives_body_failures(
         assert exc.value.status_code == status
     finally:
         inspector.close()
-    text = next(tmp_path.glob("*.jsonl")).read_text()
+    text = next(tmp_path.glob("*.jsonl")).read_text(encoding="utf-8")
     assert "private-error" not in text
     assert json.loads(text)["http_status"] == status
 
@@ -351,6 +357,7 @@ def test_no_audit_does_not_claim_zero_cost(tmp_path):
     assert result["estimated_base_cost_usd"] is None
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only Linux service lifecycle")
 def test_preflight_initialization_failure_releases_suite_lock(monkeypatch, tmp_path):
     import os
 
@@ -370,7 +377,9 @@ def test_preflight_initialization_failure_releases_suite_lock(monkeypatch, tmp_p
         suite.preflight(tmp_path / "output.mp4", tmp_path / "probe")
     fd = acquire(tmp_path / "outputs" / "vlm-modes" / "run")
     os.close(fd)
-    result = json.loads((tmp_path / "probe" / "preflight.json").read_text())
+    result = json.loads(
+        (tmp_path / "probe" / "preflight.json").read_text(encoding="utf-8")
+    )
     assert result["passed"] is False
 
 
@@ -420,7 +429,7 @@ def test_report_describes_direct_route(tmp_path):
             "request_budget": modes.request_budget(args),
         },
     )
-    page = (tmp_path / "report.html").read_text()
+    page = (tmp_path / "report.html").read_text(encoding="utf-8")
     assert "OpenAI Decisions 直连 API" in page
     assert "固定服务商：OpenAI" in page  # noqa: RUF001
     assert "允许其他供应商接替：False" in page  # noqa: RUF001
@@ -553,7 +562,7 @@ def test_analysis_keeps_planned_denominator_and_history(tmp_path):
     assert not result["passes_target"] and not result["all_two_trials"]
     assert trial["audit_coverage"]["missing_attempts"] == 1
     assert not trial["valid"]
-    page = (tmp_path / "decisions-comparison.html").read_text()
+    page = (tmp_path / "decisions-comparison.html").read_text(encoding="utf-8")
     assert "未通过验收" in page and "未知" in page
     assert "不完整或不一致" in page
 
@@ -604,7 +613,7 @@ def test_interrupted_suite_cannot_pass_even_with_two_timely_trials(tmp_path):
     import copy
 
     test_analysis_keeps_planned_denominator_and_history(tmp_path)
-    document = json.loads((tmp_path / "summary.json").read_text())
+    document = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
     first = document["jobs"][0]
     document["jobs"] = []
     for repeat in (1, 2):
@@ -660,6 +669,7 @@ def test_portable_bundle_excludes_credentials(tmp_path):
     "status,expected,cleanup_failure",
     [(200, 3, False), (429, 1, False), (200, 3, True)],
 )
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only Linux service lifecycle")
 def test_visual_preflight_uses_three_native_calls(
     monkeypatch, tmp_path, status, expected, cleanup_failure
 ):
@@ -710,10 +720,14 @@ def test_visual_preflight_uses_three_native_calls(
         with pytest.raises(ModelAPIError):
             suite.preflight(tmp_path / "output.mp4", folder)
     assert len(calls) == expected
-    saved = json.loads((folder / "preflight.json").read_text())
+    saved = json.loads((folder / "preflight.json").read_text(encoding="utf-8"))
     assert saved["passed"] is (status == 200 and not cleanup_failure)
     assert saved["formal_test_started"] is False
-    audit = next((folder / "api-audit").glob("*.jsonl")).read_text().splitlines()
+    audit = (
+        next((folder / "api-audit").glob("*.jsonl"))
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     assert len(audit) == expected
     fd = acquire(tmp_path / "outputs" / "vlm-modes" / "run")
     os.close(fd)
@@ -766,7 +780,7 @@ def test_native_decisions_crosses_real_worker_and_result_bus(tmp_path):
         audit = [
             json.loads(line)
             for path in (tmp_path / "audit").glob("*.jsonl")
-            for line in path.read_text().splitlines()
+            for line in path.read_text(encoding="utf-8").splitlines()
         ]
         assert audit_coverage([report], audit)["valid"]
     finally:

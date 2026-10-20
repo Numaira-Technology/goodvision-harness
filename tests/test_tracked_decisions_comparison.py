@@ -143,7 +143,7 @@ def test_common_reference_and_fixed_denominators(runs, tmp_path):
     assert analysis["decisions_usage"]["audit_coverage"]["valid"]
     assert analysis["decisions_usage"]["usage_missing_requests"] == 8
     assert analysis["decisions_usage"]["estimated_base_cost_usd"] is None
-    assert "Decisions" in (new / "report.html").read_text()
+    assert "Decisions" in (new / "report.html").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -164,7 +164,7 @@ def test_common_reference_and_fixed_denominators(runs, tmp_path):
 def test_incompatible_or_unreconciled_results_rejected(runs, tmp_path, problem):
     old, new, reference = runs
     path = new / "summary.json"
-    summary = json.loads(path.read_text())
+    summary = json.loads(path.read_text(encoding="utf-8"))
     if problem == "policy":
         summary["event_policy"]["sha256"] = "different"
     elif problem == "source":

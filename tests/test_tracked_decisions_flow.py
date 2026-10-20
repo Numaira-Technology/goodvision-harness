@@ -53,6 +53,9 @@ def test_twelve_sources_native_decisions_and_person_reports(
     args = suite.arguments()
     args.real = True
     args.duration, args.output_mode, args.deadline = 1.6, mode, 3
+    # This checks offline routing/accounting, not the host journal throughput.
+    # Keep production source freshness and the real shared gate unchanged.
+    args.queue_timeout = 3
     args.admission_storage = "workspace"  # Portable mock, formal profile uses tmpfs.
     base = modes.configure(suite.arguments())
     calls = []

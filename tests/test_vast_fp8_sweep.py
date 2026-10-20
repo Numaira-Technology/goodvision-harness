@@ -1,6 +1,7 @@
 """Offline load invariants, kernel provenance and live-server mismatch guards."""
 
 import json
+import os
 import pickle
 import sys
 from dataclasses import asdict
@@ -229,6 +230,7 @@ def test_kernel_actions_are_offline_by_default(action, monkeypatch, capsys):
     assert "--tune" in result["command"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only Linux service lifecycle")
 def test_tuner_refuses_busy_gpu_before_download(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "volume_root", lambda p: p)
     monkeypatch.setattr(runtime, "verify_model", lambda *a, **k: {})
@@ -312,6 +314,7 @@ def mock_gpu_runtime(root, monkeypatch):
 
 
 @pytest.mark.parametrize("attestation_ok", [True, False])
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only Linux service lifecycle")
 def test_startup_applies_options_and_cleans_private_process_on_failure(
     tmp_path, monkeypatch, attestation_ok
 ):
@@ -351,6 +354,7 @@ def test_startup_applies_options_and_cleans_private_process_on_failure(
 
 
 @pytest.mark.parametrize("success", [True, False])
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only Linux service lifecycle")
 def test_tuning_persists_verified_bundle_only_after_success(
     tmp_path, monkeypatch, success
 ):

@@ -383,6 +383,20 @@ def compare(roots, reference):
                 for lane in job["result"]["lanes"].values()
             ):
                 raise ValueError("planned window denominator changed")
+            # The shared report also derives its denominator from stage metadata.
+            # Historical stages may omit these fields and use the frozen defaults,
+            # but an explicit value must not override the validated suite load.
+            stage_load = {
+                "streams": 12,
+                "duration_seconds": base.FROZEN["duration"],
+                "observation_fps": base.FROZEN["observation_fps"],
+            }
+            sample_fps = max(2.0, base.FROZEN["observation_fps"] * 2)
+            if any(
+                job["result"].get(key, value) != value
+                for key, value in stage_load.items()
+            ) or job["result"].get("source_sample_fps") not in (None, sample_fps):
+                raise ValueError("frozen stage load changed")
             for lane, counts in job["result"]["lanes"].items():
                 records = [r["report"] for r in raw if report_lane(r["report"]) == lane]
                 if counts["reports"] != len(records) or counts[
