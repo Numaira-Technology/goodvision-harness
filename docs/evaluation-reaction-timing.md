@@ -1,5 +1,10 @@
 # Evaluation-only reaction timing
 
+See the [physical-conflict Harness adaptation guide](physical-conflict-harness-adaptation.md)
+for the runtime changes, frame-attribution limits, and single-fight/four-event
+measurement contract. Benchmark task and annotation changes belong in the
+separate GoodVision evaluation repository.
+
 The approved run of UBI F_8_1_0_0_0 and the negative clips N_251_0_0_1_0
 and N_478_0_0_1_0 (80 seconds in total) finished using application revision
 `091f41d`. Its resources were released. It used the historical 52-label,
