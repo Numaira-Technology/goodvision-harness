@@ -181,14 +181,14 @@ class ModelLedger:
     def _apply_window_replay(self, operations):
         """Carry unique prior sends into one explicitly authorized window replay.
 
-        The authorization is local audit text. Source and session fields narrow
+        The approval quote is local audit text. Source and session fields narrow
         the budget transfer; lane and frame sequences keep their original scope.
         Receipts, cached responses and unknown-outcome blocks stay on old keys.
         """
         replay = self.window_replay
         if replay is None:
             return
-        fields = {"authorization", "source_id", "prior_session", "new_session"}
+        fields = {"approval_quote", "source_id", "prior_session", "new_session"}
         if (not isinstance(replay, dict) or set(replay) != fields
                 or any(not isinstance(replay[field], str) or not replay[field].strip()
                        for field in fields)

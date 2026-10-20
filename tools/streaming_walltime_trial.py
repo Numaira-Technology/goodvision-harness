@@ -211,6 +211,8 @@ def prepare(args):
     save(root / "prepare-intent.json", {"epoch": time.time(), "clips": clips,
         "model_calls": 0, "gpu_creations": 0, "source_commit": args.commit})
     commit = freeze_source(root, args.worktree.resolve(), args.commit)
+    source_privacy = import_file("walltime_source_privacy",
+        root / "checkout/src/goodvision_harness/evaluation/privacy.py")
     with (root / "checkout/tools/streaming_walltime_trial.py").open("xb") as target:
         target.write(git(args.worktree, "show", commit + ":tools/streaming_walltime_trial.py"))
     copy_ledger(root, resumed if resumed is not None else last)
@@ -320,9 +322,10 @@ def prepare(args):
         if recovery is not None and row["clip"] in recovery["replayed"]:
             replay = recovery["replayed"][row["clip"]]
             configuration["model_ledger"]["window_replay"] = {
-                "authorization": replay["approval_quote"], "source_id": configuration["source_id"],
+                "approval_quote": replay["approval_quote"], "source_id": configuration["source_id"],
                 "prior_session": replay["prior_session"], "new_session": configuration["stream_session_id"]}
             configuration["provenance"]["approved_source_replay"] = replay
+        source_privacy.reject_private(configuration, observation=True)
         destination = root / "sources" / (row["clip"] + ".json")
         save(destination, configuration)
         entries.append({"clip": row["clip"], "config": str(destination),

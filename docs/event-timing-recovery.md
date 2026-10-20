@@ -28,11 +28,17 @@ results; both attempts remain in request and cost totals.
 - `event_recovery`: preserves the prior round, inherited member paths, replay
   decision, and newly captured members. It prevents a new round from presenting
   an inherited recording as fresh inference.
-- `model_ledger.window_replay`: contains `authorization`, `source_id`,
+- `model_ledger.window_replay`: contains `approval_quote`, `source_id`,
   `prior_session`, and `new_session`. It permits the named new measurement while
   carrying prior sends into the cumulative three-attempt window budget.
 - `context.window_replay`: records that approval with each new paid request.
   It is local accounting metadata, not model input.
+
+The approval field is deliberately not named `authorization`: that name is
+reserved for credentials and remains forbidden by the observation-input privacy
+guard. Offline preparation applies the same existing guard to newly generated
+source configurations before launch can rent a GPU. Historical rejected source
+files are retained unchanged, not migrated or accepted through a privacy bypass.
 
 Matching uses the explicit source, lane, and ordered frame-sequence window.
 Old successful replies are not substituted for the newly approved measurement.
