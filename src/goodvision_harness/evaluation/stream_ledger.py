@@ -23,13 +23,15 @@ class LedgerInspectorFactory:
     directory: str
     seed_manifest: str
     owner_lock: str
+    window_replay: dict | None = None
 
     def __call__(self, config):
         global _ledger, _identity
         with _lock:
             if _ledger is None:
                 _ledger = ModelLedger(self.directory, seed_manifest_path=self.seed_manifest,
-                                      owner_lock_path=self.owner_lock)
+                                      owner_lock_path=self.owner_lock,
+                                      window_replay=self.window_replay)
                 _identity = self
             elif _identity != self:
                 raise ValueError("native process ledger ownership changed")

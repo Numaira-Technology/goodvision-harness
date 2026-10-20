@@ -48,7 +48,7 @@ def _rows(path):
 
 class ModelLedger:
     def __init__(self, root, *, seed_manifest_path, owner_lock_path, seed_manifest_sha256=None,
-                 summary_recovery=None):
+                 summary_recovery=None, window_replay=None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._handles = []
@@ -61,6 +61,7 @@ class ModelLedger:
         self._call_sequence = 0
         self.balance_blocked = False
         self.summary_recovery = summary_recovery
+        self.window_replay = copy.deepcopy(window_replay)
         self.recovery_selections = {}
         self.response_errors = set()
         try:
@@ -175,6 +176,36 @@ class ModelLedger:
         self._call_sequence = max([len(requests), *prior_sequences])
         # Balance blocks belong to this run; historical 402s do not permanently block a recovered account.
         self.balance_blocked = (self.root / "balance-blocked.jsonl").exists()
+        self._apply_window_replay(operations)
+
+    def _apply_window_replay(self, operations):
+        """Carry unique prior sends into one explicitly authorized window replay.
+
+        The authorization is local audit text. Source and session fields narrow
+        the budget transfer; lane and frame sequences keep their original scope.
+        Receipts, cached responses and unknown-outcome blocks stay on old keys.
+        """
+        replay = self.window_replay
+        if replay is None:
+            return
+        fields = {"authorization", "source_id", "prior_session", "new_session"}
+        if (not isinstance(replay, dict) or set(replay) != fields
+                or any(not isinstance(replay[field], str) or not replay[field].strip()
+                       for field in fields)
+                or replay["prior_session"] == replay["new_session"]):
+            raise LedgerBlocked("invalid_explicit_window_replay")
+        matched = False
+        # Operations are indexed by unique call ID after seed/current deduplication.
+        for operation in operations.values():
+            if (operation is None or operation["kind"] != "window"
+                    or operation["source"] != replay["source_id"]
+                    or operation["session"] != replay["prior_session"]):
+                continue
+            matched = True
+            key = operation_key({**operation, "session": replay["new_session"]})
+            self.counts[key] = self.counts.get(key, 0) + 1
+        if not matched:
+            raise LedgerBlocked("window_replay_prior_requests_missing")
 
     def _append(self, name, value):
         try:
@@ -236,6 +267,11 @@ class ModelLedger:
             operation = operation_for_request(context, request)
         except (ValueError, KeyError, TypeError, IndexError):
             raise LedgerBlocked("model_operation_scope_missing", scope="source") from None
+        replay = self.window_replay
+        if (replay is not None and operation["kind"] == "window"
+                and operation["source"] == replay["source_id"]
+                and operation["session"] == replay["new_session"]):
+            context = {**context, "window_replay": copy.deepcopy(replay)}
         key = operation_key(operation)
         with self.lock:
             if self.closed or self.poisoned or self.balance_blocked:

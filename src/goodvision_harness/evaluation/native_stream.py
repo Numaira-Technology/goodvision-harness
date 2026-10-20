@@ -243,6 +243,12 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
             or config.get("question_conditioned") is not False
             or config.get("sam_internal_patch") is not False):
         raise ValueError("explicit native stream, VLM choice, stock model and face-disabled identity required")
+    window_replay = config.get("model_ledger", {}).get("window_replay")
+    if (window_replay is not None
+            and (not isinstance(window_replay, dict)
+                 or window_replay.get("source_id") != config["source_id"]
+                 or window_replay.get("new_session") != config["stream_session_id"])):
+        raise ValueError("window replay must match the current native source and session")
     resources.prepare(config)
     coverage_policy = config.get("coverage_policy",
         "all_delivered_person_frames_and_native_admitted_vlm_windows")
@@ -345,7 +351,7 @@ def capture_native_stream(config_path, *, output, resources, config_sha256=None)
             ledger = config["model_ledger"]
             factory = LedgerInspectorFactory(str((base / ledger["output_directory"]).resolve()),
                 str((base / ledger["seed_manifest"]).resolve()),
-                str((base / ledger["owner_lock"]).resolve()))
+                str((base / ledger["owner_lock"]).resolve()), window_replay=window_replay)
             capture.worker = IndependentVLMBranch(vlm, fusion=capture.fusion,
                 inspector_factory=factory, report_observer=capture.independent_report,
                 rejected_report_observer=recorder.rejected_report,
