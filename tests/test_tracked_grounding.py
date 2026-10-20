@@ -483,8 +483,15 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
             inspector_factory=partial(inspector, broker_url=broker.endpoint),
             source_hook=broker.submit,
         )
+        # Model windows can finish before the detector-only source tail.
+        detector_counts = broker.drain()
+    assert result["input_timing_valid"]
     assert result["all_drained"] and result["result_records_missing"] == 0
     assert result["result_retention"]["valid"]
+    assert detector_counts == {
+        "submitted": frame_count * 12,
+        "ready": frame_count * 12,
+    }
     assert (
         len(calls["detector"]) == frame_count * 12
     )  # Same 2.5 FPS detector stream, independent of VLM cadence or lane count.
