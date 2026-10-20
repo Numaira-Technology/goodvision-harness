@@ -431,6 +431,12 @@ def start_gpu(c):
         path = c.ROOT / "gpu/output/deployment.json"
         if path.exists() and c.load(path).get("state") == "application_started":
             deployment = c.load(path)
+            worker_log = c.ROOT / "gpu/output/worker.log"
+            startup = worker_log.read_text(errors="replace") if worker_log.exists() else ""
+            readiness = [line for line in startup.splitlines()
+                         if "detector rich-label ready model=yolo26-s " in line]
+            if not readiness or " gpu=True " not in readiness[-1]:
+                raise RuntimeError("The remote detector did not initialize usable CUDA")
             vast = VastAI(api_key=c.ENV["VAST_API_KEY"], retry=1)
             vast.client.timeout = (5, 20)
             owned = [row for row in c.inventory(vast) if row.get("id") == deployment["instance_id"]

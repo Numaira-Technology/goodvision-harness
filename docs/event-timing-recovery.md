@@ -12,6 +12,11 @@ round has its own once-only preparation and launch. Its cohort, media order,
 model, sampling, windows, fight rules, output limit, HTTP deadline, and scoring
 inputs remain unchanged.
 
+Before reading a video, deployment also requires the detector process's normal
+startup message to report `gpu=True`. A running rental or HTTP server alone
+does not establish CUDA availability. This uses saved startup output, not a
+separate health request, warmup, or model probe.
+
 Completed recordings are referenced through read-only directory links. Their
 source configurations, original clocks, reports, and model receipts remain in
 the previous round. The controller does not call their models again.
