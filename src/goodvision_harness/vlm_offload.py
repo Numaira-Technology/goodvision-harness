@@ -229,7 +229,7 @@ def decode_inspection(payload: object) -> InspectionPayload:
         _number(raw["end_seconds"]),
     )
     raw_frames = wire["frames"]
-    if not isinstance(raw_frames, list) or not 2 <= len(raw_frames) <= 4:
+    if not isinstance(raw_frames, list) or not 2 <= len(raw_frames) <= 64:
         raise ValueError("invalid inspection frame count")
     frames, total_bytes, previous_sequence = [], 0, -1
     for raw_frame in raw_frames:

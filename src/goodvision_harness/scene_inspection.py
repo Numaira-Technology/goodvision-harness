@@ -68,8 +68,8 @@ class InspectionRunCounts:
 
 def _validate_job(job: TemporalInspection) -> set[str]:
     request = job.request
-    if not 2 <= len(job.frames) <= 4:
-        raise ValueError("temporal inspection requires two through four source frames")
+    if not 2 <= len(job.frames) <= 64:
+        raise ValueError("temporal inspection requires two through 64 source frames")
     if job.evidence_after_frame_sequence is not None and (
         type(job.evidence_after_frame_sequence) is not int
         or job.evidence_after_frame_sequence < -1

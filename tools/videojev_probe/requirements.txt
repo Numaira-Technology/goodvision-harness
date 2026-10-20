@@ -1,0 +1,17 @@
+# Use a separate Python 3.12 CUDA environment for the native VideoJev runtime.
+# First install torch==2.8.0 and torchvision==0.23.0 from the official cu128 index.
+transformers==5.14.1
+torchvision==0.23.0
+accelerate==1.10.1
+safetensors==0.8.0
+numpy==2.2.6
+pillow==11.3.0
+av==18.1.0
+flash-linear-attention==0.4.2
+fla-core==0.4.2
+httpx==0.28.1
+opencv-python-headless==4.12.0.88
+PyYAML==6.0.2
+python-dotenv==1.1.1
+# Install flash-attn==2.8.3.post2 causal-conv1d==1.7.0 with
+# --no-build-isolation after PyTorch, matching the team Ada / CUDA 12.8 setup.
