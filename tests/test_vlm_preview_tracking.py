@@ -323,6 +323,7 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
             # on a loaded host; requiring it to survive forever tests CPU speed,
             # not browser identity/display correctness. Keep the real budget and
             # the strict per-camera box/IoU assertions, and exercise recovery.
+            recovery_anchors = set()
             for _ in range(3):
                 page.wait_for_timeout(800)
                 media_times = page.locator(".camera video").evaluate_all(
@@ -331,6 +332,8 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
                 tick = min(len(samples) - 1, int(min(media_times) / 0.4))
                 fresh = result(tick, "grounding")
                 fresh["objects"] = anchor(*scene(tick * 6))["objects"]
+                if tick > r["frame"]["source_frame_index"]:
+                    recovery_anchors.add(f"{tick}:{fresh['message_id']}")
                 for camera in range(streams):
                     monitor.result(camera, fresh)
             page.wait_for_timeout(600)
@@ -360,10 +363,11 @@ def test_live_tracking_browser_keeps_correct_boxes_and_bounded_playback(
                     continue
                 assert tracking["errors"] == 0
                 assert tracking["framesWithBoxes"] >= 5
+                # Every lane must recover on published post-initial evidence.
+                # A later source gap may correctly hide its boxes again; the
+                # final seed need not survive the replay/response budgets.
                 assert any(
-                    sample["anchor"] is not None
-                    and sample["anchor"].startswith(f"{tick}:")
-                    and sample["objects"]
+                    sample["anchor"] in recovery_anchors and sample["objects"]
                     for sample in tracking["samples"]
                 )
                 for sample in tracking["samples"]:
