@@ -2,16 +2,24 @@
 
 See the [physical-conflict Harness adaptation guide](physical-conflict-harness-adaptation.md)
 for the runtime changes, frame-attribution limits, and single-fight/four-event
-measurement contract. Benchmark task and annotation changes belong in the
-separate GoodVision evaluation repository.
+measurement contract. The separate [physical-conflict reaction task](https://github.com/Numaira-Technology/goodvision/tree/codex/physical-conflict-on-off-eval/evaluation/lmms_eval/tasks/physical_conflict_reaction)
+owns the derived benchmark protocol, offline matching, and saved-run comparison.
 
-The approved run of UBI F_8_1_0_0_0 and the negative clips N_251_0_0_1_0
-and N_478_0_0_1_0 (80 seconds in total) finished using application revision
-`091f41d`. Its resources were released. It used the historical 52-label,
-parallel events/compact profile, not the later fight-only mode. One positive
-clip supports a case latency, not a population p90. The later mode is published
-source without a new prepared, deployed, or measured run. Do not replay the
-completed run to fill that distinction.
+We completed two distinct 80-second evaluations of UBI F_8_1_0_0_0 and the
+negative clips N_251_0_0_1_0 and N_478_0_0_1_0. The original `091f41d` run used
+52 labels and parallel events/compact calls. The later `268f51b` run deployed
+the fight-only profile and completed the same clips. Saved completion and
+cleanup records confirm that both runs finished and released their resources.
+Each selection contains one positive source case, so neither supports a
+population p90. Keep their source revisions and results separate.
+
+We changed the benchmark application from final QA answers to a derived event
+reaction task: native window-level `true`/`false`/`null` reports, source-interval
+matching, actual-input-to-readable-report timing, and separate event, video,
+window, and request outcomes. The native window output already existed in
+Harness. Original questions, annotations, and QA scoring remain unchanged.
+The reaction task has its own protocol and denominators; this Harness guide
+does not replace its benchmark implementation.
 
 ## Release and runtime correspondence
 
@@ -19,44 +27,56 @@ Git source, a prepared runtime, and an observed result are separate records.
 Documentation-only commits after the application revisions below do not create
 another runtime or latency result.
 
-| Component | Completed 80-second run | Later fight-only source |
+| Application source | Profile and role | Execution evidence reviewed for this guide |
 | --- | --- | --- |
-| Application and controller | `091f41d`; frozen under the workspace experiment `detector-reaction-ubi3-20261019/checkout` | Introduced by `a07b27f`, source-error classification refined by `8c3e5fb`; no new frozen experiment |
-| Native capture mode | Historical benchmark profile; 52 event labels with compact grounding; final QA disabled | Explicit `capture_mode: physical_conflict`; fight events only; no compact or QA export |
-| VLM route and budgets | Qwen3-VL-8B-Instruct through OpenRouter; events 1600 tokens/75 seconds, compact 8192 tokens/180 seconds | Same model route; events 160 tokens/5 seconds; actual future provider and latency remain unobserved |
-| Person detection | YOLO26-S, explicit size 1280 and confidence 0.10; source provenance declares max_det 300, while the worker leaves that argument to the SDK default; internal `/v1/tracks` protocol | Same native internal tracking path, not the separate `/v1/count` evaluation protocol |
-| Input and output evidence | Original source configurations, `plan.json`, `ready.json`, `launch.json`, per-frame input and publication records, `round-outcome.json`, `resources-after.json` | Source and documented contract only; no corresponding new runtime evidence |
+| `091f41d` | Historical 52-label benchmark profile, parallel events/compact calls, final QA disabled | Completed original 80-second run; saved input/publication records and confirmed release |
+| `268f51b` | Fight-only profile introduced by `a07b27f` and refined by `8c3e5fb`; `capture_mode: physical_conflict`, no compact or final QA | Deployed and completed a separate 80-second run; saved event reports, input/publication clocks, request receipts, and confirmed release |
+| `f457ec2` | Fixed 50-video extension of the same fight-only observation implementation | Deployed; the saved records reviewed for this update show capture in progress and completed sources, without a final cohort outcome |
+| `e88e536` | Four-event comparison implementation; `capture_mode: native_four_events` | Published source; saved local state contains a 50-member staging selection only, with no preparation or launch. Launch follows complete single-fight termination and resource release |
+
+The historical `091f41d` events lane used 1600 output tokens and a 75-second
+deadline; its compact lane used 8192 tokens and 180 seconds. The fight-only and
+four-event profiles use 160 tokens and five seconds for events. Both configure
+Qwen3-VL-8B-Instruct through the same OpenRouter route. Keep each run's actual
+provider, request durations, and runtime evidence separate.
+
+The selected person detector is YOLO26-S with explicit size 1280 and confidence
+0.10. Provenance declares `max_det: 300`, while the worker leaves that argument
+to the installed SDK default. The saved evidence does not establish that
+default. Native capture uses the internal `/v1/tracks` protocol.
 
 The native tracking client in [native_stream.py](../src/goodvision_harness/evaluation/native_stream.py)
 selects `RichLabelHTTPClient(mode="tracks")`. The client rewrites the configured
 labels endpoint to `/v1/tracks`; the tracked
 [detector worker](../workers/detector_rich_label/app.py) implements both routes.
-The completed run's frozen detector `app.py` and `detectors.py` have the same
-text as those two current tracked worker files. This two-file correspondence
+The earlier review of the `091f41d` run established textual correspondence
+between its frozen detector `app.py` and `detectors.py` and the tracked worker
+files. This two-file correspondence
 does not establish that the full deployment bundle is interchangeable. The
 separate historical `/v1/count` service is not a dependency of native event
 tracking; its integration gap must not be used to block this mode.
-The frozen worker log contains completed `/v1/tracks` requests. That evidence
-is stronger than its Uvicorn-only startup receipt, but is still historical
-execution, not a new deployment of the fight-only source. The worker's
-`model.predict` call does not explicitly pass `max_det`; this review did not
-recover the installed SDK default from the remote environment or change it.
+The saved `091f41d` worker log contains completed `/v1/tracks` requests. Those
+records describe that historical deployment. The later `268f51b` execution has
+its own completion, request, and release records. The worker's `model.predict`
+call does not pass `max_det`; the SDK-default limitation applies to both.
 
-### Dependencies outside the application revision
+### Historical deployment dependencies (`091f41d`)
 
-The published [timing controller](../tools/streaming_walltime_trial.py) still
-prepares a runtime by copying several existing workspace artifacts. A checkout
-of the application commit alone is therefore not a self-contained deployment.
+The original preparation copied existing workspace artifacts. The published
+[timing controller](../tools/streaming_walltime_trial.py) retains external
+deployment dependencies, so an application checkout alone is insufficient for
+standalone reconstruction. The inventory below describes the original run's
+dependency evidence.
 
 | Runtime component | Controller source or completed-run evidence | Boundary |
 | --- | --- | --- |
 | Application freeze | `freeze_source` in [saved_streaming_recovery.py](../tools/saved_streaming_recovery.py) archives committed `src` and two saved-streaming helpers; the controller copies its committed entry separately | The helper does not archive the detector deployment tree, images, or every run input |
-| GPU service and configuration | `prepare` copies `source_round/gpu/source`, `harness.yaml`, and `cohort/seed-weights.json`; the completed run names `detector-streaming182-yolo-s-resume41-20261019` as that source | These are separate frozen workspace artifacts, not implied by the application Git revision |
-| Resource control and release | `prepare` copies `control.py` and `driver.py` from `detector-rf-count36-1288-resume5-20261016` into `resource-control.py` and `resource-release.py` | The adapter retains local Docker image references, a dedicated network, and host tooling; no portable image build is established by this document |
+| GPU service and configuration | `prepare` copies `source_round/gpu/source`, `harness.yaml`, and `cohort/seed-weights.json` from a prior saved capture | These are separate frozen workspace artifacts, not implied by the application Git revision |
+| Resource control and release | `prepare` copies existing `control.py` and `driver.py` entries into `resource-control.py` and `resource-release.py` | The adapter retains local Docker image references, a dedicated network, and host tooling; no portable image build is established by this document |
 | Detector environment and weights | Frozen `gpu/source/workers/detector/requirements.txt`, deployment bootstrap, `cohort/seed-weights.json`, and `gpu/output/weights/weights.json` | Requirements include Ultralytics 8.4.0 and Torch 2.7.1; `yolo26s.pt` declares the Ultralytics assets v8.4.0 source. The installed environment and staged weight receipt are runtime evidence, not a new build result |
 | Source configuration and media | Three `sources` files, original media paths, staging selections, and model-ledger seed in the private experiment | Media, credentials, ledgers, and experiment data are not repository release contents; GT remains offline |
 
-The completed run's `plan.json` names these origins. `ready.json` embeds that
+The historical `091f41d` run's `plan.json` names these origins. `ready.json` embeds that
 plan, and launch compares the plan snapshot; it is not a full dependency-content
 freeze. There is no separate whole-runtime source manifest in that run.
 Application publication, successful historical execution, and standalone
@@ -70,17 +90,14 @@ OS package installation and does not preserve a complete OS/Python-build
 lock. These are additional reconstruction limits, not evidence that the
 completed run failed.
 
-This inventory documents the existing dependency boundary without migrating
-the resource adapter, changing the detector, rebuilding an image, or starting
-another run. A later portable release would need to include or explicitly
-version those deployment dependencies and record its actual preparation and
-execution separately. It is not claimed here. No tests were run (no user
-authorization).
+Standalone reproduction would require versioning those deployment dependencies
+and recording their preparation and execution. The completed fight-only run
+establishes later execution evidence, but does not establish a portable build.
+No software tests were run for this documentation update (no user authorization).
 
 ## Physical-conflict event tracking
 
-New preparations from `tools/streaming_walltime_trial.py` use
-`capture_mode: physical_conflict`. This selects the existing native `events`
+The timing controller's `capture_mode: physical_conflict` selects the existing native `events`
 lane with only `fight` and its standard `main-baseline` sensitivity. The 51
 additional benchmark definitions and the compact grounding lane are absent.
 The response contract is exactly `{"fight":true}`, `{"fight":false}`, or
@@ -112,11 +129,11 @@ media probing and a decoder returning `read_ok=false` keep their existing
 behavior; this change adds neither a new completeness gate nor a claim that
 all truncated files can be detected.
 
-Without this explicit capture mode, the complete benchmark profile and its
-existing evidence recorder retain their behavior. Frozen historical checkouts
-and artifacts are not changed. This source change does not launch another
-trial or claim an observed latency reduction. No tests, model calls, GPU
-creation, preparation or launch were run for this change.
+The complete benchmark profile and its existing evidence recorder retain
+their behavior outside this explicit capture mode. Historical checkouts and
+artifacts retain their original content. The `268f51b` run supplies execution
+evidence for fight-only capture; publishing source or documentation remains
+separate from starting an evaluation.
 
 The saved 15.58968-second F_8 case contains 1.70146 seconds from source onset
 to the last window image, 13.30816 seconds in the HTTP exchange, and a residual
@@ -133,33 +150,33 @@ disabled in that historical run.
 
 ## Method and publication scope
 
-The remaining sections describe the original `091f41d` timing instrument.
-The physical-conflict mode above supersedes its benchmark labels, paired
-grounding and QA export only when explicitly selected.
+The timing field contract below originated with `091f41d` and also applies to
+the later profiles. Selecting physical-conflict mode replaces the historical
+benchmark labels, paired grounding, and QA exports with fight-only recording.
 
 This is the Harness evaluation method, not historical native SAM-Ashley. The
 pre-task Harness baseline remains `6c28ddd`; cumulative changes are recorded in
 [the component guide](guides/unified-eval-components.md) and
 [the integration record](design/2026-10-19-hash-migration-integration-status.md).
-The immediate implementation base is `7b7c5d3`, not a replacement baseline.
+The `091f41d` timing increment used `7b7c5d3` as its immediate implementation
+base; the pre-task comparison baseline remains `6c28ddd`.
 
-Relative to those cumulative categories, this increment changes source replay
-pacing only under the evaluation switch, adds local input/publication export,
-and extends the bounded timing controller to the approved new clips. Detector
+The `091f41d` timing increment changes source replay pacing under the evaluation
+switch and adds local input/publication export. Detector
 and VLM source/weights, image preprocessing, inference parameters, loading and
 calls, busy admission/replacement and report ordering, final-answer contracts,
 and PR63 scoring retain their existing versions. Earlier adapters, request
 accounting, evidence projection and answer/score changes remain part of the
 cumulative method; they are not described as an unchanged original Harness.
-A fresh whole-branch baseline line audit was not performed for this increment.
+The source review for that increment did not repeat a whole-branch baseline audit.
 
 ## Switch and boundaries
 
 Set `evaluation_timing: true` in a frozen native-stream source configuration.
 The default is false. This is an evaluation replay instrument, not a model,
 prompt, scoring, or production delivery change. No annotations enter capture.
-The existing `tools/streaming_walltime_trial.py` owner accepts this switch in
-staging only for clips 0040, 0003 and 0030, in that order. Preparation requires
+The controller retains the original three-clip selection as its default and
+also supports the fixed 50-video cohort described below. Preparation requires
 `--prior-timing-round` to preserve the previous run's release and GPU accounting;
 launch checks that exact historical GPU and containers again. It keeps the
 latest saved-answer ledger and never runs a final-answer phase. The earlier
@@ -222,8 +239,11 @@ request failures, invalid report content, misses, and false reports distinct.
 An onset sampled out after actual ingress still has an input clock, but no
 claim of onset-frame model observation. A later report may use other frames.
 Existing admissions and window evidence establish what the model actually saw.
-No model/weight, sampling rate, image preprocessing, task definition, original
-answer, or original score is changed by this instrument.
+The timing switch preserves model/weight, sampling rate, and image
+preprocessing. Original answers and QA scores remain intact. The derived
+reaction protocol adds a different task interface, source-event matching, and
+outcome denominators; preserving the original QA data does not make those
+evaluation definitions unchanged.
 
 No standalone tests, test edits, lint, compilation, builds, or health probes
 are authorized for this change. Source/diff review is not a passing test.
