@@ -1,6 +1,6 @@
 {
   "inference_service": {
-    "provider": "aiclub",
+    "provider": "openrouter",
     "max_retries": 0,
     "providers": {
       "openrouter": {

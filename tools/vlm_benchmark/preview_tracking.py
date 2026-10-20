@@ -198,6 +198,18 @@ class PreviewTracker:
             self.status, self.reason = "lost", "evidence_outside_history"
             if self.history[0][0] - MAX_GAP <= anchor["time"]:
                 source = gray_frame(anchor["jpeg"])
+                # JPEG thumbnails preserve odd dimensions; the H.264 proxy
+                # rounds them to even pixels. Align that small aspect-ratio
+                # difference before applying normalized evidence boxes. Keep
+                # incompatible crops/shapes hidden and history checks exact.
+                if source.shape != frame.shape and math.isclose(
+                    source.shape[0], frame.shape[0], rel_tol=0.01, abs_tol=1
+                ):
+                    source = cv2.resize(
+                        source,
+                        (frame.shape[1], frame.shape[0]),
+                        interpolation=cv2.INTER_AREA,
+                    )
                 if source.shape == frame.shape:
                     tracks = self._seeds(source, anchor)
                     seed_count = len(tracks)

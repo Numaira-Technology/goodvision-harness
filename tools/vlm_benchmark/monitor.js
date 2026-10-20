@@ -7,7 +7,8 @@
   const seconds = v => Number.isFinite(v) ? `${v.toFixed(2)} s` : "—";
   let state, anchoredAt = 0, cards = [], lastPoll = 0, rafFrames = 0;
   window.trackingClient = crypto.randomUUID();
-  const trackingRequested = new URLSearchParams(location.search).get("tracking") !== "off";
+  // Extra preview work is opt-in so timed mode comparisons share the same load.
+  const trackingRequested = new URLSearchParams(location.search).get("tracking") === "on";
   let singleVideo = false, trackingEnabled = trackingRequested;
   window.currentStage = null; window.monitorReady = false; window.finalPainted = false;
   const resetDiagnostics = () => window.monitorDiagnostics = {sawPlaying:false,finalPainted:false,pendingEvidence:0,maxPollGapSeconds:0,maxPlaybackGapSeconds:0,mediaErrors:[],paintFrames:0,phases:[],videoFrames:[],trackingEnabled,allCamerasVisible:false,evidenceFramesPainted:0,laneRenderUpdates:{}};
@@ -38,8 +39,10 @@
     byId("grid").style.maxWidth = count === 1 ? "1340px" : "none";
     byId("display-note").textContent = singleVideo
       ? "每路显示原速视频（预览目标 15 FPS），不叠加定位或跟踪框。事件状态按返回时刻更新，证据时间与耗时见每条结果；未增加播放缓冲。"
-      : data.detector ? "左侧为独立循环播放的 YOLO 预览，黄色框仅表示该帧检测；事件判断只对应右侧证据帧。迟到的有效检测在带时间标记的小窗显示，循环前的框即隐藏。"
-      : "左侧为原速视频（蓝色虚线=帧间跟踪估计，丢失即隐藏）；右侧为模型返回时才显示的原始证据帧，绿色框为原始定位。跟踪不产生新事件判断，也不验证人员身份。";
+      : trackingEnabled && data.detector ? "左侧为独立循环播放的 YOLO 预览，黄色框仅表示该帧检测；事件判断只对应右侧证据帧。迟到的有效检测在带时间标记的小窗显示，循环前的框即隐藏。"
+      : trackingEnabled && data.lanes.includes("grounding")
+      ? "左侧为原速视频（蓝色虚线=帧间跟踪估计，丢失即隐藏）；右侧为模型返回时才显示的原始证据帧，绿色框为原始定位。跟踪仅供可视化，增加负载，不用于容量或耗时对照。"
+      : "左侧为原速视频；右侧为模型返回时才显示的原始证据帧，绿色框为原始定位。预览跟踪默认关闭。";
     window.monitorDiagnostics.layout = singleVideo ? "single-video" : "evidence";
     window.monitorDiagnostics.previewTargetFps = data.preview_fps || 15;
     data.cameras.forEach((camera, i) => {
@@ -177,7 +180,8 @@
         const pos=time*state.sample_fps, index=Math.floor(pos)%c.media.sample_count;
         const a=c.media.timestamps[index], b=index+1<c.media.sample_count ? c.media.timestamps[index+1] : c.media.duration;
         const media=a+(b-a)*(pos-Math.floor(pos));
-        c.clock.textContent=`视频 ${seconds(state.detector && c.video ? c.video.currentTime : media)} · 本轮 ${seconds(Math.max(0,Math.min(time,state.duration)))}`;
+        const shownMedia=state.detector && c.video && Number.isFinite(c.video.currentTime) ? c.video.currentTime : media;
+        c.clock.textContent=`视频 ${seconds(shownMedia)} · 本轮 ${seconds(Math.max(0,Math.min(time,state.duration)))}`;
         if(c.video) {
           // In detector preview each lane loops freely, so it plays for the
           // whole run instead of stopping at its per-lane duration/offset.

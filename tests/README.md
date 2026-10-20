@@ -37,7 +37,7 @@ For focused iteration, select the modules that own the behavior:
 | Worker and video behavior | `test_paddle_*.py`, `test_video_*.py`, `test_display_*.py` |
 | Model protocols and privacy | `test_model_api*.py`, `test_vlm_*.py`, `test_privacy.py`, `test_multi_event.py` |
 | Deployment and delivery | `test_delivery.py`, `test_start_delivery.py`, `test_runtime_gateway.py`, `test_windows_hybrid_deployment.py` |
-| Dashboard behavior | Five `dashboard_*.cjs` suites; shared DOM harness in `helpers/dashboard.cjs` |
+| Dashboard behavior | Dashboard, workflow canvas, task observation and summary suites; shared DOM harness in `helpers/dashboard.cjs` |
 
 ```bash
 python -m pytest tests/test_event_service.py tests/test_video_evidence.py

@@ -71,7 +71,7 @@ def resolve_model_route(
 ) -> tuple[ModelAPISettings, str, dict[str, Any]]:
     """Select connection, model, and channel-specific request parameters together.
 
-    The old top-level aiclub/openrouter sections still work. Their global
+    The old top-level openrouter section still works. Its global
     inference.model and request parameters belong to that original channel;
     switching channels must not carry its model ID or private routing options.
     """
@@ -81,7 +81,7 @@ def resolve_model_route(
         raise ValueError("inference.profile must be standard")
     service = _section(raw, "inference_service")
     legacy_provider = (
-        "openrouter" if "openrouter" in raw and "aiclub" not in raw else "aiclub"
+        "aiclub" if raw.get("aiclub") is not None else "openrouter"
     )
     configured_provider = (
         str(service.get("provider") or legacy_provider).strip().lower()
@@ -89,6 +89,10 @@ def resolve_model_route(
     provider = (
         os.environ.get("INFERENCE_PROVIDER", "").strip().lower() or configured_provider
     )
+    if provider == "aiclub" or configured_provider == "aiclub":
+        raise ValueError(
+            "AIClub has been removed; select OpenRouter and configure its API key"
+        )
     deployment_profile = os.environ.get("HARNESS_INFERENCE_PROFILE", "").strip().lower()
     if deployment_profile:
         if deployment_profile != CUSTOMER_INFERENCE_PROFILE:
@@ -99,7 +103,7 @@ def resolve_model_route(
             return _resolve_customer_route(raw, inference)
     if provider not in PROVIDER_DEFAULTS:
         raise ValueError(
-            "inference_service.provider must be aiclub, openrouter, dashscope, or local"
+            "inference_service.provider must be openrouter, dashscope, or local"
         )
     profiles = _section(service, "providers")
     legacy_route = _section(raw, provider)

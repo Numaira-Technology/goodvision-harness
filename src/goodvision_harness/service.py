@@ -191,6 +191,7 @@ from .vlm_admission import AdmissionSettings
 from .vlm_fusion import VLMFusion
 from .vlm_independent import IndependentVLMBranch, VLMProcessConfig
 from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
+from .workflow_runtime import WorkflowRuntimeMixin
 
 LOGGER = logging.getLogger(__name__)
 MJPEG_BOUNDARY = "goodvision-frame"
@@ -236,7 +237,7 @@ def _resolved_face_live_scheduler(*, provider: str, configured: str) -> str:
     return configured
 
 
-class HarnessRuntime:
+class HarnessRuntime(WorkflowRuntimeMixin):
     """Own one active stream or browser-camera session."""
 
     def __init__(
@@ -989,6 +990,8 @@ class HarnessRuntime:
 
     def _processing_lifecycle_busy(self, *, include_pending_start: bool = True) -> bool:
         """Capture end and native cleanup both belong to the old session."""
+        if self._workflow_busy(include_pending_start=include_pending_start):
+            return True
         if include_pending_start and self._session_start_pending:
             return True
         if self._retiring_rich_labels is not None:
@@ -1009,8 +1012,28 @@ class HarnessRuntime:
 
     def _replace_processing_method(
         self, method: str | None, *, config: HarnessConfig | None = None,
+        suppress_remote_config: bool = False,
+        baseline_scene_mode: str | None = None,
     ) -> None:
         """Detach the old plugin under its revision before creating another."""
+        requested_method = method
+        baseline = self._workflow_tracking_baseline
+        if baseline is not None and not suppress_remote_config:
+            # Global changes update the deployment baseline. Keep the managed
+            # graph's policy as a separate, reversible runtime override.
+            baseline = {
+                "rich_labeling": (
+                    config.rich_labeling if config is not None else replace(
+                        baseline["rich_labeling"], processing_method=method,
+                    )
+                ),
+                "scene_mode": baseline_scene_mode or baseline["scene_mode"],
+            }
+            config = self._workflow_tracking_configuration(
+                config or self.config, self._workflow_plan, baseline,
+            )
+            method = config.rich_labeling.processing_method
+            self._workflow_tracking_baseline = baseline
         with self._state_lock:
             previous_method = self._processing_method()
             self._rich_config_revision += 1
@@ -1028,12 +1051,18 @@ class HarnessRuntime:
             self.config = config or replace(self.config, rich_labeling=replace(
                 self.config.rich_labeling, processing_method=method,
             ))
-            if (getattr(self, "_service_locations", ServiceLocations()).tracking_mode
-                    == "legacy" and self._remote_config is not None
-                    and not self._detector_model_headers()):
+            if (
+                not suppress_remote_config
+                and getattr(
+                    self, "_service_locations", ServiceLocations()
+                ).tracking_mode == "legacy"
+                and self._remote_config is not None
+                and not self._detector_model_headers()
+            ):
                 self._remote_config = replace(
                     self._remote_config, rich_labeling=replace(
-                        self._remote_config.rich_labeling, processing_method=method,
+                    self._remote_config.rich_labeling,
+                    processing_method=requested_method,
                     ),
                 )
             self._scene_mode = self.config.runtime.scene_mode
@@ -1113,8 +1142,19 @@ class HarnessRuntime:
                 or previous.rich_labeling != configuration.rich_labeling):
             self._replace_processing_method(
                 configuration.rich_labeling.processing_method, config=configuration,
+                baseline_scene_mode=configuration.runtime.scene_mode,
             )
         else:
+            baseline = self._workflow_tracking_baseline
+            if baseline is not None:
+                baseline = {
+                    "rich_labeling": configuration.rich_labeling,
+                    "scene_mode": configuration.runtime.scene_mode,
+                }
+                self._workflow_tracking_baseline = baseline
+                configuration = self._workflow_tracking_configuration(
+                    configuration, self._workflow_plan, baseline,
+                )
             self.config = configuration
         self._state.update(
             last_error=self.config_error,
@@ -1247,15 +1287,37 @@ class HarnessRuntime:
                     self._deployment_settings.processing_method
                     if self._deployment_settings is not None else None
                 )
+                processing_configuration = (
+                    local_configuration or rich_configuration or self.config
+                )
+                baseline = self._workflow_tracking_baseline
+                if baseline is not None and processing_configuration is not None:
+                    processing_configuration = replace(
+                        processing_configuration,
+                        rich_labeling=(
+                            processing_configuration.rich_labeling
+                            if local_configuration or rich_configuration
+                            else baseline["rich_labeling"]
+                        ),
+                        runtime=replace(
+                            processing_configuration.runtime,
+                            scene_mode=(
+                                processing_configuration.runtime.scene_mode
+                                if local_configuration is not None
+                                else baseline["scene_mode"]
+                            ),
+                        ),
+                    )
                 if "processing_method" in payload:
                     processing_method = validate_processing_method(
                         payload["processing_method"]
                     )
-                    prospective = local_configuration or rich_configuration
-                    methods = (processing_methods(prospective.rich_labeling)
-                               if prospective is not None
-                               and prospective.runtime.scene_mode == "active"
-                               else self._processing_methods())
+                    methods = (
+                        processing_methods(processing_configuration.rich_labeling)
+                        if processing_configuration is not None
+                        and processing_configuration.runtime.scene_mode == "active"
+                        else []
+                    )
                     if not any(item["id"] == processing_method and item["available"]
                                for item in methods):
                         raise ValueError("此部署暂不支持所选人物处理方式。")
@@ -1266,7 +1328,7 @@ class HarnessRuntime:
                     )
                 prospective = local_configuration or rich_configuration
                 if prospective is None and "processing_method" in payload:
-                    prospective = self.config
+                    prospective = processing_configuration
                 if prospective is not None:
                     if processing_method is not None:
                         prospective = replace(prospective, rich_labeling=replace(
@@ -1393,7 +1455,11 @@ class HarnessRuntime:
             if (tracking_key_changed and self.config is not None
                     and self._rich_config_revision == tracking_revision
                     and is_contour_endpoint(self.config.rich_labeling.endpoint)):
-                self._replace_processing_method(self._processing_method())
+                baseline = self._workflow_tracking_baseline
+                self._replace_processing_method(
+                    baseline["rich_labeling"].processing_method
+                    if baseline is not None else self._processing_method(),
+                )
             if not buffer_only:
                 self._update_state(dry_run=self.dry_run)
         return self.deployment_settings()
@@ -1404,6 +1470,8 @@ class HarnessRuntime:
         return {
             "protocol": 1, "transport": "websocket",
             "enabled": (self._scene_mode == "active" and self.config.rich_labeling.backend == "sam31_stream"
+                        and (self._workflow_plan is None
+                             or self._workflow_plan["tracking_enabled"])
                         and os.environ.get("LOCAL_CAMERA_DISPLAY_ENABLED", "false").lower() in {"1", "true", "yes"}),
             "metadata_url": "/v1/video/display/metadata", "metrics_url": "/v1/video/display/metrics",
             "target_fps": _env_bounded_int("LOCAL_CAMERA_TARGET_FPS", 15, 15, 30),
@@ -2055,6 +2123,14 @@ class HarnessRuntime:
                 self._video_connection.stop()
         return self.status()
 
+    def _independent_events_requested(
+        self, features: Collection[str], *, dry_run: bool,
+    ) -> bool:
+        return bool(
+            self._scene_enabled and self.config.runtime.scene_independent_vlm
+            and not dry_run and set(features).intersection(SAFETY_EVENT_LABELS)
+        )
+
     def prepare_analysis(self) -> dict[str, Any]:
         with self._control_lock:
             if self.config is None or self.config_error is not None or self._closed:
@@ -2066,13 +2142,29 @@ class HarnessRuntime:
                 raise RuntimeError("stop the active session before starting analysis")
             if self._route_probe["state"] == "running":
                 raise RuntimeError("wait for the route check before starting analysis")
-            features = self._analysis_settings["features"]
+            features = self._workflow_choices()["features"]
+            tracking = bool(
+                self._workflow_plan is not None
+                and self._workflow_plan["tracking_enabled"]
+            )
+            if tracking:
+                capability = self.workflow_tracking_capability()
+                if not capability["configured"]:
+                    raise ValueError(capability["reason"])
+            independent_events = self._independent_events_requested(
+                features, dry_run=self.dry_run,
+            )
             if (not self.dry_run
-                    and any(item in SAFETY_EVENT_LABELS for item in features)
+                    and (any(item in SAFETY_EVENT_LABELS for item in features)
+                         or bool(self._workflow_plan
+                                 and self._workflow_plan["summaries"]))
                     and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
-        self._require_processing_ready()
+        if tracking or (
+            features and self._workflow_plan is None and not independent_events
+        ):
+            self._require_processing_ready()
         if not self.dry_run and "stranger" in features:
             self._ensure_face_runtime().warmup()
         with self._control_lock:
@@ -2084,17 +2176,7 @@ class HarnessRuntime:
         return {"prepared": True, "connection_id": connection.status()["connection_id"]}
 
     def start_connected_analysis(self) -> dict[str, Any]:
-        self.prepare_analysis()
-        with self._control_lock:
-            connection = self._video_connection
-            if connection is None or not connection.status()["connected"]:
-                raise RuntimeError("视频连接已中断。请重新连接。")
-            choices = copy.deepcopy(self._analysis_settings)
-            layout = self._connection_camera_layout
-        return self.start_stream(
-            connection.stream_url, camera_layout=layout,
-            _connection_id=connection.connection_id, **choices,
-        )
+        return self._start_connected_with_workflow()
 
     def start_stream(
         self,
@@ -2107,6 +2189,7 @@ class HarnessRuntime:
         event_sensitivities: Mapping[str, str] | None = None,
         camera_layout: str | None = None,
         _connection_id: str | None = None,
+        _tracking_only: bool = False,
     ) -> dict[str, Any]:
         if camera_layout is not None:
             validate_camera_layout(camera_layout)
@@ -2126,6 +2209,7 @@ class HarnessRuntime:
             event_sensitivities=event_sensitivities,
             camera_layout=camera_layout,
             video_connection_id=_connection_id,
+            tracking_only=_tracking_only,
         )
 
     def start_camera(
@@ -2154,6 +2238,9 @@ class HarnessRuntime:
         # Admission remains visible while readiness checks run outside the
         # control lock, even if the caller's HTTP connection disappears.
         with self._control_lock:
+            if (self._workflow_starting
+                    and self._workflow_start_operation != self._workflow_operation):
+                raise RuntimeError("workflow start was cancelled")
             if self._session_start_pending:
                 raise RuntimeError("a harness session is already starting")
             self._session_start_pending = True
@@ -2181,6 +2268,7 @@ class HarnessRuntime:
         camera_owner: str | None = None,
         camera_layout: str | None = None,
         video_connection_id: str | None = None,
+        tracking_only: bool = False,
     ) -> dict[str, Any]:
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
@@ -2197,7 +2285,15 @@ class HarnessRuntime:
             raise ValueError("features can only be used with analysis_mode=multi")
 
         if selected_analysis == MULTI_ANALYSIS_MODE:
-            selected_features = _normalize_features(features)
+            if tracking_only:
+                if (features not in ([], ()) or self._workflow_plan is None
+                        or not self._workflow_plan["tracking_enabled"]):
+                    raise ValueError(
+                        "tracking-only capture requires an enabled workflow tracker"
+                    )
+                selected_features = ()
+            else:
+                selected_features = _normalize_features(features)
             label = ",".join(selected_features)
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
         elif selected_analysis == FACE_ANALYSIS_MODE:
@@ -2219,18 +2315,25 @@ class HarnessRuntime:
             label = label[:EVENT_LABEL_MAX_CHARS]
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
 
-        sensitivity_labels = selected_features or (label,)
+        sensitivity_labels = (
+            selected_features if selected_features is not None else (label,)
+        )
         if selected_analysis == EVENT_ANALYSIS_MODE and self.config.memory is not None:
             sensitivity_labels = ()
         selected_sensitivities = normalize_event_sensitivities(
             event_sensitivities, sensitivity_labels,
         )
 
-        independent_requested = (
-            self._scene_enabled and self.config.runtime.scene_independent_vlm
-            and not use_dry_run and bool(set(sensitivity_labels).intersection(SAFETY_EVENT_LABELS))
+        independent_requested = self._independent_events_requested(
+            sensitivity_labels, dry_run=use_dry_run,
         )
-        if independent_requested:
+        tracking_required = bool(
+            self._workflow_plan is not None
+            and self._workflow_plan["tracking_enabled"]
+        )
+        if (independent_requested and not tracking_required) or (
+            self._workflow_plan is not None and not tracking_required
+        ):
             # Availability of an optional tracker cannot gate event reporting.
             # Preserve the revision/ownership check below; its errors still matter.
             with self._control_lock:
@@ -2944,6 +3047,8 @@ class HarnessRuntime:
     def stop_session(self, *, camera_owner: str | None = None) -> bool:
         """Stop capture, then finish accepted review and evidence in the background."""
 
+        if camera_owner is None:
+            self._stop_workflow_summaries()
         with self._control_lock:
             if getattr(self, "_session_start_pending", False) and (
                 camera_owner is None or camera_owner == self._pending_start_owner
@@ -3354,6 +3459,7 @@ class HarnessRuntime:
             })
             if connection is not None and connection.running:
                 payload["camera_layout"] = self._connection_camera_layout
+            self._workflow_status(payload)
             state = payload.get("pipeline_state")
             payload["analysis_state"] = (
                 "stopping" if state in {"stopping", "draining"}
@@ -3432,6 +3538,7 @@ class HarnessRuntime:
         })
         if connection is not None and connection.running:
             payload["camera_layout"] = self._connection_camera_layout
+        self._workflow_status(payload)
         pipeline_state = payload.get("pipeline_state")
         payload["analysis_state"] = (
             "stopping" if pipeline_state in {"stopping", "draining"}
@@ -3769,6 +3876,13 @@ class HarnessRuntime:
         now = time.monotonic()
         if now - last_frame > self.settings.ready_max_frame_age_seconds:
             return False, "frame_stale"
+        plan = self._workflow_plan
+        if plan is not None and plan["tracking_enabled"] and not plan["features"]:
+            metadata = self._camera_display_metadata.snapshot()
+            if (metadata.get("stream_session_id") != session.stream_session_id
+                    or not metadata.get("anchors")):
+                return False, "waiting_for_tracking"
+            return True, "ready"
         if self._scene_is_active() and self._scene.event_labels:
             last_result = self._last_scene_inference_monotonic
         if last_result is None:
@@ -4457,7 +4571,8 @@ class HarnessRuntime:
                         == session.stream_session_id
                     ):
                         self._last_scene_snapshot = final_snapshot
-                        self._publish_scene_result(final_snapshot)
+                        if final_snapshot is not None:
+                            self._publish_scene_result(final_snapshot)
                         self._last_identity_review = registry.identity_review_stats()
                         self._update_state(scene_drain={"state": "completed"})
         except Exception:
@@ -4718,6 +4833,8 @@ def create_app(
     )
     install_event_routes(application)
     install_fleet_routes(application)
+    from .workflow_routes import install_workflow_routes
+    install_workflow_routes(application)
 
     @application.exception_handler(StarletteHTTPException)
     async def public_http_error(
@@ -5137,7 +5254,7 @@ def create_app(
                 raise HTTPException(413, "camera control body exceeds 64 KiB")
         try:
             value = json.loads(body or b"{}")
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             raise HTTPException(400, "camera control body must be JSON") from None
         if not isinstance(value, dict):
             raise HTTPException(400, "camera control body must be an object")
@@ -5207,6 +5324,59 @@ def create_app(
     @application.get("/v1/analysis/settings")
     def analysis_settings(request: Request) -> dict[str, Any]:
         return _runtime(request).analysis_settings()
+
+    @application.put("/v1/analysis/workflow")
+    async def configure_workflow(request: Request) -> dict[str, Any]:
+        from .workflow_routes import body as workflow_body
+
+        require_coordinator(request)
+        return await camera_action(
+            _runtime(request).configure_workflow, await workflow_body(request),
+        )
+
+    @application.post("/v1/analysis/workflow/test")
+    async def test_workflow(request: Request) -> dict[str, Any]:
+        from .workflow_routes import body as workflow_body
+
+        require_coordinator(request)
+        payload = await workflow_body(request)
+        if set(payload) != {"graph"}:
+            raise HTTPException(400, "workflow test requires a graph")
+        return await camera_action(_runtime(request).test_workflow, payload["graph"])
+
+    @application.get("/v1/workflow/results")
+    def workflow_results(request: Request) -> JSONResponse:
+        return JSONResponse(
+            _runtime(request).workflow_results(), headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/v1/video/source/latest.jpg")
+    def workflow_source_frame(request: Request) -> Response:
+        from .workflow_summary import snapshot_from_connection
+
+        connection = _runtime(request)._video_connection
+        snapshot = (
+            snapshot_from_connection(connection) if connection is not None else None
+        )
+        if snapshot is None:
+            raise HTTPException(404, "no connected source frame")
+        return Response(snapshot.jpeg_bytes, media_type="image/jpeg", headers={
+            "Cache-Control": "no-store",
+            "X-Source-Frame-Sequence": str(snapshot.source_frame_sequence),
+            "X-Source-Timestamp": str(snapshot.timestamp_seconds),
+            "X-Connection-Id": snapshot.connection_id or "",
+        })
+
+    @application.get("/v1/workflow/summaries")
+    def workflow_summaries(
+        request: Request, limit: int = 100, node_id: str | None = None,
+    ) -> JSONResponse:
+        if not 1 <= limit <= 100:
+            raise HTTPException(400, "summary limit must be between 1 and 100")
+        return JSONResponse(
+            _runtime(request).workflow_summary_results(limit=limit, node_id=node_id),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @application.put("/v1/analysis/settings")
     async def update_analysis_settings(request: Request) -> dict[str, Any]:
@@ -5404,10 +5574,14 @@ def create_app(
                             headers={"Cache-Control": "no-store"})
 
     @application.get("/v1/vlm/results/latest")
-    async def independent_vlm_latest(request: Request) -> JSONResponse:
+    async def independent_vlm_latest(
+        request: Request, allow_empty: bool = False,
+    ) -> Response:
         branch = _runtime(request)._vlm_branch
         record = branch.results.latest() if branch is not None else None
         if record is None:
+            if allow_empty:
+                return Response(status_code=204, headers={"Cache-Control": "no-store"})
             raise HTTPException(status_code=404, detail="no independent VLM report yet")
         return JSONResponse(record.payload, headers={"Cache-Control": "no-store",
                             "X-Result-Cursor": str(record.cursor), "X-Result-Stream": branch.results.epoch})
@@ -5427,8 +5601,8 @@ def create_app(
                              "associations": list(branch.fusion.links()) if branch and branch.fusion else []})
 
     @application.get("/v1/results/latest")
-    async def latest_result(request: Request) -> JSONResponse:
-        return _latest_result_response(_runtime(request))
+    async def latest_result(request: Request, allow_empty: bool = False) -> Response:
+        return _latest_result_response(_runtime(request), allow_empty=allow_empty)
 
     @application.get("/v1/rich-labels/latest")
     def latest_rich_labels(request: Request) -> JSONResponse:
@@ -5595,8 +5769,12 @@ def create_app(
         )
 
     @application.get("/v1/results/overall/latest")
-    async def latest_overall_description(request: Request) -> JSONResponse:
-        return _latest_result_response(_runtime(request), overall_only=True)
+    async def latest_overall_description(
+        request: Request, allow_empty: bool = False,
+    ) -> Response:
+        return _latest_result_response(
+            _runtime(request), overall_only=True, allow_empty=allow_empty,
+        )
 
     @application.get("/v1/results/overall/events")
     async def overall_description_events(
@@ -5610,8 +5788,10 @@ def create_app(
     def feature_latest_endpoint(
         feature: str,
     ) -> Callable[[Request], Any]:
-        async def endpoint(request: Request) -> JSONResponse:
-            return _latest_result_response(_runtime(request), feature=feature)
+        async def endpoint(request: Request, allow_empty: bool = False) -> Response:
+            return _latest_result_response(
+                _runtime(request), feature=feature, allow_empty=allow_empty,
+            )
 
         return endpoint
 
@@ -5877,9 +6057,12 @@ def _latest_result_response(
     *,
     feature: str | None = None,
     overall_only: bool = False,
-) -> JSONResponse:
+    allow_empty: bool = False,
+) -> Response:
     record = runtime.results.latest(feature=feature)
     if record is None:
+        if allow_empty:
+            return Response(status_code=204, headers={"Cache-Control": "no-store"})
         raise HTTPException(
             status_code=404,
             detail=f"no {feature} result yet" if feature else "no analysis result yet",
@@ -5888,6 +6071,8 @@ def _latest_result_response(
     if feature is not None:
         selected = _feature_result_payload(payload, feature)
         if selected is None:
+            if allow_empty:
+                return Response(status_code=204, headers={"Cache-Control": "no-store"})
             raise HTTPException(
                 status_code=404,
                 detail=f"no {feature} result in the latest analysis",

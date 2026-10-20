@@ -983,7 +983,7 @@ def _rich_vlm_request_parameters(
         model_overrides = dict(overrides)
         service = _mapping_section(raw, "inference_service")
         legacy_provider = (
-            "openrouter" if "openrouter" in raw and "aiclub" not in raw else "aiclub"
+            "openrouter"
         )
         configured_provider = str(
             service.get("provider") or legacy_provider
@@ -992,7 +992,7 @@ def _rich_vlm_request_parameters(
             os.environ.get("HARNESS_INFERENCE_PROFILE", "").strip().lower()
             == CUSTOMER_INFERENCE_PROFILE
             and "provider" not in service
-            and not {"aiclub", "openrouter"}.intersection(raw)
+            and "openrouter" not in raw
         ):
             # The neutral delivery config already belongs to the locked customer
             # OpenRouter route; a distinct rich model is not a channel switch.

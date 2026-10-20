@@ -91,10 +91,6 @@ inference_service:
   retry_backoff_seconds: 1.0
   extra_headers: {}
   providers:
-    aiclub:
-      model: qwen3.5-plus
-      request_parameters:
-        enable_thinking: false
     openrouter:
       # Previously selected by the live visual-latency benchmark (4592cd8).
       model: qwen/qwen3.5-35b-a3b

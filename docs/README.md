@@ -25,6 +25,7 @@
 | 任务 | 文档 |
 | --- | --- |
 | 配置调度、人脸与视觉大模型 | [运行指南](guides/runtime.md) |
+| 编排流程、摄像头组与定时总结 | [工作流画布](guides/workflows.md) |
 | 了解设置优先级、推理路线与参考记忆 | [配置指南](guides/configuration.md) |
 | 从源码部署、使用 Compose 与 dry-run | [源码部署](guides/deployment.md) |
 | 在本机 NVIDIA 显卡上运行多路视频 | [本地 GPU 部署](guides/local-gpu.md) |

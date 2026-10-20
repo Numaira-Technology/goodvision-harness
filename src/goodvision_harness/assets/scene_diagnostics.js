@@ -25,8 +25,12 @@
   const base = diagnosticsBase(root.GoodvisionDiagnosticCameraId);
   let timer, controller, generation = 0;
   function stop() { generation++; clearTimeout(timer); controller?.abort(); }
+  function surfaceActive() { return typeof root.channelSurfaceActive !== "function" || root.channelSurfaceActive(); }
   async function refresh(version) {
     if (!panel.open || document.hidden || version !== generation) return;
+    // Keep a lightweight wakeup so returning to the parent page resumes the
+    // expanded panel, without fetching diagnostics or images while it is hidden.
+    if (!surfaceActive()) { timer = setTimeout(() => refresh(version), 2000); return; }
     let poll = true;
     const requestController = new AbortController();
     controller = requestController;
@@ -35,7 +39,7 @@
       const response = await fetch(base, {cache:"no-store", signal:requestController.signal});
       if (!response.ok) throw new Error("unavailable");
       const data = await response.json();
-      if (version !== generation) return;
+      if (version !== generation || !surfaceActive()) return;
       content.replaceChildren();
       if (data.enabled === false) {
         poll = false;

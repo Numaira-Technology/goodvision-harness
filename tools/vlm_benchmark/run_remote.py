@@ -399,7 +399,7 @@ def main(argv=None):
     parser.add_argument("--video", type=Path, action="append")
     parser.add_argument("--reuse-video", metavar="RUN_ID")
     parser.add_argument("--streams", type=int, nargs="+", default=[1, 4, 8, 12])
-    parser.add_argument("--provider", choices=["aiclub", "openrouter", "dashscope"])
+    parser.add_argument("--provider", choices=["openrouter", "dashscope"])
     parser.add_argument("--model", default="")
     parser.add_argument(
         "--endpoint",
@@ -468,7 +468,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     mode_suite = args.suite == "modes"
     for name, value in {
-        "provider": "openrouter" if mode_suite else "aiclub",
+        "provider": "openrouter",
         "soak_seconds": 0 if mode_suite else 900,
         "global_limit": 48 if mode_suite else 16,
         "per_stream_limit": 4 if mode_suite else 2,
@@ -621,7 +621,6 @@ def main(argv=None):
             else:
                 key = os.environ.get("INFERENCE_API_KEY") or os.environ.get(
                     {
-                        "aiclub": "AICLUB_API_KEY",
                         "openrouter": "OPENROUTER_API_KEY",
                         "dashscope": "DASHSCOPE_API_KEY",
                     }[args.provider]

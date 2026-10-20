@@ -61,21 +61,25 @@ window.PreviewTracking = class {
   }
   drawBoxes(ctx, image, objects, w, h) {
     const iw=image.width, ih=image.height, k=Math.min(w/iw,h/ih), rw=iw*k,rh=ih*k,x=(w-rw)/2,y=(h-rh)/2;
+    const scale=Math.min(ctx.canvas.clientWidth/w,ctx.canvas.clientHeight/h) || 1;
     for(const object of objects) {
       const b=object.bbox;
       if(!b || ![b.x1,b.y1,b.x2,b.y2].every(v=>Number.isFinite(v)&&v>=0&&v<=1) || b.x2<=b.x1 || b.y2<=b.y1) continue;
       // Independent detector playback is not aligned with benchmark verdicts;
       // its neutral boxes carry no event/normal assertion.
       const color = this.detectorMode ? "#ffd68b" : "#57c7ff";
-      ctx.strokeStyle=color; ctx.lineWidth=2; ctx.setLineDash(this.detectorMode?[]:[7,3]);
+      ctx.strokeStyle=color; ctx.lineWidth=2/scale; ctx.setLineDash(this.detectorMode?[]:[7/scale,3/scale]);
       ctx.strokeRect(x+b.x1*rw,y+b.y1*rh,(b.x2-b.x1)*rw,(b.y2-b.y1)*rh);
-      ctx.setLineDash([]);ctx.fillStyle=color;ctx.font="13px sans-serif";
+      ctx.setLineDash([]);ctx.fillStyle=color;ctx.font=`${13/scale}px sans-serif`;
       const label = this.detectorMode ? `${object.track_id} · 检测`
         : `T${Number(String(object.track_id).split(":").at(-1))+1} · 跟踪估计`;
-      ctx.fillText(label,x+b.x1*rw,Math.max(14,y+b.y1*rh-4));
+      ctx.fillText(label,x+b.x1*rw,Math.max(14/scale,y+b.y1*rh-4/scale));
     }
   }
   paint(image, objects=[]) {
+    // Match the source aspect ratio before CSS contains the transparent overlay.
+    const height=Math.round(this.canvas.width*image.height/image.width);
+    if(this.canvas.height!==height) this.canvas.height=height;
     // Keep the playing video visible underneath. A delayed network reply must
     // not replace it with the old request JPEG or freeze it after the run stops.
     this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height);
@@ -157,7 +161,7 @@ window.PreviewTracking = class {
       timeout=setTimeout(()=>controller.abort(),this.abortMs);
       const response=await fetch(`tracking/${encodeURIComponent(this.stage)}/${this.camera}`,{
         method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,
-        body:JSON.stringify({client:this.client,time:at,epoch,jpeg})});
+        body:JSON.stringify({client:this.client,time:at,epoch,generation,jpeg})});
       if(!response.ok) throw new Error("tracking HTTP");
       const result=await response.json(), end=performance.now();
       this.stats.roundTripSeconds.push((end-started)/1000);

@@ -86,6 +86,7 @@ goodvision_harness = [
   "camera_display.js",
   "camera_display_dense.js",
   "assets/*.js",
+  "assets/*.css",
   "assets/*.txt",
   "fonts/*.otf",
   "fonts/*.txt",

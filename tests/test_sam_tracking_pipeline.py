@@ -25,7 +25,7 @@ def setup_pipeline(tmp_path, callback=None, **kwargs):
         "http://worker.test",
         method="sam_live",
         transport=httpx.MockTransport(server),
-        timeout_seconds=4,
+        timeout_seconds=kwargs.pop("client_timeout_seconds", 4),
     )
     coordinator = PipelinedVideoSessionTrackingCoordinator(
         client,
