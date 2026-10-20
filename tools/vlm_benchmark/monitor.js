@@ -144,6 +144,17 @@
         if(row.report?.id !== r.id) d.laneRenderUpdates[lane]=(d.laneRenderUpdates[lane] || 0)+1;
         row.report=r;
       }
+      // Real per-person select events light the event chips even when the
+      // benchmark lane report is missing or incomplete — the signal is the
+      // live SELECT tag, not the (simulated) lane verdict.
+      const evrow=c.lanes.events;
+      if(evrow && camera.select_events && camera.select_events.length) {
+        for(const chip of evrow.chips.children) {
+          if(camera.select_events.includes(chip.dataset.label)) {
+            chip.className="chip positive"; chip.title="逐人识别检测到";
+          }
+        }
+      }
       const evidence=camera.tracking_anchor || camera.lanes.grounding || camera.lanes.events;
       if(evidence && !singleVideo) { drawEvidence(c,camera,evidence); c.note.textContent=`证据 ${seconds(evidence.media_seconds)} · 帧 ${evidence.tick ?? "?"} · ${camera.lanes.grounding ? `目标框 ${evidence.objects.length}` : "事件模式不提供定位框"}`; }
       c.foot.textContent=`送帧拒绝 ${camera.rejected} · 保留旧结果 ${camera.out_of_order} · 模型判断未经人工复核`;
