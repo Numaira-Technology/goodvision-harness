@@ -51,6 +51,11 @@ def bundle(
         for p in (root / "tools/vlm_benchmark").iterdir()
         if p.suffix in {".py", ".sh", ".json", ".txt", ".html", ".js"}
     ]
+    for directory in ("videojev_probe", "videojev_benchmark"):
+        files += [
+            p for p in (root / "tools" / directory).iterdir()
+            if p.suffix in {".py", ".txt"}
+        ]
     manifest = {"files": {}, "videos": [], "scope": scope}
     with tempfile.TemporaryDirectory(prefix="vlm-package-") as temp:
         stage = Path(temp)

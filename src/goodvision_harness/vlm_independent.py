@@ -6,11 +6,13 @@ the output reader. Fusion has its own bounded consumer after publication.
 
 from __future__ import annotations
 
+import copy
 import io
 import math
 import multiprocessing as mp
 import os
 import time
+from bisect import bisect_left
 from collections import Counter, OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
@@ -33,6 +35,7 @@ from .result_bus import ResultBus
 from .runtime.scene import TemporalInspection
 from .runtime.scheduling import EvidenceFrame, InspectionRequest
 from .vlm_admission import AdmissionError, AdmissionSettings, SharedAdmission
+from .vlm_event_policy import EVENT_POLICY_PROFILES, event_policy_snapshot
 from .vlm_independent_model import IndependentVLMInspector
 
 MAX_FRAME_BYTES = 4 * 1024**2
@@ -64,14 +67,56 @@ class VLMProcessConfig:
     output_mode: str = "parallel"
     diagnostics_enabled: bool = False
     admission: AdmissionSettings | None = None
+    event_policy: str = "main-baseline"
+    retain_historical_results: bool = False
+    event_definitions: tuple[tuple[str, str], ...] = ()
+    candidate_fps: float | None = None
+    observation_window_frames: int = 4
+    observation_frame_delta_seconds: float | None = None
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
             raise ValueError("invalid VLM output mode")
         if not self.stream_session_id or not self.source_id or not self.labels:
             raise ValueError("VLM process requires a scoped source and event labels")
+        if self.event_policy not in EVENT_POLICY_PROFILES:
+            raise ValueError("invalid event policy profile")
+        if type(self.retain_historical_results) is not bool:
+            raise ValueError("historical retention must be boolean")
+        if (
+            not isinstance(self.event_definitions, tuple)
+            or len(self.event_definitions) > 64
+            or any(
+                not isinstance(item, tuple) or len(item) != 2
+                or not isinstance(item[0], str) or item[0] not in self.labels
+                or not isinstance(item[1], str) or not item[1].strip()
+                or len(item[1]) > 4096
+                for item in self.event_definitions
+            )
+        ):
+            raise ValueError("invalid fixed event definitions")
+        defined = {label for label, _ in self.event_definitions}
+        if (len(defined) != len(self.event_definitions)
+                or self.event_definitions and defined != set(self.labels)):
+            raise ValueError("fixed definitions must uniquely cover the requested events")
         if not 0 < self.observation_fps <= 3 or not math.isfinite(self.observation_fps):
             raise ValueError("VLM cadence must be in (0, 3]")
+        if self.candidate_fps is not None and (
+            type(self.candidate_fps) not in (int, float)
+            or not 1.0 / 3600 <= self.candidate_fps <= 120
+            or not math.isfinite(self.candidate_fps)
+        ):
+            raise ValueError("candidate sampling FPS must be within 1/3600..120")
+        if type(self.observation_window_frames) is not int or not (
+            2 <= self.observation_window_frames <= 64
+        ):
+            raise ValueError("observation window must contain 2..64 source frames")
+        if self.observation_frame_delta_seconds is not None and (
+            type(self.observation_frame_delta_seconds) not in (int, float)
+            or not 0 < self.observation_frame_delta_seconds <= 3600
+            or not math.isfinite(self.observation_frame_delta_seconds)
+        ):
+            raise ValueError("observation frame interval must be in (0, 3600]")
         if type(self.max_in_flight) is not int or not 1 <= self.max_in_flight <= 4:
             raise ValueError("VLM concurrency must be within 1..4")
 
@@ -83,21 +128,101 @@ class SourceSample:
     received_monotonic: float
 
 
-def _observation_window(history):
-    """Keep at most four originals while retaining enough temporal context."""
-    samples = tuple(history)
-    window = tuple(sample.frame for sample in samples[-4:])
+def _source_sample_fps(config):
+    return (
+        config.candidate_fps if config.candidate_fps is not None
+        else max(2.0, config.observation_fps * 2.0)
+    )
+
+
+def _observation_history_limits(config):
     if (
-        len(window) == 4
+        config.candidate_fps is None
+        and config.observation_window_frames == 4
+        and config.observation_frame_delta_seconds is None
+    ):
+        return 12, 3.0
+    fps = _source_sample_fps(config)
+    interval = 1.0 / fps
+    delta = config.observation_frame_delta_seconds
+    span = (config.observation_window_frames - 1) * (
+        interval if delta is None else delta
+    )
+    seconds = max(3.0, span + max(interval, delta or interval))
+    capacity = max(12, config.observation_window_frames, math.ceil(seconds * fps) + 2)
+    return capacity, seconds
+
+
+def _observation_window(
+    history, frame_count=4, frame_delta_seconds=None, candidate_fps=None,
+):
+    """Select distinct arrived originals, retaining the latest source endpoint."""
+    samples = tuple(history)
+    if frame_delta_seconds is not None:
+        if len(samples) < frame_count:
+            return ()
+        timestamps = tuple(sample.frame.timestamp_seconds for sample in samples)
+        endpoint = timestamps[-1]
+        if endpoint - (frame_count - 1) * frame_delta_seconds + 1e-9 < timestamps[0]:
+            return ()
+        intervals = sorted(
+            newer.frame.timestamp_seconds - older.frame.timestamp_seconds
+            for older, newer in zip(samples, samples[1:])
+        )
+        middle = len(intervals) // 2
+        observed_interval = (
+            intervals[middle] if len(intervals) % 2
+            else (intervals[middle - 1] + intervals[middle]) / 2.0
+        )
+        sampling_interval = (
+            observed_interval if candidate_fps is None
+            else max(1.0 / candidate_fps, observed_interval)
+        )
+        tolerance = min(frame_delta_seconds / 2.0, sampling_interval / 2.0) + 1e-9
+        selected = [samples[-1].frame]
+        available_end = len(samples) - 1
+        for offset in range(1, frame_count):
+            if not available_end:
+                return ()
+            target = endpoint - offset * frame_delta_seconds
+            insertion = bisect_left(timestamps, target, 0, available_end)
+            candidates = {
+                max(0, insertion - 1), min(available_end - 1, insertion),
+            }
+            index = min(candidates, key=lambda i: (abs(timestamps[i] - target), -i))
+            frame = samples[index].frame
+            if abs(frame.timestamp_seconds - target) > tolerance:
+                return ()
+            selected.append(frame)
+            available_end = index
+        return tuple(reversed(selected))
+    window = tuple(sample.frame for sample in samples[-frame_count:])
+    if (
+        len(window) == frame_count
         and window[-1].timestamp_seconds - window[0].timestamp_seconds < 0.75
     ):
         # Dense sampling can put all four recent frames inside 0.75 seconds.
         # Replace only the oldest image, preserving the latest endpoint and
         # image budget without changing windows at the default sampling rate.
-        for sample in reversed(samples[:-4]):
+        for sample in reversed(samples[:-frame_count]):
             if window[-1].timestamp_seconds - sample.frame.timestamp_seconds >= 0.75:
-                return (sample.frame, *window[-3:])
+                return (sample.frame, *window[1:])
     return window
+
+
+def _native_event_policy(config, job):
+    if not job.event_definitions:
+        return event_policy_snapshot(
+            job.request.event_labels, dict(job.event_sensitivities),
+            profile=config.event_policy,
+        )
+    return {
+        "version": "fixed-evaluation-events-v1",
+        "profile": "fixed-evaluation",
+        "event_labels": list(job.request.event_labels),
+        "definitions": dict(job.event_definitions),
+        "comparison_field": "observed_detected",
+    }
 
 
 class IndependentEventState:
@@ -211,6 +336,10 @@ class IndependentEventState:
             "schema_version": "1",
             "type": "vlm_report",
             "analysis_kind": "vlm_event",
+            **({"event_policy": _native_event_policy(self.config, job)} if (
+                self.config.model_settings.provider == "local"
+                and self.config.model == "ZhuYuhan/VideoJev-4B"
+            ) else {}),
             "event_scope": "scene"
             if self.config.output_mode == "events"
             else "observation",
@@ -275,6 +404,13 @@ class IndependentEventState:
 
 
 def _inspector(config):
+    if (
+        config.model_settings.provider == "local"
+        and config.model == "ZhuYuhan/VideoJev-4B"
+    ):
+        from .videojev_model import VideoJevInspector
+
+        return VideoJevInspector(config)
     from .vlm_compact_model import CompactGroundingInspector, EventJSONInspector
 
     cls = {"events": EventJSONInspector, "compact": CompactGroundingInspector}.get(
@@ -318,13 +454,15 @@ def run_vlm_process(
     state = IndependentEventState(config)
     admission = SharedAdmission(config.admission) if config.admission else None
     stats = Counter()
-    history = deque(maxlen=12)
+    history_capacity, history_seconds = _observation_history_limits(config)
+    history = deque(maxlen=history_capacity)
     lanes = (
         ("events", "compact")
         if config.output_mode == "parallel"
         else (config.output_mode,)
     )
     queues = {lane: OrderedDict() for lane in lanes}
+    accounting = {lane: Counter(submitted=0, finished=0, published=0) for lane in lanes}
     ready = {lane: {} for lane in lanes}
     next_dispatch_order = {lane: 0 for lane in lanes}
     next_publish_order = {lane: 0 for lane in lanes}
@@ -387,6 +525,7 @@ def run_vlm_process(
         response_diagnostics = {}
         shape = {}
         inspector = None
+        inspection_attempted = False
         diagnostic = None
         failure = None
         if config.diagnostics_enabled and diagnostic_outgoing is not None:
@@ -407,6 +546,7 @@ def run_vlm_process(
                 started, started_at = time.monotonic(), utc_now()
                 try:
                     inspector = worker_inspector(lane)
+                    inspection_attempted = True
                     verdicts = inspector.inspect(job)
                     shape = getattr(inspector, "last_response_diagnostics", {})
                 finally:
@@ -459,6 +599,7 @@ def run_vlm_process(
                 if type(value) is int and 0 <= value <= 10**9:
                     response_diagnostics[key] = value
             for key, allowed in {
+                "model_match": {"matched", "mismatch", "unreported"},
                 "provider_category": {
                     "Darkbloom", "DeepInfra", "Parasail", "Alibaba",
                     "Alibaba Cloud Int.", "AtlasCloud", "SiliconFlow",
@@ -470,6 +611,15 @@ def run_vlm_process(
                 },
                 "content_kind": {"text", "parts", "missing", "other"},
                 "content_wrapper": {"code_fence", "none"},
+                "native_service_error": {
+                    "cuda_shared_failure", "cuda_recovery_failed", "result_log_failure",
+                    "gpu_worker_stopped", "cpu_worker_stopped", "invalid_response",
+                    "preprocess_failed", "window_failed", "cuda_out_of_memory",
+                    "queue_full", "superseded", "expired_before_preprocess",
+                    "expired_before_gpu", "client_timeout_before_start",
+                    "request_deadline", "service_unavailable", "service_shutdown",
+                    "cancelled_before_start",
+                },
             }.items():
                 value = shape.get(key)
                 if isinstance(value, str) and value in allowed:
@@ -494,6 +644,35 @@ def run_vlm_process(
                 and math.isfinite(value) and 0 <= value <= 10**9
             ):
                 http_timing[name] = value
+        for name in (
+            "videojev_preprocess_seconds", "videojev_visual_encode_seconds",
+            "videojev_decision_seconds", "videojev_model_pipeline_seconds",
+            "videojev_server_queue_seconds", "videojev_peak_allocated_bytes",
+            "videojev_peak_reserved_bytes", "videojev_input_frame_count",
+            "videojev_internal_temporal_padding_frames", "videojev_visual_tokens",
+            "videojev_native_temporal_fps", "videojev_gpu_pipeline_seconds",
+            "videojev_context", "videojev_max_pixels", "videojev_source_width",
+            "videojev_source_height", "videojev_processed_width",
+            "videojev_processed_height", "videojev_cpu_queue_seconds",
+            "videojev_gpu_queue_seconds", "videojev_server_preprocess_seconds",
+            "videojev_server_gpu_seconds", "videojev_server_elapsed_seconds",
+            "videojev_processor_max_pixels",
+        ):
+            value = measurements.get(name) if isinstance(measurements, dict) else None
+            if (
+                type(value) in (int, float)
+                and value >= 0
+                and (type(value) is int or math.isfinite(value))
+            ):
+                http_timing[name] = value
+        http_attempted = (
+            measurements.get("http_request_attempted")
+            if isinstance(measurements, dict) else None
+        )
+        if not inspection_attempted:
+            http_attempted = False
+        elif type(http_attempted) is not bool:
+            http_attempted = None
         inspection_timing = {}
         measurements = getattr(inspector, "last_inspection_timing", {})
         for name in (
@@ -514,6 +693,7 @@ def run_vlm_process(
                 )
             except Exception:
                 pass  # Separate bounded diagnostics never gate normal reports.
+        completed = time.monotonic()
         return (
             verdicts,
             error,
@@ -528,6 +708,12 @@ def run_vlm_process(
                 "response_diagnostics": response_diagnostics,
                 "http_timing": http_timing,
                 "inspection_timing": inspection_timing,
+                "inspection_attempted": inspection_attempted,
+                "http_request_attempted": http_attempted,
+                "completion_monotonic": completed,
+                "source_to_completion_seconds": max(
+                    0.0, completed - sample.received_monotonic
+                ),
             },
         )
 
@@ -554,6 +740,10 @@ def run_vlm_process(
                 for counts in lane_counts.values()
             ),
             "lanes": lane_counts,
+            "request_accounting": {
+                "events" if lane == "events" else "grounding": dict(counts)
+                for lane, counts in accounting.items()
+            },
         }
 
     try:
@@ -615,7 +805,8 @@ def run_vlm_process(
                 history.append(sample)
                 stats["source_samples"] += 1
                 while history and (
-                    frame.timestamp_seconds - history[0].frame.timestamp_seconds > 3.0
+                    frame.timestamp_seconds - history[0].frame.timestamp_seconds
+                    > history_seconds
                     or sum(len(x.frame.jpeg_bytes) for x in history) > 16 * 1024**2
                 ):
                     history.popleft()
@@ -627,6 +818,16 @@ def run_vlm_process(
                         continue
                     pending.pop(order)
                     result = future.result()
+                    accounting[lane]["finished"] += 1
+                    accounting[lane]["inspection_attempted"] += int(
+                        result[2]["inspection_attempted"]
+                    )
+                    http_attempted = result[2]["http_request_attempted"]
+                    accounting[lane][
+                        "http_attempt_unknown" if http_attempted is None
+                        else "http_attempted" if http_attempted
+                        else "http_not_attempted"
+                    ] += 1
                     if lane == "events" and result[1] == "timeout":
                         stats["information_http_timeouts"] += 1
                     ready[lane][order] = (job, sample, result, dispatched, None)
@@ -645,7 +846,8 @@ def run_vlm_process(
                         lane == "events"
                         and sample.frame.frame_sequence <= last_published[lane]
                     )
-                    if historical and config.output_mode != "events":
+                    if (historical and config.output_mode != "events"
+                            and not config.retain_historical_results):
                         ready[lane].pop(order)
                         stats["late_information_reports_discarded"] += 1
                         log_timing(
@@ -667,8 +869,7 @@ def run_vlm_process(
                             - sample.received_monotonic,
                             reorder_wait_seconds=max(
                                 0.0,
-                                now - timing["request_started_monotonic"]
-                                - timing["model_seconds"],
+                                now - timing["completion_monotonic"],
                             ),
                         )
                         report = state.report(
@@ -717,6 +918,7 @@ def run_vlm_process(
                         stats["output_backpressure"] += 1
                         break
                     next_report_sequence += 1
+                    accounting[lane]["published"] += 1
                     ready[lane].pop(order)
                     last_published[lane] = max(
                         last_published[lane], sample.frame.frame_sequence
@@ -732,11 +934,20 @@ def run_vlm_process(
             if history:
                 sample = history[-1]
                 frame = sample.frame
-                window = _observation_window(history)
-                if (
-                    len(window) >= 2
+                window = _observation_window(
+                    history, config.observation_window_frames,
+                    config.observation_frame_delta_seconds,
+                    _source_sample_fps(config),
+                )
+                window_ready = (
+                    len(window) == config.observation_window_frames
+                    if config.observation_frame_delta_seconds is not None
+                    else len(window) >= 2
                     and window[-1].timestamp_seconds - window[0].timestamp_seconds
                     >= 0.75
+                )
+                if (
+                    window_ready
                     and frame.frame_sequence > last_endpoint
                     and (
                         frame.timestamp_seconds + 1e-9 >= next_due
@@ -786,6 +997,7 @@ def run_vlm_process(
                             grounding_required=bool(
                                 grounding_required and grounding_required.is_set()
                             ),
+                            event_definitions=config.event_definitions,
                         )
                         dispatched = time.monotonic()
                         for lane in lanes:
@@ -806,6 +1018,7 @@ def run_vlm_process(
                                 ),
                                 dispatched,
                             )
+                            accounting[lane]["submitted"] += 1
                             last_lane_endpoint[lane] = frame.frame_sequence
                         last_endpoint = frame.frame_sequence
                         if config.output_mode != "events":
@@ -878,10 +1091,20 @@ class IndependentVLMBranch:
         delivery=None,
         camera_callback=None,
         inspector_factory=_inspector,
+        report_observer=None,
+        rejected_report_observer=None,
+        publication_observer=None,
     ):
+        if report_observer is not None and rejected_report_observer is None:
+            raise ValueError("evaluation recording requires a rejected-report observer")
+        if publication_observer is not None and report_observer is None:
+            raise ValueError("publication timing requires a report observer")
         self.config, self.connection, self.fusion = config, connection, fusion
         self._display_fusion = display_fusion
         self._delivery = delivery
+        self._report_observer = report_observer
+        self._rejected_report_observer = rejected_report_observer
+        self._publication_observer = publication_observer
         self.results = ResultBus(128)
         self.grounding_results = ResultBus(128)
         self._shared_results = results
@@ -903,6 +1126,7 @@ class IndependentVLMBranch:
         self._grounding_required = context.Event()
         self._startup_ready = context.Event()
         self._stop, self._lock = Event(), Lock()
+        self._cleanup_started = False
         self._source_finished = Event()
         self._process = context.Process(
             target=run_vlm_process,
@@ -1001,9 +1225,7 @@ class IndependentVLMBranch:
             if sequence <= self._last_sequence or timestamp + 1e-9 < self._next_sample:
                 return False
             self._last_sequence = sequence
-            self._next_sample = timestamp + 1.0 / max(
-                2.0, self.config.observation_fps * 2.0
-            )
+            self._next_sample = timestamp + 1.0 / _source_sample_fps(self.config)
             sample = SourceSample(
                 EvidenceFrame(self.config.stream_session_id, sequence, timestamp, jpeg),
                 utc_now(),
@@ -1107,6 +1329,16 @@ class IndependentVLMBranch:
                 report.get("stream_session_id") != self.config.stream_session_id
                 or report.get("generation") != self.config.generation
             ):
+                if self._rejected_report_observer is not None:
+                    try:
+                        self._rejected_report_observer(
+                            copy.deepcopy(report), reason="stream_session_or_generation_mismatch"
+                        )
+                    except Exception as exc:
+                        self._capture_failed(exc, "evaluation_rejected_archive_failed")
+                    else:
+                        self._capture_failed(None, "evaluation_report_identity_mismatch")
+                    return
                 continue
             now = time.monotonic()
             report["emitted_at"] = utc_now()
@@ -1115,10 +1347,24 @@ class IndependentVLMBranch:
                 0.0, now - report["timing"].pop("evidence_received_monotonic")
             )
             report["timing"].pop("request_started_monotonic", None)
+            completed = report["timing"].pop("completion_monotonic", None)
+            if completed is not None:
+                report["timing"]["completion_to_publish_seconds"] = max(
+                    0.0, now - completed
+                )
             # Independent publication precedes every optional fusion/archive action.
             information = report.get("vlm_lane") != "grounding"
             grounding = report.get("vlm_lane") != "information"
-            (self.results if information else self.grounding_results).publish(report)
+            publication = (self.results if information else self.grounding_results).publish(
+                report, measure_publication=self._publication_observer is not None)
+            if self._report_observer is not None:
+                try:
+                    reference = self._report_observer(copy.deepcopy(report))
+                    if self._publication_observer is not None:
+                        self._publication_observer(publication, report_reference=reference)
+                except Exception as exc:
+                    self._capture_failed(exc, "evaluation_capture_failed")
+                    return
             if information and self._shared_results is not None:
                 self._shared_results.publish(report, expected_epoch=self._shared_epoch)
             if (
@@ -1263,8 +1509,12 @@ class IndependentVLMBranch:
                     2 if self.config.output_mode == "parallel" else 1
                 ),
                 "reorder_capacity_per_lane": REORDER_CAPACITY,
-                "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
+                "source_sample_fps": _source_sample_fps(self.config),
                 "observation_fps": self.config.observation_fps,
+                "observation_window_frames": self.config.observation_window_frames,
+                "observation_frame_delta_seconds": (
+                    self.config.observation_frame_delta_seconds
+                ),
                 "output_mode": self.config.output_mode,
                 "shared_admission_enabled": self.config.admission is not None,
                 "paired_admission": False,
@@ -1280,22 +1530,48 @@ class IndependentVLMBranch:
             result["camera_source_dispatch"] = self._camera_dispatch.stats()
         return result
 
+    def _capture_failed(self, exc, code):
+        with self._lock:
+            self._status.update(state="failed", error_code=code)
+            if exc is not None:
+                self._status["capture_error_type"] = type(exc).__name__
+                self._status["capture_error_errno"] = getattr(exc, "errno", None)
+        self._process_stop.set()
+        self._stop.set()
+        self.close()
+
     def close(self, timeout_seconds=0.0):
-        if not self._stop.is_set():
+        with self._lock:
+            start_cleanup = not self._cleanup_started
+            self._cleanup_started = True
             self._stop.set()
             self._process_stop.set()
-            if self.fusion is not None:
-                self.fusion.close()
-            if self._camera_dispatch is not None:
-                self._camera_dispatch.close()
-            with self._lock:
+            if start_cleanup and self._status.get("state") != "failed":
                 self._status["state"] = "stopping"
-            self._reaper = Thread(
-                target=self._cleanup, name="vlm-process-cleanup", daemon=True
-            )
-            self._reaper.start()
+        if start_cleanup:
+            try:
+                if self.fusion is not None:
+                    self.fusion.close()
+            finally:
+                try:
+                    if self._camera_dispatch is not None:
+                        self._camera_dispatch.close()
+                finally:
+                    with self._lock:
+                        self._reaper = Thread(
+                            target=self._cleanup, name="vlm-process-cleanup", daemon=True
+                        )
+                        self._reaper.start()
         if self._reaper is not None and timeout_seconds > 0:
             self._reaper.join(timeout_seconds)
+
+    def close_complete(self):
+        """Confirm process and callback retirement, not just cleanup initiation."""
+        with self._lock:
+            complete = self._status.get("cleanup_complete") is True
+        return (complete and (not self._started or not self._process.is_alive())
+                and all(thread is None or not thread.is_alive() for thread in
+                        (self._reader, self._source, self._diagnostic_reader, self._reaper)))
 
     def _cleanup(self):
         if self._started:
@@ -1321,7 +1597,9 @@ class IndependentVLMBranch:
         with self._lock:
             self._evidence.clear()
             self._evidence_bytes = 0
-            self._status["state"] = "stopped"
+            if self._status.get("state") != "failed":
+                self._status["state"] = "stopped"
+            self._status["cleanup_complete"] = True
 
 
 class CameraSourceDispatch:

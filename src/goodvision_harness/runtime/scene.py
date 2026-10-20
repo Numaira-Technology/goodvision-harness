@@ -71,6 +71,9 @@ class TemporalInspection:
         default=None, repr=False, compare=False,
     )
     grounding_required: bool = False
+    allowed_event_labels: tuple[str, ...] | None = None
+    scene_only_event_labels: tuple[str, ...] = ("ground_litter",)
+    event_definitions: tuple[tuple[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
