@@ -16,29 +16,25 @@ Completed recordings are referenced through read-only directory links. Their
 source configurations, original clocks, reports, and model receipts remain in
 the previous round. The controller does not call their models again.
 
-An interrupted recording cannot be silently continued or replayed. A replay
-requires an explicit member selection and the human approval recorded in the
-private staging file. It starts the original media from zero with a new clock
-domain. The old partial recording stays intact as a separate failed attempt.
+An interrupted recording cannot be silently continued or replayed. Select only
+the members the human has asked to replay. No approval text is required in the
+source configuration. A replay starts the original media from zero with a new
+clock domain. The old partial recording stays intact as a separate failed attempt.
 Only the approved new recording contributes that video's primary observation
 results; both attempts remain in request and cost totals.
 
-## Local fields and why they are retained
+## Runtime state
 
-- `event_recovery`: preserves the prior round, inherited member paths, replay
-  decision, and newly captured members. It prevents a new round from presenting
-  an inherited recording as fresh inference.
-- `model_ledger.window_replay`: contains `approval_quote`, `source_id`,
-  `prior_session`, and `new_session`. It permits the named new measurement while
-  carrying prior sends into the cumulative three-attempt window budget.
-- `context.window_replay`: records that approval with each new paid request.
-  It is local accounting metadata, not model input.
+- `plan.event_recovery` contains the previous round and the member mappings used
+  to read completed recordings and select unfinished members.
+- `model_ledger.window_replay` contains only `source_id`, `prior_session`, and
+  `new_session`. These fields carry prior sends into the cumulative
+  three-attempt window budget.
 
-The approval field is deliberately not named `authorization`: that name is
-reserved for credentials and remains forbidden by the observation-input privacy
-guard. Offline preparation applies the same existing guard to newly generated
-source configurations before launch can rent a GPU. Historical rejected source
-files are retained unchanged, not migrated or accepted through a privacy bypass.
+Source configurations and model requests contain no replay approval quote,
+replay proof, or repeated replay context. No separate `event-recovery.json` is
+generated. The existing credential and private-GT protection remains unchanged.
+Historical records are not rewritten.
 
 Matching uses the explicit source, lane, and ordered frame-sequence window.
 Old successful replies are not substituted for the newly approved measurement.
@@ -56,8 +52,8 @@ and receipts are preserved.
 
 Use `streaming_walltime_trial.py prepare` with the original paired baseline
 and the additional `--resume-event-round` directory. Select each explicitly
-approved interrupted member with `--replay-interrupted-clip`. Keep the approval
-in `staging.json` as `replay_approval_quote`. Launch only the newly frozen entry.
+selected interrupted member with `--replay-interrupted-clip`. Launch only the
+newly frozen entry.
 
 The benchmark-side matching and scoring remain in the evaluation repository.
 Resource-provider differences, restarts, inherited recordings, and the old

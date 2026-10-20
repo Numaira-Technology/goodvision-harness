@@ -74,11 +74,8 @@ def event_recovery(previous, *, last_answer, staging, replay_clips):
             or plan.get("paired_comparison", {}).get("baseline_round")
                != staging.get("comparison_baseline_round")):
         raise ValueError("Recovery requires the stopped paired four-event cohort")
-    approval = staging.get("replay_approval_quote")
-    if replay_clips and (not isinstance(approval, str) or not approval.strip()):
-        raise ValueError("Interrupted-source replay requires its explicit human approval")
     if len(replay_clips) != len(set(replay_clips)):
-        raise ValueError("Do not authorize the same replay twice")
+        raise ValueError("Do not select the same replay twice")
     started, inherited, interrupted = set(), {}, {}
     for entry, selection in zip(plan["sources"], staging["selections"]):
         clip = entry["clip"]
@@ -112,26 +109,20 @@ def event_recovery(previous, *, last_answer, staging, replay_clips):
             if clip in replay_clips or cleanup.get("shared_failure") is True:
                 raise ValueError("A completed source cannot be selected for replay")
             inherited[clip] = {"entry": entry, "directory": str(directory),
-                "outcome": load(directory / "outcome.json"),
-                "source_commit": manifest.get("provenance", {}).get("harness_commit")}
+                "outcome": load(directory / "outcome.json")}
         else:
             if clip not in replay_clips or not (directory / "failure.json").exists():
                 raise ValueError("An interrupted source lacks an explicit replay decision")
-            interrupted[clip] = {"directory": str(directory),
-                "prior_session": source["stream_session_id"], "source_id": source["source_id"],
-                "approval_quote": approval, "old_receipts_and_unknown_costs_preserved": True}
+            interrupted[clip] = {"prior_session": source["stream_session_id"]}
     if set(replay_clips) != set(interrupted):
-        raise ValueError("Replay approval must identify exactly the interrupted sources")
+        raise ValueError("Replay selection must identify exactly the interrupted sources")
     dispatched = {row.get("context", {}).get("source_id")
                   for row in rows(previous / "output/model-ledger/model-requests.jsonl")}
     if not dispatched <= {"clip-" + clip for clip in started}:
         raise ValueError("A paid source has no reviewed prior recording")
     if len(inherited) == len(PHYSICAL_CONFLICT_CLIPS):
         raise ValueError("There is no uncompleted source to continue")
-    return {"prior_round": str(previous), "inherited": inherited,
-        "replayed": interrupted, "newly_captured_clips": [clip for clip in PHYSICAL_CONFLICT_CLIPS
-            if clip not in inherited], "prior_capture_commit": plan["source_commit"],
-        "same_cohort_order_and_observer_settings": True}
+    return {"prior_round": str(previous), "inherited": inherited, "replayed": interrupted}
 
 
 def prepare(args):
@@ -154,8 +145,6 @@ def prepare(args):
              PACED_INPUT_CLIPS if evaluation_timing else CLIPS)
     if tuple(row["clip"] for row in staging["selections"]) != clips:
         raise ValueError("The source list must match the authorized cohort in member order")
-    if cohort == "physical_conflict50" and not staging.get("approval_quote"):
-        raise ValueError("Preserve the explicit 50-video human approval in staging")
     prior_timing = args.prior_timing_round.resolve() if args.prior_timing_round else None
     if evaluation_timing and prior_timing is None:
         raise ValueError("The instrumented run requires the prior timing resource record")
@@ -236,7 +225,6 @@ def prepare(args):
         recordings.mkdir(parents=True)
         for clip, reference in recovery["inherited"].items():
             (recordings / clip).symlink_to(reference["directory"], target_is_directory=True)
-        save(root / "event-recovery.json", recovery)
     previous_authorization = load((resumed or prior_timing) / "gpu/source/execution-authorization.json"
         if prior_timing is not None else source / "authorization.json")
     approval = {"status": "explicitly_approved", "approved_by": "human_user",
@@ -322,9 +310,8 @@ def prepare(args):
         if recovery is not None and row["clip"] in recovery["replayed"]:
             replay = recovery["replayed"][row["clip"]]
             configuration["model_ledger"]["window_replay"] = {
-                "approval_quote": replay["approval_quote"], "source_id": configuration["source_id"],
+                "source_id": configuration["source_id"],
                 "prior_session": replay["prior_session"], "new_session": configuration["stream_session_id"]}
-            configuration["provenance"]["approved_source_replay"] = replay
         source_privacy.reject_private(configuration, observation=True)
         destination = root / "sources" / (row["clip"] + ".json")
         save(destination, configuration)

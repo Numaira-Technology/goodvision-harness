@@ -179,16 +179,16 @@ class ModelLedger:
         self._apply_window_replay(operations)
 
     def _apply_window_replay(self, operations):
-        """Carry unique prior sends into one explicitly authorized window replay.
+        """Carry prior sends into the selected source replay's request budget.
 
-        The approval quote is local audit text. Source and session fields narrow
-        the budget transfer; lane and frame sequences keep their original scope.
+        Source and session fields narrow the budget transfer; lane and frame
+        sequences keep their original scope.
         Receipts, cached responses and unknown-outcome blocks stay on old keys.
         """
         replay = self.window_replay
         if replay is None:
             return
-        fields = {"approval_quote", "source_id", "prior_session", "new_session"}
+        fields = {"source_id", "prior_session", "new_session"}
         if (not isinstance(replay, dict) or set(replay) != fields
                 or any(not isinstance(replay[field], str) or not replay[field].strip()
                        for field in fields)
@@ -267,11 +267,6 @@ class ModelLedger:
             operation = operation_for_request(context, request)
         except (ValueError, KeyError, TypeError, IndexError):
             raise LedgerBlocked("model_operation_scope_missing", scope="source") from None
-        replay = self.window_replay
-        if (replay is not None and operation["kind"] == "window"
-                and operation["source"] == replay["source_id"]
-                and operation["session"] == replay["new_session"]):
-            context = {**context, "window_replay": copy.deepcopy(replay)}
         key = operation_key(operation)
         with self.lock:
             if self.closed or self.poisoned or self.balance_blocked:
