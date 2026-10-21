@@ -17,6 +17,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -32,12 +33,13 @@ from PIL import Image
 
 from goodvision_harness.config import load_config
 from goodvision_harness.model_api import ModelAPISettings, environment_api_key
-from goodvision_harness.vlm_compact_model import event_response_format
-from goodvision_harness.vlm_independent import _inspector
+from tools.benchmark_runtime.vlm_compact_model import event_response_format
+from tools.benchmark_runtime.vlm_independent import _inspector
 from tools.vlm_benchmark.lock import acquire
 from tools.vlm_benchmark.mode_report import render_modes
 from tools.vlm_benchmark.recording import save_recording
 from tools.vlm_benchmark.report import write_json
+from tools.vlm_benchmark.routes import mode_api_key
 from tools.vlm_benchmark.telemetry import Telemetry
 from tools.vlm_multistream_benchmark import (
     LABELS,
@@ -75,11 +77,27 @@ def mode_inspector(config):
 
 
 def validate(args):
+    if getattr(args, "self_hosted_fp8_yolo", False):
+        from tools.vast_vlm.fp8_profile import validate as validate_local
+
+        validate_local(args)
+    elif getattr(args, "self_hosted_qwen35", False):
+        from tools.vast_vlm.profile import validate as validate_local
+
+        validate_local(args)
+    if args.backend == "openai_decisions":
+        from tools.decisions_benchmark.profile import validate as validate_decisions
+
+        validate_decisions(args)
     args.modes = ["compact" if m == "grounding" else m for m in args.modes]
     if args.monitor_layout not in {"evidence", "single-video"}:
         raise ValueError("invalid monitor layout")
     if not 0 <= args.monitor_port <= 65535 or (args.headed and not args.record):
         raise ValueError("invalid monitor port or --headed without --record")
+    if args.backend != "openrouter" and (
+        getattr(args, "provider_only", "") or getattr(args, "provider_prefer", "")
+    ):
+        raise ValueError("provider routing requires OpenRouter")
     if not args.model.strip() or len(args.model) > 200:
         raise ValueError("invalid model name")
     for name, low, high in (
@@ -236,7 +254,18 @@ def configure(args):
         # This Instruct endpoint does not advertise reasoning support. With
         # require_parameters=True even a disabled reasoning flag can filter routes.
         parameters.pop("reasoning", None)
-    settings = ModelAPISettings(
+    settings_type = ModelAPISettings
+    if args.backend == "openai_decisions":
+        from tools.decisions_benchmark.profile import DecisionSettings
+
+        settings_type = DecisionSettings
+    for key, field in (("provider_only", "only"), ("provider_prefer", "order")):
+        if getattr(args, key, ""):
+            parameters["provider"].update(
+                {field: [getattr(args, key)], "allow_fallbacks": field == "order"}
+            )
+            parameters["provider"].pop("ignore", None)
+    settings = settings_type(
         provider=args.backend,
         endpoint=args.endpoint or "",
         max_retries=0,
@@ -248,7 +277,11 @@ def configure(args):
         inference=replace(
             base.inference,
             model=args.model,
-            request_parameters={**parameters, "temperature": 0},
+            request_parameters=(
+                {}
+                if args.backend == "openai_decisions"
+                else {**parameters, "temperature": 0}
+            ),
         ),
         runtime=replace(
             base.runtime,
@@ -269,7 +302,7 @@ def usable(stage):
     )
 
 
-def run(args):
+def run(args, *, before_run=None):
     validate(args)
     # A second suite would contaminate both capacity and server counter deltas.
     # Simulation is offline and may run in isolated unit-test processes.
@@ -279,6 +312,8 @@ def run(args):
         lock_root.parent.parent.mkdir(parents=True, exist_ok=True)
         lock = acquire(lock_root)
     try:
+        if before_run is not None:
+            before_run()
         return _run(args)
     finally:
         if lock is not None:
@@ -287,11 +322,7 @@ def run(args):
 
 def _run(args):
     base = configure(args)
-    if (
-        args.real
-        and args.backend != "local"
-        and not environment_api_key(base.model_api)
-    ):
+    if args.real and args.backend != "local" and not mode_api_key(base.model_api):
         raise ValueError("configured API credential is unavailable")
     output = args.output or ROOT / "outputs/vlm-modes" / datetime.now(
         timezone.utc
@@ -324,8 +355,19 @@ def _run(args):
         return digest.hexdigest()
 
     def trial(job):
+        factory = mode_inspector
+        if getattr(args, "self_hosted_qwen35", False):
+            from tools.vast_vlm.benchmark import inspector
+
+            factory = inspector
         location = output / job["id"]
         location.mkdir()
+        if args.backend == "openai_decisions":
+            from functools import partial
+
+            from tools.decisions_benchmark.adapter import inspector
+
+            factory = partial(inspector, audit_dir=location / "api-audit")
         document["active_stage"] = job["id"]
         render_modes(output, document)
         options = SimpleNamespace(**vars(args))
@@ -344,7 +386,9 @@ def _run(args):
             with Telemetry(
                 telemetry_file,
                 args.metrics_url if args.real else None,
-                environment_api_key(base.model_api) if args.real else "",
+                environment_api_key(base.model_api)
+                if args.real and args.backend != "local"
+                else "",
             ) as telemetry:
                 result = run_stage(
                     options,
@@ -353,7 +397,7 @@ def _run(args):
                     framesets,
                     location,
                     job["repeat"],
-                    inspector_factory=mode_inspector,
+                    inspector_factory=factory,
                     **({"observer": monitor} if monitor else {}),
                 )
             if monitor:
@@ -404,8 +448,13 @@ def _run(args):
             f"/ repeat {job['repeat']}",
             flush=True,
         )
+        if args.backend == "openai_decisions":
+            from tools.decisions_benchmark.suite import check_stage
+
+            check_stage(job, result, location)
         if any(r["http_status_counts"].get("429") for r in result["lanes"].values()):
-            raise RuntimeError("HTTP 429; stopped subsequent stages")
+            if args.backend != "openai_decisions" or job["phase"] != "measurement":
+                raise RuntimeError("HTTP 429; stopped subsequent stages")
         if (
             not result["all_drained"]
             or not result["input_timing_valid"]
@@ -445,6 +494,7 @@ def _run(args):
                 str(p.relative_to(ROOT)): sha(p)
                 for p in [
                     *sorted((ROOT / "src/goodvision_harness").rglob("*.py")),
+                    *sorted((ROOT / "tools/benchmark_runtime").glob("*.py")),
                     *sorted((ROOT / "tools/vlm_benchmark").glob("*.py")),
                     *sorted((ROOT / "tools/vlm_benchmark").glob("monitor.*")),
                     ROOT / "tools/vlm_multistream_benchmark.py",
@@ -452,11 +502,51 @@ def _run(args):
             },
             "videos": [{"path": str(p), "sha256": sha(p)} for p in args.video],
         }
+        if args.backend == "openai_decisions":
+            from tools.benchmark_runtime.vlm_event_policy import (
+                annotation_policy,
+                event_policy_snapshot,
+            )
+            from tools.decisions_benchmark.profile import VERSION
+            from tools.vlm_benchmark.evaluation_contract import evaluation_contract
+
+            manifest.update(
+                decisions_profile=VERSION,
+                transport="decisions-json-v1",
+                http_timeouts={"events": 20},
+                output_limits=None,
+                evaluation_contract=evaluation_contract(),
+                event_policy=event_policy_snapshot(LABELS),
+                deployment_metadata="OpenAI hosted; hardware/precision unreported",
+            )
+            write_json(output / "event-policy.json", annotation_policy(LABELS))
+        if getattr(args, "self_hosted_qwen35", False):
+            from tools.benchmark_runtime.vlm_event_policy import event_policy_snapshot
+            from tools.vlm_benchmark.evaluation_contract import evaluation_contract
+
+            manifest.update(
+                transport="sse-v1",
+                http_timeouts={"events": 20, "compact": 20},
+                event_policy=event_policy_snapshot(LABELS),
+                evaluation_contract=evaluation_contract(),
+            )
         write_json(output / "manifest.json", manifest)
 
         framesets = [
             decode(p, max(2, args.observation_fps * 2), 720, 90) for p in args.video
         ]
+        if args.backend == "openai_decisions" or getattr(
+            args, "self_hosted_qwen35", False
+        ):
+            manifest["decoded_evidence"] = [
+                [
+                    {"sha256": hashlib.sha256(data).hexdigest(), "media_seconds": at}
+                    for data, at in zip(frames, frames.media_seconds, strict=True)
+                ]
+                for frames in framesets
+                if hasattr(frames, "media_seconds")
+            ]
+            write_json(output / "manifest.json", manifest)
         if not framesets:
             buffer = io.BytesIO()
             Image.new("RGB", (64, 48), "gray").save(buffer, "JPEG")
@@ -482,6 +572,8 @@ def _run(args):
                     f"{mode} preflight: incomplete result or invalid input/drain"
                 )
         for job in jobs(args):
+            if args.backend == "openai_decisions":
+                time.sleep(args.rate_limit_cooldown)
             warm = trial(
                 {
                     **job,
@@ -545,6 +637,22 @@ def _run(args):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--person-display", choices=["ids", "boxes", "off"], default="ids")
+    p.add_argument(
+        "--grounding-format", choices=["legacy", "lean-v1"], default="legacy"
+    )
+    p.add_argument(
+        "--parallel-scheduling",
+        choices=["independent", "paired"],
+        default="independent",
+    )
+    p.add_argument(
+        "--admission-storage", choices=["workspace", "memory"], default="workspace"
+    )
+    p.add_argument("--admission-diagnostics", action="store_true")
+    routing = p.add_mutually_exclusive_group()
+    routing.add_argument("--provider-only", default="")
+    routing.add_argument("--provider-prefer", default="")
     p.add_argument("--real", action="store_true")
     p.add_argument("--plan-only", action="store_true")
     p.add_argument("--backend", choices=["openrouter", "local"], default="openrouter")
@@ -594,7 +702,9 @@ def parser():
         help="record each measurement/soak browser viewport (implies --monitor)",
     )
     p.add_argument(
-        "--monitor-layout", choices=["evidence", "single-video"], default="evidence",
+        "--monitor-layout",
+        choices=["evidence", "single-video"],
+        default="evidence",
         help="single-video hides evidence panes and tracking overlays",
     )
     p.add_argument(

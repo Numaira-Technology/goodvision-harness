@@ -41,6 +41,7 @@ def bundle(
 ):
     root = Path(root).resolve()
     files = list((root / "src/goodvision_harness").rglob("*.py"))
+    files += sorted((root / "tools/benchmark_runtime").glob("*.py"))
     files += [
         root / "src/goodvision_harness/config.yaml",
         root / "pyproject.toml",
@@ -51,7 +52,10 @@ def bundle(
         for p in (root / "tools/vlm_benchmark").iterdir()
         if p.suffix in {".py", ".sh", ".json", ".txt", ".html", ".js"}
     ]
-    manifest = {"files": {}, "videos": [], "scope": scope}
+    from tools.vlm_benchmark.provenance import source_identity
+
+    manifest = {"files": {}, "videos": [], "scope": scope,
+                "source_identity": source_identity(root)}
     with tempfile.TemporaryDirectory(prefix="vlm-package-") as temp:
         stage = Path(temp)
         for source in sorted(set(files)):

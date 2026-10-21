@@ -707,24 +707,27 @@ def test_close_waits_for_preparation_to_unwind_and_keeps_uncommitted_sources(
     received = []
     _, client, coordinator = setup_pipeline(
         tmp_path, received.append, queue_policy=queue_policy,
+        # Exercise close after preparation starts, allowing native-session and
+        # journal setup to finish before a latest-only candidate expires.
+        realtime_max_age_seconds=10,
     )
     prepare = client.prepare_append
 
     def blocked_prepare(inputs, **kwargs):
         entered.set()
-        assert release.wait(3)
+        assert release.wait(5)
         return prepare(inputs, **kwargs)
 
     monkeypatch.setattr(client, "prepare_append", blocked_prepare)
     try:
         submit(coordinator, frames(1, 1))
-        assert entered.wait(2)
+        assert entered.wait(5), coordinator.stats()
         assert coordinator._spool._connection is not None
         coordinator.close(timeout_seconds=0)
         assert coordinator._spool._connection is None
         assert not coordinator.close_complete()
         release.set()
-        wait_for(coordinator.close_complete)
+        wait_for(coordinator.close_complete, timeout=5)
         assert received == []
         assert coordinator._spool.load(0, [3])[0].jpeg_bytes == b"jpeg"
         assert coordinator._spool._connection is None

@@ -25,10 +25,11 @@
     const count = data.cameras.length;
     document.body.classList.toggle("compact", count > 4);
     document.body.classList.toggle("single-video", singleVideo);
+    document.body.classList.toggle("person-ids", !!data.backend_person_tracks);
     document.body.classList.toggle("parallel-mode", data.mode === "parallel");
     // The YOLO detector preview supplies its own boxes, so enable tracking on
     // the detector flag even without a VLM grounding lane (events-only runs).
-    window.previewHasBoxes = data.lanes.includes("grounding") || !!data.detector;
+    window.previewHasBoxes = !data.backend_person_tracks && (data.lanes.includes("grounding") || !!data.detector);
     // Detector round-trips are serialized across lanes on one GPU, so a lane's
     // response can take a few seconds. The tracker uses this to widen its abort
     // and stale thresholds (and box hold) so slow-but-valid boxes still paint.
@@ -37,7 +38,9 @@
     document.body.classList.toggle("multicam", count > 1);
     byId("grid").style.setProperty("--cols", count > 8 ? 4 : count > 4 ? 3 : count > 1 ? 2 : 1);
     byId("grid").style.maxWidth = count === 1 ? "1340px" : "none";
-    byId("display-note").textContent = singleVideo
+    byId("display-note").textContent = data.backend_person_tracks
+      ? `后端人物关联已开启 · ${data.person_display==="boxes" ? "显示人物框和 ID" : data.person_display==="off" ? "隐藏人物标注" : "只显示人物 ID"}。显示选项不改变分析请求；过期位置隐藏。`
+      : singleVideo
       ? "每路显示原速视频（预览目标 15 FPS），不叠加定位或跟踪框。事件状态按返回时刻更新，证据时间与耗时见每条结果；未增加播放缓冲。"
       : trackingEnabled && data.lanes.includes("grounding")
       ? "左侧为原速视频（蓝色虚线=帧间跟踪估计，丢失即隐藏）；右侧为模型返回时才显示的原始证据帧，绿色框为原始定位。跟踪仅供可视化，增加负载，不用于容量或耗时对照。"
@@ -70,6 +73,12 @@
         evidence.firstChild.textContent="模型原始定位 · 对应证据帧";
         trackNote=node("div","tracking-note","等待视频播放与定位");
       }
+      let idCanvas=null;
+      if(video && data.backend_person_tracks && data.person_display!=="off") {
+        idCanvas=node("canvas");idCanvas.width=640;idCanvas.height=360;
+        idCanvas.className="tracking-overlay";sourceScreen.append(idCanvas);
+        source.firstChild.textContent="当前播放 · 人物 ID（不显示框）";
+      }
       source.append(sourceScreen); pair.append(source);
       if(!singleVideo) { evidence.append(evidenceScreen); pair.append(evidence); }
       card.append(pair);
@@ -83,7 +92,7 @@
         laneNodes[lane] = {chips,timer};
       });
       const foot = node("div","camera-foot","模型判断不等于已人工核实的事件"); card.append(foot); byId("grid").append(card);
-      cards.push({video,trackCanvas,trackNote,tracker:null,sample,clock,canvas,empty,note,foot,lanes:laneNodes,media,evidenceKey:null,evidenceLoading:false,sourceTick:null,playRequested:false,lastPresented:0,progressAt:0,playSeconds:0,playFrames:0,lastAnimate:null,wasPlaying:false});
+      cards.push({video,idCanvas,trackCanvas,trackNote,tracker:null,sample,clock,canvas,empty,note,foot,lanes:laneNodes,media,evidenceKey:null,evidenceLoading:false,sourceTick:null,playRequested:false,lastPresented:0,progressAt:0,playSeconds:0,playFrames:0,lastAnimate:null,wasPlaying:false});
     });
   }
   function drawEvidence(card, camera, report) {
@@ -114,7 +123,7 @@
     const d=window.monitorDiagnostics;
     if(!d.phases.includes(data.state)) d.phases.push(data.state);
     if(data.state === "playing") d.sawPlaying=true;
-    byId("model").textContent=`${data.model} · ${data.backend === "openrouter" ? "OpenRouter 服务商推理" : "自部署服务"}`;
+    byId("model").textContent=`${data.model} · ${data.backend === "openrouter" ? "OpenRouter 服务商推理" : data.backend === "openai_decisions" ? "OpenAI Decisions · 六类事件判断" : "自部署服务"}`;
     byId("badge").textContent=data.real ? "真实模型测试" : "模拟调度 · 未调用真实模型";
     const modeLabel={events:"events · 事件识别",compact:"grounding · 带定位识别",parallel:"parallel · events + grounding"}[data.mode] || data.mode;
     byId("stage").textContent=`${phaseNames[data.phase]} / ${modeLabel} / ${data.cameras.length} 路 / 第 ${data.repeat} 轮`;
@@ -142,6 +151,14 @@
         row.report=r;
       }
       const evidence=camera.tracking_anchor || camera.lanes.grounding || camera.lanes.events;
+      if(data.backend_person_tracks) {
+        const r=camera.lanes.grounding;
+        c.note.textContent=r?.person_judgments?.length
+          ? `证据 ${seconds(r.media_seconds)} · `+r.person_judgments.map(p=>`${p.id}: `+Object.entries(p.events).map(([k,v])=>`${labels[k]}${v===true?"有":v===false?"无":"?"}`).join(" ")).join("；")
+          : data.mode === "events" ? "本模式判断场景事件；人物 ID 只在本路会话有效"
+          : "人物判断等待中；编号只在本摄像头会话内有效";
+        c.note.title=c.note.textContent;
+      }
       if(evidence && !singleVideo) { drawEvidence(c,camera,evidence); c.note.textContent=`证据 ${seconds(evidence.media_seconds)} · 帧 ${evidence.tick ?? "?"} · ${camera.lanes.grounding ? `目标框 ${evidence.objects.length}` : "事件模式不提供定位框"}`; }
       c.foot.textContent=`送帧拒绝 ${camera.rejected} · 保留旧结果 ${camera.out_of_order} · 模型判断未经人工复核`;
     });
@@ -175,6 +192,34 @@
         const shownMedia=state.detector && c.video && Number.isFinite(c.video.currentTime) ? c.video.currentTime : media;
         c.clock.textContent=`视频 ${seconds(shownMedia)} · 本轮 ${seconds(Math.max(0,Math.min(time,state.duration)))}`;
         if(c.video) {
+          if(c.idCanvas) {
+            // Match the displayed viewport, including wide/portrait sources;
+            // a fixed 16:9 overlay introduces a second letterbox transform.
+            const cw=Math.max(1,c.idCanvas.clientWidth),ch=Math.max(1,c.idCanvas.clientHeight);
+            if(c.idCanvas.width!==cw || c.idCanvas.height!==ch) {c.idCanvas.width=cw;c.idCanvas.height=ch;}
+            const ctx=c.idCanvas.getContext("2d"), people=state.cameras[i].people;
+            ctx.clearRect(0,0,cw,ch);
+            // Compare source time, never response receipt time. Hide stale IDs;
+            // a delayed result must not label a person at an obsolete position.
+            const seq=people?.sequence, cycle=Math.floor(pos/c.media.sample_count);
+            const index=Number.isInteger(seq) ? seq%c.media.sample_count : -1;
+            const age=index>=0 ? c.video.currentTime-c.media.timestamps[index] : Infinity;
+            if(state.state === "playing" && index>=0 && Math.floor(seq/c.media.sample_count)===cycle && age>=-.03 && age<=.5) {
+              const w=c.video.videoWidth,h=c.video.videoHeight,k=Math.min(cw/w,ch/h);
+              if(w>0 && h>0) for(const p of people.objects) {
+                const b=p.bbox,x=(cw-w*k)/2+(b.x1+b.x2)*.5*w*k,y=(ch-h*k)/2+b.y1*h*k;
+                ctx.font="bold 13px sans-serif";ctx.lineWidth=3;ctx.strokeStyle="#07101b";ctx.fillStyle="#ffffff";
+                if(state.person_display==="boxes") {
+                  ctx.strokeStyle="#3ddc84";ctx.lineWidth=2;
+                  ctx.strokeRect((cw-w*k)/2+b.x1*w*k,(ch-h*k)/2+b.y1*h*k,(b.x2-b.x1)*w*k,(b.y2-b.y1)*h*k);
+                  ctx.strokeStyle="#07101b";ctx.lineWidth=3;
+                }
+                ctx.textAlign="center";
+                const half=ctx.measureText(p.track_id).width/2+4,px=Math.max(half,Math.min(cw-half,x)),py=Math.max(15,Math.min(ch-3,y));
+                ctx.strokeText(p.track_id,px,py);ctx.fillText(p.track_id,px,py);
+              }
+            }
+          }
           // In detector preview each lane loops freely, so it plays for the
           // whole run instead of stopping at its per-lane duration/offset.
           const playing=state.detector ? state.state === "playing"
