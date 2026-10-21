@@ -18,8 +18,10 @@ The code includes a real-file 1–12 stream entrypoint. The initial sixteen real
 parameter/load runs used `fe95fa9` and the repeated question layout. Separate
 seven-run layout and seven-run prefix-cache comparisons have also completed.
 They do not establish usable twelve-stream capacity or justify making the
-experimental prefix cache the default. The fixed-template optimization below
-has not been deployed or measured. Completed Qwen-based 50-video results remain
+experimental prefix cache the default. A later seven-run comparison has also
+deployed the fixed-template optimization below. All sent native requests
+completed, but input coverage, CPU preprocessing and quality still prevent a
+twelve-stream usability claim. Completed Qwen-based 50-video results remain
 separate and unchanged.
 No software tests, imports for validation, builds, or health probes were run.
 
@@ -176,8 +178,10 @@ This replaces two costs found in the completed cache comparison: the client
 rebuilt all fixed questions on every request, and the runtime first built native
 groups only to rebuild them in another layout. It does not change event criteria,
 the three choices, model weights, the trained head, or the formatter. Source
-review is not an executed token/output comparison; no new speed or quality result
-is claimed for this optimization.
+review is not an executed token/output equivalence comparison. The real-file
+comparison confirmed sub-millisecond median question preparation; slower CPU
+image preparation and missed input opportunities still dominated the complete
+pipeline on that host. This is not an end-to-end speedup or quality guarantee.
 
 ### Experimental static-policy prefix cache
 
