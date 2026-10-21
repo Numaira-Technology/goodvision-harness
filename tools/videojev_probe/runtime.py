@@ -63,7 +63,7 @@ def _shared_questions(rows):
 
 
 class VideoJevRuntime:
-    def __init__(self, cache_dir, *, question_layout="repeated"):
+    def __init__(self, cache_dir, *, question_layout="repeated", single_sequence=False):
         import torch
         from transformers import AutoModel, AutoProcessor
 
@@ -91,6 +91,7 @@ class VideoJevRuntime:
         self._prepare_query_groups = native["prepare_query_groups"]
         self._format_predictions = native["format_predictions"]
         self.question_layout = question_layout
+        self.single_sequence = single_sequence
         self._policy_prefix = None
         self.decoder = dict(self.model.config.decoder)
         if not 0 < self.decoder["threshold"] < 1:
@@ -121,6 +122,7 @@ class VideoJevRuntime:
             "torch_cpu_threads": torch.get_num_threads(),
             "torch_interop_threads": torch.get_num_interop_threads(),
             "packed_choice_supported": self.packed_choice_supported,
+            "single_sequence": self.single_sequence,
             "attention": "flash_attention_2", "context": CONTEXT,
             "question_layout_default": question_layout,
         }
@@ -371,6 +373,7 @@ class VideoJevRuntime:
             torch.cuda.synchronize()
             encoded = time.perf_counter()
             raw, layouts, tokens, scoring_events, prefix_stats = [], [], [], [], []
+            single_sequence_groups = 0
             prepare_started = time.perf_counter()
             if question_template is not None:
                 if question_template.compiled is None:
@@ -411,6 +414,10 @@ class VideoJevRuntime:
                         use_cache=actual_layout == "prefix-cache",
                     )
                     prefix_stats.append(cache_stats)
+                elif (self.single_sequence and question_template is not None
+                      and layout in ("repeated", "shared")):
+                    output = self._packed_forward([batch], [features], packed=False)
+                    single_sequence_groups += 1
                 else:
                     output = self.model(**batch, visual_features=features)
                 score_end.record()
@@ -428,6 +435,7 @@ class VideoJevRuntime:
             "question_layout": layouts[0] if len(set(layouts)) == 1 else "mixed",
             "question_layout_groups": layouts,
             "native_group_count": len(layouts),
+            "single_sequence_groups": single_sequence_groups,
             "native_input_tokens": sum(tokens),
             "native_group_input_tokens": tokens,
             "question_group_prepare_seconds": group_prepare_seconds,
@@ -439,8 +447,8 @@ class VideoJevRuntime:
             "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
         }
 
-    def _packed_forward(self, groups, features):
-        """Score independent unpadded sequences in one native language call."""
+    def _packed_forward(self, groups, features, *, packed=True):
+        """Score a single sequence or isolated unpadded sequences with the native head."""
         torch, model = self.torch, self.model
         device = model.get_input_embeddings().weight.device
         embeddings, positions, pairs, queries, masks, tasks = [], [], [], [], [], []
@@ -472,22 +480,27 @@ class VideoJevRuntime:
                 tasks.append(batch["decision_tasks"].to(device))
                 lengths.append(ids.shape[1])
                 offset += ids.shape[1]
-            boundaries, cumulative = [0], 0
-            for length in lengths:
-                cumulative += length
-                boundaries.append(cumulative)
-            cu = torch.tensor(boundaries, device=device, dtype=torch.int32)
-            sequence = torch.cat([
-                torch.full((1, length), index, device=device, dtype=torch.int32)
-                for index, length in enumerate(lengths)
-            ], dim=1)
-            hidden = model.backbone.language_model(
-                inputs_embeds=torch.cat(embeddings, dim=1),
-                position_ids=torch.cat(positions, dim=-1), use_cache=False,
+            language_args = dict(
+                inputs_embeds=embeddings[0] if len(groups) == 1 else torch.cat(embeddings, dim=1),
+                position_ids=positions[0] if len(groups) == 1 else torch.cat(positions, dim=-1),
+                use_cache=False,
                 attention_mask={"full_attention": None, "linear_attention": None},
-                cu_seq_lens_q=cu, cu_seq_lens_k=cu,
-                max_length_q=max(lengths), max_length_k=max(lengths), seq_idx=sequence,
-            ).last_hidden_state[0]
+            )
+            if packed:
+                boundaries, cumulative = [0], 0
+                for length in lengths:
+                    cumulative += length
+                    boundaries.append(cumulative)
+                cu = torch.tensor(boundaries, device=device, dtype=torch.int32)
+                language_args.update(
+                    cu_seq_lens_q=cu, cu_seq_lens_k=cu,
+                    max_length_q=max(lengths), max_length_k=max(lengths),
+                    seq_idx=torch.cat([
+                        torch.full((1, length), index, device=device, dtype=torch.int32)
+                        for index, length in enumerate(lengths)
+                    ], dim=1),
+                )
+            hidden = model.backbone.language_model(**language_args).last_hidden_state[0]
         with torch.autocast(device_type="cuda", enabled=False):
             mask, decision_tasks = torch.cat(masks), torch.cat(tasks)
             logits = model.head(hidden[torch.cat(pairs)], hidden[torch.cat(queries)])

@@ -139,6 +139,34 @@ their shorter first requests are not an isolated thread-count speedup or an
 independent cold-start measurement. GPU scoring and service queueing, rather
 than CPU image preparation, dominated the steady twelve-stream runs on that host.
 
+### Optional single-sequence scoring
+
+`--single-sequence` is off by default. For a fixed non-prefix template it sends
+each complete window to the language model as one unpadded sequence, without
+`cu_seq_lens_q/k`, `max_length_q/k` or all-zero `seq_idx`. Visual encoding, full
+native mRoPE, causal attention, BF16 language weights, FP32 choice head, task
+questions and formatting are preserved. Each context group starts from no cached
+state. Actual two-window packed scoring still supplies its distinct boundaries;
+prefix layouts and the generic non-template interface retain their existing paths.
+
+The author's single-window wrapper always supplies packed metadata. In the pinned
+[FLA index preparation](https://github.com/fla-org/flash-linear-attention/blob/v0.4.2/fla/ops/utils/index.py#L121),
+this can copy sequence lengths to the CPU; same-window layer calls are already
+cached, so the extra copy must not be counted once per layer. Without those
+arguments, [FlashAttention](https://github.com/huggingface/transformers/blob/v5.14.1/src/transformers/modeling_flash_attention_utils.py#L757)
+uses its ordinary unpadded call. The unchanged native three-plane mRoPE produces
+no text packing positions in [Qwen3.5](https://github.com/huggingface/transformers/blob/v5.14.1/src/transformers/models/qwen3_5/modeling_qwen3_5.py#L1176).
+FLA retains its zero-initialized chunk kernel with one equal-length sequence,
+and causal-conv1d retains its CUDA implementation without a segment-index tensor.
+
+The existing scoring helper also bypasses the wrapper's repeated GPU boolean
+checks for an already constructed fixed template. Any combined timing change
+must not be attributed only to omitting packed metadata. Native per-window mRoPE
+and formatter synchronizations remain. New kernel specializations can add first
+use costs or alter near-boundary numeric results. This option has not been
+deployed or measured; quality and throughput still require a real comparison.
+No independent software tests were run.
+
 ### Optional ready-window packed scoring
 
 `--gpu-batch-size 1|2` defaults to one, preserving the original single-window

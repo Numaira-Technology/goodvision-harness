@@ -857,6 +857,8 @@ def main():
     parser.add_argument("--cpu-workers", type=int, default=1)
     parser.add_argument("--gpu-batch-size", type=int, choices=(1, 2), default=1,
                         help="Score up to two already-ready independent windows without waiting")
+    parser.add_argument("--single-sequence", action="store_true",
+                        help="Use unpadded single-sequence scoring for fixed non-prefix windows")
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument(
@@ -871,6 +873,7 @@ def main():
         args.result_log,
         runtime_factory=lambda: VideoJevRuntime(
             args.cache_dir, question_layout=args.question_layout,
+            single_sequence=args.single_sequence,
         ),
         request_timeout=args.request_timeout,
         queue_age=args.queue_age,
