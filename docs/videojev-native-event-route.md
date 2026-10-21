@@ -21,8 +21,12 @@ They do not establish usable twelve-stream capacity or justify making the
 experimental prefix cache the default. A later seven-run comparison has also
 deployed the fixed-template optimization below. All sent native requests
 completed, but input coverage, CPU preprocessing and quality still prevent a
-twelve-stream usability claim. Completed Qwen-based 50-video results remain
-separate and unchanged.
+twelve-stream usability claim. A subsequent same-host startup-thread comparison
+completed eight real-file runs. All twelve streams received regular updates on
+that host, but changing the CPU thread limit produced no material throughput
+gain or quality improvement. Event false positives, missed intervals and unscored
+categories still prevent a full usability claim. Completed Qwen-based 50-video
+results remain separate and unchanged.
 No software tests, imports for validation, builds, or health probes were run.
 
 ## What changes in the running path
@@ -126,6 +130,14 @@ environment, restarting only the service between drained configuration groups.
 Record cold-start and steady real-file results separately. This is an optional
 performance experiment, not a changed production default or a proven fix for
 input lateness. See the [PyTorch 2.8 environment-variable documentation](https://docs.pytorch.org/docs/2.8/threading_environment_variables.html).
+
+The completed comparison retained the default thread setting: limiting it to
+one, four or eight did not improve throughput materially, and the default had
+fewer negative clips with positive reports in this development sample. Later
+service restarts reused the same environment and persistent compilation cache;
+their shorter first requests are not an isolated thread-count speedup or an
+independent cold-start measurement. GPU scoring and service queueing, rather
+than CPU image preparation, dominated the steady twelve-stream runs on that host.
 
 ### Optional question-layout ablation
 
