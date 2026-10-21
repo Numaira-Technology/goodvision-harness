@@ -203,6 +203,7 @@ class Scorer:
         queue_capacity=48,
         ready_capacity=2,
         cpu_workers=1,
+        gpu_batch_size=1,
         context=CONTEXT,
         max_pixels=409600,
         question_layout="repeated",
@@ -214,6 +215,7 @@ class Scorer:
             or queue_age <= 0
             or queue_policy not in ("fifo", "latest-per-stream")
             or question_layout not in ("repeated", "shared", "prefix", "prefix-cache")
+            or gpu_batch_size not in (1, 2)
             or any(
                 type(value) is not int or value <= 0
                 for value in (
@@ -232,6 +234,7 @@ class Scorer:
         self.ready_capacity = ready_capacity
         self.context, self.max_pixels = context, max_pixels
         self.question_layout = question_layout
+        self.gpu_batch_size = gpu_batch_size
         self._condition = threading.Condition()
         self._log_lock = threading.Lock()
         self._pending = deque()
@@ -286,6 +289,7 @@ class Scorer:
                 "context": self.context,
                 "max_pixels": self.max_pixels,
                 "question_layout_default": self.question_layout,
+                "gpu_batch_size": self.gpu_batch_size,
                 "model": MODEL,
                 "revision": REVISION,
                 "runtime": {} if self.runtime is None else self.runtime.metadata,
@@ -491,53 +495,26 @@ class Scorer:
                 if work.gpu_start - work.arrival >= self.queue_age:
                     self._finish(work, error=WindowError("expired_before_gpu"))
                     continue
-                raw = None
-                timings = self._timings(work)
-                try:
-                    raw, native_timings = self.runtime.predict_prepared(
-                        work.prepared, work.body["questions"],
-                        question_layout=work.question_layout,
-                        question_template=work.question_template,
-                        frame_times=work.body["frame_times"],
-                    )
-                    gpu_end = time.monotonic()
-                    timings.update(native_timings)
-                    timings.update(self._timings(work))
-                    timings["server_gpu_seconds"] = gpu_end - work.gpu_start
-                    try:
-                        parse_choices(raw, work.body["questions"])
-                    except (ValueError, TypeError, KeyError, IndexError) as exc:
-                        raise WindowError("invalid_response", str(exc), raw=raw,
-                                          timings=timings) from None
-                    value = {
-                        "model": MODEL,
-                        "revision": REVISION,
-                        "request_id": work.body["request_id"],
-                        "raw": raw,
-                        "timings": timings,
-                    }
-                    self._finish(work, value=value)
-                except Exception as exc:
-                    timings.update(self._timings(work))
-                    timings["server_gpu_seconds"] = time.monotonic() - work.gpu_start
-                    error = WindowError(
-                        exc.code if isinstance(exc, WindowError) else "window_failed",
-                        f"{type(exc).__name__}: {exc}", raw=raw, timings=timings,
-                    )
-                    if _shared_cuda_failure(exc):
-                        error.code = "cuda_shared_failure"
-                        self._stop_shared(error)
-                    elif "out of memory" in str(exc).lower() or type(exc).__name__ == "OutOfMemoryError":
-                        error.code = "cuda_out_of_memory"
-                        try:
-                            # Cache recovery belongs to the same sole CUDA owner.
-                            self.runtime.torch.cuda.empty_cache()
-                            self.runtime.torch.cuda.synchronize()
-                        except Exception as recovery:
-                            self._stop_shared(
-                                WindowError("cuda_recovery_failed", str(recovery))
-                            )
-                    self._finish(work, error=error)
+                extra = None
+                if (self.gpu_batch_size == 2
+                        and work.question_layout in ("repeated", "shared")
+                        and work.question_template is not None
+                        and self.runtime.packed_choice_supported):
+                    with self._condition:
+                        if (self._pipeline and self._pipeline[0].state == "ready"
+                                and self._pipeline[0].question_layout in ("repeated", "shared")
+                                and self._pipeline[0].question_template is not None):
+                            extra = self._pipeline.popleft()
+                            extra.state = "gpu"
+                            extra.gpu_start = time.monotonic()
+                            self._condition.notify_all()
+                    if extra is not None and extra.gpu_start - extra.arrival >= self.queue_age:
+                        self._finish(extra, error=WindowError("expired_before_gpu"))
+                        extra = None
+                if extra is not None:
+                    self._score_batch([work, extra])
+                    continue
+                self._score_one(work)
         except BaseException as exc:
             error = WindowError("gpu_worker_stopped", f"{type(exc).__name__}: {exc}")
             self._stop_shared(error)
@@ -547,6 +524,121 @@ class Scorer:
             with self._condition:
                 self._loaded = False
                 self._condition.notify_all()
+
+    def _score_one(self, work):
+        raw = None
+        timings = self._timings(work)
+        try:
+            raw, native_timings = self.runtime.predict_prepared(
+                work.prepared, work.body["questions"],
+                question_layout=work.question_layout,
+                question_template=work.question_template,
+                frame_times=work.body["frame_times"],
+            )
+            timings.update(native_timings)
+            timings["gpu_batch_size"] = 1
+            timings.update(self._timings(work))
+            timings["server_gpu_seconds"] = time.monotonic() - work.gpu_start
+            try:
+                parse_choices(raw, work.body["questions"])
+            except (ValueError, TypeError, KeyError, IndexError) as exc:
+                raise WindowError("invalid_response", str(exc), raw=raw,
+                                  timings=timings) from None
+            self._finish(work, value={
+                "model": MODEL, "revision": REVISION,
+                "request_id": work.body["request_id"], "raw": raw, "timings": timings,
+            })
+        except Exception as exc:
+            timings.update(self._timings(work))
+            timings["server_gpu_seconds"] = time.monotonic() - work.gpu_start
+            self._finish(work, error=self._gpu_error(exc, raw=raw, timings=timings))
+
+    def _gpu_error(self, exc, *, raw=None, timings=None):
+        error = WindowError(
+            exc.code if isinstance(exc, WindowError) else "window_failed",
+            f"{type(exc).__name__}: {exc}", raw=raw, timings=timings,
+        )
+        if _shared_cuda_failure(exc):
+            error.code = "cuda_shared_failure"
+            self._stop_shared(error)
+        elif "out of memory" in str(exc).lower() or type(exc).__name__ == "OutOfMemoryError":
+            error.code = "cuda_out_of_memory"
+            try:
+                self.runtime.torch.cuda.empty_cache()
+                self.runtime.torch.cuda.synchronize()
+            except Exception as recovery:
+                self._stop_shared(WindowError("cuda_recovery_failed", str(recovery)))
+        return error
+
+    def _score_batch(self, works):
+        outcomes = self.runtime.predict_prepared_batch([
+            {"prepared": work.prepared, "questions": work.body["questions"],
+             "question_layout": work.question_layout,
+             "question_template": work.question_template,
+             "frame_times": work.body["frame_times"]}
+            for work in works
+        ])
+        try:
+            for item in outcomes:
+                if item is None:
+                    for work in works:
+                        if self._stopping:
+                            break
+                        if not work.finished:
+                            with self._condition:
+                                if work is not works[0]:
+                                    work.gpu_start = time.monotonic()
+                                self._gpu_work = work
+                            if work.gpu_start - work.arrival >= self.queue_age:
+                                self._finish(work, error=WindowError("expired_before_gpu"))
+                                continue
+                            self._score_one(work)
+                    break
+                index, outcome = item
+                work = works[index]
+                self._gpu_work = work
+                timings = self._timings(work)
+                timings["server_gpu_seconds"] = time.monotonic() - work.gpu_start
+                raw = None
+                try:
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    raw, native_timings = outcome
+                    timings.update(native_timings)
+                    try:
+                        parse_choices(raw, work.body["questions"])
+                    except (ValueError, TypeError, KeyError, IndexError) as exc:
+                        raise WindowError("invalid_response", str(exc), raw=raw,
+                                          timings=timings) from None
+                    self._finish(work, value={
+                        "model": MODEL, "revision": REVISION,
+                        "request_id": work.body["request_id"], "raw": raw, "timings": timings,
+                    })
+                except Exception as exc:
+                    self._finish(work, error=self._gpu_error(exc, raw=raw, timings=timings))
+                if self._stopping:
+                    break
+                with self._condition:
+                    self._gpu_work = next((item for item in works if not item.finished), None)
+        except BaseException as exc:
+            error = self._gpu_error(exc)
+            if not isinstance(exc, Exception):
+                error = WindowError("gpu_worker_stopped", f"{type(exc).__name__}: {exc}")
+                self._stop_shared(error)
+            for work in works:
+                if not work.finished:
+                    self._finish(work, error=error)
+            if not isinstance(exc, Exception):
+                raise
+        finally:
+            outcomes.close()
+            if self._stopping:
+                cause = self._failure or WindowError("service_shutdown")
+                for work in works:
+                    if not work.finished:
+                        self._finish(work, error=WindowError(
+                            cause.code, f"Shared service stopped before this window completed: {cause}",
+                        ))
 
     def _timings(self, work):
         now = time.monotonic()
@@ -763,6 +855,8 @@ def main():
     parser.add_argument("--queue-capacity", type=int, default=48)
     parser.add_argument("--ready-capacity", type=int, default=2)
     parser.add_argument("--cpu-workers", type=int, default=1)
+    parser.add_argument("--gpu-batch-size", type=int, choices=(1, 2), default=1,
+                        help="Score up to two already-ready independent windows without waiting")
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument(
@@ -784,6 +878,7 @@ def main():
         queue_capacity=args.queue_capacity,
         ready_capacity=args.ready_capacity,
         cpu_workers=args.cpu_workers,
+        gpu_batch_size=args.gpu_batch_size,
         context=args.context,
         max_pixels=args.max_pixels,
         question_layout=args.question_layout,

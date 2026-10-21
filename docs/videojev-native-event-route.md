@@ -139,6 +139,52 @@ their shorter first requests are not an isolated thread-count speedup or an
 independent cold-start measurement. GPU scoring and service queueing, rather
 than CPU image preparation, dominated the steady twelve-stream runs on that host.
 
+### Optional ready-window packed scoring
+
+`--gpu-batch-size 1|2` defaults to one, preserving the original single-window
+route. Two-window mode takes only an immediately ready second choice window
+from the existing pipeline. It does not wait to fill a batch, reorder the queue,
+combine videos into one timeline, remove event questions, or change model weights.
+Each window retains its own request, source times, future, result and failure.
+Prefix layouts and windows requiring multiple native context groups retain the
+single-window path without repeating a model call.
+
+The author's wrapper accepts one video. The optional runtime adapter still
+encodes each video separately and computes its own complete mRoPE positions.
+It packs the resulting unpadded language sequences using explicit cumulative
+query/key lengths and the longest individual sequence length. Distinct `seq_idx`
+segments reset causal-convolution boundaries; FLA recurrent states start from
+zero for each segment. The trained FP32 choice head is unchanged, with candidate
+and decision indices offset within their own sequences. Output tensors are copied
+once to the CPU and split by window before the original formatter and parser.
+The loaded linear-attention layers must actually use the FLA and causal-conv1d
+implementations: their plain Torch fallbacks ignore packed boundaries. If those
+implementations are unavailable, the existing single-window route remains usable.
+
+This relies on the pinned [Transformers FlashAttention interface](https://github.com/huggingface/transformers/blob/v5.14.1/src/transformers/modeling_flash_attention_utils.py#L794),
+[Qwen3.5 DeltaNet implementation](https://github.com/huggingface/transformers/blob/v5.14.1/src/transformers/models/qwen3_5/modeling_qwen3_5.py#L441),
+[FLA sequence boundaries](https://github.com/fla-org/flash-linear-attention/blob/v0.4.2/fla/ops/common/chunk_delta_h.py#L62),
+and [causal-conv1d segment handling](https://github.com/Dao-AILab/causal-conv1d/blob/v1.7.0/csrc/causal_conv1d_fwd.cu#L304).
+No past-video cache is retained. A shared forward failure affects only its actual
+participating windows; formatting or parsing errors remain per-window. There is
+no automatic resend or whole-video restart.
+
+Source review found that an early fallback could reverse window order or delay
+classification of a fatal CUDA error. Eligibility is now decided before model
+calls, and indexed outcomes return to the service immediately. A fallback second
+window gets its actual start time and original expiry check; an individual visual
+encoding error does not fail its unattempted neighbor. The GPU owner is restored
+before resuming remaining work. These are source-reviewed changes, not executed
+error-path validation.
+
+Per-window timings record the actual `gpu_batch_size`. Shared scoring time is
+the real wait experienced by both windows, not divided by two. Consequently
+overlapping batch intervals must not be added as if they were independent GPU
+work. Extra memory and the first window waiting for the second visual encoding
+are trade-offs to measure, not an assumed speedup. This option has not yet been
+deployed or measured; the default is unchanged. No independent software tests
+were run.
+
 ### Optional question-layout ablation
 
 `--question-layout repeated|shared|prefix|prefix-cache` selects the service default;

@@ -95,6 +95,15 @@ class VideoJevRuntime:
         self.decoder = dict(self.model.config.decoder)
         if not 0 < self.decoder["threshold"] < 1:
             raise ValueError("threshold must be between 0 and 1")
+        linear_layers = [module for module in self.model.backbone.language_model.modules()
+                         if hasattr(module, "chunk_gated_delta_rule")]
+        # Torch fallbacks ignore packed sequence boundaries. Keep their existing
+        # single-window route instead of sharing recurrent or convolution state.
+        self.packed_choice_supported = all(
+            getattr(module.chunk_gated_delta_rule, "__module__", "").startswith("fla.")
+            and getattr(module.causal_conv1d_fn, "__module__", "").startswith("causal_conv1d.")
+            for module in linear_layers
+        )
         torch.cuda.synchronize()
         props = torch.cuda.get_device_properties(0)
         self.metadata = {
@@ -111,6 +120,7 @@ class VideoJevRuntime:
             "cuda_runtime": torch.version.cuda,
             "torch_cpu_threads": torch.get_num_threads(),
             "torch_interop_threads": torch.get_num_interop_threads(),
+            "packed_choice_supported": self.packed_choice_supported,
             "attention": "flash_attention_2", "context": CONTEXT,
             "question_layout_default": question_layout,
         }
@@ -428,6 +438,180 @@ class VideoJevRuntime:
             "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
             "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
         }
+
+    def _packed_forward(self, groups, features):
+        """Score independent unpadded sequences in one native language call."""
+        torch, model = self.torch, self.model
+        device = model.get_input_embeddings().weight.device
+        embeddings, positions, pairs, queries, masks, tasks = [], [], [], [], [], []
+        lengths, offset = [], 0
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            for batch, visual in zip(groups, features, strict=True):
+                ids = batch["input_ids"].to(device)
+                types = batch["mm_token_type_ids"].to(device)
+                grid = batch["video_grid_thw"].to(device)
+                embeds = model.get_input_embeddings()(ids)
+                slots = ids == model.config.backbone_config.video_token_id
+                embeds = embeds.masked_scatter(
+                    slots[..., None].expand_as(embeds), visual.to(embeds),
+                )
+                if model.is_moe:
+                    position, _ = model.backbone.get_rope_index(
+                        ids, types, video_grid_thw=grid,
+                    )
+                else:
+                    position = model.backbone.compute_3d_position_ids(
+                        input_ids=ids, inputs_embeds=embeds, video_grid_thw=grid,
+                        attention_mask=None, past_key_values=None, mm_token_type_ids=types,
+                    )
+                embeddings.append(embeds)
+                positions.append(position)
+                pairs.append(batch["pair_indices"].to(device) + offset)
+                queries.append(batch["query_indices"].to(device) + offset)
+                masks.append(batch["score_mask"].to(device))
+                tasks.append(batch["decision_tasks"].to(device))
+                lengths.append(ids.shape[1])
+                offset += ids.shape[1]
+            boundaries, cumulative = [0], 0
+            for length in lengths:
+                cumulative += length
+                boundaries.append(cumulative)
+            cu = torch.tensor(boundaries, device=device, dtype=torch.int32)
+            sequence = torch.cat([
+                torch.full((1, length), index, device=device, dtype=torch.int32)
+                for index, length in enumerate(lengths)
+            ], dim=1)
+            hidden = model.backbone.language_model(
+                inputs_embeds=torch.cat(embeddings, dim=1),
+                position_ids=torch.cat(positions, dim=-1), use_cache=False,
+                attention_mask={"full_attention": None, "linear_attention": None},
+                cu_seq_lens_q=cu, cu_seq_lens_k=cu,
+                max_length_q=max(lengths), max_length_k=max(lengths), seq_idx=sequence,
+            ).last_hidden_state[0]
+        with torch.autocast(device_type="cuda", enabled=False):
+            mask, decision_tasks = torch.cat(masks), torch.cat(tasks)
+            logits = model.head(hidden[torch.cat(pairs)], hidden[torch.cat(queries)])
+            valid = logits.masked_fill(~mask, -torch.inf)
+            probabilities = torch.where(
+                (decision_tasks == 1)[:, None], valid.softmax(-1), logits.sigmoid(),
+            ) * mask
+        return SimpleNamespace(logits=logits, probabilities=probabilities, score_mask=mask)
+
+    def predict_prepared_batch(self, windows):
+        """Yield indexed outcomes; None requests the original sequential route."""
+        eligible = []
+        started = time.perf_counter()
+        # Decide eligibility before any model call, preserving queue order if
+        # either window needs the original multi-group or prefix route.
+        for index, window in enumerate(windows):
+            if (not self.packed_choice_supported
+                    or window["question_layout"] not in ("repeated", "shared")
+                    or window["question_template"] is None):
+                yield None
+                return
+            try:
+                before = time.perf_counter()
+                template, prepared = window["question_template"], window["prepared"]
+                if template.compiled is None:
+                    template.compiled = CompiledQuestions(
+                        self.processor, self.torch, template.rows, self._prefix_for_policy,
+                    )
+                groups = list(template.compiled.groups(
+                    prepared.record, window["frame_times"], prepared.context,
+                    window["question_layout"],
+                ))
+                if len(groups) != 1 or groups[0][3] is not None:
+                    yield None
+                    return
+                eligible.append((index, window, groups[0], time.perf_counter() - before))
+            except Exception as exc:
+                yield index, exc
+        if len(eligible) < 2:
+            yield None
+            return
+
+        torch = self.torch
+        encoded_windows, features, visual_seconds = [], [], []
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        # Surface an individual encoding failure before attempting another
+        # window so the service can stop immediately on a shared CUDA failure.
+        for item in eligible:
+            index, window, _group, _seconds = item
+            try:
+                before = time.perf_counter()
+                prepared = window["prepared"]
+                with torch.inference_mode():
+                    visual = self.model.encode_video(
+                        prepared.pixel_values, torch.tensor([prepared.record["grid_thw"]]),
+                    )
+                    torch.cuda.synchronize()
+                features.append(visual)
+                visual_seconds.append(time.perf_counter() - before)
+                encoded_windows.append(item)
+            except Exception as exc:
+                yield index, exc
+        if not encoded_windows:
+            return
+        results = {}
+        try:
+            with torch.inference_mode():
+                encoded = time.perf_counter()
+                score_start, score_end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+                score_start.record()
+                output = self._packed_forward([item[2][0] for item in encoded_windows], features)
+                score_end.record()
+                # Preserve the author's formatter, with one complete CPU copy
+                # per output tensor rather than per-question GPU readbacks.
+                cpu = SimpleNamespace(
+                    logits=output.logits.float().cpu(),
+                    probabilities=output.probabilities.float().cpu(),
+                    score_mask=output.score_mask.cpu(),
+                )
+                row_offset = 0
+                for index, window, group, prep_seconds in encoded_windows:
+                    batch, rows, layout, _prefix = group
+                    count = len(rows)
+                    per_window = SimpleNamespace(**{
+                        key: getattr(cpu, key)[row_offset:row_offset + count]
+                        for key in ("logits", "probabilities", "score_mask")
+                    })
+                    try:
+                        raw = self._format_predictions(
+                            per_window, rows, window["prepared"].record, self.decoder,
+                        )
+                        results[index] = raw, {
+                            **window["prepared"].timings,
+                            "question_layout_requested": window["question_layout"],
+                            "question_layout": layout, "question_layout_groups": [layout],
+                            "native_group_count": 1,
+                            "native_input_tokens": batch["input_ids"].shape[1],
+                            "native_group_input_tokens": [batch["input_ids"].shape[1]],
+                            "question_group_prepare_seconds": prep_seconds,
+                            "prefix_cache_groups": [],
+                        }
+                    except Exception as exc:
+                        results[index] = exc
+                    row_offset += count
+                torch.cuda.synchronize()
+            done = time.perf_counter()
+            for position, (index, window, _group, _seconds) in enumerate(encoded_windows):
+                if not isinstance(results[index], Exception):
+                    results[index][1].update({
+                        "gpu_batch_size": len(encoded_windows),
+                        "visual_encode_seconds": visual_seconds[position],
+                        "decision_seconds": done - encoded,
+                        "gpu_pipeline_seconds": done - started,
+                        "model_pipeline_seconds": window["prepared"].timings["preprocess_seconds"] + done - started,
+                        "gpu_scoring_seconds": score_start.elapsed_time(score_end) / 1000,
+                        "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+                        "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+                    })
+        except Exception as exc:
+            for index, _window, _group, _seconds in encoded_windows:
+                results[index] = exc
+        for index, _window, _group, _seconds in encoded_windows:
+            yield index, results[index]
 
     def predict(self, payloads, fps, questions, *, question_layout=None):
         return self.predict_prepared(
