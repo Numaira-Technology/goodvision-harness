@@ -18,7 +18,7 @@ from .diagnostics import note
 from .model_api import ModelAPIError
 from .scene_inspection import _validate_job
 from .scene_model import _json
-from .videojev_contract import MODEL, parse_choices, questions
+from .videojev_contract import MODEL, parse_choices, scene_question_template
 from .vlm_independent_model import IndependentVerdict
 from .vlm_transport import create_vlm_http_client
 
@@ -32,7 +32,7 @@ _NATIVE_SERVICE_ERRORS = NATIVE_SHARED_ERRORS | frozenset((
     "invalid_response", "preprocess_failed", "window_failed", "cuda_out_of_memory",
     "queue_full", "superseded", "expired_before_preprocess", "expired_before_gpu",
     "client_timeout_before_start", "request_deadline", "service_unavailable",
-    "service_shutdown", "cancelled_before_start",
+    "service_shutdown", "cancelled_before_start", "template_missing",
 ))
 _SERVICE_METRICS = frozenset((
     "preprocess_seconds", "visual_encode_seconds", "decision_seconds",
@@ -79,6 +79,16 @@ class VideoJevInspector:
         self._lock = RLock()
         self._loop = None
         self._http = None
+        self._question_template = scene_question_template(
+            labels=config.labels, sensitivities=dict(config.sensitivities),
+            event_policy_profile=config.event_policy,
+            definitions=config.event_definitions,
+        )
+        self._expected = tuple(
+            {"id": row["id"], "options": row["options"]}
+            for row in self._question_template
+        )
+        self._template_registered = False
         self.last_http_timing = {}
         self.last_inspection_timing = {}
         self.last_response_diagnostics = {}
@@ -102,15 +112,6 @@ class VideoJevInspector:
 
     def _payload(self, job):
         _validate_job(job)
-        window = {"frames": [
-            {"media_seconds": frame.timestamp_seconds} for frame in job.frames
-        ]}
-        expected = questions(
-            window, labels=job.request.event_labels,
-            sensitivities=dict(job.event_sensitivities),
-            event_policy_profile=self.config.event_policy,
-            definitions=job.event_definitions,
-        )
         # The native model uses uniform FPS for positional encoding. Actual
         # source timestamps remain separate; irregular input is not retimed.
         delta = self.config.observation_frame_delta_seconds
@@ -125,13 +126,14 @@ class VideoJevInspector:
             "session": job.stream_session_id,
             "fps": fps,
             "frame_times": [frame.timestamp_seconds for frame in job.frames],
-            "questions": expected,
             "question_layout": self.config.videojev_question_layout,
             "images": [
                 base64.b64encode(frame.jpeg_bytes).decode("ascii")
                 for frame in job.frames
             ],
         }
+        if not self._template_registered:
+            payload["question_template"] = list(self._question_template)
         if job.diagnostics is not None:
             encoded = []
             for frame in job.frames:
@@ -142,7 +144,7 @@ class VideoJevInspector:
         body = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
         if len(body) > _MAX_REQUEST_BYTES:
             raise ValueError("VideoJev request exceeds the encoded memory limit")
-        return body, expected
+        return body, self._expected
 
     def inspect(self, job):
         with self._lock:
@@ -177,6 +179,7 @@ class VideoJevInspector:
                         or not isinstance(response.get("timings"), dict)
                     ):
                         raise ValueError("invalid native scoring envelope")
+                    self._template_registered = True
                     for name, value in response["timings"].items():
                         if (name in _SERVICE_METRICS
                                 and type(value) in (int, float)
@@ -263,6 +266,8 @@ class VideoJevInspector:
                                 }
                             if detail.get("error") == "invalid_response":
                                 code = "invalid_response"
+                            if service_error == "template_missing":
+                                self._template_registered = False
                             service = detail.get("timings")
                             if isinstance(service, dict):
                                 for name, value in service.items():

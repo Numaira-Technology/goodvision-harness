@@ -15,10 +15,11 @@ Historical QA, detector controllers, paid-request storage, paired scheduling,
 and lean grounding implementations are not imported.
 
 The code includes a real-file 1–12 stream entrypoint. The initial sixteen real
-parameter/load runs used `fe95fa9` and the repeated question layout. Those runs
-are distinct from the optional shared-layout ablation described below, which has
-not been deployed or measured. The initial single-GPU results do not establish
-usable twelve-stream capacity. Completed Qwen-based 50-video results remain
+parameter/load runs used `fe95fa9` and the repeated question layout. Separate
+seven-run layout and seven-run prefix-cache comparisons have also completed.
+They do not establish usable twelve-stream capacity or justify making the
+experimental prefix cache the default. The fixed-template optimization below
+has not been deployed or measured. Completed Qwen-based 50-video results remain
 separate and unchanged.
 No software tests, imports for validation, builds, or health probes were run.
 
@@ -123,9 +124,10 @@ The real-file runner accepts `videojev_question_layout` in its observation JSON
 and passes it through the native event worker as `question_layout`; the default
 is `repeated`. Its run and stream manifests retain that selected configuration.
 
-Both layouts first use the pinned HF revision's original `prepare_query_groups`
-to determine group boundaries. Repeated mode uses each original native batch and
-the original rows directly. Shared mode examines the exact prefix before the last
+The original repeated-layout group boundaries are retained. The fixed-template
+path computes them from compiled message lengths, including this window's actual
+source-time tokens; the legacy full-question path still calls the pinned HF
+revision's `prepare_query_groups`. Shared mode examines the exact prefix before the last
 newline followed by `For ` in every query in that group. Only when all prefixes
 are present, nonempty, and identical does it keep that complete prefix in the
 first query and keep the remaining query suffixes in their original order.
@@ -139,7 +141,43 @@ three-value meanings remain available. The original rows still drive the native
 result formatter and unchanged choice parser. This is a prompt-layout ablation:
 removing repeated token occurrences changes positions and the context seen by
 later questions, so outputs are not claimed to be equivalent. It is not a
-multi-video batch, a KV-cache implementation, or a measured speed improvement.
+multi-video batch. Its speed and quality must be distinguished from the separate
+prefix-cache layout below.
+
+### Fixed streaming questions
+
+The native event client now prepares its fixed rules, scene questions and options
+once when its inspector is created. On the first real request it sends a
+`question_template` through the existing `/predict` endpoint. Each row has the
+existing choice ID, task, options and two `query_parts` surrounding the actual
+source-time list. Later windows on that session send pictures, `frame_times` and
+the existing transport fields, not the rules again. No template UUID, content
+fingerprint or extra registration request is introduced. Explicit person/PPE
+probe callers may still supply full `questions` using the legacy interface.
+
+The service binds that template to the existing session. Windows already queued
+hold the template they arrived with, so a later configuration cannot change their
+questions. Identical templates from different streams share compiled text. The
+service retains at most 64 session bindings; a missing binding affects only that
+window. The client includes its template on the next new window rather than
+resending a failed window or restarting the service.
+
+`tools/videojev_probe/question_templates.py` compiles the fixed native chat text,
+options and repeated/shared/prefix variants. A small eight-entry cache handles
+native frame-count/FPS/spatial-grid shapes. Only the short source-time span is
+tokenized per window; adjacent pre-tokenizer units stay with that span to avoid
+cutting through a BPE unit. Original greedy group boundaries are derived from the
+current lengths rather than repeatedly formatting and tokenizing every candidate
+question group. Final tensors and option/decision indices still describe this
+window's actual sequence. The dynamic visual sequence and positions are not
+reused across windows.
+
+This replaces two costs found in the completed cache comparison: the client
+rebuilt all fixed questions on every request, and the runtime first built native
+groups only to rebuild them in another layout. It does not change event criteria,
+the three choices, model weights, the trained head, or the formatter. Source
+review is not an executed token/output comparison; no new speed or quality result
+is claimed for this optimization.
 
 ### Experimental static-policy prefix cache
 
@@ -155,12 +193,22 @@ Unsupported prefix/group shapes use the original repeated layout and report it.
 
 Both experimental modes construct the same full token sequence. `prefix` scores
 that sequence without state reuse. `prefix-cache` prefills the text-only prefix
-once, retaining one base cache for the loaded model and exact prefix token IDs
-and positions. Every window deep-copies the whole Transformers hybrid cache,
+once. The immutable policy object owns its token IDs, GPU token IDs, embeddings
+and pure-text base state. A cache hit reads that object directly: it does not
+copy prefix IDs or positions back to the CPU, compare their contents or retokenize
+the policy. Every window deep-copies the whole Transformers hybrid cache,
 including full-attention KV, convolution and DeltaNet recurrent state. The
 video-updated copy is discarded; it never becomes the base for another window.
-Changing the prefix replaces the base. No hash, UUID, old picture or past event
-answer is used as a cache key.
+Changing the fixed configuration creates a corresponding policy object. No hash,
+UUID, old picture or past event answer is used as a cache key.
+
+The previous implementation accepted complete questions on each window and
+reconstructed a key from GPU prefix tokens and positions. That guarded a generic
+changing-query interface at the wrong frequency for a fixed streaming policy and
+forced device-to-host synchronization on cache hits. Binding the state to the
+configuration removes that comparison rather than replacing it with a per-window
+CPU fingerprint. The legacy full-question path still extracts its policy from the
+supplied queries; it is not the fixed-template fast path.
 
 The opt-in scorer calls the existing language backbone, injects this window's
 fresh visual features and recomputes positions from its complete new sequence.
@@ -179,8 +227,9 @@ change floating-point rounding. Compare native shared, prefix without cache and
 prefix with cache on quality, raw scores, wall-time and stream coverage before
 selecting a deployment setting. No performance result is implied by this code.
 
-The runtime calls the pinned model module's original `prepare_query_groups` and
-`format_predictions(output, rows, record, decoder)` functions. Native
+The runtime retains the pinned model module's original `prepare_query_groups`
+for legacy full-question requests and its
+`format_predictions(output, rows, record, decoder)` for both interfaces. Native
 `repeated`/`shared` use the same model-forward call as `predict_features`;
 the two prefix modes use the explicit language-backbone/head path above.
 No downloaded model source or weights are edited. Default-mode equivalence is a
@@ -213,8 +262,9 @@ service. Scores are not claimed to be calibrated confidence.
 Additional service timings record `native_group_count`, total
 `native_input_tokens`, and `native_group_input_tokens`. Token counts include the
 native visual slots and text in every actual group; they are not generated-token
-counts. `question_group_prepare_seconds` measures native text/group construction,
-including the original grouping and any shared-layout reconstruction.
+counts. `question_group_prepare_seconds` measures text/group preparation. For a
+template, this includes its initial compilation when needed and the current
+dynamic source-time fill; legacy requests include grouping and reconstruction.
 `gpu_scoring_seconds` sums CUDA-event intervals around the group model-forward
 calls. It excludes visual encoding, text/group preparation, and native CPU result
 formatting, but is not a sum of profiled kernel times. Existing `decision_seconds`

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from goodvision_harness.videojev_contract import QuestionTemplate
 from tools.videojev_probe.contract import CONTEXT, MODEL, REVISION, parse_choices
 
 
@@ -36,6 +37,7 @@ class _Work:
     body: dict
     arrival: float
     question_layout: str = "repeated"
+    question_template: QuestionTemplate | None = None
     future: Future = field(default_factory=Future)
     state: str = "pending"
     prepared: object = None
@@ -64,6 +66,49 @@ def _json_safe(value):
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
     return repr(value)
+
+
+def _question_rows(questions, *, template=False):
+    if not isinstance(questions, list) or not 1 <= len(questions) <= 64:
+        raise ValueError("invalid question group size")
+    ids, rows = [], []
+    for question in questions:
+        if (
+            not isinstance(question, dict)
+            or not isinstance(question.get("id"), str)
+            or not 0 < len(question["id"]) <= 512
+            or question.get("task") != "choice"
+            or not isinstance(question.get("options"), list)
+            or len(question["options"]) != 3
+            or any(
+                not isinstance(option, str) or not 0 < len(option) <= 4096
+                for option in question["options"]
+            )
+        ):
+            raise ValueError("invalid three-choice question")
+        row = {
+            "id": question["id"], "task": question["task"],
+            "options": list(question["options"]),
+        }
+        if template:
+            parts = question.get("query_parts")
+            if (
+                not isinstance(parts, list) or len(parts) != 2
+                or any(not isinstance(part, str) for part in parts)
+                or not 0 < sum(len(part) for part in parts) <= 65536
+            ):
+                raise ValueError("invalid source-time question template")
+            row["query_parts"] = tuple(parts)
+        else:
+            query = question.get("query")
+            if not isinstance(query, str) or not 0 < len(query) <= 65536:
+                raise ValueError("invalid three-choice question")
+            row["query"] = query
+        ids.append(question["id"])
+        rows.append(row)
+    if len(set(ids)) != len(ids):
+        raise ValueError("duplicate question IDs")
+    return tuple(rows) if template else rows
 
 
 def _request(body):
@@ -97,29 +142,13 @@ def _request(body):
         or any(left >= right for left, right in zip(times, times[1:]))
     ):
         raise ValueError("frame_times must match images and strictly increase")
-    questions = body.get("questions")
-    if not isinstance(questions, list) or not 1 <= len(questions) <= 64:
-        raise ValueError("invalid question group size")
-    ids = []
-    for question in questions:
-        if (
-            not isinstance(question, dict)
-            or not isinstance(question.get("id"), str)
-            or not 0 < len(question["id"]) <= 512
-            or question.get("task") != "choice"
-            or not isinstance(question.get("query"), str)
-            or not 0 < len(question["query"]) <= 65536
-            or not isinstance(question.get("options"), list)
-            or len(question["options"]) != 3
-            or any(
-                not isinstance(option, str) or not 0 < len(option) <= 4096
-                for option in question["options"]
-            )
-        ):
-            raise ValueError("invalid three-choice question")
-        ids.append(question["id"])
-    if len(set(ids)) != len(ids):
-        raise ValueError("duplicate question IDs")
+    if "questions" in body and "question_template" in body:
+        raise ValueError("provide full questions or a fixed template, not both")
+    questions = _question_rows(body["questions"]) if "questions" in body else None
+    template = (
+        _question_rows(body["question_template"], template=True)
+        if "question_template" in body else None
+    )
     question_layout = body.get("question_layout")
     if question_layout is not None and question_layout not in ("repeated", "shared", "prefix", "prefix-cache"):
         raise ValueError("invalid question_layout")
@@ -130,15 +159,8 @@ def _request(body):
         "frame_times": list(times),
         "images": list(images),
         "question_layout": question_layout,
-        "questions": [
-            {
-                "id": question["id"],
-                "task": question["task"],
-                "query": question["query"],
-                "options": list(question["options"]),
-            }
-            for question in questions
-        ],
+        "questions": questions,
+        "question_template": template,
     }
 
 
@@ -218,6 +240,8 @@ class Scorer:
         self._active_sessions = {}
         self._jobs = {}
         self._recent = OrderedDict()
+        self._question_templates = OrderedDict()
+        self._last_template = None
         self._gpu_work = None
         self._loaded = False
         self._accepting = True
@@ -299,9 +323,29 @@ class Scorer:
                 if self._failure is not None:
                     raise WindowError(self._failure.code, str(self._failure))
                 raise WindowError("service_unavailable")
+            rows = body.pop("question_template")
+            question_template = None
+            if body["questions"] is None:
+                session = body["session"]
+                question_template = self._question_templates.get(session)
+                if rows is not None:
+                    if question_template is None or rows != question_template.rows:
+                        if self._last_template is not None and rows == self._last_template.rows:
+                            question_template = self._last_template
+                        else:
+                            question_template = QuestionTemplate(rows)
+                    self._question_templates[session] = question_template
+                    self._last_template = question_template
+                elif question_template is None:
+                    raise WindowError("template_missing")
+                self._question_templates.move_to_end(session)
+                while len(self._question_templates) > 64:
+                    self._question_templates.popitem(last=False)
+                body["questions"] = question_template.rows
             work = _Work(
                 body, time.monotonic(),
                 question_layout=body["question_layout"] or self.question_layout,
+                question_template=question_template,
             )
             if self.queue_policy == "fifo":
                 if self._pending_count() >= self.queue_capacity:
@@ -453,6 +497,8 @@ class Scorer:
                     raw, native_timings = self.runtime.predict_prepared(
                         work.prepared, work.body["questions"],
                         question_layout=work.question_layout,
+                        question_template=work.question_template,
+                        frame_times=work.body["frame_times"],
                     )
                     gpu_end = time.monotonic()
                     timings.update(native_timings)
@@ -683,7 +729,7 @@ def handler(scorer):
                     "queue_full", "service_unavailable", "service_shutdown",
                     "cuda_shared_failure", "cuda_recovery_failed", "result_log_failure",
                     "gpu_worker_stopped", "cpu_worker_stopped",
-                ) else 409 if exc.code == "superseded" else 504 if (
+                ) else 409 if exc.code in ("superseded", "template_missing") else 504 if (
                     exc.code.startswith("expired_") or exc.code == "client_timeout_before_start"
                 ) else 500
                 value = {"request_id": request_id, "error": exc.code, "detail": str(exc)[:1200]}

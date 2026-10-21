@@ -3,6 +3,7 @@
 import json
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from .event_sensitivity import EVENT_SENSITIVITY_DEFAULTS
 from .vlm_event_policy import event_policy_text
@@ -20,6 +21,14 @@ OPTIONS = [
 VALUES = (True, False, None)
 CONTEXT = 32768
 MAX_PEOPLE = 4
+
+
+@dataclass(eq=False)
+class QuestionTemplate:
+    """Fixed session questions with runtime-owned compiled text state."""
+
+    rows: tuple
+    compiled: object = None
 
 
 def questions(
@@ -123,6 +132,35 @@ def questions(
         "baseline" if fixed else ppe_variant, ppe_option_order,
         person_aliases=aliases,
     )
+
+
+def scene_question_template(
+    *,
+    labels=LABELS,
+    sensitivities=None,
+    event_policy_profile="research-v1",
+    definitions=(),
+):
+    """Prepare fixed scene choices with one dynamic source-time slot."""
+    rows = questions(
+        {"frames": []}, labels=labels, sensitivities=sensitivities,
+        event_policy_profile=event_policy_profile, definitions=definitions,
+    )
+    template = []
+    marker = "\nEvidence metadata: "
+    slot = '"source_times": []'
+    for row in rows:
+        policy, separator, evidence = row["query"].partition(marker)
+        if not separator or evidence.count(slot) != 1:
+            raise ValueError("scene question requires one source-time slot")
+        before, _, after = evidence.partition(slot)
+        template.append({
+            "id": row["id"],
+            "task": row["task"],
+            "query_parts": (policy + separator + before + '"source_times": ', after),
+            "options": list(row["options"]),
+        })
+    return tuple(template)
 
 
 def parse_choices(raw, expected):

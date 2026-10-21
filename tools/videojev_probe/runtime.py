@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 from .contract import CONTEXT, MODEL, REVISION
+from .question_templates import CompiledQuestions, PolicyPrefix
 
 QUESTION_LAYOUTS = ("repeated", "shared", "prefix", "prefix-cache")
 
@@ -90,8 +91,10 @@ class VideoJevRuntime:
         self._prepare_query_groups = native["prepare_query_groups"]
         self._format_predictions = native["format_predictions"]
         self.question_layout = question_layout
-        self._prefix_cache_key = None
-        self._prefix_cache = None
+        self._policy_prefix = None
+        self.decoder = dict(self.model.config.decoder)
+        if not 0 < self.decoder["threshold"] < 1:
+            raise ValueError("threshold must be between 0 and 1")
         torch.cuda.synchronize()
         props = torch.cuda.get_device_properties(0)
         self.metadata = {
@@ -191,34 +194,41 @@ class VideoJevRuntime:
             "processor_max_pixels": low,
         })
 
+    def _prefix_for_policy(self, policy):
+        # Called when a fixed template is first bound, not on every window.
+        if self._policy_prefix is None or self._policy_prefix.text != policy:
+            text = self.processor.apply_chat_template(
+                [{"role": "user", "content": [{"type": "text", "text": policy}]}],
+                tokenize=False, add_generation_prompt=False,
+            )
+            tokens = tuple(self.processor.tokenizer.encode(text, add_special_tokens=False))
+            self._policy_prefix = PolicyPrefix(
+                policy, self.torch.tensor([tokens], dtype=self.torch.long), tokens,
+            )
+        return self._policy_prefix
+
     def _layout_group(self, prepared, batch, rows, question_layout):
         if question_layout == "repeated":
-            return batch, "repeated", 0
+            return batch, "repeated", None
         shared, changed = _shared_questions(rows)
         if not changed:
-            return batch, "repeated", 0
-        prefix_ids = None
+            return batch, "repeated", None
+        prefix = None
         if question_layout in ("prefix", "prefix-cache"):
             marker = "\nEvidence metadata: "
             policies = [row["query"].partition(marker) for row in rows]
             policy = policies[0][0]
             if (not policy or any(not separator or head != policy
                                   for head, separator, _ in policies)):
-                return batch, "repeated", 0
+                return batch, "repeated", None
             # A complete text-only message precedes the original video message.
             # Dynamic source times and person context stay after the video.
-            text = self.processor.apply_chat_template(
-                [{"role": "user", "content": [{"type": "text", "text": policy}]}],
-                tokenize=False, add_generation_prompt=False,
-            )
-            prefix_ids = self.torch.tensor([
-                self.processor.tokenizer.encode(text, add_special_tokens=False)
-            ], dtype=batch["input_ids"].dtype)
+            prefix = self._prefix_for_policy(policy)
             shared = [
                 {**shared[0], "query": marker + policies[0][2]},
                 *shared[1:],
             ]
-        prefix_length = 0 if prefix_ids is None else prefix_ids.shape[1]
+        prefix_length = 0 if prefix is None else prefix.length
         # Original native groups remain the boundary. Each new group retains
         # its own full first-row prefix, even when the original window split.
         groups = iter(self._prepare_query_groups(
@@ -227,22 +237,22 @@ class VideoJevRuntime:
         try:
             replacement, replacement_rows = next(groups)
             if next(groups, None) is not None or len(replacement_rows) != len(rows):
-                return batch, "repeated", 0
+                return batch, "repeated", None
         except (StopIteration, ValueError):
-            return batch, "repeated", 0
-        if prefix_ids is not None:
+            return batch, "repeated", None
+        if prefix is not None:
             replacement = {
                 **replacement,
-                "input_ids": self.torch.cat([prefix_ids, replacement["input_ids"]], dim=1),
+                "input_ids": self.torch.cat([prefix.ids, replacement["input_ids"]], dim=1),
                 "mm_token_type_ids": self.torch.cat([
-                    self.torch.zeros_like(prefix_ids), replacement["mm_token_type_ids"],
+                    self.torch.zeros_like(prefix.ids), replacement["mm_token_type_ids"],
                 ], dim=1),
                 "pair_indices": replacement["pair_indices"] + prefix_length,
                 "query_indices": replacement["query_indices"] + prefix_length,
             }
-        return replacement, question_layout, prefix_length
+        return replacement, question_layout, prefix
 
-    def _prefix_forward(self, batch, features, prefix_length, *, use_cache):
+    def _prefix_forward(self, batch, features, prefix, *, use_cache):
         """Score a text-first layout, optionally reusing only its pure-text state.
 
         The pinned native forward disables caching. This opt-in path preserves
@@ -252,7 +262,12 @@ class VideoJevRuntime:
         """
         torch, model = self.torch, self.model
         device = model.get_input_embeddings().weight.device
-        ids = batch["input_ids"].to(device)
+        prefix_length = prefix.length
+        if prefix.device_ids is None:
+            prefix.device_ids = prefix.ids.to(device)
+        ids = torch.cat([
+            prefix.device_ids, batch["input_ids"][:, prefix_length:].to(device),
+        ], dim=1)
         types = batch["mm_token_type_ids"].to(device)
         grid = batch["video_grid_thw"].to(device)
         pairs = batch["pair_indices"].to(device)
@@ -263,10 +278,12 @@ class VideoJevRuntime:
                  "prefix_cache_hit": False,
                  "prefix_prefill_seconds": 0.0, "prefix_clone_seconds": 0.0}
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            embeds = model.get_input_embeddings()(ids)
+            if prefix.embeddings is None:
+                prefix.embeddings = model.get_input_embeddings()(prefix.device_ids)
+            embeds = torch.cat([
+                prefix.embeddings, model.get_input_embeddings()(ids[:, prefix_length:]),
+            ], dim=1)
             slots = ids == model.config.backbone_config.video_token_id
-            if int(slots.sum()) != len(features) or slots[:, :prefix_length].any():
-                raise ValueError("visual features must belong to this window's suffix")
             embeds = embeds.masked_scatter(
                 slots[..., None].expand_as(embeds), features.to(embeds),
             )
@@ -281,15 +298,10 @@ class VideoJevRuntime:
                 )
             language = model.backbone.language_model
             if use_cache:
-                # One immutable base state per loaded model. Deep-copy attention
-                # KV, convolution state and DeltaNet recurrent state per window.
-                # A suffix-updated state is never retained for another video.
-                key = (tuple(ids[0, :prefix_length].tolist()),
-                       tuple(positions[..., :prefix_length].flatten().tolist()))
-                stats["prefix_cache_hit"] = key == self._prefix_cache_key
+                # The fixed configuration owns its pure-text state. There is
+                # no device-to-host token/position comparison on a cache hit.
+                stats["prefix_cache_hit"] = prefix.state is not None
                 if not stats["prefix_cache_hit"]:
-                    self._prefix_cache = None
-                    self._prefix_cache_key = None
                     before = time.perf_counter()
                     base = language(
                         inputs_embeds=embeds[:, :prefix_length],
@@ -298,9 +310,10 @@ class VideoJevRuntime:
                     ).past_key_values
                     torch.cuda.synchronize()
                     stats["prefix_prefill_seconds"] = time.perf_counter() - before
-                    self._prefix_cache, self._prefix_cache_key = base, key
+                    prefix.state = base
                 before = time.perf_counter()
-                working = deepcopy(self._prefix_cache)
+                # Copy all hybrid state; never retain a previous video suffix.
+                working = deepcopy(prefix.state)
                 torch.cuda.synchronize()
                 stats["prefix_clone_seconds"] = time.perf_counter() - before
                 hidden = language(
@@ -327,7 +340,8 @@ class VideoJevRuntime:
         return SimpleNamespace(logits=logits, probabilities=probabilities,
                                score_mask=mask), stats
 
-    def predict_prepared(self, prepared, questions, *, question_layout=None):
+    def predict_prepared(self, prepared, questions, *, question_layout=None,
+                         question_template=None, frame_times=None):
         """Encode and score on the service's single GPU worker thread."""
         if not isinstance(prepared, _PreparedVideo):
             raise ValueError("provide the result of prepare")
@@ -344,33 +358,44 @@ class VideoJevRuntime:
             )
             torch.cuda.synchronize()
             encoded = time.perf_counter()
-            decoder = dict(self.model.config.decoder)
-            if not 0 < decoder["threshold"] < 1:
-                raise ValueError("threshold must be between 0 and 1")
             raw, layouts, tokens, scoring_events, prefix_stats = [], [], [], [], []
-            group_prepare_seconds = 0.0
-            groups = iter(self._prepare_query_groups(
-                self.processor, prepared.record, questions, prepared.context,
-            ))
+            prepare_started = time.perf_counter()
+            if question_template is not None:
+                if question_template.compiled is None:
+                    question_template.compiled = CompiledQuestions(
+                        self.processor, torch, question_template.rows, self._prefix_for_policy,
+                    )
+                groups = iter(question_template.compiled.groups(
+                    prepared.record, frame_times, prepared.context, layout,
+                ))
+            else:
+                groups = (
+                    (*self._layout_group(prepared, batch, rows, layout), rows)
+                    for batch, rows in self._prepare_query_groups(
+                        self.processor, prepared.record, questions, prepared.context,
+                    )
+                )
+            group_prepare_seconds = time.perf_counter() - prepare_started
             while True:
                 group_started = time.perf_counter()
                 try:
-                    batch, rows = next(groups)
+                    group = next(groups)
                 except StopIteration:
                     group_prepare_seconds += time.perf_counter() - group_started
                     break
-                batch, actual_layout, prefix_length = self._layout_group(
-                    prepared, batch, rows, layout,
-                )
+                if question_template is None:
+                    batch, actual_layout, prefix, rows = group
+                else:
+                    batch, rows, actual_layout, prefix = group
                 group_prepare_seconds += time.perf_counter() - group_started
                 layouts.append(actual_layout)
                 tokens.append(int(batch["input_ids"].shape[1]))
                 score_start = torch.cuda.Event(enable_timing=True)
                 score_end = torch.cuda.Event(enable_timing=True)
                 score_start.record()
-                if prefix_length:
+                if prefix is not None:
                     output, cache_stats = self._prefix_forward(
-                        batch, features, prefix_length,
+                        batch, features, prefix,
                         use_cache=actual_layout == "prefix-cache",
                     )
                     prefix_stats.append(cache_stats)
@@ -378,7 +403,7 @@ class VideoJevRuntime:
                     output = self.model(**batch, visual_features=features)
                 score_end.record()
                 scoring_events.append((score_start, score_end))
-                raw.extend(self._format_predictions(output, rows, prepared.record, decoder))
+                raw.extend(self._format_predictions(output, rows, prepared.record, self.decoder))
             torch.cuda.synchronize()
             done = time.perf_counter()
         return raw, {
