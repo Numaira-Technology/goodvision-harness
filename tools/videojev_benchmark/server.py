@@ -35,6 +35,7 @@ class WindowError(Exception):
 class _Work:
     body: dict
     arrival: float
+    question_layout: str = "repeated"
     future: Future = field(default_factory=Future)
     state: str = "pending"
     prepared: object = None
@@ -119,12 +120,16 @@ def _request(body):
         ids.append(question["id"])
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate question IDs")
+    question_layout = body.get("question_layout")
+    if question_layout is not None and question_layout not in ("repeated", "shared"):
+        raise ValueError("question_layout must be repeated or shared")
     return {
         "request_id": body["request_id"],
         "session": body["session"],
         "fps": fps,
         "frame_times": list(times),
         "images": list(images),
+        "question_layout": question_layout,
         "questions": [
             {
                 "id": question["id"],
@@ -178,6 +183,7 @@ class Scorer:
         cpu_workers=1,
         context=CONTEXT,
         max_pixels=409600,
+        question_layout="repeated",
     ):
         if (
             not _number(request_timeout)
@@ -185,6 +191,7 @@ class Scorer:
             or not _number(queue_age)
             or queue_age <= 0
             or queue_policy not in ("fifo", "latest-per-stream")
+            or question_layout not in ("repeated", "shared")
             or any(
                 type(value) is not int or value <= 0
                 for value in (
@@ -202,6 +209,7 @@ class Scorer:
         self.queue_policy, self.queue_capacity = queue_policy, queue_capacity
         self.ready_capacity = ready_capacity
         self.context, self.max_pixels = context, max_pixels
+        self.question_layout = question_layout
         self._condition = threading.Condition()
         self._log_lock = threading.Lock()
         self._pending = deque()
@@ -253,6 +261,7 @@ class Scorer:
                 "queue_policy": self.queue_policy,
                 "context": self.context,
                 "max_pixels": self.max_pixels,
+                "question_layout_default": self.question_layout,
                 "model": MODEL,
                 "revision": REVISION,
                 "runtime": {} if self.runtime is None else self.runtime.metadata,
@@ -290,7 +299,10 @@ class Scorer:
                 if self._failure is not None:
                     raise WindowError(self._failure.code, str(self._failure))
                 raise WindowError("service_unavailable")
-            work = _Work(body, time.monotonic())
+            work = _Work(
+                body, time.monotonic(),
+                question_layout=body["question_layout"] or self.question_layout,
+            )
             if self.queue_policy == "fifo":
                 if self._pending_count() >= self.queue_capacity:
                     rejected = True
@@ -439,7 +451,8 @@ class Scorer:
                 timings = self._timings(work)
                 try:
                     raw, native_timings = self.runtime.predict_prepared(
-                        work.prepared, work.body["questions"]
+                        work.prepared, work.body["questions"],
+                        question_layout=work.question_layout,
                     )
                     gpu_end = time.monotonic()
                     timings.update(native_timings)
@@ -523,6 +536,7 @@ class Scorer:
             "fps": work.body["fps"],
             "frame_times": work.body["frame_times"],
             "question_count": len(work.body["questions"]),
+            "question_layout_requested": work.question_layout,
             "status": "completed" if error is None else error.code,
             "client_deadline_elapsed": work.client_timed_out,
             "timings": value["timings"] if value is not None else error.timings,
@@ -705,13 +719,19 @@ def main():
     parser.add_argument("--cpu-workers", type=int, default=1)
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
+    parser.add_argument(
+        "--question-layout", choices=("repeated", "shared"), default="repeated",
+        help="Default native question layout; a request may explicitly override it",
+    )
     args = parser.parse_args()
     from tools.videojev_probe.runtime import VideoJevRuntime
 
     scorer = Scorer(
         None,
         args.result_log,
-        runtime_factory=lambda: VideoJevRuntime(args.cache_dir),
+        runtime_factory=lambda: VideoJevRuntime(
+            args.cache_dir, question_layout=args.question_layout,
+        ),
         request_timeout=args.request_timeout,
         queue_age=args.queue_age,
         queue_policy=args.queue_policy,
@@ -720,6 +740,7 @@ def main():
         cpu_workers=args.cpu_workers,
         context=args.context,
         max_pixels=args.max_pixels,
+        question_layout=args.question_layout,
     )
     server = None
     try:

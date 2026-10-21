@@ -3,6 +3,7 @@
 import importlib.metadata
 import io
 import math
+import sys
 import time
 from dataclasses import dataclass
 
@@ -39,11 +40,30 @@ class _PreparedVideo:
     timings: dict
 
 
+def _shared_questions(rows):
+    """Keep an identical query prefix once within one original native group."""
+    if len(rows) < 2:
+        return rows, False
+    parts = [row["query"].rpartition("\nFor ") for row in rows]
+    prefix = parts[0][0]
+    if not prefix or any(not marker or head != prefix for head, marker, _ in parts):
+        return rows, False
+    return [
+        rows[0],
+        *[
+            {**row, "query": marker + question}
+            for row, (_, marker, question) in zip(rows[1:], parts[1:], strict=True)
+        ],
+    ], True
+
+
 class VideoJevRuntime:
-    def __init__(self, cache_dir):
+    def __init__(self, cache_dir, *, question_layout="repeated"):
         import torch
         from transformers import AutoModel, AutoProcessor
 
+        if question_layout not in ("repeated", "shared"):
+            raise ValueError("question_layout must be repeated or shared")
         if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
             raise RuntimeError("requires a CUDA GPU supporting BF16; no CPU fallback")
         if importlib.metadata.version("transformers") != "5.14.1":
@@ -62,6 +82,10 @@ class VideoJevRuntime:
             device_map={"": "cuda:0"}, attn_implementation="flash_attention_2",
         )
         self.model.prepare_for_inference()
+        native = vars(sys.modules[type(self.model).__module__])
+        self._prepare_query_groups = native["prepare_query_groups"]
+        self._format_predictions = native["format_predictions"]
+        self.question_layout = question_layout
         torch.cuda.synchronize()
         props = torch.cuda.get_device_properties(0)
         self.metadata = {
@@ -77,6 +101,7 @@ class VideoJevRuntime:
             },
             "cuda_runtime": torch.version.cuda,
             "attention": "flash_attention_2", "context": CONTEXT,
+            "question_layout_default": question_layout,
         }
 
     def prepare(self, payloads, fps, *, context=CONTEXT, max_pixels=409600):
@@ -160,10 +185,32 @@ class VideoJevRuntime:
             "processor_max_pixels": low,
         })
 
-    def predict_prepared(self, prepared, questions):
+    def _layout_group(self, prepared, batch, rows, question_layout):
+        if question_layout != "shared":
+            return batch, "repeated"
+        shared, changed = _shared_questions(rows)
+        if not changed:
+            return batch, "repeated"
+        # Original native groups remain the boundary. Each new group retains
+        # its own full first-row prefix, even when the original window split.
+        groups = iter(self._prepare_query_groups(
+            self.processor, prepared.record, shared, prepared.context,
+        ))
+        try:
+            replacement, replacement_rows = next(groups)
+            if next(groups, None) is not None or len(replacement_rows) != len(rows):
+                return batch, "repeated"
+        except (StopIteration, ValueError):
+            return batch, "repeated"
+        return replacement, "shared"
+
+    def predict_prepared(self, prepared, questions, *, question_layout=None):
         """Encode and score on the service's single GPU worker thread."""
         if not isinstance(prepared, _PreparedVideo):
             raise ValueError("provide the result of prepare")
+        layout = self.question_layout if question_layout is None else question_layout
+        if layout not in ("repeated", "shared"):
+            raise ValueError("question_layout must be repeated or shared")
         torch = self.torch
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
@@ -174,10 +221,32 @@ class VideoJevRuntime:
             )
             torch.cuda.synchronize()
             encoded = time.perf_counter()
-            raw = self.model.predict_features(
-                self.processor, features, prepared.record, questions,
-                context=prepared.context,
-            )
+            decoder = dict(self.model.config.decoder)
+            if not 0 < decoder["threshold"] < 1:
+                raise ValueError("threshold must be between 0 and 1")
+            raw, layouts, tokens, scoring_events = [], [], [], []
+            group_prepare_seconds = 0.0
+            groups = iter(self._prepare_query_groups(
+                self.processor, prepared.record, questions, prepared.context,
+            ))
+            while True:
+                group_started = time.perf_counter()
+                try:
+                    batch, rows = next(groups)
+                except StopIteration:
+                    group_prepare_seconds += time.perf_counter() - group_started
+                    break
+                batch, actual_layout = self._layout_group(prepared, batch, rows, layout)
+                group_prepare_seconds += time.perf_counter() - group_started
+                layouts.append(actual_layout)
+                tokens.append(int(batch["input_ids"].shape[1]))
+                score_start = torch.cuda.Event(enable_timing=True)
+                score_end = torch.cuda.Event(enable_timing=True)
+                score_start.record()
+                output = self.model(**batch, visual_features=features)
+                score_end.record()
+                scoring_events.append((score_start, score_end))
+                raw.extend(self._format_predictions(output, rows, prepared.record, decoder))
             torch.cuda.synchronize()
             done = time.perf_counter()
         return raw, {
@@ -186,9 +255,21 @@ class VideoJevRuntime:
             "decision_seconds": done - encoded,
             "gpu_pipeline_seconds": done - start,
             "model_pipeline_seconds": prepared.timings["preprocess_seconds"] + done - start,
+            "question_layout_requested": layout,
+            "question_layout": layouts[0] if len(set(layouts)) == 1 else "mixed",
+            "question_layout_groups": layouts,
+            "native_group_count": len(layouts),
+            "native_input_tokens": sum(tokens),
+            "native_group_input_tokens": tokens,
+            "question_group_prepare_seconds": group_prepare_seconds,
+            "gpu_scoring_seconds": sum(
+                first.elapsed_time(last) / 1000 for first, last in scoring_events
+            ),
             "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
             "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
         }
 
-    def predict(self, payloads, fps, questions):
-        return self.predict_prepared(self.prepare(payloads, fps), questions)
+    def predict(self, payloads, fps, questions, *, question_layout=None):
+        return self.predict_prepared(
+            self.prepare(payloads, fps), questions, question_layout=question_layout,
+        )

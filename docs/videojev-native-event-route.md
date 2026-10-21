@@ -14,9 +14,12 @@ optional report callbacks, and event-policy interfaces needed by this route.
 Historical QA, detector controllers, paid-request storage, paired scheduling,
 and lean grounding implementations are not imported.
 
-The code includes a real-file 1–12 stream entrypoint. It has not been deployed or
-measured in this task. It does not demonstrate that one GPU can sustain twelve
-streams. Completed Qwen-based 50-video results remain separate and unchanged.
+The code includes a real-file 1–12 stream entrypoint. The initial sixteen real
+parameter/load runs used `fe95fa9` and the repeated question layout. Those runs
+are distinct from the optional shared-layout ablation described below, which has
+not been deployed or measured. The initial single-GPU results do not establish
+usable twelve-stream capacity. Completed Qwen-based 50-video results remain
+separate and unchanged.
 No software tests, imports for validation, builds, or health probes were run.
 
 ## What changes in the running path
@@ -109,6 +112,43 @@ settings, not claimed latency targets. Set `--queue-policy latest-per-stream`
 explicitly to evaluate fair latest-window processing. More than one CPU worker
 is opt-in; shared processor concurrency has not been measured.
 
+### Optional question-layout ablation
+
+`--question-layout repeated|shared` selects the service default; `repeated` remains
+the default. A `/predict` request may specify `question_layout` with either value.
+Omitting it uses the fixed service default. The selected value belongs to that
+request and does not mutate the service or restart its loaded model. Ready output
+records `question_layout_default`.
+The real-file runner accepts `videojev_question_layout` in its observation JSON
+and passes it through the native event worker as `question_layout`; the default
+is `repeated`. Its run and stream manifests retain that selected configuration.
+
+Both layouts first use the pinned HF revision's original `prepare_query_groups`
+to determine group boundaries. Repeated mode uses each original native batch and
+the original rows directly. Shared mode examines the exact prefix before the last
+newline followed by `For ` in every query in that group. Only when all prefixes
+are present, nonempty, and identical does it keep that complete prefix in the
+first query and keep the remaining query suffixes in their original order.
+Otherwise the entire group uses the repeated layout. Single-question groups also
+remain repeated. Each original group retains its own full prefix; reducing text
+does not merge groups across the original context boundary. If rebuilding a shared
+group cannot retain that boundary, it falls back to the original repeated batch.
+
+Event definitions, source times, all requested events, question IDs, options, and
+three-value meanings remain available. The original rows still drive the native
+result formatter and unchanged choice parser. This is a prompt-layout ablation:
+removing repeated token occurrences changes positions and the context seen by
+later questions, so outputs are not claimed to be equivalent. It is not a
+multi-video batch, a KV-cache implementation, or a measured speed improvement.
+
+The runtime calls the pinned model module's original `prepare_query_groups` and
+`format_predictions(output, rows, record, decoder)` functions, with the same
+model-forward call used by its `predict_features` method. No downloaded model
+source or weights are edited. Default-mode input/output equivalence is a
+read-only source assessment, not an executed comparison. The interfaces were read
+from the pinned HF [model source](https://huggingface.co/ZhuYuhan/VideoJev-4B/raw/1c1a253bf90dfa66176124d25a48ffb791d517d5/modeling_videojev.py)
+and [processing source](https://huggingface.co/ZhuYuhan/VideoJev-4B/raw/1c1a253bf90dfa66176124d25a48ffb791d517d5/processing_videojev.py).
+
 No synthetic warmup or health request is sent by the adapter. Its first request
 uses actual arrived frames. The local adapter does not retry, follow redirects,
 use proxy environment settings, or fall back to another model. Client and server
@@ -130,6 +170,27 @@ reports: CPU and GPU waiting, CPU preprocessing, visual encoding, choice scoring
 native total computation, frame/padding counts, dimensions, visual tokens, and
 peak memory. Raw native scores and terminal window status are saved by the
 service. Scores are not claimed to be calibrated confidence.
+
+Additional service timings record `native_group_count`, total
+`native_input_tokens`, and `native_group_input_tokens`. Token counts include the
+native visual slots and text in every actual group; they are not generated-token
+counts. `question_group_prepare_seconds` measures native text/group construction,
+including the original grouping and any shared-layout reconstruction.
+`gpu_scoring_seconds` sums CUDA-event intervals around the group model-forward
+calls. It excludes visual encoding, text/group preparation, and native CPU result
+formatting, but is not a sum of profiled kernel times. Existing `decision_seconds`
+still covers the whole post-encoding decision stage, including CPU work and
+formatting; all prior timing fields retain their boundaries. These internal
+measurements must not be added to full HTTP time a second time.
+The four numeric measurements also pass through the Harness report transport.
+The extra event/timing instrumentation can itself add overhead. Compare repeated
+and shared requests on the same updated service; do not assume a new repeated
+measurement is performance-identical to the historical `fe95fa9` run.
+
+Timings also retain `question_layout_requested`, actual `question_layout`
+(`repeated`, `shared`, or `mixed`), and `question_layout_groups`. These are service
+metadata and are not appended to model text. A shared request can legitimately
+report repeated or mixed layouts when prefixes differ or a group falls back.
 
 Real event response time still starts when the original event frame enters the
 Harness before sampling, and ends when the corresponding report can be read.

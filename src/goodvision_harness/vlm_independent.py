@@ -73,10 +73,13 @@ class VLMProcessConfig:
     candidate_fps: float | None = None
     observation_window_frames: int = 4
     observation_frame_delta_seconds: float | None = None
+    videojev_question_layout: str = "repeated"
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
             raise ValueError("invalid VLM output mode")
+        if self.videojev_question_layout not in {"repeated", "shared"}:
+            raise ValueError("invalid VideoJev question layout")
         if not self.stream_session_id or not self.source_id or not self.labels:
             raise ValueError("VLM process requires a scoped source and event labels")
         if self.event_policy not in EVENT_POLICY_PROFILES:
@@ -379,7 +382,12 @@ class IndependentEventState:
                 "evidence_received_monotonic": sample.received_monotonic,
             },
             "model": {
-                "name": PUBLIC_MODEL_NAME,
+                "name": (
+                    self.config.model
+                    if self.config.model_settings.provider == "local"
+                    and self.config.model == "ZhuYuhan/VideoJev-4B"
+                    else PUBLIC_MODEL_NAME
+                ),
                 "route_id": self.config.route_id,
                 "latency_seconds": timing["model_seconds"],
             },
@@ -657,6 +665,8 @@ def run_vlm_process(
             "videojev_gpu_queue_seconds", "videojev_server_preprocess_seconds",
             "videojev_server_gpu_seconds", "videojev_server_elapsed_seconds",
             "videojev_processor_max_pixels",
+            "videojev_native_group_count", "videojev_native_input_tokens",
+            "videojev_question_group_prepare_seconds", "videojev_gpu_scoring_seconds",
         ):
             value = measurements.get(name) if isinstance(measurements, dict) else None
             if (

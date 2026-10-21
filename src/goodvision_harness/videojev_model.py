@@ -42,6 +42,8 @@ _SERVICE_METRICS = frozenset((
     "input_frame_count", "internal_temporal_padding_frames", "visual_tokens",
     "native_temporal_fps", "context", "max_pixels", "source_width",
     "source_height", "processed_width", "processed_height", "processor_max_pixels",
+    "native_group_count", "native_input_tokens", "question_group_prepare_seconds",
+    "gpu_scoring_seconds",
 ))
 
 
@@ -124,6 +126,7 @@ class VideoJevInspector:
             "fps": fps,
             "frame_times": [frame.timestamp_seconds for frame in job.frames],
             "questions": expected,
+            "question_layout": self.config.videojev_question_layout,
             "images": [
                 base64.b64encode(frame.jpeg_bytes).decode("ascii")
                 for frame in job.frames
