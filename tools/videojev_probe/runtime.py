@@ -109,6 +109,8 @@ class VideoJevRuntime:
                 )
             },
             "cuda_runtime": torch.version.cuda,
+            "torch_cpu_threads": torch.get_num_threads(),
+            "torch_interop_threads": torch.get_num_interop_threads(),
             "attention": "flash_attention_2", "context": CONTEXT,
             "question_layout_default": question_layout,
         }

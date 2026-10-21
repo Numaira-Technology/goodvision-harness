@@ -115,6 +115,18 @@ settings, not claimed latency targets. Set `--queue-policy latest-per-stream`
 explicitly to evaluate fair latest-window processing. More than one CPU worker
 is opt-in; shared processor concurrency has not been measured.
 
+CPU preparation workers and Torch intra-op threads are different settings.
+For a startup-thread ablation, set `OMP_NUM_THREADS` and `MKL_NUM_THREADS` before
+starting the service; MKL's setting takes precedence. Unset both for the default
+baseline. Loaded-model metadata records `torch_cpu_threads` and
+`torch_interop_threads`; these describe the model-loading thread, not an
+independent measurement of every worker. The request protocol, pictures and event
+rules do not change. Compare configurations on the same GPU and installed
+environment, restarting only the service between drained configuration groups.
+Record cold-start and steady real-file results separately. This is an optional
+performance experiment, not a changed production default or a proven fix for
+input lateness. See the [PyTorch 2.8 environment-variable documentation](https://docs.pytorch.org/docs/2.8/threading_environment_variables.html).
+
 ### Optional question-layout ablation
 
 `--question-layout repeated|shared|prefix|prefix-cache` selects the service default;
