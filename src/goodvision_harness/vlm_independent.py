@@ -78,7 +78,7 @@ class VLMProcessConfig:
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
             raise ValueError("invalid VLM output mode")
-        if self.videojev_question_layout not in {"repeated", "shared"}:
+        if self.videojev_question_layout not in {"repeated", "shared", "prefix", "prefix-cache"}:
             raise ValueError("invalid VideoJev question layout")
         if not self.stream_session_id or not self.source_id or not self.labels:
             raise ValueError("VLM process requires a scoped source and event labels")

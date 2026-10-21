@@ -114,8 +114,8 @@ is opt-in; shared processor concurrency has not been measured.
 
 ### Optional question-layout ablation
 
-`--question-layout repeated|shared` selects the service default; `repeated` remains
-the default. A `/predict` request may specify `question_layout` with either value.
+`--question-layout repeated|shared|prefix|prefix-cache` selects the service default;
+`repeated` remains the default. A `/predict` request may specify `question_layout`.
 Omitting it uses the fixed service default. The selected value belongs to that
 request and does not mutate the service or restart its loaded model. Ready output
 records `question_layout_default`.
@@ -141,10 +141,49 @@ removing repeated token occurrences changes positions and the context seen by
 later questions, so outputs are not claimed to be equivalent. It is not a
 multi-video batch, a KV-cache implementation, or a measured speed improvement.
 
+### Experimental static-policy prefix cache
+
+`prefix` and `prefix-cache` are opt-in layouts for a separate real-file comparison.
+The native layout puts video before question text, so question states already
+depend on that window's pictures. Reusing those states for different pictures
+would be incorrect. Both new layouts instead move only the identical policy
+before `Evidence metadata:` into a complete text-only user message before the
+original video message. Source times, person metadata, judgment instructions,
+questions and options remain in the dynamic suffix. The same original group
+boundaries, original rows, context budget and result formatter are retained.
+Unsupported prefix/group shapes use the original repeated layout and report it.
+
+Both experimental modes construct the same full token sequence. `prefix` scores
+that sequence without state reuse. `prefix-cache` prefills the text-only prefix
+once, retaining one base cache for the loaded model and exact prefix token IDs
+and positions. Every window deep-copies the whole Transformers hybrid cache,
+including full-attention KV, convolution and DeltaNet recurrent state. The
+video-updated copy is discarded; it never becomes the base for another window.
+Changing the prefix replaces the base. No hash, UUID, old picture or past event
+answer is used as a cache key.
+
+The opt-in scorer calls the existing language backbone, injects this window's
+fresh visual features and recomputes positions from its complete new sequence.
+It slices suffix positions and candidate/decision indices only after computing
+them. Transformers constructs unpadded continuation masks without native packed
+q/k lengths, which no longer match after prefix caching. The original trained
+decision head, FP32 scoring, mask, softmax and weights are unchanged. Native
+`repeated`/`shared` forward calls remain unchanged.
+
+`prefix_cache_groups` records prefix tokens, hit/miss, real prefill/copy time and
+the tokens forwarded in that call. Initial prefill and layout first-call costs
+remain part of the actual trial. This is genuine model-state reuse, not only
+tokenization caching. It does not promise bitwise equality: prefix placement
+changes context relative to native layouts, and splitting a hybrid forward can
+change floating-point rounding. Compare native shared, prefix without cache and
+prefix with cache on quality, raw scores, wall-time and stream coverage before
+selecting a deployment setting. No performance result is implied by this code.
+
 The runtime calls the pinned model module's original `prepare_query_groups` and
-`format_predictions(output, rows, record, decoder)` functions, with the same
-model-forward call used by its `predict_features` method. No downloaded model
-source or weights are edited. Default-mode input/output equivalence is a
+`format_predictions(output, rows, record, decoder)` functions. Native
+`repeated`/`shared` use the same model-forward call as `predict_features`;
+the two prefix modes use the explicit language-backbone/head path above.
+No downloaded model source or weights are edited. Default-mode equivalence is a
 read-only source assessment, not an executed comparison. The interfaces were read
 from the pinned HF [model source](https://huggingface.co/ZhuYuhan/VideoJev-4B/raw/1c1a253bf90dfa66176124d25a48ffb791d517d5/modeling_videojev.py)
 and [processing source](https://huggingface.co/ZhuYuhan/VideoJev-4B/raw/1c1a253bf90dfa66176124d25a48ffb791d517d5/processing_videojev.py).

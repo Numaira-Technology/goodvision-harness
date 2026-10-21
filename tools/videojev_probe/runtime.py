@@ -5,9 +5,13 @@ import io
 import math
 import sys
 import time
+from copy import deepcopy
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from .contract import CONTEXT, MODEL, REVISION
+
+QUESTION_LAYOUTS = ("repeated", "shared", "prefix", "prefix-cache")
 
 
 def record_for_grid(processor, grid, frame_count, fps):
@@ -62,8 +66,8 @@ class VideoJevRuntime:
         import torch
         from transformers import AutoModel, AutoProcessor
 
-        if question_layout not in ("repeated", "shared"):
-            raise ValueError("question_layout must be repeated or shared")
+        if question_layout not in QUESTION_LAYOUTS:
+            raise ValueError("invalid question_layout")
         if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
             raise RuntimeError("requires a CUDA GPU supporting BF16; no CPU fallback")
         if importlib.metadata.version("transformers") != "5.14.1":
@@ -86,6 +90,8 @@ class VideoJevRuntime:
         self._prepare_query_groups = native["prepare_query_groups"]
         self._format_predictions = native["format_predictions"]
         self.question_layout = question_layout
+        self._prefix_cache_key = None
+        self._prefix_cache = None
         torch.cuda.synchronize()
         props = torch.cuda.get_device_properties(0)
         self.metadata = {
@@ -186,31 +192,148 @@ class VideoJevRuntime:
         })
 
     def _layout_group(self, prepared, batch, rows, question_layout):
-        if question_layout != "shared":
-            return batch, "repeated"
+        if question_layout == "repeated":
+            return batch, "repeated", 0
         shared, changed = _shared_questions(rows)
         if not changed:
-            return batch, "repeated"
+            return batch, "repeated", 0
+        prefix_ids = None
+        if question_layout in ("prefix", "prefix-cache"):
+            marker = "\nEvidence metadata: "
+            policies = [row["query"].partition(marker) for row in rows]
+            policy = policies[0][0]
+            if (not policy or any(not separator or head != policy
+                                  for head, separator, _ in policies)):
+                return batch, "repeated", 0
+            # A complete text-only message precedes the original video message.
+            # Dynamic source times and person context stay after the video.
+            text = self.processor.apply_chat_template(
+                [{"role": "user", "content": [{"type": "text", "text": policy}]}],
+                tokenize=False, add_generation_prompt=False,
+            )
+            prefix_ids = self.torch.tensor([
+                self.processor.tokenizer.encode(text, add_special_tokens=False)
+            ], dtype=batch["input_ids"].dtype)
+            shared = [
+                {**shared[0], "query": marker + policies[0][2]},
+                *shared[1:],
+            ]
+        prefix_length = 0 if prefix_ids is None else prefix_ids.shape[1]
         # Original native groups remain the boundary. Each new group retains
         # its own full first-row prefix, even when the original window split.
         groups = iter(self._prepare_query_groups(
-            self.processor, prepared.record, shared, prepared.context,
+            self.processor, prepared.record, shared, prepared.context - prefix_length,
         ))
         try:
             replacement, replacement_rows = next(groups)
             if next(groups, None) is not None or len(replacement_rows) != len(rows):
-                return batch, "repeated"
+                return batch, "repeated", 0
         except (StopIteration, ValueError):
-            return batch, "repeated"
-        return replacement, "shared"
+            return batch, "repeated", 0
+        if prefix_ids is not None:
+            replacement = {
+                **replacement,
+                "input_ids": self.torch.cat([prefix_ids, replacement["input_ids"]], dim=1),
+                "mm_token_type_ids": self.torch.cat([
+                    self.torch.zeros_like(prefix_ids), replacement["mm_token_type_ids"],
+                ], dim=1),
+                "pair_indices": replacement["pair_indices"] + prefix_length,
+                "query_indices": replacement["query_indices"] + prefix_length,
+            }
+        return replacement, question_layout, prefix_length
+
+    def _prefix_forward(self, batch, features, prefix_length, *, use_cache):
+        """Score a text-first layout, optionally reusing only its pure-text state.
+
+        The pinned native forward disables caching. This opt-in path preserves
+        its visual injection, complete-window positions and decision head, but
+        lets Transformers build unpadded continuation masks. Packed q/k lengths
+        from a full forward must not be reused with a longer cached key prefix.
+        """
+        torch, model = self.torch, self.model
+        device = model.get_input_embeddings().weight.device
+        ids = batch["input_ids"].to(device)
+        types = batch["mm_token_type_ids"].to(device)
+        grid = batch["video_grid_thw"].to(device)
+        pairs = batch["pair_indices"].to(device)
+        queries = batch["query_indices"].to(device)
+        mask = batch["score_mask"].to(device)
+        tasks = batch["decision_tasks"].to(device)
+        stats = {"prefix_tokens": prefix_length, "prefix_cache_enabled": use_cache,
+                 "prefix_cache_hit": False,
+                 "prefix_prefill_seconds": 0.0, "prefix_clone_seconds": 0.0}
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            embeds = model.get_input_embeddings()(ids)
+            slots = ids == model.config.backbone_config.video_token_id
+            if int(slots.sum()) != len(features) or slots[:, :prefix_length].any():
+                raise ValueError("visual features must belong to this window's suffix")
+            embeds = embeds.masked_scatter(
+                slots[..., None].expand_as(embeds), features.to(embeds),
+            )
+            if model.is_moe:
+                positions, _ = model.backbone.get_rope_index(
+                    ids, types, video_grid_thw=grid,
+                )
+            else:
+                positions = model.backbone.compute_3d_position_ids(
+                    input_ids=ids, inputs_embeds=embeds, video_grid_thw=grid,
+                    attention_mask=None, past_key_values=None, mm_token_type_ids=types,
+                )
+            language = model.backbone.language_model
+            if use_cache:
+                # One immutable base state per loaded model. Deep-copy attention
+                # KV, convolution state and DeltaNet recurrent state per window.
+                # A suffix-updated state is never retained for another video.
+                key = (tuple(ids[0, :prefix_length].tolist()),
+                       tuple(positions[..., :prefix_length].flatten().tolist()))
+                stats["prefix_cache_hit"] = key == self._prefix_cache_key
+                if not stats["prefix_cache_hit"]:
+                    self._prefix_cache = None
+                    self._prefix_cache_key = None
+                    before = time.perf_counter()
+                    base = language(
+                        inputs_embeds=embeds[:, :prefix_length],
+                        position_ids=positions[..., :prefix_length],
+                        attention_mask=None, use_cache=True,
+                    ).past_key_values
+                    torch.cuda.synchronize()
+                    stats["prefix_prefill_seconds"] = time.perf_counter() - before
+                    self._prefix_cache, self._prefix_cache_key = base, key
+                before = time.perf_counter()
+                working = deepcopy(self._prefix_cache)
+                torch.cuda.synchronize()
+                stats["prefix_clone_seconds"] = time.perf_counter() - before
+                hidden = language(
+                    inputs_embeds=embeds[:, prefix_length:],
+                    position_ids=positions[..., prefix_length:],
+                    attention_mask=None, past_key_values=working, use_cache=True,
+                ).last_hidden_state[0]
+                pairs, queries = pairs - prefix_length, queries - prefix_length
+                stats["forward_tokens"] = ids.shape[1] - (
+                    prefix_length if stats["prefix_cache_hit"] else 0
+                )
+            else:
+                hidden = language(
+                    inputs_embeds=embeds, position_ids=positions,
+                    attention_mask=None, use_cache=False,
+                ).last_hidden_state[0]
+                stats["forward_tokens"] = ids.shape[1]
+        with torch.autocast(device_type="cuda", enabled=False):
+            logits = model.head(hidden[pairs], hidden[queries])
+            valid = logits.masked_fill(~mask, -torch.inf)
+            probabilities = torch.where(
+                (tasks == 1)[:, None], valid.softmax(-1), logits.sigmoid(),
+            ) * mask
+        return SimpleNamespace(logits=logits, probabilities=probabilities,
+                               score_mask=mask), stats
 
     def predict_prepared(self, prepared, questions, *, question_layout=None):
         """Encode and score on the service's single GPU worker thread."""
         if not isinstance(prepared, _PreparedVideo):
             raise ValueError("provide the result of prepare")
         layout = self.question_layout if question_layout is None else question_layout
-        if layout not in ("repeated", "shared"):
-            raise ValueError("question_layout must be repeated or shared")
+        if layout not in QUESTION_LAYOUTS:
+            raise ValueError("invalid question_layout")
         torch = self.torch
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
@@ -224,7 +347,7 @@ class VideoJevRuntime:
             decoder = dict(self.model.config.decoder)
             if not 0 < decoder["threshold"] < 1:
                 raise ValueError("threshold must be between 0 and 1")
-            raw, layouts, tokens, scoring_events = [], [], [], []
+            raw, layouts, tokens, scoring_events, prefix_stats = [], [], [], [], []
             group_prepare_seconds = 0.0
             groups = iter(self._prepare_query_groups(
                 self.processor, prepared.record, questions, prepared.context,
@@ -236,14 +359,23 @@ class VideoJevRuntime:
                 except StopIteration:
                     group_prepare_seconds += time.perf_counter() - group_started
                     break
-                batch, actual_layout = self._layout_group(prepared, batch, rows, layout)
+                batch, actual_layout, prefix_length = self._layout_group(
+                    prepared, batch, rows, layout,
+                )
                 group_prepare_seconds += time.perf_counter() - group_started
                 layouts.append(actual_layout)
                 tokens.append(int(batch["input_ids"].shape[1]))
                 score_start = torch.cuda.Event(enable_timing=True)
                 score_end = torch.cuda.Event(enable_timing=True)
                 score_start.record()
-                output = self.model(**batch, visual_features=features)
+                if prefix_length:
+                    output, cache_stats = self._prefix_forward(
+                        batch, features, prefix_length,
+                        use_cache=actual_layout == "prefix-cache",
+                    )
+                    prefix_stats.append(cache_stats)
+                else:
+                    output = self.model(**batch, visual_features=features)
                 score_end.record()
                 scoring_events.append((score_start, score_end))
                 raw.extend(self._format_predictions(output, rows, prepared.record, decoder))
@@ -262,6 +394,7 @@ class VideoJevRuntime:
             "native_input_tokens": sum(tokens),
             "native_group_input_tokens": tokens,
             "question_group_prepare_seconds": group_prepare_seconds,
+            "prefix_cache_groups": prefix_stats,
             "gpu_scoring_seconds": sum(
                 first.elapsed_time(last) / 1000 for first, last in scoring_events
             ),
