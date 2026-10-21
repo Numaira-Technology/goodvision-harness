@@ -181,9 +181,49 @@ Per-window timings record the actual `gpu_batch_size`. Shared scoring time is
 the real wait experienced by both windows, not divided by two. Consequently
 overlapping batch intervals must not be added as if they were independent GPU
 work. Extra memory and the first window waiting for the second visual encoding
-are trade-offs to measure, not an assumed speedup. This option has not yet been
-deployed or measured; the default is unchanged. No independent software tests
-were run.
+are trade-offs to measure, not an assumed speedup. The default is unchanged.
+
+The optional implementation was deployed at `00b035d` and measured in six real-file
+trials on one RTX 4090, using the same installation and weights. Each configuration
+ran the original cold clip, three-stream case and twelve-stream input. Changing
+the startup option restarted only the drained scoring process, not the machine
+or environment. All 2,158 requests completed; fight semantic unknowns, invalid
+judgments and request failures were zero. No independent software tests were run.
+
+| Twelve-stream result | Single window | Up to two ready windows |
+| --- | ---: | ---: |
+| Completed / 1,800 opportunities | 960 | 953 |
+| Valid reports during input | 937 | 930 |
+| Valid updates/s, common input span | 7.803 | 7.745 |
+| Longest valid-update gap | 2.276 s | 2.375 s |
+| Source intervals reported | 6/8 | 7/8 |
+| Negative clips with a positive | 6/8 | 6/8 |
+| Positive negative-clip windows | 47/640 | 55/635 |
+| Median service elapsed time | 1.497 s | 1.508 s |
+
+The packed case actually used two-window scoring for 952/953 requests, so its
+roughly 0.75% lower update rate was not caused by widespread single-window fallback.
+The shared GPU-work interval increased from a median 124.8 to 252.5 ms; dividing
+that shared interval by two would misrepresent either window's actual latency.
+The six commonly reported source intervals were three faster and three slower,
+with a median paired difference of +0.193 s. The changed reported-event set and
+real-time frame selection prevent attributing the extra report to better model
+recognition. Negative coverage and false positives must accompany latency.
+
+The first single-window service request took 37.84 s. A later restarted service
+reused the environment and compilation cache; its first 1.03 s single-window
+request is not a packed cold-start improvement. The first actual packed forward
+took 8.87 s in the three-stream trial, which missed 29/100 opportunities. Those
+startup costs remain in the results rather than being hidden by warm-up calls.
+
+In the saved twelve-stream outputs, 193 matching original-frame/time pairs shared
+1,156/1,158 six-event choices. Two near-boundary fall/PPE choices changed, so neither
+numerical nor output equivalence is established. Those classes lack ground truth
+in this comparison. The eight negative clips come from four original videos;
+source intervals are not accepted natural-onset or subject-level annotations.
+Packed scoring remains an opt-in experiment, not the recommended configuration.
+The GPU was released after all results were retrieved. Twelve-stream quality and
+the full P0 goal remain unresolved.
 
 ### Optional question-layout ablation
 
