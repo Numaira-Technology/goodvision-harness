@@ -125,7 +125,11 @@ by vLLM, and implementation alone does not establish runtime compatibility,
 classification equivalence, or a throughput improvement.
 
 The adapter uses the vLLM 0.30 bare Qwen3.5 language executor, not a generative
-language-model head. Original language weights are mapped into its fused
+language-model head. Its configuration callback leaves the engine's initial
+type-discovery config unchanged, allowing the actual VideoJev config to load
+before selecting its backbone and original decision-head settings. This is a
+CPU configuration step, not a synthetic model invocation.
+Original language weights are mapped into its fused
 projections and hybrid attention/DeltaNet implementation. The final layer keeps
 attention and its residual, without its removed MLP or post-attention norm.
 The model's final norm adds that residual once. This changes language execution

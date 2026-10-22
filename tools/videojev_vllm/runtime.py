@@ -11,6 +11,9 @@ from tools.videojev_probe.runtime import VideoJevRuntime
 
 
 def engine_hf_config(config):
+    # Type discovery precedes loading the actual VideoJev configuration.
+    if config.model_type.startswith("dummy_"):
+        return config
     native = config.backbone_config
     native.architectures = ["VideoJevForPooling"]
     native.videojev_head_dim = config.head_dim
