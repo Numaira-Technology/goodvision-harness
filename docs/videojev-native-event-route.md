@@ -14,20 +14,11 @@ optional report callbacks, and event-policy interfaces needed by this route.
 Historical QA, detector controllers, paid-request storage, paired scheduling,
 and lean grounding implementations are not imported.
 
-The code includes a real-file 1–12 stream entrypoint. The initial sixteen real
-parameter/load runs used `fe95fa9` and the repeated question layout. Separate
-seven-run layout and seven-run prefix-cache comparisons have also completed.
-They do not establish usable twelve-stream capacity or justify making the
-experimental prefix cache the default. A later seven-run comparison has also
-deployed the fixed-template optimization below. All sent native requests
-completed, but input coverage, CPU preprocessing and quality still prevent a
-twelve-stream usability claim. A subsequent same-host startup-thread comparison
-completed eight real-file runs. All twelve streams received regular updates on
-that host, but changing the CPU thread limit produced no material throughput
-gain or quality improvement. Event false positives, missed intervals and unscored
-categories still prevent a full usability claim. Completed Qwen-based 50-video
-results remain separate and unchanged.
-No software tests, imports for validation, builds, or health probes were run.
+The code includes a real-file 1–12 stream entrypoint. This document describes
+implementation, configuration, timing boundaries and remaining scope. Experiment
+records, raw responses, measurements, quality tables, comparisons and run status
+belong in the project's Google Drive materials, not this repository. Keep them
+separate from implementation documentation.
 
 ## What changes in the running path
 
@@ -112,65 +103,6 @@ registration and compiled-text path. It adds no per-window text rewriting or GPU
 comparison. These are optional prompt factors, not a claim of lossless model
 equivalence.
 
-### Same-host prompt results, October 21
-
-The seven-group comparison ran application `9dabe0e` on one 24 GB RTX 4090,
-one installation, and one resident model process. It used the original cold
-F_8 clip, three-source steady groups for each style, and twelve-stream groups
-for each style. The six event questions, two frames at 0.5-second spacing,
-4 FPS candidates, 0.8-second opportunities, shared layout, native single-window
-scoring, and offline references stayed fixed. The service used Torch intra-op
-8 / inter-op 8 throughout; results from other hosts are not causal baselines.
-All seven groups finished, all 3,034 sent requests completed, and the GPU was
-released after collection. There was no per-group deployment or model restart.
-
-| Twelve-stream result | full | scene | brief |
-| --- | ---: | ---: | ---: |
-| Median input tokens | 1,681 | 1,614 | 1,512 |
-| Completed / 1,800 opportunities | 873 | 896 | 949 |
-| Busy opportunities not sent | 927 | 904 | 851 |
-| Valid updates during input, per second | 7.088 | 7.273 | 7.712 |
-| Median service / queue, seconds | 1.665 / 1.519 | 1.628 / 1.486 | 1.523 / 1.390 |
-| Median CUDA scoring interval, milliseconds | 117.410 | 113.452 | 104.469 |
-| Source intervals reported / all 8 | 6/8 | 7/8 | 7/8 |
-| Source intervals reported within 3 seconds / all 8 | 5/8 | 4/8 | 7/8 |
-| Negative clips with a positive report / all 8 | 4/8 | 4/8 | 8/8 |
-| Positive windows in negative clips | 39/582 | 37/598 | 96/632 |
-
-Update rates exclude 22 / 23 / 23 drain-period reports and use each group's
-common input span of about 120 seconds. Each group delivered 41,397 raw input
-frames with no late drops. No waiting window expired. All twelve streams had
-a longest valid-update gap below three seconds, but completion was only
-48.50% / 49.78% / 52.72% of the fixed opportunities. This does not meet a
-twelve-stream update every 0.8 seconds. Timing intervals are nested, not additive.
-
-The scene/full common six reported intervals had a paired latency difference
-median of -0.122 seconds, with four faster and two slower. Brief/full had a
-median of -0.481 seconds on their common six, all faster. Each style also chose
-different windows as its throughput changed. Matching the exact source frames
-and times still found a prompt effect: among 188 full/brief matched windows,
-26 fight choices changed from absent to present, with none in the reverse
-direction. Brief's increase in positive reports is not only a scheduling effect.
-
-Keep `full` as the default. `scene` remains a development candidate: its update
-rate improved 2.62%, but early reporting did not improve across all intervals.
-Do not recommend `brief` from this result. Its 8.81% higher update rate came
-with positive reports in all eight negative clips and 15.19% positive negative
-windows, versus 6.70% for full. Even the three-source groups, which each
-completed all 100 opportunities, produced 13/40 positive negative windows for
-brief versus 1/40 for full and scene.
-
-The cold full request took 36.228 seconds in the service, including a
-33.723-second CUDA scoring interval. Only 16/60 cold opportunities were sent;
-44 were skipped while busy. No extra warm-up or replay hid this startup cost.
-Request failures and fight unknown/invalid results were zero across the batch.
-That is not zero unknowns for all six classes: twelve-stream PPE returned
-insufficient evidence 14 / 8 / 0 times. The other five classes had no quality
-reference in this comparison. The eight negative clips came from four original
-videos; source ON times are not accepted natural-action start times. This is a
-single ordered development comparison, not a general-quality acceptance result.
-No independent software tests were run.
-
 ## Service use
 
 Run the service from this checkout with the Harness package available. Keep its
@@ -212,14 +144,6 @@ Record cold-start and steady real-file results separately. This is an optional
 performance experiment, not a changed production default or a proven fix for
 input lateness. See the [PyTorch 2.8 environment-variable documentation](https://docs.pytorch.org/docs/2.8/threading_environment_variables.html).
 
-The completed comparison retained the default thread setting: limiting it to
-one, four or eight did not improve throughput materially, and the default had
-fewer negative clips with positive reports in this development sample. Later
-service restarts reused the same environment and persistent compilation cache;
-their shorter first requests are not an isolated thread-count speedup or an
-independent cold-start measurement. GPU scoring and service queueing, rather
-than CPU image preparation, dominated the steady twelve-stream runs on that host.
-
 ### Optional single-sequence scoring
 
 `--single-sequence` is off by default. For a fixed non-prefix template it sends
@@ -246,60 +170,9 @@ must not be attributed only to omitting packed metadata. Native per-window mRoPE
 and formatter synchronizations remain. New kernel specializations can add first
 use costs or alter near-boundary numeric results.
 
-The optional path was deployed at `56c5007` in six real-file trials on one RTX
-4090. Each configuration ran the original cold clip, three-stream case and
-twelve-stream input. Both used the same installation, weights, six event rules,
-shared two-frame layout, 0.5-second frame spacing and 0.8-second scheduling
-opportunities. The controller restarted only the drained service to change the
-startup option. It did not lease another GPU or redeploy between groups.
-
-| Twelve-stream result | Native single window | Single-sequence option |
-| --- | ---: | ---: |
-| Completed / 1,800 opportunities | 922 | 924 |
-| Busy opportunities not sent / waiting expiry | 878 / 0 | 876 / 0 |
-| Valid reports during input | 899 | 901 |
-| Valid updates/s, common input span | 7.482 | 7.499 |
-| Longest valid-update gap | 2.434 s | 2.461 s |
-| Source intervals reported | 6/8 | 7/8 |
-| Source intervals reported within 3 s / all intervals | 4/8 | 5/8 |
-| Negative clips with a positive | 6/8 | 4/8 |
-| Positive negative-clip windows | 46/615 | 42/616 |
-| Median service elapsed time | 1.575 s | 1.569 s |
-| Median service queue | 1.429 s | 1.423 s |
-| Median GPU-work interval | 132.258 ms | 131.860 ms |
-| Median CUDA scoring interval | 103.850 ms | 103.064 ms |
-
-The option ran for all 924 candidate windows; all 922 baseline windows used the
-native path. Both retained one GPU window at a time. The update-rate difference
-was about +0.22%, too small to support a material speedup or a default switch.
-All twelve streams received valid updates with no gap above three seconds on
-this short load, but roughly 1.58-second per-stream intervals still missed about
-half the fixed 0.8-second opportunities. Timing intervals overlap and must not be
-added. GPU memory peaks were almost unchanged.
-
-The six commonly reported source intervals were four slower and two faster with
-the option; the median paired difference was +0.179 s. The candidate's extra
-report used different selected frames. It does not establish improved model
-recognition. For the 132 matching original two-frame/time combinations, all 792
-event choices and their saved probabilities matched. That observation covers
-only those saved windows, not all inputs or mathematical equivalence. Only fight
-has reference labels; the other five categories remain unscored. Eight negative
-clips come from four original videos, and source ON is not a separately accepted
-natural action onset or subject match.
-
-All 2,051 sent requests completed across the six trials; fight semantic unknowns,
-invalid judgments and request failures were zero. The native first full HTTP
-request took 60.437 s, completing only one of sixty cold-clip opportunities, with
-58 busy opportunities unsent and one waiting expiry. After the same-host service
-restart, the option's first request took 45.875 s and four of sixty completed.
-First-use kernel work and reused environment/cache order differ, so the 14.6 s
-gap is not a steady-state optimization result. Both later three-stream trials
-completed all 100 requests. No extra warm-up requests were sent.
-
-The controller collected all six results and released the GPU; a separate exact
-provider query confirmed the instance was absent. The default remains native
-single-window scoring; this option remains an explicit research setting.
-No independent software tests were run.
+The default remains native single-window scoring; this option is an explicit
+research setting. Compare steady behavior separately from first-use kernel work,
+service restarts and reused compilation caches.
 
 ### Optional ready-window packed scoring
 
@@ -345,47 +218,10 @@ overlapping batch intervals must not be added as if they were independent GPU
 work. Extra memory and the first window waiting for the second visual encoding
 are trade-offs to measure, not an assumed speedup. The default is unchanged.
 
-The optional implementation was deployed at `00b035d` and measured in six real-file
-trials on one RTX 4090, using the same installation and weights. Each configuration
-ran the original cold clip, three-stream case and twelve-stream input. Changing
-the startup option restarted only the drained scoring process, not the machine
-or environment. All 2,158 requests completed; fight semantic unknowns, invalid
-judgments and request failures were zero. No independent software tests were run.
-
-| Twelve-stream result | Single window | Up to two ready windows |
-| --- | ---: | ---: |
-| Completed / 1,800 opportunities | 960 | 953 |
-| Valid reports during input | 937 | 930 |
-| Valid updates/s, common input span | 7.803 | 7.745 |
-| Longest valid-update gap | 2.276 s | 2.375 s |
-| Source intervals reported | 6/8 | 7/8 |
-| Negative clips with a positive | 6/8 | 6/8 |
-| Positive negative-clip windows | 47/640 | 55/635 |
-| Median service elapsed time | 1.497 s | 1.508 s |
-
-The packed case actually used two-window scoring for 952/953 requests, so its
-roughly 0.75% lower update rate was not caused by widespread single-window fallback.
-The shared GPU-work interval increased from a median 124.8 to 252.5 ms; dividing
-that shared interval by two would misrepresent either window's actual latency.
-The six commonly reported source intervals were three faster and three slower,
-with a median paired difference of +0.193 s. The changed reported-event set and
-real-time frame selection prevent attributing the extra report to better model
-recognition. Negative coverage and false positives must accompany latency.
-
-The first single-window service request took 37.84 s. A later restarted service
-reused the environment and compilation cache; its first 1.03 s single-window
-request is not a packed cold-start improvement. The first actual packed forward
-took 8.87 s in the three-stream trial, which missed 29/100 opportunities. Those
-startup costs remain in the results rather than being hidden by warm-up calls.
-
-In the saved twelve-stream outputs, 193 matching original-frame/time pairs shared
-1,156/1,158 six-event choices. Two near-boundary fall/PPE choices changed, so neither
-numerical nor output equivalence is established. Those classes lack ground truth
-in this comparison. The eight negative clips come from four original videos;
-source intervals are not accepted natural-onset or subject-level annotations.
-Packed scoring remains an opt-in experiment, not the recommended configuration.
-The GPU was released after all results were retrieved. Twelve-stream quality and
-the full P0 goal remain unresolved.
+Packed scoring remains opt-in. Compare the same source frames and timestamps
+when assessing changed choices or probabilities; changed real-time window
+selection does not by itself establish improved recognition. Report quality and
+negative coverage alongside latency and throughput.
 
 ### Optional question-layout ablation
 
@@ -446,14 +282,12 @@ question group. Final tensors and option/decision indices still describe this
 window's actual sequence. The dynamic visual sequence and positions are not
 reused across windows.
 
-This replaces two costs found in the completed cache comparison: the client
-rebuilt all fixed questions on every request, and the runtime first built native
-groups only to rebuild them in another layout. It does not change event criteria,
-the three choices, model weights, the trained head, or the formatter. Source
-review is not an executed token/output equivalence comparison. The real-file
-comparison confirmed sub-millisecond median question preparation; slower CPU
-image preparation and missed input opportunities still dominated the complete
-pipeline on that host. This is not an end-to-end speedup or quality guarantee.
+This avoids rebuilding fixed questions in the client on every request and
+building native groups only to reconstruct them in another layout. It does not
+change event criteria, the three choices, model weights, the trained head, or
+the formatter. Source review does not establish token/output equivalence or
+end-to-end performance. CPU image preparation and source coverage remain
+separate parts of the pipeline to measure.
 
 ### Experimental static-policy prefix cache
 
@@ -496,171 +330,12 @@ decision head, FP32 scoring, mask, softmax and weights are unchanged. Native
 
 `prefix_cache_groups` records prefix tokens, hit/miss, real prefill/copy time and
 the tokens forwarded in that call. Initial prefill and layout first-call costs
-remain part of the actual trial. This is genuine model-state reuse, not only
-tokenization caching. It does not promise bitwise equality: prefix placement
-changes context relative to native layouts, and splitting a hybrid forward can
-change floating-point rounding. Compare native shared, prefix without cache and
+remain part of the actual trial. This reuses model state as well as tokenization.
+It does not promise bitwise equality: prefix placement changes context relative
+to native layouts, and splitting a hybrid forward can change floating-point
+rounding. Compare native shared, prefix without cache and
 prefix with cache on quality, raw scores, wall-time and stream coverage before
 selecting a deployment setting. No performance result is implied by this code.
-
-### Fixed-CPU, same-host KV follow-up, October 21
-
-The earlier compiled-text comparison showed a cache benefit in small-load scoring,
-but its twelve-stream run also had severe CPU preparation delays. A new seven-group
-comparison used existing application `75b4119`, one RTX 4090, one resident model,
-and fixed OMP/MKL threads of 4 (observed Torch intra-op 4 / inter-op 8). No new
-model code was added. Full choices, all six classes, two frames at 0.5-second
-spacing, 4 FPS candidates, 0.8-second opportunities and offline references stayed
-fixed. Shared cold, three-source groups for all three layouts, and twelve-stream
-groups all completed before collection and GPU release.
-
-| Twelve-stream result | shared | prefix, no cache | prefix-cache |
-| --- | ---: | ---: | ---: |
-| Completed / 1,800 opportunities | 997 | 1,002 | 1,486 |
-| Busy opportunities not sent | 803 | 798 | 314 |
-| All reports during input, per second | 8.120 | 8.155 | 12.193 |
-| Valid fight reports during input, per second | 8.120 | 7.947 | 11.902 |
-| Median service / queue, seconds | 1.456 / 1.328 | 1.448 / 1.321 | 0.967 / 0.880 |
-| Median CUDA scoring interval, milliseconds | 100.687 | 100.344 | 61.622 |
-| Full input / forwarded token median | 1,681 / 1,681 | 1,687 / 1,687 | 1,687 / 776 |
-| Source intervals reported / all 8 | 6/8 | 7/8 | 7/8 |
-| Source intervals reported within 3 seconds / all 8 | 6/8 | 7/8 | 7/8 |
-| Negative clips with a positive report / all 8 | 6/8 | 7/8 | 7/8 |
-| Positive windows in negative clips | 44/665 | 144/668 | 213/990 |
-| Fight insufficient-evidence reports | 0 | 27 | 37 |
-| Longest interval without a valid fight update, seconds | 2.186 | 11.978 | 11.943 |
-
-The cache increased valid-fight input-period throughput by 49.77% relative to the
-same text-first layout without caching, or 46.57% relative to shared. It reused
-911 pure-text tokens: all 1,486 twelve-stream cache calls hit, with a median
-3.401 ms state-copy cost. CPU image preparation remained about 7 ms and visual
-encoding about 19 ms. Nested timing intervals must not be added together.
-
-Report volume and semantic coverage are different. The prefix layouts kept
-publishing, but their fight unknowns concentrated in one stream and left about
-twelve seconds without a definite fight judgment. They achieved a maximum
-valid-fight gap below three seconds on 11/12 streams, versus shared's 12/12.
-PPE unknowns were 15 / 196 / 319; the other four labels had none. There were no
-request failures, invalid fight formats, missing native receipts or late input
-drops. All three groups received 41,397 raw frames and drained normally. Rates
-exclude drain-period reports; valid-fight rates also exclude unknown judgments.
-
-Moving the rules before the video has a quality cost in this development set.
-Negative-window positive rates were 6.62% / 21.56% / 21.52%. Caching and moving
-the rules must not be treated as one factor. On 300 matching original-frame/time
-windows, prefix and prefix-cache agreed on all fight choices and on 1,793/1,800
-six-class choices; all seven differences were PPE. Scores were not bitwise
-identical. On 104 shared/prefix matched windows, fight agreed on 90, with seven
-absent-to-present and seven absent-to-unknown changes. This supports separating
-the layout effect from cache reuse, without proving general equivalence.
-
-The common seven reported events were all faster with caching than without it:
-paired latency difference median -0.590 seconds. Both still left the same source
-interval unreported. Source-interval matching is not a human acceptance of the
-natural action onset or the actor. The eight negative clips came from four
-original videos; other classes had no quality reference. Keep shared as the
-development reference and keep prefix-cache opt-in. The throughput gain does
-not establish a quality-preserving default or complete the P0 goal.
-
-Startup costs remain: first complete HTTP took 35.956 seconds for shared,
-25.773 seconds when first using prefix, and 10.756 seconds when first using
-the cache, including 5.075 seconds of prefix prefill. Three-source prefix
-completed only 31/100 opportunities (67 busy, two waiting expiry); cache completed
-64/100 (36 busy). No extra warm-up or replay concealed these costs. Across all
-seven groups, 3,697 sent requests completed. The process and installation stayed
-the same; the final GPU absence was checked after release. No independent
-software tests were run.
-
-### Same-host four-versus-six class study, October 21
-
-This five-group study used application `5c47514`, one RTX 4090, one installation
-and one resident model process. It changed only the requested class set and the
-existing shared/prefix-cache setting. Four classes means fight, smoking, fall
-and weapon; six also includes PPE violation and ground litter. Full answer
-choices, two actual frames per request, 0.5-second spacing, 4 FPS candidates,
-0.8-second opportunities, references and native scheduling stayed fixed.
-Observed Torch threads were intra-op 4 / inter-op 192 throughout, not the
-previous machine's inter-op 8. No new model code was needed.
-
-| Twelve-stream result | six/shared | six/cache | four/shared | four/cache |
-| --- | ---: | ---: | ---: | ---: |
-| Completed / 1,800 opportunities | 988 | 1,068 | 1,210 | 1,800 |
-| Busy opportunities not sent | 812 | 732 | 590 | 0 |
-| Input-period reports / second | 8.041 | 8.698 | 9.888 | 14.849 |
-| Input-period definite fight judgments / second | 8.041 | 8.466 | 9.888 | 14.574 |
-| Median service, seconds | 1.468 | 0.958 | 1.194 | 0.443 |
-| Median queue, seconds | 1.338 | 0.868 | 1.086 | 0.370 |
-| Median CUDA scoring, milliseconds | 104.349 | 63.022 | 80.960 | 48.609 |
-| Full input token median | 1,681 | 1,687 | 1,341 | 1,347 |
-| Source intervals reported / all 8 | 6/8 | 5/8 | 7/8 | 7/8 |
-| Source intervals reported within 3 seconds / all 8 | 5/8 | 4/8 | 5/8 | 7/8 |
-| Negative clips with positive reports / all 8 | 5/8 | 7/8 | 5/8 | 7/8 |
-| Positive windows in negative clips | 49/659 | 148/712 | 44/807 | 191/1,200 |
-| Fight insufficient-evidence judgments | 0 | 29 | 0 | 33 |
-
-Four/cache completed 150 opportunities on each of the twelve streams,
-with four judgments on every response. All 7,200 native choices matched their
-published three-way values. Each twelve-stream group recorded 41,397 raw input
-frames, with no late-input drops, and finished input, draining and cleanup.
-Each sent request had a saved native receipt and report. Rates use each group's earliest
-input through latest input; they exclude 22 / 22 / 22 / 15 drain-period reports.
-This demonstrates capacity for this 120-second, four-class development load,
-not six-class capacity, long-running stability or four-class quality acceptance.
-
-The four/cache group still had 33 fight unknowns in one stream, leaving a
-9.041-second gap without a definite fight judgment despite continuous reports.
-Four/shared's maximum definite-fight gap was 1.767 seconds. PPE unknowns were
-13 / 241 in the six-class groups; PPE and litter were not requested in the
-four-class groups, rather than silently counted as absent. Other requested
-labels had no unknowns, but only fight had quality references. There were no
-request failures, invalid fight formats or decoder-index mismatches. All five
-groups together completed 5,078 requests.
-
-Reducing the class set is a task tradeoff, not a six-class speedup. Four/shared
-reduced median scoring by 22.41% and median service by 18.70% versus six/shared.
-Visual encoding remained about 17 ms and question preparation about 0.5 ms.
-For cached groups, six classes reused 911 text tokens and forwarded a median
-776; four reused 723 and forwarded 624. Each policy had one initial miss.
-Timing intervals are nested and must not be added together.
-
-Four/shared and four/cache both reported seven of eight source intervals.
-Neither reported the second interval of dev0013. In four/cache, three completed
-windows ended inside that interval
-and returned fight absent: its miss was not a request or raw-input failure.
-Six/cache's startup left no window ending inside three unreported intervals,
-so those must retain an observation-coverage explanation instead of being
-classified entirely as visual errors. Among the seven events reported by both
-four-class configurations, caching was faster in all seven, with a paired
-median difference of -1.404 seconds. All seven first-positive evidence windows
-differed, so this combines faster service with changed window selection.
-
-The negative-window positive rates were 7.44% / 20.79% / 5.45% / 15.92%.
-The four-class configurations shared 433 original-frame/time windows: fight
-choices agreed in 352, with 73 absent-to-present and eight absent-to-unknown
-changes in the cache configuration. On 268 matching negative windows,
-four/shared had ten
-positive fight choices and four/cache had 43: 33 absent-to-present changes,
-not just more windows observed. Class selection also changes context:
-six/shared and four/shared shared 248 windows, with 13 fight present-to-absent
-changes and none in the reverse direction. Neither change is lossless.
-Keep shared as the quality reference and cache as an explicit candidate;
-do not promote it on throughput alone. Other classes lack quality references,
-and source interval starts are not accepted natural action onsets.
-
-Startup and order matter. The initial shared cold request took 39.705 seconds
-over complete HTTP, completing only 12/60 opportunities. Six/cache's first
-request took 34.704 seconds, including 28.531 seconds of prefix prefill, within
-its twelve-stream group. Four/cache's first request took 0.151 seconds, including
-49.528 ms prefill, after earlier groups had initialized native kernels. This
-fixed-order, single-pass study does not isolate class count from cold-kernel
-effects. Cache columns also move rules before the video; their difference from
-shared is not a cache-only intervention. Common research-policy guidance was
-unchanged and still mentions PPE/litter even when those questions are absent.
-
-The controller collected the results and released the GPU; an independent
-provider lookup confirmed its absence. We ran no independent software tests.
-We have measured this short-load capacity but have not accepted multi-class
-quality, long-running stability or the full P0 outcome.
 
 The runtime retains the pinned model module's original `prepare_query_groups`
 for legacy full-question requests and its
@@ -714,134 +389,37 @@ separate client duration includes it. Neither duration is an event's real-stream
 reaction latency. Point annotations do not establish natural ON/OFF or negatives
 at nearby times, and scene judgments do not identify an annotated actor.
 
-The initial bounded study uses five layouts/class sets on the same seven windows:
-six-class shared, prefix without KV, prefix with KV, four-class shared, and
-four-class prefix with KV. Four subsequent paced 12-stream trials compare shared
-and prefix-cache with 0.8-second and 1.6-second observation opportunities. All
-trials retain one GPU, environment and model process. Smoking stays HIGH; fight,
-fall and weapon stay STANDARD. Fixed-window classification and paced-stream
-quality/latency have separate denominators. PPE and litter remain unscored where
-no reference exists. No result or deployment is claimed by adding this entry
-point; independent software tests have not been run under the project rule.
+Compare layouts or requested class sets on identical original frames before
+attributing streaming differences to model classification. Fixed-window
+classification and paced-stream quality/latency have separate denominators.
+Labels without references remain unscored. Event sensitivities stay explicit
+in the observation configuration; smoking uses HIGH and fight, fall and weapon
+use STANDARD under the existing policy.
 
-### Completed same-host classification and 12-stream comparison
+### Optional category and window factors
 
-Nine groups completed on 2026-10-22 UTC using runtime `7109e0f`: one RTX4090,
-one resident VideoJev process, intra-op 4/inter-op 32, GPU batch 1, and the pinned
-model and environment above. The five fixed-frame groups ran before the four
-120-second paced groups. No group reloaded the model or sent a synthetic warmup.
-All 4,227 requests completed; request failures, invalid responses and missing
-receipts were zero. This does not make every classification correct.
+Observation configurations can vary the policy profile, requested labels and
+window geometry without changing application code. Compare research-v1 with
+main-baseline, combined labels with single labels, and alternative window
+settings as distinct factors. Keep answer options, sensitivities and offline
+references fixed when they are not the factor being examined. Reuse one GPU,
+environment and resident model for compatible configurations.
 
-The seven fixed windows provide eight offline reference judgments: two positive
-and two negative fight judgments, two positive fall judgments, and one positive
-judgment each for smoking and visible weapon. One window carries both fight and
-fall. References came from original UBI labels, the UR fall transition labels,
-and selected AVA action points with reviewed images. The weapon reference uses
-the visible gun at a shoot-labeled point, not a general shoot-to-weapon mapping.
-AVA labels are sparse person/action points, not natural event boundaries. The
-weapon window crosses a shot cut; only the selected final scene is scored.
-
-| Fixed identical frames | Fight correct / 4 | Fall correct / 2 | Smoking correct / 1 | Weapon correct / 1 |
-| --- | ---: | ---: | ---: | ---: |
-| Six shared | 4 | 1 | 0 | 0 |
-| Six prefix, no KV | 2 | 0 | 1 | 0 |
-| Six prefix-cache | 2 | 0 | 1 | 0 |
-| Four shared | 4 | 1 | 0 | 0 |
-| Four prefix-cache | 3 | 0 | 1 | 0 |
-
-Both positive fight references were detected in all five groups. The two fight
-negatives became positive in both six-prefix groups; one became positive in the
-four-cache group. Moving rules before the video therefore changed quality even
-without KV. Six-prefix and six-cache selected the same 42/42 choices, but their
-saved probabilities were not equal (maximum absolute difference 0.016865).
-No scored judgment was unknown. Two unscored PPE judgments were unknown, and
-PPE/litter have no quality references. Smoking, fall and weapon lack negative
-references here, so this study does not establish their false-positive rates.
-
-First complete HTTP durations were 38.468, 27.925, 12.122, 0.192 and 0.154 seconds
-in table order. The ordinary medians of each group's remaining six requests were
-0.167, 0.128, 0.083, 0.131 and 0.076 seconds. These are fixed-frame HTTP timings,
-not event reaction delays. Fixed group order and kernel initialization prevent
-treating the first-use differences as a class-count or cache-only improvement.
-
-The paced groups all requested six labels, with two real frames, no internal
-padding, 0.5-second target spacing, candidate FPS 4, full options, unchanged rules
-and the same twelve source segments. Each group recorded 41,397 original input
-frames with zero late drops; all sources completed their input, drain and cleanup.
-
-| Six-class, twelve-stream result | Shared 0.8 s | Shared 1.6 s | Cache 0.8 s | Cache 1.6 s |
-| --- | ---: | ---: | ---: | ---: |
-| Completed / scheduling opportunities | 990/1800 | 900/900 | 1402/1800 | 900/900 |
-| Busy opportunities not sent | 810 | 0 | 398 | 0 |
-| Source intervals reported / all intervals | 7/8 | 7/8 | 7/8 | 7/8 |
-| Reports within 3 s / all intervals | 5/8 | 6/8 | 7/8 | 7/8 |
-| Negative segments with a positive report | 5/8 | 4/8 | 7/8 | 6/8 |
-| Positive / evaluated negative windows | 50/661 | 50/600 | 200/935 | 126/600 |
-| Fight unknown judgments | 0 | 0 | 39 | 22 |
-| PPE unknown judgments, unscored | 15 | 9 | 305 | 214 |
-| Longest interval without a definite fight result, s | 2.195 | 2.455 | 14.072 | 14.519 |
-| Service P50, s | 1.464 | 0.830 | 1.022 | 0.480 |
-| Server queue P50, s | 1.334 | 0.692 | 0.931 | 0.390 |
-| CUDA choice-scoring P50, ms | 101.291 | 106.101 | 64.148 | 62.728 |
-
-P50 in this streaming table uses the existing analyzer's nearest-rank definition.
-Service time contains queueing and computation; nested durations must not be
-added to it. Cache 0.8 s recorded 1,401 hits/one miss; cache 1.6 s recorded 900
-hits/no misses. Both cached 911 text tokens, with a median 776-token forward.
-The first load-group cache prefill took 66.068 ms after the earlier point groups;
-it is not the cold-cache cost. Waiting expiry, request failures and format
-failures were zero in all four groups.
-
-All four groups missed the same source interval, dev0013's second interval;
-their saved in-interval windows completed and returned false. Among their common seven
-reported intervals, cache minus shared reaction delay had median differences of
--0.759 s at 0.8-second scheduling and -0.436 s at 1.6-second scheduling. These
-include changed window selection as well as service time. For example, the
-dev0007 source interval at 0.8 seconds took 1.769 s with shared and 1.398 s with
-cache: input-to-last-evidence 0.200/0.200 s, complete HTTP 1.455/1.054 s, and
-remaining local work 0.114/0.144 s. Both reports ended at original frame 1099.
-This measures from the source-labeled start frame entering Harness to a readable
-report; it does not establish a human-accepted natural onset, actor attribution,
-OFF transition, or frontend alarm delay.
-
-The 1.6-second setting halves the requested update rate. Its 900/900 completion
-does not show that the GPU can meet all 1,800 opportunities at 0.8 seconds.
-Cache reduces scoring work, but the point comparison and negative/unknown
-results do not justify replacing the shared default. Keep shared as the quality
-reference; shared 1.6 s is a lower-frequency capacity candidate, while cache
-remains an explicit speed/quality experiment. Weapon and UR fall misses need
-category-specific work before claiming multi-class usability. The references
-remain a small development set, not held-out acceptance data.
-
-The controller collected all nine groups and released the GPU. A separate exact
-provider lookup returned no instance. No independent software tests were run.
-
-### Next bounded category and window comparison
-
-The missed weapon and UR fall points returned ordinary negative choices, not
-HTTP or decoding errors. The next ten groups use existing configuration only:
-seven fixed-frame groups compare six-class research-v1, six-class main-baseline,
-four individual main-baseline labels, and a six-class main-baseline four-frame
-window. Three paced twelve-stream groups then compare research-v1/two frames,
-main-baseline/two frames, and main-baseline/four frames. All use one GPU and model
-process, full options, the same sensitivities and offline references, with KV
-disabled. The paced groups retain 0.8-second scheduling and candidate FPS 4.
-
-This compares existing policy profiles as a whole. Main-baseline omits the
-research-wide guidance but retains some confidence wording; it is neither a
-pure deletion ablation nor the official model's built-in policy. Single-label
-groups remove other definitions and preceding questions as well as reducing
+A policy-profile comparison evaluates existing profiles as a whole.
+Main-baseline omits the research-wide guidance but retains some confidence
+wording; it is neither a pure deletion ablation nor the official model's built-in
+policy. Single-label groups remove other definitions and preceding questions as well as reducing
 question count. Their requested shared layout uses the existing repeated
 fallback for one question. They do not establish combined multi-class capacity.
 
-All point groups keep the selected final frame. The four-frame candidate adds
-earlier frames over about one second and sets nominal FPS 3. It changes frame
-count, temporal span and positional FPS together; actual source times remain
-separate. Earlier weapon frames can cross a shot cut. Offline scoring uses only
-requested labels, preserving each label's reference denominator; unrequested
-classes are not format failures. Default application behavior, event definitions,
-weights and original labels do not change. This plan is not a result.
+For a window-geometry comparison, keep the selected final frame. For example, a
+four-frame candidate can add earlier frames over about one second with nominal
+FPS 3. It changes frame count, temporal span and positional FPS together; actual
+source times remain separate. Added earlier frames may cross a shot cut. Offline
+scoring uses only requested labels, preserving each label's reference denominator;
+unrequested classes are not format failures. Default application behavior, event definitions,
+weights and original labels do not change. These are configuration choices,
+not performance or quality claims.
 
 ## Failures and timing
 
@@ -872,8 +450,8 @@ formatting; all prior timing fields retain their boundaries. These internal
 measurements must not be added to full HTTP time a second time.
 The four numeric measurements also pass through the Harness report transport.
 The extra event/timing instrumentation can itself add overhead. Compare repeated
-and shared requests on the same updated service; do not assume a new repeated
-measurement is performance-identical to the historical `fe95fa9` run.
+and shared requests on the same updated service; instrumentation changes can
+prevent direct attribution to the layout alone.
 
 Timings also retain `question_layout_requested`, actual `question_layout`
 (`repeated`, `shared`, or `mixed`), and `question_layout_groups`. These are service
@@ -885,6 +463,14 @@ Harness before sampling, and ends when the corresponding report can be read.
 HTTP includes server waiting and computation: do not add those internal
 measurements to HTTP a second time. Server durations use the server clock; its
 absolute clock is not subtracted from the local input clock.
+
+Source-label ON times do not by themselves establish natural action onset or
+actor attribution. Keep that annotation boundary distinct from the actual
+input-to-readable-report measurement. For streaming summaries, the existing
+analyzer uses nearest-rank percentiles. Compute input-period update rates over
+the common input span, excluding drain-period reports; distinguish all reports
+from definite-label judgments that exclude insufficient evidence. Retain all
+scheduling opportunities when reporting completion, including those not sent.
 
 ## Remaining evaluation work
 
