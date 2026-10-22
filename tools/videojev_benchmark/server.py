@@ -869,6 +869,10 @@ def main():
                         help="Use lossy FP8 weights and dynamic activations only in language MLPs")
     parser.add_argument("--language-mlp-gemm-autotune", action="store_true",
                         help="Compile language MLPs and tune ATEN/TRITON matrix kernels at first use")
+    parser.add_argument("--compile-language-norm", action="store_true",
+                        help="Compile ordinary language RMSNorms without changing weights or gated norms")
+    parser.add_argument("--compile-vision-blocks", action="store_true",
+                        help="Compile existing visual blocks; first use includes compilation")
     parser.add_argument("--profile-request", type=int, default=0,
                         help="Profile this real single-window call once; zero disables profiling")
     parser.add_argument("--profile-output", type=Path,
@@ -903,6 +907,8 @@ def main():
             compile_language_mlp=args.compile_language_mlp,
             language_mlp_fp8=args.language_mlp_fp8,
             language_mlp_gemm_autotune=args.language_mlp_gemm_autotune,
+            compile_language_norm=args.compile_language_norm,
+            compile_vision_blocks=args.compile_vision_blocks,
             **runtime_options,
         ),
         request_timeout=args.request_timeout,

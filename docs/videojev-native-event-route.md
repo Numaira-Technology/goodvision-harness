@@ -187,6 +187,47 @@ parsing paths remain unchanged.
 The implementation uses the pinned [PyTorch 2.8 matrix selection path](https://github.com/pytorch/pytorch/blob/v2.8.0/torch/_inductor/kernel/mm.py#L663)
 and [dynamic compilation behavior](https://docs.pytorch.org/docs/2.8/generated/torch.compile.html).
 
+### Optional ordinary language normalization and visual block compilation
+
+`--compile-language-norm` and `--compile-vision-blocks` are independent,
+disabled-by-default startup factors. Both use in-place `Module.compile()` with
+Inductor, dynamic lengths, and disabled CUDA Graphs after the author's inference
+preparation. They do not enable language MLP compilation, GEMM autotuning, FP8, or prefix
+state caching. No prediction-request fields, model text, or dependencies change.
+
+The normalization factor selects only `Qwen3_5RMSNorm` instances in the language
+model, including its input, post-attention, final, and attention q/k RMSNorms.
+Their original FP32 normalization and `(1 + weight)` expression remain the source
+computation. This is distinct from DeltaNet's already fused gated normalization,
+which stays untouched. Attention projections and kernels, recurrent and
+convolution state, language MLPs, visual encoding, positions, and the FP32 decision
+head retain their paths.
+
+The visual factor compiles each existing `backbone.visual.blocks` module in place.
+It retains the author's visual parameter dtypes, original autocast, FlashAttention
+backend, position inputs, residuals, and MLP definitions. It does not compile or
+replace the entire language model, reuse prior images, lower image resolution, or
+change sampling. Dynamic attention lengths and supported graph breaks can leave
+parts eager; the flag is not evidence that every visual operation was compiled.
+
+Compare an unchanged eager phase, ordinary-normalization-only phase, and
+visual-block-only phase before combining factors. Keep all other startup options,
+rules, frames, and offline references fixed. Reuse one GPU, installation, and
+weight source, draining each phase before its planned scoring-service restart.
+The phases therefore do not share a single model process. Preserve real first-use
+and shape-compilation cost without synthetic warmup or health requests.
+
+Compilation can change floating-point evaluation and may fail. Existing window
+failure handling remains unchanged, without suppressed compiler exceptions or
+automatic eager resends. Compare probabilities and decisions on fixed original
+frames and retain full event, negative, unknown, and processing denominators in
+the streaming comparison. Neither numerical equivalence nor a speed improvement
+follows from these startup options. Loaded-model metadata records the effective
+options, not completed compilation or all-layer execution coverage.
+
+The regions follow the pinned [Qwen3.5 implementation](https://github.com/huggingface/transformers/blob/v5.14.1/src/transformers/models/qwen3_5/modeling_qwen3_5.py)
+and [PyTorch Module compilation interface](https://docs.pytorch.org/docs/2.8/generated/torch.nn.Module.html#torch.nn.Module.compile).
+
 ### Optional FP8 language MLPs
 
 `--language-mlp-fp8` is disabled by default and requires the optional

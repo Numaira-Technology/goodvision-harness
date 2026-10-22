@@ -65,7 +65,8 @@ def _shared_questions(rows):
 class VideoJevRuntime:
     def __init__(self, cache_dir, *, question_layout="repeated", single_sequence=False,
                  compile_language_mlp=False, language_mlp_fp8=False,
-                 language_mlp_gemm_autotune=False):
+                 language_mlp_gemm_autotune=False, compile_language_norm=False,
+                 compile_vision_blocks=False):
         import torch
         from transformers import AutoModel, AutoProcessor
 
@@ -122,6 +123,23 @@ class VideoJevRuntime:
                         backend="inductor", dynamic=True,
                         options=compile_options,
                     )
+        if compile_language_norm:
+            from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNorm
+
+            # Leave the distinct fused DeltaNet gated norm on its native path.
+            for module in self.model.backbone.language_model.modules():
+                if isinstance(module, Qwen3_5RMSNorm):
+                    module.compile(
+                        backend="inductor", dynamic=True,
+                        options={"triton.cudagraphs": False},
+                    )
+        if compile_vision_blocks:
+            # Keep the original visual weights, autocast and attention backend.
+            for block in self.model.backbone.visual.blocks:
+                block.compile(
+                    backend="inductor", dynamic=True,
+                    options={"triton.cudagraphs": False},
+                )
         native = vars(sys.modules[type(self.model).__module__])
         self._prepare_query_groups = native["prepare_query_groups"]
         self._format_predictions = native["format_predictions"]
@@ -161,6 +179,8 @@ class VideoJevRuntime:
             "compile_language_mlp": compile_language_mlp,
             "language_mlp_fp8": language_mlp_fp8,
             "language_mlp_gemm_autotune": language_mlp_gemm_autotune,
+            "compile_language_norm": compile_language_norm,
+            "compile_vision_blocks": compile_vision_blocks,
             "attention": "flash_attention_2", "context": CONTEXT,
             "question_layout_default": question_layout,
         }
