@@ -873,6 +873,8 @@ def main():
                         help="Score up to two already-ready independent windows without waiting")
     parser.add_argument("--execution-backend", choices=("native", "vllm"), default="native",
                         help="Use native scoring or the isolated vLLM 0.30 pooling adapter")
+    parser.add_argument("--engine-language-fp8", action="store_true",
+                        help="Quantize vLLM language linear weights once during loading; activations are dynamic")
     parser.add_argument("--single-sequence", action="store_true",
                         help="Use unpadded single-sequence scoring for fixed non-prefix windows")
     parser.add_argument("--compile-language-mlp", action="store_true",
@@ -919,7 +921,9 @@ def main():
         from tools.videojev_vllm.runtime import EngineVideoJevRuntime
 
         runtime_class = EngineVideoJevRuntime
-        runtime_options = {"context": args.context}
+        runtime_options = {"context": args.context, "language_fp8": args.engine_language_fp8}
+    elif args.engine_language_fp8:
+        parser.error("--engine-language-fp8 requires --execution-backend vllm")
     elif args.profile_request > 0:
         from tools.videojev_benchmark.profiling import ProfiledVideoJevRuntime
 

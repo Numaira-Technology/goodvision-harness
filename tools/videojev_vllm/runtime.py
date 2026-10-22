@@ -22,7 +22,8 @@ def engine_hf_config(config):
 
 
 class EngineVideoJevRuntime(VideoJevRuntime):
-    def __init__(self, cache_dir, *, question_layout="repeated", context=CONTEXT):
+    def __init__(self, cache_dir, *, question_layout="repeated", context=CONTEXT,
+                 language_fp8=False):
         import torch
         from transformers import AutoConfig, AutoProcessor
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
@@ -61,6 +62,7 @@ class EngineVideoJevRuntime(VideoJevRuntime):
             model=MODEL, revision=REVISION, code_revision=REVISION,
             trust_remote_code=True, download_dir=str(cache_dir),
             hf_overrides=engine_hf_config, dtype="bfloat16", runner="pooling",
+            quantization="fp8" if language_fp8 else None,
             skip_tokenizer_init=True, distributed_executor_backend="uni",
             tensor_parallel_size=1, pipeline_parallel_size=1,
             worker_cls="tools.videojev_vllm.worker.VideoJevWorker",
@@ -95,6 +97,7 @@ class EngineVideoJevRuntime(VideoJevRuntime):
             "packed_choice_supported": True, "single_sequence": False,
             "prefix_cache_enabled": False, "synthetic_model_calls": False,
             "engine_state_bytes": 4 * 1024**3, "mamba_ssm_cache_dtype": "float32",
+            "language_linear_quantization": "fp8-online" if language_fp8 else "bfloat16",
         }
 
     def _groups(self, window):

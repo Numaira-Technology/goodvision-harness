@@ -167,6 +167,29 @@ input/publication clocks, parser and window-failure handling remain in use.
 Service shutdown releases the engine on the GPU thread. Native-only optimization
 switches and prefix layouts are not supported by this separate backend.
 
+`--engine-language-fp8` is a disabled-by-default engine startup factor. It passes
+`quantization="fp8"` to the pinned engine while loading the original BF16
+checkpoint, without adding serialized-quantization metadata to that checkpoint.
+The engine's online per-tensor method converts language linear weights once
+after their fused shards load, then retains FP8 weights and scales. Forward
+calls dynamically quantize activations, not the weights again. This includes
+language attention projections, DeltaNet projections and the remaining MLPs;
+it does not restore the removed final MLP. The original HF vision module and
+ordinary FP32 decision head remain outside these engine linear methods.
+Attention cache storage retains its model-dtype setting and recurrent state
+remains explicitly FP32. This factor is distinct from the native-only
+`--language-mlp-fp8` path and cannot be used with the native backend.
+
+The reason to compare this method is to avoid repeated weight conversion while
+changing the language matrix execution. Ada SM89 has a CUDA 12.4-or-newer
+CUTLASS FP8 path in the pinned engine; this does not promise that every layer
+will benefit. Dynamic activation scaling, other operators and CPU dispatch
+remain. Quantization is lossy, including with an unchanged FP32 decision head.
+Compare original-frame classifications, event coverage, false reports, unknown
+judgments, failures, throughput and wall-time on the same GPU before changing
+defaults. A slower observation cadence reduces demand rather than accelerating
+inference; report that tradeoff separately from engine or precision changes.
+
 Compare native and adapter phases on the same GPU and new installation, with
 identical original frame windows, labels, rules, resolution and scheduling.
 Record the planned service switch, first-use costs, every processing opportunity,
