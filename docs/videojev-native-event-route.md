@@ -113,7 +113,12 @@ with the adapter's pinned dependencies; do not install them into the native
 PyTorch 2.8 environment. Its Linux x86_64 requirements select the official
 vLLM 0.30.0 cu129 wheel, Torch 2.13 / torchvision 0.28 from the official cu129
 index, and HF 5.14.1. Use a CUDA 12.9 development image and a compatible GPU
-driver. FA2 and causal-conv1d require builds for this installation; their old
+driver. Pin the official CPU TorchCodec wheel: the default Linux package can
+require CUDA 13 libraries during vLLM imports. This prepared-input path uses
+PIL/PyAV and the original HF processor, not TorchCodec CUDA media decoding;
+visual and language computation still executes on the GPU. Fatal worker
+errors retain their chained traceback in the existing server log.
+FA2 and causal-conv1d require builds for this installation; their old
 Torch 2.8 binaries cannot be reused. The same new environment also provides the
 native comparison phase. The adapter is not a stock VideoJev endpoint provided
 by vLLM, and implementation alone does not establish runtime compatibility,

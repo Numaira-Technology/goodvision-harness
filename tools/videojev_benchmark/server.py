@@ -7,6 +7,7 @@ import json
 import math
 import threading
 import time
+import traceback
 from collections import OrderedDict, deque
 from concurrent.futures import CancelledError, Future, TimeoutError
 from dataclasses import dataclass, field
@@ -520,6 +521,7 @@ class Scorer:
                     continue
                 self._score_one(work)
         except BaseException as exc:
+            traceback.print_exc()
             error = WindowError("gpu_worker_stopped", f"{type(exc).__name__}: {exc}")
             self._stop_shared(error)
             if work is not None:
