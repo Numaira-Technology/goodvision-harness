@@ -63,7 +63,8 @@ def _shared_questions(rows):
 
 
 class VideoJevRuntime:
-    def __init__(self, cache_dir, *, question_layout="repeated", single_sequence=False):
+    def __init__(self, cache_dir, *, question_layout="repeated", single_sequence=False,
+                 compile_language_mlp=False):
         import torch
         from transformers import AutoModel, AutoProcessor
 
@@ -87,6 +88,15 @@ class VideoJevRuntime:
             device_map={"": "cuda:0"}, attn_implementation="flash_attention_2",
         )
         self.model.prepare_for_inference()
+        if compile_language_mlp:
+            # The final attention-only layer has no MLP. Keep the original
+            # modules and weights; compile only the remaining language MLPs.
+            for layer in self.model.backbone.language_model.layers:
+                if hasattr(layer, "mlp"):
+                    layer.mlp.compile(
+                        backend="inductor", dynamic=True,
+                        options={"triton.cudagraphs": False},
+                    )
         native = vars(sys.modules[type(self.model).__module__])
         self._prepare_query_groups = native["prepare_query_groups"]
         self._format_predictions = native["format_predictions"]
@@ -123,6 +133,7 @@ class VideoJevRuntime:
             "torch_interop_threads": torch.get_num_interop_threads(),
             "packed_choice_supported": self.packed_choice_supported,
             "single_sequence": self.single_sequence,
+            "compile_language_mlp": compile_language_mlp,
             "attention": "flash_attention_2", "context": CONTEXT,
             "question_layout_default": question_layout,
         }

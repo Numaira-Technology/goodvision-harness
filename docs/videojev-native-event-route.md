@@ -105,6 +105,32 @@ equivalence.
 
 ## Service use
 
+### Optional language MLP compilation
+
+`--compile-language-mlp` is a disabled-by-default startup factor. After the
+official inference preparation, it calls PyTorch's in-place `Module.compile()`
+on the existing language-layer MLPs, using Inductor, dynamic lengths, and no CUDA
+Graphs. The attention-only final layer has no MLP and is left unchanged. The
+original modules and weights remain in place. Visual encoding, attention,
+DeltaNet, positions, hybrid state, the FP32 decision head, prompts, and parsing
+remain on their existing paths. No new prediction-request fields or model text
+are required. The existing loaded-model metadata includes the startup option.
+
+Registration does not mean compilation has finished. The first real input and
+new shapes can incur compilation cost; retain those costs separately from
+steady-state measurements, without dummy warmup requests. Compiler exceptions
+use the existing window failure handling, without suppressing errors or
+resending the window through an eager fallback. Normal PyTorch graph-break or
+recompilation behavior can still leave regions eager; this option alone does
+not prove that every operation ran as compiled code or improved performance.
+
+Compare an eager phase and a compiled phase on the same GPU, installation, and
+weights. Drain the eager phase before changing this startup factor. Such a
+comparison restarts the scoring service once and must not be described as the
+same model process. Keep input layouts and cache settings fixed, compare saved
+classifications and probabilities on the same original frames, then retain
+full quality and completion denominators in the real-stream comparison.
+
 Run the service from this checkout with the Harness package available. Keep its
 Python 3.12 CUDA environment separate from the ordinary application environment.
 The team's dependency versions are retained in
