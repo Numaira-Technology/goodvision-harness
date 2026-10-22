@@ -865,6 +865,8 @@ def main():
                         help="Use unpadded single-sequence scoring for fixed non-prefix windows")
     parser.add_argument("--compile-language-mlp", action="store_true",
                         help="Compile existing language MLPs with Inductor; first use includes compilation")
+    parser.add_argument("--language-mlp-fp8", action="store_true",
+                        help="Use lossy FP8 weights and dynamic activations only in language MLPs")
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument(
@@ -883,6 +885,7 @@ def main():
             args.cache_dir, question_layout=args.question_layout,
             single_sequence=args.single_sequence,
             compile_language_mlp=args.compile_language_mlp,
+            language_mlp_fp8=args.language_mlp_fp8,
         ),
         request_timeout=args.request_timeout,
         queue_age=args.queue_age,

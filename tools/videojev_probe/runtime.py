@@ -64,7 +64,7 @@ def _shared_questions(rows):
 
 class VideoJevRuntime:
     def __init__(self, cache_dir, *, question_layout="repeated", single_sequence=False,
-                 compile_language_mlp=False):
+                 compile_language_mlp=False, language_mlp_fp8=False):
         import torch
         from transformers import AutoModel, AutoProcessor
 
@@ -88,9 +88,26 @@ class VideoJevRuntime:
             device_map={"": "cuda:0"}, attn_implementation="flash_attention_2",
         )
         self.model.prepare_for_inference()
+        if language_mlp_fp8:
+            from torchao.quantization import (
+                Float8DynamicActivationFloat8WeightConfig, Float8MMConfig,
+                PerRow, quantize_,
+            )
+            from torchao.quantization.quantize_.common import KernelPreference
+
+            fp8_config = Float8DynamicActivationFloat8WeightConfig(
+                granularity=PerRow(), kernel_preference=KernelPreference.TORCH,
+                mm_config=Float8MMConfig(use_fast_accum=False),
+                set_inductor_config=False, version=2,
+            )
+            # Quantize only the language MLP Linear weights and activations.
+            # Keep attention, recurrent state, vision and the decision head intact.
+            for layer in self.model.backbone.language_model.layers:
+                if hasattr(layer, "mlp"):
+                    quantize_(layer.mlp, fp8_config)
         if compile_language_mlp:
             # The final attention-only layer has no MLP. Keep the original
-            # modules and weights; compile only the remaining language MLPs.
+            # modules and their current weights; compile only language MLPs.
             for layer in self.model.backbone.language_model.layers:
                 if hasattr(layer, "mlp"):
                     layer.mlp.compile(
@@ -134,9 +151,12 @@ class VideoJevRuntime:
             "packed_choice_supported": self.packed_choice_supported,
             "single_sequence": self.single_sequence,
             "compile_language_mlp": compile_language_mlp,
+            "language_mlp_fp8": language_mlp_fp8,
             "attention": "flash_attention_2", "context": CONTEXT,
             "question_layout_default": question_layout,
         }
+        if language_mlp_fp8:
+            self.metadata["versions"]["torchao"] = importlib.metadata.version("torchao")
 
     def prepare(self, payloads, fps, *, context=CONTEXT, max_pixels=409600):
         """Prepare on a CPU worker; native positions use the supplied uniform FPS.

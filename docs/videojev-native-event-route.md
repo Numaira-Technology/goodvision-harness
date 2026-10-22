@@ -111,7 +111,8 @@ equivalence.
 official inference preparation, it calls PyTorch's in-place `Module.compile()`
 on the existing language-layer MLPs, using Inductor, dynamic lengths, and no CUDA
 Graphs. The attention-only final layer has no MLP and is left unchanged. The
-original modules and weights remain in place. Visual encoding, attention,
+original modules remain in place; compilation itself does not quantize weights.
+Visual encoding, attention,
 DeltaNet, positions, hybrid state, the FP32 decision head, prompts, and parsing
 remain on their existing paths. No new prediction-request fields or model text
 are required. The existing loaded-model metadata includes the startup option.
@@ -130,6 +131,43 @@ comparison restarts the scoring service once and must not be described as the
 same model process. Keep input layouts and cache settings fixed, compare saved
 classifications and probabilities on the same original frames, then retain
 full quality and completion denominators in the real-stream comparison.
+
+### Optional FP8 language MLPs
+
+`--language-mlp-fp8` is disabled by default and requires the optional
+`torchao==0.13.0+cu128` wheel for the pinned PyTorch 2.8 CUDA 12.8 environment:
+
+```sh
+python -m pip install --no-deps --index-url https://download.pytorch.org/whl/cu128 \
+  torchao==0.13.0+cu128
+```
+
+After official inference preparation, only the Linear modules inside existing
+language-layer MLPs use TorchAO's version-2 dynamic FP8 activation/FP8 weight
+configuration. It explicitly selects per-row scaling, the PyTorch scaled-matrix
+backend, and `use_fast_accum=False`. The pinned model has 31 MLPs with three Linear
+modules each; the attention-only final layer remains unchanged. Weight storage
+and matrix inputs in those Linear operations are quantized, with BF16 outputs.
+This is a lossy precision experiment, unlike exact prefix-state reuse.
+
+`set_inductor_config=False` prevents TorchAO's recommended-settings helper from
+changing global FP32 matrix precision or unrelated Inductor settings. Vision's
+existing parameter/autocast behavior, attention, DeltaNet state, positions, FP32
+decision head, prompts, choices and parser retain their original paths. The
+optional import and weight conversion run only at startup; no new prediction
+fields, per-window comparisons or alternate-answer retries are introduced.
+
+The flag is independent of `--compile-language-mlp`. For a compiled FP8 comparison,
+enable compilation in both the BF16 and FP8 phases; otherwise the comparison
+mixes precision with compilation. Conversion precedes regional MLP compilation.
+Keep the GPU, installation, weights source, media and scheduling fixed, drain
+each phase before restarting the model service, and retain first-use costs.
+The saved startup metadata identifies the option and TorchAO version, but does
+not prove every operation used an FP8 kernel or that quality was preserved.
+
+References: [TorchAO 0.13 configuration](https://github.com/pytorch/ao/blob/v0.13.0/torchao/quantization/quant_api.py#L1602),
+[FP8 Linear dispatch](https://github.com/pytorch/ao/blob/v0.13.0/torchao/quantization/quantize_/workflows/float8/float8_tensor.py#L232),
+and [PyTorch 2.8 SM89 rowwise dispatch](https://github.com/pytorch/pytorch/blob/v2.8.0/aten/src/ATen/native/cuda/RowwiseScaledMM.cu#L945).
 
 Run the service from this checkout with the Harness package available. Keep its
 Python 3.12 CUDA environment separate from the ordinary application environment.
