@@ -422,7 +422,14 @@ class VideoJevRuntime:
                     output = self.model(**batch, visual_features=features)
                 score_end.record()
                 scoring_events.append((score_start, score_end))
-                raw.extend(self._format_predictions(output, rows, prepared.record, self.decoder))
+                # The native formatter reads each question separately. Transfer
+                # each complete tensor once, as in the packed-window path.
+                cpu = SimpleNamespace(
+                    logits=output.logits.float().cpu(),
+                    probabilities=output.probabilities.float().cpu(),
+                    score_mask=output.score_mask.cpu(),
+                )
+                raw.extend(self._format_predictions(cpu, rows, prepared.record, self.decoder))
             torch.cuda.synchronize()
             done = time.perf_counter()
         return raw, {

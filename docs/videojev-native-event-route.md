@@ -347,6 +347,24 @@ read-only source assessment, not an executed comparison. The interfaces were rea
 from the pinned HF [model source](https://huggingface.co/ZhuYuhan/VideoJev-4B/raw/1c1a253bf90dfa66176124d25a48ffb791d517d5/modeling_videojev.py)
 and [processing source](https://huggingface.co/ZhuYuhan/VideoJev-4B/raw/1c1a253bf90dfa66176124d25a48ffb791d517d5/processing_videojev.py).
 
+### Grouped result transfer
+
+Single-window scoring now transfers each complete logits, probabilities and
+score-mask tensor to the CPU before calling the original native formatter. The
+existing packed-window path already uses this arrangement. The formatter's
+per-question mask counts and list conversions therefore run on CPU tensors,
+rather than triggering repeated small GPU readbacks for each event class.
+
+The native formatter, FP32 conversion, valid-option slicing, choice ordering and
+parser remain unchanged. Model execution, prompts, cached state and video
+selection do not change. This is a result-transfer optimization, not a fix for
+prefix-cache score differences or a claim of numerical equivalence between
+cached and uncached model forwards. No additional request option, timing field,
+comparison pass or synchronization is introduced. Existing decision-stage and
+total timings include the transfer and formatting work. Performance and output
+behavior still require the authorized real-input evaluation; source review alone
+does not establish a speedup. No independent software tests were run.
+
 No synthetic warmup or health request is sent by the adapter. Its first request
 uses actual arrived frames. The local adapter does not retry, follow redirects,
 use proxy environment settings, or fall back to another model. Client and server
