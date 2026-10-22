@@ -90,6 +90,31 @@ frames can force lower spatial resolution under the context budget. Source size,
 processed size, visual tokens, and the effective pixel cap must therefore be read
 alongside frame count, rather than attributing every change to FPS alone.
 
+## Optional scene-prompt ablation
+
+The real-file input configuration accepts `videojev_prompt_style`: `full`
+(default), `scene`, or `brief`. `full` preserves the existing template. `scene`
+omits position/ID association instructions from the scene-only template, which
+has no person snapshots. It also removes duplicate last-frame/evidence guidance
+only for `research-v1` without fixed definitions, where the policy already states
+those rules. Main-baseline and fixed-definition templates retain that guidance;
+the person-snapshot question interface is unchanged.
+
+`brief` adds one separate change: its choices are `A. Present.`, `B. Assessed
+absent.`, and `C. Insufficient evidence.` The six event definitions, sensitivities,
+scene aggregation, source times, native task markers and three semantic values
+remain. The parser checks the returned answer against the actual options, keeps
+the original probabilities, and maps the shortened canonical options to the same
+three values. Existing PPE option semantics retain their path.
+
+The client constructs the chosen template once, then reuses the existing session
+registration and compiled-text path. It adds no per-window text rewriting or GPU
+comparison. These are optional prompt factors, not a claim of lossless model
+equivalence or measured speedup. Compare full/scene/brief using the same resident
+model, input settings and offline references; examine actual token lengths,
+quality and twelve-stream updates together. This new comparison has not yet run.
+No independent software tests were run.
+
 ## Service use
 
 Run the service from this checkout with the Harness package available. Keep its

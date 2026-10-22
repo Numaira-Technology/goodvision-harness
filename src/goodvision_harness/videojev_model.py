@@ -83,6 +83,7 @@ class VideoJevInspector:
             labels=config.labels, sensitivities=dict(config.sensitivities),
             event_policy_profile=config.event_policy,
             definitions=config.event_definitions,
+            prompt_style=config.videojev_prompt_style,
         )
         self._expected = tuple(
             {"id": row["id"], "options": row["options"]}

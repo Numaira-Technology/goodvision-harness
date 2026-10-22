@@ -36,6 +36,7 @@ _DEFAULTS = {
     "event_policy": "research-v1",
     "event_definitions": {},
     "videojev_question_layout": "repeated",
+    "videojev_prompt_style": "full",
     "max_image_side": 720,
     "jpeg_quality": 90,
     "start_delay_seconds": 0.5,
@@ -124,6 +125,7 @@ def _process_config(config, source, run_id):
         event_policy=config["event_policy"], retain_historical_results=True,
         event_definitions=tuple(config["event_definitions"].items()),
         videojev_question_layout=config["videojev_question_layout"],
+        videojev_prompt_style=config["videojev_prompt_style"],
     )
 
 

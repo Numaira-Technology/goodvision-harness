@@ -74,12 +74,15 @@ class VLMProcessConfig:
     observation_window_frames: int = 4
     observation_frame_delta_seconds: float | None = None
     videojev_question_layout: str = "repeated"
+    videojev_prompt_style: str = "full"
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
             raise ValueError("invalid VLM output mode")
         if self.videojev_question_layout not in {"repeated", "shared", "prefix", "prefix-cache"}:
             raise ValueError("invalid VideoJev question layout")
+        if self.videojev_prompt_style not in {"full", "scene", "brief"}:
+            raise ValueError("invalid VideoJev prompt style")
         if not self.stream_session_id or not self.source_id or not self.labels:
             raise ValueError("VLM process requires a scoped source and event labels")
         if self.event_policy not in EVENT_POLICY_PROFILES:
