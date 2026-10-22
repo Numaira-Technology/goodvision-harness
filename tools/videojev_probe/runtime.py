@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from .contract import CONTEXT, MODEL, REVISION
 from .question_templates import CompiledQuestions, PolicyPrefix
 
-QUESTION_LAYOUTS = ("repeated", "shared", "prefix", "prefix-cache")
+QUESTION_LAYOUTS = ("repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned")
 
 
 def record_for_grid(processor, grid, frame_count, fps):
@@ -228,7 +228,7 @@ class VideoJevRuntime:
         if not changed:
             return batch, "repeated", None
         prefix = None
-        if question_layout in ("prefix", "prefix-cache"):
+        if question_layout in ("prefix", "prefix-cache", "prefix-cache-aligned"):
             marker = "\nEvidence metadata: "
             policies = [row["query"].partition(marker) for row in rows]
             policy = policies[0][0]
@@ -266,7 +266,7 @@ class VideoJevRuntime:
             }
         return replacement, question_layout, prefix
 
-    def _prefix_forward(self, batch, features, prefix, *, use_cache):
+    def _prefix_forward(self, batch, features, prefix, *, use_cache, align_cache=False):
         """Score a text-first layout, optionally reusing only its pure-text state.
 
         The pinned native forward disables caching. This opt-in path preserves
@@ -277,6 +277,10 @@ class VideoJevRuntime:
         torch, model = self.torch, self.model
         device = model.get_input_embeddings().weight.device
         prefix_length = prefix.length
+        # FLA 0.4.2 evaluates DeltaNet in 64-token chunks. Keep the remaining
+        # policy tokens in the suffix without changing the complete sequence.
+        cache_length = prefix_length - prefix_length % 64 if align_cache else prefix_length
+        use_cache = use_cache and cache_length > 0
         if prefix.device_ids is None:
             prefix.device_ids = prefix.ids.to(device)
         ids = torch.cat([
@@ -288,7 +292,8 @@ class VideoJevRuntime:
         queries = batch["query_indices"].to(device)
         mask = batch["score_mask"].to(device)
         tasks = batch["decision_tasks"].to(device)
-        stats = {"prefix_tokens": prefix_length, "prefix_cache_enabled": use_cache,
+        stats = {"prefix_tokens": cache_length if use_cache else prefix_length,
+                 "prefix_cache_enabled": use_cache,
                  "prefix_cache_hit": False,
                  "prefix_prefill_seconds": 0.0, "prefix_clone_seconds": 0.0}
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -314,30 +319,34 @@ class VideoJevRuntime:
             if use_cache:
                 # The fixed configuration owns its pure-text state. There is
                 # no device-to-host token/position comparison on a cache hit.
-                stats["prefix_cache_hit"] = prefix.state is not None
+                base = prefix.aligned_state if align_cache else prefix.state
+                stats["prefix_cache_hit"] = base is not None
                 if not stats["prefix_cache_hit"]:
                     before = time.perf_counter()
                     base = language(
-                        inputs_embeds=embeds[:, :prefix_length],
-                        position_ids=positions[..., :prefix_length],
+                        inputs_embeds=embeds[:, :cache_length],
+                        position_ids=positions[..., :cache_length],
                         attention_mask=None, use_cache=True,
                     ).past_key_values
                     torch.cuda.synchronize()
                     stats["prefix_prefill_seconds"] = time.perf_counter() - before
-                    prefix.state = base
+                    if align_cache:
+                        prefix.aligned_state = base
+                    else:
+                        prefix.state = base
                 before = time.perf_counter()
                 # Copy all hybrid state; never retain a previous video suffix.
-                working = deepcopy(prefix.state)
+                working = deepcopy(base)
                 torch.cuda.synchronize()
                 stats["prefix_clone_seconds"] = time.perf_counter() - before
                 hidden = language(
-                    inputs_embeds=embeds[:, prefix_length:],
-                    position_ids=positions[..., prefix_length:],
+                    inputs_embeds=embeds[:, cache_length:],
+                    position_ids=positions[..., cache_length:],
                     attention_mask=None, past_key_values=working, use_cache=True,
                 ).last_hidden_state[0]
-                pairs, queries = pairs - prefix_length, queries - prefix_length
+                pairs, queries = pairs - cache_length, queries - cache_length
                 stats["forward_tokens"] = ids.shape[1] - (
-                    prefix_length if stats["prefix_cache_hit"] else 0
+                    cache_length if stats["prefix_cache_hit"] else 0
                 )
             else:
                 hidden = language(
@@ -411,7 +420,8 @@ class VideoJevRuntime:
                 if prefix is not None:
                     output, cache_stats = self._prefix_forward(
                         batch, features, prefix,
-                        use_cache=actual_layout == "prefix-cache",
+                        use_cache=actual_layout in ("prefix-cache", "prefix-cache-aligned"),
+                        align_cache=actual_layout == "prefix-cache-aligned",
                     )
                     prefix_stats.append(cache_stats)
                 elif (self.single_sequence and question_template is not None

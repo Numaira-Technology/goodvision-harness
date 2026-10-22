@@ -225,7 +225,7 @@ negative coverage alongside latency and throughput.
 
 ### Optional question-layout ablation
 
-`--question-layout repeated|shared|prefix|prefix-cache` selects the service default;
+`--question-layout repeated|shared|prefix|prefix-cache|prefix-cache-aligned` selects the service default;
 `repeated` remains the default. A `/predict` request may specify `question_layout`.
 Omitting it uses the fixed service default. The selected value belongs to that
 request and does not mutate the service or restart its loaded model. Ready output
@@ -336,6 +336,28 @@ to native layouts, and splitting a hybrid forward can change floating-point
 rounding. Compare native shared, prefix without cache and
 prefix with cache on quality, raw scores, wall-time and stream coverage before
 selecting a deployment setting. No performance result is implied by this code.
+
+`prefix-cache-aligned` is a separate experimental factor. The pinned
+[FLA 0.4.2 DeltaNet forward](https://github.com/fla-org/flash-linear-attention/blob/v0.4.2/fla/ops/gated_delta_rule/chunk.py#L35)
+uses 64-token chunks. Splitting a full sequence at an arbitrary text-prefix end
+changes those chunk boundaries. The aligned mode caches only the largest multiple
+of 64 tokens within that pure-text prefix. Its remaining policy tokens are
+computed with the current window suffix; no padding, deletion, reordering or new
+model context is introduced. A prefix shorter than one chunk uses the full
+uncached text-first forward rather than an empty prefill. Full-prefix and aligned
+base states are stored separately on the fixed policy object, so switching this
+request factor can reuse the same loaded model without mixing their states.
+
+Both modes still compute positions from the complete current sequence, preserve
+its candidate indices and copy the entire hybrid state before suffix evaluation.
+The existing `prefix_tokens` count describes the actually cached span when
+caching is enabled; first prefill and remaining forward tokens keep their actual
+costs. This factor investigates a concrete difference in evaluation order, not a
+confirmed defect or a promise of equal probabilities. Attention/projection shapes
+and the explicit recurrent-state boundary still differ from a full forward.
+Compare the same original frames, raw probabilities, three-valued decisions and
+paced-stream results before selecting it. The original `prefix-cache` mode and
+all defaults remain available and unchanged.
 
 The runtime retains the pinned model module's original `prepare_query_groups`
 for legacy full-question requests and its

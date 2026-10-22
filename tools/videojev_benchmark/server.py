@@ -150,7 +150,9 @@ def _request(body):
         if "question_template" in body else None
     )
     question_layout = body.get("question_layout")
-    if question_layout is not None and question_layout not in ("repeated", "shared", "prefix", "prefix-cache"):
+    if question_layout is not None and question_layout not in (
+        "repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned",
+    ):
         raise ValueError("invalid question_layout")
     return {
         "request_id": body["request_id"],
@@ -214,7 +216,9 @@ class Scorer:
             or not _number(queue_age)
             or queue_age <= 0
             or queue_policy not in ("fifo", "latest-per-stream")
-            or question_layout not in ("repeated", "shared", "prefix", "prefix-cache")
+            or question_layout not in (
+                "repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned",
+            )
             or gpu_batch_size not in (1, 2)
             or any(
                 type(value) is not int or value <= 0
@@ -862,7 +866,9 @@ def main():
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument(
-        "--question-layout", choices=("repeated", "shared", "prefix", "prefix-cache"), default="repeated",
+        "--question-layout",
+        choices=("repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned"),
+        default="repeated",
         help="Default native question layout; a request may explicitly override it",
     )
     args = parser.parse_args()

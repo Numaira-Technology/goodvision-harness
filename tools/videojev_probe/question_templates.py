@@ -16,6 +16,7 @@ class PolicyPrefix:
     device_ids: object = None
     embeddings: object = None
     state: object = None
+    aligned_state: object = None
 
     @property
     def length(self):
@@ -179,7 +180,9 @@ class CompiledQuestions:
             actual, prefix = "repeated", None
             if (self.shared and end - start > 1 and layout != "repeated"
                     and (layout == "shared" or self.prefix is not None)):
-                use_prefix = layout in ("prefix", "prefix-cache") and self.prefix is not None
+                use_prefix = layout in (
+                    "prefix", "prefix-cache", "prefix-cache-aligned",
+                ) and self.prefix is not None
                 candidate = [prefixed[start] if use_prefix else first[start],
                              *shared[start + 1:end]]
                 candidate_length = sum(part.length(dynamic) for part in candidate)

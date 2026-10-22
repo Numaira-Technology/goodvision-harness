@@ -79,7 +79,9 @@ class VLMProcessConfig:
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
             raise ValueError("invalid VLM output mode")
-        if self.videojev_question_layout not in {"repeated", "shared", "prefix", "prefix-cache"}:
+        if self.videojev_question_layout not in {
+            "repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned",
+        }:
             raise ValueError("invalid VideoJev question layout")
         if self.videojev_prompt_style not in {"full", "scene", "brief"}:
             raise ValueError("invalid VideoJev prompt style")
