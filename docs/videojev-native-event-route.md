@@ -724,6 +724,99 @@ quality/latency have separate denominators. PPE and litter remain unscored where
 no reference exists. No result or deployment is claimed by adding this entry
 point; independent software tests have not been run under the project rule.
 
+### Completed same-host classification and 12-stream comparison
+
+Nine groups completed on 2026-10-22 UTC using runtime `7109e0f`: one RTX4090,
+one resident VideoJev process, intra-op 4/inter-op 32, GPU batch 1, and the pinned
+model and environment above. The five fixed-frame groups ran before the four
+120-second paced groups. No group reloaded the model or sent a synthetic warmup.
+All 4,227 requests completed; request failures, invalid responses and missing
+receipts were zero. This does not make every classification correct.
+
+The seven fixed windows provide eight offline reference judgments: two positive
+and two negative fight judgments, two positive fall judgments, and one positive
+judgment each for smoking and visible weapon. One window carries both fight and
+fall. References came from original UBI labels, the UR fall transition labels,
+and selected AVA action points with reviewed images. The weapon reference uses
+the visible gun at a shoot-labeled point, not a general shoot-to-weapon mapping.
+AVA labels are sparse person/action points, not natural event boundaries. The
+weapon window crosses a shot cut; only the selected final scene is scored.
+
+| Fixed identical frames | Fight correct / 4 | Fall correct / 2 | Smoking correct / 1 | Weapon correct / 1 |
+| --- | ---: | ---: | ---: | ---: |
+| Six shared | 4 | 1 | 0 | 0 |
+| Six prefix, no KV | 2 | 0 | 1 | 0 |
+| Six prefix-cache | 2 | 0 | 1 | 0 |
+| Four shared | 4 | 1 | 0 | 0 |
+| Four prefix-cache | 3 | 0 | 1 | 0 |
+
+Both positive fight references were detected in all five groups. The two fight
+negatives became positive in both six-prefix groups; one became positive in the
+four-cache group. Moving rules before the video therefore changed quality even
+without KV. Six-prefix and six-cache selected the same 42/42 choices, but their
+saved probabilities were not equal (maximum absolute difference 0.016865).
+No scored judgment was unknown. Two unscored PPE judgments were unknown, and
+PPE/litter have no quality references. Smoking, fall and weapon lack negative
+references here, so this study does not establish their false-positive rates.
+
+First complete HTTP durations were 38.468, 27.925, 12.122, 0.192 and 0.154 seconds
+in table order. The ordinary medians of each group's remaining six requests were
+0.167, 0.128, 0.083, 0.131 and 0.076 seconds. These are fixed-frame HTTP timings,
+not event reaction delays. Fixed group order and kernel initialization prevent
+treating the first-use differences as a class-count or cache-only improvement.
+
+The paced groups all requested six labels, with two real frames, no internal
+padding, 0.5-second target spacing, candidate FPS 4, full options, unchanged rules
+and the same twelve source segments. Each group recorded 41,397 original input
+frames with zero late drops; all sources completed their input, drain and cleanup.
+
+| Six-class, twelve-stream result | Shared 0.8 s | Shared 1.6 s | Cache 0.8 s | Cache 1.6 s |
+| --- | ---: | ---: | ---: | ---: |
+| Completed / scheduling opportunities | 990/1800 | 900/900 | 1402/1800 | 900/900 |
+| Busy opportunities not sent | 810 | 0 | 398 | 0 |
+| Source intervals reported / all intervals | 7/8 | 7/8 | 7/8 | 7/8 |
+| Reports within 3 s / all intervals | 5/8 | 6/8 | 7/8 | 7/8 |
+| Negative segments with a positive report | 5/8 | 4/8 | 7/8 | 6/8 |
+| Positive / evaluated negative windows | 50/661 | 50/600 | 200/935 | 126/600 |
+| Fight unknown judgments | 0 | 0 | 39 | 22 |
+| PPE unknown judgments, unscored | 15 | 9 | 305 | 214 |
+| Longest interval without a definite fight result, s | 2.195 | 2.455 | 14.072 | 14.519 |
+| Service P50, s | 1.464 | 0.830 | 1.022 | 0.480 |
+| Server queue P50, s | 1.334 | 0.692 | 0.931 | 0.390 |
+| CUDA choice-scoring P50, ms | 101.291 | 106.101 | 64.148 | 62.728 |
+
+P50 in this streaming table uses the existing analyzer's nearest-rank definition.
+Service time contains queueing and computation; nested durations must not be
+added to it. Cache 0.8 s recorded 1,401 hits/one miss; cache 1.6 s recorded 900
+hits/no misses. Both cached 911 text tokens, with a median 776-token forward.
+The first load-group cache prefill took 66.068 ms after the earlier point groups;
+it is not the cold-cache cost. Waiting expiry, request failures and format
+failures were zero in all four groups.
+
+All four groups missed the same source interval, dev0013's second interval;
+their saved in-interval windows completed and returned false. Among their common seven
+reported intervals, cache minus shared reaction delay had median differences of
+-0.759 s at 0.8-second scheduling and -0.436 s at 1.6-second scheduling. These
+include changed window selection as well as service time. For example, the
+dev0007 source interval at 0.8 seconds took 1.769 s with shared and 1.398 s with
+cache: input-to-last-evidence 0.200/0.200 s, complete HTTP 1.455/1.054 s, and
+remaining local work 0.114/0.144 s. Both reports ended at original frame 1099.
+This measures from the source-labeled start frame entering Harness to a readable
+report; it does not establish a human-accepted natural onset, actor attribution,
+OFF transition, or frontend alarm delay.
+
+The 1.6-second setting halves the requested update rate. Its 900/900 completion
+does not show that the GPU can meet all 1,800 opportunities at 0.8 seconds.
+Cache reduces scoring work, but the point comparison and negative/unknown
+results do not justify replacing the shared default. Keep shared as the quality
+reference; shared 1.6 s is a lower-frequency capacity candidate, while cache
+remains an explicit speed/quality experiment. Weapon and UR fall misses need
+category-specific work before claiming multi-class usability. The references
+remain a small development set, not held-out acceptance data.
+
+The controller collected all nine groups and released the GPU. A separate exact
+provider lookup returned no instance. No independent software tests were run.
+
 ## Failures and timing
 
 A malformed native choice remains a format failure, not a negative observation.
@@ -824,8 +917,8 @@ The runner does not rent, release, or restart a GPU. The external resource owner
 must stop/release the exact owned GPU after the last requested run and retain
 server results, including calculations that outlive a client deadline.
 
-GPU execution and offline quality scoring remain next steps. Parameter tuning
-must report quality, dropped/expired windows, per-stream
+Further quality and sustained-load evaluation remain. Parameter tuning must
+report quality, dropped/expired windows, per-stream
 completion and update intervals, failures, and event response delay together.
 Dropping most requests can reduce the latency of survivors without meeting
 twelve-stream capacity. Small tuning clips are not a held-out final benchmark.
