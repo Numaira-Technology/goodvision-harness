@@ -873,8 +873,9 @@ def main():
                         help="Score up to two already-ready independent windows without waiting")
     parser.add_argument("--execution-backend", choices=("native", "vllm"), default="native",
                         help="Use native scoring or the isolated vLLM 0.30 pooling adapter")
-    parser.add_argument("--engine-language-fp8", action="store_true",
-                        help="Quantize vLLM language linear weights once during loading; activations are dynamic")
+    parser.add_argument("--engine-language-fp8", nargs="?", const="all",
+                        choices=("all", "mlp"),
+                        help="Quantize all language linear layers or only MLPs once at loading; activations are dynamic")
     parser.add_argument("--single-sequence", action="store_true",
                         help="Use unpadded single-sequence scoring for fixed non-prefix windows")
     parser.add_argument("--compile-language-mlp", action="store_true",

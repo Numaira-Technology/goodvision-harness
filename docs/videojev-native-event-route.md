@@ -167,7 +167,8 @@ input/publication clocks, parser and window-failure handling remain in use.
 Service shutdown releases the engine on the GPU thread. Native-only optimization
 switches and prefix layouts are not supported by this separate backend.
 
-`--engine-language-fp8` is a disabled-by-default engine startup factor. It passes
+`--engine-language-fp8` is a disabled-by-default engine startup factor. With no
+value, or with the explicit value `all`, it passes
 `quantization="fp8"` to the pinned engine while loading the original BF16
 checkpoint, without adding serialized-quantization metadata to that checkpoint.
 The engine's online per-tensor method converts language linear weights once
@@ -179,6 +180,27 @@ ordinary FP32 decision head remain outside these engine linear methods.
 Attention cache storage retains its model-dtype setting and recurrent state
 remains explicitly FP32. This factor is distinct from the native-only
 `--language-mlp-fp8` path and cannot be used with the native backend.
+
+`--engine-language-fp8 mlp` selects only the language MLP's fused gate/up and
+down projections. It uses the pinned engine's `quantization="online"` with
+`quantization_config.targets` matching
+`language_model.layers.*.mlp.gate_up_proj` and
+`language_model.layers.*.mlp.down_proj`, both using `fp8_per_tensor`.
+Unmatched attention and DeltaNet projections retain their original BF16 linear
+method; selection happens during model construction, not on every window.
+The original checkpoint, visual module, decision head, embeddings, attention
+cache and recurrent-state precision remain unchanged. This does not add
+checkpoint quantization metadata or combine a legacy `fp8` base with online
+overrides. The removed final MLP remains removed.
+
+This narrower factor isolates MLP precision from attention-projection precision.
+Its MLP outputs still affect later attention inputs, so it does not guarantee
+unchanged classifications or a speed improvement. The full-language and MLP-only
+factors share the engine's online per-tensor FP8 linear implementation; the
+native-only TorchAO option remains a separate implementation. Compare actual
+original-frame decisions and streaming quality before selecting either factor.
+See the pinned engine's [online configuration](https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/config/quantization.py)
+and [layer selection](https://github.com/vllm-project/vllm/blob/v0.30.0/vllm/model_executor/layers/quantization/online/base.py).
 
 The reason to compare this method is to avoid repeated weight conversion while
 changing the language matrix execution. Ada SM89 has a CUDA 12.4-or-newer

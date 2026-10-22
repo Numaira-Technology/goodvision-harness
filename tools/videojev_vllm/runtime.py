@@ -58,11 +58,19 @@ class EngineVideoJevRuntime(VideoJevRuntime):
         ModelRegistry.register_model(
             "VideoJevForPooling", "tools.videojev_vllm.model:VideoJevForPooling",
         )
+        mlp_fp8 = language_fp8 == "mlp"
+        quantization_config = None
+        if mlp_fp8:
+            quantization_config = {"targets": {
+                "language_model.layers.*.mlp.gate_up_proj": "fp8_per_tensor",
+                "language_model.layers.*.mlp.down_proj": "fp8_per_tensor",
+            }}
         arguments = EngineArgs(
             model=MODEL, revision=REVISION, code_revision=REVISION,
             trust_remote_code=True, download_dir=str(cache_dir),
             hf_overrides=engine_hf_config, dtype="bfloat16", runner="pooling",
-            quantization="fp8" if language_fp8 else None,
+            quantization="online" if mlp_fp8 else "fp8" if language_fp8 else None,
+            quantization_config=quantization_config,
             skip_tokenizer_init=True, distributed_executor_backend="uni",
             tensor_parallel_size=1, pipeline_parallel_size=1,
             worker_cls="tools.videojev_vllm.worker.VideoJevWorker",
@@ -97,7 +105,9 @@ class EngineVideoJevRuntime(VideoJevRuntime):
             "packed_choice_supported": True, "single_sequence": False,
             "prefix_cache_enabled": False, "synthetic_model_calls": False,
             "engine_state_bytes": 4 * 1024**3, "mamba_ssm_cache_dtype": "float32",
-            "language_linear_quantization": "fp8-online" if language_fp8 else "bfloat16",
+            "language_linear_quantization": (
+                "fp8-online-mlp" if mlp_fp8 else "fp8-online" if language_fp8 else "bfloat16"
+            ),
         }
 
     def _groups(self, window):
