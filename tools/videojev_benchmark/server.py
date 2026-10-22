@@ -867,6 +867,8 @@ def main():
                         help="Compile existing language MLPs with Inductor; first use includes compilation")
     parser.add_argument("--language-mlp-fp8", action="store_true",
                         help="Use lossy FP8 weights and dynamic activations only in language MLPs")
+    parser.add_argument("--language-mlp-gemm-autotune", action="store_true",
+                        help="Compile language MLPs and tune ATEN/TRITON matrix kernels at first use")
     parser.add_argument("--profile-request", type=int, default=0,
                         help="Profile this real single-window call once; zero disables profiling")
     parser.add_argument("--profile-output", type=Path,
@@ -900,6 +902,7 @@ def main():
             single_sequence=args.single_sequence,
             compile_language_mlp=args.compile_language_mlp,
             language_mlp_fp8=args.language_mlp_fp8,
+            language_mlp_gemm_autotune=args.language_mlp_gemm_autotune,
             **runtime_options,
         ),
         request_timeout=args.request_timeout,

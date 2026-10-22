@@ -64,7 +64,8 @@ def _shared_questions(rows):
 
 class VideoJevRuntime:
     def __init__(self, cache_dir, *, question_layout="repeated", single_sequence=False,
-                 compile_language_mlp=False, language_mlp_fp8=False):
+                 compile_language_mlp=False, language_mlp_fp8=False,
+                 language_mlp_gemm_autotune=False):
         import torch
         from transformers import AutoModel, AutoProcessor
 
@@ -105,14 +106,21 @@ class VideoJevRuntime:
             for layer in self.model.backbone.language_model.layers:
                 if hasattr(layer, "mlp"):
                     quantize_(layer.mlp, fp8_config)
+        compile_language_mlp = compile_language_mlp or language_mlp_gemm_autotune
         if compile_language_mlp:
+            compile_options = {"triton.cudagraphs": False}
+            if language_mlp_gemm_autotune:
+                compile_options.update(
+                    max_autotune_gemm=True,
+                    max_autotune_gemm_backends="ATEN,TRITON",
+                )
             # The final attention-only layer has no MLP. Keep the original
             # modules and their current weights; compile only language MLPs.
             for layer in self.model.backbone.language_model.layers:
                 if hasattr(layer, "mlp"):
                     layer.mlp.compile(
                         backend="inductor", dynamic=True,
-                        options={"triton.cudagraphs": False},
+                        options=compile_options,
                     )
         native = vars(sys.modules[type(self.model).__module__])
         self._prepare_query_groups = native["prepare_query_groups"]
@@ -152,6 +160,7 @@ class VideoJevRuntime:
             "single_sequence": self.single_sequence,
             "compile_language_mlp": compile_language_mlp,
             "language_mlp_fp8": language_mlp_fp8,
+            "language_mlp_gemm_autotune": language_mlp_gemm_autotune,
             "attention": "flash_attention_2", "context": CONTEXT,
             "question_layout_default": question_layout,
         }

@@ -154,6 +154,39 @@ same model process. Keep input layouts and cache settings fixed, compare saved
 classifications and probabilities on the same original frames, then retain
 full quality and completion denominators in the real-stream comparison.
 
+### Optional language MLP GEMM autotuning
+
+`--language-mlp-gemm-autotune` is a disabled-by-default startup factor that
+also enables the existing regional MLP compilation path. It adds
+`max_autotune_gemm=True` and `max_autotune_gemm_backends="ATEN,TRITON"` to
+the MLP-only compile options, retaining dynamic lengths and disabled CUDA
+Graphs. It does not enable global Inductor autotuning or exhaustive search.
+The loaded-model metadata reports the effective MLP compilation startup option
+and this factor, not proof that compilation has finished or covered every layer.
+It adds no prediction-request fields, model text, or dependencies.
+
+Inductor times candidate matrix kernels during first-use compilation. Its
+internal timing uses compiler-generated buffers, not extra video or full-model
+requests. Keep this first-use cost and any later shape compilation separate
+from steady-state latency. Dynamic lengths do not guarantee that every shape
+shares a compiled variant or receives its own optimal kernel. ATEN remains a
+candidate, but this does not guarantee that compilation cannot fail. Existing
+window failure handling remains unchanged, with no suppressed errors or
+automatic eager resend.
+
+For a BF16 comparison, enable `--compile-language-mlp` in both phases and change
+only the GEMM-autotune startup factor. Keep FP8, prefix state caching, and
+profiling disabled. Reuse the GPU, installation, weights, and fixed frame
+inputs, draining before the one planned service restart. Compare complete
+probability vectors and decisions, then real-stream quality and processing
+coverage. Kernel selection can change floating-point evaluation, so neither
+bitwise equivalence nor a speed improvement follows from enabling the flag.
+The original visual, attention, DeltaNet, position, decision-head, prompt, and
+parsing paths remain unchanged.
+
+The implementation uses the pinned [PyTorch 2.8 matrix selection path](https://github.com/pytorch/pytorch/blob/v2.8.0/torch/_inductor/kernel/mm.py#L663)
+and [dynamic compilation behavior](https://docs.pytorch.org/docs/2.8/generated/torch.compile.html).
+
 ### Optional FP8 language MLPs
 
 `--language-mlp-fp8` is disabled by default and requires the optional
