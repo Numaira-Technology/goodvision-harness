@@ -163,8 +163,61 @@ The existing scoring helper also bypasses the wrapper's repeated GPU boolean
 checks for an already constructed fixed template. Any combined timing change
 must not be attributed only to omitting packed metadata. Native per-window mRoPE
 and formatter synchronizations remain. New kernel specializations can add first
-use costs or alter near-boundary numeric results. This option has not been
-deployed or measured; quality and throughput still require a real comparison.
+use costs or alter near-boundary numeric results.
+
+The optional path was deployed at `56c5007` in six real-file trials on one RTX
+4090. Each configuration ran the original cold clip, three-stream case and
+twelve-stream input. Both used the same installation, weights, six event rules,
+shared two-frame layout, 0.5-second frame spacing and 0.8-second scheduling
+opportunities. The controller restarted only the drained service to change the
+startup option. It did not lease another GPU or redeploy between groups.
+
+| Twelve-stream result | Native single window | Single-sequence option |
+| --- | ---: | ---: |
+| Completed / 1,800 opportunities | 922 | 924 |
+| Busy opportunities not sent / waiting expiry | 878 / 0 | 876 / 0 |
+| Valid reports during input | 899 | 901 |
+| Valid updates/s, common input span | 7.482 | 7.499 |
+| Longest valid-update gap | 2.434 s | 2.461 s |
+| Source intervals reported | 6/8 | 7/8 |
+| Source intervals reported within 3 s / all intervals | 4/8 | 5/8 |
+| Negative clips with a positive | 6/8 | 4/8 |
+| Positive negative-clip windows | 46/615 | 42/616 |
+| Median service elapsed time | 1.575 s | 1.569 s |
+| Median service queue | 1.429 s | 1.423 s |
+| Median GPU-work interval | 132.258 ms | 131.860 ms |
+| Median CUDA scoring interval | 103.850 ms | 103.064 ms |
+
+The option ran for all 924 candidate windows; all 922 baseline windows used the
+native path. Both retained one GPU window at a time. The update-rate difference
+was about +0.22%, too small to support a material speedup or a default switch.
+All twelve streams received valid updates with no gap above three seconds on
+this short load, but roughly 1.58-second per-stream intervals still missed about
+half the fixed 0.8-second opportunities. Timing intervals overlap and must not be
+added. GPU memory peaks were almost unchanged.
+
+The six commonly reported source intervals were four slower and two faster with
+the option; the median paired difference was +0.179 s. The candidate's extra
+report used different selected frames. It does not establish improved model
+recognition. For the 132 matching original two-frame/time combinations, all 792
+event choices and their saved probabilities matched. That observation covers
+only those saved windows, not all inputs or mathematical equivalence. Only fight
+has reference labels; the other five categories remain unscored. Eight negative
+clips come from four original videos, and source ON is not a separately accepted
+natural action onset or subject match.
+
+All 2,051 sent requests completed across the six trials; fight semantic unknowns,
+invalid judgments and request failures were zero. The native first full HTTP
+request took 60.437 s, completing only one of sixty cold-clip opportunities, with
+58 busy opportunities unsent and one waiting expiry. After the same-host service
+restart, the option's first request took 45.875 s and four of sixty completed.
+First-use kernel work and reused environment/cache order differ, so the 14.6 s
+gap is not a steady-state optimization result. Both later three-stream trials
+completed all 100 requests. No extra warm-up requests were sent.
+
+The controller collected all six results and released the GPU; a separate exact
+provider query confirmed the instance was absent. The default remains native
+single-window scoring; this option remains an explicit research setting.
 No independent software tests were run.
 
 ### Optional ready-window packed scoring
