@@ -867,6 +867,10 @@ def main():
                         help="Compile existing language MLPs with Inductor; first use includes compilation")
     parser.add_argument("--language-mlp-fp8", action="store_true",
                         help="Use lossy FP8 weights and dynamic activations only in language MLPs")
+    parser.add_argument("--profile-request", type=int, default=0,
+                        help="Profile this real single-window call once; zero disables profiling")
+    parser.add_argument("--profile-output", type=Path,
+                        help="Directory for the optional operator trace and table")
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument(
@@ -878,14 +882,25 @@ def main():
     args = parser.parse_args()
     from tools.videojev_probe.runtime import VideoJevRuntime
 
+    runtime_class = VideoJevRuntime
+    runtime_options = {}
+    if args.profile_request > 0:
+        from tools.videojev_benchmark.profiling import ProfiledVideoJevRuntime
+
+        runtime_class = ProfiledVideoJevRuntime
+        runtime_options = {
+            "profile_request": args.profile_request,
+            "profile_output": args.profile_output or Path(args.result_log).parent / "kernel-profile",
+        }
     scorer = Scorer(
         None,
         args.result_log,
-        runtime_factory=lambda: VideoJevRuntime(
+        runtime_factory=lambda: runtime_class(
             args.cache_dir, question_layout=args.question_layout,
             single_sequence=args.single_sequence,
             compile_language_mlp=args.compile_language_mlp,
             language_mlp_fp8=args.language_mlp_fp8,
+            **runtime_options,
         ),
         request_timeout=args.request_timeout,
         queue_age=args.queue_age,

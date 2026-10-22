@@ -105,6 +105,28 @@ equivalence.
 
 ## Service use
 
+### Optional single-window operator profile
+
+`--profile-request N` selects one real `predict_prepared()` call for PyTorch CPU
+and CUDA profiling; the default zero uses the original runtime without a call
+counter or profiler wrapper. Use single-window GPU batches for this capture.
+`--profile-output DIR` selects its output directory, otherwise `kernel-profile`
+beside the service result log is used. The directory receives `trace.json` and
+an operator table grouped by input shape. No model text, prediction-request
+fields, weights, choices, or classification rules change.
+
+The selected call includes profiler overhead and trace export. Keep all of its
+CPU, CUDA, service, and HTTP durations separate from normal inference and
+event-response latency. Earlier real
+windows can establish the existing runtime's warm state; retain their first-use
+cost rather than adding dummy warmup calls. Subsequent windows run without
+profiling in the same model process. Profiler start, stop, and export failures
+are reported separately; they do not discard a successful prediction or resend
+it. If profiling cannot start, the selected window still runs once through the
+original inference path. Model exceptions retain the existing handling. This
+trace is a
+performance artifact, not proof of classification equivalence or task quality.
+
 ### Optional language MLP compilation
 
 `--compile-language-mlp` is a disabled-by-default startup factor. After the
