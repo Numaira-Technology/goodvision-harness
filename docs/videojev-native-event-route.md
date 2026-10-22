@@ -503,6 +503,74 @@ change floating-point rounding. Compare native shared, prefix without cache and
 prefix with cache on quality, raw scores, wall-time and stream coverage before
 selecting a deployment setting. No performance result is implied by this code.
 
+### Fixed-CPU, same-host KV follow-up, October 21
+
+The earlier compiled-text comparison showed a cache benefit in small-load scoring,
+but its twelve-stream run also had severe CPU preparation delays. A new seven-group
+comparison used existing application `75b4119`, one RTX 4090, one resident model,
+and fixed OMP/MKL threads of 4 (observed Torch intra-op 4 / inter-op 8). No new
+model code was added. Full choices, all six classes, two frames at 0.5-second
+spacing, 4 FPS candidates, 0.8-second opportunities and offline references stayed
+fixed. Shared cold, three-source groups for all three layouts, and twelve-stream
+groups all completed before collection and GPU release.
+
+| Twelve-stream result | shared | prefix, no cache | prefix-cache |
+| --- | ---: | ---: | ---: |
+| Completed / 1,800 opportunities | 997 | 1,002 | 1,486 |
+| Busy opportunities not sent | 803 | 798 | 314 |
+| All reports during input, per second | 8.120 | 8.155 | 12.193 |
+| Valid fight reports during input, per second | 8.120 | 7.947 | 11.902 |
+| Median service / queue, seconds | 1.456 / 1.328 | 1.448 / 1.321 | 0.967 / 0.880 |
+| Median CUDA scoring interval, milliseconds | 100.687 | 100.344 | 61.622 |
+| Full input / forwarded token median | 1,681 / 1,681 | 1,687 / 1,687 | 1,687 / 776 |
+| Source intervals reported / all 8 | 6/8 | 7/8 | 7/8 |
+| Source intervals reported within 3 seconds / all 8 | 6/8 | 7/8 | 7/8 |
+| Negative clips with a positive report / all 8 | 6/8 | 7/8 | 7/8 |
+| Positive windows in negative clips | 44/665 | 144/668 | 213/990 |
+| Fight insufficient-evidence reports | 0 | 27 | 37 |
+| Longest interval without a valid fight update, seconds | 2.186 | 11.978 | 11.943 |
+
+The cache increased valid-fight input-period throughput by 49.77% relative to the
+same text-first layout without caching, or 46.57% relative to shared. It reused
+911 pure-text tokens: all 1,486 twelve-stream cache calls hit, with a median
+3.401 ms state-copy cost. CPU image preparation remained about 7 ms and visual
+encoding about 19 ms. Nested timing intervals must not be added together.
+
+Report volume and semantic coverage are different. The prefix layouts kept
+publishing, but their fight unknowns concentrated in one stream and left about
+twelve seconds without a definite fight judgment. They achieved a maximum
+valid-fight gap below three seconds on 11/12 streams, versus shared's 12/12.
+PPE unknowns were 15 / 196 / 319; the other four labels had none. There were no
+request failures, invalid fight formats, missing native receipts or late input
+drops. All three groups received 41,397 raw frames and drained normally. Rates
+exclude drain-period reports; valid-fight rates also exclude unknown judgments.
+
+Moving the rules before the video has a quality cost in this development set.
+Negative-window positive rates were 6.62% / 21.56% / 21.52%. Caching and moving
+the rules must not be treated as one factor. On 300 matching original-frame/time
+windows, prefix and prefix-cache agreed on all fight choices and on 1,793/1,800
+six-class choices; all seven differences were PPE. Scores were not bitwise
+identical. On 104 shared/prefix matched windows, fight agreed on 90, with seven
+absent-to-present and seven absent-to-unknown changes. This supports separating
+the layout effect from cache reuse, without proving general equivalence.
+
+The common seven reported events were all faster with caching than without it:
+paired latency difference median -0.590 seconds. Both still left the same source
+interval unreported. Source-interval matching is not a human acceptance of the
+natural action onset or the actor. The eight negative clips came from four
+original videos; other classes had no quality reference. Keep shared as the
+development reference and keep prefix-cache opt-in. The throughput gain does
+not establish a quality-preserving default or complete the P0 goal.
+
+Startup costs remain: first complete HTTP took 35.956 seconds for shared,
+25.773 seconds when first using prefix, and 10.756 seconds when first using
+the cache, including 5.075 seconds of prefix prefill. Three-source prefix
+completed only 31/100 opportunities (67 busy, two waiting expiry); cache completed
+64/100 (36 busy). No extra warm-up or replay concealed these costs. Across all
+seven groups, 3,697 sent requests completed. The process and installation stayed
+the same; the final GPU absence was checked after release. No independent
+software tests were run.
+
 The runtime retains the pinned model module's original `prepare_query_groups`
 for legacy full-question requests and its
 `format_predictions(output, rows, record, decoder)` for both interfaces. Native
