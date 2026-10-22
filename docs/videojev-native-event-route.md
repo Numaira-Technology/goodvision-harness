@@ -110,9 +110,65 @@ three values. Existing PPE option semantics retain their path.
 The client constructs the chosen template once, then reuses the existing session
 registration and compiled-text path. It adds no per-window text rewriting or GPU
 comparison. These are optional prompt factors, not a claim of lossless model
-equivalence or measured speedup. Compare full/scene/brief using the same resident
-model, input settings and offline references; examine actual token lengths,
-quality and twelve-stream updates together. This new comparison has not yet run.
+equivalence.
+
+### Same-host prompt results, October 21
+
+The seven-group comparison ran application `9dabe0e` on one 24 GB RTX 4090,
+one installation, and one resident model process. It used the original cold
+F_8 clip, three-source steady groups for each style, and twelve-stream groups
+for each style. The six event questions, two frames at 0.5-second spacing,
+4 FPS candidates, 0.8-second opportunities, shared layout, native single-window
+scoring, and offline references stayed fixed. The service used Torch intra-op
+8 / inter-op 8 throughout; results from other hosts are not causal baselines.
+All seven groups finished, all 3,034 sent requests completed, and the GPU was
+released after collection. There was no per-group deployment or model restart.
+
+| Twelve-stream result | full | scene | brief |
+| --- | ---: | ---: | ---: |
+| Median input tokens | 1,681 | 1,614 | 1,512 |
+| Completed / 1,800 opportunities | 873 | 896 | 949 |
+| Busy opportunities not sent | 927 | 904 | 851 |
+| Valid updates during input, per second | 7.088 | 7.273 | 7.712 |
+| Median service / queue, seconds | 1.665 / 1.519 | 1.628 / 1.486 | 1.523 / 1.390 |
+| Median CUDA scoring interval, milliseconds | 117.410 | 113.452 | 104.469 |
+| Source intervals reported / all 8 | 6/8 | 7/8 | 7/8 |
+| Source intervals reported within 3 seconds / all 8 | 5/8 | 4/8 | 7/8 |
+| Negative clips with a positive report / all 8 | 4/8 | 4/8 | 8/8 |
+| Positive windows in negative clips | 39/582 | 37/598 | 96/632 |
+
+Update rates exclude 22 / 23 / 23 drain-period reports and use each group's
+common input span of about 120 seconds. Each group delivered 41,397 raw input
+frames with no late drops. No waiting window expired. All twelve streams had
+a longest valid-update gap below three seconds, but completion was only
+48.50% / 49.78% / 52.72% of the fixed opportunities. This does not meet a
+twelve-stream update every 0.8 seconds. Timing intervals are nested, not additive.
+
+The scene/full common six reported intervals had a paired latency difference
+median of -0.122 seconds, with four faster and two slower. Brief/full had a
+median of -0.481 seconds on their common six, all faster. Each style also chose
+different windows as its throughput changed. Matching the exact source frames
+and times still found a prompt effect: among 188 full/brief matched windows,
+26 fight choices changed from absent to present, with none in the reverse
+direction. Brief's increase in positive reports is not only a scheduling effect.
+
+Keep `full` as the default. `scene` remains a development candidate: its update
+rate improved 2.62%, but early reporting did not improve across all intervals.
+Do not recommend `brief` from this result. Its 8.81% higher update rate came
+with positive reports in all eight negative clips and 15.19% positive negative
+windows, versus 6.70% for full. Even the three-source groups, which each
+completed all 100 opportunities, produced 13/40 positive negative windows for
+brief versus 1/40 for full and scene.
+
+The cold full request took 36.228 seconds in the service, including a
+33.723-second CUDA scoring interval. Only 16/60 cold opportunities were sent;
+44 were skipped while busy. No extra warm-up or replay hid this startup cost.
+Request failures and fight unknown/invalid results were zero across the batch.
+That is not zero unknowns for all six classes: twelve-stream PPE returned
+insufficient evidence 14 / 8 / 0 times. The other five classes had no quality
+reference in this comparison. The eight negative clips came from four original
+videos; source ON times are not accepted natural-action start times. This is a
+single ordered development comparison, not a general-quality acceptance result.
 No independent software tests were run.
 
 ## Service use
