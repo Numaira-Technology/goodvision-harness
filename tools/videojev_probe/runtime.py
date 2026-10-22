@@ -64,7 +64,7 @@ def _shared_questions(rows):
 
 class VideoJevRuntime:
     def __init__(self, cache_dir, *, question_layout="repeated", single_sequence=False,
-                 compile_language_mlp=False, language_mlp_fp8=False,
+                 compile_language_mlp=False, fuse_language_gate_up=False, language_mlp_fp8=False,
                  language_mlp_gemm_autotune=False, compile_language_norm=False,
                  compile_vision_blocks=False):
         import torch
@@ -90,6 +90,13 @@ class VideoJevRuntime:
             device_map={"": "cuda:0"}, attn_implementation="flash_attention_2",
         )
         self.model.prepare_for_inference()
+        if fuse_language_gate_up:
+            from .fused_mlp import FusedGateUpMLP
+
+            # Replace only remaining language MLPs; the final layer has none.
+            for layer in self.model.backbone.language_model.layers:
+                if hasattr(layer, "mlp"):
+                    layer.mlp = FusedGateUpMLP(layer.mlp)
         if language_mlp_fp8:
             from torchao.quantization import (
                 Float8DynamicActivationFloat8WeightConfig, Float8MMConfig,
@@ -177,6 +184,7 @@ class VideoJevRuntime:
             "packed_choice_supported": self.packed_choice_supported,
             "single_sequence": self.single_sequence,
             "compile_language_mlp": compile_language_mlp,
+            "fuse_language_gate_up": fuse_language_gate_up,
             "language_mlp_fp8": language_mlp_fp8,
             "language_mlp_gemm_autotune": language_mlp_gemm_autotune,
             "compile_language_norm": compile_language_norm,

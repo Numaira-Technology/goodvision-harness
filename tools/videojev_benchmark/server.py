@@ -865,6 +865,8 @@ def main():
                         help="Use unpadded single-sequence scoring for fixed non-prefix windows")
     parser.add_argument("--compile-language-mlp", action="store_true",
                         help="Compile existing language MLPs with Inductor; first use includes compilation")
+    parser.add_argument("--fuse-language-gate-up", action="store_true",
+                        help="Merge each language MLP's original gate/up weights once at load time")
     parser.add_argument("--language-mlp-fp8", action="store_true",
                         help="Use lossy FP8 weights and dynamic activations only in language MLPs")
     parser.add_argument("--language-mlp-gemm-autotune", action="store_true",
@@ -905,6 +907,7 @@ def main():
             args.cache_dir, question_layout=args.question_layout,
             single_sequence=args.single_sequence,
             compile_language_mlp=args.compile_language_mlp,
+            fuse_language_gate_up=args.fuse_language_gate_up,
             language_mlp_fp8=args.language_mlp_fp8,
             language_mlp_gemm_autotune=args.language_mlp_gemm_autotune,
             compile_language_norm=args.compile_language_norm,

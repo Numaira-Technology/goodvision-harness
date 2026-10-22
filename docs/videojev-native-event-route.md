@@ -228,6 +228,40 @@ options, not completed compilation or all-layer execution coverage.
 The regions follow the pinned [Qwen3.5 implementation](https://github.com/huggingface/transformers/blob/v5.14.1/src/transformers/models/qwen3_5/modeling_qwen3_5.py)
 and [PyTorch Module compilation interface](https://docs.pytorch.org/docs/2.8/generated/torch.nn.Module.html#torch.nn.Module.compile).
 
+### Optional merged language gate/up projections
+
+`--fuse-language-gate-up` is a disabled-by-default startup factor for the pinned
+bias-free Qwen3.5 language MLPs. After the author's inference preparation, it
+replaces each remaining language MLP with `FusedGateUpMLP`. The final decoder
+layer, whose MLP was removed by the author, is left alone.
+
+The original computation is `down(act_fn(gate(x)) * up(x))`. The replacement
+concatenates the original BF16 gate and up weights along their output dimension
+once during loading. It performs one linear projection, splits the output in
+the original gate/up order, then uses the original activation and down projection.
+The combined parameter keeps the original device and dtype and disables gradients.
+A meta-device Linear avoids random initialization of another CUDA matrix. Replacing
+the original MLP drops its gate/up module references rather than keeping an extra
+permanent copy. The weights on disk and the model's trained values are unchanged;
+runtime parameter names differ, so this inference wrapper is not a checkpoint
+export format.
+
+This changes matrix output width, not the input token count or total arithmetic.
+Different matrix kernels and split views may affect floating-point results and
+performance. Neither exact numerical equivalence nor a speed improvement is
+promised. Nothing is concatenated or copied back to the CPU on each window.
+Vision, attention, recurrent state, positions, the FP32 decision head, prompts,
+sampling, scheduling, and existing failure handling retain their paths.
+
+The flag does not enable compilation, FP8, or prefix caching. Compare it alone
+against an unchanged phase on one GPU and installation, using the same fixed
+original frames and streaming inputs. Drain before the planned service switch,
+retain first-use costs, and score quality, unknowns, failures, coverage, and
+wall-time separately. Loaded-model metadata records the selected startup factor;
+no prediction-request fields or dependencies are added.
+
+The expression follows the pinned [Qwen3.5 MLP implementation](https://github.com/huggingface/transformers/blob/v5.14.1/src/transformers/models/qwen3_5/modeling_qwen3_5.py).
+
 ### Optional FP8 language MLPs
 
 `--language-mlp-fp8` is disabled by default and requires the optional
