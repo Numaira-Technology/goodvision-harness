@@ -679,6 +679,51 @@ deadlines must be chosen together; an elapsed client deadline does not mean an
 already-started CUDA operation has stopped. Recent completed outcomes and active
 requests are reused by transport ID, without repeating GPU work.
 
+## Fixed original-frame classification
+
+`tools.videojev_benchmark.points` uses the existing `VideoJevInspector`, event
+question template, JPEG preparation, service and choice parser. It does not use
+the paced source scheduler. This separates a change in the model's judgment on
+identical frames from a faster configuration selecting different streaming
+windows. The regular `run` entry point and application defaults are unchanged.
+
+Provide a regular observation config with `streams`, labels and layout, plus a
+separate observation-only window list. Each window contains only `id`,
+`stream_id`, ordered zero-based `frame_indices`, and their actual
+`timestamps_seconds`. The runner decodes sequentially to those original frames;
+it does not infer frame numbers from nominal FPS or annotation seconds. Source
+timestamps and the configured native positional FPS remain separate.
+
+```bash
+python -m tools.videojev_benchmark.points \
+  --config /path/to/observations.json --windows /path/to/windows.json \
+  --execute --output /path/to/new-results
+```
+
+The caller supplies references only to a later offline analysis, never to this
+runner. One stable client session registers the existing template once, and each
+window is sent once. A window's input, HTTP or parsing failure is retained while
+later windows continue; the existing explicit shared-service failures and
+authorization denial stop further calls. A 429 cools down for at least 60 seconds
+or a longer finite numeric Retry-After, without replaying the window.
+
+The output separates processed windows, completed requests, failed windows and
+three-valued judgments. The unchanged service log retains native choices and
+probabilities. HTTP duration excludes local decoding/JPEG preparation; the
+separate client duration includes it. Neither duration is an event's real-stream
+reaction latency. Point annotations do not establish natural ON/OFF or negatives
+at nearby times, and scene judgments do not identify an annotated actor.
+
+The initial bounded study uses five layouts/class sets on the same seven windows:
+six-class shared, prefix without KV, prefix with KV, four-class shared, and
+four-class prefix with KV. Four subsequent paced 12-stream trials compare shared
+and prefix-cache with 0.8-second and 1.6-second observation opportunities. All
+trials retain one GPU, environment and model process. Smoking stays HIGH; fight,
+fall and weapon stay STANDARD. Fixed-window classification and paced-stream
+quality/latency have separate denominators. PPE and litter remain unscored where
+no reference exists. No result or deployment is claimed by adding this entry
+point; independent software tests have not been run under the project rule.
+
 ## Failures and timing
 
 A malformed native choice remains a format failure, not a negative observation.
