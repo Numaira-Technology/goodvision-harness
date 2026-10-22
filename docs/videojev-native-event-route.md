@@ -105,6 +105,64 @@ equivalence.
 
 ## Service use
 
+### Isolated vLLM pooling adapter
+
+`--execution-backend vllm` selects the experimental adapter in
+`tools/videojev_vllm`. The default remains `native`. Use a separate environment
+with the adapter's pinned dependencies; do not install them into the native
+PyTorch 2.8 environment. Its Linux x86_64 requirements select the official
+vLLM 0.30.0 cu129 wheel, Torch 2.13 / torchvision 0.28 from the official cu129
+index, and HF 5.14.1. Use a CUDA 12.9 development image and a compatible GPU
+driver. FA2 and causal-conv1d require builds for this installation; their old
+Torch 2.8 binaries cannot be reused. The same new environment also provides the
+native comparison phase. The adapter is not a stock VideoJev endpoint provided
+by vLLM, and implementation alone does not establish runtime compatibility,
+classification equivalence, or a throughput improvement.
+
+The adapter uses the vLLM 0.30 bare Qwen3.5 language executor, not a generative
+language-model head. Original language weights are mapped into its fused
+projections and hybrid attention/DeltaNet implementation. The final layer keeps
+attention and its residual, without its removed MLP or post-attention norm.
+The model's final norm adds that residual once. This changes language execution
+kernels, not the trained decision task; numerical differences remain possible.
+
+The original HF 5.14.1 visual module keeps FP32 parameters and BF16 autocast,
+temporal chunks, and video-grid inputs. It is constructed with real CPU storage
+before moving to the GPU, preserving non-persistent rotary buffers. The original
+native load rounds visual parameters to BF16 before promoting them to FP32; the
+adapter preserves that parameter path without rounding rotary buffers. The head
+keeps its original FP32 loading exception. The original
+processor, tokens, source-time questions, repeated/shared layouts and fresh-window
+3D positions are reused. The FP32 original cosine head scores the original
+candidate/question indices inside the GPU pooler. Only logits, probabilities and
+the score mask return to the original formatter; the complete hidden sequence
+does not pass through CPU memory.
+
+The existing GPU worker owns an in-process `EngineCore` with `UniProcExecutor`.
+Already-prepared tokens and video fields enter directly, without rendering or
+tokenizing the prompt again. The first version allows up to two independent
+requests and a 32768-token context, allocates 4 GiB for request-local attention
+and recurrent state, and explicitly keeps recurrent state FP32. Prefix sharing,
+multimodal processor caching, CUDA graphs and compilation are disabled. This
+allocation is a configuration choice, not a measured memory-capacity guarantee.
+The adapter does not reuse a previous window's video or hidden state. Short
+internal request identifiers use timestamps and are not supplied as model text.
+
+A small worker override skips stock full-model profiling and synthetic warmup;
+an explicit multimodal size bound avoids synthetic video sizing. The first real
+request therefore retains first-use kernel costs. Existing server scheduling,
+input/publication clocks, parser and window-failure handling remain in use.
+Service shutdown releases the engine on the GPU thread. Native-only optimization
+switches and prefix layouts are not supported by this separate backend.
+
+Compare native and adapter phases on the same GPU and new installation, with
+identical original frame windows, labels, rules, resolution and scheduling.
+Record the planned service switch, first-use costs, every processing opportunity,
+unknown/failed windows, task quality and real event-report latency. A change from
+the older Torch 2.8 installation is not an isolated engine improvement. For an
+optional two-window engine batch, CUDA segment totals are marked `engine-batch`
+and must not be interpreted as independent per-window kernel durations.
+
 ### Optional single-window operator profile
 
 `--profile-request N` selects one real `predict_prepared()` call for PyTorch CPU

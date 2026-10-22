@@ -528,6 +528,12 @@ class Scorer:
             with self._condition:
                 self._loaded = False
                 self._condition.notify_all()
+            close = getattr(self.runtime, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception as exc:
+                    print(f"Engine shutdown failed: {type(exc).__name__}: {exc}", flush=True)
 
     def _score_one(self, work):
         raw = None
@@ -558,6 +564,8 @@ class Scorer:
             self._finish(work, error=self._gpu_error(exc, raw=raw, timings=timings))
 
     def _gpu_error(self, exc, *, raw=None, timings=None):
+        if raw is None:
+            raw = getattr(exc, "raw", None)
         error = WindowError(
             exc.code if isinstance(exc, WindowError) else "window_failed",
             f"{type(exc).__name__}: {exc}", raw=raw, timings=timings,
@@ -861,6 +869,8 @@ def main():
     parser.add_argument("--cpu-workers", type=int, default=1)
     parser.add_argument("--gpu-batch-size", type=int, choices=(1, 2), default=1,
                         help="Score up to two already-ready independent windows without waiting")
+    parser.add_argument("--execution-backend", choices=("native", "vllm"), default="native",
+                        help="Use native scoring or the isolated vLLM 0.30 pooling adapter")
     parser.add_argument("--single-sequence", action="store_true",
                         help="Use unpadded single-sequence scoring for fixed non-prefix windows")
     parser.add_argument("--compile-language-mlp", action="store_true",
@@ -891,27 +901,36 @@ def main():
     from tools.videojev_probe.runtime import VideoJevRuntime
 
     runtime_class = VideoJevRuntime
-    runtime_options = {}
-    if args.profile_request > 0:
+    runtime_options = {
+        "single_sequence": args.single_sequence,
+        "compile_language_mlp": args.compile_language_mlp,
+        "fuse_language_gate_up": args.fuse_language_gate_up,
+        "language_mlp_fp8": args.language_mlp_fp8,
+        "language_mlp_gemm_autotune": args.language_mlp_gemm_autotune,
+        "compile_language_norm": args.compile_language_norm,
+        "compile_vision_blocks": args.compile_vision_blocks,
+    }
+    if args.execution_backend == "vllm":
+        if (args.question_layout not in ("repeated", "shared")
+                or any(runtime_options.values()) or args.profile_request > 0):
+            parser.error("The vLLM adapter uses repeated/shared layouts without native-only optimizations")
+        from tools.videojev_vllm.runtime import EngineVideoJevRuntime
+
+        runtime_class = EngineVideoJevRuntime
+        runtime_options = {"context": args.context}
+    elif args.profile_request > 0:
         from tools.videojev_benchmark.profiling import ProfiledVideoJevRuntime
 
         runtime_class = ProfiledVideoJevRuntime
-        runtime_options = {
+        runtime_options.update({
             "profile_request": args.profile_request,
             "profile_output": args.profile_output or Path(args.result_log).parent / "kernel-profile",
-        }
+        })
     scorer = Scorer(
         None,
         args.result_log,
         runtime_factory=lambda: runtime_class(
             args.cache_dir, question_layout=args.question_layout,
-            single_sequence=args.single_sequence,
-            compile_language_mlp=args.compile_language_mlp,
-            fuse_language_gate_up=args.fuse_language_gate_up,
-            language_mlp_fp8=args.language_mlp_fp8,
-            language_mlp_gemm_autotune=args.language_mlp_gemm_autotune,
-            compile_language_norm=args.compile_language_norm,
-            compile_vision_blocks=args.compile_vision_blocks,
             **runtime_options,
         ),
         request_timeout=args.request_timeout,
