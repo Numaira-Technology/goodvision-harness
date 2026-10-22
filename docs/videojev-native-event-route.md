@@ -817,6 +817,32 @@ remain a small development set, not held-out acceptance data.
 The controller collected all nine groups and released the GPU. A separate exact
 provider lookup returned no instance. No independent software tests were run.
 
+### Next bounded category and window comparison
+
+The missed weapon and UR fall points returned ordinary negative choices, not
+HTTP or decoding errors. The next ten groups use existing configuration only:
+seven fixed-frame groups compare six-class research-v1, six-class main-baseline,
+four individual main-baseline labels, and a six-class main-baseline four-frame
+window. Three paced twelve-stream groups then compare research-v1/two frames,
+main-baseline/two frames, and main-baseline/four frames. All use one GPU and model
+process, full options, the same sensitivities and offline references, with KV
+disabled. The paced groups retain 0.8-second scheduling and candidate FPS 4.
+
+This compares existing policy profiles as a whole. Main-baseline omits the
+research-wide guidance but retains some confidence wording; it is neither a
+pure deletion ablation nor the official model's built-in policy. Single-label
+groups remove other definitions and preceding questions as well as reducing
+question count. Their requested shared layout uses the existing repeated
+fallback for one question. They do not establish combined multi-class capacity.
+
+All point groups keep the selected final frame. The four-frame candidate adds
+earlier frames over about one second and sets nominal FPS 3. It changes frame
+count, temporal span and positional FPS together; actual source times remain
+separate. Earlier weapon frames can cross a shot cut. Offline scoring uses only
+requested labels, preserving each label's reference denominator; unrequested
+classes are not format failures. Default application behavior, event definitions,
+weights and original labels do not change. This plan is not a result.
+
 ## Failures and timing
 
 A malformed native choice remains a format failure, not a negative observation.
