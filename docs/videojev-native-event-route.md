@@ -571,6 +571,97 @@ seven groups, 3,697 sent requests completed. The process and installation stayed
 the same; the final GPU absence was checked after release. No independent
 software tests were run.
 
+### Same-host four-versus-six class study, October 21
+
+This five-group study used application `5c47514`, one RTX 4090, one installation
+and one resident model process. It changed only the requested class set and the
+existing shared/prefix-cache setting. Four classes means fight, smoking, fall
+and weapon; six also includes PPE violation and ground litter. Full answer
+choices, two actual frames per request, 0.5-second spacing, 4 FPS candidates,
+0.8-second opportunities, references and native scheduling stayed fixed.
+Observed Torch threads were intra-op 4 / inter-op 192 throughout, not the
+previous machine's inter-op 8. No new model code was needed.
+
+| Twelve-stream result | six/shared | six/cache | four/shared | four/cache |
+| --- | ---: | ---: | ---: | ---: |
+| Completed / 1,800 opportunities | 988 | 1,068 | 1,210 | 1,800 |
+| Busy opportunities not sent | 812 | 732 | 590 | 0 |
+| Input-period reports / second | 8.041 | 8.698 | 9.888 | 14.849 |
+| Input-period definite fight judgments / second | 8.041 | 8.466 | 9.888 | 14.574 |
+| Median service, seconds | 1.468 | 0.958 | 1.194 | 0.443 |
+| Median queue, seconds | 1.338 | 0.868 | 1.086 | 0.370 |
+| Median CUDA scoring, milliseconds | 104.349 | 63.022 | 80.960 | 48.609 |
+| Full input token median | 1,681 | 1,687 | 1,341 | 1,347 |
+| Source intervals reported / all 8 | 6/8 | 5/8 | 7/8 | 7/8 |
+| Source intervals reported within 3 seconds / all 8 | 5/8 | 4/8 | 5/8 | 7/8 |
+| Negative clips with positive reports / all 8 | 5/8 | 7/8 | 5/8 | 7/8 |
+| Positive windows in negative clips | 49/659 | 148/712 | 44/807 | 191/1,200 |
+| Fight insufficient-evidence judgments | 0 | 29 | 0 | 33 |
+
+Four/cache completed 150 opportunities on each of the twelve streams,
+with four judgments on every response. All 7,200 native choices matched their
+published three-way values. Each twelve-stream group recorded 41,397 raw input
+frames, with no late-input drops, and finished input, draining and cleanup.
+Each sent request had a saved native receipt and report. Rates use each group's earliest
+input through latest input; they exclude 22 / 22 / 22 / 15 drain-period reports.
+This demonstrates capacity for this 120-second, four-class development load,
+not six-class capacity, long-running stability or four-class quality acceptance.
+
+The four/cache group still had 33 fight unknowns in one stream, leaving a
+9.041-second gap without a definite fight judgment despite continuous reports.
+Four/shared's maximum definite-fight gap was 1.767 seconds. PPE unknowns were
+13 / 241 in the six-class groups; PPE and litter were not requested in the
+four-class groups, rather than silently counted as absent. Other requested
+labels had no unknowns, but only fight had quality references. There were no
+request failures, invalid fight formats or decoder-index mismatches. All five
+groups together completed 5,078 requests.
+
+Reducing the class set is a task tradeoff, not a six-class speedup. Four/shared
+reduced median scoring by 22.41% and median service by 18.70% versus six/shared.
+Visual encoding remained about 17 ms and question preparation about 0.5 ms.
+For cached groups, six classes reused 911 text tokens and forwarded a median
+776; four reused 723 and forwarded 624. Each policy had one initial miss.
+Timing intervals are nested and must not be added together.
+
+Four/shared and four/cache both reported seven of eight source intervals.
+Neither reported the second interval of dev0013. In four/cache, three completed
+windows ended inside that interval
+and returned fight absent: its miss was not a request or raw-input failure.
+Six/cache's startup left no window ending inside three unreported intervals,
+so those must retain an observation-coverage explanation instead of being
+classified entirely as visual errors. Among the seven events reported by both
+four-class configurations, caching was faster in all seven, with a paired
+median difference of -1.404 seconds. All seven first-positive evidence windows
+differed, so this combines faster service with changed window selection.
+
+The negative-window positive rates were 7.44% / 20.79% / 5.45% / 15.92%.
+The four-class configurations shared 433 original-frame/time windows: fight
+choices agreed in 352, with 73 absent-to-present and eight absent-to-unknown
+changes in the cache configuration. On 268 matching negative windows,
+four/shared had ten
+positive fight choices and four/cache had 43: 33 absent-to-present changes,
+not just more windows observed. Class selection also changes context:
+six/shared and four/shared shared 248 windows, with 13 fight present-to-absent
+changes and none in the reverse direction. Neither change is lossless.
+Keep shared as the quality reference and cache as an explicit candidate;
+do not promote it on throughput alone. Other classes lack quality references,
+and source interval starts are not accepted natural action onsets.
+
+Startup and order matter. The initial shared cold request took 39.705 seconds
+over complete HTTP, completing only 12/60 opportunities. Six/cache's first
+request took 34.704 seconds, including 28.531 seconds of prefix prefill, within
+its twelve-stream group. Four/cache's first request took 0.151 seconds, including
+49.528 ms prefill, after earlier groups had initialized native kernels. This
+fixed-order, single-pass study does not isolate class count from cold-kernel
+effects. Cache columns also move rules before the video; their difference from
+shared is not a cache-only intervention. Common research-policy guidance was
+unchanged and still mentions PPE/litter even when those questions are absent.
+
+The controller collected the results and released the GPU; an independent
+provider lookup confirmed its absence. We ran no independent software tests.
+We have measured this short-load capacity but have not accepted multi-class
+quality, long-running stability or the full P0 outcome.
+
 The runtime retains the pinned model module's original `prepare_query_groups`
 for legacy full-question requests and its
 `format_predictions(output, rows, record, decoder)` for both interfaces. Native
