@@ -149,7 +149,10 @@ does not pass through CPU memory.
 
 The existing GPU worker owns an in-process `EngineCore` with `UniProcExecutor`.
 Already-prepared tokens and video fields enter directly, without rendering or
-tokenizing the prompt again. The first version allows up to two independent
+tokenizing the prompt again. The static-budget processor declares that it does
+not require a tokenizer; the original HF processor still prepares real inputs,
+and the adapter's public preprocessing entry remains unsupported.
+The first version allows up to two independent
 requests and a 32768-token context, allocates 4 GiB for request-local attention
 and recurrent state, and explicitly keeps recurrent state FP32. Prefix sharing,
 multimodal processor caching, CUDA graphs and compilation are disabled. This

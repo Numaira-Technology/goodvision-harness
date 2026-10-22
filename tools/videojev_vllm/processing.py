@@ -22,6 +22,9 @@ class NoSyntheticInputs(BaseDummyInputsBuilder):
 
 
 class PreparedVideoProcessor(BaseMultiModalProcessor):
+    # Real requests already contain tokens from the original HF processor.
+    requires_tokenizer = False
+
     def _get_mm_fields_config(self, hf_inputs, hf_processor_mm_kwargs):
         return {}
 
