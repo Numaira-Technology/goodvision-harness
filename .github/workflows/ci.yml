@@ -74,7 +74,7 @@ jobs:
           VLM_TRACKING_REVIEW_OUTPUT: outputs/preview-browser/tracking
         run: |
           mkdir -p outputs/preview-browser
-          python -m pytest tests/test_vlm_monitor.py tests/test_vlm_preview_tracking.py --basetemp=outputs/preview-browser/tests -q
+          python -m pytest tests/test_vlm_monitor.py tests/test_vlm_preview_tracking.py tests/test_tracked_grounding_browser.py --basetemp=outputs/preview-browser/tests -q
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -3,11 +3,11 @@ from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
-from test_vlm_independent import ROOT, await_condition, config, jpeg
+from benchmark_runtime_fixtures import ROOT, await_condition, config, jpeg
 
 from goodvision_harness.config import load_config
-from goodvision_harness.vlm_admission import AdmissionSettings, SharedAdmission
-from goodvision_harness.vlm_independent import IndependentVLMBranch
+from tools.benchmark_runtime.vlm_admission import AdmissionSettings, SharedAdmission
+from tools.benchmark_runtime.vlm_independent import IndependentVLMBranch
 from tools.vlm_multistream_benchmark import (
     LABELS,
     planned_observations,
@@ -196,7 +196,11 @@ def test_drain_collects_last_timeout_without_extending_request_or_waiting_foreve
         # Drain budgeting uses a logical clock. Keep source delivery on that
         # clock too; a real feeder thread would wait against the host's uptime.
         # Real-time feeder scheduling has its own integration tests.
-        def __init__(self, branches, framesets, releases, started, sample_fps):
+        def __init__(
+            self, branches, framesets, releases, started, sample_fps,
+            *, source_hook=None,
+        ):
+            assert source_hook is None
             self.branches, self.framesets = branches, framesets
             self.releases, self.started = releases, started
             self.sample_fps = sample_fps

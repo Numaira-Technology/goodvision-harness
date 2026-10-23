@@ -16,7 +16,7 @@ from goodvision_harness.grounding import SAFETY_EVENT_LABELS
 from goodvision_harness.model_api import ModelAPISettings
 from goodvision_harness.scene_evidence import EvidenceFrame, InspectionRequest
 from goodvision_harness.scene_runtime import TemporalInspection
-from goodvision_harness.vlm_compact_model import (
+from tools.benchmark_runtime.vlm_compact_model import (
     CompactGroundingInspector,
     EventJSONInspector,
     event_response_format,

@@ -165,7 +165,20 @@ class LiveMonitor:
         self._select_events = os.environ.get(
             "PREVIEW_SELECT_EVENTS", ""
         ).strip().lower() not in {"", "0", "false", "no", "off"}
-        self._select_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        self.backend_person_tracks = getattr(
+            args, "backend_person_tracks", getattr(args, "person_ids_only", False)
+        )
+        self.person_display = getattr(args, "person_display", "ids")
+        if self.person_display not in {"ids", "boxes", "off"}:
+            raise ValueError("invalid person display")
+        if self.backend_person_tracks:
+            # Backend broker owns detection; preview must not add API load or boxes.
+            self.detector_url = ""
+            self._select_events = False
+        self._select_key = (
+            os.environ.get("OPENROUTER_API_KEY", "").strip()
+            if self._select_events else ""
+        )
         self._select_model = os.environ.get(
             "PREVIEW_SELECT_MODEL", "qwen/qwen3-vl-30b-a3b-instruct"
         ).strip()
@@ -293,12 +306,18 @@ class LiveMonitor:
                 "model": self.args.model,
                 "real": self.args.real,
                 "backend": self.args.backend,
+                "person_ids_only": getattr(self.args, "person_ids_only", False),
+                "backend_person_tracks": self.backend_person_tracks,
+                "person_display": self.person_display,
                 "monitor_layout": self.layout,
                 "preview_fps": 15,
-                "sample_fps": max(2.0, self.args.observation_fps * 2),
+                "sample_fps": getattr(self.args, "source_sample_fps", None) or max(
+                    2.0, self.args.observation_fps * 2
+                ),
                 "observation_fps": self.args.observation_fps,
                 "planned": planned_observations(
-                    job["duration"], self.args.observation_fps
+                    job["duration"], self.args.observation_fps,
+                    getattr(self.args, "source_sample_fps", None),
                 )
                 * job["streams"],
                 "offsets": [0] * job["streams"],

@@ -34,6 +34,13 @@
 | 使用持续场景分析 | [持续场景指南](guides/continuous-scene.md) |
 | 检查时序请求和运行回放 | [时序诊断与回放](guides/diagnostics-replay.md) |
 | 对比 VLM 事件、定位与双分支耗时 | [VLM 三模式测试](guides/vlm-mode-benchmark.md) |
+| 测试 YOLO26-S 人物 ID 与原生 Decisions | [YOLO + Decisions](guides/yolo-decisions-benchmark.md) |
+| 对齐 YOLO + Qwen35B 历史基线 | [YOLO + Qwen35B](guides/yolo-qwen-tracked-grounding.md) |
+| main grounding 恢复与独立实验保留 | [代码与测试边界](guides/pr48-49-person-grounding-integration.md) |
+| 单独测试 Decisions 场景事件 | [Decisions events](guides/decisions-api-benchmark.md) |
+| 部署和预检 Qwen3.5-35B | [Vast 自部署](guides/vast-self-hosted-qwen35.md) |
+| 对照 FP8 内核及 16/24/32 并发 | [FP8 测试](guides/vast-fp8-yolo.md) |
+| 验证 VideoJev-4B 与 PPE 提问方案 | [VideoJev 小规模验证](guides/videojev-candidate.md) |
 | 配置与验收 Contour 实时队列 | [Contour 验收指南](guides/contour-realtime-validation.md) |
 | 构建和检查发布包 | [发布构建指南](guides/release.md) |
 
@@ -76,3 +83,5 @@
 持续场景和多路部署入口已归入上方“使用与运维”和“安装与接口集成”。
 
 Additional event rules: [PPE violations and ground litter](guides/safety-events.md).
+
+- [Vast 48GB 4090 FP8 + YOLO26-S](guides/vast-fp8-yolo.md)：固定模型和镜像、持久卷、离线预检与六轮入口；默认只打印计划。

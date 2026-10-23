@@ -8,13 +8,13 @@ from threading import Thread
 from types import SimpleNamespace
 
 import pytest
-from test_vlm_independent import ROOT, await_condition, config, jpeg
+from benchmark_runtime_fixtures import ROOT, await_condition, config, jpeg
 from test_vlm_multistream_benchmark import report
 
 from goodvision_harness.config import load_config
 from goodvision_harness.model_api import environment_api_key
-from goodvision_harness.vlm_admission import AdmissionSettings, SharedAdmission
-from goodvision_harness.vlm_independent import IndependentVLMBranch
+from tools.benchmark_runtime.vlm_admission import AdmissionSettings, SharedAdmission
+from tools.benchmark_runtime.vlm_independent import IndependentVLMBranch
 from tools.vlm_benchmark import lock as suite_lock
 from tools.vlm_benchmark import modes
 from tools.vlm_benchmark.mode_report import render_modes
