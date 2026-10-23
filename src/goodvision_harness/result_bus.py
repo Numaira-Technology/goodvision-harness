@@ -18,7 +18,6 @@ from .privacy import public_safe_value
 class ResultRecord:
     cursor: int
     payload: dict[str, Any]
-    readable_monotonic_bounds: tuple[float, float] | None = None
 
 
 class ResultBus:
@@ -40,7 +39,6 @@ class ResultBus:
     def publish(
         self, payload: Mapping[str, Any], *, expected_epoch: str | None = None,
         promote_latest: bool = True,
-        measure_publication: bool = False,
     ) -> ResultRecord | None:
         """Deliver every record; auxiliary projections may skip global promotion."""
         safe = public_safe_value(copy.deepcopy(dict(payload)))
@@ -70,12 +68,7 @@ class ResultBus:
             while len(self._latest_by_feature) > self._feature_limit:
                 self._latest_by_feature.popitem(last=False)
             self._condition.notify_all()
-            lower = time.monotonic() if measure_publication else None
-        upper = time.monotonic() if measure_publication else None
-        # Only the publishing caller receives evaluation timing; public payloads
-        # and retained live records keep their existing contract.
-        bounds = (lower, upper) if measure_publication else None
-        return ResultRecord(record.cursor, copy.deepcopy(record.payload), bounds)
+        return _copy_result(record)
 
     def reset(self) -> None:
         """Clear one session's history while keeping cursors monotonic."""
@@ -231,5 +224,4 @@ class FrameBus:
 
 
 def _copy_result(record: ResultRecord) -> ResultRecord:
-    return ResultRecord(record.cursor, copy.deepcopy(record.payload),
-                        record.readable_monotonic_bounds)
+    return ResultRecord(record.cursor, copy.deepcopy(record.payload))

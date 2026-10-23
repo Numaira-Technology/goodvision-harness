@@ -9,7 +9,7 @@ from __future__ import annotations
 import heapq
 import math
 from collections import Counter, OrderedDict, deque
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from threading import RLock
@@ -24,35 +24,6 @@ _EVENT_LABELS = frozenset({
 _IDENTITY_KEYS = ("status", "person_id", "name", "identity_source", "matched_memory_id")
 _NATIVE_TRACK_KEYS = ("backend", "epoch", "object_id")
 _MAX_CONTOUR_HISTORY_POINTS = 131072
-
-
-def normalize_event_profile(
-    allowed_event_labels: Collection[str],
-    scene_only_event_labels: Collection[str],
-) -> tuple[frozenset[str], frozenset[str]]:
-    """Snapshot an explicit bounded profile without widening production defaults."""
-    if (
-        isinstance(allowed_event_labels, (str, bytes))
-        or not isinstance(allowed_event_labels, Collection)
-        or not 1 <= len(allowed_event_labels) <= 64
-        or any(
-            not isinstance(label, str) or not label.strip()
-            or label != label.strip() or len(label) > 128
-            for label in allowed_event_labels
-        )
-    ):
-        raise ValueError("allowed event labels must be bounded nonempty text")
-    allowed = frozenset(allowed_event_labels)
-    if (
-        isinstance(scene_only_event_labels, (str, bytes))
-        or not isinstance(scene_only_event_labels, Collection)
-        or any(not isinstance(label, str) for label in scene_only_event_labels)
-    ):
-        raise ValueError("scene-only event labels must be a label collection")
-    scene_only = frozenset(scene_only_event_labels)
-    if not scene_only <= allowed or "stranger" in scene_only:
-        raise ValueError("scene-only labels must be allowed non-identity events")
-    return allowed, scene_only
 
 
 def _text(value: str, name: str) -> str:

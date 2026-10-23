@@ -14,7 +14,6 @@ from PIL import Image, UnidentifiedImageError
 
 from .contracts import NormalizedBBox
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
-from .events.state_machine import normalize_event_profile
 from .runtime.scene import SceneRuntime, TemporalInspection, TemporalVerdict
 
 _EVENT_LABELS = frozenset((
@@ -68,8 +67,8 @@ class InspectionRunCounts:
 
 def _validate_job(job: TemporalInspection) -> set[str]:
     request = job.request
-    if not 2 <= len(job.frames) <= 64:
-        raise ValueError("temporal inspection requires two through 64 source frames")
+    if not 2 <= len(job.frames) <= 4:
+        raise ValueError("temporal inspection requires two through four source frames")
     if job.evidence_after_frame_sequence is not None and (
         type(job.evidence_after_frame_sequence) is not int
         or job.evidence_after_frame_sequence < -1
@@ -84,33 +83,8 @@ def _validate_job(job: TemporalInspection) -> set[str]:
         or request.start_seconds > request.end_seconds
     ):
         raise ValueError("invalid temporal inspection interval")
-    profile_labels, _scene_only = normalize_event_profile(
-        _EVENT_LABELS if job.allowed_event_labels is None else job.allowed_event_labels,
-        job.scene_only_event_labels,
-    )
-    if (not request.event_labels or not set(request.event_labels) <= profile_labels
-            or "stranger" in profile_labels):
+    if not request.event_labels or not set(request.event_labels) <= _EVENT_LABELS:
         raise ValueError("unsupported temporal event labels")
-    definitions = job.event_definitions
-    if (
-        not isinstance(definitions, tuple)
-        or len(definitions) > 64
-        or any(
-            not isinstance(item, tuple) or len(item) != 2
-            or not isinstance(item[0], str) or item[0] not in profile_labels
-            or not isinstance(item[1], str) or not item[1].strip()
-            or len(item[1]) > 4096
-            for item in definitions
-        )
-    ):
-        raise ValueError("invalid fixed event definitions")
-    definition_labels = {label for label, _ in definitions}
-    if len(definition_labels) != len(definitions):
-        raise ValueError("duplicate fixed event definition")
-    if not (set(request.event_labels) - _EVENT_LABELS) <= definition_labels:
-        raise ValueError("evaluation labels require fixed event definitions")
-    if definitions and not set(request.event_labels) <= definition_labels:
-        raise ValueError("fixed definitions must cover every requested event")
     sequences: set[int] = set()
     previous_time = -math.inf
     byte_count = 0

@@ -52,14 +52,6 @@ def bundle(
         for p in (root / "tools/vlm_benchmark").iterdir()
         if p.suffix in {".py", ".sh", ".json", ".txt", ".html", ".js"}
     ]
-    for directory in (
-        "videojev_probe", "videojev_benchmark", "videojev_native",
-        "videojev_walltime", "videojev_vllm",
-    ):
-        files += [
-            p for p in (root / "tools" / directory).iterdir()
-            if p.suffix in {".py", ".txt"}
-        ]
     from tools.vlm_benchmark.provenance import source_identity
 
     manifest = {"files": {}, "videos": [], "scope": scope,

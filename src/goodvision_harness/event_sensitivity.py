@@ -245,7 +245,6 @@ def sensitivity_policy_text(
     *,
     smoking_standard_rule: str,
     include_output_guidance: bool = True,
-    include_confidence_guidance: bool = True,
 ) -> str:
     """Render evidence criteria, optionally with grounding output instructions.
 
@@ -259,15 +258,6 @@ def sensitivity_policy_text(
         else:
             key = (label, level)
             rule = _EVIDENCE_POLICIES[key]
-            if not include_confidence_guidance:
-                # Evidence criteria stay the same across output formats.
-                for before, after in (
-                    ("; lower confidence for ambiguous aggression.", "."),
-                    ("Use lower confidence for ambiguity. ", ""),
-                    ("Lower confidence when uncertain; ", ""),
-                    ("Lower confidence if uncertain. ", ""),
-                ):
-                    rule = rule.replace(before, after)
             if include_output_guidance:
                 rule = _GROUNDING_POLICIES.get(key, rule)
             rules.append(rule)

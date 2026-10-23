@@ -14,7 +14,7 @@ import math
 import queue
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -126,7 +126,6 @@ class VideoFileStream:
         start_seconds: float = 0.0,
         realtime: bool = True,
         stop_event: threading.Event | None = None,
-        input_observer: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if display_fps <= 0:
             raise ValueError("display_fps must be positive")
@@ -134,8 +133,6 @@ class VideoFileStream:
             raise ValueError("playback_speed must be positive")
         if isinstance(start_seconds, bool) or start_seconds < 0:
             raise ValueError("start_seconds must be a non-negative number")
-        if input_observer is not None and (not realtime or playback_speed != 1.0):
-            raise ValueError("input timing requires realtime playback at source speed")
         self.path = Path(path).expanduser().resolve()
         if not self.path.is_file():
             raise FileNotFoundError(f"video does not exist: {self.path}")
@@ -146,12 +143,6 @@ class VideoFileStream:
         self.realtime = realtime
         self.dropped_frames = 0
         self._stop = stop_event or threading.Event()
-        self._input_observer = input_observer
-        self.input_timing_statistics = {
-            "decoded_inputs": 0, "selected": 0, "cadence_excluded": 0,
-            "late_dropped": 0, "observer_wall_seconds": 0.0,
-            "observer_max_wall_seconds": 0.0,
-        } if input_observer is not None else None
 
     def stop(self) -> None:
         self._stop.set()
@@ -186,64 +177,20 @@ class VideoFileStream:
                 timestamp = source_index / source_fps
                 source_index += 1
 
-                # Evaluation timestamps actual paced input, including frames
-                # excluded by cadence. Decoding ahead is not input arrival.
-                ingress = None
-                decoder_frame_index = decoder_timestamp_msec = None
-                if self._input_observer is not None:
-                    # Keep decoder-reported positions beside the nominal frame
-                    # grid; a seek request alone does not establish alignment.
-                    decoder_next = capture.get(cv2.CAP_PROP_POS_FRAMES)
-                    decoder_pts = capture.get(cv2.CAP_PROP_POS_MSEC)
-                    if math.isfinite(decoder_next) and decoder_next >= 1:
-                        decoder_frame_index = decoder_next - 1
-                    if math.isfinite(decoder_pts) and decoder_pts >= 0:
-                        decoder_timestamp_msec = decoder_pts
-                    target = started_wall + (timestamp - self.start_seconds)
-                    if not _sleep_until(target, self._stop):
-                        break
-                    ingress = time.monotonic()
-                selected = timestamp + 1e-9 >= next_emit_time
-                late = ingress is not None and ingress - target > self.MAX_LAG_SECONDS
-                if self._input_observer is not None:
-                    disposition = ("cadence_excluded" if not selected else
-                                   "late_dropped" if late else "selected")
-                    stats = self.input_timing_statistics
-                    stats["decoded_inputs"] += 1
-                    stats[disposition] += 1
-                    observer_started = time.monotonic()
-                    try:
-                        self._input_observer({
-                            "raw_frame_index": source_index - 1,
-                            "decoder_frame_index": decoder_frame_index,
-                            "decoder_timestamp_msec": decoder_timestamp_msec,
-                            "timestamp_seconds": timestamp,
-                            "ingress_monotonic": ingress,
-                            "scheduled_monotonic": target,
-                            "lag_seconds": ingress - target,
-                            "disposition": disposition,
-                            "frame_sequence": emitted if selected and not late else None,
-                        })
-                    finally:
-                        elapsed = time.monotonic() - observer_started
-                        stats["observer_wall_seconds"] += elapsed
-                        stats["observer_max_wall_seconds"] = max(
-                            stats["observer_max_wall_seconds"], elapsed)
-                if not selected:
+                if timestamp + 1e-9 < next_emit_time:
                     continue
                 while next_emit_time <= timestamp + 1e-9:
                     next_emit_time += emit_period
 
-                if self.realtime and self._input_observer is None:
+                if self.realtime:
                     target = started_wall + (
                         (timestamp - self.start_seconds) / self.playback_speed
                     )
                     if not _sleep_until(target, self._stop):
                         break
-                    late = time.monotonic() - target > self.MAX_LAG_SECONDS
-                if late:
-                    self.dropped_frames += 1
-                    continue
+                    if time.monotonic() - target > self.MAX_LAG_SECONDS:
+                        self.dropped_frames += 1
+                        continue
 
                 yield LiveFrame(
                     index=emitted,
