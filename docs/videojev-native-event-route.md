@@ -1,5 +1,20 @@
 # Native VideoJev event route
 
+## Integration with the team's main branch
+
+The wall-time tools use `tools.videojev_walltime` and
+`tools.videojev_native`. The team's existing `tools.videojev_benchmark` and
+`tools.videojev_probe` keep their original interfaces and implementations.
+These are separate entrypoints: requests for one service must not be sent to
+the other. The optional engine remains in `tools.videojev_vllm`.
+
+The separation prevents the wall-time request format, prepared-input runtime,
+and fixed-question templates from replacing the team's existing benchmark
+contract. Imports, CLI examples, and remote packaging use the explicit names.
+It does not change model decisions, window scheduling, defaults, or scoring.
+The remote package includes both tool families and the optional engine.
+Cloud rental scripts and credentials are not included in this integration.
+
 ## Scope and status
 
 This integration reuses Haotian's native VideoJev implementation from
@@ -33,13 +48,13 @@ separate from implementation documentation.
   truth and benchmark questions are not supplied. Source timestamps and optional
   window-local person aliases are the only evidence metadata in question text;
   transport IDs, paths, revisions, and machine details are not model context.
-- `tools/videojev_probe/runtime.py` retains the team's pinned model revision
+- `tools/videojev_native/runtime.py` retains the team's pinned model revision
   `1c1a253bf90dfa66176124d25a48ffb791d517d5`, BF16 model loading, native feature
   scoring, and attention configuration. `prepare()` does CPU image preparation;
   `predict_prepared()` performs visual encoding and choice scoring on the sole GPU
   thread. All event questions in one window share that visual encoding. There is
   no cross-window feature cache or multi-video GPU batch.
-- `tools/videojev_benchmark/server.py` keeps a resident model on one GPU. CPU
+- `tools/videojev_walltime/server.py` keeps a resident model on one GPU. CPU
   preparation can overlap GPU work. FIFO remains the default; the explicit
   `latest-per-stream` policy retains one latest waiting candidate per stream and
   serves waiting streams in order. Replacing a pending candidate does not reset
@@ -417,18 +432,18 @@ and [PyTorch 2.8 SM89 rowwise dispatch](https://github.com/pytorch/pytorch/blob/
 Run the service from this checkout with the Harness package available. Keep its
 Python 3.12 CUDA environment separate from the ordinary application environment.
 The team's dependency versions are retained in
-`tools/videojev_probe/requirements.txt`; PyTorch and native attention extensions
+`tools/videojev_native/requirements.txt`; PyTorch and native attention extensions
 require the CUDA installation steps described there. Model files must already be
 available in the supplied cache. This integration does not download weights or
 start a GPU automatically.
 
-Use `python -m tools.videojev_probe download --cache-dir /path/to/cache` only when
+Use `python -m tools.videojev_native download --cache-dir /path/to/cache` only when
 explicitly preparing the model. It reuses/downloads the pinned official snapshot
 without loading it. The existing `tools.vlm_benchmark.run_remote.bundle()` now
 includes both VideoJev tool directories as well as the packaged source. Reuse
 that bundling and SSH transport, not its cloud-API bootstrap or old requirements.
 
-The repository entrypoint is `python -m tools.videojev_benchmark.server`. Required
+The repository entrypoint is `python -m tools.videojev_walltime.server`. Required
 arguments are `--cache-dir` and `--result-log`. It binds only to `127.0.0.1`, port
 8093 by default; forward that port for a remote GPU rather than exposing this
 unauthenticated endpoint publicly. The adapter endpoint is the full `/predict`
@@ -581,7 +596,7 @@ service retains at most 64 session bindings; a missing binding affects only that
 window. The client includes its template on the next new window rather than
 resending a failed window or restarting the service.
 
-`tools/videojev_probe/question_templates.py` compiles the fixed native chat text,
+`tools/videojev_native/question_templates.py` compiles the fixed native chat text,
 options and repeated/shared/prefix variants. A small eight-entry cache handles
 native frame-count/FPS/spatial-grid shapes. Only the short source-time span is
 tokenized per window; adjacent pre-tokenizer units stay with that span to avoid
@@ -705,7 +720,7 @@ requests are reused by transport ID, without repeating GPU work.
 
 ## Fixed original-frame classification
 
-`tools.videojev_benchmark.points` uses the existing `VideoJevInspector`, event
+`tools.videojev_walltime.points` uses the existing `VideoJevInspector`, event
 question template, JPEG preparation, service and choice parser. It does not use
 the paced source scheduler. This separates a change in the model's judgment on
 identical frames from a faster configuration selecting different streaming
@@ -719,7 +734,7 @@ it does not infer frame numbers from nominal FPS or annotation seconds. Source
 timestamps and the configured native positional FPS remain separate.
 
 ```bash
-python -m tools.videojev_benchmark.points \
+python -m tools.videojev_walltime.points \
   --config /path/to/observations.json --windows /path/to/windows.json \
   --execute --output /path/to/new-results
 ```
@@ -823,7 +838,7 @@ scheduling opportunities when reporting completion, including those not sent.
 
 ## Remaining evaluation work
 
-`python -m tools.videojev_benchmark.run --config CONFIG.json` prints the selected
+`python -m tools.videojev_walltime.run --config CONFIG.json` prints the selected
 settings without opening videos, creating workers, or contacting the model.
 Add `--execute --output NEW_DIRECTORY` to run the listed real files once. The
 config accepts only observation settings, not ground truth. A minimal example is:

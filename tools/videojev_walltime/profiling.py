@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 
-from tools.videojev_probe.runtime import VideoJevRuntime
+from tools.videojev_native.runtime import VideoJevRuntime
 
 
 def _profile_error(stage, error):

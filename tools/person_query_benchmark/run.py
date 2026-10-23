@@ -18,7 +18,7 @@ import httpx
 
 from goodvision_harness.rich_labeling import RichLabelCoordinator, RichLabelHTTPClient
 from goodvision_harness.video_to_stream import VideoFileStream, encode_jpeg
-from tools.videojev_benchmark.recording import EventStreamRecorder, publish_once
+from tools.videojev_walltime.recording import EventStreamRecorder, publish_once
 
 from .publishing import PersonQueryPublisher
 

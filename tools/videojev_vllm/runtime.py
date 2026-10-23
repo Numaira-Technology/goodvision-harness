@@ -5,9 +5,9 @@ import sys
 import time
 from types import SimpleNamespace
 
-from tools.videojev_probe.contract import CONTEXT, MODEL, REVISION
-from tools.videojev_probe.question_templates import CompiledQuestions
-from tools.videojev_probe.runtime import VideoJevRuntime
+from tools.videojev_native.contract import CONTEXT, MODEL, REVISION
+from tools.videojev_native.question_templates import CompiledQuestions
+from tools.videojev_native.runtime import VideoJevRuntime
 
 
 def engine_hf_config(config):

@@ -20,7 +20,7 @@ from vllm.model_executor.models.qwen3_5 import (
 from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper
 from vllm.multimodal import MULTIMODAL_REGISTRY
 
-from tools.videojev_probe.contract import MODEL, REVISION
+from tools.videojev_native.contract import MODEL, REVISION
 from .processing import NoSyntheticInputs, PreparedVideoProcessor, StaticVideoInfo
 
 

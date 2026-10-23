@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from goodvision_harness.videojev_contract import QuestionTemplate
-from tools.videojev_probe.contract import CONTEXT, MODEL, REVISION, parse_choices
+from tools.videojev_native.contract import CONTEXT, MODEL, REVISION, parse_choices
 
 
 MAX_BODY_BYTES = 64 * 1024 * 1024
@@ -903,7 +903,7 @@ def main():
         help="Default native question layout; a request may explicitly override it",
     )
     args = parser.parse_args()
-    from tools.videojev_probe.runtime import VideoJevRuntime
+    from tools.videojev_native.runtime import VideoJevRuntime
 
     runtime_class = VideoJevRuntime
     runtime_options = {
@@ -926,7 +926,7 @@ def main():
     elif args.engine_language_fp8:
         parser.error("--engine-language-fp8 requires --execution-backend vllm")
     elif args.profile_request > 0:
-        from tools.videojev_benchmark.profiling import ProfiledVideoJevRuntime
+        from tools.videojev_walltime.profiling import ProfiledVideoJevRuntime
 
         runtime_class = ProfiledVideoJevRuntime
         runtime_options.update({
