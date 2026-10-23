@@ -120,8 +120,8 @@ class VideoJevRuntime(NativeVideoJevModel):
             "processor_max_pixels": low,
         })
 
-    def _score_cached(self, batch, features, prefix):
-        """Continue a fresh copy of fixed text state; never retain video state."""
+    def _prefix_inputs(self, batch, features, prefix):
+        """Build full-window positions before slicing the fixed prefix."""
         torch, model = self.torch, self.model
         device = model.get_input_embeddings().weight.device
         length = prefix.length
@@ -151,34 +151,75 @@ class VideoJevRuntime(NativeVideoJevModel):
                 )
                 model.backbone.rope_deltas = model.backbone.rope_deltas.to(device)
             positions = positions.to(device)
+        return embeds, positions, batch
+
+    def _score_cached(self, batches, features, prefix):
+        """Continue independent batch rows; never retain their video state."""
+        torch, model = self.torch, self.model
+        parts = [self._prefix_inputs(batch, visual, prefix)
+                 for batch, visual in zip(batches, features, strict=True)]
+        length = prefix.length
+        device = parts[0][0].device
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             language = model.backbone.language_model
             hit = prefix.state is not None
             if not hit:
                 prefill = language(
-                    inputs_embeds=embeds[:, :length], position_ids=positions[..., :length],
+                    inputs_embeds=parts[0][0][:, :length],
+                    position_ids=parts[0][1][..., :length],
                     attention_mask=None, use_cache=True,
                 )
                 prefix.state = prefill.past_key_values
                 del prefill
             # Copy the full hybrid state, including convolution and recurrent layers.
             working = deepcopy(prefix.state)
+            lengths = [embeds.shape[1] - length for embeds, _positions, _batch in parts]
+            longest = max(lengths)
+            padding_mask = None
+            if len(parts) > 1:
+                working.reorder_cache(torch.zeros(len(parts), device=device, dtype=torch.long))
+                padding_mask = torch.zeros(
+                    (len(parts), length + longest), dtype=torch.bool, device=device,
+                )
+                for index, size in enumerate(lengths):
+                    padding_mask[index, :length + size] = True
+            if len(parts) == 1:
+                embeds, positions = parts[0][0][:, length:], parts[0][1][..., length:]
+            else:
+                embeds = torch.cat([
+                    torch.nn.functional.pad(part[0][:, length:], (0, 0, 0, longest - size))
+                    for part, size in zip(parts, lengths, strict=True)
+                ])
+                positions = torch.cat([
+                    torch.nn.functional.pad(part[1][..., length:], (0, longest - size))
+                    for part, size in zip(parts, lengths, strict=True)
+                ], dim=1)
+            # Right padding follows every scored position; discard updated states.
             hidden = language(
-                inputs_embeds=embeds[:, length:], position_ids=positions[..., length:],
-                attention_mask=None, past_key_values=working, use_cache=True,
-            ).last_hidden_state[0]
-            pairs = batch["pair_indices"].to(device) - length
-            queries = batch["query_indices"].to(device) - length
-            pair_hidden, query_hidden = hidden[pairs], hidden[queries]
+                inputs_embeds=embeds, position_ids=positions,
+                attention_mask=padding_mask, past_key_values=working, use_cache=True,
+            ).last_hidden_state
+            pair_hidden = torch.cat([
+                hidden[index, part[2]["pair_indices"].to(device) - length]
+                for index, part in enumerate(parts)
+            ])
+            query_hidden = torch.cat([
+                hidden[index, part[2]["query_indices"].to(device) - length]
+                for index, part in enumerate(parts)
+            ])
         with torch.autocast(device_type="cuda", enabled=False):
-            mask = batch["score_mask"].to(device)
-            tasks = batch["decision_tasks"].to(device)
+            mask = torch.cat([batch["score_mask"].to(device) for batch in batches])
+            tasks = torch.cat([batch["decision_tasks"].to(device) for batch in batches])
             logits = model.head(pair_hidden, query_hidden)
             valid = logits.masked_fill(~mask, -torch.inf)
             probabilities = torch.where(
                 (tasks == 1)[:, None], valid.softmax(-1), logits.sigmoid(),
             ) * mask
         output = SimpleNamespace(logits=logits, probabilities=probabilities, score_mask=mask)
-        return output, hit, embeds.shape[1] - (length if hit else 0)
+        return output, hit, [
+            size + (length if not hit and index == 0 else 0)
+            for index, size in enumerate(lengths)
+        ]
 
     def predict_prepared(self, prepared, *, question_template, frame_times):
         """Score native post-video choices on the service's single GPU worker."""
@@ -204,8 +245,8 @@ class VideoJevRuntime(NativeVideoJevModel):
                     output = self.model(**batch, visual_features=features)
                     forwarded += batch["input_ids"].shape[1]
                 else:
-                    output, hit, count = self._score_cached(batch, features, prefix)
-                    forwarded += count
+                    output, hit, counts = self._score_cached([batch], [features], prefix)
+                    forwarded += counts[0]
                     hits += int(hit)
                     misses += int(not hit)
                     prefix_tokens = prefix.length
@@ -229,3 +270,96 @@ class VideoJevRuntime(NativeVideoJevModel):
             "prefix_cache_hits": hits,
             "prefix_cache_misses": misses,
         }
+
+    def predict_prepared_batch(self, windows):
+        """Yield individual outcomes; None keeps the original sequential route."""
+        if not self.prefix_cache:
+            yield None
+            return
+        started = time.perf_counter()
+        eligible = []
+        for index, window in enumerate(windows):
+            try:
+                template, prepared = window["question_template"], window["prepared"]
+                if template.compiled is None:
+                    template.compiled = CompiledQuestions(self.processor, self.torch, template.rows)
+                groups = list(template.compiled.groups(
+                    prepared.record, window["frame_times"], prepared.context, prefix_cache=True,
+                ))
+                if (len(groups) != 1 or groups[0][2] is None
+                        or (eligible and groups[0][2] is not eligible[0][2][2])):
+                    yield None
+                    return
+                eligible.append((index, window, groups[0]))
+            except Exception as exc:
+                yield index, exc
+        if len(eligible) < 2:
+            yield None
+            return
+
+        torch = self.torch
+        torch.cuda.synchronize()
+        encoded_windows, features, visual_seconds = [], [], []
+        for item in eligible:
+            index, window, _group = item
+            try:
+                before = time.perf_counter()
+                prepared = window["prepared"]
+                with torch.inference_mode():
+                    visual = self.model.encode_video(
+                        prepared.pixel_values, torch.tensor([prepared.record["grid_thw"]]),
+                    )
+                    torch.cuda.synchronize()
+                encoded_windows.append(item)
+                features.append(visual)
+                visual_seconds.append(time.perf_counter() - before)
+            except Exception as exc:
+                yield index, exc
+        if not encoded_windows:
+            return
+        try:
+            with torch.inference_mode():
+                encoded = time.perf_counter()
+                prefix = encoded_windows[0][2][2]
+                output, hit, counts = self._score_cached(
+                    [item[2][0] for item in encoded_windows], features, prefix,
+                )
+                cpu = SimpleNamespace(
+                    logits=output.logits.float().cpu(),
+                    probabilities=output.probabilities.float().cpu(),
+                    score_mask=output.score_mask.cpu(),
+                )
+                torch.cuda.synchronize()
+                done = time.perf_counter()
+            row_offset = 0
+            for position, (index, window, group) in enumerate(encoded_windows):
+                batch, rows, _prefix = group
+                per_window = SimpleNamespace(**{
+                    key: getattr(cpu, key)[row_offset:row_offset + len(rows)]
+                    for key in ("logits", "probabilities", "score_mask")
+                })
+                row_offset += len(rows)
+                try:
+                    raw = self._format_predictions(
+                        per_window, rows, window["prepared"].record, self.decoder,
+                    )
+                    prepared = window["prepared"]
+                    cached = hit or position > 0
+                    yield index, (raw, {
+                        **prepared.timings,
+                        "gpu_batch_size": len(encoded_windows),
+                        "visual_encode_seconds": visual_seconds[position],
+                        "decision_seconds": done - encoded,
+                        "gpu_pipeline_seconds": done - started,
+                        "model_pipeline_seconds": prepared.timings["preprocess_seconds"] + done - started,
+                        "native_input_tokens": batch["input_ids"].shape[1],
+                        "forward_input_tokens": counts[position],
+                        "prefix_tokens": prefix.length,
+                        "prefix_cache_hits": int(cached),
+                        "prefix_cache_misses": int(not cached),
+                    })
+                except Exception as exc:
+                    yield index, exc
+        except Exception as exc:
+            for index, _window, _group in encoded_windows:
+                yield index, exc

@@ -212,7 +212,7 @@ class Scorer:
         self._recent = OrderedDict()
         self._question_templates = OrderedDict()
         self._last_template = None
-        self._gpu_work = None
+        self._gpu_work = ()
         self._loaded = False
         self._accepting = True
         self._stopping = False
@@ -247,11 +247,11 @@ class Scorer:
                 "queue": len(self._pending),
                 "preparing": sum(work.state == "preparing" for work in self._pipeline),
                 "prepared": sum(work.state == "ready" for work in self._pipeline),
-                "gpu_busy": self._gpu_work is not None,
+                "gpu_busy": bool(self._gpu_work),
                 "queue_policy": "latest-per-stream",
                 "context": self.context,
                 "max_pixels": self.max_pixels,
-                "gpu_batch_size": 1,
+                "gpu_batch_size": 2,
                 "model": MODEL,
                 "revision": REVISION,
                 "runtime": {} if self.runtime is None else self.runtime.metadata,
@@ -407,7 +407,7 @@ class Scorer:
                     return
 
     def _gpu_loop(self):
-        work = None
+        works = []
         try:
             self.runtime = self._runtime_factory()
             with self._condition:
@@ -421,19 +421,30 @@ class Scorer:
                         self._condition.wait()
                     if self._stopping:
                         return
-                    work = self._pipeline.popleft()
-                    work.state = "gpu"
-                    work.gpu_start = time.monotonic()
-                    self._gpu_work = work
+                    works = [self._pipeline.popleft()]
+                    # Take only an already-ready compatible window; never wait to fill a batch.
+                    if (self.runtime.prefix_cache and self._pipeline
+                            and self._pipeline[0].state == "ready"
+                            and self._pipeline[0].question_template is works[0].question_template):
+                        works.append(self._pipeline.popleft())
+                    started = time.monotonic()
+                    for work in works:
+                        work.state = "gpu"
+                        work.gpu_start = started
+                    self._gpu_work = tuple(works)
                     self._condition.notify_all()
-                if work.gpu_start - work.arrival >= self.queue_age:
-                    self._finish(work, error=WindowError("expired_before_gpu"))
-                    continue
-                self._score_one(work)
+                for work in works:
+                    if started - work.arrival >= self.queue_age:
+                        self._finish(work, error=WindowError("expired_before_gpu"))
+                ready = [work for work in works if not work.finished]
+                if len(ready) == 1:
+                    self._score_one(ready[0])
+                elif ready:
+                    self._score_batch(ready)
         except BaseException as exc:
             error = WindowError("gpu_worker_stopped", f"{type(exc).__name__}: {exc}")
             self._stop_shared(error)
-            if work is not None:
+            for work in works:
                 self._finish(work, error=error)
         finally:
             with self._condition:
@@ -442,6 +453,10 @@ class Scorer:
 
     def _score_one(self, work):
         raw = None
+        work.gpu_start = time.monotonic()
+        if work.gpu_start - work.arrival >= self.queue_age:
+            self._finish(work, error=WindowError("expired_before_gpu"))
+            return
         timings = self._timings(work)
         try:
             raw, native_timings = self.runtime.predict_prepared(
@@ -449,23 +464,56 @@ class Scorer:
                 question_template=work.question_template,
                 frame_times=work.body["frame_times"],
             )
-            timings.update(native_timings)
-            timings["gpu_batch_size"] = 1
-            timings.update(self._timings(work))
-            timings["server_gpu_seconds"] = time.monotonic() - work.gpu_start
-            try:
-                parse_choices(raw, work.question_template.rows)
-            except (ValueError, TypeError, KeyError, IndexError) as exc:
-                raise WindowError("invalid_response", str(exc), raw=raw,
-                                  timings=timings) from None
-            self._finish(work, value={
-                "model": MODEL, "revision": REVISION,
-                "request_id": work.body["request_id"], "raw": raw, "timings": timings,
-            })
+            self._complete_prediction(work, raw, {**native_timings, "gpu_batch_size": 1})
         except Exception as exc:
             timings.update(self._timings(work))
             timings["server_gpu_seconds"] = time.monotonic() - work.gpu_start
             self._finish(work, error=self._gpu_error(exc, raw=raw, timings=timings))
+
+    def _score_batch(self, works):
+        try:
+            for outcome in self.runtime.predict_prepared_batch([
+                {"prepared": work.prepared, "question_template": work.question_template,
+                 "frame_times": work.body["frame_times"]}
+                for work in works
+            ]):
+                if outcome is None:
+                    for work in works:
+                        if self._stopping:
+                            return
+                        if not work.finished:
+                            self._score_one(work)
+                    return
+                index, result = outcome
+                work = works[index]
+                if isinstance(result, Exception):
+                    self._finish(work, error=self._gpu_error(result, timings=self._timings(work)))
+                else:
+                    self._complete_prediction(work, *result)
+                if self._stopping:
+                    return
+        except Exception as exc:
+            for work in works:
+                if not work.finished:
+                    self._finish(work, error=self._gpu_error(exc, timings=self._timings(work)))
+        finally:
+            if self._stopping:
+                for work in works:
+                    if not work.finished:
+                        self._finish(work, error=self._failure or WindowError("service_stopped"))
+
+    def _complete_prediction(self, work, raw, native_timings):
+        timings = {**native_timings, **self._timings(work)}
+        timings["server_gpu_seconds"] = time.monotonic() - work.gpu_start
+        try:
+            parse_choices(raw, work.question_template.rows)
+        except (ValueError, TypeError, KeyError, IndexError) as exc:
+            self._finish(work, error=WindowError("invalid_response", str(exc), raw=raw, timings=timings))
+            return
+        self._finish(work, value={
+            "model": MODEL, "revision": REVISION,
+            "request_id": work.body["request_id"], "raw": raw, "timings": timings,
+        })
 
     def _gpu_error(self, exc, *, raw=None, timings=None):
         error = WindowError(
@@ -550,8 +598,7 @@ class Scorer:
                 self._pipeline.remove(work)
             except ValueError:
                 pass
-            if self._gpu_work is work:
-                self._gpu_work = None
+            self._gpu_work = tuple(item for item in self._gpu_work if item is not work)
             if self._active_sessions.get(work.body["session"]) is work:
                 del self._active_sessions[work.body["session"]]
             work.prepared = None
@@ -592,8 +639,9 @@ class Scorer:
                         WindowError(
                             error.code,
                             str(error),
-                            raw=error.raw if work is self._gpu_work else None,
-                            timings=dict(error.timings or {}) if work is self._gpu_work else None,
+                            raw=error.raw if len(self._gpu_work) == 1 and work in self._gpu_work else None,
+                            timings=(dict(error.timings or {})
+                                     if len(self._gpu_work) == 1 and work in self._gpu_work else None),
                         )
                     )
             self._condition.notify_all()
