@@ -696,13 +696,14 @@ def main():
     parser.add_argument("--ready-capacity", type=int, default=2)
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
+    parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
     def runtime_factory():
         import torch
 
         torch.set_num_threads(4)
-        return VideoJevRuntime(args.cache_dir)
+        return VideoJevRuntime(args.cache_dir, prefix_cache=args.prefix_cache)
 
     scorer = Scorer(
         runtime_factory,

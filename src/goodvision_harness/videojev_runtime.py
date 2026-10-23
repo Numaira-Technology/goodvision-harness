@@ -4,6 +4,7 @@ import io
 import math
 import sys
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -22,8 +23,9 @@ class _PreparedVideo:
 class VideoJevRuntime(NativeVideoJevModel):
     """Prepare windows on CPU and score compiled scene questions on GPU."""
 
-    def __init__(self, cache_dir):
+    def __init__(self, cache_dir, *, prefix_cache=True):
         super().__init__(cache_dir)
+        self.prefix_cache = prefix_cache
         native = vars(sys.modules[type(self.model).__module__])
         self._format_predictions = native["format_predictions"]
         self.decoder = dict(self.model.config.decoder)
@@ -32,6 +34,7 @@ class VideoJevRuntime(NativeVideoJevModel):
         self.metadata.update(
             torch_cpu_threads=self.torch.get_num_threads(),
             torch_interop_threads=self.torch.get_num_interop_threads(),
+            prefix_cache=prefix_cache,
         )
 
     def prepare(self, payloads, fps, *, context=CONTEXT, max_pixels=409600):
@@ -117,8 +120,68 @@ class VideoJevRuntime(NativeVideoJevModel):
             "processor_max_pixels": low,
         })
 
+    def _score_cached(self, batch, features, prefix):
+        """Continue a fresh copy of fixed text state; never retain video state."""
+        torch, model = self.torch, self.model
+        device = model.get_input_embeddings().weight.device
+        length = prefix.length
+        if prefix.device_ids is None:
+            prefix.device_ids = prefix.ids.to(device)
+        ids = torch.cat([prefix.device_ids, batch["input_ids"][:, length:].to(device)], dim=1)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            if prefix.embeddings is None:
+                prefix.embeddings = model.get_input_embeddings()(prefix.device_ids)
+            embeds = torch.cat([
+                prefix.embeddings, model.get_input_embeddings()(ids[:, length:]),
+            ], dim=1)
+            slots = ids == model.config.backbone_config.video_token_id
+            embeds = embeds.masked_scatter(
+                slots[..., None].expand_as(embeds), features.to(embeds),
+            )
+            if model.is_moe:
+                positions, _ = model.backbone.get_rope_index(
+                    batch["input_ids"], batch["mm_token_type_ids"],
+                    video_grid_thw=batch["video_grid_thw"],
+                )
+            else:
+                positions = model.backbone.compute_3d_position_ids(
+                    input_ids=batch["input_ids"], inputs_embeds=None,
+                    video_grid_thw=batch["video_grid_thw"], attention_mask=None,
+                    past_key_values=None, mm_token_type_ids=batch["mm_token_type_ids"],
+                )
+                model.backbone.rope_deltas = model.backbone.rope_deltas.to(device)
+            positions = positions.to(device)
+            language = model.backbone.language_model
+            hit = prefix.state is not None
+            if not hit:
+                prefill = language(
+                    inputs_embeds=embeds[:, :length], position_ids=positions[..., :length],
+                    attention_mask=None, use_cache=True,
+                )
+                prefix.state = prefill.past_key_values
+                del prefill
+            # Copy the full hybrid state, including convolution and recurrent layers.
+            working = deepcopy(prefix.state)
+            hidden = language(
+                inputs_embeds=embeds[:, length:], position_ids=positions[..., length:],
+                attention_mask=None, past_key_values=working, use_cache=True,
+            ).last_hidden_state[0]
+            pairs = batch["pair_indices"].to(device) - length
+            queries = batch["query_indices"].to(device) - length
+            pair_hidden, query_hidden = hidden[pairs], hidden[queries]
+        with torch.autocast(device_type="cuda", enabled=False):
+            mask = batch["score_mask"].to(device)
+            tasks = batch["decision_tasks"].to(device)
+            logits = model.head(pair_hidden, query_hidden)
+            valid = logits.masked_fill(~mask, -torch.inf)
+            probabilities = torch.where(
+                (tasks == 1)[:, None], valid.softmax(-1), logits.sigmoid(),
+            ) * mask
+        output = SimpleNamespace(logits=logits, probabilities=probabilities, score_mask=mask)
+        return output, hit, embeds.shape[1] - (length if hit else 0)
+
     def predict_prepared(self, prepared, *, question_template, frame_times):
-        """Score fixed shared questions on the service's single GPU worker."""
+        """Score native post-video choices on the service's single GPU worker."""
         torch = self.torch
         torch.cuda.synchronize()
         start = time.perf_counter()
@@ -132,12 +195,20 @@ class VideoJevRuntime(NativeVideoJevModel):
                 question_template.compiled = CompiledQuestions(
                     self.processor, torch, question_template.rows,
                 )
-            raw, tokens = [], 0
-            for batch, rows in question_template.compiled.groups(
-                prepared.record, frame_times, prepared.context,
+            raw, tokens, forwarded, hits, misses, prefix_tokens = [], 0, 0, 0, 0, 0
+            for batch, rows, prefix in question_template.compiled.groups(
+                prepared.record, frame_times, prepared.context, prefix_cache=self.prefix_cache,
             ):
                 tokens += batch["input_ids"].shape[1]
-                output = self.model(**batch, visual_features=features)
+                if prefix is None:
+                    output = self.model(**batch, visual_features=features)
+                    forwarded += batch["input_ids"].shape[1]
+                else:
+                    output, hit, count = self._score_cached(batch, features, prefix)
+                    forwarded += count
+                    hits += int(hit)
+                    misses += int(not hit)
+                    prefix_tokens = prefix.length
                 cpu = SimpleNamespace(
                     logits=output.logits.float().cpu(),
                     probabilities=output.probabilities.float().cpu(),
@@ -153,4 +224,8 @@ class VideoJevRuntime(NativeVideoJevModel):
             "gpu_pipeline_seconds": done - start,
             "model_pipeline_seconds": prepared.timings["preprocess_seconds"] + done - start,
             "native_input_tokens": tokens,
+            "forward_input_tokens": forwarded,
+            "prefix_tokens": prefix_tokens,
+            "prefix_cache_hits": hits,
+            "prefix_cache_misses": misses,
         }

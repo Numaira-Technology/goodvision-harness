@@ -47,6 +47,7 @@ _SERVICE_METRICS = frozenset((
     "source_height", "processed_width", "processed_height", "processor_max_pixels",
     "native_group_count", "native_input_tokens", "question_group_prepare_seconds",
     "gpu_scoring_seconds",
+    "forward_input_tokens", "prefix_tokens", "prefix_cache_hits", "prefix_cache_misses",
 ))
 
 
@@ -127,9 +128,9 @@ class VideoJevInspector:
             jpeg = frame.jpeg_bytes
             with Image.open(io.BytesIO(jpeg)) as image:
                 width, height = image.size
-                if max(width, height) > 384:
+                if max(width, height) > 720:
                     bgr = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    jpeg, width, height = encode_jpeg(bgr, max_image_side=384, quality=90)
+                    jpeg, width, height = encode_jpeg(bgr, max_image_side=720, quality=90)
             images.append(base64.b64encode(jpeg).decode("ascii"))
             encoded.append((frame, jpeg, width, height))
         payload = {

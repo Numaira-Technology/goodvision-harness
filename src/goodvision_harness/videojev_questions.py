@@ -9,6 +9,19 @@ _SOURCE_TIMES = "{source_times}"
 
 
 @dataclass(eq=False)
+class _Prefix:
+    ids: object
+    tokens: tuple
+    device_ids: object = None
+    embeddings: object = None
+    state: object = None
+
+    @property
+    def length(self):
+        return len(self.tokens)
+
+
+@dataclass(eq=False)
 class _TimeSlot:
     before: str
     after: str
@@ -68,6 +81,7 @@ class CompiledQuestions:
 
     def __init__(self, processor, torch, rows):
         self.processor, self.torch = processor, torch
+        self.prefix = None
         self.rows = tuple({
             **row, "query": "[]".join(row["query_parts"]),
         } for row in rows)
@@ -88,6 +102,51 @@ class CompiledQuestions:
             {**row, "query": marker + question}
             for row, (_, marker, question) in zip(self.rows, divided)
         ) if self.shared else self.rows
+        policies = [row["query"].partition("\nEvidence metadata: ") for row in self.rows]
+        policy = policies[0][0]
+        self.prefixed = tuple({
+            **row, "query_parts": (row["query_parts"][0][len(policy):],
+                                    row["query_parts"][1]),
+        } for row in self.rows) if self.shared and policy and all(
+            marker and head == policy for head, marker, _ in policies
+        ) else self.rows
+
+    def _full_prefix(self):
+        if self.prefix is not None:
+            return self.prefix
+        fixed = []
+        for row in self.rows:
+            policy, marker, evidence = row["query"].partition("\nEvidence metadata: ")
+            query = "[current window source times]".join(row["query_parts"])
+            if marker:
+                try:
+                    metadata, end = json.JSONDecoder().raw_decode(evidence)
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(metadata, dict):
+                        metadata.pop("source_times", None)
+                        query = policy + (
+                            marker + json.dumps(metadata, allow_nan=False) if metadata else ""
+                        ) + evidence[end:]
+            fixed.append(query)
+        divided = [query.rpartition("\nFor ") for query in fixed]
+        common = divided[0][0] if all(
+            marker and head == divided[0][0] for head, marker, _ in divided
+        ) else ""
+        text = common + "\nTask: single-choice video question answering\n"
+        for index, (row, query, (_, marker, question)) in enumerate(
+            zip(self.rows, fixed, divided)
+        ):
+            text += f"\nQuestion {index + 1}: {marker + question if common else query}\nOptions:\n"
+            text += "".join(option + "\n" for option in row["options"])
+        text = self.processor.apply_chat_template(
+            [{"role": "user", "content": [{"type": "text", "text": text}]}],
+            tokenize=False, add_generation_prompt=False,
+        )
+        tokens = tuple(self.processor.tokenizer.encode(text, add_special_tokens=False))
+        self.prefix = _Prefix(self.torch.tensor([tokens], dtype=self.torch.long), tokens)
+        return self.prefix
 
     def _messages(self, record):
         from transformers.video_utils import VideoMetadata
@@ -127,23 +186,35 @@ class CompiledQuestions:
         original_first = tuple(message(row, True) for row in self.rows)
         original_next = tuple(message(row) for row in self.rows)
         shared_next = tuple(message(row, dynamic=False) for row in self.following)
-        value = original_first, original_next, shared_next, slots
+        prefix_first = tuple(message(row, True) for row in self.prefixed)
+        value = original_first, original_next, shared_next, prefix_first, slots
         self.geometry[key] = value
         while len(self.geometry) > 8:
             self.geometry.popitem(last=False)
         return value
 
-    def groups(self, record, frame_times, context):
-        first, following, shared, slots = self._messages(record)
+    def groups(self, record, frame_times, context, *, prefix_cache=False):
+        first, following, shared, prefixed, slots = self._messages(record)
         times = json.dumps(frame_times, allow_nan=False)
         tokenizer = self.processor.tokenizer
         dynamic = {slot: tokenizer.encode(slot.before + times + slot.after,
                                            add_special_tokens=False) for slot in slots}
+        prefix = self._full_prefix() if prefix_cache else None
+        if prefix is not None and any(
+            (prefix.length + part.length(dynamic) + 63) // 64 * 64 > context
+            for part in prefixed
+        ):
+            # Keep every original question when a full prefix cannot fit.
+            prefix = None
+        if prefix is not None:
+            first = prefixed
+            following = shared if self.shared else following
         start = 0
         while start < len(self.rows):
             # Preserve native repeated-layout group boundaries, but determine
             # them by lengths instead of repeatedly rebuilding each candidate.
-            end, length = start + 1, first[start].length(dynamic)
+            end = start + 1
+            length = first[start].length(dynamic) + (0 if prefix is None else prefix.length)
             if (length + 63) // 64 * 64 > context:
                 raise ValueError("a complete native choice exceeds the context")
             while end < len(self.rows):
@@ -152,12 +223,12 @@ class CompiledQuestions:
                     break
                 length, end = candidate, end + 1
             selected = [first[start], *following[start + 1:end]]
-            if self.shared and end - start > 1:
+            if prefix is None and self.shared and end - start > 1:
                 candidate = [first[start], *shared[start + 1:end]]
                 candidate_length = sum(part.length(dynamic) for part in candidate)
                 if (candidate_length + 63) // 64 * 64 <= context:
                     selected = candidate
-            values = []
+            values = [] if prefix is None else list(prefix.tokens)
             for part in selected:
                 values.extend(part.tokens(dynamic))
             pairs = [index for index, token in enumerate(values) if token == self.option_id]
@@ -174,5 +245,5 @@ class CompiledQuestions:
                 "score_mask": torch.ones((count, 3), dtype=torch.bool),
                 "decision_tasks": torch.ones(count, dtype=torch.long),
             }
-            yield batch, self.rows[start:end]
+            yield batch, self.rows[start:end], prefix
             start = end

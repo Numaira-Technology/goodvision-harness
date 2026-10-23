@@ -353,8 +353,8 @@ class ServiceLocations:
             # This classifier emits scene choices, not chat or person grounding.
             config = replace(config, runtime=replace(
                 config.runtime, scene_mode="active", scene_independent_vlm=True,
-                scene_vlm_output_mode="events", scene_observation_fps=0.625,
-                scene_max_in_flight=1, scene_max_image_side=384,
+                scene_vlm_output_mode="events", scene_observation_fps=1.25,
+                scene_max_in_flight=1, scene_max_image_side=720,
                 scene_jpeg_quality=90, scene_timeout_seconds=20.0,
             ))
             if config.rich_labeling.backend == "vlm":
