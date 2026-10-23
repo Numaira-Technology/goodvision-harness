@@ -11,6 +11,7 @@ import math
 import multiprocessing as mp
 import os
 import time
+from bisect import bisect_left
 from collections import Counter, OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
@@ -64,6 +65,9 @@ class VLMProcessConfig:
     output_mode: str = "parallel"
     diagnostics_enabled: bool = False
     admission: AdmissionSettings | None = None
+    candidate_fps: float | None = None
+    observation_window_frames: int = 4
+    observation_frame_delta_seconds: float | None = None
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
@@ -72,6 +76,22 @@ class VLMProcessConfig:
             raise ValueError("VLM process requires a scoped source and event labels")
         if not 0 < self.observation_fps <= 3 or not math.isfinite(self.observation_fps):
             raise ValueError("VLM cadence must be in (0, 3]")
+        if self.candidate_fps is not None and (
+            type(self.candidate_fps) not in (int, float)
+            or not 1.0 / 3600 <= self.candidate_fps <= 120
+            or not math.isfinite(self.candidate_fps)
+        ):
+            raise ValueError("candidate sampling FPS must be within 1/3600..120")
+        if type(self.observation_window_frames) is not int or not (
+            2 <= self.observation_window_frames <= 4
+        ):
+            raise ValueError("observation window must contain 2..4 source frames")
+        if self.observation_frame_delta_seconds is not None and (
+            type(self.observation_frame_delta_seconds) not in (int, float)
+            or not 0 < self.observation_frame_delta_seconds <= 3600
+            or not math.isfinite(self.observation_frame_delta_seconds)
+        ):
+            raise ValueError("observation frame interval must be in (0, 3600]")
         if type(self.max_in_flight) is not int or not 1 <= self.max_in_flight <= 4:
             raise ValueError("VLM concurrency must be within 1..4")
 
@@ -83,20 +103,67 @@ class SourceSample:
     received_monotonic: float
 
 
-def _observation_window(history):
-    """Keep at most four originals while retaining enough temporal context."""
+def _source_sample_fps(config):
+    return (
+        config.candidate_fps if config.candidate_fps is not None
+        else max(2.0, config.observation_fps * 2.0)
+    )
+
+
+def _observation_window(
+    history, frame_count=4, frame_delta_seconds=None, candidate_fps=None,
+):
+    """Select distinct arrived originals, retaining the latest source endpoint."""
     samples = tuple(history)
-    window = tuple(sample.frame for sample in samples[-4:])
+    if frame_delta_seconds is not None:
+        if len(samples) < frame_count:
+            return ()
+        timestamps = tuple(sample.frame.timestamp_seconds for sample in samples)
+        endpoint = timestamps[-1]
+        if endpoint - (frame_count - 1) * frame_delta_seconds + 1e-9 < timestamps[0]:
+            return ()
+        intervals = sorted(
+            newer.frame.timestamp_seconds - older.frame.timestamp_seconds
+            for older, newer in zip(samples, samples[1:])
+        )
+        middle = len(intervals) // 2
+        observed_interval = (
+            intervals[middle] if len(intervals) % 2
+            else (intervals[middle - 1] + intervals[middle]) / 2.0
+        )
+        sampling_interval = (
+            observed_interval if candidate_fps is None
+            else max(1.0 / candidate_fps, observed_interval)
+        )
+        tolerance = min(frame_delta_seconds / 2.0, sampling_interval / 2.0) + 1e-9
+        selected = [samples[-1].frame]
+        available_end = len(samples) - 1
+        for offset in range(1, frame_count):
+            if not available_end:
+                return ()
+            target = endpoint - offset * frame_delta_seconds
+            insertion = bisect_left(timestamps, target, 0, available_end)
+            candidates = {
+                max(0, insertion - 1), min(available_end - 1, insertion),
+            }
+            index = min(candidates, key=lambda i: (abs(timestamps[i] - target), -i))
+            frame = samples[index].frame
+            if abs(frame.timestamp_seconds - target) > tolerance:
+                return ()
+            selected.append(frame)
+            available_end = index
+        return tuple(reversed(selected))
+    window = tuple(sample.frame for sample in samples[-frame_count:])
     if (
-        len(window) == 4
+        len(window) == frame_count
         and window[-1].timestamp_seconds - window[0].timestamp_seconds < 0.75
     ):
         # Dense sampling can put all four recent frames inside 0.75 seconds.
         # Replace only the oldest image, preserving the latest endpoint and
         # image budget without changing windows at the default sampling rate.
-        for sample in reversed(samples[:-4]):
+        for sample in reversed(samples[:-frame_count]):
             if window[-1].timestamp_seconds - sample.frame.timestamp_seconds >= 0.75:
-                return (sample.frame, *window[-3:])
+                return (sample.frame, *window[1:])
     return window
 
 
@@ -275,6 +342,13 @@ class IndependentEventState:
 
 
 def _inspector(config):
+    if (
+        config.model_settings.provider == "local"
+        and config.model == "ZhuYuhan/VideoJev-4B"
+    ):
+        from .videojev_model import VideoJevInspector
+
+        return VideoJevInspector(config)
     from .vlm_compact_model import CompactGroundingInspector, EventJSONInspector
 
     cls = {"events": EventJSONInspector, "compact": CompactGroundingInspector}.get(
@@ -732,11 +806,18 @@ def run_vlm_process(
             if history:
                 sample = history[-1]
                 frame = sample.frame
-                window = _observation_window(history)
+                window = _observation_window(
+                    history, config.observation_window_frames,
+                    config.observation_frame_delta_seconds, _source_sample_fps(config),
+                )
+                window_ready = (
+                    len(window) == config.observation_window_frames
+                    if config.observation_frame_delta_seconds is not None
+                    else len(window) >= 2
+                    and window[-1].timestamp_seconds - window[0].timestamp_seconds >= 0.75
+                )
                 if (
-                    len(window) >= 2
-                    and window[-1].timestamp_seconds - window[0].timestamp_seconds
-                    >= 0.75
+                    window_ready
                     and frame.frame_sequence > last_endpoint
                     and (
                         frame.timestamp_seconds + 1e-9 >= next_due
@@ -1001,9 +1082,7 @@ class IndependentVLMBranch:
             if sequence <= self._last_sequence or timestamp + 1e-9 < self._next_sample:
                 return False
             self._last_sequence = sequence
-            self._next_sample = timestamp + 1.0 / max(
-                2.0, self.config.observation_fps * 2.0
-            )
+            self._next_sample = timestamp + 1.0 / _source_sample_fps(self.config)
             sample = SourceSample(
                 EvidenceFrame(self.config.stream_session_id, sequence, timestamp, jpeg),
                 utc_now(),
@@ -1263,7 +1342,7 @@ class IndependentVLMBranch:
                     2 if self.config.output_mode == "parallel" else 1
                 ),
                 "reorder_capacity_per_lane": REORDER_CAPACITY,
-                "source_sample_fps": max(2.0, self.config.observation_fps * 2.0),
+                "source_sample_fps": _source_sample_fps(self.config),
                 "observation_fps": self.config.observation_fps,
                 "output_mode": self.config.output_mode,
                 "shared_admission_enabled": self.config.admission is not None,
