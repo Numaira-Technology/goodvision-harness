@@ -301,7 +301,7 @@ class VideoJevRuntime(NativeVideoJevModel):
         return replacement, question_layout, prefix
 
     def _prefix_inputs(self, batch, features, prefix):
-        """Prepare the original full-window positions before slicing its prefix."""
+        """Build full-window positions from CPU inputs before slicing the prefix."""
         torch, model = self.torch, self.model
         device = model.get_input_embeddings().weight.device
         prefix_length = prefix.length
@@ -310,8 +310,8 @@ class VideoJevRuntime(NativeVideoJevModel):
         ids = torch.cat([
             prefix.device_ids, batch["input_ids"][:, prefix_length:].to(device),
         ], dim=1)
-        types = batch["mm_token_type_ids"].to(device)
-        grid = batch["video_grid_thw"].to(device)
+        types = batch["mm_token_type_ids"]
+        grid = batch["video_grid_thw"]
         pairs = batch["pair_indices"].to(device)
         queries = batch["query_indices"].to(device)
         mask = batch["score_mask"].to(device)
@@ -328,13 +328,15 @@ class VideoJevRuntime(NativeVideoJevModel):
             )
             if model.is_moe:
                 positions, _ = model.backbone.get_rope_index(
-                    ids, types, video_grid_thw=grid,
+                    batch["input_ids"], types, video_grid_thw=grid,
                 )
             else:
                 positions = model.backbone.compute_3d_position_ids(
-                    input_ids=ids, inputs_embeds=embeds, video_grid_thw=grid,
+                    input_ids=batch["input_ids"], inputs_embeds=None, video_grid_thw=grid,
                     attention_mask=None, past_key_values=None, mm_token_type_ids=types,
                 )
+                model.backbone.rope_deltas = model.backbone.rope_deltas.to(device)
+            positions = positions.to(device)
         return embeds, positions, pairs, queries, mask, tasks
 
     def _prefix_forward(self, batch, features, prefix, *, use_cache, align_cache=False):
