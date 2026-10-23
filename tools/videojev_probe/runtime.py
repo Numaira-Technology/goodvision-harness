@@ -3,9 +3,9 @@
 import io
 import time
 
-from goodvision_harness.videojev_runtime import NativeVideoJevModel, record_for_grid
-
-from .contract import CONTEXT, MODEL, REVISION
+from goodvision_harness.videojev_core import (
+    CONTEXT, MODEL, REVISION, NativeVideoJevModel, record_for_grid,
+)
 
 
 class VideoJevRuntime(NativeVideoJevModel):

@@ -2,7 +2,7 @@
 
 import json
 
-from goodvision_harness.videojev_contract import (
+from goodvision_harness.videojev_core import (
     CONTEXT,
     MODEL,
     OPTIONS,
