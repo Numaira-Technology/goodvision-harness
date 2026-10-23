@@ -9,6 +9,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+from goodvision_harness.videojev_core import NativeVideoJevModel, video_record
+
 from .contract import CONTEXT, MODEL, REVISION
 from .question_templates import CompiledQuestions, PolicyPrefix
 
@@ -25,16 +27,7 @@ def record_for_grid(processor, grid, frame_count, fps):
         or grid[1] % 2 or grid[2] % 2
     ):
         raise ValueError("native processor resampled frames or changed temporal grid")
-    return {
-        "frames": frame_count,
-        "fps": fps,
-        "grid_thw": grid,
-        "tokens": math.prod(grid) // 4,
-        "score_times": list(
-            processor._calculate_timestamps(list(range(frame_count)), fps, 2)
-        ),
-        "sampled_duration": frame_count / fps,
-    }
+    return video_record(processor, grid, frame_count, fps)
 
 
 @dataclass(frozen=True)
@@ -62,34 +55,16 @@ def _shared_questions(rows):
     ], True
 
 
-class VideoJevRuntime:
+class VideoJevRuntime(NativeVideoJevModel):
     def __init__(self, cache_dir, *, question_layout="repeated", single_sequence=False,
                  compile_language_mlp=False, fuse_language_gate_up=False, language_mlp_fp8=False,
                  language_mlp_gemm_autotune=False, compile_language_norm=False,
                  compile_vision_blocks=False):
-        import torch
-        from transformers import AutoModel, AutoProcessor
-
         if question_layout not in QUESTION_LAYOUTS:
             raise ValueError("invalid question_layout")
-        if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
-            raise RuntimeError("requires a CUDA GPU supporting BF16; no CPU fallback")
-        if importlib.metadata.version("transformers") != "5.14.1":
-            raise RuntimeError("use isolated environment with transformers==5.14.1")
-        self.torch = torch
         started = time.perf_counter()
-        shared = dict(
-            revision=REVISION,
-            cache_dir=str(cache_dir),
-            local_files_only=True,
-            trust_remote_code=True,
-        )
-        self.processor = AutoProcessor.from_pretrained(MODEL, **shared)
-        self.model = AutoModel.from_pretrained(
-            MODEL, **shared, dtype=torch.bfloat16,
-            device_map={"": "cuda:0"}, attn_implementation="flash_attention_2",
-        )
-        self.model.prepare_for_inference()
+        super().__init__(cache_dir)
+        torch = self.torch
         if fuse_language_gate_up:
             from .fused_mlp import FusedGateUpMLP
 
@@ -166,19 +141,8 @@ class VideoJevRuntime:
             for module in linear_layers
         )
         torch.cuda.synchronize()
-        props = torch.cuda.get_device_properties(0)
-        self.metadata = {
-            "model": MODEL, "revision": REVISION,
-            "gpu": props.name, "gpu_total_bytes": props.total_memory,
+        self.metadata.update({
             "model_load_seconds": time.perf_counter() - started,
-            "versions": {
-                n: importlib.metadata.version(n)
-                for n in (
-                    "torch", "transformers", "flash-attn", "flash-linear-attention",
-                    "causal-conv1d", "fla-core", "accelerate",
-                )
-            },
-            "cuda_runtime": torch.version.cuda,
             "torch_cpu_threads": torch.get_num_threads(),
             "torch_interop_threads": torch.get_num_interop_threads(),
             "packed_choice_supported": self.packed_choice_supported,
@@ -189,9 +153,8 @@ class VideoJevRuntime:
             "language_mlp_gemm_autotune": language_mlp_gemm_autotune,
             "compile_language_norm": compile_language_norm,
             "compile_vision_blocks": compile_vision_blocks,
-            "attention": "flash_attention_2", "context": CONTEXT,
             "question_layout_default": question_layout,
-        }
+        })
         if language_mlp_fp8:
             self.metadata["versions"]["torchao"] = importlib.metadata.version("torchao")
 

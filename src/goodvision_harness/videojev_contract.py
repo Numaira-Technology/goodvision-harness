@@ -1,30 +1,21 @@
 """Event questions and three-way choice decoding without model loading."""
 
 import json
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .event_sensitivity import EVENT_SENSITIVITY_DEFAULTS
+from .videojev_core import CONTEXT, MODEL, OPTIONS, REVISION, VALUES, choice_indices
 from .vlm_event_policy import event_policy_text
 
 from .videojev_ppe import adapt, experiment, values_for_question
 
-MODEL = "ZhuYuhan/VideoJev-4B"
-REVISION = "1c1a253bf90dfa66176124d25a48ffb791d517d5"
 LABELS = tuple(EVENT_SENSITIVITY_DEFAULTS)
-OPTIONS = [
-    "A. Present under the specified event policy.",
-    "B. Assessed absent under the specified event policy.",
-    "C. Insufficient evidence to decide under the specified event policy.",
-]
 BRIEF_OPTIONS = [
     "A. Present.",
     "B. Assessed absent.",
     "C. Insufficient evidence.",
 ]
-VALUES = (True, False, None)
-CONTEXT = 32768
 MAX_PEOPLE = 4
 _WINDOW_GUIDANCE = (
     "\nJudge the last original frame using all earlier frames as context. "
@@ -186,37 +177,10 @@ def parse_choices(raw, expected):
     flattened = []
     for item in raw:
         flattened.extend(item if isinstance(item, list) else [item])
-    if len(flattened) != len(expected):
-        raise ValueError("incomplete question group")
-    rows = {}
-    for item in flattened:
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            raise ValueError("invalid choice row")
-        if item["id"] in rows:
-            raise ValueError("duplicate choice ID")
-        rows[item["id"]] = item
-    if set(rows) != {q["id"] for q in expected}:
-        raise ValueError("unknown or missing choice ID")
+    indices = choice_indices(flattened, expected)
     decoded = {}
     for q in expected:
-        row = rows[q["id"]]
-        scores, index = row.get("probabilities"), row.get("answer_index")
-        if (
-            row.get("task") != "choice"
-            or type(index) is not int
-            or not 0 <= index < 3
-            or not isinstance(scores, list)
-            or len(scores) != 3
-            or any(
-                type(p) not in (int, float) or not math.isfinite(p) or not 0 <= p <= 1
-                for p in scores
-            )
-            or not math.isclose(sum(scores), 1, abs_tol=1e-4)
-            or scores[index] != max(scores)
-            or row.get("answer") != q["options"][index]
-        ):
-            raise ValueError("invalid choice probability/answer contract")
         # No confidence cutoff and no conversion of uncertain into negative.
         options = BRIEF_OPTIONS if q["options"] == BRIEF_OPTIONS else OPTIONS
-        decoded[q["id"]] = values_for_question(q, options)[index]
+        decoded[q["id"]] = values_for_question(q, options)[indices[q["id"]]]
     return decoded
