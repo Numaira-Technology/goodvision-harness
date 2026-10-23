@@ -300,21 +300,11 @@ class VideoJevRuntime(NativeVideoJevModel):
             }
         return replacement, question_layout, prefix
 
-    def _prefix_forward(self, batch, features, prefix, *, use_cache, align_cache=False):
-        """Score a text-first layout, optionally reusing only its pure-text state.
-
-        The pinned native forward disables caching. This opt-in path preserves
-        its visual injection, complete-window positions and decision head, but
-        lets Transformers build unpadded continuation masks. Packed q/k lengths
-        from a full forward must not be reused with a longer cached key prefix.
-        """
+    def _prefix_inputs(self, batch, features, prefix):
+        """Prepare the original full-window positions before slicing its prefix."""
         torch, model = self.torch, self.model
         device = model.get_input_embeddings().weight.device
         prefix_length = prefix.length
-        # FLA 0.4.2 evaluates DeltaNet in 64-token chunks. Keep the remaining
-        # policy tokens in the suffix without changing the complete sequence.
-        cache_length = prefix_length - prefix_length % 64 if align_cache else prefix_length
-        use_cache = use_cache and cache_length > 0
         if prefix.device_ids is None:
             prefix.device_ids = prefix.ids.to(device)
         ids = torch.cat([
@@ -326,10 +316,6 @@ class VideoJevRuntime(NativeVideoJevModel):
         queries = batch["query_indices"].to(device)
         mask = batch["score_mask"].to(device)
         tasks = batch["decision_tasks"].to(device)
-        stats = {"prefix_tokens": cache_length if use_cache else prefix_length,
-                 "prefix_cache_enabled": use_cache,
-                 "prefix_cache_hit": False,
-                 "prefix_prefill_seconds": 0.0, "prefix_clone_seconds": 0.0}
         with torch.autocast("cuda", dtype=torch.bfloat16):
             if prefix.embeddings is None:
                 prefix.embeddings = model.get_input_embeddings()(prefix.device_ids)
@@ -349,6 +335,23 @@ class VideoJevRuntime(NativeVideoJevModel):
                     input_ids=ids, inputs_embeds=embeds, video_grid_thw=grid,
                     attention_mask=None, past_key_values=None, mm_token_type_ids=types,
                 )
+        return embeds, positions, pairs, queries, mask, tasks
+
+    def _prefix_forward(self, batch, features, prefix, *, use_cache, align_cache=False):
+        """Score one text-first window, optionally reusing its pure-text state."""
+        torch, model = self.torch, self.model
+        prefix_length = prefix.length
+        # Keep the optional aligned route's remaining policy tokens in its suffix.
+        cache_length = prefix_length - prefix_length % 64 if align_cache else prefix_length
+        use_cache = use_cache and cache_length > 0
+        embeds, positions, pairs, queries, mask, tasks = self._prefix_inputs(
+            batch, features, prefix,
+        )
+        stats = {"prefix_tokens": cache_length if use_cache else prefix_length,
+                 "prefix_cache_enabled": use_cache,
+                 "prefix_cache_hit": False,
+                 "prefix_prefill_seconds": 0.0, "prefix_clone_seconds": 0.0}
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             language = model.backbone.language_model
             if use_cache:
                 # The fixed configuration owns its pure-text state. There is
@@ -382,7 +385,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                 ).last_hidden_state[0]
                 pair_hidden = hidden[pairs - cache_length]
                 query_hidden = hidden[queries - cache_length]
-                stats["forward_tokens"] = ids.shape[1] - (
+                stats["forward_tokens"] = embeds.shape[1] - (
                     cache_length if stats["prefix_cache_hit"] else 0
                 )
             else:
@@ -391,7 +394,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                     attention_mask=None, use_cache=False,
                 ).last_hidden_state[0]
                 pair_hidden, query_hidden = hidden[pairs], hidden[queries]
-                stats["forward_tokens"] = ids.shape[1]
+                stats["forward_tokens"] = embeds.shape[1]
         with torch.autocast(device_type="cuda", enabled=False):
             logits = model.head(pair_hidden, query_hidden)
             valid = logits.masked_fill(~mask, -torch.inf)
@@ -400,6 +403,78 @@ class VideoJevRuntime(NativeVideoJevModel):
             ) * mask
         return SimpleNamespace(logits=logits, probabilities=probabilities,
                                score_mask=mask), stats
+
+    def _prefix_batch_forward(self, groups, features, prefix, *, use_cache):
+        """Continue independent batch rows; discard their video-updated states."""
+        torch, model = self.torch, self.model
+        parts = [self._prefix_inputs(batch, visual, prefix)
+                 for batch, visual in zip(groups, features, strict=True)]
+        device = parts[0][0].device
+        offset = prefix.length if use_cache else 0
+        hit, prefill_seconds, clone_seconds = False, 0.0, 0.0
+        working = None
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            if use_cache:
+                hit = prefix.state is not None
+                if not hit:
+                    before = time.perf_counter()
+                    prefill = model.backbone.language_model(
+                        inputs_embeds=parts[0][0][:, :offset],
+                        position_ids=parts[0][1][..., :offset],
+                        attention_mask=None, use_cache=True,
+                    )
+                    prefix.state = prefill.past_key_values
+                    del prefill
+                    torch.cuda.synchronize()
+                    prefill_seconds = time.perf_counter() - before
+                before = time.perf_counter()
+                working = deepcopy(prefix.state)
+                # The native reorder API copies KV, convolution and recurrent
+                # state. repeat_interleave is not implemented by every hybrid layer.
+                working.reorder_cache(torch.zeros(len(parts), device=device, dtype=torch.long))
+                torch.cuda.synchronize()
+                clone_seconds = time.perf_counter() - before
+            lengths = [part[0].shape[1] - offset for part in parts]
+            longest = max(lengths)
+            padding_mask = torch.zeros(
+                (len(parts), offset + longest), dtype=torch.bool, device=device,
+            )
+            embeddings, positions = [], []
+            for index, (part, length) in enumerate(zip(parts, lengths, strict=True)):
+                padding_mask[index, :offset + length] = True
+                embeddings.append(torch.nn.functional.pad(
+                    part[0][:, offset:], (0, 0, 0, longest - length),
+                ))
+                positions.append(torch.nn.functional.pad(
+                    part[1][..., offset:], (0, longest - length),
+                ))
+            # Padding follows every scored position. Its updated recurrent state
+            # is discarded, so it cannot enter this or any later window's evidence.
+            hidden = model.backbone.language_model(
+                inputs_embeds=torch.cat(embeddings, dim=0),
+                position_ids=torch.cat(positions, dim=1),
+                attention_mask=padding_mask, past_key_values=working,
+                use_cache=use_cache,
+            ).last_hidden_state
+            pair_hidden = torch.cat([hidden[index, part[2] - offset]
+                                     for index, part in enumerate(parts)])
+            query_hidden = torch.cat([hidden[index, part[3] - offset]
+                                      for index, part in enumerate(parts)])
+        with torch.autocast(device_type="cuda", enabled=False):
+            mask, tasks = torch.cat([part[4] for part in parts]), torch.cat([part[5] for part in parts])
+            logits = model.head(pair_hidden, query_hidden)
+            valid = logits.masked_fill(~mask, -torch.inf)
+            probabilities = torch.where(
+                (tasks == 1)[:, None], valid.softmax(-1), logits.sigmoid(),
+            ) * mask
+        return SimpleNamespace(logits=logits, probabilities=probabilities, score_mask=mask), [
+            {"prefix_tokens": prefix.length, "prefix_cache_enabled": use_cache,
+             "prefix_cache_hit": use_cache and (hit or index > 0),
+             "prefix_prefill_seconds": prefill_seconds if index == 0 else 0.0,
+             "prefix_clone_seconds": clone_seconds,
+             "forward_tokens": length + (offset if use_cache and not hit and index == 0 else 0)}
+            for index, length in enumerate(lengths)
+        ]
 
     def predict_prepared(self, prepared, questions, *, question_layout=None,
                          question_template=None, frame_times=None):
@@ -573,11 +648,15 @@ class VideoJevRuntime(NativeVideoJevModel):
         """Yield indexed outcomes; None requests the original sequential route."""
         eligible = []
         started = time.perf_counter()
+        prefix_layouts = ("full-prefix", "full-prefix-cache")
+        prefix_batch = bool(windows) and windows[0]["question_layout"] in prefix_layouts
         # Decide eligibility before any model call, preserving queue order if
-        # either window needs the original multi-group or prefix route.
+        # either window needs multiple groups or a different fixed prefix.
         for index, window in enumerate(windows):
             if (not self.packed_choice_supported
-                    or window["question_layout"] not in ("repeated", "shared")
+                    or window["question_layout"] not in ("repeated", "shared", *prefix_layouts)
+                    or (prefix_batch and window["question_layout"] != windows[0]["question_layout"])
+                    or (not prefix_batch and window["question_layout"] in prefix_layouts)
                     or window["question_template"] is None):
                 yield None
                 return
@@ -592,7 +671,11 @@ class VideoJevRuntime(NativeVideoJevModel):
                     prepared.record, window["frame_times"], prepared.context,
                     window["question_layout"],
                 ))
-                if len(groups) != 1 or groups[0][3] is not None:
+                if (len(groups) != 1
+                        or (prefix_batch and (groups[0][3] is None or (
+                            eligible and groups[0][3] is not eligible[0][2][3]
+                        )))
+                        or (not prefix_batch and groups[0][3] is not None)):
                     yield None
                     return
                 eligible.append((index, window, groups[0], time.perf_counter() - before))
@@ -631,7 +714,15 @@ class VideoJevRuntime(NativeVideoJevModel):
                 encoded = time.perf_counter()
                 score_start, score_end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
                 score_start.record()
-                output = self._packed_forward([item[2][0] for item in encoded_windows], features)
+                prefix_stats = None
+                if prefix_batch:
+                    output, prefix_stats = self._prefix_batch_forward(
+                        [item[2][0] for item in encoded_windows], features,
+                        encoded_windows[0][2][3],
+                        use_cache=windows[0]["question_layout"] == "full-prefix-cache",
+                    )
+                else:
+                    output = self._packed_forward([item[2][0] for item in encoded_windows], features)
                 score_end.record()
                 # Preserve the author's formatter, with one complete CPU copy
                 # per output tensor rather than per-question GPU readbacks.
@@ -641,7 +732,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                     score_mask=output.score_mask.cpu(),
                 )
                 row_offset = 0
-                for index, window, group, prep_seconds in encoded_windows:
+                for position, (index, window, group, prep_seconds) in enumerate(encoded_windows):
                     batch, rows, layout, _prefix = group
                     count = len(rows)
                     per_window = SimpleNamespace(**{
@@ -660,7 +751,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                             "native_input_tokens": batch["input_ids"].shape[1],
                             "native_group_input_tokens": [batch["input_ids"].shape[1]],
                             "question_group_prepare_seconds": prep_seconds,
-                            "prefix_cache_groups": [],
+                            "prefix_cache_groups": [] if prefix_stats is None else [prefix_stats[position]],
                         }
                     except Exception as exc:
                         results[index] = exc

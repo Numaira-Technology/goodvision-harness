@@ -53,7 +53,9 @@ separate from implementation documentation.
   scoring, and attention configuration. `prepare()` does CPU image preparation;
   `predict_prepared()` performs visual encoding and choice scoring on the sole GPU
   thread. All event questions in one window share that visual encoding. There is
-  no cross-window feature cache or multi-video GPU batch.
+  no cross-window feature cache. Optional ready-window scoring uses isolated
+  packed segments for repeated/shared layouts and independent batch rows for
+  full-prefix layouts, retaining original visual encodings and timestamps.
 - `tools/videojev_walltime/server.py` keeps a resident model on one GPU. CPU
   preparation can overlap GPU work. FIFO remains the default; the explicit
   `latest-per-stream` policy retains one latest waiting candidate per stream and
@@ -505,8 +507,9 @@ route. Two-window mode takes only an immediately ready second choice window
 from the existing pipeline. It does not wait to fill a batch, reorder the queue,
 combine videos into one timeline, remove event questions, or change model weights.
 Each window retains its own request, source times, future, result and failure.
-Prefix layouts and windows requiring multiple native context groups retain the
-single-window path without repeating a model call.
+Windows requiring multiple native context groups retain the single-window path
+without repeating a model call. The full-prefix variants also support two
+ready windows sharing the same fixed prefix; other prefix variants stay single.
 
 The author's wrapper accepts one video. The optional runtime adapter still
 encodes each video separately and computes its own complete mRoPE positions.
@@ -693,6 +696,22 @@ does not establish quality, latency or numerical equivalence. Compare shared,
 full-prefix without cache and full-prefix with cache on the same inputs before
 selecting a deployment layout. Defaults and earlier layouts are unchanged;
 adding these options does not start an experiment or deployment.
+
+With `--gpu-batch-size 2`, two immediately ready full-prefix windows can share
+one language forward. Each row retains its own video-conditioned readout and
+complete-window positions. The runtime right-pads the suffixes, masks padding
+for full attention, and gathers only original option/decision positions. Padding
+comes after every scored token; the resulting working state is discarded.
+It copies the text-only hybrid state with the native `reorder_cache` API using
+repeated source-row indices, covering KV, convolution and recurrent tensors.
+It does not use shared mutable tensor expansion or the incomplete hybrid
+`batch_repeat_interleave` path. Different fixed prefixes fall back to the
+existing single-window route before model calls, without changing queue order.
+Visual encoding remains separate per window; no queue-fill delay is added.
+Scoring and prefix-copy durations in both outcomes describe the shared batch,
+not independent intervals that can be summed. Prefill is counted only on the
+first participating window. This is an opt-in research path, not a claim of
+classification equivalence or a throughput improvement.
 
 ### Aligned policy-prefix boundary
 

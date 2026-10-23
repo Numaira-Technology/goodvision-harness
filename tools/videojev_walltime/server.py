@@ -503,13 +503,14 @@ class Scorer:
                     self._finish(work, error=WindowError("expired_before_gpu"))
                     continue
                 extra = None
+                batch_layouts = ("repeated", "shared", "full-prefix", "full-prefix-cache")
                 if (self.gpu_batch_size == 2
-                        and work.question_layout in ("repeated", "shared")
+                        and work.question_layout in batch_layouts
                         and work.question_template is not None
                         and self.runtime.packed_choice_supported):
                     with self._condition:
                         if (self._pipeline and self._pipeline[0].state == "ready"
-                                and self._pipeline[0].question_layout in ("repeated", "shared")
+                                and self._pipeline[0].question_layout == work.question_layout
                                 and self._pipeline[0].question_template is not None):
                             extra = self._pipeline.popleft()
                             extra.state = "gpu"
