@@ -662,34 +662,37 @@ rounding. Compare native shared, prefix without cache and
 prefix with cache on quality, raw scores, wall-time and stream coverage before
 selecting a deployment setting. No performance result is implied by this code.
 
-### Full fixed-question prefix (research only, not evaluated)
+### Full fixed-question prefix with native readouts (research only)
 
 `full-prefix` and `full-prefix-cache` require the existing fixed
 `question_template` interface. They put the common rules, every complete fixed
 question and all original options in a text-only prefix. Actual source times
-remain with the new video after that prefix. Fixed questions receive short
-ordinal references, not transport IDs. Each reference has its own `<|decide|>`
-readout after the current video. No prior video's state or answer is retained.
+remain with the new video after that prefix. The prefix's options are plain
+text, without scoring markers. After the current video, the existing native
+messages repeat each original event question and its original options, followed
+by `<|option_end|>` and `<|decide|>` readouts. The first question retains the
+actual evidence metadata; later questions reuse the existing shared-rule form.
+No prior video's state or answer is retained.
 
-The option markers are in the fixed prefix, so their hidden vectors can be
-saved with the prefix's complete attention/DeltaNet state. On a cache hit, the
-runtime copies only that pure-text base, forwards the new video, timestamps and
-decision references, and compares the saved option vectors with this window's
-decision vectors using the original FP32 head. It reads the correct option rows
-by their original order, without copying fixed tokens or positions back to the
-CPU. The video-updated working state is discarded. Full-prefix positions are
-still derived from the complete current sequence.
+The trained head reads only these video-conditioned option and decision vectors,
+not pure-text option vectors from before the video. On a cache hit, the runtime
+copies the complete pure-text attention/DeltaNet state and forwards the current
+video, timestamps and native readout messages. It does not cache completed option
+or decision vectors, and it discards the video-updated working state. Fixed
+tokens or positions are not copied back to the CPU for cache comparisons.
+Positions still come from the complete current sequence.
 
 Both modes use the same prompt and option/query readout positions. `full-prefix`
 computes the whole sequence without state reuse; `full-prefix-cache` prefills
-once and reuses the fixed state and option vectors. All fixed questions remain
+once and reuses the fixed state. All fixed questions remain
 in the prefix if the dynamic decisions require multiple context-sized groups.
 The original choice meanings, IDs, output ordering, formatter and parser remain
-unchanged. This changes the original input layout and removes visual context
-from option vectors, while decisions still see the current video. It is not
-claimed equivalent to the original layout, and no new quality, latency or cache
-equivalence measurements have been made. Defaults and earlier layouts are
-unchanged; no experiment or deployment is started by adding these options.
+unchanged. This changes the original input layout; the native readout text is
+still computed after the video and is not claimed to be free. Source review
+does not establish quality, latency or numerical equivalence. Compare shared,
+full-prefix without cache and full-prefix with cache on the same inputs before
+selecting a deployment layout. Defaults and earlier layouts are unchanged;
+adding these options does not start an experiment or deployment.
 
 ### Aligned policy-prefix boundary
 

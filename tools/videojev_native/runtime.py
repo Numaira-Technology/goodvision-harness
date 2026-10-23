@@ -322,8 +322,7 @@ class VideoJevRuntime(NativeVideoJevModel):
         ], dim=1)
         types = batch["mm_token_type_ids"].to(device)
         grid = batch["video_grid_thw"].to(device)
-        pairs = (None if use_cache and prefix.option_positions is not None
-                 else batch["pair_indices"].to(device))
+        pairs = batch["pair_indices"].to(device)
         queries = batch["query_indices"].to(device)
         mask = batch["score_mask"].to(device)
         tasks = batch["decision_tasks"].to(device)
@@ -364,10 +363,6 @@ class VideoJevRuntime(NativeVideoJevModel):
                         attention_mask=None, use_cache=True,
                     )
                     base = prefill.past_key_values
-                    if prefix.option_positions is not None:
-                        prefix.option_hidden = prefill.last_hidden_state[0][
-                            prefix.option_positions.to(device)
-                        ]
                     del prefill
                     torch.cuda.synchronize()
                     stats["prefix_prefill_seconds"] = time.perf_counter() - before
@@ -385,13 +380,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                     position_ids=positions[..., cache_length:],
                     attention_mask=None, past_key_values=working, use_cache=True,
                 ).last_hidden_state[0]
-                if prefix.option_positions is None:
-                    pair_hidden = hidden[pairs - cache_length]
-                else:
-                    start, end = batch["prefix_option_range"]
-                    pair_hidden = prefix.option_hidden[start:end].reshape(
-                        -1, 3, prefix.option_hidden.shape[-1],
-                    )
+                pair_hidden = hidden[pairs - cache_length]
                 query_hidden = hidden[queries - cache_length]
                 stats["forward_tokens"] = ids.shape[1] - (
                     cache_length if stats["prefix_cache_hit"] else 0
