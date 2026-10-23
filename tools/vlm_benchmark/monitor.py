@@ -190,12 +190,15 @@ class LiveMonitor:
             "ppe_violation",
             "ground_litter",
         )
-        self._select_interval = 4.0
-        self._select_ttl = 6.0
+        # Tunable for dense coverage on many streams: with N cameras sharing
+        # _select_max_inflight slots and each select ~3s, a camera refreshes every
+        # ~N/max_inflight*3s; TTL must exceed that gap or the overlay flickers.
+        self._select_interval = float(os.environ.get("PREVIEW_SELECT_INTERVAL", "4"))
+        self._select_ttl = float(os.environ.get("PREVIEW_SELECT_TTL", "6"))
         self._select_states = {}
         self._select_waiters = {}
         self._select_inflight = set()
-        self._select_max_inflight = 4
+        self._select_max_inflight = int(os.environ.get("PREVIEW_SELECT_MAX_INFLIGHT", "4"))
         self._select_closed = False
         self._select_state_lock = threading.Lock()
 
@@ -519,6 +522,22 @@ class LiveMonitor:
                 }
                 for i, frames in enumerate(self.framesets)
             ]
+            # Surface the real per-person select events (YOLO boxes + cheap VLM
+            # "which number" query) onto each camera so the chips reflect them,
+            # not just the box colour, and flag that a real model is in use.
+            if self._select_events:
+                data["select_active"] = True
+                now = time.monotonic()
+                per_camera = {}
+                with self._select_state_lock:
+                    for (_client, camera), state in self._select_states.items():
+                        if state["expires"] <= now:
+                            continue
+                        events = per_camera.setdefault(camera, set())
+                        for labels in state["tags"].values():
+                            events.update(labels)
+                for i, cam in enumerate(data.get("cameras", [])):
+                    cam["select_events"] = sorted(per_camera.get(i, ()))
             return data
 
     def track_preview(self, stage, camera, payload):
@@ -752,7 +771,12 @@ class LiveMonitor:
                 for obj in objects
                 if obj.get("observation_state", "observed") == "observed"
             ]
-            self._maybe_select(key, session["id"], stage, evidence_at, jpeg, raw)
+            # Feed the full-res source frame (not the 320px capture) to the VLM
+            # select query; 320px is too small to read actions (fight/fall).
+            self._maybe_select(
+                key, session["id"], stage, evidence_at,
+                self._hires_frame(key, evidence_at, epoch) or jpeg, raw,
+            )
             tags, selected_scene_alert = self._active_tags(
                 key, session["id"], {track_id for track_id, _ in raw}
             )
@@ -799,6 +823,25 @@ class LiveMonitor:
                 },
                 state["scene_alert"] or bool(set(tags) - observed),
             )
+
+    def _hires_frame(self, key, at, epoch):
+        """The full-res (720px) source JPEG the preview capture came from.
+
+        The browser only uploads a 320px capture, which is too small for the VLM
+        to read actions; the server still holds the decoded source frames, so the
+        select query draws the YOLO boxes on the matching high-res frame instead.
+        Returns None on any mismatch (falls back to the 320px capture).
+        """
+        try:
+            camera = key[1]
+            frames = self.framesets[camera % len(self.framesets)]
+            sample_fps = self.state["sample_fps"]
+            duration = getattr(frames, "media_duration", len(frames) / sample_fps)
+            local = at - epoch * duration if duration else at
+            index = int(round(local * sample_fps)) % len(frames)
+            return frames[index]
+        except (IndexError, KeyError, TypeError, ZeroDivisionError, AttributeError):
+            return None
 
     def _maybe_select(self, key, session_id, stage, evidence_at, jpeg, raw):
         """Reserve a bounded asynchronous selection for a current source frame."""
@@ -1024,7 +1067,13 @@ class LiveMonitor:
         message = choice.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
             raise ValueError("invalid selection message")
-        verdicts = json.loads(message["content"], object_pairs_hook=unique)
+        # Models sometimes wrap the JSON in markdown fences or prose; extract the
+        # outermost object so a cosmetic wrapper does not drop the whole verdict.
+        content = message["content"]
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        verdicts = json.loads(
+            match.group(0) if match else content, object_pairs_hook=unique
+        )
         if not isinstance(verdicts, dict) or set(verdicts) != set(self._select_labels):
             raise ValueError("incomplete selection verdicts")
         tags, scene_alert = {}, False
