@@ -17,6 +17,8 @@ class PolicyPrefix:
     embeddings: object = None
     state: object = None
     aligned_state: object = None
+    option_positions: object = None
+    option_hidden: object = None
 
     @property
     def length(self):
@@ -83,6 +85,8 @@ class CompiledQuestions:
 
     def __init__(self, processor, torch, rows, policy_prefix):
         self.processor, self.torch = processor, torch
+        self._prefix_factory = policy_prefix
+        self.full_prefix = None
         self.rows = tuple({
             **row, "query": "[]".join(row["query_parts"]),
         } for row in rows)
@@ -113,11 +117,43 @@ class CompiledQuestions:
                                     row["query_parts"][1]),
         } for row in self.rows) if self.prefix is not None else self.rows
 
-    def _messages(self, record):
+    def _full_prefix(self):
+        if self.full_prefix is not None:
+            return self.full_prefix
+        fixed = []
+        for row in self.rows:
+            policy, marker, evidence = row["query"].partition("\nEvidence metadata: ")
+            if marker:
+                metadata, end = json.JSONDecoder().raw_decode(evidence)
+                metadata.pop("source_times", None)
+                fixed.append(policy + (
+                    marker + json.dumps(metadata, allow_nan=False) if metadata else ""
+                ) + evidence[end:])
+            else:
+                fixed.append("[current window source times]".join(row["query_parts"]))
+        divided = [query.rpartition("\nFor ") for query in fixed]
+        common = divided[0][0] if all(
+            marker and head == divided[0][0] for head, marker, _ in divided
+        ) else ""
+        text = common + "\nTask: single-choice video question answering\n"
+        for index, (row, query, (_, marker, question)) in enumerate(
+            zip(self.rows, fixed, divided)
+        ):
+            query = marker + question if common else query
+            text += f"\nQuestion {index + 1}: {query}\nOptions:\n"
+            text += "".join(option + "<|option_end|>\n" for option in row["options"])
+        prefix = self._prefix_factory(text)
+        prefix.option_positions = self.torch.tensor([
+            index for index, token in enumerate(prefix.tokens) if token == self.option_id
+        ], dtype=self.torch.long)
+        self.full_prefix = prefix
+        return prefix
+
+    def _messages(self, record, *, full=False):
         from transformers.video_utils import VideoMetadata
         import numpy as np
 
-        key = (record["frames"], record["fps"], *record["grid_thw"])
+        key = (full, record["frames"], record["fps"], *record["grid_thw"])
         if key in self.geometry:
             self.geometry.move_to_end(key)
             return self.geometry[key]
@@ -131,12 +167,7 @@ class CompiledQuestions:
             )],
         }, video_idx=0)
 
-        def message(row, video=False, dynamic=True):
-            query = _SOURCE_TIMES.join(row["query_parts"]) if dynamic else row["query"]
-            text = "\nTask: single-choice video question answering\nQuestion: " + query
-            text += "\nOptions:\n" + "".join(
-                option + "<|option_end|>\n" for option in row["options"]
-            ) + "<|decide|>"
+        def render(text, video=False):
             content = [{"type": "video", "video": "provided_in_memory"}] if video else []
             content.append({"type": "text", "text": text})
             text = processor.apply_chat_template(
@@ -148,17 +179,75 @@ class CompiledQuestions:
             return _Text(processor, text, slots, first=video,
                          spatial=grid[1] * grid[2] // 4)
 
-        original_first = tuple(message(row, True) for row in self.rows)
-        original_next = tuple(message(row) for row in self.rows)
-        shared_next = tuple(message(row, dynamic=False) for row in self.following)
-        prefix_first = tuple(message(row, True) for row in self.prefixed)
-        value = original_first, original_next, shared_next, prefix_first, slots
+        def message(row, video=False, dynamic=True):
+            query = _SOURCE_TIMES.join(row["query_parts"]) if dynamic else row["query"]
+            text = "\nTask: single-choice video question answering\nQuestion: " + query
+            text += "\nOptions:\n" + "".join(
+                option + "<|option_end|>\n" for option in row["options"]
+            ) + "<|decide|>"
+            return render(text, video)
+
+        if full:
+            video = render('\nEvidence metadata: {"source_times": ' + _SOURCE_TIMES + '}', True)
+            decisions = tuple(render(
+                "\nTask: single-choice video question answering\n"
+                f"Question: Answer fixed question {index + 1} for this video window.\n<|decide|>"
+            ) for index in range(len(self.rows)))
+            value = video, decisions, slots
+        else:
+            original_first = tuple(message(row, True) for row in self.rows)
+            original_next = tuple(message(row) for row in self.rows)
+            shared_next = tuple(message(row, dynamic=False) for row in self.following)
+            prefix_first = tuple(message(row, True) for row in self.prefixed)
+            value = original_first, original_next, shared_next, prefix_first, slots
         self.geometry[key] = value
         while len(self.geometry) > 8:
             self.geometry.popitem(last=False)
         return value
 
+    def _full_groups(self, record, frame_times, context, layout):
+        prefix = self._full_prefix()
+        video, decisions, slots = self._messages(record, full=True)
+        times = json.dumps(frame_times, allow_nan=False)
+        dynamic = {slot: self.processor.tokenizer.encode(
+            slot.before + times + slot.after, add_special_tokens=False,
+        ) for slot in slots}
+        first = video.tokens(dynamic)
+        start = 0
+        torch = self.torch
+        while start < len(self.rows):
+            values = [*first, *decisions[start].tokens(dynamic)]
+            if (prefix.length + len(values) + 63) // 64 * 64 > context:
+                raise ValueError("a complete fixed prefix and video choice exceeds the context")
+            end = start + 1
+            while end < len(self.rows):
+                following = decisions[end].tokens(dynamic)
+                if (prefix.length + len(values) + len(following) + 63) // 64 * 64 > context:
+                    break
+                values.extend(following)
+                end += 1
+            ids = torch.cat([prefix.ids, torch.tensor([values], dtype=torch.long)], dim=1)
+            count = end - start
+            batch = {
+                "input_ids": ids,
+                "mm_token_type_ids": (ids == self.processor.video_token_id).long() * 2,
+                "video_grid_thw": torch.tensor([record["grid_thw"]]),
+                "pair_indices": prefix.option_positions[start * 3:end * 3].reshape(count, 3),
+                "prefix_option_range": (start * 3, end * 3),
+                "query_indices": torch.tensor([
+                    prefix.length + index for index, token in enumerate(values)
+                    if token == self.decide_id
+                ], dtype=torch.long),
+                "score_mask": torch.ones((count, 3), dtype=torch.bool),
+                "decision_tasks": torch.ones(count, dtype=torch.long),
+            }
+            yield batch, self.rows[start:end], layout, prefix
+            start = end
+
     def groups(self, record, frame_times, context, layout):
+        if layout in ("full-prefix", "full-prefix-cache"):
+            yield from self._full_groups(record, frame_times, context, layout)
+            return
         first, following, shared, prefixed, slots = self._messages(record)
         times = json.dumps(frame_times, allow_nan=False)
         tokenizer = self.processor.tokenizer

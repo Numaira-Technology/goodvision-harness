@@ -14,7 +14,10 @@ from goodvision_harness.videojev_core import NativeVideoJevModel, video_record
 from .contract import CONTEXT, MODEL, REVISION
 from .question_templates import CompiledQuestions, PolicyPrefix
 
-QUESTION_LAYOUTS = ("repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned")
+QUESTION_LAYOUTS = (
+    "repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned",
+    "full-prefix", "full-prefix-cache",
+)
 
 
 def record_for_grid(processor, grid, frame_count, fps):
@@ -319,7 +322,8 @@ class VideoJevRuntime(NativeVideoJevModel):
         ], dim=1)
         types = batch["mm_token_type_ids"].to(device)
         grid = batch["video_grid_thw"].to(device)
-        pairs = batch["pair_indices"].to(device)
+        pairs = (None if use_cache and prefix.option_positions is not None
+                 else batch["pair_indices"].to(device))
         queries = batch["query_indices"].to(device)
         mask = batch["score_mask"].to(device)
         tasks = batch["decision_tasks"].to(device)
@@ -354,11 +358,17 @@ class VideoJevRuntime(NativeVideoJevModel):
                 stats["prefix_cache_hit"] = base is not None
                 if not stats["prefix_cache_hit"]:
                     before = time.perf_counter()
-                    base = language(
+                    prefill = language(
                         inputs_embeds=embeds[:, :cache_length],
                         position_ids=positions[..., :cache_length],
                         attention_mask=None, use_cache=True,
-                    ).past_key_values
+                    )
+                    base = prefill.past_key_values
+                    if prefix.option_positions is not None:
+                        prefix.option_hidden = prefill.last_hidden_state[0][
+                            prefix.option_positions.to(device)
+                        ]
+                    del prefill
                     torch.cuda.synchronize()
                     stats["prefix_prefill_seconds"] = time.perf_counter() - before
                     if align_cache:
@@ -375,7 +385,14 @@ class VideoJevRuntime(NativeVideoJevModel):
                     position_ids=positions[..., cache_length:],
                     attention_mask=None, past_key_values=working, use_cache=True,
                 ).last_hidden_state[0]
-                pairs, queries = pairs - cache_length, queries - cache_length
+                if prefix.option_positions is None:
+                    pair_hidden = hidden[pairs - cache_length]
+                else:
+                    start, end = batch["prefix_option_range"]
+                    pair_hidden = prefix.option_hidden[start:end].reshape(
+                        -1, 3, prefix.option_hidden.shape[-1],
+                    )
+                query_hidden = hidden[queries - cache_length]
                 stats["forward_tokens"] = ids.shape[1] - (
                     cache_length if stats["prefix_cache_hit"] else 0
                 )
@@ -384,9 +401,10 @@ class VideoJevRuntime(NativeVideoJevModel):
                     inputs_embeds=embeds, position_ids=positions,
                     attention_mask=None, use_cache=False,
                 ).last_hidden_state[0]
+                pair_hidden, query_hidden = hidden[pairs], hidden[queries]
                 stats["forward_tokens"] = ids.shape[1]
         with torch.autocast(device_type="cuda", enabled=False):
-            logits = model.head(hidden[pairs], hidden[queries])
+            logits = model.head(pair_hidden, query_hidden)
             valid = logits.masked_fill(~mask, -torch.inf)
             probabilities = torch.where(
                 (tasks == 1)[:, None], valid.softmax(-1), logits.sigmoid(),
@@ -402,6 +420,8 @@ class VideoJevRuntime(NativeVideoJevModel):
         layout = self.question_layout if question_layout is None else question_layout
         if layout not in QUESTION_LAYOUTS:
             raise ValueError("invalid question_layout")
+        if layout in ("full-prefix", "full-prefix-cache") and question_template is None:
+            raise ValueError("full-prefix layouts require a fixed question_template")
         torch = self.torch
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
@@ -451,7 +471,9 @@ class VideoJevRuntime(NativeVideoJevModel):
                 if prefix is not None:
                     output, cache_stats = self._prefix_forward(
                         batch, features, prefix,
-                        use_cache=actual_layout in ("prefix-cache", "prefix-cache-aligned"),
+                        use_cache=actual_layout in (
+                            "prefix-cache", "prefix-cache-aligned", "full-prefix-cache",
+                        ),
                         align_cache=actual_layout == "prefix-cache-aligned",
                     )
                     prefix_stats.append(cache_stats)

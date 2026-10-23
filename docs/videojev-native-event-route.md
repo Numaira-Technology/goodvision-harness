@@ -549,7 +549,7 @@ negative coverage alongside latency and throughput.
 
 ### Optional question-layout ablation
 
-`--question-layout repeated|shared|prefix|prefix-cache|prefix-cache-aligned` selects the service default;
+`--question-layout repeated|shared|prefix|prefix-cache|prefix-cache-aligned|full-prefix|full-prefix-cache` selects the service default;
 `repeated` remains the default. A `/predict` request may specify `question_layout`.
 Omitting it uses the fixed service default. The selected value belongs to that
 request and does not mutate the service or restart its loaded model. Ready output
@@ -558,7 +558,8 @@ The real-file runner accepts `videojev_question_layout` in its observation JSON
 and passes it through the native event worker as `question_layout`; the default
 is `repeated`. Its run and stream manifests retain that selected configuration.
 
-The original repeated-layout group boundaries are retained. The fixed-template
+The repeated/shared and policy-only prefix layouts retain the original
+repeated-layout group boundaries. The fixed-template
 path computes them from compiled message lengths, including this window's actual
 source-time tokens; the legacy full-question path still calls the pinned HF
 revision's `prepare_query_groups`. Shared mode examines the exact prefix before the last
@@ -660,6 +661,37 @@ to native layouts, and splitting a hybrid forward can change floating-point
 rounding. Compare native shared, prefix without cache and
 prefix with cache on quality, raw scores, wall-time and stream coverage before
 selecting a deployment setting. No performance result is implied by this code.
+
+### Full fixed-question prefix (research only, not evaluated)
+
+`full-prefix` and `full-prefix-cache` require the existing fixed
+`question_template` interface. They put the common rules, every complete fixed
+question and all original options in a text-only prefix. Actual source times
+remain with the new video after that prefix. Fixed questions receive short
+ordinal references, not transport IDs. Each reference has its own `<|decide|>`
+readout after the current video. No prior video's state or answer is retained.
+
+The option markers are in the fixed prefix, so their hidden vectors can be
+saved with the prefix's complete attention/DeltaNet state. On a cache hit, the
+runtime copies only that pure-text base, forwards the new video, timestamps and
+decision references, and compares the saved option vectors with this window's
+decision vectors using the original FP32 head. It reads the correct option rows
+by their original order, without copying fixed tokens or positions back to the
+CPU. The video-updated working state is discarded. Full-prefix positions are
+still derived from the complete current sequence.
+
+Both modes use the same prompt and option/query readout positions. `full-prefix`
+computes the whole sequence without state reuse; `full-prefix-cache` prefills
+once and reuses the fixed state and option vectors. All fixed questions remain
+in the prefix if the dynamic decisions require multiple context-sized groups.
+The original choice meanings, IDs, output ordering, formatter and parser remain
+unchanged. This changes the original input layout and removes visual context
+from option vectors, while decisions still see the current video. It is not
+claimed equivalent to the original layout, and no new quality, latency or cache
+equivalence measurements have been made. Defaults and earlier layouts are
+unchanged; no experiment or deployment is started by adding these options.
+
+### Aligned policy-prefix boundary
 
 `prefix-cache-aligned` is a separate experimental factor. The pinned
 [FLA 0.4.2 DeltaNet forward](https://github.com/fla-org/flash-linear-attention/blob/v0.4.2/fla/ops/gated_delta_rule/chunk.py#L35)

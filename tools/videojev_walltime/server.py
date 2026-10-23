@@ -153,6 +153,7 @@ def _request(body):
     question_layout = body.get("question_layout")
     if question_layout is not None and question_layout not in (
         "repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned",
+        "full-prefix", "full-prefix-cache",
     ):
         raise ValueError("invalid question_layout")
     return {
@@ -219,6 +220,7 @@ class Scorer:
             or queue_policy not in ("fifo", "latest-per-stream")
             or question_layout not in (
                 "repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned",
+                "full-prefix", "full-prefix-cache",
             )
             or gpu_batch_size not in (1, 2)
             or any(
@@ -898,7 +900,8 @@ def main():
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument(
         "--question-layout",
-        choices=("repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned"),
+        choices=("repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned",
+                 "full-prefix", "full-prefix-cache"),
         default="repeated",
         help="Default native question layout; a request may explicitly override it",
     )

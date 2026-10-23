@@ -81,6 +81,7 @@ class VLMProcessConfig:
             raise ValueError("invalid VLM output mode")
         if self.videojev_question_layout not in {
             "repeated", "shared", "prefix", "prefix-cache", "prefix-cache-aligned",
+            "full-prefix", "full-prefix-cache",
         }:
             raise ValueError("invalid VideoJev question layout")
         if self.videojev_prompt_style not in {"full", "scene", "brief"}:
