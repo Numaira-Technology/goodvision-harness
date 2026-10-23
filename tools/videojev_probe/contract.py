@@ -1,7 +1,15 @@
 """Frozen inputs and strict choice decoding; no model imports or network calls."""
 
 import json
-import math
+
+from goodvision_harness.videojev_contract import (
+    CONTEXT,
+    MODEL,
+    OPTIONS,
+    REVISION,
+    VALUES,
+    choice_indices,
+)
 
 from tools.benchmark_runtime.event_sensitivity import EVENT_SENSITIVITY_DEFAULTS
 from tools.benchmark_runtime.vlm_event_policy import (
@@ -11,18 +19,9 @@ from tools.benchmark_runtime.vlm_event_policy import (
 
 from .ppe import adapt, experiment, values_for_question
 
-MODEL = "ZhuYuhan/VideoJev-4B"
-REVISION = "1c1a253bf90dfa66176124d25a48ffb791d517d5"
 LABELS = tuple(EVENT_SENSITIVITY_DEFAULTS)
 POLICY_SHA = "d9c487c37404df2f6d1f4d1f3da39559abffe28f59c76e7fef85f4a9f9e48a7b"
 VIDEO_SHA = "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9"
-OPTIONS = [
-    "A. Present under the specified event policy.",
-    "B. Assessed absent under the specified event policy.",
-    "C. Insufficient evidence to decide under the specified event policy.",
-]
-VALUES = (True, False, None)
-CONTEXT = 32768
 MAX_PEOPLE = 4
 
 
@@ -127,36 +126,8 @@ def questions(
 
 
 def parse_choices(raw, expected):
-    if not isinstance(raw, list) or len(raw) != len(expected):
-        raise ValueError("incomplete question group")
-    rows = {}
-    for item in raw:
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            raise ValueError("invalid choice row")
-        if item["id"] in rows:
-            raise ValueError("duplicate choice ID")
-        rows[item["id"]] = item
-    if set(rows) != {q["id"] for q in expected}:
-        raise ValueError("unknown or missing choice ID")
-    decoded = {}
-    for q in expected:
-        row = rows[q["id"]]
-        scores, index = row.get("probabilities"), row.get("answer_index")
-        if (
-            row.get("task") != "choice"
-            or type(index) is not int
-            or not 0 <= index < 3
-            or not isinstance(scores, list)
-            or len(scores) != 3
-            or any(
-                type(p) not in (int, float) or not math.isfinite(p) or not 0 <= p <= 1
-                for p in scores
-            )
-            or not math.isclose(sum(scores), 1, abs_tol=1e-4)
-            or scores[index] != max(scores)
-            or row.get("answer") != q["options"][index]
-        ):
-            raise ValueError("invalid choice probability/answer contract")
-        # No confidence cutoff and no conversion of uncertain into negative.
-        decoded[q["id"]] = values_for_question(q, OPTIONS)[index]
-    return decoded
+    indices = choice_indices(raw, expected)
+    # No confidence cutoff and no conversion of uncertain into negative.
+    return {
+        q["id"]: values_for_question(q, OPTIONS)[indices[q["id"]]] for q in expected
+    }

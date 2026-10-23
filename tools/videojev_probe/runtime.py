@@ -1,87 +1,15 @@
 """Isolated CUDA runner using the pinned upstream feature/choice API."""
 
-import importlib.metadata
 import io
-import math
 import time
+
+from goodvision_harness.videojev_runtime import NativeVideoJevModel, record_for_grid
 
 from .contract import CONTEXT, MODEL, REVISION
 
 
-def record_for_grid(processor, grid, frame_count, fps):
-    if (
-        type(frame_count) is not int
-        or not 2 <= frame_count <= 4
-        or not isinstance(fps, (int, float))
-        or not math.isfinite(fps)
-        or fps <= 0
-        or len(grid) != 3
-        or any(type(v) is not int or v <= 0 for v in grid)
-        or grid[0] != (frame_count + 1) // 2
-    ):
-        raise ValueError("native processor resampled frames or changed temporal grid")
-    return {
-        "frames": frame_count,
-        "fps": fps,
-        "grid_thw": grid,
-        "tokens": math.prod(grid) // 4,
-        "score_times": list(
-            processor._calculate_timestamps(list(range(frame_count)), fps, 2)
-        ),
-        "sampled_duration": frame_count / fps,
-    }
-
-
-class VideoJevRuntime:
-    def __init__(self, cache_dir):
-        import torch
-        from transformers import AutoModel, AutoProcessor
-
-        if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
-            raise RuntimeError("requires a CUDA GPU supporting BF16; no CPU fallback")
-        if importlib.metadata.version("transformers") != "5.14.1":
-            raise RuntimeError("use isolated environment with transformers==5.14.1")
-        self.torch = torch
-        started = time.perf_counter()
-        shared = dict(
-            revision=REVISION,
-            cache_dir=str(cache_dir),
-            local_files_only=True,
-            trust_remote_code=True,
-        )
-        self.processor = AutoProcessor.from_pretrained(MODEL, **shared)
-        self.model = AutoModel.from_pretrained(
-            MODEL,
-            **shared,
-            dtype=torch.bfloat16,
-            device_map={"": "cuda:0"},
-            attn_implementation="flash_attention_2",
-        )
-        self.model.prepare_for_inference()
-        torch.cuda.synchronize()
-        props = torch.cuda.get_device_properties(0)
-        self.metadata = {
-            "model": MODEL,
-            "revision": REVISION,
-            "gpu": props.name,
-            "gpu_total_bytes": props.total_memory,
-            "model_load_seconds": time.perf_counter() - started,
-            "versions": {
-                n: importlib.metadata.version(n)
-                for n in (
-                    "torch",
-                    "transformers",
-                    "flash-attn",
-                    "flash-linear-attention",
-                    "causal-conv1d",
-                    "fla-core",
-                    "accelerate",
-                )
-            },
-            "cuda_runtime": torch.version.cuda,
-            "attention": "flash_attention_2",
-            "context": CONTEXT,
-        }
+class VideoJevRuntime(NativeVideoJevModel):
+    """Keep the probe's original preprocessing and upstream prediction path."""
 
     def predict(self, payloads, fps, questions):
         import numpy as np

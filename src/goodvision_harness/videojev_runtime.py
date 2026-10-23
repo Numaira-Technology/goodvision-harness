@@ -15,11 +15,10 @@ from .videojev_questions import CompiledQuestions
 def record_for_grid(processor, grid, frame_count, fps):
     if (
         type(frame_count) is not int or not 2 <= frame_count <= 4
-        or type(fps) not in (int, float) or not math.isfinite(fps) or fps <= 0
+        or not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0
         or len(grid) != 3
         or any(type(v) is not int or v <= 0 for v in grid)
         or grid[0] != (frame_count + 1) // 2
-        or grid[1] % 2 or grid[2] % 2
     ):
         raise ValueError("native processor resampled frames or changed temporal grid")
     return {
@@ -42,7 +41,9 @@ class _PreparedVideo:
     timings: dict
 
 
-class VideoJevRuntime:
+class NativeVideoJevModel:
+    """Load the native BF16 model shared by live inference and probe tools."""
+
     def __init__(self, cache_dir):
         import torch
         from transformers import AutoModel, AutoProcessor
@@ -65,11 +66,6 @@ class VideoJevRuntime:
             device_map={"": "cuda:0"}, attn_implementation="flash_attention_2",
         )
         self.model.prepare_for_inference()
-        native = vars(sys.modules[type(self.model).__module__])
-        self._format_predictions = native["format_predictions"]
-        self.decoder = dict(self.model.config.decoder)
-        if not 0 < self.decoder["threshold"] < 1:
-            raise ValueError("threshold must be between 0 and 1")
         torch.cuda.synchronize()
         props = torch.cuda.get_device_properties(0)
         self.metadata = {
@@ -84,10 +80,24 @@ class VideoJevRuntime:
                 )
             },
             "cuda_runtime": torch.version.cuda,
-            "torch_cpu_threads": torch.get_num_threads(),
-            "torch_interop_threads": torch.get_num_interop_threads(),
             "attention": "flash_attention_2", "context": CONTEXT,
         }
+
+
+class VideoJevRuntime(NativeVideoJevModel):
+    """Prepare windows on CPU and score compiled scene questions on GPU."""
+
+    def __init__(self, cache_dir):
+        super().__init__(cache_dir)
+        native = vars(sys.modules[type(self.model).__module__])
+        self._format_predictions = native["format_predictions"]
+        self.decoder = dict(self.model.config.decoder)
+        if not 0 < self.decoder["threshold"] < 1:
+            raise ValueError("threshold must be between 0 and 1")
+        self.metadata.update(
+            torch_cpu_threads=self.torch.get_num_threads(),
+            torch_interop_threads=self.torch.get_num_interop_threads(),
+        )
 
     def prepare(self, payloads, fps, *, context=CONTEXT, max_pixels=409600):
         """Prepare on a CPU worker; native positions use the supplied uniform FPS.
@@ -154,6 +164,8 @@ class VideoJevRuntime:
             raise ValueError("video preparation must produce CPU tensors")
         grid = native["video_grid_thw"][0].tolist()
         record = record_for_grid(self.processor, grid, n, fps)
+        if grid[1] % 2 or grid[2] % 2:
+            raise ValueError("native processor resampled frames or changed temporal grid")
         if record["tokens"] > budget:
             raise ValueError("native video grid exceeds the requested context budget")
         return _PreparedVideo(pixels, record, context, {

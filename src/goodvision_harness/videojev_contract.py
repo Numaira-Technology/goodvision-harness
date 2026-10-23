@@ -58,17 +58,12 @@ def scene_question_template(*, labels, sensitivities=None):
     } for label in labels)
 
 
-def parse_choices(raw, expected):
-    """Decode flat native rows or native per-question lists, retaining raw scores."""
-    if not isinstance(raw, list):
-        raise ValueError("incomplete question group")
-    flattened = []
-    for item in raw:
-        flattened.extend(item if isinstance(item, list) else [item])
-    if len(flattened) != len(expected):
+def choice_indices(raw, expected):
+    """Validate a flat choice group and return each question's selected index."""
+    if not isinstance(raw, list) or len(raw) != len(expected):
         raise ValueError("incomplete question group")
     rows = {}
-    for item in flattened:
+    for item in raw:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
             raise ValueError("invalid choice row")
         if item["id"] in rows:
@@ -76,7 +71,7 @@ def parse_choices(raw, expected):
         rows[item["id"]] = item
     if set(rows) != {q["id"] for q in expected}:
         raise ValueError("unknown or missing choice ID")
-    decoded = {}
+    indices = {}
     for q in expected:
         row = rows[q["id"]]
         scores, index = row.get("probabilities"), row.get("answer_index")
@@ -95,6 +90,17 @@ def parse_choices(raw, expected):
             or row.get("answer") != q["options"][index]
         ):
             raise ValueError("invalid choice probability/answer contract")
-        # No confidence cutoff and no conversion of uncertain into negative.
-        decoded[q["id"]] = VALUES[index]
-    return decoded
+        indices[q["id"]] = index
+    return indices
+
+
+def parse_choices(raw, expected):
+    """Decode flat native rows or native per-question lists, retaining raw scores."""
+    if not isinstance(raw, list):
+        raise ValueError("incomplete question group")
+    flattened = []
+    for item in raw:
+        flattened.extend(item if isinstance(item, list) else [item])
+    indices = choice_indices(flattened, expected)
+    # No confidence cutoff and no conversion of uncertain into negative.
+    return {q["id"]: VALUES[indices[q["id"]]] for q in expected}
