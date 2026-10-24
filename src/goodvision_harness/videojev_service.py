@@ -255,7 +255,7 @@ class Scorer:
                 "queue_policy": "latest-per-stream",
                 "context": self.context,
                 "max_pixels": self.max_pixels,
-                "gpu_batch_size": self.ready_capacity,
+                "gpu_batch_size": 2,
                 "model": MODEL,
                 "revision": REVISION,
                 "runtime": {} if self.runtime is None else self.runtime.metadata,
@@ -428,8 +428,7 @@ class Scorer:
                         return
                     works = [self._pipeline.popleft()]
                     # Take only an already-ready compatible window; never wait to fill a batch.
-                    while (len(works) < self.ready_capacity
-                            and self.runtime.prefix_cache and self._pipeline
+                    if (self.runtime.prefix_cache and self._pipeline
                             and self._pipeline[0].state == "ready"
                             and self._pipeline[0].question_template is works[0].question_template):
                         works.append(self._pipeline.popleft())
@@ -747,8 +746,7 @@ def main():
     parser.add_argument("--request-timeout", type=float, default=20.0)
     parser.add_argument("--queue-age", type=float, default=19.5)
     parser.add_argument("--queue-capacity", type=int, default=48)
-    parser.add_argument("--ready-capacity", type=int, default=2,
-                        help="Maximum prepared windows and compatible GPU batch size")
+    parser.add_argument("--ready-capacity", type=int, default=2)
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
@@ -786,12 +784,6 @@ def main():
             _index, result = outcome
             if isinstance(result, Exception):
                 raise result
-        if args.prefix_cache and args.ready_capacity > 2:
-            for outcome in runtime.predict_prepared_batch([
-                windows[index % len(windows)] for index in range(args.ready_capacity)
-            ]):
-                if outcome is not None and isinstance(outcome[1], Exception):
-                    raise outcome[1]
         runtime.startup_template = template
         runtime.metadata["startup_prepare_seconds"] = time.perf_counter() - started
         return runtime
