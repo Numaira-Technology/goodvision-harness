@@ -2,7 +2,7 @@
 
 import json
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 _SOURCE_TIMES = "{source_times}"
@@ -15,6 +15,7 @@ class _Prefix:
     device_ids: object = None
     embeddings: object = None
     state: object = None
+    working_states: dict = field(default_factory=dict)
 
     @property
     def length(self):
