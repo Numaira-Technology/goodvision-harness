@@ -752,11 +752,14 @@ def main():
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
+    import torch
+
+    torch.set_num_threads(4)
+    torch.set_num_interop_threads(4)
+
     def runtime_factory():
-        import torch
         from PIL import Image
 
-        torch.set_num_threads(4)
         runtime = VideoJevRuntime(args.cache_dir, prefix_cache=args.prefix_cache)
         started = time.perf_counter()
         template = QuestionTemplate(scene_question_template(
