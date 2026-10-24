@@ -3,6 +3,7 @@
 import argparse
 import base64
 import binascii
+import io
 import json
 import math
 import threading
@@ -13,7 +14,10 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .videojev_contract import CONTEXT, MODEL, REVISION, QuestionTemplate, parse_choices
+from .event_sensitivity import EVENT_SENSITIVITY_DEFAULTS
+from .videojev_contract import (
+    CONTEXT, MODEL, REVISION, QuestionTemplate, parse_choices, scene_question_template,
+)
 from .videojev_runtime import VideoJevRuntime
 
 
@@ -411,6 +415,7 @@ class Scorer:
         try:
             self.runtime = self._runtime_factory()
             with self._condition:
+                self._last_template = getattr(self.runtime, "startup_template", None)
                 self._loaded = True
                 self._condition.notify_all()
             while True:
@@ -749,9 +754,39 @@ def main():
 
     def runtime_factory():
         import torch
+        from PIL import Image
 
         torch.set_num_threads(4)
-        return VideoJevRuntime(args.cache_dir, prefix_cache=args.prefix_cache)
+        runtime = VideoJevRuntime(args.cache_dir, prefix_cache=args.prefix_cache)
+        started = time.perf_counter()
+        template = QuestionTemplate(scene_question_template(
+            labels=tuple(EVENT_SENSITIVITY_DEFAULTS),
+        ))
+        windows = []
+        for size in ((640, 360), (720, 405)):
+            jpeg = io.BytesIO()
+            Image.new("RGB", size, (127, 127, 127)).save(jpeg, format="JPEG")
+            windows.append({
+                "prepared": runtime.prepare(
+                    [jpeg.getvalue()] * 2, 2.0,
+                    context=args.context, max_pixels=args.max_pixels,
+                ),
+                "question_template": template, "frame_times": [0.0, 0.5],
+            })
+        # Initialize native kernels and fixed text before accepting camera windows.
+        # These predictions are discarded, not published as event observations.
+        runtime.predict_prepared(**windows[0])
+        for outcome in runtime.predict_prepared_batch(windows):
+            if outcome is None:
+                for window in windows:
+                    runtime.predict_prepared(**window)
+                break
+            _index, result = outcome
+            if isinstance(result, Exception):
+                raise result
+        runtime.startup_template = template
+        runtime.metadata["startup_prepare_seconds"] = time.perf_counter() - started
+        return runtime
 
     scorer = Scorer(
         runtime_factory,
