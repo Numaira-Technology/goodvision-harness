@@ -186,6 +186,7 @@ class Scorer:
         queue_age=19.5,
         queue_capacity=48,
         ready_capacity=2,
+        gpu_batch_size=2,
         context=CONTEXT,
         max_pixels=409600,
     ):
@@ -196,7 +197,7 @@ class Scorer:
             or queue_age <= 0
             or any(
                 type(value) is not int or value <= 0
-                for value in (queue_capacity, ready_capacity, context, max_pixels)
+                for value in (queue_capacity, ready_capacity, gpu_batch_size, context, max_pixels)
             )
         ):
             raise ValueError("invalid scorer configuration")
@@ -206,6 +207,7 @@ class Scorer:
         self.result_log.parent.mkdir(parents=True, exist_ok=True)
         self.request_timeout, self.queue_age = request_timeout, queue_age
         self.queue_capacity, self.ready_capacity = queue_capacity, ready_capacity
+        self.gpu_batch_size = gpu_batch_size
         self.context, self.max_pixels = context, max_pixels
         self._condition = threading.Condition()
         self._log_lock = threading.Lock()
@@ -255,7 +257,7 @@ class Scorer:
                 "queue_policy": "latest-per-stream",
                 "context": self.context,
                 "max_pixels": self.max_pixels,
-                "gpu_batch_size": 2,
+                "gpu_batch_size": self.gpu_batch_size,
                 "model": MODEL,
                 "revision": REVISION,
                 "runtime": {} if self.runtime is None else self.runtime.metadata,
@@ -427,8 +429,9 @@ class Scorer:
                     if self._stopping:
                         return
                     works = [self._pipeline.popleft()]
-                    # Take only an already-ready compatible window; never wait to fill a batch.
-                    if (self.runtime.prefix_cache and self._pipeline
+                    # Take only already-ready compatible windows; never wait to fill a batch.
+                    while (len(works) < self.gpu_batch_size
+                            and self.runtime.prefix_cache and self._pipeline
                             and self._pipeline[0].state == "ready"
                             and self._pipeline[0].question_template is works[0].question_template):
                         works.append(self._pipeline.popleft())
@@ -747,6 +750,7 @@ def main():
     parser.add_argument("--queue-age", type=float, default=19.5)
     parser.add_argument("--queue-capacity", type=int, default=48)
     parser.add_argument("--ready-capacity", type=int, default=2)
+    parser.add_argument("--gpu-batch-size", type=int, default=2)
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
@@ -798,6 +802,7 @@ def main():
         queue_age=args.queue_age,
         queue_capacity=args.queue_capacity,
         ready_capacity=args.ready_capacity,
+        gpu_batch_size=args.gpu_batch_size,
         context=args.context,
         max_pixels=args.max_pixels,
     )
