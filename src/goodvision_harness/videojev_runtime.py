@@ -299,23 +299,24 @@ class VideoJevRuntime(NativeVideoJevModel):
 
         torch = self.torch
         torch.cuda.synchronize()
-        encoded_windows, features, visual_seconds = [], [], []
-        for item in eligible:
-            index, window, _group = item
-            try:
-                before = time.perf_counter()
-                prepared = window["prepared"]
-                with torch.inference_mode():
-                    visual = self.model.encode_video(
-                        prepared.pixel_values, torch.tensor([prepared.record["grid_thw"]]),
-                    )
-                    torch.cuda.synchronize()
-                encoded_windows.append(item)
-                features.append(visual)
-                visual_seconds.append(time.perf_counter() - before)
-            except Exception as exc:
+        try:
+            before = time.perf_counter()
+            videos = [item[1]["prepared"] for item in eligible]
+            device = self.model.get_input_embeddings().weight.device
+            pixels = torch.cat([video.pixel_values for video in videos]).to(device)
+            grids = torch.tensor([video.record["grid_thw"] for video in videos], device=device)
+            with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                visual = self.model.backbone.visual(
+                    pixels, grid_thw=grids, return_dict=True,
+                ).pooler_output
+                features = list(visual.split([video.record["tokens"] for video in videos]))
+                torch.cuda.synchronize()
+            encoded_windows = eligible
+            # One shared visual forward; do not sum this value per window.
+            visual_seconds = [time.perf_counter() - before] * len(eligible)
+        except Exception as exc:
+            for index, _window, _group in eligible:
                 yield index, exc
-        if not encoded_windows:
             return
         try:
             with torch.inference_mode():
@@ -348,6 +349,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                     yield index, (raw, {
                         **prepared.timings,
                         "gpu_batch_size": len(encoded_windows),
+                        "visual_batch_size": len(encoded_windows),
                         "visual_encode_seconds": visual_seconds[position],
                         "decision_seconds": done - encoded,
                         "gpu_pipeline_seconds": done - started,
