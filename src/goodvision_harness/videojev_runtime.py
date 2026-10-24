@@ -121,19 +121,17 @@ class VideoJevRuntime(NativeVideoJevModel):
         })
 
     def _prefix_inputs(self, batch, features, prefix):
-        """Build full-window positions before slicing the fixed prefix."""
+        """Embed only the suffix while retaining full-window absolute positions."""
         torch, model = self.torch, self.model
         device = model.get_input_embeddings().weight.device
         length = prefix.length
         if prefix.device_ids is None:
             prefix.device_ids = prefix.ids.to(device)
-        ids = torch.cat([prefix.device_ids, batch["input_ids"][:, length:].to(device)], dim=1)
+        ids = batch["input_ids"][:, length:].to(device)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             if prefix.embeddings is None:
                 prefix.embeddings = model.get_input_embeddings()(prefix.device_ids)
-            embeds = torch.cat([
-                prefix.embeddings, model.get_input_embeddings()(ids[:, length:]),
-            ], dim=1)
+            embeds = model.get_input_embeddings()(ids)
             slots = ids == model.config.backbone_config.video_token_id
             embeds = embeds.masked_scatter(
                 slots[..., None].expand_as(embeds), features.to(embeds),
@@ -153,6 +151,28 @@ class VideoJevRuntime(NativeVideoJevModel):
             positions = positions.to(device)
         return embeds, positions, batch
 
+    def _working_prefix(self, prefix, count, device):
+        """Restore an independent hybrid state without reallocating its linear buffers."""
+        working = prefix.working_states.get(count)
+        if working is None:
+            working = deepcopy(prefix.state)
+            if count > 1:
+                working.reorder_cache(self.torch.zeros(count, device=device, dtype=self.torch.long))
+            prefix.working_states[count] = working
+        for original, target in zip(prefix.state.layers, working.layers, strict=True):
+            # Dynamic attention appends with cat and replaces these read-only views.
+            if getattr(original, "keys", None) is not None:
+                target.keys = original.keys.expand(count, *original.keys.shape[1:])
+                target.values = original.values.expand(count, *original.values.shape[1:])
+            # Linear attention updates its state in place, so keep separate buffers.
+            for name in ("conv_states", "recurrent_states"):
+                states = getattr(original, name, {})
+                destination = getattr(target, name, {})
+                for index, value in states.items():
+                    if value is not None:
+                        destination[index].copy_(value.expand(count, *value.shape[1:]))
+        return working
+
     def _score_cached(self, batches, features, prefix):
         """Continue independent batch rows; never retain their video state."""
         torch, model = self.torch, self.model
@@ -165,29 +185,31 @@ class VideoJevRuntime(NativeVideoJevModel):
             hit = prefix.state is not None
             if not hit:
                 prefill = language(
-                    inputs_embeds=parts[0][0][:, :length],
+                    inputs_embeds=prefix.embeddings,
                     position_ids=parts[0][1][..., :length],
                     attention_mask=None, use_cache=True,
                 )
                 prefix.state = prefill.past_key_values
                 del prefill
-            # Copy the full hybrid state, including convolution and recurrent layers.
-            working = deepcopy(prefix.state)
-            lengths = [embeds.shape[1] - length for embeds, _positions, _batch in parts]
+            working = self._working_prefix(prefix, len(parts), device)
+            lengths = [embeds.shape[1] for embeds, _positions, _batch in parts]
             longest = max(lengths)
             padding_mask = None
-            if len(parts) > 1:
-                working.reorder_cache(torch.zeros(len(parts), device=device, dtype=torch.long))
+            equal = len(set(lengths)) == 1
+            if len(parts) > 1 and not equal:
                 padding_mask = torch.zeros(
                     (len(parts), length + longest), dtype=torch.bool, device=device,
                 )
                 for index, size in enumerate(lengths):
                     padding_mask[index, :length + size] = True
             if len(parts) == 1:
-                embeds, positions = parts[0][0][:, length:], parts[0][1][..., length:]
+                embeds, positions = parts[0][0], parts[0][1][..., length:]
+            elif equal:
+                embeds = torch.cat([part[0] for part in parts])
+                positions = torch.cat([part[1][..., length:] for part in parts], dim=1)
             else:
                 embeds = torch.cat([
-                    torch.nn.functional.pad(part[0][:, length:], (0, 0, 0, longest - size))
+                    torch.nn.functional.pad(part[0], (0, 0, 0, longest - size))
                     for part, size in zip(parts, lengths, strict=True)
                 ])
                 positions = torch.cat([
@@ -299,23 +321,24 @@ class VideoJevRuntime(NativeVideoJevModel):
 
         torch = self.torch
         torch.cuda.synchronize()
-        encoded_windows, features, visual_seconds = [], [], []
-        for item in eligible:
-            index, window, _group = item
-            try:
-                before = time.perf_counter()
-                prepared = window["prepared"]
-                with torch.inference_mode():
-                    visual = self.model.encode_video(
-                        prepared.pixel_values, torch.tensor([prepared.record["grid_thw"]]),
-                    )
-                    torch.cuda.synchronize()
-                encoded_windows.append(item)
-                features.append(visual)
-                visual_seconds.append(time.perf_counter() - before)
-            except Exception as exc:
+        try:
+            before = time.perf_counter()
+            videos = [item[1]["prepared"] for item in eligible]
+            device = self.model.get_input_embeddings().weight.device
+            pixels = torch.cat([video.pixel_values for video in videos]).to(device)
+            grids = torch.tensor([video.record["grid_thw"] for video in videos], device=device)
+            with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                visual = self.model.backbone.visual(
+                    pixels, grid_thw=grids, return_dict=True,
+                ).pooler_output
+                features = list(visual.split([video.record["tokens"] for video in videos]))
+                torch.cuda.synchronize()
+            encoded_windows = eligible
+            # One shared visual forward; do not sum this value per window.
+            visual_seconds = [time.perf_counter() - before] * len(eligible)
+        except Exception as exc:
+            for index, _window, _group in eligible:
                 yield index, exc
-        if not encoded_windows:
             return
         try:
             with torch.inference_mode():
@@ -348,6 +371,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                     yield index, (raw, {
                         **prepared.timings,
                         "gpu_batch_size": len(encoded_windows),
+                        "visual_batch_size": len(encoded_windows),
                         "visual_encode_seconds": visual_seconds[position],
                         "decision_seconds": done - encoded,
                         "gpu_pipeline_seconds": done - started,
