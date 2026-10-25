@@ -81,8 +81,14 @@ def assert_admission_drained(result, args, expected_grants):
 
 def config(session="vlm-run", generation=1):
     base = main_config(session, generation)
+    # Product-only sampling controls evolve separately from this preserved
+    # runtime. Copy shared defaults without changing benchmark scheduling.
+    supported = {field.name for field in fields(VLMProcessConfig)}
     return VLMProcessConfig(
-        **{field.name: getattr(base, field.name) for field in fields(base)}
+        **{
+            field.name: getattr(base, field.name)
+            for field in fields(base) if field.name in supported
+        }
     )
 
 

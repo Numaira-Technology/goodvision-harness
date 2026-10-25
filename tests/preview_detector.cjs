@@ -193,9 +193,10 @@ function element(tag="div") {
 }
 
 async function monitorView(tracking) {
-  const elements = new Map(), videos = [], animations = [], timers = [];
+  const elements = new Map(), videos = [], animations = [], timers = [], requests = [];
   const state = {stage:"stage", state:"playing", detector:true, monitor_layout:"evidence",
-    cameras:[{camera:1, tick:-1, lanes:{}, rejected:0, out_of_order:0}],
+    cameras:[{camera:1, tick:-1, lanes:{}, rejected:0, out_of_order:0,
+      select_epoch:0, select_generation:0}],
     media:[{url:"preview.mp4", duration:10, sample_count:2, timestamps:[0,5]}],
     lanes:["events"], mode:"events", phase:"measurement", model:"model", backend:"local",
     real:true, repeat:1, planned:1, counters:{events:{complete:0}}, source_count:1,
@@ -210,15 +211,18 @@ async function monitorView(tracking) {
     performance:{now:() => 1000}, innerHeight:1080, innerWidth:1920,
     requestAnimationFrame:callback => {animations.push(callback);},
     setTimeout:callback => {timers.push(callback);},
-    fetch:async () => ({ok:true, json:async () => state})};
+    fetch:async (url, options) => {
+      requests.push({url, options});
+      return {ok:true, json:async () => state};
+    }};
   let tracker;
-  context.window.PreviewTracking = class {constructor() {tracker = this; this.epoch=0;} close() {}};
+  context.window.PreviewTracking = class {constructor() {tracker = this; this.epoch=0; this.generation=0;} close() {}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,
     "../tools/vlm_benchmark/monitor.js"), "utf8"), context);
   await new Promise(resolve => setImmediate(resolve));
   function animate() {assert(animations.length); animations.shift()();}
   animate();
-  return {state, video:videos[0], clock:elements.get("grid").children[0].children[0].children[1],
+  return {state, elements, requests, video:videos[0], clock:elements.get("grid").children[0].children[0].children[1],
     get tracker() {return tracker;}, animate, async poll() {
     assert(timers.length); await timers.shift()();
   }};
@@ -249,4 +253,89 @@ for(const tracking of [false, true]) {
       assert.equal(view.video.paused, true);
     });
   }
+}
+
+
+test("expired select events clear even before a benchmark report arrives", async () => {
+  const view = await monitorView(true);
+  const card = view.elements.get("grid").children[0];
+  const row = card.children.find(child => child.className === "lane");
+  const chip = row.children[1].children.find(child => child.dataset.label === "fight");
+  view.state.cameras[0].select_events = ["fight"];
+  await view.poll();
+  assert.equal(chip.className, "chip positive");
+  view.state.cameras[0].select_events = [];
+  await view.poll();
+  assert.equal(chip.className, "chip");
+  assert.equal(chip.title, "等待模型结果");
+});
+
+for(const lane of ["events", "grounding"]) {
+  test(`select events override failed ${lane} verdicts and restore them on expiry`, async () => {
+    const view = await monitorView(true);
+    view.state.stage = "new-stage";
+    view.state.lanes = [lane];
+    view.state.counters[lane] = {complete:0};
+    view.state.cameras[0].lanes[lane] = {id:"failure", tick:null,
+      judgments:[], complete:false, error:"offline failure"};
+    view.state.cameras[0].select_events = ["fight"];
+    await view.poll();
+    view.animate();
+    await view.poll();
+    const card = view.elements.get("grid").children[0];
+    const row = card.children.find(child => child.className === "lane");
+    const chip = row.children[1].children.find(child => child.dataset.label === "fight");
+    assert.equal(chip.className, "chip positive");
+    assert.equal(chip.title, "逐人识别检测到");
+    view.state.cameras[0].select_events = [];
+    await view.poll();
+    assert.equal(chip.className, "chip failed");
+    assert.equal(chip.title, "offline failure");
+  });
+}
+
+for(const change of ["epoch", "generation"]) {
+  test(`a local ${change} change hides old selection before another tracking request`, async () => {
+    const view = await monitorView(true);
+    const card = view.elements.get("grid").children[0];
+    const row = card.children.find(child => child.className === "lane");
+    const chip = row.children[1].children.find(child => child.dataset.label === "fight");
+    view.state.cameras[0].select_events = ["fight"];
+    await view.poll();
+    assert.equal(chip.className, "chip positive");
+    view.tracker[change]++;
+    await view.poll();  // Server still reports the previous source generation.
+    assert.equal(chip.className, "chip");
+    view.state.cameras[0][`select_${change}`] = view.tracker[change];
+    await view.poll();
+    assert.equal(chip.className, "chip positive");
+  });
+}
+
+test("state polls identify the same preview client as tracking", async () => {
+  const view = await monitorView(true);
+  assert.equal(view.requests[0].url, "state");
+  assert.equal(view.requests[0].options.headers["X-GoodVision-Preview-Client"], "client");
+});
+
+test("selection labels are hidden when tracking is disabled", async () => {
+  const view = await monitorView(false);
+  const card = view.elements.get("grid").children[0];
+  const row = card.children.find(child => child.className === "lane");
+  const chip = row.children[1].children.find(child => child.dataset.label === "fight");
+  view.state.cameras[0].select_events = ["fight"];
+  await view.poll();
+  assert.equal(chip.className, "chip");
+});
+
+
+for(const tracking of [false, true]) {
+  test(`real select badge requires active tracking: ${tracking}`, async () => {
+    const view = await monitorView(tracking);
+    view.state.real = false;
+    view.state.select_active = true;
+    await view.poll();
+    assert.equal(view.elements.get("badge").textContent, tracking
+      ? "真实逐人识别 · YOLO + VLM" : "模拟调度 · 未调用真实模型");
+  });
 }

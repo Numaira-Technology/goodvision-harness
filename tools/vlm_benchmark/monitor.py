@@ -133,6 +133,16 @@ def media_time(frames, tick, fps):
     return times[index] if times else index / fps
 
 
+def _positive_env(name, default, convert=float):
+    try:
+        value = convert(os.environ.get(name, default))
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be positive and finite") from exc
+    if value <= 0 or (isinstance(value, float) and not math.isfinite(value)):
+        raise ValueError(f"{name} must be positive and finite")
+    return value
+
+
 class LiveMonitor:
     def __init__(self, output, framesets, args):
         self.output, self.framesets, self.args = Path(output), framesets, args
@@ -190,12 +200,17 @@ class LiveMonitor:
             "ppe_violation",
             "ground_litter",
         )
-        self._select_interval = 4.0
-        self._select_ttl = 6.0
+        # Tunable for dense coverage on many streams: with N cameras sharing
+        # _select_max_inflight slots and each select ~3s, a camera refreshes every
+        # ~N/max_inflight*3s; TTL must exceed that gap or the overlay flickers.
+        self._select_interval = _positive_env("PREVIEW_SELECT_INTERVAL", "4")
+        self._select_ttl = _positive_env("PREVIEW_SELECT_TTL", "6")
         self._select_states = {}
         self._select_waiters = {}
         self._select_inflight = set()
-        self._select_max_inflight = 4
+        self._select_max_inflight = _positive_env(
+            "PREVIEW_SELECT_MAX_INFLIGHT", "4", int
+        )
         self._select_closed = False
         self._select_state_lock = threading.Lock()
 
@@ -486,7 +501,7 @@ class LiveMonitor:
                 self.recording_active = False
         return None
 
-    def snapshot(self):
+    def snapshot(self, client=None):
         with self.lock:
             data = copy.deepcopy(self.state)
             if not data.get("stage"):
@@ -519,6 +534,39 @@ class LiveMonitor:
                 }
                 for i, frames in enumerate(self.framesets)
             ]
+            # Surface the real per-person select events (YOLO boxes + cheap VLM
+            # "which number" query) onto each camera so the chips reflect them,
+            # not just the box colour, and flag that a real model is in use.
+            if self._select_events:
+                data["select_active"] = bool(self._select_key and self.detector_url)
+                now = time.monotonic()
+                with self._select_state_lock:
+                    live = (
+                        isinstance(client, str)
+                        and re.fullmatch(r"[a-f0-9-]{36}", client)
+                        and now - self.preview_viewers.get(client, -math.inf) <= 30
+                        and data["state"] not in {"draining", "finished", "failed"}
+                    )
+                    for i, cam in enumerate(data.get("cameras", [])):
+                        key = (client, i)
+                        state = self._select_states.get(key) if live else None
+                        session = self._detector_sessions.get(key)
+                        events = set()
+                        cam["select_epoch"] = cam["select_generation"] = None
+                        if (
+                            key in self.preview_trackers
+                            and state is not None
+                            and session is not None
+                            and state["stage"] == data["stage"]
+                            and session["stage"] == data["stage"]
+                            and state["session"] == session["id"]
+                            and state["expires"] > now
+                        ):
+                            for labels in state["tags"].values():
+                                events.update(labels)
+                            cam["select_epoch"] = session["epoch"]
+                            cam["select_generation"] = session["generation"]
+                        cam["select_events"] = sorted(events)
             return data
 
     def track_preview(self, stage, camera, payload):
@@ -752,7 +800,12 @@ class LiveMonitor:
                 for obj in objects
                 if obj.get("observation_state", "observed") == "observed"
             ]
-            self._maybe_select(key, session["id"], stage, evidence_at, jpeg, raw)
+            # Feed the full-res source frame (not the 320px capture) to the VLM
+            # select query; 320px is too small to read actions (fight/fall).
+            self._maybe_select(
+                key, session["id"], stage, evidence_at,
+                self._hires_frame(key, at, epoch) or jpeg, raw,
+            )
             tags, selected_scene_alert = self._active_tags(
                 key, session["id"], {track_id for track_id, _ in raw}
             )
@@ -799,6 +852,43 @@ class LiveMonitor:
                 },
                 state["scene_alert"] or bool(set(tags) - observed),
             )
+
+    def _hires_frame(self, key, at, epoch):
+        """Use a source JPEG only when its exact media PTS matches the capture.
+
+        Preview playback is denser than the stored source samples. A nearby
+        sample can show different people, so unmatched captures must keep their
+        uploaded JPEG and its detector boxes together.
+        """
+        try:
+            camera = key[1]
+            frames = self.framesets[camera % len(self.framesets)]
+            timestamps = getattr(frames, "media_seconds", ())
+            duration = getattr(frames, "media_duration", None)
+            if (
+                len(timestamps) != len(frames)
+                or type(duration) not in (int, float)
+                or not math.isfinite(duration)
+                or duration <= 0
+                or type(at) not in (int, float)
+                or not math.isfinite(at)
+                or type(epoch) is not int
+                or epoch < 0
+            ):
+                return None
+            local = at - epoch * duration
+            if not 0 <= local < duration:
+                return None
+            # Cover timestamp serialization and the proxy's 90 kHz rounding,
+            # without substituting a different sparse evidence frame.
+            index = bisect.bisect_left(timestamps, local - 1e-4)
+            if index < len(frames) and math.isclose(
+                timestamps[index], local, rel_tol=0, abs_tol=1e-4
+            ):
+                return frames[index]
+        except (IndexError, KeyError, TypeError, ZeroDivisionError, AttributeError):
+            pass
+        return None
 
     def _maybe_select(self, key, session_id, stage, evidence_at, jpeg, raw):
         """Reserve a bounded asynchronous selection for a current source frame."""
@@ -1024,7 +1114,13 @@ class LiveMonitor:
         message = choice.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
             raise ValueError("invalid selection message")
-        verdicts = json.loads(message["content"], object_pairs_hook=unique)
+        # Models sometimes wrap the JSON in markdown fences or prose; extract the
+        # outermost object so a cosmetic wrapper does not drop the whole verdict.
+        content = message["content"]
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        verdicts = json.loads(
+            match.group(0) if match else content, object_pairs_hook=unique
+        )
         if not isinstance(verdicts, dict) or set(verdicts) != set(self._select_labels):
             raise ValueError("incomplete selection verdicts")
         tags, scene_alert = {}, False
@@ -1118,7 +1214,11 @@ class LiveMonitor:
                         )
                     elif path == "state":
                         self.reply(
-                            json.dumps(monitor.snapshot()).encode(),
+                            json.dumps(
+                                monitor.snapshot(
+                                    self.headers.get("X-GoodVision-Preview-Client")
+                                )
+                            ).encode(),
                             "application/json",
                             head=head,
                         )

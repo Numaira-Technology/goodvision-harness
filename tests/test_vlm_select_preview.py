@@ -565,3 +565,57 @@ def test_select_waiter_uses_the_new_session_after_seek(
     preview_lane(monitor, 1, at=0.3, generation=1)
     assert [query.args[0][1] for query in selections] == [0, 1]
     assert selections[1].args[1] == new_session
+
+
+@pytest.mark.parametrize("name,value", [
+    ("PREVIEW_SELECT_INTERVAL", "0"),
+    ("PREVIEW_SELECT_INTERVAL", "-1"),
+    ("PREVIEW_SELECT_INTERVAL", "nan"),
+    ("PREVIEW_SELECT_INTERVAL", "inf"),
+    ("PREVIEW_SELECT_TTL", "0"),
+    ("PREVIEW_SELECT_TTL", "-1"),
+    ("PREVIEW_SELECT_TTL", "nan"),
+    ("PREVIEW_SELECT_TTL", "inf"),
+    ("PREVIEW_SELECT_MAX_INFLIGHT", "0"),
+    ("PREVIEW_SELECT_MAX_INFLIGHT", "-1"),
+    ("PREVIEW_SELECT_MAX_INFLIGHT", "1.5"),
+])
+def test_invalid_select_budgets_fail_before_startup(tmp_path, monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=name):
+        monitor_module.LiveMonitor(tmp_path, [], SimpleNamespace())
+
+
+def test_select_budgets_are_configurable_without_changing_defaults(
+    tmp_path, monkeypatch
+):
+    for name in (
+        "PREVIEW_SELECT_INTERVAL",
+        "PREVIEW_SELECT_TTL",
+        "PREVIEW_SELECT_MAX_INFLIGHT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    default = monitor_module.LiveMonitor(tmp_path, [], SimpleNamespace())
+    assert default._select_interval == 4
+    assert default._select_ttl == 6
+    assert default._select_max_inflight == 4
+    monkeypatch.setenv("PREVIEW_SELECT_INTERVAL", "0.5")
+    monkeypatch.setenv("PREVIEW_SELECT_TTL", "14")
+    monkeypatch.setenv("PREVIEW_SELECT_MAX_INFLIGHT", "6")
+    configured = monitor_module.LiveMonitor(tmp_path, [], SimpleNamespace())
+    assert configured._select_interval == 0.5
+    assert configured._select_ttl == 14
+    assert configured._select_max_inflight == 6
+
+
+@pytest.mark.parametrize(
+    "key_available,detector_available",
+    [(False, True), (True, False), (True, True)],
+)
+def test_real_select_badge_requires_provider_and_detector(
+    monitor, key_available, detector_available
+):
+    monitor.previews = [None]
+    monitor._select_key = "offline-test-only" if key_available else ""
+    monitor.detector_url = "http://detector" if detector_available else ""
+    assert monitor.snapshot()["select_active"] is (key_available and detector_available)
