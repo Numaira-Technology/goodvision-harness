@@ -289,7 +289,8 @@ class ServiceLocations:
                     ),
                 ),
             )
-            if config.rich_labeling.backend == "vlm":
+            if (config.rich_labeling.backend == "vlm"
+                    and self.inference_server_model != "ZhuYuhan/VideoJev-4B"):
                 config = replace(
                     config,
                     rich_labeling=replace(
@@ -342,4 +343,23 @@ class ServiceLocations:
             config = replace(config, rich_labeling=replace(
                 config.rich_labeling, max_fps=self.tracking_sample_fps,
             ))
+        if (config.model_api.provider == "local"
+                and config.inference.model == "ZhuYuhan/VideoJev-4B"):
+            if self.inference_mode == "server":
+                config = replace(config, aiclub=replace(
+                    config.model_api, endpoint=self.inference_server_url + "/predict",
+                    inspection_endpoint="",
+                ))
+            # This classifier emits scene choices, not chat or person grounding.
+            config = replace(config, runtime=replace(
+                config.runtime, scene_mode="active", scene_independent_vlm=True,
+                scene_vlm_output_mode="events", scene_observation_fps=1.25,
+                scene_max_in_flight=1, scene_max_image_side=720,
+                scene_jpeg_quality=90, scene_timeout_seconds=20.0,
+            ))
+            if config.rich_labeling.backend == "vlm":
+                # Native scene choices do not implement person-attribute chat.
+                config = replace(config, rich_labeling=replace(
+                    config.rich_labeling, enabled=False, tracking_enabled=False,
+                ))
         return config
