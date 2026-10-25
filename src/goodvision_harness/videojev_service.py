@@ -783,14 +783,19 @@ def main():
         # Initialize native kernels and fixed text before accepting camera windows.
         # These predictions are discarded, not published as event observations.
         runtime.predict_prepared(**windows[0])
-        for outcome in runtime.predict_prepared_batch(windows):
-            if outcome is None:
-                for window in windows:
-                    runtime.predict_prepared(**window)
-                break
-            _index, result = outcome
-            if isinstance(result, Exception):
-                raise result
+        if args.gpu_batch_size == 1:
+            # The configured GPU cap also applies before readiness. Warm both
+            # representative geometries without requiring a larger GPU batch.
+            runtime.predict_prepared(**windows[1])
+        else:
+            for outcome in runtime.predict_prepared_batch(windows):
+                if outcome is None:
+                    for window in windows:
+                        runtime.predict_prepared(**window)
+                    break
+                _index, result = outcome
+                if isinstance(result, Exception):
+                    raise result
         runtime.startup_template = template
         runtime.metadata["startup_prepare_seconds"] = time.perf_counter() - started
         return runtime

@@ -12,6 +12,9 @@ from .videojev_core import CONTEXT, MODEL, REVISION, NativeVideoJevModel, record
 from .videojev_questions import CompiledQuestions
 
 
+_WORKING_PREFIX_CACHE_SIZE = 2
+
+
 @dataclass(frozen=True)
 class _PreparedVideo:
     pixel_values: object
@@ -153,12 +156,17 @@ class VideoJevRuntime(NativeVideoJevModel):
 
     def _working_prefix(self, prefix, count, device):
         """Restore an independent hybrid state without reallocating its linear buffers."""
-        working = prefix.working_states.get(count)
+        working = prefix.working_states.pop(count, None)
         if working is None:
+            # Keep the common one/two-window states warm without retaining one
+            # full hybrid cache for every batch cardinality ever encountered.
+            # Evict before allocation so a third cache cannot raise peak usage.
+            while len(prefix.working_states) >= _WORKING_PREFIX_CACHE_SIZE:
+                prefix.working_states.pop(next(iter(prefix.working_states)))
             working = deepcopy(prefix.state)
             if count > 1:
                 working.reorder_cache(self.torch.zeros(count, device=device, dtype=self.torch.long))
-            prefix.working_states[count] = working
+        prefix.working_states[count] = working
         for original, target in zip(prefix.state.layers, working.layers, strict=True):
             # Dynamic attention appends with cat and replaces these read-only views.
             if getattr(original, "keys", None) is not None:
