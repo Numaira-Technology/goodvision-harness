@@ -124,7 +124,7 @@
     if(!d.phases.includes(data.state)) d.phases.push(data.state);
     if(data.state === "playing") d.sawPlaying=true;
     byId("model").textContent=`${data.model} · ${data.backend === "openrouter" ? "OpenRouter 服务商推理" : data.backend === "openai_decisions" ? "OpenAI Decisions · 六类事件判断" : "自部署服务"}`;
-    byId("badge").textContent=data.real ? "真实模型测试" : data.select_active ? "真实逐人识别 · YOLO + VLM" : "模拟调度 · 未调用真实模型";
+    byId("badge").textContent=data.real ? "真实模型测试" : trackingEnabled && data.select_active ? "真实逐人识别 · YOLO + VLM" : "模拟调度 · 未调用真实模型";
     const modeLabel={events:"events · 事件识别",compact:"grounding · 带定位识别",parallel:"parallel · events + grounding"}[data.mode] || data.mode;
     byId("stage").textContent=`${phaseNames[data.phase]} / ${modeLabel} / ${data.cameras.length} 路 / 第 ${data.repeat} 轮`;
     byId("notice").textContent=`${data.source_count === 1 && data.cameras.length>1 ? "同一视频复制为多路负载；" : ""}模型判断：绿=未检测到，红=检测到，黄=不确定，灰=等待，蓝灰=请求失败。预览 15 FPS 与请求频率 ${data.observation_fps} Hz 分开。${singleVideo ? "当前画面与结果的证据时间可能不同。" : "没有定位框不代表无人。"}`;
@@ -141,28 +141,15 @@
       if(c.sample && camera.tick>=0 && c.sourceTick!==camera.tick) {c.sourceTick=camera.tick;c.sample.src=`frame/${encodeURIComponent(data.stage)}/${i}/${camera.tick}.jpg`;}
       for(const lane of data.lanes) {
         const r=camera.lanes[lane], row=c.lanes[lane];
-        if(!r) continue;
         for(const chip of row.chips.children) {
-          const judgment=r.judgments.find(j=>j.label===chip.dataset.label);
-          // A real per-person select event (YOLO box + VLM "which number") lights
-          // the chip red, taking priority over the benchmark lane's own verdict.
-          const selected=camera.select_events && camera.select_events.includes(chip.dataset.label);
-          chip.className=`chip ${r.error || !r.complete ? "failed" : selected ? "positive" : !judgment ? "" : judgment.observed===true ? "positive" : judgment.observed===false ? "negative" : "uncertain"}`;
-          chip.title=selected ? "逐人识别检测到" : (r.error || (judgment?.observed===true ? "模型检测到" : judgment?.observed===false ? "模型未检测到" : "不确定"));
+          const judgment=r?.judgments.find(j=>j.label===chip.dataset.label);
+          const selected=trackingEnabled && c.tracker && camera.select_epoch===c.tracker.epoch && camera.select_generation===c.tracker.generation && camera.select_events?.includes(chip.dataset.label);
+          const status=selected ? "positive" : !r ? "" : r.error || !r.complete ? "failed" : !judgment ? "" : judgment.observed===true ? "positive" : judgment.observed===false ? "negative" : "uncertain";
+          chip.className=status ? `chip ${status}` : "chip";
+          chip.title=selected ? "逐人识别检测到" : !r ? "等待模型结果" : r.error || (judgment?.observed===true ? "模型检测到" : judgment?.observed===false ? "模型未检测到" : "不确定");
         }
-        if(row.report?.id !== r.id) d.laneRenderUpdates[lane]=(d.laneRenderUpdates[lane] || 0)+1;
+        if(r && row.report?.id !== r.id) d.laneRenderUpdates[lane]=(d.laneRenderUpdates[lane] || 0)+1;
         row.report=r;
-      }
-      // Real per-person select events light the event chips even when the
-      // benchmark lane report is missing or incomplete — the signal is the
-      // live SELECT tag, not the (simulated) lane verdict.
-      const evrow=c.lanes.events;
-      if(evrow && camera.select_events && camera.select_events.length) {
-        for(const chip of evrow.chips.children) {
-          if(camera.select_events.includes(chip.dataset.label)) {
-            chip.className="chip positive"; chip.title="逐人识别检测到";
-          }
-        }
       }
       const evidence=camera.tracking_anchor || camera.lanes.grounding || camera.lanes.events;
       if(data.backend_person_tracks) {
@@ -270,7 +257,7 @@
   }
   async function poll() {
     try {
-      const response=await fetch("state",{cache:"no-store"}); if(!response.ok) throw new Error("HTTP");
+      const response=await fetch("state",{cache:"no-store",headers:{"X-GoodVision-Preview-Client":window.trackingClient}}); if(!response.ok) throw new Error("HTTP");
       const data=await response.json(), now=performance.now();
       if(lastPoll && data.stage===window.currentStage) window.monitorDiagnostics.maxPollGapSeconds=Math.max(window.monitorDiagnostics.maxPollGapSeconds,(now-lastPoll)/1000);
       lastPoll=now; render(data); byId("connection").textContent="";
