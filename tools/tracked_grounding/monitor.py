@@ -6,8 +6,8 @@ from tools.vlm_benchmark.monitor import LiveMonitor, lane_name
 class PersonMonitor(LiveMonitor):
     broker = None
 
-    def snapshot(self):
-        data = super().snapshot()
+    def snapshot(self, client=None):
+        data = super().snapshot(client)
         if data.get("stage") and self.broker is not None:
             with self.broker.condition:
                 for i, camera in enumerate(data["cameras"]):
