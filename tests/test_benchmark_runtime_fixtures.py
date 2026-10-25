@@ -3,9 +3,11 @@
 import sqlite3
 import time
 from contextlib import closing
+from dataclasses import fields, replace
 from threading import Event
 from types import SimpleNamespace
 
+import benchmark_runtime_fixtures as fixtures
 import pytest
 from benchmark_runtime_fixtures import configure_ephemeral_admission
 
@@ -63,3 +65,34 @@ def test_ephemeral_fixture_keeps_shared_transactions_isolated(tmp_path, monkeypa
             )
     with closing(sqlite3.connect(settings.database)) as ordinary:
         assert ordinary.execute("PRAGMA synchronous").fetchone()[0] != 0
+
+
+def test_benchmark_config_preserves_shared_values_without_product_sampling(
+    monkeypatch,
+):
+    source = replace(
+        fixtures.main_config("source-camera", 7),
+        model="shared-model", observation_fps=0.5, max_in_flight=3,
+        parameters={"temperature": 0}, options={"max_image_side": 640},
+        candidate_fps=4.0, observation_window_frames=2,
+        observation_frame_delta_seconds=0.5,
+    )
+    monkeypatch.setattr(fixtures, "main_config", lambda session, generation: source)
+    benchmark = fixtures.config("source-camera", 7)
+    shared = {field.name for field in fields(source)} & {
+        field.name for field in fields(benchmark)
+    }
+    assert all(getattr(benchmark, name) == getattr(source, name) for name in shared)
+    assert benchmark.stream_session_id == "source-camera"
+    assert benchmark.generation == 7
+    assert benchmark.model == "shared-model"
+    assert benchmark.parameters == {"temperature": 0}
+    assert benchmark.options == {"max_image_side": 640}
+    # Product-only candidate/window controls must not alter the frozen
+    # benchmark's cadence, evidence selection or grounding route defaults.
+    assert benchmark.observation_fps == 0.5
+    assert benchmark.source_sample_fps is None
+    assert benchmark.sample_fps == 2.0
+    assert benchmark.grounding_source == "vlm"
+    assert benchmark.grounding_format == "legacy"
+    assert benchmark.parallel_scheduling == "independent"
