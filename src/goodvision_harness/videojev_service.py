@@ -12,6 +12,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import CancelledError, Future, TimeoutError
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import combinations
 from pathlib import Path
 
 from .event_sensitivity import EVENT_SENSITIVITY_DEFAULTS
@@ -412,6 +413,31 @@ class Scorer:
                 if not isinstance(exc, Exception):
                     return
 
+    def _take_ready(self):
+        works = [self._pipeline.popleft()]
+        if not self.runtime.prefix_cache or self.gpu_batch_size == 1:
+            return works
+        candidates = []
+        for work in self._pipeline:
+            if work.state != "ready" or work.question_template is not works[0].question_template:
+                break
+            candidates.append(work)
+            if len(candidates) == self.gpu_batch_size:
+                break
+        count = min(self.gpu_batch_size - 1, len(candidates))
+        selected = candidates
+        if len(candidates) > count:
+            def padding(group):
+                sizes = [work.prepared.record["tokens"] for work in (works[0], *group)]
+                return len(sizes) * max(sizes) - sum(sizes)
+
+            # Keep the oldest window; consider at most one extra ready candidate.
+            selected = min(combinations(candidates, count), key=padding)
+        for work in selected:
+            self._pipeline.remove(work)
+            works.append(work)
+        return works
+
     def _gpu_loop(self):
         works = []
         try:
@@ -428,13 +454,8 @@ class Scorer:
                         self._condition.wait()
                     if self._stopping:
                         return
-                    works = [self._pipeline.popleft()]
                     # Take only already-ready compatible windows; never wait to fill a batch.
-                    while (len(works) < self.gpu_batch_size
-                            and self.runtime.prefix_cache and self._pipeline
-                            and self._pipeline[0].state == "ready"
-                            and self._pipeline[0].question_template is works[0].question_template):
-                        works.append(self._pipeline.popleft())
+                    works = self._take_ready()
                     started = time.monotonic()
                     for work in works:
                         work.state = "gpu"
