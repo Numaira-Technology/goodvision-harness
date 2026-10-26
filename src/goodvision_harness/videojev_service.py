@@ -751,6 +751,7 @@ def main():
     parser.add_argument("--queue-capacity", type=int, default=48)
     parser.add_argument("--ready-capacity", type=int, default=2)
     parser.add_argument("--gpu-batch-size", type=int, default=2)
+    parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
@@ -758,7 +759,7 @@ def main():
 
     import torch
 
-    torch.set_num_threads(4)
+    torch.set_num_threads(args.cpu_threads)
     torch.set_num_interop_threads(4)
 
     def runtime_factory():
