@@ -40,7 +40,8 @@ class VideoJevRuntime(NativeVideoJevModel):
             prefix_cache=prefix_cache,
         )
 
-    def prepare(self, payloads, fps, *, context=CONTEXT, max_pixels=409600):
+    def prepare(self, payloads, fps, *, context=CONTEXT, max_pixels=409600,
+                question_template=None, frame_times=None):
         """Prepare on a CPU worker; native positions use the supplied uniform FPS.
 
         Actual source times remain in the questions. No frame is sampled away;

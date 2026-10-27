@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .event_sensitivity import EVENT_SENSITIVITY_DEFAULTS
 from .videojev_contract import (
-    CONTEXT, MODEL, REVISION, QuestionTemplate, parse_choices, scene_question_template,
+    CONTEXT, QuestionTemplate, parse_choices, scene_question_template,
 )
 from .videojev_runtime import VideoJevRuntime
 
@@ -177,6 +177,13 @@ def _shared_cuda_failure(exc):
 
 
 class Scorer:
+    """Shared window transport and scheduling for prepared VLM runtimes.
+
+    A runtime owns CPU preparation, response validation and model metadata.
+    Optional batch prediction consumes already-ready independent windows; it
+    does not require prefix caching or wait for more camera input.
+    """
+
     def __init__(
         self,
         runtime_factory,
@@ -248,6 +255,7 @@ class Scorer:
 
     def snapshot(self):
         with self._condition:
+            metadata = {} if self.runtime is None else self.runtime.metadata
             return {
                 "ready": self.healthy,
                 "queue": len(self._pending),
@@ -255,12 +263,12 @@ class Scorer:
                 "prepared": sum(work.state == "ready" for work in self._pipeline),
                 "gpu_busy": bool(self._gpu_work),
                 "queue_policy": "latest-per-stream",
-                "context": self.context,
+                "context": metadata.get("context", self.context),
                 "max_pixels": self.max_pixels,
                 "gpu_batch_size": self.gpu_batch_size,
-                "model": MODEL,
-                "revision": REVISION,
-                "runtime": {} if self.runtime is None else self.runtime.metadata,
+                "model": metadata.get("model"),
+                "revision": metadata.get("revision"),
+                "runtime": metadata,
                 "error": None if self._failure is None else self._failure.code,
             }
 
@@ -392,6 +400,8 @@ class Scorer:
                     work.body["fps"],
                     context=self.context,
                     max_pixels=self.max_pixels,
+                    question_template=work.question_template,
+                    frame_times=work.body["frame_times"],
                 )
                 with self._condition:
                     work.preprocess_end = time.monotonic()
@@ -431,7 +441,8 @@ class Scorer:
                     works = [self._pipeline.popleft()]
                     # Take only already-ready compatible windows; never wait to fill a batch.
                     while (len(works) < self.gpu_batch_size
-                            and self.runtime.prefix_cache and self._pipeline
+                            and callable(getattr(self.runtime, "predict_prepared_batch", None))
+                            and self._pipeline
                             and self._pipeline[0].state == "ready"
                             and self._pipeline[0].question_template is works[0].question_template):
                         works.append(self._pipeline.popleft())
@@ -514,12 +525,14 @@ class Scorer:
         timings = {**native_timings, **self._timings(work)}
         timings["server_gpu_seconds"] = time.monotonic() - work.gpu_start
         try:
-            parse_choices(raw, work.question_template.rows)
+            validate = getattr(self.runtime, "validate_response", parse_choices)
+            validate(raw, work.question_template.rows)
         except (ValueError, TypeError, KeyError, IndexError) as exc:
             self._finish(work, error=WindowError("invalid_response", str(exc), raw=raw, timings=timings))
             return
         self._finish(work, value={
-            "model": MODEL, "revision": REVISION,
+            "model": self.runtime.metadata.get("model"),
+            "revision": self.runtime.metadata.get("revision"),
             "request_id": work.body["request_id"], "raw": raw, "timings": timings,
         })
 
@@ -743,6 +756,7 @@ def handler(scorer):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--runtime", choices=("videojev", "decision3"), default="videojev")
     parser.add_argument("--cache-dir", required=True)
     parser.add_argument("--result-log", required=True)
     parser.add_argument("--port", type=int, default=8093)
@@ -752,9 +766,11 @@ def main():
     parser.add_argument("--ready-capacity", type=int, default=2)
     parser.add_argument("--gpu-batch-size", type=int, default=2)
     parser.add_argument("--context", type=int, default=CONTEXT)
-    parser.add_argument("--max-pixels", type=int, default=409600)
+    parser.add_argument("--max-pixels", type=int)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
+    if args.max_pixels is None:
+        args.max_pixels = 200704 if args.runtime == "decision3" else 409600
 
     import torch
 
@@ -764,7 +780,12 @@ def main():
     def runtime_factory():
         from PIL import Image
 
-        runtime = VideoJevRuntime(args.cache_dir, prefix_cache=args.prefix_cache)
+        if args.runtime == "decision3":
+            from .decision3_runtime import Decision3Runtime
+
+            runtime = Decision3Runtime(args.cache_dir)
+        else:
+            runtime = VideoJevRuntime(args.cache_dir, prefix_cache=args.prefix_cache)
         started = time.perf_counter()
         template = QuestionTemplate(scene_question_template(
             labels=tuple(EVENT_SENSITIVITY_DEFAULTS),
@@ -777,17 +798,44 @@ def main():
                 "prepared": runtime.prepare(
                     [jpeg.getvalue()] * 2, 2.0,
                     context=args.context, max_pixels=args.max_pixels,
+                    question_template=template, frame_times=[0.0, 0.5],
                 ),
                 "question_template": template, "frame_times": [0.0, 0.5],
             })
         # Initialize native kernels and fixed text before accepting camera windows.
         # These predictions are discarded, not published as event observations.
-        runtime.predict_prepared(**windows[0])
-        if args.gpu_batch_size == 1:
+        if args.runtime == "decision3":
+            # Warm the actual window cap, including mixed geometries. Keep
+            # local preparation failures separate from a lost CUDA context.
+            failures = []
+            batches = [[window] for window in windows]
+            for count in range(2, min(args.gpu_batch_size, args.ready_capacity) + 1):
+                batches.extend([
+                    [windows[0]] * count, [windows[1]] * count,
+                    [windows[index % 2] for index in range(count)],
+                ])
+            for batch in batches:
+                try:
+                    if len(batch) == 1:
+                        runtime.predict_prepared(**batch[0])
+                    else:
+                        for _index, result in runtime.predict_prepared_batch(batch):
+                            if isinstance(result, Exception):
+                                raise result
+                except Exception as error:
+                    if _shared_cuda_failure(error):
+                        raise
+                    failures.append(f"{len(batch)} windows: {type(error).__name__}: {error}")
+                    if isinstance(error, torch.OutOfMemoryError):
+                        torch.cuda.empty_cache()
+            runtime.metadata["startup_prepare_errors"] = failures
+        elif args.gpu_batch_size == 1:
             # The configured GPU cap also applies before readiness. Warm both
             # representative geometries without requiring a larger GPU batch.
+            runtime.predict_prepared(**windows[0])
             runtime.predict_prepared(**windows[1])
         else:
+            runtime.predict_prepared(**windows[0])
             for outcome in runtime.predict_prepared_batch(windows):
                 if outcome is None:
                     for window in windows:
