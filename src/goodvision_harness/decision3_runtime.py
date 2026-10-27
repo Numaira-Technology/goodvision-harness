@@ -5,7 +5,6 @@ import io
 import json
 import math
 import sys
-import threading
 import time
 from collections import OrderedDict
 from copy import deepcopy
@@ -29,6 +28,8 @@ class _PreparedVideo:
     frame_times: object
     timings: dict
     prefix_length: int = 0
+    shared_window_state: bool = False
+    question_runtime: object = None
 
 
 class _CompiledQuestions:
@@ -38,7 +39,6 @@ class _CompiledQuestions:
         self.runtime = runtime
         self.rows = tuple(rows)
         self.cache = OrderedDict()
-        self.lock = threading.Lock()
         self.questions, self.texts, self.errors = {}, {}, {}
         marker = "{source_times}"
         while any(marker in part for row in self.rows for part in (*row["query_parts"], *row["options"])):
@@ -67,47 +67,55 @@ class _CompiledQuestions:
 
     def bind(self, prepared, times):
         """Tokenize whole official prompts; never concatenate independently encoded BPE spans."""
-        key = (times, tuple(prepared.video_texts))
-        with self.lock:
-            if key in self.cache:
-                self.cache.move_to_end(key)
-                return self.cache[key]
-            native = self.runtime.native
-            processor = native.processor
-            texts = {name: text.replace(self.marker, times) for name, text in self.texts.items()}
-            keys = list(texts)
-            lengths, encoded_rows = {}, []
-            errors = dict(self.errors)
-            if keys:
-                expanded = [processor.get_text_with_replacements(
-                    [texts[name]], [], prepared.video_texts,
-                )[0][0] for name in keys]
-                encoded = processor.tokenizer(
-                    expanded, padding=False, return_token_type_ids=False,
-                )["input_ids"]
-                for name, ids in zip(keys, encoded):
-                    length = len(ids)
-                    if native.max_length is not None and length > native.max_length:
-                        errors[name] = {
-                            "type": self.questions[name].kind,
-                            "error": "max_length_exceeded",
-                            "message": f"the question prompt has {length} tokens, "
-                            f"over the maximum context length of "
-                            f"{native.max_length} tokens; nothing was truncated",
-                        }
-                        continue
-                    tokens = self.runtime.torch.tensor(ids, dtype=self.runtime.torch.long)
-                    types = self.runtime.torch.as_tensor(
-                        processor.create_mm_token_type_ids(tokens[None]),
-                        dtype=self.runtime.torch.long,
-                    )[0]
-                    lengths[name] = length
-                    encoded_rows.append((name, tokens, types, len(self.questions[name].keys)))
-            value = (texts, lengths, errors, tuple(encoded_rows))
-            self.cache[key] = value
-            while len(self.cache) > 2:
-                self.cache.popitem(last=False)
-            return value
+        shared = self.runtime.shared_window_state
+        key = (shared, times, tuple(prepared.video_texts))
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        native = self.runtime.native
+        processor = native.processor
+        texts = {name: text.replace(self.marker, times) for name, text in self.texts.items()}
+        keys = list(texts)
+        lengths, encoded_rows = {}, []
+        errors = dict(self.errors)
+        if keys:
+            expanded = [processor.get_text_with_replacements(
+                [texts[name]], [], prepared.video_texts,
+            )[0][0] for name in keys]
+            encoded = processor.tokenizer(
+                expanded, padding=False, return_token_type_ids=False,
+            )["input_ids"]
+            for name, ids in zip(keys, encoded):
+                length = len(ids)
+                if native.max_length is not None and length > native.max_length:
+                    errors[name] = {
+                        "type": self.questions[name].kind,
+                        "error": "max_length_exceeded",
+                        "message": f"the question prompt has {length} tokens, "
+                        f"over the maximum context length of "
+                        f"{native.max_length} tokens; nothing was truncated",
+                    }
+                    continue
+                tokens = self.runtime.torch.tensor(ids, dtype=self.runtime.torch.long)
+                types = self.runtime.torch.as_tensor(
+                    processor.create_mm_token_type_ids(tokens[None]),
+                    dtype=self.runtime.torch.long,
+                )[0]
+                lengths[name] = length
+                encoded_rows.append((name, tokens, types, len(self.questions[name].keys)))
+        prefix_length = 0
+        if shared and encoded_rows:
+            # Keep a readout token in each tail, even for identical questions.
+            prefix_length = min(len(row[1]) for row in encoded_rows) - 1
+            for row in encoded_rows[1:]:
+                differences = (encoded_rows[0][1][:prefix_length] != row[1][:prefix_length]).nonzero()
+                if len(differences):
+                    prefix_length = int(differences[0, 0])
+        value = (self.questions, texts, lengths, errors, tuple(encoded_rows), prefix_length)
+        self.cache[key] = value
+        while len(self.cache) > 2:
+            self.cache.popitem(last=False)
+        return value
 
 
 class Decision3Runtime:
@@ -123,7 +131,6 @@ class Decision3Runtime:
             raise RuntimeError("Decision 3 requires a CUDA GPU supporting BF16")
         self.torch = torch
         self.shared_window_state = shared_window_state
-        self._template_lock = threading.Lock()
         started = time.perf_counter()
         self.model = AutoModel.from_pretrained(
             MODEL, revision=REVISION, trust_remote_code=True,
@@ -156,13 +163,8 @@ class Decision3Runtime:
             "attention_mode": "prefix_bidir" if shared_window_state else "noncausal_full_attention",
         }
 
-    def _compiled(self, template):
-        with self._template_lock:
-            compiled = template.compiled
-            if not isinstance(compiled, _CompiledQuestions) or compiled.runtime is not self:
-                compiled = _CompiledQuestions(self, template.rows)
-                template.compiled = compiled
-            return compiled
+    def compile_questions(self, rows):
+        return _CompiledQuestions(self, rows)
 
     def prepare(self, payloads, fps, *, question_template=None, frame_times=None,
                 context=CONTEXT, max_pixels=MAX_PIXELS):
@@ -204,27 +206,23 @@ class Decision3Runtime:
 
     def _bind(self, prepared, template, frame_times):
         times = json.dumps(frame_times, allow_nan=False, separators=(",", ":"))
-        if prepared.template is template and prepared.frame_times == times:
+        if (prepared.question_runtime is self and prepared.template is template
+                and prepared.frame_times == times
+                and prepared.shared_window_state == self.shared_window_state):
             return prepared
         native = self.native
         # Reuse the official media planner and CPU processor without rendering questions twice.
         media = native._prepare_videos("", {}, [], native.load_videos([prepared.frames]))
         if any(value.device.type != "cpu" for value in media.media.values()):
             raise ValueError("video preparation must produce CPU tensors")
-        compiled = self._compiled(template)
-        texts, lengths, errors, rows = compiled.bind(media, times)
+        questions, texts, lengths, errors, rows, prefix_length = template.bind(self, media, times)
         media.keys = [row["id"] for row in template.rows]
-        media.questions = dict(compiled.questions)
+        media.questions = dict(questions)
         media.texts = {key: text for key, text in texts.items() if key in lengths}
         media.lengths, media.errors = dict(lengths), dict(errors)
-        # Keep a readout token in each tail even for a single or identical question.
-        prefix_length = min((len(row[1]) for row in rows), default=1) - 1
-        for row in rows[1:]:
-            differences = (rows[0][1][:prefix_length] != row[1][:prefix_length]).nonzero()
-            if len(differences):
-                prefix_length = int(differences[0, 0])
         return _PreparedVideo(
             prepared.frames, media, rows, template, times, prepared.timings, prefix_length,
+            self.shared_window_state, self,
         )
 
     def _inputs(self, rows, prepared, features):

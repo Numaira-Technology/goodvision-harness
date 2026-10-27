@@ -182,6 +182,8 @@ class Scorer:
     A runtime owns CPU preparation, response validation and model metadata.
     Optional batch prediction consumes already-ready independent windows; it
     does not require prefix caching or wait for more camera input.
+    Fixed questions bind through QuestionTemplate on the CPU preparation path.
+    Native tokenization, attention, positions and GPU state remain runtime-owned.
     """
 
     def __init__(

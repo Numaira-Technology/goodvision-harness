@@ -194,6 +194,10 @@ class CompiledQuestions:
             self.geometry.popitem(last=False)
         return value
 
+    def bind(self, record, frame_times, context, *, prefix_cache=False):
+        """Prepare the complete CPU question groups for this window once."""
+        return tuple(self.groups(record, frame_times, context, prefix_cache=prefix_cache))
+
     def groups(self, record, frame_times, context, *, prefix_cache=False):
         first, following, shared, prefixed, slots = self._messages(record)
         times = json.dumps(frame_times, allow_nan=False)
