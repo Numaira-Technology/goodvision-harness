@@ -77,30 +77,23 @@ class _CompiledQuestions:
             lengths, encoded_rows = {}, []
             errors = dict(self.errors)
             if keys:
-                planned = processor.tokenizer(
-                    [texts[name] for name in keys] + prepared.video_texts,
-                    add_special_tokens=False,
-                )["input_ids"]
-                visual = sum(len(ids) for ids in planned[len(keys):])
                 expanded = [processor.get_text_with_replacements(
                     [texts[name]], [], prepared.video_texts,
                 )[0][0] for name in keys]
                 encoded = processor.tokenizer(
                     expanded, padding=False, return_token_type_ids=False,
                 )["input_ids"]
-                for name, before, ids in zip(keys, planned, encoded):
-                    length = len(before) - 1 + visual
+                for name, ids in zip(keys, encoded):
+                    length = len(ids)
                     if native.max_length is not None and length > native.max_length:
                         errors[name] = {
                             "type": self.questions[name].kind,
                             "error": "max_length_exceeded",
-                            "message": f"the question prompt has {length} tokens ({visual} for "
-                            f"0 image(s) and 1 video(s)), over the maximum context length of "
+                            "message": f"the question prompt has {length} tokens, "
+                            f"over the maximum context length of "
                             f"{native.max_length} tokens; nothing was truncated",
                         }
                         continue
-                    if len(ids) != length:
-                        raise RuntimeError(f"planned {length} input tokens, the processor produced {len(ids)}")
                     tokens = self.runtime.torch.tensor(ids, dtype=self.runtime.torch.long)
                     types = self.runtime.torch.as_tensor(
                         processor.create_mm_token_type_ids(tokens[None]),
