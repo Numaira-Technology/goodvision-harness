@@ -768,6 +768,7 @@ def main():
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--d3-shared-window-state", action=argparse.BooleanOptionalAction, default=False)
     args = parser.parse_args()
     if args.max_pixels is None:
         args.max_pixels = 200704 if args.runtime == "decision3" else 409600
@@ -783,7 +784,7 @@ def main():
         if args.runtime == "decision3":
             from .decision3_runtime import Decision3Runtime
 
-            runtime = Decision3Runtime(args.cache_dir)
+            runtime = Decision3Runtime(args.cache_dir, shared_window_state=args.d3_shared_window_state)
         else:
             runtime = VideoJevRuntime(args.cache_dir, prefix_cache=args.prefix_cache)
         started = time.perf_counter()

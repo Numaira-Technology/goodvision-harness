@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass, replace
 
 from .videojev_contract import CONTEXT
@@ -27,6 +28,7 @@ class _PreparedVideo:
     template: object
     frame_times: object
     timings: dict
+    prefix_length: int = 0
 
 
 class _CompiledQuestions:
@@ -113,13 +115,14 @@ class Decision3Runtime:
 
     prefix_cache = False
 
-    def __init__(self, cache_dir):
+    def __init__(self, cache_dir, *, shared_window_state=False):
         import torch
         from transformers import AutoModel
 
         if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
             raise RuntimeError("Decision 3 requires a CUDA GPU supporting BF16")
         self.torch = torch
+        self.shared_window_state = shared_window_state
         self._template_lock = threading.Lock()
         started = time.perf_counter()
         self.model = AutoModel.from_pretrained(
@@ -148,7 +151,9 @@ class Decision3Runtime:
             "prefix_cache": False, "max_pixels_per_frame": MAX_PIXELS,
             "max_input_tokens": self.model.max_input_tokens,
             "context": self.model.max_input_tokens,
-            "api": "official_choice_independent_rows",
+            "api": "choice_shared_window_state" if shared_window_state else "official_choice_independent_rows",
+            "shared_window_state": shared_window_state,
+            "attention_mode": "prefix_bidir" if shared_window_state else "noncausal_full_attention",
         }
 
     def _compiled(self, template):
@@ -212,12 +217,18 @@ class Decision3Runtime:
         media.questions = dict(compiled.questions)
         media.texts = {key: text for key, text in texts.items() if key in lengths}
         media.lengths, media.errors = dict(lengths), dict(errors)
+        # Keep a readout token in each tail even for a single or identical question.
+        prefix_length = min((len(row[1]) for row in rows), default=1) - 1
+        for row in rows[1:]:
+            differences = (rows[0][1][:prefix_length] != row[1][:prefix_length]).nonzero()
+            if len(differences):
+                prefix_length = int(differences[0, 0])
         return _PreparedVideo(
-            prepared.frames, media, rows, template, times, prepared.timings,
+            prepared.frames, media, rows, template, times, prepared.timings, prefix_length,
         )
 
-    def _logits(self, rows, prepared, features):
-        """Use the official embeddings, positions, attention encoder and masked readout."""
+    def _inputs(self, rows, prepared, features):
+        """Preserve complete prompt tokens and their official multimodal positions."""
         torch, native = self.torch, self.native
         backbone = native.backbone
         width = max(len(row[2]) for row in rows)
@@ -251,6 +262,24 @@ class Decision3Runtime:
                 inputs_embeds=embeds, attention_mask=mask, past_key_values=None,
                 mm_token_type_ids=types,
             )
+        return embeds, mask, positions, padded
+
+    def _readout(self, hidden, rows):
+        torch, native = self.torch, self.native
+        if native.readout_dtype == "float32":
+            logits = hidden.float() @ native.readout.T
+        else:
+            logits = torch.nn.functional.linear(hidden, native.readout).float()
+        counts = torch.as_tensor([row[4] for row in rows], device=native.device)[:, None]
+        invalid = torch.arange(self.helpers.MAX_OPTIONS, device=native.device)[None] >= counts
+        return logits.masked_fill(invalid, float("-inf"))
+
+    def _logits(self, rows, prepared, features):
+        """Use the official embeddings, positions, attention encoder and masked readout."""
+        torch, native = self.torch, self.native
+        backbone = native.backbone
+        with torch.inference_mode(), self.helpers.sdpa_backends(native.device):
+            embeds, mask, positions, padded = self._inputs(rows, prepared, features)
             fused = native.fast.fused if native.fast is not None else None
             if fused is not None:
                 rotary = native.fast.lm.rotary_emb(embeds, positions)
@@ -265,13 +294,84 @@ class Decision3Runtime:
                     input_ids=None, position_ids=positions, attention_mask=mask,
                     past_key_values=None, inputs_embeds=embeds, use_cache=False,
                 ).last_hidden_state[:, -1]
-            if native.readout_dtype == "float32":
-                logits = hidden.float() @ native.readout.T
-            else:
-                logits = torch.nn.functional.linear(hidden, native.readout).float()
-            counts = torch.as_tensor([row[4] for row in rows], device=native.device)[:, None]
-            invalid = torch.arange(self.helpers.MAX_OPTIONS, device=native.device)[None] >= counts
-            return logits.masked_fill(invalid, float("-inf"))
+            return self._readout(hidden, rows)
+
+    def _shared_state(self, rows, prepared, features):
+        """Compute each window's common prefix once; keep its hybrid state only for this batch.
+
+        This adopts the D3 Turbo StateOnce attention layout on the unchanged nano weights.
+        Full-attention prefixes are bidirectional and cannot read questions. DeltaNet stays causal.
+        """
+        torch, native = self.torch, self.native
+        language = native.backbone.language_model
+        active = list(dict.fromkeys(row[0] for row in rows))
+        window_rows = {index: offset for offset, index in enumerate(active)}
+        width = max(prepared[index].prefix_length for index in active)
+        with torch.inference_mode(), self.helpers.sdpa_backends(native.device):
+            embeds, _mask, positions, _padded = self._inputs(rows, prepared, features)
+            prefix = embeds.new_zeros((len(active), width, embeds.shape[-1]))
+            prefix_positions = positions.new_zeros((positions.shape[0], len(active), width))
+            present = torch.zeros((len(active), width), dtype=torch.bool, device=native.device)
+            tails, seen = {}, set()
+            for row_index, (index, key, tokens, _types, _count) in enumerate(rows):
+                length = prepared[index].prefix_length
+                offset = embeds.shape[1] - len(tokens)
+                if index not in seen:
+                    target = window_rows[index]
+                    if length:
+                        prefix[target, width - length:] = embeds[row_index, offset:offset + length]
+                        prefix_positions[:, target, width - length:] = positions[:, row_index, offset:offset + length]
+                        present[target, width - length:] = True
+                    seen.add(index)
+                tails[index, key] = (
+                    embeds[row_index, offset + length:], positions[:, row_index, offset + length:],
+                )
+            cache = None
+            if width:
+                cache = language(
+                    inputs_embeds=prefix, position_ids=prefix_positions,
+                    attention_mask={
+                        "full_attention": present[:, None, None, :],
+                        "linear_attention": present,
+                    }, use_cache=True,
+                ).past_key_values
+            return cache, present, window_rows, tails
+
+    def _shared_logits(self, rows, state):
+        """Continue separate question rows from copies of their own window's KV and linear states."""
+        torch, native = self.torch, self.native
+        cache, prefix_mask, window_rows, tails = state
+        parts = [tails[index, key] for index, key, *_rest in rows]
+        lengths = [part[0].shape[0] for part in parts]
+        width = max(lengths)
+        with torch.inference_mode(), self.helpers.sdpa_backends(native.device):
+            selected = torch.tensor([window_rows[row[0]] for row in rows], device=native.device)
+            # reorder_cache copies KV, conv and recurrent tensors, including repeated window indices.
+            # A fresh working cache prevents one question batch from changing the next batch's prefix.
+            working = deepcopy(cache)
+            if working is not None:
+                working.reorder_cache(selected)
+            embeds = torch.stack([
+                torch.nn.functional.pad(part[0], (0, 0, 0, width - size))
+                for part, size in zip(parts, lengths)
+            ])
+            positions = torch.stack([
+                torch.nn.functional.pad(part[1], (0, width - size))
+                for part, size in zip(parts, lengths)
+            ], dim=1)
+            present = torch.arange(width, device=native.device)[None] < torch.tensor(
+                lengths, device=native.device,
+            )[:, None]
+            keys = torch.cat((prefix_mask.index_select(0, selected), present), dim=1)
+            hidden = native.backbone.language_model(
+                inputs_embeds=embeds, position_ids=positions,
+                attention_mask={
+                    "full_attention": keys[:, None, None, :],
+                    "linear_attention": present,
+                }, past_key_values=working, use_cache=True,
+            ).last_hidden_state
+            last = torch.tensor(lengths, device=native.device) - 1
+            return self._readout(hidden[torch.arange(len(rows), device=native.device), last], rows)
 
     def predict_prepared(self, prepared, *, question_template, frame_times):
         for _index, result in self.predict_prepared_batch([{
@@ -328,12 +428,25 @@ class Decision3Runtime:
             for index in active:
                 yield index, error
             return
+        state, prefix_seconds = None, 0.0
+        if self.shared_window_state:
+            try:
+                before = time.perf_counter()
+                state = self._shared_state(rows, prepared, features)
+                native.synchronize()
+                prefix_seconds = time.perf_counter() - before
+            except Exception as error:
+                for index in active:
+                    yield index, error
+                return
         for start in range(0, len(rows), QUESTION_BATCH_SIZE):
             chunk = rows[start:start + QUESTION_BATCH_SIZE]
             affected = set(row[0] for row in chunk)
             before = time.perf_counter()
             try:
-                scores = (self._logits(chunk, prepared, features) / native.temperature).softmax(-1).cpu().tolist()
+                logits = (self._shared_logits(chunk, state) if state is not None
+                          else self._logits(chunk, prepared, features))
+                scores = (logits / native.temperature).softmax(-1).cpu().tolist()
                 if len(scores) != len(chunk):
                     raise RuntimeError("the readout did not return one probability row per question")
                 native.synchronize()
@@ -368,14 +481,24 @@ class Decision3Runtime:
                 try:
                     tokens = sum(video.native.lengths.values())
                     raw = native.respond(video.native, probabilities[index], tokens)
+                    shared_timings = {}
+                    forward_tokens = tokens
+                    if state is not None:
+                        forward_tokens -= (len(video.rows) - 1) * video.prefix_length
+                        shared_timings = {
+                            "shared_prefix_tokens": video.prefix_length,
+                            "prefix_encode_seconds": prefix_seconds,
+                            "question_seconds": decision_seconds[index],
+                        }
                     # Shared batch wall times must not be summed across windows as GPU work.
                     elapsed = time.perf_counter() - started
                     yield index, (raw, {
                         **video.timings, "gpu_batch_size": len(active), "visual_batch_size": len(active),
                         "visual_encode_seconds": visual_seconds,
-                        "decision_seconds": decision_seconds[index], "gpu_pipeline_seconds": elapsed,
+                        "decision_seconds": prefix_seconds + decision_seconds[index], "gpu_pipeline_seconds": elapsed,
                         "model_pipeline_seconds": video.timings["preprocess_seconds"] + elapsed,
-                        "native_input_tokens": tokens, "forward_input_tokens": tokens,
+                        "native_input_tokens": tokens, "forward_input_tokens": forward_tokens,
+                        **shared_timings,
                     })
                 except Exception as error:
                     yield index, error
