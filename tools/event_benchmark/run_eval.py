@@ -127,9 +127,9 @@ def frame_score(backend, model, qcore, uri, key):
 
 
 # ---------------------------------------------------------------- per-video (§5)
-def eval_video(backend, model, sample, media_dir, key, interval=None):
-    path = media_dir / sample["filename"]
-    if not path.exists():
+def eval_video(backend, model, sample, media_index, key, interval=None):
+    path = media_index.get(sample["filename"])
+    if path is None or not path.exists():
         return sample, {"error": "missing file"}
     qcore = question_core(sample["question"])
     best, seen, failed = 0.0, 0, 0
@@ -165,7 +165,9 @@ def main():
     ap.add_argument("--model", help="explicit model id (with --backend)")
     ap.add_argument("--backend", choices=["language", "decision"], help="explicit backend class")
     ap.add_argument("--samples", type=Path, default=DEFAULT_SAMPLES)
-    ap.add_argument("--media", type=Path, default=DEFAULT_MEDIA)
+    ap.add_argument("--media", type=Path, nargs="+", default=[DEFAULT_MEDIA],
+                    help="one or more dirs holding the clips; searched by filename "
+                         "(the dataset may be split across folders)")
     ap.add_argument("--env-file", type=Path, default=REPO / ".env")
     ap.add_argument("--workers", type=int, default=12,
                     help="parallelism, default 12 to align with the 12-stream product "
@@ -192,9 +194,16 @@ def main():
     samples = [s for s in json.load(open(a.samples))["samples"]
                if s["event"] in SCORED_EVENTS]
 
+    # index clips by filename across all --media dirs (dataset may be split)
+    media_index = {}
+    for d in a.media:
+        for f in d.iterdir() if d.is_dir() else []:
+            if f.is_file():
+                media_index.setdefault(f.name, f)
+
     results = []
     with ThreadPoolExecutor(max_workers=a.workers) as ex:
-        futs = [ex.submit(eval_video, backend, model, s, a.media, key, interval) for s in samples]
+        futs = [ex.submit(eval_video, backend, model, s, media_index, key, interval) for s in samples]
         for f in as_completed(futs):
             results.append(f.result())
 
@@ -233,8 +242,8 @@ def main():
         "per_event": {ev: dict(cnt[ev]) for ev in SCORED_EVENTS},
         "per_video": [{"number": s["number"], "filename": s["filename"], "event": s["event"],
                        "gt": s["proposed_answer"],
-                       **({"sha256": sha256(a.media / s["filename"])}
-                          if a.checksums and (a.media / s["filename"]).exists() else {}),
+                       **({"sha256": sha256(media_index[s["filename"]])}
+                          if a.checksums and s["filename"] in media_index else {}),
                        **r}
                       for s, r in sorted(results, key=lambda x: x[0]["number"])],
     }
