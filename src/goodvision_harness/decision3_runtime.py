@@ -122,6 +122,7 @@ class Decision3Runtime:
     """Keep camera evidence independent while sharing visual and question forwards."""
 
     prefix_cache = False
+    batch_enabled = True
 
     def __init__(self, cache_dir, *, shared_window_state=False):
         import torch
@@ -505,3 +506,11 @@ class Decision3Runtime:
         """Accept official per-question errors without discarding valid sibling answers."""
         if not isinstance(raw, dict) or not isinstance(raw.get("answers"), dict):
             raise ValueError("Decision 3 response must contain the official answers mapping")
+
+    def validate_warmup(self, raw, rows):
+        """Readiness requires actual answers for the fixed startup questions."""
+        from .decision3_model import Decision3Inspector
+
+        self.validate_response(raw, rows)
+        for row in rows:
+            Decision3Inspector._choice(raw["answers"].get(row["id"]), row["options"])

@@ -835,46 +835,38 @@ def main():
             })
         # Initialize native kernels and fixed text before accepting camera windows.
         # These predictions are discarded, not published as event observations.
-        if args.runtime == "decision3":
-            # Warm the actual window cap, including mixed geometries. Keep
-            # local preparation failures separate from a lost CUDA context.
-            failures = []
-            batches = [[window] for window in windows]
-            for count in range(2, min(args.gpu_batch_size, args.ready_capacity) + 1):
-                batches.extend([
-                    [windows[0]] * count, [windows[1]] * count,
-                    [windows[index % 2] for index in range(count)],
-                ])
+        def check_warmup(result):
+            validate = getattr(runtime, "validate_warmup", None)
+            if validate is not None:
+                validate(result[0], template.rows)
+
+        for window in windows:
+            check_warmup(runtime.predict_prepared(**window))
+        batch_limit = min(args.gpu_batch_size, args.ready_capacity) if getattr(
+            runtime, "batch_enabled", runtime.prefix_cache,
+        ) else 1
+        for count in range(2, batch_limit + 1):
+            batches = [[window] * count for window in windows]
+            batches.append([windows[index % len(windows)] for index in range(count)])
             for batch in batches:
-                try:
-                    if len(batch) == 1:
-                        runtime.predict_prepared(**batch[0])
-                    else:
-                        for _index, result in runtime.predict_prepared_batch(batch):
-                            if isinstance(result, Exception):
-                                raise result
-                except Exception as error:
-                    if _shared_cuda_failure(error):
-                        raise
-                    failures.append(f"{len(batch)} windows: {type(error).__name__}: {error}")
-                    if isinstance(error, torch.OutOfMemoryError):
-                        torch.cuda.empty_cache()
-            runtime.metadata["startup_prepare_errors"] = failures
-        elif args.gpu_batch_size == 1:
-            # The configured GPU cap also applies before readiness. Warm both
-            # representative geometries without requiring a larger GPU batch.
-            runtime.predict_prepared(**windows[0])
-            runtime.predict_prepared(**windows[1])
-        else:
-            runtime.predict_prepared(**windows[0])
-            for outcome in runtime.predict_prepared_batch(windows):
-                if outcome is None:
-                    for window in windows:
-                        runtime.predict_prepared(**window)
-                    break
-                _index, result = outcome
-                if isinstance(result, Exception):
-                    raise result
+                completed = set()
+                for outcome in runtime.predict_prepared_batch(batch):
+                    if outcome is None:
+                        for index, window in enumerate(batch):
+                            if index not in completed:
+                                check_warmup(runtime.predict_prepared(**window))
+                                completed.add(index)
+                        break
+                    index, result = outcome
+                    if isinstance(result, Exception):
+                        raise result
+                    if type(index) is not int or not 0 <= index < count or index in completed:
+                        raise ValueError("invalid warmup batch result index")
+                    check_warmup(result)
+                    completed.add(index)
+                if len(completed) != count:
+                    raise ValueError("incomplete warmup batch results")
+
         runtime.startup_template = template
         runtime.metadata["startup_prepare_seconds"] = time.perf_counter() - started
         return runtime

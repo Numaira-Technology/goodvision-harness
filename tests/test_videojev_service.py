@@ -60,9 +60,10 @@ def test_ready_selection_does_not_cross_incompatible_work(barrier):
     assert list(scorer._pipeline) == works[1:]
 
 
-@pytest.mark.parametrize("cap,cpu_threads", [(1, None), (2, 1), (4, 8)])
+@pytest.mark.parametrize("cap,ready,cache,cpu_threads", [(1, 4, True, None), (2, 2, True, 1), (4, 4, True, 8), (4, 1, True, None), (4, 4, False, None)])
 def test_startup_warmup_respects_gpu_batch_cap_before_serving(
-    tmp_path, monkeypatch, cap, cpu_threads
+    tmp_path, monkeypatch, cap, ready, cache, cpu_threads
+
 ):
     calls, prepared, runtimes, events = [], [], [], []
     thread_settings = []
@@ -70,7 +71,7 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
     class Runtime:
         def __init__(self, *args, **kwargs):
             self.metadata = {}
-            self.prefix_cache = True
+            self.prefix_cache = cache
             runtimes.append(self)
 
         def prepare(self, payloads, fps, **kwargs):
@@ -126,6 +127,7 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
         "videojev-service", "--cache-dir", str(tmp_path),
         "--result-log", str(tmp_path / "results.jsonl"),
         "--gpu-batch-size", str(cap),
+        "--ready-capacity", str(ready),
     ] + ([] if cpu_threads is None else ["--cpu-threads", str(cpu_threads)]))
     service.main()
 
@@ -133,9 +135,12 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
     assert prepared == [(640, 360), (720, 405)]
     assert {size for _kind, windows in calls for size in windows} == set(prepared)
     assert all(len(windows) <= cap for _kind, windows in calls)
-    assert [kind for kind, _windows in calls] == (
-        ["single", "single"] if cap == 1 else ["single", "batch"]
-    )
+    limit = min(cap, ready) if cache else 1
+    expected = [("single", (size,)) for size in prepared]
+    for count in range(2, limit + 1):
+        expected.extend(("batch", (size,) * count) for size in prepared)
+        expected.append(("batch", tuple(prepared[index % 2] for index in range(count))))
+    assert calls == expected
     assert runtimes[0].startup_template.rows
     assert runtimes[0].metadata["startup_prepare_seconds"] >= 0
     assert events == ["warm", "ready", "listen"]
