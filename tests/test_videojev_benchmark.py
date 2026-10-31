@@ -6,6 +6,7 @@ from functools import partial
 import httpx
 import pytest
 from benchmark_runtime_fixtures import (
+    ContractSourceFeeder,
     assert_admission_drained,
     configure_ephemeral_admission,
 )
@@ -66,6 +67,7 @@ def test_fixed_load_and_policy():
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 def test_twelve_camera_native_route(tmp_path, monkeypatch, mode):
     monkeypatch.delenv("GOODVISION_LOCAL_API_KEY", raising=False)
+    monkeypatch.setattr("tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder)
     args = suite.arguments()
     args.real = True
     args.duration, args.output_mode, args.deadline = 1.6, mode, 3
@@ -73,6 +75,11 @@ def test_twelve_camera_native_route(tmp_path, monkeypatch, mode):
     # Keep production source freshness and the real shared gate unchanged.
     args.queue_timeout = 3
     args.admission_storage = "workspace"
+    # Exercise every camera and frame without making this adapter contract
+    # test depend on twelve simultaneous process-queue wakeups fitting in
+    # one source interval on a shared CI host. Sender stalls have their own
+    # deterministic coverage in test_vlm_sender_lag.py.
+    args.arrival_mode = "staggered"
     base = modes.configure(suite.arguments())
     calls = []
 

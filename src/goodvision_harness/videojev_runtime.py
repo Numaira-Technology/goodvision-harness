@@ -5,7 +5,7 @@ import math
 import sys
 import time
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 from .videojev_core import CONTEXT, MODEL, REVISION, NativeVideoJevModel, record_for_grid
@@ -21,10 +21,19 @@ class _PreparedVideo:
     record: dict
     context: int
     timings: dict
+    question_groups: tuple | None = None
+    question_template: object = None
+    question_runtime: object = None
+    frame_times: tuple | None = None
+    prefix_cache: bool | None = None
 
 
 class VideoJevRuntime(NativeVideoJevModel):
     """Prepare windows on CPU and score compiled scene questions on GPU."""
+
+    @property
+    def batch_enabled(self):
+        return self.prefix_cache
 
     def __init__(self, cache_dir, *, prefix_cache=True):
         super().__init__(cache_dir)
@@ -40,7 +49,28 @@ class VideoJevRuntime(NativeVideoJevModel):
             prefix_cache=prefix_cache,
         )
 
-    def prepare(self, payloads, fps, *, context=CONTEXT, max_pixels=409600):
+    def compile_questions(self, rows):
+        return CompiledQuestions(self.processor, self.torch, rows)
+
+    def _bind(self, prepared, template, frame_times):
+        times = tuple(frame_times)
+        if (prepared.question_runtime is self and prepared.question_template is template
+                and prepared.frame_times == times
+                and prepared.prefix_cache == self.prefix_cache):
+            return prepared
+        started = time.perf_counter()
+        groups = template.bind(
+            self, prepared.record, times, prepared.context, prefix_cache=self.prefix_cache,
+        )
+        return replace(
+            prepared, question_groups=groups, question_template=template, frame_times=times,
+            question_runtime=self, prefix_cache=self.prefix_cache,
+            timings={**prepared.timings, "preprocess_seconds":
+                     prepared.timings["preprocess_seconds"] + time.perf_counter() - started},
+        )
+
+    def prepare(self, payloads, fps, *, context=CONTEXT, max_pixels=409600,
+                question_template=None, frame_times=None):
         """Prepare on a CPU worker; native positions use the supplied uniform FPS.
 
         Actual source times remain in the questions. No frame is sampled away;
@@ -109,7 +139,7 @@ class VideoJevRuntime(NativeVideoJevModel):
             raise ValueError("native processor resampled frames or changed temporal grid")
         if record["tokens"] > budget:
             raise ValueError("native video grid exceeds the requested context budget")
-        return _PreparedVideo(pixels, record, context, {
+        prepared = _PreparedVideo(pixels, record, context, {
             "preprocess_seconds": time.perf_counter() - start,
             "input_frame_count": n,
             "internal_temporal_padding_frames": grid[0] * 2 - n,
@@ -122,6 +152,10 @@ class VideoJevRuntime(NativeVideoJevModel):
             "context": context, "max_pixels": max_pixels,
             "processor_max_pixels": low,
         })
+        if question_template is not None and frame_times is not None:
+            prepared = self._bind(prepared, question_template, frame_times)
+        prepared.timings["preprocess_seconds"] = time.perf_counter() - start
+        return prepared
 
     def _prefix_inputs(self, batch, features, prefix):
         """Embed only the suffix while retaining full-window absolute positions."""
@@ -253,6 +287,7 @@ class VideoJevRuntime(NativeVideoJevModel):
 
     def predict_prepared(self, prepared, *, question_template, frame_times):
         """Score native post-video choices on the service's single GPU worker."""
+        prepared = self._bind(prepared, question_template, frame_times)
         torch = self.torch
         torch.cuda.synchronize()
         start = time.perf_counter()
@@ -262,14 +297,8 @@ class VideoJevRuntime(NativeVideoJevModel):
             )
             torch.cuda.synchronize()
             encoded = time.perf_counter()
-            if question_template.compiled is None:
-                question_template.compiled = CompiledQuestions(
-                    self.processor, torch, question_template.rows,
-                )
             raw, tokens, forwarded, hits, misses, prefix_tokens = [], 0, 0, 0, 0, 0
-            for batch, rows, prefix in question_template.compiled.groups(
-                prepared.record, frame_times, prepared.context, prefix_cache=self.prefix_cache,
-            ):
+            for batch, rows, prefix in prepared.question_groups:
                 tokens += batch["input_ids"].shape[1]
                 if prefix is None:
                     output = self.model(**batch, visual_features=features)
@@ -306,16 +335,13 @@ class VideoJevRuntime(NativeVideoJevModel):
         if not self.prefix_cache:
             yield None
             return
-        started = time.perf_counter()
         eligible = []
         for index, window in enumerate(windows):
             try:
                 template, prepared = window["question_template"], window["prepared"]
-                if template.compiled is None:
-                    template.compiled = CompiledQuestions(self.processor, self.torch, template.rows)
-                groups = list(template.compiled.groups(
-                    prepared.record, window["frame_times"], prepared.context, prefix_cache=True,
-                ))
+                prepared = self._bind(prepared, template, window["frame_times"])
+                window = {**window, "prepared": prepared}
+                groups = prepared.question_groups
                 if (len(groups) != 1 or groups[0][2] is None
                         or (eligible and groups[0][2] is not eligible[0][2][2])):
                     yield None
@@ -327,6 +353,7 @@ class VideoJevRuntime(NativeVideoJevModel):
             yield None
             return
 
+        started = time.perf_counter()
         torch = self.torch
         torch.cuda.synchronize()
         try:

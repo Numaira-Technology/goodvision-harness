@@ -13,16 +13,78 @@ from PIL import Image
 from goodvision_harness import videojev_service as service
 
 
-@pytest.mark.parametrize("cap", [1, 2, 4])
+@pytest.mark.parametrize(
+    "sizes,cap,selected,remaining",
+    [
+        ([10, 100, 11], 2, [0, 2], [1]),
+        ([10, 11, 9], 2, [0, 1], [2]),
+        ([10, 100, 11, 12, 10], 3, [0, 2, 3], [1, 4]),
+        ([10, 11], 4, [0, 1], []),
+        ([10, 11], 1, [0], [1]),
+    ],
+)
+def test_ready_selection_minimizes_padding_and_preserves_order(sizes, cap, selected, remaining):
+    from collections import deque
+
+    template = object()
+    works = [SimpleNamespace(
+        index=index, state="ready", question_template=template,
+        prepared=SimpleNamespace(record={"tokens": size}),
+    ) for index, size in enumerate(sizes)]
+    scorer = object.__new__(service.Scorer)
+    scorer.runtime = SimpleNamespace(batch_enabled=True, predict_prepared_batch=lambda _: None)
+    scorer.gpu_batch_size = cap
+    scorer._pipeline = deque(works)
+    assert [work.index for work in scorer._take_ready()] == selected
+    assert [work.index for work in scorer._pipeline] == remaining
+
+
+@pytest.mark.parametrize("barrier", ["preparing", "template", "cache_disabled"])
+def test_ready_selection_does_not_cross_incompatible_work(barrier):
+    from collections import deque
+
+    template = object()
+    works = [SimpleNamespace(
+        index=index, state="ready", question_template=template,
+        prepared=SimpleNamespace(record={"tokens": 10}),
+    ) for index in range(3)]
+    scorer = object.__new__(service.Scorer)
+    scorer.runtime = SimpleNamespace(batch_enabled=barrier != "cache_disabled", predict_prepared_batch=lambda _: None)
+    scorer.gpu_batch_size = 2
+    scorer._pipeline = deque(works)
+    if barrier == "preparing":
+        works[1].state = "preparing"
+    elif barrier == "template":
+        works[1].question_template = object()
+    assert scorer._take_ready() == works[:1]
+    assert list(scorer._pipeline) == works[1:]
+
+
+def test_non_videojev_runtime_batches_without_prefix_cache_or_visual_records():
+    from collections import deque
+
+    template = object()
+    scorer = object.__new__(service.Scorer)
+    scorer.runtime = SimpleNamespace(prefix_cache=False, predict_prepared_batch=lambda _: None)
+    scorer.gpu_batch_size = 2
+    works = [SimpleNamespace(state="ready", question_template=template, prepared=object()) for _ in range(3)]
+    scorer._pipeline = deque(works)
+    assert scorer._take_ready() == works[:2]
+    assert list(scorer._pipeline) == works[2:]
+
+
+@pytest.mark.parametrize("cap,ready,cache,cpu_threads", [(1, 4, True, None), (2, 2, True, 1), (4, 4, True, 8), (4, 1, True, None), (4, 4, False, None)])
 def test_startup_warmup_respects_gpu_batch_cap_before_serving(
-    tmp_path, monkeypatch, cap
+    tmp_path, monkeypatch, cap, ready, cache, cpu_threads
+
 ):
     calls, prepared, runtimes, events = [], [], [], []
+    thread_settings = []
 
     class Runtime:
         def __init__(self, *args, **kwargs):
             self.metadata = {}
-            self.prefix_cache = True
+            self.prefix_cache = cache
             runtimes.append(self)
 
         def prepare(self, payloads, fps, **kwargs):
@@ -68,8 +130,8 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
             pass
 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
-        set_num_threads=lambda value: None,
-        set_num_interop_threads=lambda value: None,
+        set_num_threads=lambda value: thread_settings.append(("cpu", value)),
+        set_num_interop_threads=lambda value: thread_settings.append(("interop", value)),
     ))
     monkeypatch.setattr(service, "VideoJevRuntime", Runtime)
     monkeypatch.setattr(service, "Scorer", Scorer)
@@ -78,18 +140,70 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
         "videojev-service", "--cache-dir", str(tmp_path),
         "--result-log", str(tmp_path / "results.jsonl"),
         "--gpu-batch-size", str(cap),
-    ])
+        "--ready-capacity", str(ready),
+    ] + ([] if cpu_threads is None else ["--cpu-threads", str(cpu_threads)]))
     service.main()
 
+    assert thread_settings == [("cpu", cpu_threads or 4), ("interop", 4)]
     assert prepared == [(640, 360), (720, 405)]
     assert {size for _kind, windows in calls for size in windows} == set(prepared)
     assert all(len(windows) <= cap for _kind, windows in calls)
-    assert [kind for kind, _windows in calls] == (
-        ["single", "single"] if cap == 1 else ["single", "batch"]
-    )
+    limit = min(cap, ready) if cache else 1
+    expected = [("single", (size,)) for size in prepared]
+    for count in range(2, limit + 1):
+        expected.extend(("batch", (size,) * count) for size in prepared)
+        expected.append(("batch", tuple(prepared[index % 2] for index in range(count))))
+    assert calls == expected
     assert runtimes[0].startup_template.rows
     assert runtimes[0].metadata["startup_prepare_seconds"] >= 0
     assert events == ["warm", "ready", "listen"]
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_invalid_cpu_threads_fail_before_runtime_initialization(monkeypatch, value):
+    monkeypatch.setattr(sys, "argv", [
+        "videojev-service", "--cache-dir", "unused", "--result-log", "unused",
+        "--cpu-threads", value,
+    ])
+    with pytest.raises(SystemExit) as error:
+        service.main()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("failure", ["single_error", "batch_error", "missing_batch"])
+def test_d3_warmup_failure_prevents_listening(tmp_path, monkeypatch, failure):
+    from goodvision_harness import decision3_runtime
+
+    class Runtime(decision3_runtime.Decision3Runtime):
+        def __init__(self, *args, **kwargs):
+            self.metadata = {}
+
+        def prepare(self, *args, **kwargs):
+            return None
+
+        def predict_prepared(self, prepared, *, question_template, **kwargs):
+            return {"answers": {row["id"]: (
+                {"type": "choice", "error": "inference_failed"}
+                if failure == "single_error" else
+                {"type": "choice", "choice": row["options"][0],
+                 "probabilities": dict(zip(row["options"], [1.0, 0.0, 0.0]))}
+            ) for row in question_template.rows}}, {}
+
+        def predict_prepared_batch(self, windows):
+            if failure == "batch_error":
+                yield 0, ValueError("warmup failed")
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        set_num_threads=lambda _: None, set_num_interop_threads=lambda _: None,
+    ))
+    monkeypatch.setattr(decision3_runtime, "Decision3Runtime", Runtime)
+    monkeypatch.setattr(service, "ThreadingHTTPServer", lambda *_: pytest.fail("listened before warmup succeeded"))
+    monkeypatch.setattr(sys, "argv", [
+        "goodvision-vlm", "--runtime", "decision3", "--cache-dir", str(tmp_path),
+        "--result-log", str(tmp_path / "audit.jsonl"),
+    ])
+    with pytest.raises(service.WindowError):
+        service.main()
 
 
 @pytest.mark.parametrize("cap,ready_capacity", [(1, 4), (3, 4), (4, 4), (4, 2)])
@@ -105,7 +219,7 @@ def test_scorer_batches_ready_windows_within_configured_cap(
     }]
 
     def predictions(prepared, template):
-        selected = prepared % 3
+        selected = prepared.value % 3
         return [{
             "id": row["id"], "task": "choice", "answer_index": selected,
             "answer": row["options"][selected],
@@ -119,18 +233,18 @@ def test_scorer_batches_ready_windows_within_configured_cap(
             self.metadata = {}
 
         def prepare(self, images, fps, **kwargs):
-            return int(images[0])
+            return SimpleNamespace(value=int(images[0]), record={"tokens": 16})
 
         def predict_prepared(self, prepared, *, question_template, frame_times):
-            calls.append(("single", (prepared,)))
-            if prepared == 0:
+            calls.append(("single", (prepared.value,)))
+            if prepared.value == 0:
                 entered.set()
                 assert release.wait(5)
             return predictions(prepared, question_template), {}
 
         def predict_prepared_batch(self, windows):
             assert len({id(w["question_template"]) for w in windows}) == 1
-            calls.append(("batch", tuple(w["prepared"] for w in windows)))
+            calls.append(("batch", tuple(w["prepared"].value for w in windows)))
             for index, window in enumerate(windows):
                 yield index, (
                     predictions(window["prepared"], window["question_template"]), {},

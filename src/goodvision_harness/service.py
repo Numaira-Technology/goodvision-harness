@@ -2761,9 +2761,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 }
 
                 if self.config.runtime.scene_independent_vlm:
-                    native_videojev = (
+                    prepared_native_vlm = (
                         model_settings.provider == "local"
-                        and model == "ZhuYuhan/VideoJev-4B"
+                        and model in {"ZhuYuhan/VideoJev-4B", "vllm-sr/d3-nano"}
                     )
                     process_config = VLMProcessConfig(
                         session.stream_session_id, self.source_id, generation, scene_labels,
@@ -2783,9 +2783,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                             self.config.runtime.scene_requests_per_second,
                             self.config.runtime.scene_queue_timeout_seconds,
                         ) if self.config.runtime.scene_admission_database else None),
-                        candidate_fps=4.0 if native_videojev else None,
-                        observation_window_frames=2 if native_videojev else 4,
-                        observation_frame_delta_seconds=0.5 if native_videojev else None,
+                        candidate_fps=4.0 if prepared_native_vlm else None,
+                        observation_window_frames=2 if prepared_native_vlm else 4,
+                        observation_frame_delta_seconds=0.5 if prepared_native_vlm else None,
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
