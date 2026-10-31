@@ -767,6 +767,7 @@ def main():
     parser.add_argument("--queue-capacity", type=int, default=48)
     parser.add_argument("--ready-capacity", type=int, default=2)
     parser.add_argument("--gpu-batch-size", type=int, default=2)
+    parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
@@ -774,10 +775,12 @@ def main():
     args = parser.parse_args()
     if args.max_pixels is None:
         args.max_pixels = 200704 if args.runtime == "decision3" else 409600
+    if args.cpu_threads < 1:
+        parser.error("--cpu-threads must be at least 1")
 
     import torch
 
-    torch.set_num_threads(4)
+    torch.set_num_threads(args.cpu_threads)
     torch.set_num_interop_threads(4)
 
     def runtime_factory():

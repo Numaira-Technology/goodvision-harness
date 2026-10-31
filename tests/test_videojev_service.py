@@ -13,11 +13,12 @@ from PIL import Image
 from goodvision_harness import videojev_service as service
 
 
-@pytest.mark.parametrize("cap", [1, 2, 4])
+@pytest.mark.parametrize("cap,cpu_threads", [(1, None), (2, 1), (4, 8)])
 def test_startup_warmup_respects_gpu_batch_cap_before_serving(
-    tmp_path, monkeypatch, cap
+    tmp_path, monkeypatch, cap, cpu_threads
 ):
     calls, prepared, runtimes, events = [], [], [], []
+    thread_settings = []
 
     class Runtime:
         def __init__(self, *args, **kwargs):
@@ -68,8 +69,8 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
             pass
 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
-        set_num_threads=lambda value: None,
-        set_num_interop_threads=lambda value: None,
+        set_num_threads=lambda value: thread_settings.append(("cpu", value)),
+        set_num_interop_threads=lambda value: thread_settings.append(("interop", value)),
     ))
     monkeypatch.setattr(service, "VideoJevRuntime", Runtime)
     monkeypatch.setattr(service, "Scorer", Scorer)
@@ -78,9 +79,10 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
         "videojev-service", "--cache-dir", str(tmp_path),
         "--result-log", str(tmp_path / "results.jsonl"),
         "--gpu-batch-size", str(cap),
-    ])
+    ] + ([] if cpu_threads is None else ["--cpu-threads", str(cpu_threads)]))
     service.main()
 
+    assert thread_settings == [("cpu", cpu_threads or 4), ("interop", 4)]
     assert prepared == [(640, 360), (720, 405)]
     assert {size for _kind, windows in calls for size in windows} == set(prepared)
     assert all(len(windows) <= cap for _kind, windows in calls)
@@ -90,6 +92,17 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
     assert runtimes[0].startup_template.rows
     assert runtimes[0].metadata["startup_prepare_seconds"] >= 0
     assert events == ["warm", "ready", "listen"]
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_invalid_cpu_threads_fail_before_runtime_initialization(monkeypatch, value):
+    monkeypatch.setattr(sys, "argv", [
+        "videojev-service", "--cache-dir", "unused", "--result-log", "unused",
+        "--cpu-threads", value,
+    ])
+    with pytest.raises(SystemExit) as error:
+        service.main()
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("cap,ready_capacity", [(1, 4), (3, 4), (4, 4), (4, 2)])
