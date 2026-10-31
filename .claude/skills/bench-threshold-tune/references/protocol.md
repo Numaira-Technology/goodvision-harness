@@ -1,47 +1,47 @@
-# 阈值标定协议(SPEC §5/§8 展开)
+# Threshold calibration protocol (SPEC §5/§8, expanded)
 
-## 为什么 0.5 对连续分数的模型不公平
+## Why 0.5 is unfair to continuous-score models
 
-片级判定是“帧分数取最大,大于 gate 就算 yes”。
+A clip is scored "take the max over frames, call it yes if that exceeds the gate."
 
-qwen/gemini 每帧只吐 0 或 1,gate 0.5 就等于“任一帧为 true”,没有别的空间可调,调它没意义。luna 的 `noul` 和 CLIP 的 margin 不一样,它们每帧给的是一个连续分数,0.5 是从二值逻辑借来的边界,不一定是这个模型真正该用的工作点,得靠数据定。
+qwen/gemini emit 0 or 1 per frame, so gate 0.5 just means "any frame was true" — there is nothing else to move, and tuning it is meaningless. luna's `noul` and CLIP's margin are different: each frame gives a continuous score, and 0.5 is a boundary borrowed from binary logic, not necessarily where this model should sit. That has to come from data.
 
-“取最大”这一步对正例和负例的影响相反:帧抽得多,正例更容易被抓到(召回高),负例也更容易误触发(误报高)。某个事件如果每帧误报偏高(luna 的 fall 就是),在 0.5 下误报会被放大,把这个事件的阈值抬高就能压下去。
+The "take the max" step cuts both ways. Sampling more frames makes a positive easier to catch (higher recall) and a negative easier to trip (higher false positives). If one event runs hot on per-frame false positives — luna's fall does — 0.5 amplifies them, and raising that event's threshold brings them back down.
 
-## 做法:留出集选阈 → 冻结 → 测试集评估
+## The method: pick on held-out → freeze → evaluate on test
 
-1. 留出集:一组不在任何测试集里的片子(`validation_split.json`,`disjoint_assert` 全 0),只在这上面选阈。
-2. 按事件扫阈:τ 从 0 到 1 每 0.01 试一遍,算验证集准确率,取并列最优那段的中点。`tune_threshold.py` 的 `pick_tau` 就是干这个。
-3. 把选出的 per-class τ 冻结。
-4. 用冻结的 τ 在测试集上算分,和 0.5 基线并排报。
-5. 主表永远是 0.5,校准结果只作脚注或变体,不替换主表,也不进 Drive 冻结集的主结论。
+1. Held-out set: clips that are in no test set (`validation_split.json`, `disjoint_assert` all 0). Thresholds are picked only here.
+2. Sweep per event: try τ from 0 to 1 in steps of 0.01, score validation accuracy, take the midpoint of the tied-best run. That is what `pick_tau` in `tune_threshold.py` does.
+3. Freeze the chosen per-class τ.
+4. Score the test set with the frozen τ and report it next to the 0.5 baseline.
+5. The main table stays at 0.5. The calibrated result is a footnote or a variant — it never replaces the main table, and never enters the Drive frozen set's headline.
 
-最关键的一条:阈值只能在留出集上选,不能在测试集上选。在测试集上挑一个能把测试分数拉到最高的阈值,等于把答案偷看进了模型配置,报出来的分虚高、换一批数据就垮。留出集的意义就是“选阈用的数据”和“报分用的数据”彻底分开。
+The one rule that matters most: thresholds may only be picked on the held-out set, never on the test set. Picking the τ that maximizes the test score is reading the answers into the model config — the number comes out inflated and falls apart on the next batch of data. The point of a held-out set is to keep "data used to pick τ" and "data used to report" strictly apart.
 
-## 实例(luna,v1)
+## Worked example (luna, v1)
 
-留出集 24 片(fight/smoking/fall/weapon 各 6,12 正 12 负,1fps),与 50/100 测试集零重叠。选出的阈值:
+Held-out set of 24 clips (6 each of fight/smoking/fall/weapon, 12 yes / 12 no, 1fps), zero overlap with the 50- and 100-clip test sets. Thresholds picked:
 
-| 事件 | τ | 相对 0.5 | 作用 |
+| Event | τ | vs 0.5 | Effect |
 |---|---|---|---|
-| fight | 0.29 | 调低 | 多抓打斗 |
-| smoking | 0.53 | 基本不变 | — |
-| fall | 0.58 | 调高 | 压掉把日常动作当跌倒的误报 |
-| weapon | 0.46 | 基本不变 | — |
+| fight | 0.29 | lower | catch more fights |
+| smoking | 0.53 | ~same | — |
+| fall | 0.58 | higher | cut everyday motion misread as a fall |
+| weapon | 0.46 | ~same | — |
 
-测试集(冻结 τ vs 0.5):50 片 84% → 94%,100 题 85% → 92%。提升几乎全来自 fall:0.5 下它误报多(50 片 4 个、100 题 7 个),抬到 0.58 后这些误报消失。
+Test set (frozen τ vs 0.5): 50-clip 84% → 94%, 100-question 85% → 92%. Almost all of the gain is fall: at 0.5 it had many false positives (4 on the 50 set, 7 on the 100 set), and raising τ to 0.58 removed them.
 
-## 命令
+## Commands
 
 ```sh
-# 1) 留出集打分(已有 results/luna_val24.json 且与冻结 split 一致就跳过)
+# 1) Score the held-out set (skip if results/luna_val24.json exists and matches the frozen split)
 python tools/event_benchmark/run_eval.py --candidate luna \
   --samples <val_split>/samples.json --media <val_split>/videos \
   --out tools/event_benchmark/results/luna_val24.json
 
-# 2) 测试集打分(50 / 100 / 120-base,已有则复用)
+# 2) Score the test set(s) (50 / 100 / 120-base; reuse if already present)
 
-# 3) 标定 + 评估(纯离线,读 score,不调 API)
+# 3) Calibrate + evaluate (offline, reads score, no API calls)
 python -I tools/event_benchmark/tune_threshold.py \
   --val  tools/event_benchmark/results/luna_val24.json \
   --test tools/event_benchmark/results/luna_1fps.json \
@@ -49,6 +49,6 @@ python -I tools/event_benchmark/tune_threshold.py \
   --out  tools/event_benchmark/results/luna_threshold_tuning.json
 ```
 
-## 小样本注意
+## Small-sample caveat
 
-每事件留出的片越少,阈值越不稳。现在每类 6 片是下限,报告里要写出每个事件的 val n。某个事件的片少于 6,就把它的 τ 标成 n/a、退回 0.5,别硬报。之后扩了留出集要重跑,并重新核对 `disjoint_assert`。
+The fewer held-out clips an event has, the shakier its threshold. Six per class is the current floor; always state the val n per event in the report. If an event has fewer than six, mark its τ as n/a, fall back to 0.5, and don't report a tuned number for it. After the held-out set grows, re-run and re-check `disjoint_assert`.
