@@ -123,7 +123,13 @@
     const d=window.monitorDiagnostics;
     if(!d.phases.includes(data.state)) d.phases.push(data.state);
     if(data.state === "playing") d.sawPlaying=true;
-    byId("model").textContent=`${data.model} · ${data.backend === "openrouter" ? "OpenRouter 服务商推理" : data.backend === "openai_decisions" ? "OpenAI Decisions · 六类事件判断" : "自部署服务"}`;
+    const backendLabel=data.backend === "openrouter" ? "OpenRouter 服务商推理" : data.backend === "openai_decisions" ? "OpenAI Decisions · 六类事件判断" : "自部署服务";
+    if(data.select_active){
+        const selName=data.select_backend === "luna" ? "Luna Decisions" : (data.select_model || "VLM");
+        byId("model").textContent=`逐人识别: ${selName} · 主管线: ${data.model}${data.real ? "" : "（模拟）"}`;
+    } else {
+        byId("model").textContent=`${data.model} · ${backendLabel}`;
+    }
     byId("badge").textContent=data.real ? "真实模型测试" : trackingEnabled && data.select_active ? "真实逐人识别 · YOLO + VLM" : "模拟调度 · 未调用真实模型";
     const modeLabel={events:"events · 事件识别",compact:"grounding · 带定位识别",parallel:"parallel · events + grounding"}[data.mode] || data.mode;
     byId("stage").textContent=`${phaseNames[data.phase]} / ${modeLabel} / ${data.cameras.length} 路 / 第 ${data.repeat} 轮`;
