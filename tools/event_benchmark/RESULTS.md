@@ -1,9 +1,11 @@
 # 测评结果 — spec v1（50 片）
 
-所有数字用的是 [`SPEC.md`](SPEC.md) 冻结的同一套考卷:自带 `question`、gate=0.5、720px、`--workers 12`。
+以下为保留的历史 v1 结果，**不是修正后 v2 runner 的验证结果**。旧 runner 会把部分非法回答当作阴性或跳过丢失帧，且这些输出没有媒体/答案指纹；目前无法从存档排除这些问题。v2 比较需重新跑全部候选，本次代码审查没有调用付费 API。
+
+原始规则见 [`SPEC_V1.md`](SPEC_V1.md):自带 `question`、gate=0.5、720px、`--workers 12`。
 **唯一变量是模型**;下面第二张表额外展示"同一套考卷换采样密度"的敏感度(采样本身也是冻结项,仅作对照)。
 
-## 官方口径 — 1 fps（spec v1 冻结节奏）
+## 历史口径 — 1 fps（spec v1）
 
 `results/{luna,qwen,gemini}_1fps.json` 为原始逐片输出。
 
@@ -32,14 +34,13 @@
 | qwen | 92% | **88%** | 70% |
 | luna | 88% | **84%** | 74% |
 
-单调关系很干净:**采样越密、准确率越高**。1 fps 居中,是冻结口径。
-生产历史上的 0.25 fps 只是 VLM 吞吐限制下的妥协,无硬性要求,现统一到 1 fps(见 SPEC §4)。
+该附表是历史记录；本 PR 未包含 dense / 0.25 fps 的逐片记录，不能从此仓库复核。dense 上限为 14 帧，长片中可能比 1 fps 更稀疏，不能由此推导采样密度与准确率的普遍关系。
 
-## 复现
+## v2 重跑（不覆盖历史结果）
 
 ```sh
-python tools/event_benchmark/run_eval.py --candidate luna   --out results/luna_1fps.json
-python tools/event_benchmark/run_eval.py --candidate qwen   --out results/qwen_1fps.json
-python tools/event_benchmark/run_eval.py --candidate gemini --out results/gemini_1fps.json
+python tools/event_benchmark/run_eval.py --candidate luna --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/luna-v2.json
+python tools/event_benchmark/run_eval.py --candidate qwen --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/qwen-v2.json
+python tools/event_benchmark/run_eval.py --candidate gemini --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/gemini-v2.json
 # 对照节奏: 加 --interval 4 (产品 0.25fps) 或 --dense (能力上限)
 ```
