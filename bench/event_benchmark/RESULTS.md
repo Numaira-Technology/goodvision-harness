@@ -74,22 +74,22 @@
 ## 复现
 
 ```sh
-python tools/event_benchmark/run_eval.py --candidate luna   --out results/luna_1fps.json
-python tools/event_benchmark/run_eval.py --candidate qwen   --out results/qwen_1fps.json
-python tools/event_benchmark/run_eval.py --candidate gemini --out results/gemini_1fps.json
+python bench/event_benchmark/run_eval.py --candidate luna   --out results/luna_1fps.json
+python bench/event_benchmark/run_eval.py --candidate qwen   --out results/qwen_1fps.json
+python bench/event_benchmark/run_eval.py --candidate gemini --out results/gemini_1fps.json
 # 对照节奏: 加 --interval 4 (产品 0.25fps) 或 --dense (能力上限)
 
 # 100 题 base-4 扩展集 (每个候选):
-python tools/event_benchmark/run_eval.py --candidate <cand> \
+python bench/event_benchmark/run_eval.py --candidate <cand> \
   --samples <…/media_extra_50/samples.json> \
   --media <…/media50/media/media> <…/media_extra_50/新增基础视频_50段> \
   --out results/<cand>_100base.json
 
 # luna 阈值调参 (先把 24 验证集放到 media_val_24/):
-python tools/event_benchmark/run_eval.py --candidate luna \
+python bench/event_benchmark/run_eval.py --candidate luna \
   --samples <…/media_val_24/samples.json> --media <…/media_val_24/videos> \
   --out results/luna_val24.json
-python tools/event_benchmark/tune_threshold.py \
+python bench/event_benchmark/tune_threshold.py \
   --val results/luna_val24.json \
   --test results/luna_1fps.json --test results/luna_100base.json \
   --out results/luna_threshold_tuning.json

@@ -85,9 +85,9 @@
 
 ```sh
 # 换考生只改这一个参数：
-python tools/event_benchmark/run_eval.py --candidate luna
-python tools/event_benchmark/run_eval.py --candidate qwen
-python tools/event_benchmark/run_eval.py --candidate gemini
+python bench/event_benchmark/run_eval.py --candidate luna
+python bench/event_benchmark/run_eval.py --candidate qwen
+python bench/event_benchmark/run_eval.py --candidate gemini
 # 或自定义： --model <id> --backend <language|decision>
 # 对比口径： 默认 1fps；--interval 4（产品0.25fps）；--dense（能力上限）
 ```

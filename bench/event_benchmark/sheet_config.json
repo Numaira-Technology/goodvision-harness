@@ -10,8 +10,8 @@
     {"col": "A", "key": "model",          "header": "Model",          "type": "text"},
     {"col": "B", "key": "backend",        "header": "Backend",        "type": "text"},
     {"col": "C", "key": "single_inf_s",   "header": "Single inf (s)", "type": "num",  "scale": "lower_better"},
-    {"col": "D", "key": "p50_12_s",       "header": "P50 @12 (s)",    "type": "num",  "scale": "lower_better"},
-    {"col": "E", "key": "p95_12_s",       "header": "P95 @12 (s)",    "type": "num",  "scale": "lower_better"},
+    {"col": "D", "key": "p50_12_s",       "header": "P50 @{concurrency} (s)", "type": "num",  "scale": "lower_better"},
+    {"col": "E", "key": "p95_12_s",       "header": "P95 @{concurrency} (s)", "type": "num",  "scale": "lower_better"},
     {"col": "F", "key": "overall_pct",    "header": "Overall acc %",  "type": "num",  "scale": "higher_better"},
     {"col": "G", "key": "fight_pct",      "header": "Fight %",        "type": "num",  "scale": "higher_better", "note_key": "fight_note"},
     {"col": "H", "key": "smoking_pct",    "header": "Smoking %",      "type": "num",  "scale": "higher_better", "note_key": "smoking_note"},
@@ -23,10 +23,19 @@
     {"col": "N", "key": "spec_ver",       "header": "Spec ver",       "type": "text"},
     {"col": "O", "key": "run_date",       "header": "Run date",       "type": "text"},
     {"col": "P", "key": "provisional",    "header": "Provisional",    "type": "bool"},
-    {"col": "Q", "key": "source",         "header": "Source",         "type": "text"}
+    {"col": "Q", "key": "source",         "header": "Source",         "type": "text"},
+    {"col": "R", "key": "run_status",     "header": "Run",            "type": "status", "status_scale": "run"},
+    {"col": "S", "key": "validation",     "header": "Validation",     "type": "status", "status_scale": "validation"}
   ],
   "color_scales": {
-    "higher_better": "F,G,H,I,J  red(0) -> yellow(50) -> green(100)",
-    "lower_better":  "C,D,E (latency) and L (price)  green(min) -> yellow(p50) -> red(max)"
+    "_note": "Muted warm scheme (low contrast); green is reserved for best-only. Per-column independent gradient (one rule per column) on data rows (row 3+); blank cells uncolored. Palette: red #E67C73, orange #F9CB9C, pale #FCE5CD, green #B6D7A8, yellow #FFE599.",
+    "mode": "per_column_relative",
+    "accuracy": "F,G,H,I,J  gradient red(min) -> orange(max); PLUS a boolean rule: value == 100 -> green (overrides the gradient, so green appears ONLY at a perfect 100%).",
+    "lower_better": "C,D,E (latency) and L (price)  gradient pale(min) -> red(max); no green.",
+    "status": {
+      "_note": "Text cells with single-color rules, not gradients.",
+      "run": "R  yes -> green · running -> yellow · no -> red",
+      "validation": "S  yes -> green (decision + clip models) · no -> red (language models)"
+    }
   }
 }
