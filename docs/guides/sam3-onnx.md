@@ -34,7 +34,7 @@ host directly. No GPU rental or deployment is performed by these commands.
 
 ## Provision authorized weights
 
-The integration code and upstream OSAM / sam3-onnx code use MIT licenses. **Model
+The upstream OSAM and sam3-onnx source code uses MIT licenses. **Model
 weights have the separate Meta SAM License.** Review and obtain any required
 approval before acquiring them. Installing this extra does not download weights
 or accept model terms; the worker never calls OSAM's model downloader, including
