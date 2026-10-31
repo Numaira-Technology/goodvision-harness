@@ -14,13 +14,13 @@ description: >-
 
 # bench-sheet-contribute
 
-You have benchmark numbers for a vision model and want them on the **shared** running sheet so they sit
-alongside everyone else's, sortable by the built-in color scales. This skill tells you the sheet's exact
-contract and how to add one row **without breaking the format**. It assumes nothing about how you produced
-the numbers — no repo scripts, no fixed JSON schema. You bring values; you map them to the columns below.
+You have benchmark numbers for a vision model and want them on the shared running sheet, alongside everyone
+else's, sortable by the built-in color scales. This skill gives you the sheet's exact contract and how to add
+one row without breaking the format. It assumes nothing about how you produced the numbers: no repo scripts,
+no fixed JSON schema. You bring values and map them to the columns below.
 
 > If you are inside the `goodvision-harness` repo and produced results with its `run_eval.py`, use the
-> `bench-sheet-push` skill instead — it builds the row for you. This skill is for **everyone else**.
+> `bench-sheet-push` skill instead; it builds the row for you. This skill is for everyone else.
 
 ## The sheet
 

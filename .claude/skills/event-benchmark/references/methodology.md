@@ -1,43 +1,59 @@
-# 测评方法学(冻结考卷 — 换考生不换考卷)
+# Methodology (frozen exam — swap the candidate, not the exam)
 
-这是一张"控制变量"的考卷:**唯一允许变化的是被测模型(API)**。prompt、抽帧、阈值、判分对每个候选逐字节相同。
-改动任何一项 = 改考卷,要提版本号并重跑全部候选。
+This is a controlled exam: the only thing allowed to change is the model under test. Prompt, sampling,
+threshold, and scoring are byte-identical for every candidate. Changing any of them changes the exam —
+bump a version and re-run every candidate.
 
-**权威来源在仓库里**,不要在本 skill 里复制一份规则导致漂移:
-- 规范:`goodvision-harness/tools/event_benchmark/SPEC.md`(考卷规范 v1)
-- Runner:`goodvision-harness/tools/event_benchmark/run_eval.py`
-- 历史结果:`goodvision-harness/tools/event_benchmark/RESULTS.md` + `results/`
+The authoritative source lives in the repo; don't copy the rules here and let them drift:
+- Spec: `tools/event_benchmark/SPEC.md` (exam spec v1)
+- Runner: `tools/event_benchmark/run_eval.py`
+- History: `tools/event_benchmark/RESULTS.md` + `results/`
 
-下面只是要点速查,细节以 SPEC.md 为准。
+Below is a quick reference. SPEC.md wins on any detail.
 
-## 冻结项速查
+## Frozen items
 
-- **题目(prompt)**:用数据集 `samples.json` 每条自带的 `question` 字段,运行时去掉结尾 `Answer yes or no.`。语义题目对所有模型相同;只有"输出信封"按模型类固定。
-- **计分事件**:当前 fight / smoking / fall / weapon。片级(整段有没有发生),不评 track_id / 选人。
-- **模型三类**,输出格式类内固定、不跨类对齐(完整契约见 `model-classes.md`):
-  - **language**(qwen=baseline / gemini,chat completions):prompt + 帧 → JSON 布尔 `{"answer": true/false}`,每帧 0/1。
-  - **decision**:Luna decisions(题型 `noul`,0–1 概率,可留出集校准);VideoJev-4B(原生六题多标签 present/absent/insufficient,选项分数未校准、无阈值)。
-  - **threshold**(CLIP / SigLIP2,同事 `tools/clip_benchmark`,未接入 run_eval):每帧 **margin = cos(正)−cos(反)**,`> 自选阈值` → yes;margin 不是概率,**不借用 0.5**,未调基线是 thr=0。
-  - 真实 runner 位置、各自节奏(VLM 1fps · CLIP 每片 1 帧@0.8s · VideoJev 每窗 2 帧@0.8s)、数据同步与诚实标注:见 `model-classes.md`。
-- **抽帧**:1 fps(`--interval 1.0`,冻结节奏),720px 宽,一帧一次独立调用。
-  - 0.25 fps(`--interval 4`)只是生产历史上 VLM 吞吐跟不上的妥协,无硬性要求,测评与生产统一 1 fps。
-  - `--dense` 是能力上限对照(≤14 帧),仅用于采样敏感度分析,不是官方口径。
-- **判定**:每帧 0–1 分,片级 = 帧分数最大值("任一帧为正即为正"),`≥ gate 0.5` → yes。gate 0.5 统一、所有事件所有模型一致,绝不在测评集上调。
-- **运行参数**:temperature 0,chat max_tokens 30,超时 90s,重试 3 次,`--workers 12`(对齐 12 路产品,只影响快慢不影响判分)。
+- **Prompt**: each sample's own `question` field from `samples.json`, with the trailing `Answer yes or no.`
+  stripped at runtime. The question is the same for every model; only the output envelope is fixed per class.
+- **Scored events**: currently fight / smoking / fall / weapon. Clip-level (did it happen in the clip), not
+  track_id / person selection.
+- **Three model classes**, output fixed within a class and not aligned across classes (full contract in
+  `model-classes.md`):
+  - **language** (qwen = baseline / gemini, chat completions): prompt + frame → JSON boolean
+    `{"answer": true/false}`, 0/1 per frame.
+  - **decision**: Luna decisions (`noul` question type, 0–1 probability, calibratable on a held-out set);
+    VideoJev-4B (native multi-label present/absent/insufficient verdict, uncalibrated option scores, no threshold).
+  - **threshold** (CLIP / SigLIP2, colleague's `tools/clip_benchmark`, not wired into run_eval): per-frame
+    **margin = cos(positive) − cos(negative)**, `> its own threshold` → yes. A margin is not a probability,
+    so never borrow 0.5; its untuned baseline is threshold = 0.
+  - Real runner locations, per-class cadence (VLM 1fps · CLIP 1 frame/clip @0.8s · VideoJev 2 frames/window
+    @0.8s), data sync, and honesty flags: see `model-classes.md`.
+- **Sampling**: 1 fps (`--interval 1.0`, frozen cadence), 720px wide, one frame one independent call.
+  - 0.25 fps (`--interval 4`) was only a production compromise when VLM throughput couldn't keep up; it is
+    not a hard requirement, and eval + production are unified at 1 fps.
+  - `--dense` is a capability-ceiling comparison (≤14 frames), for sampling-sensitivity checks only, not the
+    headline number.
+- **Decision**: 0–1 score per frame, clip = max over frames ("positive if any frame is positive"),
+  `≥ gate 0.5` → yes. Gate 0.5 is uniform across every event and model, and is never tuned on the eval set.
+- **Run params**: temperature 0, chat max_tokens 30, 90s timeout, 3 retries, `--workers 12` (mirrors the
+  12-way product; affects speed only, not scoring).
 
-## 数据集可以扩,规范不动
+## The dataset can grow; the spec does not
 
-样本量可扩(50 → 120 → ~250),**扩样本不改考卷**。扩充注意:
-- 冻结文件清单 + 每片 SHA-256(`--checksums`),看过分数后不回标。
-- 给只有正例的事件补负例后,才能谈该类误报率 / 特异度。
-- 调阈 / 调 prompt 只能用 held-out 子集,不碰主评测片。
-- 新题型(如翻包 bag_knife / bag_alcohol_bottle,答案空间含 unknown)属于**改考卷**,要单独升版并先定 unknown 处理规则,不能塞进二值主表。
+Sample count can grow (50 → 120 → ~250), and growing it does not change the exam. When expanding:
+- Freeze the file list + a SHA-256 per clip (`--checksums`); no relabeling after you've seen scores.
+- Add negatives to a positives-only event before you talk about its false-positive rate / specificity.
+- Tune thresholds / prompts only on a held-out subset, never on the main eval clips.
+- A new question type (e.g. repackaging bag_knife / bag_alcohol_bottle, whose answer space includes
+  `unknown`) is **changing the exam**: version it separately and define the unknown-handling rule first;
+  don't fold it into the binary main table.
 
-## 数据集文件在哪(随项目变,运行前确认)
+## Where the dataset lives (moves with the project; confirm before a run)
 
-当前合并集:`~/Desktop/benchmark_media_test/media_extra_50/samples.json`(120 题),视频分散在:
-- `media50/media/media/`(原 50)
+Current merged set: `~/Desktop/benchmark_media_test/media_extra_50/samples.json` (120 questions), videos
+spread across:
+- `media50/media/media/` (original 50)
 - `media_extra_50/新增基础视频_50段/`
-- `media_extra_50/翻包视频_10段/`(翻包,非 base-4)
+- `media_extra_50/翻包视频_10段/` (repackaging, not base-4)
 
-`run_eval.py --media` 接受多个目录,按文件名跨目录找。
+`run_eval.py --media` takes several directories and finds clips by filename across them.
