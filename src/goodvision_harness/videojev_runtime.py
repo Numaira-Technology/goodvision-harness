@@ -29,11 +29,11 @@ class _PreparedVideo:
 
 
 class VideoJevRuntime(NativeVideoJevModel):
+    """Prepare windows on CPU and score compiled scene questions on GPU."""
+
     @property
     def batch_enabled(self):
         return self.prefix_cache
-
-    """Prepare windows on CPU and score compiled scene questions on GPU."""
 
     def __init__(self, cache_dir, *, prefix_cache=True):
         super().__init__(cache_dir)

@@ -100,6 +100,27 @@ def test_server_environment_overrides_legacy_flags_and_needs_no_primary_gpu(
     assert locations.tracking_capacity(32, gpu) == 24
 
 
+@pytest.mark.parametrize("tracking", ["legacy", "server"])
+def test_decision3_uses_native_events_and_preserves_separate_tracking(base, tracking):
+    base = replace(base, rich_labeling=replace(base.rich_labeling, backend="vlm", enabled=True))
+    locations = ServiceLocations(
+        inference_mode="server", inference_server_url="http://d3:8093",
+        inference_server_model="vllm-sr/d3-nano", tracking_mode=tracking,
+        tracking_server_url="http://tracker:8092",
+    )
+    config = locations.configure(base, LocalGPUDeployment(), camera_index=1)
+    assert config.model_api.endpoint == "http://d3:8093/predict"
+    assert config.model_api.inspection_endpoint == ""
+    assert config.runtime.scene_independent_vlm
+    assert config.runtime.scene_vlm_output_mode == "events"
+    if tracking == "server":
+        assert config.rich_labeling.enabled and config.rich_labeling.tracking_enabled
+        assert config.rich_labeling.backend == "sam31_stream"
+        assert config.rich_labeling.endpoint.startswith("http://tracker:8092/")
+    else:
+        assert not config.rich_labeling.enabled
+
+
 def test_persisted_locations_survive_restart_and_take_precedence_over_environment(
     tmp_path,
     monkeypatch,

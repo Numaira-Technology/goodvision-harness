@@ -60,6 +60,19 @@ def test_ready_selection_does_not_cross_incompatible_work(barrier):
     assert list(scorer._pipeline) == works[1:]
 
 
+def test_non_videojev_runtime_batches_without_prefix_cache_or_visual_records():
+    from collections import deque
+
+    template = object()
+    scorer = object.__new__(service.Scorer)
+    scorer.runtime = SimpleNamespace(prefix_cache=False, predict_prepared_batch=lambda _: None)
+    scorer.gpu_batch_size = 2
+    works = [SimpleNamespace(state="ready", question_template=template, prepared=object()) for _ in range(3)]
+    scorer._pipeline = deque(works)
+    assert scorer._take_ready() == works[:2]
+    assert list(scorer._pipeline) == works[2:]
+
+
 @pytest.mark.parametrize("cap,ready,cache,cpu_threads", [(1, 4, True, None), (2, 2, True, 1), (4, 4, True, 8), (4, 1, True, None), (4, 4, False, None)])
 def test_startup_warmup_respects_gpu_batch_cap_before_serving(
     tmp_path, monkeypatch, cap, ready, cache, cpu_threads
@@ -155,6 +168,42 @@ def test_invalid_cpu_threads_fail_before_runtime_initialization(monkeypatch, val
     with pytest.raises(SystemExit) as error:
         service.main()
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize("failure", ["single_error", "batch_error", "missing_batch"])
+def test_d3_warmup_failure_prevents_listening(tmp_path, monkeypatch, failure):
+    from goodvision_harness import decision3_runtime
+
+    class Runtime(decision3_runtime.Decision3Runtime):
+        def __init__(self, *args, **kwargs):
+            self.metadata = {}
+
+        def prepare(self, *args, **kwargs):
+            return None
+
+        def predict_prepared(self, prepared, *, question_template, **kwargs):
+            return {"answers": {row["id"]: (
+                {"type": "choice", "error": "inference_failed"}
+                if failure == "single_error" else
+                {"type": "choice", "choice": row["options"][0],
+                 "probabilities": dict(zip(row["options"], [1.0, 0.0, 0.0]))}
+            ) for row in question_template.rows}}, {}
+
+        def predict_prepared_batch(self, windows):
+            if failure == "batch_error":
+                yield 0, ValueError("warmup failed")
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        set_num_threads=lambda _: None, set_num_interop_threads=lambda _: None,
+    ))
+    monkeypatch.setattr(decision3_runtime, "Decision3Runtime", Runtime)
+    monkeypatch.setattr(service, "ThreadingHTTPServer", lambda *_: pytest.fail("listened before warmup succeeded"))
+    monkeypatch.setattr(sys, "argv", [
+        "goodvision-vlm", "--runtime", "decision3", "--cache-dir", str(tmp_path),
+        "--result-log", str(tmp_path / "audit.jsonl"),
+    ])
+    with pytest.raises(service.WindowError):
+        service.main()
 
 
 @pytest.mark.parametrize("cap,ready_capacity", [(1, 4), (3, 4), (4, 4), (4, 2)])
