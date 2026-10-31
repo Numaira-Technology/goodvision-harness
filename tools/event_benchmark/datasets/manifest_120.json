@@ -1,0 +1,1092 @@
+{
+ "dataset": "120",
+ "status": "draft_pending_user_review",
+ "note": "原50对象原样保留；用户10月29日已确认104/106/108/110四条酒瓶答案为no，其余新增66题待审阅。小瓶用途和隐藏内容不作推断。若有参考unknown须单列，不自动当no。",
+ "n_questions": 120,
+ "n_files_hashed": 120,
+ "missing_files": [],
+ "samples_json_sha256": "beacee1655f4d71ae486d7d3b758777b745613cf69d80da0fd36b623b1a10adb",
+ "scored_events_note": "run_eval.py scores fight/smoking/fall/weapon; bag_* are a separate v1.1 task",
+ "files": [
+  {
+   "number": 112,
+   "filename": "IMG_1185.MOV",
+   "sha256": "85e37d14aeaa8e688ba72b199bef6e22c24c4bf312565a9552182b16ea90dcc2",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 114,
+   "filename": "IMG_1186.MOV",
+   "sha256": "00181a984b6113e8f2239f877a9ee9a0cec0955f3a111ff6e9cd9d8aada4dd2f",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 116,
+   "filename": "IMG_1187.MOV",
+   "sha256": "693640f2893c38f2998d972cc93485725413cdb98d5a36c40c79ae6c06d14cbe",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 118,
+   "filename": "IMG_1188.MOV",
+   "sha256": "999b712dc9a946d1a6be54ed5d7136832f4653335b6caf08e45a7c8b5776fa71",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 120,
+   "filename": "IMG_1189.MOV",
+   "sha256": "e2c74c46f03d540be16f8d63b63edfcdca5d5aacf67ac31411bef121b3db0b7d",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 102,
+   "filename": "IMG_2729.MOV",
+   "sha256": "d9243c25a46a3b2673a8e7052a74e2449019bc0a2144cb23f1ce73b7aff4fe14",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 104,
+   "filename": "IMG_2730.MOV",
+   "sha256": "743d7e75ee7b0609e2a2e77445828a970ade5a0a0be46ca8849370199538a07d",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 106,
+   "filename": "IMG_2731.MOV",
+   "sha256": "bd2b6b9be97b095093e29e10f108f7315c467ac50d2fddbb4ef3a9895d17aa03",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 108,
+   "filename": "IMG_2732.MOV",
+   "sha256": "f422fcf610e21a025e1ef963613030ef32431a9a5a5764cf458fa0d98cafff61",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 110,
+   "filename": "IMG_2733.MOV",
+   "sha256": "939a81e8e1ce8768e8df7131dd8bc2584e58263fefa2cf3c5369e9f4eb6d7f8f",
+   "event": "bag_alcohol_bottle",
+   "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 111,
+   "filename": "IMG_1185.MOV",
+   "sha256": "85e37d14aeaa8e688ba72b199bef6e22c24c4bf312565a9552182b16ea90dcc2",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 113,
+   "filename": "IMG_1186.MOV",
+   "sha256": "00181a984b6113e8f2239f877a9ee9a0cec0955f3a111ff6e9cd9d8aada4dd2f",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 115,
+   "filename": "IMG_1187.MOV",
+   "sha256": "693640f2893c38f2998d972cc93485725413cdb98d5a36c40c79ae6c06d14cbe",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 117,
+   "filename": "IMG_1188.MOV",
+   "sha256": "999b712dc9a946d1a6be54ed5d7136832f4653335b6caf08e45a7c8b5776fa71",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 119,
+   "filename": "IMG_1189.MOV",
+   "sha256": "e2c74c46f03d540be16f8d63b63edfcdca5d5aacf67ac31411bef121b3db0b7d",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 101,
+   "filename": "IMG_2729.MOV",
+   "sha256": "d9243c25a46a3b2673a8e7052a74e2449019bc0a2144cb23f1ce73b7aff4fe14",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 103,
+   "filename": "IMG_2730.MOV",
+   "sha256": "743d7e75ee7b0609e2a2e77445828a970ade5a0a0be46ca8849370199538a07d",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 105,
+   "filename": "IMG_2731.MOV",
+   "sha256": "bd2b6b9be97b095093e29e10f108f7315c467ac50d2fddbb4ef3a9895d17aa03",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 107,
+   "filename": "IMG_2732.MOV",
+   "sha256": "f422fcf610e21a025e1ef963613030ef32431a9a5a5764cf458fa0d98cafff61",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 109,
+   "filename": "IMG_2733.MOV",
+   "sha256": "939a81e8e1ce8768e8df7131dd8bc2584e58263fefa2cf3c5369e9f4eb6d7f8f",
+   "event": "bag_knife",
+   "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 37,
+   "filename": "adl-02-cam0.mp4",
+   "sha256": "5c39408f55fdafaaf9cec779f61715319fdaf71f67e59e50dcb2d4cbd2d2d058",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 38,
+   "filename": "adl-03-cam0.mp4",
+   "sha256": "1c2664e54226e4b5b4efbd43f2987c8252c8af6163d17df2b3723317291f86f9",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 39,
+   "filename": "adl-04-cam0.mp4",
+   "sha256": "8d64808b775710915a4883f8354d40ee2c09a9462f754e52773bbb4feb676b09",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 40,
+   "filename": "adl-06-cam0.mp4",
+   "sha256": "ce682120ff5e2661732ec8487cbb2eb1ee38ed9bb5f1ac4315930521634f3c36",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 41,
+   "filename": "adl-07-cam0.mp4",
+   "sha256": "ece58c8c9de4f6321a261ec37882747431f98fdbc7bff24fe077b07e807e9990",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 42,
+   "filename": "adl-08-cam0.mp4",
+   "sha256": "12d26918cd0568d88c11e79a096a25890802a37cd84ff0da6ff0337c5c62ace6",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 43,
+   "filename": "adl-09-cam0.mp4",
+   "sha256": "093372011e62aa8449a999251294fd1c4850ce0bdbecb85754bebc135b50a6de",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 44,
+   "filename": "adl-11-cam0.mp4",
+   "sha256": "476dfd9eb4a993d982b8e8c8e95eecfe1ba904df738d1b760bf0c51d766a48f4",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 45,
+   "filename": "adl-12-cam0.mp4",
+   "sha256": "e254cc937ac3ff5ca40fbdda8f477403187879c48392d2d682a223bdf3fa1afd",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 82,
+   "filename": "adl-13-cam0.mp4",
+   "sha256": "dacb89fba4a3adcaab50c01ebb6358f5c06f2bce1583f1fff6748c24816bdb0d",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 85,
+   "filename": "adl-14-cam0.mp4",
+   "sha256": "143b04c4e8abdf30f13ed5bfc1223f597565f7a7266634e28ac85ab9f0a7cf23",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 83,
+   "filename": "adl-15-cam0.mp4",
+   "sha256": "5feb81df5b5d98ca5aa5dec728333feef0d1dbe0a7221c3dc747f785cd8c6bd5",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 84,
+   "filename": "adl-16-cam0.mp4",
+   "sha256": "26e9deecc0eb87cf96c0c786367003dbc673a59d002879c80f15bb1dd4d8976a",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 25,
+   "filename": "fall-11-cam0.mp4",
+   "sha256": "3267547816182b3c772e6677aca5c7093267efd7c094a6c8e84bb20076ca4bb2",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 26,
+   "filename": "fall-12-cam0.mp4",
+   "sha256": "6346a894a672f1e21080e457df660430520797a84e6b67aba6a9e7842911cbc0",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 27,
+   "filename": "fall-14-cam0.mp4",
+   "sha256": "e50559bc71a419ead4db95d0103766f6982a8b5cc739c9959a161a8259d36538",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 28,
+   "filename": "fall-15-cam0.mp4",
+   "sha256": "6d099080c745c2ff8a97c6ef9e8b06efafe9e0211ac03f54c09cc7a6711a3598",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 29,
+   "filename": "fall-16-cam0.mp4",
+   "sha256": "80951f4614611384da179ae4d6af8cc057ef7ce8ee8d673cb34e46f0d134eebd",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 30,
+   "filename": "fall-18-cam0.mp4",
+   "sha256": "e3018019d9d3a1fe6330f9698889207d181a440beac94964db1b2c7c62acabad",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 31,
+   "filename": "fall-19-cam0.mp4",
+   "sha256": "ef30f3e02f10b7e71c1ed6f06907d6357ba4d41eb3df0fc0bcd0feaa54b4888e",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 32,
+   "filename": "fall-21-cam0.mp4",
+   "sha256": "f2c115347f51c9de4e209fcc157c9a6075b16e620fa8d9a6e4bf0a520a9d4552",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 33,
+   "filename": "fall-22-cam0.mp4",
+   "sha256": "6b9d4b2ce61ac1f55604bcebb9d42ac0665f373224801ca793db80eaa698bafa",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 81,
+   "filename": "fall-23-cam0.mp4",
+   "sha256": "87fcdcce63a228ab422c59da98904338341c21076082c7bbeaedbb9c77b3d18e",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 34,
+   "filename": "fall-24-cam0.mp4",
+   "sha256": "ef4ce4285cc57532e20e5d8530fe51680bab105ac18f1cd3e85d8e513472342b",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 35,
+   "filename": "fall-25-cam0.mp4",
+   "sha256": "e8b55f82b664a8c216176ee5ff420d6ec2e26e7e1b43dc65ea917735110b92a9",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 36,
+   "filename": "fall-27-cam0.mp4",
+   "sha256": "deb5167a6755a516f06472565deb477d7cfbfa862c53ba42417fa961c0cc1640",
+   "event": "fall",
+   "question": "Does a person fall in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 4,
+   "filename": "ubi_F_120_1_0_0_0.mp4",
+   "sha256": "6b778caff7dbc782529e09e7a6b4453420006c45053dbdf9f2b350d7cf69c52e",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 53,
+   "filename": "ubi_F_135_1_2_0_0.mp4",
+   "sha256": "2bd2c466ed654234c4799b0780d4f483c1014b1bd10eb4206c0b5ac3dc1042e0",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 52,
+   "filename": "ubi_F_150_0_1_0_0.mp4",
+   "sha256": "63c7f041f3616fff329b8beb1d88eb50d7252b7c3ee158a15ab7f471fc6ab011",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 55,
+   "filename": "ubi_F_155_0_0_1_0.mp4",
+   "sha256": "7217d4206b6e866cdfb75feb69505175f9bb08469e3cc25e5bca27cbd3ab1d9a",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 57,
+   "filename": "ubi_F_161_0_0_0_0.mp4",
+   "sha256": "cbb615628db790fdf2bf7d4d7378ff31093182775a118a994c8c7a1b832a476a",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 66,
+   "filename": "ubi_F_170_0_0_1_0.mp4",
+   "sha256": "0d2484b1a730a8d1da08cbd5347a7c91ed95480e3d0541d3941d772ff597ddc9",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 54,
+   "filename": "ubi_F_174_0_0_1_0.mp4",
+   "sha256": "8ad466e35db097c334eaaf14c00a1180d512009b3bb274d0a2cf63ac87e9432c",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 56,
+   "filename": "ubi_F_195_1_0_1_0.mp4",
+   "sha256": "5a89c337227357f766ff66f00a9c466c1822b7c04410e2bc6c15a3699c56f3b2",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 2,
+   "filename": "ubi_F_1_0_1_0_1.mp4",
+   "sha256": "72850b242e51ed635f1b023d59dfa3310799212271b91eabe52ba343d09dec68",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 51,
+   "filename": "ubi_F_205_0_1_0_0.mp4",
+   "sha256": "d564fa96e38c3fd4b8845381db3ade945fd9d9f6803f4fc7e53ff187e494d0b6",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 65,
+   "filename": "ubi_F_213_0_1_0_0.mp4",
+   "sha256": "2f84b5d7664b2fe8843d7e922e748d45929dc6adf0ffbdd4d0f82d95dd3e0c38",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 5,
+   "filename": "ubi_F_24_1_0_0_0.mp4",
+   "sha256": "3066dbed0aaaaf6af026ec555ef3b6889e2d90dda92e3f168684ab7355b2e1c5",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 1,
+   "filename": "ubi_F_40_1_0_0_0.mp4",
+   "sha256": "5082ac31d1ccd59428bfb88b6361883fcb1970b9f07f4d17dfaa3ca2b0f637b0",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 6,
+   "filename": "ubi_F_84_1_2_0_0.mp4",
+   "sha256": "68a937188e185efb1d521a9122b7d78825a52a78730e2ed115ba44411981cace",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 64,
+   "filename": "ubi_F_89_1_0_0_0.mp4",
+   "sha256": "47eaa89fd356fb48ee7844014dfac4070be58c7cb88381c835ff992da9e2b418",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 3,
+   "filename": "ubi_F_91_1_1_0_0.mp4",
+   "sha256": "e278f977f04a81e536b8d46bacbef4a11faa3cbea20f6538bc85b3755ce67e48",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 61,
+   "filename": "ubi_N_100_1_0_1_0.mp4",
+   "sha256": "ddefe502d7e553026228c9c566cc38188ee1f5b48ec8aad65a57caee235fcc39",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 9,
+   "filename": "ubi_N_104_1_1_1_0.mp4",
+   "sha256": "8fab74095a4dd58d3ac397c4826d95ced731d3d989a0323460c6d51cbc1bae03",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 7,
+   "filename": "ubi_N_159_0_0_1_0.mp4",
+   "sha256": "4379b1dc615f5bf6f1597fca0f15b4bb48d62b37e27f53de6009a83557dd3626",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 12,
+   "filename": "ubi_N_166_1_0_1_0.mp4",
+   "sha256": "911519c1646f5b56c68454d5d9998a939c6f88255c7860bc6e1c53e9debb8447",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 10,
+   "filename": "ubi_N_211_0_0_1_0.mp4",
+   "sha256": "1be3317de832dbd0c30129d208eaf4a2a967d696d35c0540f79ee7b6c089d963",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 69,
+   "filename": "ubi_N_305_0_0_1_0.mp4",
+   "sha256": "0387dd2f41b9342525bbc1cc054fb62643880757573e5b2e49e55b05035227d0",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 11,
+   "filename": "ubi_N_402_0_0_1_0.mp4",
+   "sha256": "f7024937c55af78b2e02d02c2c48ab447fc74077c991f6fbe99678cc24fc6830",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 63,
+   "filename": "ubi_N_46_1_0_1_0.mp4",
+   "sha256": "2cb52b94fdf5d62dc5945bed0999e8bc678d6c88e5dcdf4a6dc8b688d72b9bd5",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 68,
+   "filename": "ubi_N_488_0_0_1_0.mp4",
+   "sha256": "8b62b64bf3bce652ce544da68509fb71957b87c6486296c5ab1d45a93e870c24",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 60,
+   "filename": "ubi_N_498_0_0_1_0.mp4",
+   "sha256": "ba7a82780fa61cc548aa9b29df96277f169698e2ed0c1cd0c9d8d1319982fb8c",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 62,
+   "filename": "ubi_N_604_1_0_1_0.mp4",
+   "sha256": "8ad0de299491814f3ff702cd30a8f5954c99e2a26ac54a00002a11cc84ea0f2b",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 67,
+   "filename": "ubi_N_66_0_0_1_0.mp4",
+   "sha256": "45698470629bcb48683fc3efff858913bb1a3a477f8c77d33e2ae9acb6ea4e2b",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 8,
+   "filename": "ubi_N_732_1_0_1_0.mp4",
+   "sha256": "9cb1047b0e59c2029cfe4f43f0db2bebba17f1748cf62f3834b698da020031be",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 70,
+   "filename": "ubi_N_745_1_1_1_0.mp4",
+   "sha256": "b9cf4ea6cf1888bab00b6ef4b55e9549a4aa6ecfc7503ca15dbebdba56c85031",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 59,
+   "filename": "ubi_N_88_1_0_1_0.mp4",
+   "sha256": "c58f981e076b36e4eb68f3bdde0a41ef7048a196a634d2d30b7303cb049f4fe9",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 58,
+   "filename": "ubi_N_99_0_0_1_0.mp4",
+   "sha256": "f497ce2e223dfd47f03adf9fe5dcfc3d0e03158bbe61894dcbd55c3e6628cb2d",
+   "event": "fight",
+   "question": "Does any fighting occur in this video? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 19,
+   "filename": "After_work_smoke_in_the_garage_smoke_h_nm_np1_fr_med_1.mp4",
+   "sha256": "19dedbee5fe61e8545abf7b6790dfc4a35298b94afd66e511339c0da797f085b",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 13,
+   "filename": "American_History_X_smoke_h_nm_np1_ri_med_45.mp4",
+   "sha256": "a11919ca8ebc95a91c2f2b9477c94f0828eab986bf8e6b2fc8f05fe03233e089",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 18,
+   "filename": "Buckle-Up_smoke_h_cm_np1_ri_goo_0.mp4",
+   "sha256": "99875610cceaa6f8be3ea4d5b77eaa72356f1d62c78621b80c6596a4bfe21aa7",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 72,
+   "filename": "Laughing_Girl_smoke_u_nm_np1_ri_goo_0.mp4",
+   "sha256": "553e3c8af4169f7cea563525997a7dcf11bc934a69d4df35d73acccc514f869f",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 17,
+   "filename": "Prelinger_LetYours1940_smoke_f_nm_np1_fr_med_6.mp4",
+   "sha256": "b00c20114d1edf67d50af1885bcf67f3ffd805541cbd88ccb6be9d62b90b7126",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 20,
+   "filename": "Rauchen_f_r_Anf_nger_smoke_h_nm_np1_fr_med_0.mp4",
+   "sha256": "c3864d65d3aa8453a7501a3e98a190fe7694146cbebd2625c1dc4fdbca79bfcf",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 21,
+   "filename": "Raucher_Antiraucher_Werbung_smoke_h_cm_np1_fr_goo_2.mp4",
+   "sha256": "4637c9abab1c99b6cf190c4d7805dcbace28c2bb2621bfd200318b4f8b81f8b6",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 22,
+   "filename": "Raucher_TRICK_xD_smoke_u_cm_np1_fr_med_2.mp4",
+   "sha256": "16586555a80fafd3edb204ecce2ed82cca3b78d61552e345b22409dded7b8ae4",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 24,
+   "filename": "Rich_smoking_experience_smoke_h_nm_np1_le_med_3.mp4",
+   "sha256": "0ce5f6fefd0fabfd37da554f8f0409e3c20f2496728849e320a4b70c2b00b314",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 23,
+   "filename": "Sara_beim_Rauchen_-_Volume_3_smoke_h_cm_np1_fr_med_0.mp4",
+   "sha256": "f091b3cd864080d95b79381705b3aa4c68ba9535925aa1a07f5557667b2c4635",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 14,
+   "filename": "The_Fugitive_2_smoke_u_cm_np1_fr_bad_22.mp4",
+   "sha256": "c5d8a574112844c5b9bdc930c46a7ec9344576ce7f4852ae46868a817d3c1c29",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 15,
+   "filename": "The_Matrix_4_smoke_h_nm_np1_fr_goo_1.mp4",
+   "sha256": "adb05579f80d0e9aa29fb425de39669664d3ec5c70a6dd8138c0e7f79e586b97",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 16,
+   "filename": "Veoh_Alpha_Dog_1_smoke_u_cm_np1_ri_goo_9.mp4",
+   "sha256": "49934d2361a199e56606756976728a0a70018bcb8c324798e97d7d66298e6333",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 76,
+   "filename": "adl-17-cam0.mp4",
+   "sha256": "c694969e7a7ab9619e17cc8eccdb5e0cb26d8bf816314b80daef8c073af6b198",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 77,
+   "filename": "adl-18-cam0.mp4",
+   "sha256": "59b041f815cca592e5ebdce83e0496574e05f1fcb137e4c62f4b5cf7cf315d74",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 78,
+   "filename": "adl-19-cam0.mp4",
+   "sha256": "daf659beaebe45b102955c6be87aaef6ba71558dfe177864af4e8a31f112a6ba",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 79,
+   "filename": "adl-20-cam0.mp4",
+   "sha256": "1250fea042d46755a16af64bf8c0afa9022685cbdce01df03d4ab344f2fd03f8",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 80,
+   "filename": "adl-21-cam0.mp4",
+   "sha256": "de88be2302e598341356a6e3c5d97088c4379c4b9b87b51d00a5bae4b4f50a98",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 75,
+   "filename": "more_smoking_smoke_h_cm_np1_ri_med_0.mp4",
+   "sha256": "eee834ea2b6f2b97b7f3003372612a53fadff9e81b77306aa12ebafcedb5dd52",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 73,
+   "filename": "passive_rauchen_smoke_h_cm_np1_ri_med_0.mp4",
+   "sha256": "16b3def5be0ca18f7758d47d2f54b6b3f56811747848b7fcf3c6338dafca8bb9",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 74,
+   "filename": "ricky_bobby_smoke_h_nm_np1_fr_med_0.mp4",
+   "sha256": "a589153496e0bac83f2357df900fb6d1f21fd9f2c8c15659e50f72b15158ca28",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 71,
+   "filename": "zigarette_rauchen_smoke_h_nm_np1_fr_med_0.mp4",
+   "sha256": "6a689d65f3884b50d9a47c36cfec74d6e82be5f25f6ce91461f81b7fe3397dd9",
+   "event": "smoking",
+   "question": "Does this video show a person smoking? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 100,
+   "filename": "adl-22-cam0.mp4",
+   "sha256": "842d62c12d59f205b70445293cddbcd60575bf1100eb2439a53a759d7440567d",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 86,
+   "filename": "t_w002_converted.avi",
+   "sha256": "bf8a44f8b358767c3191a4f0ea87d97cdd850ca5acc9b37b831119f477090e63",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 46,
+   "filename": "t_w003_converted.avi",
+   "sha256": "eaa2fb25c437c3d5cb3538dafae0101f9f544b2ac35f7e729fc813dc329b47f8",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 87,
+   "filename": "t_w004_converted.avi",
+   "sha256": "bb3364ca79dcadb08573a184493e64e6efbe39cece0c00e8d1c8f2529154436d",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 47,
+   "filename": "t_w009_converted.avi",
+   "sha256": "bda4ab01fb3bc9c068f1d10497d9dee0acc601d3a588252b7e0db65a655e76b6",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 48,
+   "filename": "t_w012_converted.avi",
+   "sha256": "eaf4c82a9f9d45dd06541fca135b256bae4070daf684b9d7ae7c4767fbf9f531",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 88,
+   "filename": "t_w014_converted.avi",
+   "sha256": "9132b4d1f4bdca2748598e3cca36834d54a37d5d85e9829a18cb7834929859fb",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 49,
+   "filename": "t_w020_converted.avi",
+   "sha256": "eca03ac8b02f9c4c6901f580f5564b91cccb37d69be36c954f7a24f30caaa2ca",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 50,
+   "filename": "t_w021_converted.avi",
+   "sha256": "e34659dd490df4a143ab4d0f85c976cd6b44313f0dae341be8f6069fb96bbee5",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "user_reviewed"
+  },
+  {
+   "number": 89,
+   "filename": "t_w024_converted.avi",
+   "sha256": "dced6695ea49cea746ed6acd31b6e02f80e6f39268a070ef6814b35d3a67c6de",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "yes",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 98,
+   "filename": "ubi_N_102_1_1_1_0.mp4",
+   "sha256": "35d07d474c1be5873d5e40eb5a6a30c146fc660653530b6893433353359b3c56",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 95,
+   "filename": "ubi_N_118_0_0_1_0.mp4",
+   "sha256": "edab23cd15f858b7ad7b3bff680f8225e1e97b8044f2418d8764ab8b87f901bd",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 90,
+   "filename": "ubi_N_148_0_0_1_1.mp4",
+   "sha256": "a589acff296bc3ec362824a379a59e1a46a17a7f7d284b33473a783e3da375a1",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 99,
+   "filename": "ubi_N_300_0_0_1_0.mp4",
+   "sha256": "a8f6f3d0e9fcf716a6c23ec60f93232306151e243c562039671a8e3904e9c7b6",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 92,
+   "filename": "ubi_N_347_0_0_1_0.mp4",
+   "sha256": "33c9c408f3925de596e9806e9d0d82340dbbc416fc32d7461aab0d4d78ca1eff",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 93,
+   "filename": "ubi_N_382_0_0_1_0.mp4",
+   "sha256": "3097f5e53b40125d4d21284dd4cacd7fe9c0b72f6588caf32cbc626cc4fcdab4",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 91,
+   "filename": "ubi_N_421_0_0_1_0.mp4",
+   "sha256": "0720d7703d4ec776584ad0aa50fa247aad0adc100fa3ea8e5bd4fc6b0e62cdaf",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 97,
+   "filename": "ubi_N_487_0_0_1_0.mp4",
+   "sha256": "f164f606075d3fb0d09a1c493d20a6881b6789ed0fd523306d094cc048aae149",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 96,
+   "filename": "ubi_N_502_0_0_1_0.mp4",
+   "sha256": "e056ab920944f18f44230f598737d87672278f2dc40e41f1da8eaa1e70e883a0",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  },
+  {
+   "number": 94,
+   "filename": "ubi_N_96_0_0_1_0.mp4",
+   "sha256": "6cd69661a08e19d26f9a5ecc0f0e73654ac8f1cc2cccb931452b429bddc1fc54",
+   "event": "weapon",
+   "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+   "proposed_answer": "no",
+   "human_review": "pending_user_review"
+  }
+ ]
+}
