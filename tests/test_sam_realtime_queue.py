@@ -183,16 +183,27 @@ def test_slow_preparation_is_retired_before_send_and_empty_session_can_finish(
 
 
 def test_latest_only_expires_memory_candidates_without_cancelling_http(
-    tmp_path, advance_age,
+    tmp_path, monkeypatch, advance_age,
 ):
     received = []
-    server, _, coordinator = setup_pipeline(
+    server, client, coordinator = setup_pipeline(
         tmp_path, received.append, queue_policy="latest_only",
         realtime_max_age_seconds=30,
     )
     server.release.clear()
+    append_ready = threading.Event()
+    append = client.append
+
+    def observed_append(*args, **kwargs):
+        append_ready.set()
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(client, "append", observed_append)
     try:
         submit(coordinator, frames(1, 1))
+        # WAL initialization and slow-spool admission precede HTTP dispatch;
+        # do not charge those setup writes to the HTTP readiness watchdog.
+        assert append_ready.wait(8), coordinator.stats()
         assert server.entered.wait(2)
         submit(coordinator, frames(2, 1))
         assert coordinator.stats()["prepared_frames"] == 0
