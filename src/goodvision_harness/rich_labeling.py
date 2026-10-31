@@ -373,11 +373,12 @@ class RichLabelHTTPClient:
         self._closed = False
 
     def gpu_ready(self) -> bool:
-        """Require the remote worker to confirm usable GPU inference.
+        """Require the remote worker to confirm usable inference.
 
         The worker may live on another machine. Host graphics adapters or an
         enabled configuration flag cannot establish its inference capability.
-        Old, unreachable, CPU-only and not-yet-ready workers remain disabled.
+        Legacy workers still require GPU readiness. The optional SAM3 ONNX
+        worker instead attests its explicitly configured CPU/CUDA/CoreML sessions.
         """
 
         return self._ready(
@@ -402,11 +403,29 @@ class RichLabelHTTPClient:
                 )
             response.raise_for_status()
             payload = response.json()
-            return (
-                isinstance(payload, dict)
-                and payload.get("ready") is True
-                and payload.get("gpu_ready") is True
-            )
+            if not isinstance(payload, dict) or payload.get("ready") is not True:
+                return False
+            requested = httpx.Headers(self._headers).get("X-GoodVision-Detector-Model")
+            if requested == "sam3-onnx" or payload.get("model") == "sam3-onnx":
+                device = payload.get("device")
+                provider = {
+                    "cpu": "CPUExecutionProvider", "cuda": "CUDAExecutionProvider",
+                    "coreml": "CoreMLExecutionProvider",
+                }.get(device) if isinstance(device, str) else None
+                sessions = payload.get("execution_providers")
+                return (
+                    requested in {None, "sam3-onnx"}
+                    and payload.get("model") == "sam3-onnx"
+                    and payload.get("provider_ready") is True
+                    and provider is not None
+                    and isinstance(sessions, dict)
+                    and set(sessions) == {
+                        "image_encoder", "language_encoder", "decoder",
+                    }
+                    and all(isinstance(values, list) and bool(values)
+                            and values[0] == provider for values in sessions.values())
+                )
+            return payload.get("gpu_ready") is True
         except (httpx.HTTPError, ValueError):
             return False
 
