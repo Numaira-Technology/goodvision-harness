@@ -14,6 +14,7 @@ from tools.benchmark_runtime.vlm_independent import (
     utc_now,
 )
 from tools.benchmark_runtime.vlm_independent_model import IndependentVerdict
+from tools.vlm_benchmark.source_feeder import TimedSourceFeeder
 
 __all__ = [
     "BOX",
@@ -22,12 +23,47 @@ __all__ = [
     "await_condition",
     "config",
     "configure_ephemeral_admission",
+    "ContractSourceFeeder",
     "job",
     "jpeg",
     "report",
     "utc_now",
     "verdict",
 ]
+
+
+class ContractSourceFeeder(TimedSourceFeeder):
+    """Replay every planned frame for adapter tests, allowing host scheduling gaps.
+
+    Source timestamps, frame identity and real worker/admission paths are kept.
+    Wall-clock stalls delay later releases instead of dropping test inputs.
+    This fixture provides no throughput/freshness evidence; those behaviors use
+    the production feeder in test_vlm_source_feeder and test_vlm_sender_lag.
+    """
+
+    def _run(self):
+        previous_release = 0.0
+        try:
+            for release_at, actions in self.releases:
+                delay = max(0.0, release_at - previous_release)
+                before = time.monotonic()
+                if self.stop.wait(delay):
+                    return
+                self.release_lags.append(max(0.0, time.monotonic() - before - delay))
+                previous_release = release_at
+                for camera, tick in actions:
+                    if self.stop.is_set():
+                        return
+                    frames = self.framesets[camera % len(self.framesets)]
+                    frame = frames[tick % len(frames)]
+                    accepted = self.branches[camera].offer(frame, tick / self.sample_fps, tick)
+                    if self.source_hook is not None:
+                        self.source_hook(camera, self.branches[camera].config.stream_session_id,
+                                         tick, tick / self.sample_fps, frame)
+                    self.offer_rejected[camera] += int(not accepted)
+                    self.samples.put_nowait((camera, tick, accepted))
+        except BaseException as error:
+            self.error = error
 
 
 class _EphemeralAdmissionSQLite:
