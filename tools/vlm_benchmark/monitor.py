@@ -26,6 +26,19 @@ ASSETS = Path(__file__).resolve().parent
 EVENT_SUBJECT_MAX_AGE = 0.30
 
 
+def _probability(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+        raise ValueError("selection probability must be a finite number in [0, 1]")
+    return value
+
+
+def _probability_env(name):
+    try:
+        return _probability(float(os.environ.get(name, "0.5")))
+    except ValueError:
+        raise ValueError(f"{name} must be a finite number in [0, 1]") from None
+
+
 def lane_name(report):
     return (
         "grounding" if report.get("vlm_lane") in {"grounding", "combined"} else "events"
@@ -219,9 +232,11 @@ class LiveMonitor:
         self._select_backend = os.environ.get(
             "PREVIEW_SELECT_BACKEND", "chat"
         ).strip().lower()
+        if self._select_backend not in {"chat", "luna"}:
+            raise ValueError("PREVIEW_SELECT_BACKEND must be chat or luna")
         if (
             self._select_backend == "luna"
-            and self._select_model == "qwen/qwen3-vl-30b-a3b-instruct"
+            and "PREVIEW_SELECT_MODEL" not in os.environ
         ):
             self._select_model = "openai/gpt-6-luna-decisions"
         # Events judged at frame level (no single actor to bind): go to scene_alert.
@@ -233,25 +248,22 @@ class LiveMonitor:
             if frame_level_env
             else {"ground_litter"}
         )
-        self._select_gate_thr = float(os.environ.get("PREVIEW_SELECT_GATE", "0.5"))
+        if self._select_frame_level - set(self._select_labels):
+            raise ValueError("unknown PREVIEW_SELECT_FRAME_LEVEL event")
+        self._select_gate_thr = _probability_env("PREVIEW_SELECT_GATE")
         # Litter gate. The tightened description already suppresses normal room
         # clutter (baseline ~0.1); real floor litter reads ~0.6+, so 0.5 separates
         # cleanly. Raise via env if a busy scene still trips it.
-        self._select_gate_litter = float(
-            os.environ.get("PREVIEW_SELECT_GATE_LITTER", "0.5")
-        )
-        self._select_bind_conf = float(
-            os.environ.get("PREVIEW_SELECT_BIND_CONF", "0.5")
-        )
+        self._select_gate_litter = _probability_env("PREVIEW_SELECT_GATE_LITTER")
+        self._select_bind_conf = _probability_env("PREVIEW_SELECT_BIND_CONF")
         # Optional: restrict the selection to a subset of events (e.g. the ones a
         # backend has been validated on). Applies to both backends.
         labels_env = os.environ.get("PREVIEW_SELECT_LABELS", "").strip()
         if labels_env:
-            chosen = tuple(
-                x.strip() for x in labels_env.split(",") if x.strip() in self._select_labels
-            )
-            if chosen:
-                self._select_labels = chosen
+            chosen = tuple(x.strip() for x in labels_env.split(","))
+            if any(label not in self._select_labels for label in chosen):
+                raise ValueError("unknown PREVIEW_SELECT_LABELS event")
+            self._select_labels = tuple(dict.fromkeys(chosen))
 
     def __enter__(self):
         from tools.vlm_benchmark.recording import BrowserRecorder, make_preview
@@ -990,7 +1002,7 @@ class LiveMonitor:
                     state["touched"] = now
                     if (
                         not self._select_key
-                        or not raw
+                        or (not raw and self._select_backend != "luna")
                         or now >= evidence_at + self._select_ttl
                         or state["pending"] is not None
                         or now - state["last"] < self._select_interval
@@ -1058,7 +1070,12 @@ class LiveMonitor:
                     is None
                 ):
                     return
-            tags, scene_alert, scene_events = self._select_query(jpeg, numbered)
+            result = self._select_query(jpeg, numbered)
+            if self._select_backend == "luna":
+                tags, scene_alert, scene_events = result
+            else:
+                tags, scene_alert = result
+                scene_events = ()
             with self.lock, self._select_state_lock:
                 state = self._current_select(key, session_id, request_id, evidence_at)
                 if state is not None:
@@ -1195,7 +1212,6 @@ class LiveMonitor:
         return (
             {track_id: tuple(sorted(labels)) for track_id, labels in tags.items()},
             scene_alert,
-            (),
         )
 
     # Per-event phrasing for the Decisions backend. Descriptions are intentionally
@@ -1292,6 +1308,12 @@ class LiveMonitor:
                     ),
                     "criteria": criteria,
                 }
+                # A diffuse actor choice is not evidence that the event occurred.
+                # Gate scene-only fallback independently in this same request.
+                questions["scene/" + label] = {
+                    "type": "noul", "instructions": f"Is it true that {desc}?",
+                    "criteria": {"true": desc, "false": f"not: {desc}"},
+                }
         body = json.dumps(
             {
                 "model": self._select_model,
@@ -1322,8 +1344,20 @@ class LiveMonitor:
             raise ValueError("oversized selection response")
         payload = json.loads(encoded)
         answers = payload.get("answers") if isinstance(payload, dict) else None
-        if not isinstance(answers, dict) or set(answers) != set(self._select_labels):
+        if not isinstance(answers, dict) or set(answers) != set(questions):
             raise ValueError("incomplete selection answers")
+        for name, question in questions.items():
+            answer = answers[name]
+            if (not isinstance(answer, dict) or answer.get("error") is not None
+                    or answer.get("type") != question["type"]):
+                raise ValueError("invalid selection answer type")
+            if question["type"] == "noul":
+                _probability(answer.get("noul"))
+            else:
+                if (not isinstance(answer.get("choice"), str)
+                        or answer["choice"] not in question["criteria"]):
+                    raise ValueError("invalid selection person")
+                _probability(answer.get("confidence"))
         tags, scene_alert, scene_events = {}, False, set()
         for label in self._select_labels:
             answer = answers[label]
@@ -1338,11 +1372,14 @@ class LiveMonitor:
                     if label == "ground_litter"
                     else self._select_gate_thr
                 )
-                if float(answer.get("noul", 0.0)) >= gate:
+                if answer["noul"] >= gate:
                     scene_events.add(label)
             elif kind == "choice":
                 choice = answer.get("choice")
-                if choice is None or choice == "none":
+                if answers["scene/" + label]["noul"] < self._select_gate_thr:
+                    continue
+                if choice == "none":
+                    scene_events.add(label)
                     continue
                 try:
                     person = int(choice)
@@ -1350,8 +1387,8 @@ class LiveMonitor:
                     raise ValueError("invalid selection person")
                 if person not in num_to_track:
                     raise ValueError("invalid selection person")
-                if float(answer.get("confidence", 0.0)) < self._select_bind_conf:
-                    scene_alert = True
+                if answer["confidence"] < self._select_bind_conf:
+                    scene_events.add(label)
                 else:
                     tags.setdefault(num_to_track[person], []).append(label)
             else:

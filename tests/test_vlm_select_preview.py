@@ -283,6 +283,80 @@ def query(monitor):
     )
 
 
+def luna_answers(monitor):
+    monitor._select_backend = "luna"
+    answers = {}
+    for label in monitor._select_labels:
+        if label in monitor._select_frame_level:
+            answers[label] = {"type": "noul", "noul": 0.0}
+        else:
+            answers[label] = {"type": "choice", "choice": "none", "confidence": 0.9}
+            answers["scene/" + label] = {"type": "noul", "noul": 0.0}
+    return answers
+
+
+def test_luna_binds_confident_actor_and_keeps_uncertain_scene_separate(monitor, monkeypatch):
+    answers = luna_answers(monitor)
+    answers["smoking"].update(choice="1", confidence=0.9)
+    answers["scene/smoking"]["noul"] = 0.8
+    answers["fight"].update(choice="1", confidence=0.2)
+    answers["scene/fight"]["noul"] = 0.8
+    answers["fall"].update(choice="1", confidence=0.2)
+    answers["ground_litter"]["noul"] = 0.7
+    provider(monkeypatch, {"answers": answers})
+    assert query(monitor) == ({"actor": ("smoking",)}, False, ("fight", "ground_litter"))
+
+
+@pytest.mark.parametrize("value", [None, True, "0.9", float("nan"), float("inf"), -0.1, 1.1])
+@pytest.mark.parametrize("name,field", [("smoking", "confidence"), ("ground_litter", "noul")])
+def test_luna_rejects_invalid_probabilities(monitor, monkeypatch, name, field, value):
+    answers = luna_answers(monitor)
+    answers[name][field] = value
+    provider(monkeypatch, {"answers": answers})
+    with pytest.raises(ValueError):
+        query(monitor)
+
+
+@pytest.mark.parametrize("change", ["missing", "wrong_type", "error", "unknown_person", "numeric_person"])
+def test_luna_rejects_incomplete_or_mismatched_answers(monitor, monkeypatch, change):
+    answers = luna_answers(monitor)
+    if change == "missing":
+        del answers["scene/smoking"]
+    elif change == "wrong_type":
+        answers["smoking"] = {"type": "noul", "noul": 1.0}
+    elif change == "error":
+        answers["smoking"]["error"] = "inference_failed"
+    else:
+        answers["smoking"]["choice"] = "2" if change == "unknown_person" else 1
+    provider(monkeypatch, {"answers": answers})
+    with pytest.raises(ValueError):
+        query(monitor)
+
+
+def test_luna_scene_selection_runs_without_people_and_expires(monitor, worker, selections, monkeypatch):
+    monitor._select_backend = "luna"
+    monitor.previews = [None]
+    worker.snapshot = {"objects": []}
+    selected(monitor, monkeypatch, ({}, False, ("ground_litter",)))
+    preview(monitor)
+    assert selections[0].args[-1] == []
+    selections[0].run()
+    state = monitor._select_states[("a" * 36, 0)]
+    assert state["scene_events"] == ("ground_litter",)
+    assert state["tags"] == {} and not state["scene_alert"]
+    assert monitor.snapshot("a" * 36)["cameras"][0]["select_events"] == ["ground_litter"]
+    monitor.clock.now += 6.1
+    assert monitor.snapshot("a" * 36)["cameras"][0]["select_events"] == []
+
+
+@pytest.mark.parametrize("name", ["PREVIEW_SELECT_GATE", "PREVIEW_SELECT_GATE_LITTER", "PREVIEW_SELECT_BIND_CONF"])
+@pytest.mark.parametrize("value", ["nan", "inf", "-0.1", "1.1"])
+def test_invalid_luna_gate_fails_before_startup(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=name):
+        monitor_module._probability_env(name)
+
+
 def test_complete_selection_keeps_multiple_labels_and_scene_positive(
     monitor, monkeypatch
 ):
