@@ -14,7 +14,7 @@
 
 ## A. language 类 —— qwen / gemini(我们的 `run_eval.py`)
 
-- **位置**:`bench/event_benchmark/run_eval.py`(PR#59 分支)。backend `language`。
+- **位置**:`tools/event_benchmark/run_eval.py`(PR#59 分支)。backend `language`。
 - **模型**:`qwen/qwen3-vl-8b-instruct`(**baseline / 参照行**)、`google/gemini-2.5-flash`。走 OpenRouter chat。
 - **输出信封**:每帧 → JSON 布尔 `{"answer": true/false}` → 1.0 / 0.0。硬 0/1,**没有可调阈值**。
 - **节奏**:1 fps(`--interval 1.0`),720px 宽,一帧一次独立调用,`--workers 12`。
@@ -26,7 +26,7 @@
 decision 类都是"直接给判定"的系统一模型,但**内部两种**,别混:
 
 ### B1. Luna decisions —— 连续概率,可留出集校准
-- **位置**:`bench/event_benchmark/run_eval.py` backend `decision`;模型 `openai/gpt-6-luna-decisions`。
+- **位置**:`tools/event_benchmark/run_eval.py` backend `decision`;模型 `openai/gpt-6-luna-decisions`。
 - **输出**:题型 `noul`,返回 **0–1 校准概率**。
 - **节奏 / 判定**:同 language(1fps、片级取最大、gate 0.5 进主表)。
 - **阈值**:0.5 只是借来的边界,对连续分数不公平 → 用 **留出集 per-class 校准**(`tune_threshold.py`),

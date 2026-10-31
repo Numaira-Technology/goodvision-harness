@@ -49,13 +49,13 @@ caveats, and the data-sync / honesty rules: **`references/model-classes.md`**.
 1. **Confirm the current dataset + candidates.** The dataset path moves as the
    set grows (50 → 120 → ~250) — don't assume. Ask or check which `samples.json`
    and which model(s). Canonical runner and rules live in the repo:
-   `goodvision-harness/bench/event_benchmark/`. For CLIP/VideoJev, their runners
+   `goodvision-harness/tools/event_benchmark/`. For CLIP/VideoJev, their runners
    are separate — see the table above and `references/model-classes.md`.
 
 2. **Run accuracy** with the repo's frozen runner (don't rewrite it):
    ```sh
-   cd "$(git rev-parse --show-toplevel)"   # goodvision-harness 仓库根
-   python bench/event_benchmark/run_eval.py --candidate luna \
+   cd ~/Desktop/goodvision-harness
+   python tools/event_benchmark/run_eval.py --candidate luna \
      --samples <set>/samples.json \
      --media <dir1> <dir2> <dir3> \
      --out <scratch>/<set>_luna.json
@@ -69,7 +69,7 @@ caveats, and the data-sync / honesty rules: **`references/model-classes.md`**.
    SEPARATE measurement from accuracy — one frame, one predicate, wall-clock
    client→OpenRouter→model→back, same frame/question across models:
    ```sh
-   python .claude/skills/event-benchmark/scripts/latency_bench.py \
+   python ~/.claude/skills/event-benchmark/scripts/latency_bench.py \
      --candidate luna --video <any representative clip> \
      --concurrency 12 --rounds 6 --out <scratch>/lat_luna.json
    # repeat for qwen, gemini. Prints single-inference median + P50/P95 @12.

@@ -4,9 +4,9 @@
 改动任何一项 = 改考卷,要提版本号并重跑全部候选。
 
 **权威来源在仓库里**,不要在本 skill 里复制一份规则导致漂移:
-- 规范:`goodvision-harness/bench/event_benchmark/SPEC.md`(考卷规范 v1)
-- Runner:`goodvision-harness/bench/event_benchmark/run_eval.py`
-- 历史结果:`goodvision-harness/bench/event_benchmark/RESULTS.md` + `results/`
+- 规范:`goodvision-harness/tools/event_benchmark/SPEC.md`(考卷规范 v1)
+- Runner:`goodvision-harness/tools/event_benchmark/run_eval.py`
+- 历史结果:`goodvision-harness/tools/event_benchmark/RESULTS.md` + `results/`
 
 下面只是要点速查,细节以 SPEC.md 为准。
 
@@ -35,7 +35,7 @@
 
 ## 数据集文件在哪(随项目变,运行前确认)
 
-当前合并集(**本机示例路径,媒体不在 repo 内,以实际 `samples.json` 为准**):`~/Desktop/benchmark_media_test/media_extra_50/samples.json`(120 题),视频分散在:
+当前合并集:`~/Desktop/benchmark_media_test/media_extra_50/samples.json`(120 题),视频分散在:
 - `media50/media/media/`(原 50)
 - `media_extra_50/新增基础视频_50段/`
 - `media_extra_50/翻包视频_10段/`(翻包,非 base-4)

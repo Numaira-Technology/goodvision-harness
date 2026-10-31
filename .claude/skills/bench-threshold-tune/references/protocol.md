@@ -55,18 +55,18 @@
 
 ```sh
 # 1) 留出集打分(若已有 results/luna_val24.json 且与冻结 split 一致,跳过)
-python bench/event_benchmark/run_eval.py --candidate luna \
+python tools/event_benchmark/run_eval.py --candidate luna \
   --samples <val_split>/samples.json --media <val_split>/videos \
-  --out bench/event_benchmark/results/luna_val24.json
+  --out tools/event_benchmark/results/luna_val24.json
 
 # 2) 测试集打分(50 / 100 / 120-base,已有则复用)
 
 # 3) 标定 + 评估(纯离线,读 score,不调 API)
-python -I bench/event_benchmark/tune_threshold.py \
-  --val  bench/event_benchmark/results/luna_val24.json \
-  --test bench/event_benchmark/results/luna_1fps.json \
-  --test bench/event_benchmark/results/luna_100base.json \
-  --out  bench/event_benchmark/results/luna_threshold_tuning.json
+python -I tools/event_benchmark/tune_threshold.py \
+  --val  tools/event_benchmark/results/luna_val24.json \
+  --test tools/event_benchmark/results/luna_1fps.json \
+  --test tools/event_benchmark/results/luna_100base.json \
+  --out  tools/event_benchmark/results/luna_threshold_tuning.json
 ```
 
 ## 小样本注意
