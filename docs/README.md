@@ -42,6 +42,7 @@
 | 对照 FP8 内核及 16/24/32 并发 | [FP8 测试](guides/vast-fp8-yolo.md) |
 | 验证 VideoJev-4B 与 PPE 提问方案 | [VideoJev 小规模验证](guides/videojev-candidate.md) |
 | 配置与验收 Contour 实时队列 | [Contour 验收指南](guides/contour-realtime-validation.md) |
+| 可选单帧人物分割 | [SAM3 ONNX component](guides/sam3-onnx.md) |
 | 构建和检查发布包 | [发布构建指南](guides/release.md) |
 
 本地开发和人物登记见[贡献指南](../CONTRIBUTING.md#local-development)；

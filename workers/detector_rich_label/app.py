@@ -1,8 +1,8 @@
-"""YOLO / RF-DETR rich-label worker — same /v1/labels contract as the Paddle one.
+"""Single-image rich-label worker with the existing Paddle-style HTTP contract.
 
 A single-frame detector (detectors.build_detector) feeds the detector-agnostic
 IoUTracker, so each object carries a stable track_id exactly as the harness
-RichLabelHTTPClient expects. No masks (optional in the contract); boxes only.
+RichLabelHTTPClient expects. Optional masks belong only to observed source frames.
 
 Request:  POST /v1/labels
   headers: x-goodvision-stream-session-id, x-goodvision-frame-sequence,
@@ -21,9 +21,14 @@ from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
-from detectors import MODEL_REGISTRY, Detector, build_detector
 from fastapi import FastAPI, HTTPException, Request
-from tracker import IoUTracker
+
+if __package__:
+    from .detectors import MODEL_REGISTRY, Detector, build_detector
+    from .tracker import IoUTracker
+else:
+    from detectors import MODEL_REGISTRY, Detector, build_detector
+    from tracker import IoUTracker
 
 LOGGER = logging.getLogger("uvicorn.error")
 MAX_JPEG_BYTES = 8 * 1024 * 1024
@@ -34,7 +39,7 @@ DETECTOR_MODEL_HEADER = "x-goodvision-detector-model"
 
 
 class RichLabelBusyError(RuntimeError):
-    """Another inference is already running on this single-GPU worker."""
+    """Another inference is already running on this worker."""
 
 
 @dataclass
@@ -42,6 +47,7 @@ class _SessionState:
     active_model: str
     tracker: IoUTracker = field(default_factory=IoUTracker)
     last_source_key: tuple[float, int] | None = None
+    image_size: tuple[int, int] | None = None
 
 
 class DetectorEngine:
@@ -78,8 +84,35 @@ class DetectorEngine:
         return key
 
     def warmup(self) -> None:
-        self._get_detector(self.default_model).warmup()
-        self._warmed_models.add(self.default_model)
+        with self._lock:
+            self._warm_model(self.default_model)
+
+    def _warm_model(self, key: str) -> Detector:
+        detector = self._get_detector(key)
+        if key not in self._warmed_models:
+            detector.warmup()
+            self._warmed_models.add(key)
+        return detector
+
+    def health(self, requested: str | None = None) -> dict:
+        key = self.resolve_model(requested)
+        # A selected optional model must attest its own provider, not the default
+        # detector's CUDA flag. Serialize its lazy warmup with inference, without
+        # queuing frames behind another request.
+        if key == "sam3-onnx":
+            if not self._lock.acquire(blocking=False):
+                return {"ready": False, "gpu_ready": False, "model": key,
+                        "provider_ready": False, "error": "inference busy"}
+            try:
+                detector = self._warm_model(key)
+                return {**detector.health(), "available": sorted(MODEL_REGISTRY)}
+            except Exception as exc:
+                return {"ready": False, "gpu_ready": False, "model": key,
+                        "provider_ready": False, "error": str(exc)}
+            finally:
+                self._lock.release()
+        return {"ready": True, "gpu_ready": self.gpu_ready,
+                "model": self.default_model, "available": sorted(MODEL_REGISTRY)}
 
     @property
     def gpu_ready(self) -> bool:
@@ -113,19 +146,23 @@ class DetectorEngine:
                 )
             ):
                 raise ValueError("source frame metadata must increase")
-            detector = self._get_detector(active_model)
-            if active_model not in self._warmed_models:
-                detector.warmup()
-                self._warmed_models.add(active_model)
-            detections = detector.detect(image)
+            detector = self._warm_model(active_model)
+            try:
+                detections = detector.detect(image)
+            except Exception:
+                if active_model == "sam3-onnx":
+                    self._warmed_models.discard(active_model)
+                raise
             if state is None:
                 state = _SessionState(active_model)
                 self._sessions[stream_session_id] = state
                 if len(self._sessions) > MAX_TRACKING_SESSIONS:
                     self._sessions.popitem(last=False)
-            elif state.active_model != active_model:
+            elif (state.active_model != active_model
+                  or state.image_size != image.shape[:2]):
                 state.tracker.reset()
                 state.active_model = active_model
+            state.image_size = image.shape[:2]
             self._sessions.move_to_end(stream_session_id)
             tracker = state.tracker
             tracks = tracker.update(
@@ -150,7 +187,15 @@ class DetectorEngine:
                             "x2": track.bbox[2] / width,
                             "y2": track.bbox[3] / height,
                         },
-                        "attributes": {},
+                        "attributes": ({
+                            "mask_contours": {
+                                "coordinate_system": "normalized",
+                                "source_frame_sequence": frame_sequence,
+                                "source_timestamp_seconds": timestamp_seconds,
+                                "polygons": track.mask_polygons,
+                            },
+                        } if track.mask_polygons
+                        and track.last_update_tick == tracker._update_tick else {}),
                         "observation_state": (
                             "observed"
                             if track.last_update_tick == tracker._update_tick
@@ -196,23 +241,13 @@ def create_app() -> FastAPI:
     def _live() -> dict:
         return {"alive": True, "model": engine.default_model}
 
-    @application.get("/health/ready")
-    def _ready() -> dict:
-        return {
-            "ready": True,
-            "gpu_ready": engine.gpu_ready,
-            "model": engine.default_model,
-            "available": sorted(MODEL_REGISTRY),
-        }
-
     @application.get("/health/tracking")
-    def _tracking() -> dict:
-        return {
-            "ready": True,
-            "gpu_ready": engine.gpu_ready,
-            "model": engine.default_model,
-            "available": sorted(MODEL_REGISTRY),
-        }
+    @application.get("/health/ready")
+    def _ready(request: Request) -> dict:
+        try:
+            return engine.health(request.headers.get(DETECTOR_MODEL_HEADER))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async def _infer_request(request: Request) -> dict:
         import asyncio

@@ -745,12 +745,14 @@ def model_selection_rig(tmp_path, monkeypatch):
     )
     store = DeploymentSettingsStore(tmp_path / "settings.json")
     requests, detector_clients, tracking_clients, runtimes = [], [], [], []
-    control = SimpleNamespace(ready=True, probe=None)
+    control = SimpleNamespace(ready=True, probe=None, provider_health=None)
 
     def handle(request):
         requests.append(request)
         if request.method == "GET":
             ready = control.probe(request) if control.probe else control.ready
+            if control.provider_health is not None:
+                return httpx.Response(200, json=control.provider_health)
             return httpx.Response(200, json={"ready": ready, "gpu_ready": ready})
         return httpx.Response(200, json={
             "stream_session_id": request.headers[STREAM_SESSION_HEADER],
@@ -901,3 +903,38 @@ def test_detector_readiness_cannot_install_client_from_previous_model_selection(
     finally:
         release.set()
         probe.join(3)
+
+
+def test_optional_segmentation_selection_uses_coreml_readiness(model_selection_rig):
+    rig = model_selection_rig
+    rig.control.provider_health = {
+        "ready": True, "gpu_ready": False, "model": "sam3-onnx",
+        "provider_ready": True, "device": "coreml",
+        "execution_providers": {
+            key: ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+            for key in ("image_encoder", "language_encoder", "decoder")
+        },
+    }
+    rig.store.save(DeploymentSettings("", True, False, rich_label_model="det-segment"))
+    runtime = rig.make()
+    assert runtime._rich_labels is not None
+    assert runtime.config.rich_labeling.backend == "paddle"
+    assert runtime.config.rich_labeling.processing_method is None
+    assert rig.requests[-1].headers[DETECTOR_MODEL_HEADER] == "sam3-onnx"
+    assert rig.requests[-1].url.path == "/health/tracking"
+    restored = rig.make()
+    assert restored.config.rich_labeling == runtime.config.rich_labeling
+    assert restored._rich_labels is not None
+
+
+def test_optional_segmentation_unready_does_not_require_cuda(model_selection_rig):
+    rig = model_selection_rig
+    rig.control.provider_health = {
+        "ready": False, "gpu_ready": False, "model": "sam3-onnx",
+        "provider_ready": False, "error": "missing local model",
+    }
+    rig.store.save(DeploymentSettings("", True, False, rich_label_model="det-segment"))
+    runtime = rig.make()
+    assert runtime._rich_labels is None
+    rich_status = runtime.status()["rich_labeling"]
+    assert rich_status["disabled_reason"] == "provider_unavailable"
