@@ -73,6 +73,11 @@ def test_twelve_camera_native_route(tmp_path, monkeypatch, mode):
     # Keep production source freshness and the real shared gate unchanged.
     args.queue_timeout = 3
     args.admission_storage = "workspace"
+    # Exercise every camera and frame without making this adapter contract
+    # test depend on twelve simultaneous process-queue wakeups fitting in
+    # one source interval on a shared CI host. Sender stalls have their own
+    # deterministic coverage in test_vlm_sender_lag.py.
+    args.arrival_mode = "staggered"
     base = modes.configure(suite.arguments())
     calls = []
 

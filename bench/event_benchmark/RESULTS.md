@@ -2,10 +2,15 @@
 
 📊 **实时汇总表（running Google Sheet）**：<https://docs.google.com/spreadsheets/d/1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA/edit> — 所有模型最新结果，数字带红→绿色阶可排序；`results` tab 为准确率主表，`threshold-tuning` tab 为 luna 阈值调参。由 `bench-sheet-push` skill 推送（预览 → 确认 → 写入，用会话内 Google OAuth，不存密钥）。
 
-所有数字用的是 [`SPEC.md`](SPEC.md) 冻结的同一套考卷:自带 `question`、gate=0.5、720px、`--workers 12`。
-**唯一变量是模型**;下面第二张表额外展示"同一套考卷换采样密度"的敏感度(采样本身也是冻结项,仅作对照)。
+本页分两部分：**历史 v1（50 片）** 为保留存档，**100 题 base-4 + luna 阈值调参** 为本次新增（provisional）。冻结考卷规则见 [`SPEC.md`](SPEC.md)；历史 50 片沿用的原始规则见 [`SPEC_V1.md`](SPEC_V1.md)。**唯一变量是模型**。
 
-## 官方口径 — 1 fps（spec v1 冻结节奏）
+---
+
+## 历史 v1 — 50 片（存档，非 v2 验证结果）
+
+> 以下为保留的历史 v1 结果，**不是修正后 v2 runner 的验证结果**。旧 runner 会把部分非法回答当作阴性或跳过丢失帧，且这些输出没有媒体/答案指纹；目前无法从存档排除这些问题。v2 比较需重新跑全部候选，本次代码审查没有调用付费 API。
+
+### 1 fps（spec v1 冻结节奏）
 
 `results/{luna,qwen,gemini}_1fps.json` 为原始逐片输出。
 
@@ -25,6 +30,18 @@
 
 - smoking、weapon 本集**全阳性**,无负例 → 不计误报率/特异度(标 `—`)。
 - 1 fps 下 qwen ≈ gemini(88%)略高于 luna(84%);gemini 有 1 个 fight 误报,luna fall 误报偏多(4)。
+
+### 采样密度敏感度(同一套考卷,仅换节奏)
+
+| 模型 | dense 能力上限(≤14 帧) | **1 fps（spec v1）** | 0.25 fps（历史 4s/帧) |
+|---|---|---|---|
+| gemini | 96% | **88%** | 80% |
+| qwen | 92% | **88%** | 70% |
+| luna | 88% | **84%** | 74% |
+
+该附表是历史记录；本仓库未包含 dense / 0.25 fps 的逐片记录，不能从此复核。dense 上限为 14 帧，长片中可能比 1 fps 更稀疏，**不能**由此推导"采样越密准确率越高"的普遍规律。1 fps 是冻结口径；生产历史上的 0.25 fps 只是 VLM 吞吐限制下的妥协，现统一到 1 fps（见 SPEC §4）。
+
+---
 
 ## 100 题 base-4 扩展集（provisional，GT 部分待审）
 
@@ -60,18 +77,11 @@
 提升几乎全来自 fall：luna 在 0.5 时 fall 误报多（50 片 FP4、100 片 FP7），fall 阈值抬到 0.58 后这些误报消失。细节见 `results/luna_threshold_tuning.json` 与表格 `threshold-tuning` tab。
 （注：adl-24、adl-28 两片验证视频暂未下载，smoking/fall 验证各用 5 片；补齐后阈值预计不变，因该两片为负例、分数远低于阈值。）
 
-## 采样密度敏感度(同一套考卷,仅换节奏)
-
-| 模型 | dense 能力上限(≤14 帧) | **1 fps（spec v1）** | 0.25 fps（历史 4s/帧) |
-|---|---|---|---|
-| gemini | 96% | **88%** | 80% |
-| qwen | 92% | **88%** | 70% |
-| luna | 88% | **84%** | 74% |
-
-单调关系很干净:**采样越密、准确率越高**。1 fps 居中,是冻结口径。
-生产历史上的 0.25 fps 只是 VLM 吞吐限制下的妥协,无硬性要求,现统一到 1 fps(见 SPEC §4)。
+---
 
 ## 复现
+
+v2 重跑写入被 Git 忽略的 `outputs/`，**不覆盖**上面的历史 v1 存档结果。
 
 ```sh
 python bench/event_benchmark/run_eval.py --candidate luna   --out results/luna_1fps.json

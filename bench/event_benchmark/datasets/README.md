@@ -7,7 +7,7 @@
 
 - **Drive**:只存大文件(视频),按版本放在**只读、永不原地改**的文件夹里。
 - **git(本目录的 manifest)**:钉死内容。这才是权威冻结物。
-- **run_eval.py `--checksums`**:跑分时顺带记录每片 SHA,结果可追溯到具体文件版本。
+- **run_eval.py**:v2 跑分前强制校验 manifest、samples.json 与每片 SHA，并将指纹写入结果。`--checksums` 仅保留为兼容参数。待审 draft manifest 不能用于正式跑分。
 
 ## manifest 内容
 
