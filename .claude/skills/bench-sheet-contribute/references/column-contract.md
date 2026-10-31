@@ -91,5 +91,9 @@ fight 11/12  ·  TP5 FN1 TN6 FP0  ·  err0
   4. gradient per accuracy column G..U (one rule each): MIN red → MAX orange.
   5. gradient per speed column E,F and price W (one rule each): MIN pale → MAX red.
 
+  Rebuild gotcha: the Sheets MCP `addConditionalFormatRule` inserts at index 0 (it prepends), so the
+  **last** rule you add ends up on top. Add the gradients first and the boolean rules (green=100,
+  Run, Val) last — otherwise a 100 cell shows the gradient max (orange) instead of green.
+
 If the sheet were ever lost, this block plus the table above is enough to rebuild it — but as a
 contributor you should never need to.
