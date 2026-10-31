@@ -13,6 +13,53 @@ from PIL import Image
 from goodvision_harness import videojev_service as service
 
 
+@pytest.mark.parametrize(
+    "sizes,cap,selected,remaining",
+    [
+        ([10, 100, 11], 2, [0, 2], [1]),
+        ([10, 11, 9], 2, [0, 1], [2]),
+        ([10, 100, 11, 12, 10], 3, [0, 2, 3], [1, 4]),
+        ([10, 11], 4, [0, 1], []),
+        ([10, 11], 1, [0], [1]),
+    ],
+)
+def test_ready_selection_minimizes_padding_and_preserves_order(sizes, cap, selected, remaining):
+    from collections import deque
+
+    template = object()
+    works = [SimpleNamespace(
+        index=index, state="ready", question_template=template,
+        prepared=SimpleNamespace(record={"tokens": size}),
+    ) for index, size in enumerate(sizes)]
+    scorer = object.__new__(service.Scorer)
+    scorer.runtime = SimpleNamespace(prefix_cache=True)
+    scorer.gpu_batch_size = cap
+    scorer._pipeline = deque(works)
+    assert [work.index for work in scorer._take_ready()] == selected
+    assert [work.index for work in scorer._pipeline] == remaining
+
+
+@pytest.mark.parametrize("barrier", ["preparing", "template", "cache_disabled"])
+def test_ready_selection_does_not_cross_incompatible_work(barrier):
+    from collections import deque
+
+    template = object()
+    works = [SimpleNamespace(
+        index=index, state="ready", question_template=template,
+        prepared=SimpleNamespace(record={"tokens": 10}),
+    ) for index in range(3)]
+    scorer = object.__new__(service.Scorer)
+    scorer.runtime = SimpleNamespace(prefix_cache=barrier != "cache_disabled")
+    scorer.gpu_batch_size = 2
+    scorer._pipeline = deque(works)
+    if barrier == "preparing":
+        works[1].state = "preparing"
+    elif barrier == "template":
+        works[1].question_template = object()
+    assert scorer._take_ready() == works[:1]
+    assert list(scorer._pipeline) == works[1:]
+
+
 @pytest.mark.parametrize("cap", [1, 2, 4])
 def test_startup_warmup_respects_gpu_batch_cap_before_serving(
     tmp_path, monkeypatch, cap
@@ -105,7 +152,7 @@ def test_scorer_batches_ready_windows_within_configured_cap(
     }]
 
     def predictions(prepared, template):
-        selected = prepared % 3
+        selected = prepared.value % 3
         return [{
             "id": row["id"], "task": "choice", "answer_index": selected,
             "answer": row["options"][selected],
@@ -119,18 +166,18 @@ def test_scorer_batches_ready_windows_within_configured_cap(
             self.metadata = {}
 
         def prepare(self, images, fps, **kwargs):
-            return int(images[0])
+            return SimpleNamespace(value=int(images[0]), record={"tokens": 16})
 
         def predict_prepared(self, prepared, *, question_template, frame_times):
-            calls.append(("single", (prepared,)))
-            if prepared == 0:
+            calls.append(("single", (prepared.value,)))
+            if prepared.value == 0:
                 entered.set()
                 assert release.wait(5)
             return predictions(prepared, question_template), {}
 
         def predict_prepared_batch(self, windows):
             assert len({id(w["question_template"]) for w in windows}) == 1
-            calls.append(("batch", tuple(w["prepared"] for w in windows)))
+            calls.append(("batch", tuple(w["prepared"].value for w in windows)))
             for index, window in enumerate(windows):
                 yield index, (
                     predictions(window["prepared"], window["question_template"]), {},
