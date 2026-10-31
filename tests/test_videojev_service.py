@@ -13,16 +13,16 @@ from PIL import Image
 from goodvision_harness import videojev_service as service
 
 
-@pytest.mark.parametrize("cap", [1, 2, 4])
+@pytest.mark.parametrize("cap,ready,cache", [(1, 4, True), (2, 2, True), (4, 4, True), (4, 1, True), (4, 4, False)])
 def test_startup_warmup_respects_gpu_batch_cap_before_serving(
-    tmp_path, monkeypatch, cap
+    tmp_path, monkeypatch, cap, ready, cache
 ):
     calls, prepared, runtimes, events = [], [], [], []
 
     class Runtime:
         def __init__(self, *args, **kwargs):
             self.metadata = {}
-            self.prefix_cache = True
+            self.prefix_cache = cache
             runtimes.append(self)
 
         def prepare(self, payloads, fps, **kwargs):
@@ -78,15 +78,19 @@ def test_startup_warmup_respects_gpu_batch_cap_before_serving(
         "videojev-service", "--cache-dir", str(tmp_path),
         "--result-log", str(tmp_path / "results.jsonl"),
         "--gpu-batch-size", str(cap),
+        "--ready-capacity", str(ready),
     ])
     service.main()
 
     assert prepared == [(640, 360), (720, 405)]
     assert {size for _kind, windows in calls for size in windows} == set(prepared)
     assert all(len(windows) <= cap for _kind, windows in calls)
-    assert [kind for kind, _windows in calls] == (
-        ["single", "single"] if cap == 1 else ["single", "batch"]
-    )
+    limit = min(cap, ready) if cache else 1
+    expected = [("single", (size,)) for size in prepared]
+    for count in range(2, limit + 1):
+        expected.extend(("batch", (size,) * count) for size in prepared)
+        expected.append(("batch", tuple(prepared[index % 2] for index in range(count))))
+    assert calls == expected
     assert runtimes[0].startup_template.rows
     assert runtimes[0].metadata["startup_prepare_seconds"] >= 0
     assert events == ["warm", "ready", "listen"]
