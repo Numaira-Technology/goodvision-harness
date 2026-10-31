@@ -1,94 +1,101 @@
-# Repo 整理 · demo vs product 清单（梳理，不重构）
+# Repo 整理 · production（交付）vs demo（运行模式）清单
 
-> 目的：在**不移动任何代码**的前提下，把当前仓库里的 compose / config / Dockerfile / 部署文档
-> 按"**product（交付/delivery）**"与"**demo/dev（演示与开发）**"分类，便于后续决定是否真正拆分。
+> 目的：厘清"生产环境"和"demo 环境"在本仓库里**到底是什么、由哪些文件/入口承载**，
+> 为日后的部署文档与运维脚本提供一张对照表。**本次不移动任何代码、不改目录结构。**
 >
-> **本清单是基于命名与文件头注释的推断**，不是权威划分。标 ⚠️ 的条目需要对应 owner 确认后才算定。
-> 生成于仓库整理任务；代码此刻未改动。
+> 权威依据：[`README.md`](../README.md)（"Start here" 表 + Quick start + Repository layout）
+> 与 [`CONTRIBUTING.md`](../CONTRIBUTING.md)（"What belongs in Git" / "Organization and stable paths"）。
 
-## 判定信号（从现状观察到的）
+## 先厘清一个关键认知
 
-- **product / 交付**：文件名含 `delivery` / `release` / `customer`，或文档标题写"交付"。这一套是给客户部署的完整功能包。
-- **demo / dev**：`compose.yaml` 的默认网络名是 `goodvision-demo`；众多 `compose.*.yaml` overlay 是模块化开发/实验栈（SAM、VLM、scene、perception、本地/云 GPU 等）。
-- **shared / 共用核心**：`src/` `tests/` `tools/` `schemas/` `workers/` 等两边都依赖，不归任何一边。
+**demo 和 production 不是两套平行文件，也不该用两条分支区分。** README / CONTRIBUTING 明确：
+
+- `goodvision-harness-demo` 与 `goodvision-harness` **是同一套代码、同一个控制台**，只是默认端口不同
+  （demo `7900` / 生产 `8080`）。demo 是一个**运行模式/入口 + dry-run 标志**，不是独立代码。
+- 根目录的 Compose / Dockerfile / env 示例 / 客户交付文档是 **"脚本、测试、运维共用的稳定入口"**，
+  移动前须审查其消费者（CONTRIBUTING "Organization and stable paths"）。
+- `config.yaml` 与 `src/goodvision_harness/config.yaml` **必须逐字节一致**，有回归测试强制。
+
+> 结论：**切换环境靠"入口 + 运行标志 + delivery overlay/config"，不是靠切分支。**
+> 用 branch-per-environment 会与该设计相悖、碰稳定入口、破坏 config 一致性测试、并让共用代码陷入合并地狱。
+
+## 怎么"切换"这两个环境（现成做法）
+
+```bash
+# demo / dry-run（合成结果、不调模型、不要人脸权重）
+HARNESS_AUTOSTART=false HARNESS_DRY_RUN=true \
+  goodvision-harness-demo --host 127.0.0.1 --port 7900
+
+# production / 客户交付
+python tools/start_delivery.py            # 见 DEPLOY.md / RELEASE.md
+```
 
 ---
 
-## A. Product / 交付（customer delivery）
+## A. Production / 客户交付（生产环境的东西）
 
-| 文件 | 说明 |
+README "Install a customer delivery" 路径所指的一套：
+
+| 文件 / 入口 | 角色 |
 |---|---|
-| `compose.full-gpu.delivery.yaml` | 完整 GPU 交付栈（`name: goodvision-harness`） |
-| `config.delivery.yaml` | 交付用配置 |
+| `DEPLOY.md` | 客户交付部署指南（"Install a customer delivery"） |
+| `RELEASE.md` | 发布记录 / 交付内容清单 |
+| `API_DELIVERY.md` | 对接方公开 API 契约（"Integrate a receiver"） |
+| `compose.full-gpu.delivery.yaml` | 交付部署 compose |
+| `config.delivery.yaml` | 交付配置 |
 | `.env.full-gpu.delivery.example` | 交付环境变量示例 |
 | `Dockerfile.release` | 发布/交付镜像 |
-| `DEPLOY.md` | 《GoodVision 完整功能部署 · …full1》 |
-| `API_DELIVERY.md` | 《GoodVision 接口交付说明》 |
-| `RELEASE.md` | 《GoodVision 完整交付 · …full1》 |
 | `tools/start_delivery.py` · `tools/delivery_smoke.py` · `tools/run_full_delivery_smoke.ps1` | 交付启动与冒烟 |
-| `tools/export_full_delivery.py` | 导出完整交付包 |
-| `tools/package_customer_delivery.py` · `tools/package_customer_update.py` · `tools/package_customer_docker_update.py` | 打客户交付/更新包 |
-| `tools/audit_customer_bundle.py` · `tools/customer_check.py` · `tools/customer_discovery.py` · `tools/customer_runtime.py` · `tools/customer_update.py` · `tools/customer_update_gui.py` | 客户侧审计/运行/更新工具 |
+| `tools/export_full_delivery.py` · `tools/package_customer_delivery.py` · `tools/package_customer_update.py` · `tools/package_customer_docker_update.py` | 交付/客户更新打包 |
+| `tools/audit_customer_bundle.py` · `tools/customer_check.py` · `tools/customer_discovery.py` · `tools/customer_runtime.py` · `tools/customer_update.py` · `tools/customer_update_gui.py` | 客户侧审计/运行/更新 |
 
-## B. Demo / dev（演示与开发）
+## B. Demo / dev（同一 app 的运行模式 + 开发用）
 
-| 文件 | 说明 |
+| 文件 / 入口 | 角色 |
 |---|---|
-| `compose.yaml` | 基础栈，默认网络 `goodvision-demo` |
-| `config.yaml` · `config.vlm-rich.yaml` | 开发用配置 |
+| `goodvision-harness-demo`（控制台入口，端口 7900）+ `HARNESS_DRY_RUN=true` | **demo 运行模式**（非独立文件/分支） |
+| `compose.yaml` | 基础栈，默认网络名 `goodvision-demo` |
+| `config.yaml` · `config.vlm-rich.yaml` | 开发/富标注配置（`config.yaml` 与包内副本须一致） |
 | `.env.example` | 开发环境变量示例 |
-| `Dockerfile` · `Dockerfile.face-gpu` | 开发/人脸 GPU 镜像 |
-| `WINDOWS_HYBRID.md` | Windows 非 NVIDIA 实验 |
-| `tools/start_windows_hybrid_demo.ps1` | Windows 混合演示启动 |
+| `Dockerfile` · `Dockerfile.face-gpu` | 开发 / 人脸 GPU 镜像 |
+| `WINDOWS_HYBRID.md` · `tools/start_windows_hybrid_demo.ps1` | Windows 非 NVIDIA 实验与演示 |
 
-### B1. 模块化 overlay（demo/dev 为主，⚠️ 需 owner 确认是否也进交付）
+## C. Shared / 两个环境共用核心（不归任一环境）
 
-这些是"叠在 `compose.yaml` 之上"的开发/实验栈。部分可能被交付流程间接复用，需确认：
+README "Repository layout" 列的主体，demo 与 production 跑的都是它：
 
-| 文件 | 文件头说明 |
+| 路径 | 角色 |
 |---|---|
-| `compose.main-server.yaml` | CPU 应用主机（`goodvision-main`） |
-| `compose.analysis-gateway.yaml` | 仅转发 console/camera/output（`goodvision-main`） |
-| `compose.cloud-gpu.yaml` | 本地网关 + UI 控制的云 GPU 租用（`goodvision-cloud`） ⚠️ |
-| `compose.local-gpu.yaml` | 本地 NVIDIA GPU overlay |
-| `compose.detector-remote.yaml` | 租 GPU 跑 YOLO/RF-DETR 检测器 |
-| `compose.sam-server.yaml` · `compose.sam31.yaml` · `compose.sam31-remote.yaml` · `compose.sam31-stream.yaml` | SAM 系列服务/验证/实验 |
-| `compose.perception.yaml` · `compose.scene.yaml` | SAM 连续分析 / 人物·事件引擎 |
-| `compose.vlm-server.yaml` | 独立模型 + CPU 处理服务 |
-| `compose.local-tracking.yaml` | 应用主机本地 GPU 上的 SAM 运行时 |
-| `compose.face-gpu.yaml` · `compose.gpu.yaml` · `compose.full-gpu.accelerated.yaml` | 人脸/通用/加速 GPU 栈 ⚠️ `accelerated` 命名与交付接近，待确认归属 |
-
-## C. Shared / 共用核心（两边都依赖，不归任一环境）
-
-| 路径 | 说明 |
-|---|---|
-| `src/` | 主代码（`goodvision_harness` 包） |
-| `tests/` | 测试 |
-| `tools/`（除上面列入 A 的交付工具外） | 通用脚本与基准/诊断工具 |
-| `schemas/` · `workers/` · `diag/` | schema、worker、诊断 |
-| `bench/` · `benchmark/` · `bench_v1_sample/` | 评测体系（偏 dev，⚠️ 若要可单列一类） |
-| `README.md` · `CONTRIBUTING.md` | 项目总说明 |
+| `src/goodvision_harness/` | 应用、API、视频流水线、事件存档、控制台 |
+| `workers/` | SAM scene / Contour / Paddle rich-label worker |
+| `tests/` | 离线单测与集成检查 |
+| `schemas/` | 版本化分析与事件契约 |
+| `tools/`（除 A 列的交付工具外） | 部署/诊断/基准/评测通用入口（见 `tools/README.md`） |
+| `docs/` | 指南 / 参考 / 架构 / 验证 |
+| `bench/` · `benchmark/` · `bench_v1_sample/` | 评测体系（dev-only，与两个环境正交） |
 | `pyproject.toml` · `.github/` | 构建与 CI |
 
-## D. 本机杂物（未被 git 跟踪，不在 repo 内，仅本地）
+### B/C 之间的模块化 overlay（按需叠加，非环境专属）
 
-`yolo*.pt` / `yolov8*.pt` 权重、`testABvideos.zip` / `testABvideos/`、`auto.crt` / `auto.key`、
-`video_samples/`、`outputs/` 等是本机工作目录文件，**git 未跟踪**，所以没有撑大仓库。
-如需减少本机混乱，可自行清理，不影响 repo。
+这些 `compose.*.yaml` 是"叠在 `compose.yaml` 之上"的部署形态（本地/云 GPU、SAM、VLM、scene、
+perception、分机等），**按部署拓扑选择，不等于 demo 或 production 的归属**。delivery 形态用 A 里的
+`compose.full-gpu.delivery.yaml`；其余（`sam31*` / `scene` / `perception` / `local-gpu` / `cloud-gpu` /
+`detector-remote` / `main-server` / `analysis-gateway` / `vlm-server` / `local-tracking` / `gpu` /
+`full-gpu.accelerated` / `face-gpu`）是运维按场景叠加的入口。详见各文件头注释与 `docs/guides/`。
+
+## D. 本机杂物（git 未跟踪，不在 repo 内）
+
+`yolo*.pt` / `yolov8*.pt`、`testABvideos.zip` / `testABvideos/`、`auto.crt` / `auto.key`、
+`video_samples/`、`outputs/` 等是本机工作目录文件，git 未跟踪，不影响仓库体积。
+（CONTRIBUTING："凭据、模型权重、人脸库、录像、构建产物、本地 worktree 一律放在 Git 之外。"）
 
 ---
 
-## ⚠️ 需 owner 确认的点
+## 结论与建议
 
-1. **overlay 归属**：B1 里的 overlay 哪些实际进客户交付？特别是 `compose.full-gpu.accelerated.yaml`
-   （命名像交付）和 `compose.cloud-gpu.yaml`（云租用）。
-2. **benchmark 体系**（`bench/` `benchmark/`）是否算 dev-only、要不要单独一类。
-3. **是否真的要物理拆分**。本清单只做梳理；若日后要落地，见下方建议。
-
-## 如果日后决定落地拆分（备选，暂不执行）
-
-- **最小改动**：在 repo 内建 `deploy/product/` 与 `deploy/demo/` 两个目录，把对应 compose/config/env
-  软链接或移动过去，顶层留 `README` 指路。共用代码 `src/`/`tools/` 不动。
-- **彻底隔离**：product 留本 repo，demo 另开 repo —— 迁移成本与历史处理较大，不推荐作为第一步。
-
-> 下一步：请 owner 核对 A/B 分类与 ⚠️ 项；确认后再谈是否物理拆分。
+1. **不要用分支分 demo/product。** 该项目本就以"同一代码 + 不同入口/标志/overlay"区分二者；
+   分支切换会与设计相悖并带来维护负担。
+2. 真正有价值的"整理"是**把上面这张对照表沉淀进部署文档**（或 `README` 的一个小节），
+   让人一眼知道生产环境=交付那套、demo=运行模式。
+3. **根部署文件（Compose / Dockerfile / env / 交付文档）不要擅自移动**；若日后仍想做物理归组，
+   须先审查脚本/测试/运维消费者，并保留 `config.yaml` 一致性不变量。
