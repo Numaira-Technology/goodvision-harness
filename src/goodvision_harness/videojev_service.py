@@ -756,6 +756,8 @@ def main():
     parser.add_argument("--max-pixels", type=int, default=409600)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
+    if args.cpu_threads < 1:
+        parser.error("--cpu-threads must be at least 1")
 
     import torch
 
