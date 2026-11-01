@@ -3946,6 +3946,20 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             return False, "frame_stale"
         plan = self._workflow_plan
         if plan is not None and plan["tracking_enabled"] and not plan["features"]:
+            if plan.get("tracking_engine") == "bbox":
+                snapshot = (
+                    self._rich_labels.latest(session.stream_session_id)
+                    if self._rich_labels is not None else None
+                )
+                if snapshot is None or snapshot.stream_session_id != session.stream_session_id:
+                    return False, "waiting_for_tracking"
+                timestamp = self._state.get("last_media_timestamp")
+                if timestamp is not None and not (
+                    0 <= timestamp - snapshot.timestamp_seconds
+                    <= self.settings.ready_max_result_age_seconds
+                ):
+                    return False, "tracking_stale"
+                return True, "ready"
             metadata = self._camera_display_metadata.snapshot()
             if (metadata.get("stream_session_id") != session.stream_session_id
                     or not metadata.get("anchors")):

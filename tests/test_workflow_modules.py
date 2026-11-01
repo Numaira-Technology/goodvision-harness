@@ -325,3 +325,42 @@ def test_output_http_route_is_no_store_and_rejects_unknown_outputs(rig):
         )
     finally:
         client.close()
+
+
+@pytest.mark.parametrize(
+    "session, timestamp, expected",
+    [
+        ("current", 10, (True, "ready")),
+        ("previous", 10, (False, "waiting_for_tracking")),
+        ("current", 1, (False, "tracking_stale")),
+        ("current", 11, (False, "tracking_stale")),
+        (None, 10, (False, "waiting_for_tracking")),
+    ],
+)
+def test_bbox_only_readiness_uses_current_session_snapshots(
+    session, timestamp, expected
+):
+    import time
+    from threading import RLock
+
+    from goodvision_harness.rich_labeling import RichLabelSnapshot
+    from goodvision_harness.service import HarnessRuntime
+
+    snapshot = RichLabelSnapshot(session, 1, timestamp, ()) if session else None
+    runtime = SimpleNamespace(
+        _state_lock=RLock(),
+        _state={"pipeline_state": "running", "last_media_timestamp": 10},
+        _last_frame_monotonic=time.monotonic(),
+        _last_result_monotonic=None,
+        _session=SimpleNamespace(running=True, stream_session_id="current"),
+        _workflow_plan={
+            "tracking_enabled": True,
+            "tracking_engine": "bbox",
+            "features": [],
+        },
+        _rich_labels=SimpleNamespace(latest=lambda session_id: snapshot),
+        settings=SimpleNamespace(
+            ready_max_frame_age_seconds=3, ready_max_result_age_seconds=5
+        ),
+    )
+    assert HarnessRuntime.readiness(runtime) == expected

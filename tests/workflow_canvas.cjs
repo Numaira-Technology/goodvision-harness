@@ -611,3 +611,18 @@ test('Output appearance cannot be changed while assigned cameras are running',as
  const before=clone(app.graph);await app.fieldChange({wcDisplay:'events:visible'},{checked:false});
  assert.deepEqual(app.graph,before);
 });
+
+
+test('group Output preview uses the applied group workflow, independently of editor selection',async()=>{
+ const app=appFixture();app.mode='groups';app.selected='out';app.group.workflow_id='workflow-2';app.testCamera='camera01';app.data.cameras[0].status={analysis_state:'running'};
+ const img={dataset:{wcOutputPreview:'out'},hidden:true,isConnected:true};app.el.querySelector=selector=>selector==='[data-wc-output-preview]'?img:null;
+ let requested;app.fetch=async url=>{requested=url;return{ok:true,blob:async()=>new Blob(['jpeg'],{type:'image/jpeg'})};};
+ try{await app.updateOutputPreview();assert(requested.includes('workflow_id=workflow-2'));assert.equal(img.hidden,false);assert.equal(app.workflowId,'workflow-1');}
+ finally{app.closed=true;clearTimeout(app.outputPreviewTimer);if(app.outputPreviewUrl)URL.revokeObjectURL(app.outputPreviewUrl);}
+});
+
+test('hidden workspaces stop requesting output frames',async()=>{
+ const app=appFixture();app.testCamera='camera01';app.selected='out';app.data.cameras[0].status={analysis_state:'running'};
+ const img={dataset:{wcOutputPreview:'out'},hidden:false};app.el.querySelector=()=>img;app.el.ownerDocument.hidden=true;
+ app.fetch=async()=>assert.fail('hidden preview must not fetch');await app.updateOutputPreview();assert.equal(img.hidden,true);
+});
