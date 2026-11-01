@@ -77,8 +77,7 @@ docker compose ps
 
 For normal fixed-five mode, the demo configuration may initialize authorized
 local face files in the Compose `face-models` volume on first use. Alternatively,
-pre-populate `/models/models/<configured-profile>/`. `HARNESS_DRY_RUN=true` does
-not need them.
+pre-populate `/models/models/<configured-profile>/`.
 
 The development default model route uses OpenRouter with `qwen/qwen3.5-35b-a3b:nitro`. Set
 `INFERENCE_PROVIDER=dashscope` to switch to DashScope; model and endpoint
@@ -146,7 +145,6 @@ firewall or reverse proxy.
 The image default is
 `webrtc+http://192.168.20.199:1985/rtc/v1/whep/?app=live&stream=livestream`.
 The **Persistent deployment defaults** panel can override that value and save
-the formal/dry-run mode,
 automatic video connection choice, and a write-only API key in the persistent
 `/data` volume. Automatic connection never starts analysis; use the global
 analysis control after the selected video connections are ready.
@@ -228,14 +226,11 @@ destructive maintenance. Optional local-file initialization is for the declared
 demo only. A customer deployment
 must use face-model weights whose license permits that production use.
 
-### Zero-cost smoke mode
+### Console checks without analysis
 
-To test WHEP ingestion, JSON delivery, and all video outputs without calling the LLM:
-
-```dotenv
-HARNESS_DRY_RUN=true
-```
-
-Restart with `docker compose up -d`. Dry-run bypasses both the external model
-and local face weights, and emits deterministic selected-feature results with
-synthetic normalized boxes.
+Start with `HARNESS_AUTOSTART=false` to configure services and inspect the
+console before connecting video. Analysis starts only through its explicit
+control and requires the configured model services and credentials. The deployed
+service ignores legacy synthetic defaults and rejects `dry_run=true` requests.
+Local source launches persist settings in `.goodvision/deployment-settings.json`
+unless `HARNESS_DEPLOYMENT_SETTINGS_PATH` selects another writable path.
