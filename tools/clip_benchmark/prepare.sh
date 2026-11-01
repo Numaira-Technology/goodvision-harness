@@ -9,4 +9,3 @@ python3 -m venv --system-site-packages "$task_root/env"
   transformers==5.14.1 pillow==11.3.0 numpy==2.2.6 \
   opencv-python-headless==4.12.0.88
 "$task_root/env/bin/python" -m pip list --format=json > "$task_root/installed-packages.json"
-

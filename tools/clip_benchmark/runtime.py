@@ -408,4 +408,3 @@ def run_streams(media, encoder, thresholds, output, slots=12, interval=.8):
         summary[scope] = counters
     _save(output / "completion.json", summary)
     return summary
-

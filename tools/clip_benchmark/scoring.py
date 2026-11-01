@@ -270,4 +270,3 @@ def evaluate(records_path: Path, samples: list, thresholds: dict, output: Path, 
     _write_csv(output / "per-question.csv", rows)
     _write_json(output / "summary.json", summary)
     return summary
-

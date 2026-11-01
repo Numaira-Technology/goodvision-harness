@@ -170,4 +170,3 @@ class TimedVideoFileStream:
                 emitted += 1
         finally:
             capture.release()
-
