@@ -632,7 +632,12 @@ def test_timeout_keeps_shared_gpu_slot_until_actual_native_work_finishes(
             ]
             assert len(timeouts) == 1
             stage, elapsed, received = timeouts[0].args
-            assert stage == "inference" and elapsed >= 0.04 and received > len(jpeg())
+            assert stage == "inference" and received > len(jpeg())
+            # Windows asyncio timers can wake within one clock-resolution tick
+            # of the 50 ms deadline. Check bounded timing and GPU ownership,
+            # rather than treating this protocol test as a precision timer.
+            assert 0 < elapsed < 2
+            assert not finished.is_set()
             assert timeouts[0].levelno == logging.WARNING
             assert client.post("/v1/video/batches", json=batch(1)).status_code == 429
             release.set()

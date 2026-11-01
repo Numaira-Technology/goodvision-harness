@@ -17,7 +17,8 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any
 
-_LABELS = frozenset({"fight", "smoking", "fall", "weapon", "stranger"})
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
+
 _PHASES = frozenset({"suspected", "confirmed", "ended", "retracted"})
 _TEXT_LIMIT = 256
 
@@ -52,6 +53,7 @@ class SceneArchive:
         retention_days: float = 7,
         max_storage_bytes: int = 64 * 1024 * 1024,
         queue_size: int = 32,
+        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
     ) -> None:
         if _number(retention_days) <= 0:
             raise ValueError("retention_days must be positive")
@@ -60,6 +62,7 @@ class SceneArchive:
         if type(queue_size) is not int or not 1 <= queue_size <= 1024:
             raise ValueError("queue_size must be an integer between 1 and 1024")
         self.directory = Path(directory)
+        self.vocabulary = vocabulary
         self.retention_days = float(retention_days)
         self.max_storage_bytes = max_storage_bytes
         self._row_limit = min(10000, max_storage_bytes // 1024)
@@ -89,15 +92,14 @@ class SceneArchive:
         self._thread.start()
         self._ready.wait(1.0)
 
-    @staticmethod
-    def _record(event: Mapping, session: str, source: str) -> dict[str, Any]:
+    def _record(self, event: Mapping, session: str, source: str) -> dict[str, Any]:
         label, phase = event.get("event_label"), event.get("phase")
-        if not isinstance(label, str) or label not in _LABELS:
+        if not isinstance(label, str) or label not in self.vocabulary:
             raise ValueError("invalid event label")
         if not isinstance(phase, str) or phase not in _PHASES:
             raise ValueError("invalid event phase")
         subjects = event.get("subject_ids")
-        if not isinstance(subjects, (list, tuple)) or not 1 <= len(subjects) <= 128:
+        if not isinstance(subjects, (list, tuple)) or not (0 if label == "ground_litter" else 1) <= len(subjects) <= 128:
             raise ValueError("invalid event participants")
         record: dict[str, Any] = {
             "event_id": _text(event.get("event_id")),
@@ -126,8 +128,15 @@ class SceneArchive:
             record["confidence"] = confidence
         return record
 
-    def submit(self, snapshot: dict, *, timeout_seconds: float = 0) -> bool:
-        """Copy only allowlisted metadata; enqueue without waiting for disk I/O."""
+    def submit(
+        self, snapshot: dict, *, timeout_seconds: float = 0,
+        raise_on_invalid: bool = False,
+    ) -> bool:
+        """Copy allowlisted metadata; optionally raise for permanent rejection.
+
+        Background drain callers must distinguish invalid data from transient
+        queue pressure. Live callers retain the nonthrowing admission API.
+        """
         if self._closing.is_set():
             return False
         try:
@@ -186,6 +195,8 @@ class SceneArchive:
         except (AttributeError, TypeError, ValueError):
             with self._lock:
                 self._stats["invalid_snapshots"] += 1
+            if raise_on_invalid:
+                raise ValueError("invalid scene archive snapshot") from None
             return False
         with self._lock:
             if self._closing.is_set() or self._stats["state"] == "failed":

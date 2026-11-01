@@ -8,8 +8,8 @@ from collections import Counter, OrderedDict
 from threading import Event, Lock, Thread
 
 from .contracts import NormalizedBBox
-from .scene_evidence import InspectionRequest
-from .scene_runtime import TemporalInspection
+from .runtime.scene import TemporalInspection
+from .runtime.scheduling import InspectionRequest
 
 
 def _overlap(a, b):
@@ -249,7 +249,11 @@ class VLMFusion:
                         ],
                         "source_frame_sequence": sequence,
                         "source_timestamp_seconds": at,
-                        "method": "source_time_box_overlap",
+                        "method": (
+                            "scene_observation"
+                            if observation["event_label"] == "ground_litter"
+                            else "source_time_box_overlap"
+                        ),
                         "subjects": [
                             {
                                 "vlm_subject_id": sid,

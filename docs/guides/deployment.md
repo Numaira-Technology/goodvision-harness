@@ -80,8 +80,8 @@ local face files in the Compose `face-models` volume on first use. Alternatively
 pre-populate `/models/models/<configured-profile>/`. `HARNESS_DRY_RUN=true` does
 not need them.
 
-The development default model route uses AIClub with `qwen3.5-plus`. Set
-`INFERENCE_PROVIDER` to switch to OpenRouter or DashScope; model and endpoint
+The development default model route uses OpenRouter with `qwen/qwen3.5-35b-a3b:nitro`. Set
+`INFERENCE_PROVIDER=dashscope` to switch to DashScope; model and endpoint
 overrides use the same streaming pipeline. See the configuration examples below.
 The full customer GPU package instead retains its fixed service preset.
 

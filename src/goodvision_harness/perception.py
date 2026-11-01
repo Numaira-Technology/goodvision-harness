@@ -295,6 +295,7 @@ def create_tracking_coordinator(client, rich, on_batch):
     if coordinator is PipelinedVideoSessionTrackingCoordinator:
         options.update(
             queue_policy=rich.video_queue_policy,
+            latest_only=rich.video_latest_only,
             realtime_append_frames=rich.video_realtime_append_frames,
             realtime_pending_frames=rich.video_realtime_pending_frames,
             realtime_max_age_seconds=rich.video_realtime_max_age_seconds,

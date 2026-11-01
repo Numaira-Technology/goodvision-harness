@@ -85,6 +85,7 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.delenv("SCENE_VLM_OUTPUT_MODE", raising=False)
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **kwargs: "")
     monkeypatch.setattr(service, "IndependentVLMBranch", LocalBranch)
     base = load_config(ROOT / "config.yaml")
@@ -138,6 +139,7 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
             independent = client.get("/v1/vlm/results/latest")
             assert independent.status_code == 200
             payload = independent.json()
+            assert payload["vlm_lane"] == "information"
             assert payload["analysis_kind"] == "vlm_event"
             removed = {"events", "missing_event_labels", "association", "confirmation"}
             assert removed.isdisjoint(payload)
@@ -152,6 +154,8 @@ def test_camera_vlm_runs_and_api_streams_while_main_state_lock_is_held(
                 == "vlm_event"
             )
             status = client.get("/v1/vlm/status").json()
+            assert status["output_mode"] == "parallel"
+            assert set(status["lanes"]) == {"events", "compact"}
             assert status["independent"]
             assert status["stream_session_id"] == payload["stream_session_id"]
             assert status["generation"] == payload["generation"]
@@ -255,6 +259,63 @@ def test_default_configuration_enables_independent_process(monkeypatch):
     monkeypatch.delenv("SCENE_INDEPENDENT_VLM", raising=False)
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **kwargs: "")
     assert load_config(ROOT / "config.yaml").runtime.scene_independent_vlm is True
+
+
+def test_applied_events_workflow_prepares_and_runs_without_optional_tracker(
+    tmp_path, monkeypatch,
+):
+    from test_video_connection import ControlledAdapter, frame, publish, wait_for
+    from test_workflow_runtime import configure, graph
+
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.setenv("HARNESS_DRY_RUN", "false")
+    monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_: "")
+    monkeypatch.setattr(service, "IndependentVLMBranch", LocalBranch)
+    base = load_config(ROOT / "config.yaml")
+    config = replace(
+        base,
+        runtime=replace(base.runtime, scene_mode="active", scene_independent_vlm=True),
+        rich_labeling=replace(
+            base.rich_labeling,
+            enabled=False,
+            tracking_enabled=False,
+            processing_method=None,
+            backend="paddle",
+        ),
+        events=replace(base.events, directory=tmp_path / "events"),
+        service=replace(base.service, webhook=replace(base.service.webhook, url=None)),
+    )
+    runtime = service.HarnessRuntime(config)
+    runtime._aiclub_api_key = "TEST_KEY"
+
+    def unavailable():
+        raise RuntimeError("optional tracker is unavailable")
+
+    monkeypatch.setattr(runtime, "_require_processing_ready", unavailable)
+    adapter = ControlledAdapter("rtsp://camera.test/video")
+    try:
+        runtime.start()
+        runtime.connect_stream("rtsp://camera.test/video", _adapter=adapter)
+        connection = runtime._video_connection
+        publish(connection, adapter, frame(1))
+        wait_for(lambda: connection.latest_jpeg() is not None)
+        configure(runtime, graph("events"))
+        ready = runtime.prepare_analysis()
+        assert ready == {"prepared": True, "connection_id": connection.connection_id}
+        runtime.start_connected_analysis()
+        branch = runtime._vlm_branch
+        assert branch is not None
+        await_condition(lambda: branch.stats()["state"] == "running")
+        for sequence in (2, 20, 40):
+            publish(connection, adapter, frame(sequence))
+            time.sleep(0.08)
+        await_condition(lambda: branch.results.latest() is not None)
+        report = branch.results.latest().payload
+        assert report["stream_session_id"] == runtime._session.stream_session_id
+        assert report["judgments"][0]["event_label"] == "smoking"
+        assert runtime.results.latest(feature="smoking") is not None
+    finally:
+        runtime.stop()
 
 
 @pytest.mark.parametrize("cancel_preparation", [False, True])

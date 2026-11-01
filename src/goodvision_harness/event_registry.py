@@ -166,6 +166,31 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
         recall=HIGH_RECALL,
     ),
     EventDefinition(
+        label="ppe_violation",
+        zh_name="防护装备缺失",
+        target=PERSON_TARGET,
+        default_sensitivity=_STANDARD,
+        sensitivity_options=_levels(
+            "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",
+            "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",
+        ),
+        builtin=True,
+        recall=HIGH_RECALL,
+    ),
+    EventDefinition(
+        label="ground_litter",
+        zh_name="地面垃圾",
+        target=OBJECT_TARGET,
+        requires_subject=False,
+        default_sensitivity=_STANDARD,
+        sensitivity_options=_levels(
+            "地面上可见被丢弃的垃圾；无需有人在场",
+            "地面上可见被丢弃的垃圾；无需有人在场",
+        ),
+        builtin=True,
+        recall=HIGH_RECALL,
+    ),
+    EventDefinition(
         label=STRANGER_LABEL,
         zh_name="陌生人",
         branch=FACE_BRANCH,

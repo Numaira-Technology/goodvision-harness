@@ -2,10 +2,13 @@
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -304,8 +307,103 @@ def test_controller_save_start_stop_persistence_and_duplicate_protection(
             )
 
         process.wait.side_effect = release
-        assert client.post("/stop").json()["state"] == "stopped"
+        assert client.post("/stop").json()["state"] == "stopping"
+        for _ in range(100):
+            if client.get("/settings?check_health=false").json()["state"] == "stopped":
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("background release did not publish stopped")
         process.send_signal.assert_called_once()
+
+
+@pytest.mark.parametrize("backup_failed", [False, True])
+def test_release_is_asynchronous_idempotent_and_shutdown_awaits_it(
+    tmp_path, monkeypatch, backup_failed,
+):
+    manager = CloudController(tmp_path, 1)
+    process = manager.process = Mock()
+    process.poll.return_value = None
+    manager.status_path.write_text(json.dumps({
+        "state": "ready", "cleanup_confirmed": False, "instance_id": 42,
+    }))
+    gate = Event()
+
+    def release():
+        assert gate.wait(5), "test never released background cleanup"
+        manager.status_path.write_text(json.dumps({
+            "state": "cleanup_required" if backup_failed else "stopped",
+            "cleanup_confirmed": not backup_failed, "instance_id": 42,
+            "error": "backup failed; instance retained" if backup_failed else None,
+        }))
+        process.poll.return_value = 130
+
+    process.wait.side_effect = release
+    spawn = Mock()
+    monkeypatch.setattr("tools.cloud_gpu_controller.subprocess.Popen", spawn)
+
+    async def scenario():
+        try:
+            assert (await manager.stop())["state"] == "stopping"
+            # The child is still reporting ready; the gateway must reject work now.
+            assert manager.record()["state"] == "ready"
+            assert manager.status()["state"] == "stopping"
+            for _ in range(3):
+                assert (await manager.stop())["state"] == "stopping"
+            process.send_signal.assert_called_once()
+            with pytest.raises(HTTPException):
+                manager.start()
+            with pytest.raises(HTTPException):
+                manager.save(CloudGPUSettings(streams=1).public())
+            close = asyncio.create_task(manager.close())
+            await asyncio.sleep(0)
+            assert not close.done()
+            gate.set()
+            await close
+            state = manager.status()
+            expected = "cleanup_required" if backup_failed else "stopped"
+            assert state["state"] == expected
+            assert state["cleanup_confirmed"] is (not backup_failed)
+            assert (await manager.stop())["state"] == state["state"]
+            process.send_signal.assert_called_once()
+            process.wait.assert_called_once_with()
+            if backup_failed:
+                with pytest.raises(HTTPException):
+                    manager.start()
+                assert state["instance_id"] == 42
+            spawn.assert_not_called()
+        finally:
+            gate.set()
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_failed_background_wait_never_confirms_release_or_signals_again(tmp_path):
+    manager = CloudController(tmp_path, 1)
+    process = manager.process = Mock()
+    process.poll.return_value = None
+    process.wait.side_effect = OSError("private SSH details must not be exposed")
+    manager.status_path.write_text(json.dumps({
+        "state": "ready", "cleanup_confirmed": False, "instance_id": 42,
+    }))
+
+    async def scenario():
+        assert (await manager.stop())["state"] == "stopping"
+        await manager.release_task
+        state = manager.status()
+        assert state["state"] == "cleanup_required"
+        assert state["cleanup_confirmed"] is False
+        assert state["instance_id"] == 42
+        assert "private SSH" not in state["error"]
+        with pytest.raises(HTTPException):
+            manager.start()
+        await manager.stop()
+        await manager.close()
+        process.send_signal.assert_called_once()
+        process.wait.assert_called_once_with()
+
+    asyncio.run(scenario())
 
 
 def test_controller_refuses_mismatched_capacity_and_uncertain_cleanup(
@@ -345,13 +443,12 @@ def test_running_rental_health_is_rechecked_without_another_rental(
         assert client.get("/settings").json()["state"] == "ready"
 
 
-def test_cloud_launcher_provisions_arbitrary_isolated_cpu_lanes():
+def test_cloud_launcher_moves_all_lanes_to_gpu_host_and_mounts_old_data_for_migration():
     text = fleet_overlay(37)
-    assert "harness-37:" in text
-    assert "camera-37-data:/data" in text
-    assert '"HARNESS_FLEET_CAMERA_INDEX": "37"' in text
-    assert "compose.cloud-gpu.yaml" in text and "compose.main-server.yaml" not in text
-    assert "ports: !override []" in text
+    assert "harness-37:" not in text
+    assert "camera-37-data:/legacy/camera-37:ro" in text
+    assert '"SAM31_LIVE_CAMERAS": "37"' in text
+    assert "LOCAL_CAMERA_37_STREAM_URL" in text
 
 
 def test_cloud_launcher_dry_run_never_calls_docker_or_creates_files(
@@ -400,3 +497,75 @@ def test_main_proxy_serializes_actions_and_blocks_mutation_while_analyzing(monke
         ):
             assert client.request(method, path, json={}).status_code == 409
         assert client.get("/v1/fleet").json()["usable_capacity"] == 2
+
+
+@pytest.mark.parametrize("streams", [2, 12, 37, 1024])
+def test_gateway_container_budget_covers_whep_slots_and_reconnects(streams):
+    import yaml
+
+    from goodvision_harness.whep_process import DEFAULT_FRAME_CAPACITY
+
+    services = yaml.safe_load(fleet_overlay(streams))["services"]
+    reservation = int(services["harness"]["shm_size"].removesuffix("m")) * 1024**2
+    # All original receivers and their replacements can coexist; metadata
+    # arenas/semaphores need additional space beyond the full pixel slots.
+    assert reservation >= 2 * streams * DEFAULT_FRAME_CAPACITY + 16 * 1024**2
+    recipe = yaml.safe_load(
+        (Path(__file__).parents[1] / "compose.analysis-gateway.yaml").read_text("utf-8")
+    )["services"]["harness"]
+    assert "HARNESS_GATEWAY_SHM_SIZE" in recipe["shm_size"]
+    assert recipe["tmpfs"] == ["/tmp:size=64m"]
+
+
+@pytest.mark.parametrize("recipe", ["cloud", "legacy"])
+def test_cloud_compose_keeps_existing_server_inference_configuration(
+    tmp_path, recipe,
+):
+    from compose_support import isolated_docker_config
+
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker Compose is required for configuration rendering")
+    root = Path(__file__).parents[1]
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("")
+    docker_config = tmp_path / "docker"
+    docker_config.mkdir()
+    selected = {
+        "INFERENCE_EXECUTION_MODE": "server",
+        "INFERENCE_SERVER_URL": "https://vision.example",
+        "INFERENCE_SERVER_MODEL": "installed-vision",
+        "INFERENCE_SERVER_PROTOCOL": "goodvision",
+        "LOCAL_INFERENCE_API_KEY": "companion-test-key",
+        "LOCAL_INFERENCE_MAX_TOKENS": "2048",
+    }
+    environment = {
+        **os.environ, **selected,
+        "DOCKER_CONFIG": isolated_docker_config(docker_config),
+        "VAST_API_KEY": "rental-test-key", "HF_TOKEN": "download-test-token",
+        "SAM_SSH_KEY": str(tmp_path / "ssh-key"),
+    }
+    files = (
+        ["compose.cloud-gpu.yaml"] if recipe == "cloud"
+        else ["compose.yaml", "compose.sam31-remote.yaml"]
+    )
+    command = [
+        docker, "compose", "--project-directory", str(root),
+        "--env-file", str(empty_env),
+    ]
+    for filename in files:
+        command.extend(["-f", str(root / filename)])
+    rendered = subprocess.run(
+        [*command, "config", "--format", "json"], env=environment,
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    services = json.loads(rendered.stdout)["services"]
+    controller = services["sam-remote"]["environment"]
+    # The old cloud main application received these through main-server; the
+    # controller now must pass them to the remote analysis process instead.
+    for key, value in selected.items():
+        assert controller.get(key) == value, key
+    assert services["harness"]["environment"]["HARNESS_ANALYSIS_URL"] == (
+        "http://sam-remote:8094"
+    )

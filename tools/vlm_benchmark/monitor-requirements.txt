@@ -1,0 +1,2 @@
+# Additional dependencies only for browser viewport recording.
+playwright==1.63.0

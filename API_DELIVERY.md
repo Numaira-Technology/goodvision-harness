@@ -15,6 +15,7 @@
 | `tracking_mode` | `legacy` 原部署服务（单路）、`local` 本机 GPU、`server` 自备追踪服务器 |
 | `inference_server_url` | 独立模型服务器的 HTTP(S) 主机地址，例如 `http://192.168.1.60:8000` |
 | `inference_server_model` | 独立服务器对外提供的模型名称，默认 `local-vision` |
+| `inference_server_protocol` | `compatible`（默认）直接调用兼容接口；`goodvision` 将图像准备和结果校验交给模型端 CPU 服务 |
 | `tracking_server_url` | 追踪服务器的 HTTP(S) 主机地址，例如 `http://192.168.1.61:8092` |
 | `tracking_server_capacity` | 追踪服务器实际配置的正整数路数，默认 1 |
 | `tracking_sample_fps` | 每路送入人物追踪的采样帧率，有限数值 `0.5–30`，默认 `2`；不改变显示、人脸采样或轮廓补帧频率 |

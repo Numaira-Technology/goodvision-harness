@@ -15,6 +15,18 @@ def trace_id(value: object) -> str | None:
     return None
 
 
+def configure_worker_timing() -> None:
+    """Spawned model workers do not inherit Uvicorn's logging configuration."""
+    logger = logging.getLogger("uvicorn.error")
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("INFO:     %(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.disabled = False
+    logger.propagate = False
+
+
 def log_timing(event: str, **fields: object) -> None:
     """Diagnostics cannot turn a successful model/display operation into failure.
 

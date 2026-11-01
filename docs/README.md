@@ -25,13 +25,25 @@
 | 任务 | 文档 |
 | --- | --- |
 | 配置调度、人脸与视觉大模型 | [运行指南](guides/runtime.md) |
+| 编排流程、摄像头组与定时总结 | [工作流画布](guides/workflows.md) |
 | 了解设置优先级、推理路线与参考记忆 | [配置指南](guides/configuration.md) |
 | 从源码部署、使用 Compose 与 dry-run | [源码部署](guides/deployment.md) |
+| 区分 demo 运行模式与客户交付 | [Demo 与交付清单](guides/demo-vs-delivery.md) |
 | 在本机 NVIDIA 显卡上运行多路视频 | [本地 GPU 部署](guides/local-gpu.md) |
 | 使用受管云 GPU 运行多路追踪 | [云 GPU 部署](guides/cloud-gpu.md) |
 | 将主程序、追踪与大模型部署到不同机器 | [分机部署](guides/modular-services.md) |
 | 使用持续场景分析 | [持续场景指南](guides/continuous-scene.md) |
+| 检查时序请求和运行回放 | [时序诊断与回放](guides/diagnostics-replay.md) |
+| 对比 VLM 事件、定位与双分支耗时 | [VLM 三模式测试](guides/vlm-mode-benchmark.md) |
+| 测试 YOLO26-S 人物 ID 与原生 Decisions | [YOLO + Decisions](guides/yolo-decisions-benchmark.md) |
+| 对齐 YOLO + Qwen35B 历史基线 | [YOLO + Qwen35B](guides/yolo-qwen-tracked-grounding.md) |
+| main grounding 恢复与独立实验保留 | [代码与测试边界](guides/pr48-49-person-grounding-integration.md) |
+| 单独测试 Decisions 场景事件 | [Decisions events](guides/decisions-api-benchmark.md) |
+| 部署和预检 Qwen3.5-35B | [Vast 自部署](guides/vast-self-hosted-qwen35.md) |
+| 对照 FP8 内核及 16/24/32 并发 | [FP8 测试](guides/vast-fp8-yolo.md) |
+| 验证 VideoJev-4B 与 PPE 提问方案 | [VideoJev 小规模验证](guides/videojev-candidate.md) |
 | 配置与验收 Contour 实时队列 | [Contour 验收指南](guides/contour-realtime-validation.md) |
+| 可选单帧人物分割 | [SAM3 ONNX component](guides/sam3-onnx.md) |
 | 构建和检查发布包 | [发布构建指南](guides/release.md) |
 
 本地开发和人物登记见[贡献指南](../CONTRIBUTING.md#local-development)；
@@ -71,3 +83,7 @@
 
 <a id="continuous-scenes-and-multi-camera-services"></a>
 持续场景和多路部署入口已归入上方“使用与运维”和“安装与接口集成”。
+
+Additional event rules: [PPE violations and ground litter](guides/safety-events.md).
+
+- [Vast 48GB 4090 FP8 + YOLO26-S](guides/vast-fp8-yolo.md)：固定模型和镜像、持久卷、离线预检与六轮入口；默认只打印计划。

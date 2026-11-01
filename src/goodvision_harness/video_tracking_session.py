@@ -620,6 +620,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
         is_last_batch: bool = False,
         request_id: str | None = None,
         prepared: PreparedSessionAppend | None = None,
+        retry_transport: bool = True,
     ) -> VideoSessionTrackingResult:
         if not self._session_operation.acquire(blocking=False):
             raise httpx.PoolTimeout("session operation already active")
@@ -791,7 +792,8 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                     "is_last_batch": is_last_batch,
                 }
 
-            for attempt in range(1, self.append_transport_retries + 2):
+            retries = self.append_transport_retries if retry_transport else 0
+            for attempt in range(1, retries + 2):
                 try:
                     result, remaining, native_ids = self._request(
                         "POST",
@@ -799,6 +801,22 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                         f"{quote(session.video_session_id, safe='')}/append",
                         deadline=deadline,
                         payload_factory=payload_factory,
+                        timing_context={
+                            "request_id": request_id,
+                            "stream_session_id": stream_session_id,
+                            "input_frames": len(frames),
+                            "final": is_last_batch,
+                            **({
+                                "first_source_sequence": frames[0].frame_sequence,
+                                "last_source_sequence": frames[-1].frame_sequence,
+                                "first_source_timestamp_seconds": (
+                                    frames[0].timestamp_seconds
+                                ),
+                                "last_source_timestamp_seconds": (
+                                    frames[-1].timestamp_seconds
+                                ),
+                            } if frames else {}),
+                        },
                         result_parser=lambda payload: self._parse_append(
                             payload, session, request_id, candidates,
                             accepted, is_last_batch,
@@ -815,7 +833,7 @@ class VideoSessionTrackingHTTPClient(VideoTrackingHTTPClient):
                     # digest. Keep the session-operation lock and exact payload:
                     # a lost response can be replayed without advancing SAM twice.
                     # HTTP status, validation and deadline failures still fail closed.
-                    if (attempt > self.append_transport_retries
+                    if (attempt > retries
                             or time.monotonic() + 0.2 >= deadline):
                         raise
                     log_timing("sam_client_append_retry",

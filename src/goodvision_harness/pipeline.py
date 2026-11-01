@@ -937,6 +937,10 @@ class StreamingSession:
             **safety,
             "event_label": self.event_label,
             "branch_errors": errors,
+            "branch_error_details": {
+                **safety.get("branch_error_details", {}),
+                **face.get("branch_error_details", {}),
+            },
             "last_error": safety.get("last_error") or face.get("last_error"),
             "branches": {
                 "safety": {

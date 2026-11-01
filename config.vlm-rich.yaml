@@ -91,10 +91,6 @@ inference_service:
   retry_backoff_seconds: 1.0
   extra_headers: {}
   providers:
-    aiclub:
-      model: qwen3.5-plus
-      request_parameters:
-        enable_thinking: false
     openrouter:
       # Previously selected by the live visual-latency benchmark (4592cd8).
       model: qwen/qwen3.5-35b-a3b
@@ -258,6 +254,8 @@ face:
   gallery_path: .goodvision/face-gallery.json
 
 runtime:
+  # Fast event information runs independently of slower person grounding.
+  scene_vlm_output_mode: parallel
   # Independent windows are sent concurrently, up to this limit. Windows that
   # would exceed it are dropped (a live feed never queues up the past).
   # Six slots provide headroom for 2.5 requests/second.

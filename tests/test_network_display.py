@@ -57,6 +57,24 @@ def test_display_uses_new_raw_source_without_any_sam_result_or_annotation():
     assert data["config"]["enabled"] is True
 
 
+def test_canvas_tracking_gate_controls_geometry_without_interrupting_video():
+    run = runtime()
+    run._workflow_plan = {"tracking_enabled": False}
+    data, image = unpack(display_response(run))
+    assert image == b"jpeg"
+    assert data["frames"][0]["source_sequence"] == 101
+    assert data["config"]["enabled"] is False
+    assert data["metadata"] is None
+    assert data["config"]["delay_seconds"] == 0
+
+    run._workflow_plan = {"tracking_enabled": True}
+    data, image = unpack(display_response(run))
+    assert image == b"jpeg"
+    assert data["config"]["enabled"] is True
+    assert data["config"]["stream_session_id"] == "run"
+    assert data["metadata"] is not None
+
+
 def test_metadata_delta_and_connection_cursor_are_independent():
     run = runtime()
     afters = []

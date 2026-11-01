@@ -167,10 +167,11 @@ class LocalGpuLauncherTests(unittest.TestCase):
         self.assertIn(str(ROOT / "compose.local-gpu.yaml"), command)
         self.assertNotIn("--build", command)
         self.assertEqual(
-            command[-4:],
+            command[-5:],
             [
                 "harness",
                 "local-inference",
+                "local-vlm-processing",
                 "local-tracking",
                 "rich-label-worker",
             ],
@@ -379,7 +380,14 @@ class LocalGpuLauncherTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 services = json.loads(result.stdout)["services"]
-                self.assertEqual(len(services), streams + 3)
+                self.assertEqual(len(services), streams + 4)
+                processing = services["local-vlm-processing"]
+                self.assertFalse(processing.get("ports"))
+                self.assertNotIn("deploy", processing)
+                self.assertEqual(
+                    processing["depends_on"]["local-inference"]["condition"],
+                    "service_healthy",
+                )
                 tracking_device = "0" if count == 1 else "1"
                 worker = services["local-tracking"]
                 self.assertEqual(worker["image"], "goodvision-contour-runtime:0.1.0")
@@ -409,6 +417,9 @@ class LocalGpuLauncherTests(unittest.TestCase):
                     )
                     self.assertEqual(volumes["/models"]["source"], "face-models")
                     env = service["environment"]
+                    self.assertEqual(env["LOCAL_INFERENCE_INSPECTION_ENDPOINT"], "http://local-vlm-processing:8080/v1/inspections")
+                    self.assertIn("LOCAL_INFERENCE_API_KEY", env)
+                    self.assertIn("INFERENCE_SERVER_PROTOCOL", env)
                     self.assertEqual(env["HARNESS_FLEET_CAPACITY"], str(streams))
                     self.assertEqual(env["HARNESS_FLEET_CAMERA_INDEX"], str(index))
                     self.assertEqual(
@@ -420,6 +431,8 @@ class LocalGpuLauncherTests(unittest.TestCase):
                         f"/cameras/camera-{index:02d}/", env["LOCAL_TRACKING_ENDPOINT"]
                     )
                 for name, service in services.items():
+                    if name == "local-vlm-processing":
+                        continue
                     self.assertIn(
                         "devices", service["deploy"]["resources"]["reservations"], name,
                     )

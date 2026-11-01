@@ -860,6 +860,7 @@ def test_peer_start_synchronizes_modular_server_settings_without_cloud_credentia
         "tracking_mode": "server",
         "inference_server_url": "http://vlm-machine:8000",
         "inference_server_model": "supplied-vision",
+        "inference_server_protocol": "goodvision",
         "tracking_server_url": "http://tracking-machine:8092",
         "tracking_server_capacity": 24,
     }
@@ -891,6 +892,7 @@ def test_peer_start_synchronizes_modular_server_settings_without_cloud_credentia
         "tracking_mode",
         "inference_server_url",
         "inference_server_model",
+        "inference_server_protocol",
         "tracking_server_url",
         "tracking_server_capacity",
     ],

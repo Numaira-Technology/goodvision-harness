@@ -17,11 +17,12 @@ from typing import Any
 
 from PIL import ImageDraw, ImageFont
 
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from .result_bus import FramePacket
 from .rich_labeling import validate_mask_contours
-from .scene_evidence import EvidenceFrame
+from .runtime.scene import SceneRuntime
+from .runtime.scheduling import EvidenceFrame
 from .scene_inspection import _read_image
-from .scene_runtime import SceneRuntime
 
 _MAX_JPEG_BYTES = 16 * 1024 * 1024
 _MAX_PEOPLE = 128
@@ -106,7 +107,10 @@ def _dashed_box(draw, bounds: tuple[int, ...], color: tuple[int, ...], width: in
         draw.line((x2, y, x2, bottom), fill=color, width=width)
 
 
-def _display_events(snapshot: Mapping[str, Any], timestamp: float) -> list[Mapping]:
+def _display_events(
+    snapshot: Mapping[str, Any], timestamp: float,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+) -> list[Mapping]:
     """Use the current event clock only when explicitly supplied by the runtime."""
     clock = _scene(snapshot).get("event_state_timestamp_seconds", timestamp)
     if not _finite(clock) or clock < 0:
@@ -126,10 +130,11 @@ def _display_events(snapshot: Mapping[str, Any], timestamp: float) -> list[Mappi
             continue
         subjects = event.get("subject_ids")
         if (
-            event.get("event_label")
-            not in ("fight", "smoking", "fall", "weapon", "stranger")
+            not isinstance(event.get("event_label"), str)
+            or event["event_label"] not in vocabulary
+            or _safe_text(event["event_label"]) != event["event_label"]
             or not isinstance(subjects, (list, tuple))
-            or not subjects
+            or (not subjects and event.get("event_label") != "ground_litter")
             or len(subjects) > _MAX_PEOPLE
             or not all(isinstance(subject, str) and subject for subject in subjects)
         ):
@@ -142,9 +147,10 @@ def _event_lines(
     snapshot: Mapping[str, Any],
     timestamp: float,
     visible_ids: set[str],
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
 ) -> list[tuple[str, tuple[int, ...]]]:
     candidates = []
-    for event in _display_events(snapshot, timestamp):
+    for event in _display_events(snapshot, timestamp, vocabulary):
         phase = event["phase"]
         at = event["last_evidence_timestamp_seconds"]
         candidates.append(
@@ -162,8 +168,6 @@ def _event_lines(
         phase = event["phase"]
         at = event["last_evidence_timestamp_seconds"]
         label = event.get("event_label")
-        if label not in ("fight", "smoking", "fall", "weapon", "stranger"):
-            continue
         subjects = event.get("subject_ids")
         if not isinstance(subjects, (list, tuple)) or not all(
             isinstance(subject, str) for subject in subjects[:8]
@@ -213,6 +217,8 @@ def render_scene_jpeg(
     snapshot: Mapping[str, Any],
     media_timestamp: float,
     quality: int = 85,
+    breakdown: dict[str, float] | None = None,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
 ) -> bytes:
     """Render presentation state only; held geometry is never event evidence.
 
@@ -220,6 +226,10 @@ def render_scene_jpeg(
     one-second visual hold is dashed and age-labelled; older/future geometry is
     omitted. Event text can persist independently and explicitly shows uncertain
     visibility. Metadata and credentials are not copied into the JPEG.
+
+    When `breakdown` is supplied it is populated with `decode_seconds`,
+    `draw_seconds` and `encode_seconds` so the caller can attribute this stage's
+    host CPU across JPEG decode, PIL draw and JPEG re-encode (display is stage 7).
     """
     if not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= _MAX_JPEG_BYTES:
         raise ValueError("scene JPEG must be nonempty and at most 16 MiB")
@@ -229,14 +239,18 @@ def render_scene_jpeg(
         raise ValueError("scene display timestamp must be finite and non-negative")
     if type(quality) is not int or not 1 <= quality <= 95:
         raise ValueError("scene JPEG quality must be an integer from 1 through 95")
+    _decode_started = time.monotonic()
     with _read_image(jpeg) as image:
+        _draw_started = time.monotonic()
+        if breakdown is not None:
+            breakdown["decode_seconds"] = _draw_started - _decode_started
         draw = ImageDraw.Draw(image)
         font = ImageFont.load_default()
         width, height = image.size
         stroke = max(1, min(4, round(min(width, height) / 300)))
         people = _people(snapshot, media_timestamp)
         subject_phases: dict[str, str] = {}
-        for event in _display_events(snapshot, media_timestamp):
+        for event in _display_events(snapshot, media_timestamp, vocabulary):
             phase = event["phase"]
             if phase not in {"suspected", "confirmed"}:
                 continue
@@ -290,7 +304,7 @@ def render_scene_jpeg(
             )
             draw.text((x + 2, y), label, font=font, fill=color)
         for index, (text, color) in enumerate(
-            _event_lines(snapshot, media_timestamp, visible_ids)
+            _event_lines(snapshot, media_timestamp, visible_ids, vocabulary)
         ):
             y = 5 + index * 16
             if y + 14 >= height or width < 16:
@@ -301,9 +315,14 @@ def render_scene_jpeg(
                 fill=(16, 23, 35),
             )
             draw.text((7, y), text, font=font, fill=color)
+        _encode_started = time.monotonic()
+        if breakdown is not None:
+            breakdown["draw_seconds"] = _encode_started - _draw_started
         with io.BytesIO() as encoded:
             image.save(encoded, format="JPEG", quality=quality)
             result = encoded.getvalue()
+        if breakdown is not None:
+            breakdown["encode_seconds"] = time.monotonic() - _encode_started
         if len(result) > _MAX_JPEG_BYTES:
             raise ValueError("rendered scene JPEG exceeds size limit")
         return result
@@ -403,7 +422,8 @@ class SceneDisplayWorker:
                         self._stats["discarded_frames"] += 1
                     continue
                 rendered = render_scene_jpeg(
-                    packet.jpeg, snapshot, packet.media_timestamp, quality=self._quality
+                    packet.jpeg, snapshot, packet.media_timestamp, quality=self._quality,
+                    vocabulary=self.scene.vocabulary,
                 )
                 output = replace(
                     packet,
@@ -712,11 +732,14 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                         self._stats["discarded_frames"] += 1
                     continue
                 render_started = time.monotonic()
+                render_breakdown: dict[str, float] = {}
                 rendered = render_scene_jpeg(
                     source.jpeg_bytes,
                     snapshot,
                     source.timestamp_seconds,
                     quality=self._quality,
+                    breakdown=render_breakdown,
+                    vocabulary=self.scene.vocabulary,
                 )
                 render_seconds = time.monotonic() - render_started
                 with self._condition:
@@ -790,6 +813,15 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                             ),
                             "snapshot_seconds": round(snapshot_seconds, 6),
                             "render_seconds": round(render_seconds, 6),
+                            "render_decode_seconds": round(
+                                render_breakdown.get("decode_seconds", 0.0), 6
+                            ),
+                            "render_draw_seconds": round(
+                                render_breakdown.get("draw_seconds", 0.0), 6
+                            ),
+                            "render_encode_seconds": round(
+                                render_breakdown.get("encode_seconds", 0.0), 6
+                            ),
                             "publish_seconds": round(publish_seconds, 6),
                             "late_event_repaint": late_event_repaint,
                             "distinct_source_frames": self._stats[

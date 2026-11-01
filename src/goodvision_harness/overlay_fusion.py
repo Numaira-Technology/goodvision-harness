@@ -67,8 +67,8 @@ _FACE_PERSON_LABELS = frozenset(
         "unknownperson",
     }
 )
-_PERSON_TARGET_EVENTS = targets(PERSON_TARGET)
-_OBJECT_TARGET_EVENTS = targets(OBJECT_TARGET)
+_PERSON_TARGET_EVENTS = frozenset(label.replace("_", "") for label in targets(PERSON_TARGET))
+_OBJECT_TARGET_EVENTS = frozenset(label.replace("_", "") for label in targets(OBJECT_TARGET))
 _MIN_MATCH_SCORE = 0.42
 _AMBIGUITY_MARGIN = 0.08
 

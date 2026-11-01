@@ -97,6 +97,15 @@ or clear a person-event episode.
 
 ## Output semantics
 
+The opt-in `scene_vlm_output_mode: events` variant uses scene-level judgments:
+`event_scope: scene`, `confirmation_state: scene_observation`, and
+`localization_state: not_requested`. Its `detected` copies the model's boolean
+or null observation without waiting for tracking. It creates neither subject
+identities nor confirmed event episodes. Late reports carry `historical_only`
+and remain in history/delivery without replacing the source-ordered latest
+state. See [pure VLM capacity testing](../validation/vlm-12-streams.md).
+The participant-grounded modes retain the following semantics:
+
 - `vlm_report.subject_id_scope` is `observation`. Its object/subject IDs are valid
   only within that report, even if consecutive boxes or model-local IDs match.
   `objects` contains only participants localized in this observation.
@@ -149,12 +158,19 @@ scene-result delivery. They do not establish SAM identity accuracy or model
 latency on real video.
 
 
-## Opt-in parallel event JSON experiment
+## Default parallel event information and grounding
 
-The runtime supports `SCENE_VLM_OUTPUT_MODE=parallel`; `full` remains the
-default. `compact` runs only the conditional grounding adapter for a single-lane
+The runtime defaults to `SCENE_VLM_OUTPUT_MODE=parallel`, including when older
+configuration files omit the setting. `full` is an explicit single-lane override.
+`compact` runs only the conditional grounding adapter for a single-lane
 control. Both adapters use original temporal images and the same selected route,
 sensitivity policies, image budget and source window. No Jev service is involved.
+
+Before recording a parallel-mode validation run, check `/v1/vlm/status` after
+session startup: `output_mode` must be `parallel`, `state` must be `running`, and
+`lanes` must contain both `events` and `compact`. Abort a mismatched run before
+playing the source. Retain the effective status with the results; configuration
+intent alone does not establish that both lanes actually started.
 
 In parallel mode, a window admitted by both lanes starts two requests: `events` returns only
 the requested event-to-boolean/null mapping; `compact` supplies subjects/verdicts

@@ -39,6 +39,10 @@ def _display_batch(
         and getattr(runtime._session, "mode", None) != "camera"
         and runtime.config.rich_labeling.backend == "sam31_stream"
         and runtime._scene_mode == "active"
+        and (
+            getattr(runtime, "_workflow_plan", None) is None
+            or runtime._workflow_plan.get("tracking_enabled", False)
+        )
     )
     config = runtime.video_display_config()
     config.update(

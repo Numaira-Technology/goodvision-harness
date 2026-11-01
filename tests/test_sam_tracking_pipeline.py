@@ -25,7 +25,7 @@ def setup_pipeline(tmp_path, callback=None, **kwargs):
         "http://worker.test",
         method="sam_live",
         transport=httpx.MockTransport(server),
-        timeout_seconds=kwargs.pop("timeout_seconds", 4),
+        timeout_seconds=kwargs.pop("client_timeout_seconds", 4),
     )
     coordinator = PipelinedVideoSessionTrackingCoordinator(
         client,
@@ -398,6 +398,85 @@ def test_phase_sampling_keeps_configured_rate_and_resets_its_clock(
         coordinator.close()
 
 
+def _park_prepare(coordinator, monkeypatch):
+    """Stop the prepare loop from draining _pending, so a backlog would grow."""
+    monkeypatch.setattr(
+        coordinator, "_preparation_schedule", lambda now: (None, {})
+    )
+
+
+def test_latest_only_drops_oldest_pending_when_behind(tmp_path, monkeypatch):
+    """With latest_only, a stalled pipeline keeps only the newest ~capacity frames."""
+    _, _, coordinator = setup_pipeline(tmp_path, max_fps=30, latest_only=True)
+    try:
+        _park_prepare(coordinator, monkeypatch)
+        for seq in range(20):
+            assert coordinator.submit(
+                b"jpeg", stream_session_id="camera", frame_sequence=seq,
+                timestamp_seconds=seq * 0.1,
+            )
+        stats = coordinator.stats()
+        assert stats["submitted"] == 20
+        # The main candidate path retains two frames without spooling them.
+        assert stats["candidate_frames"] == 2
+        assert stats["disk_pending_frames"] == 0
+        assert stats["dropped_backpressure"] == 18
+        assert set(coordinator._candidate_frames) == {18, 19}
+    finally:
+        coordinator.close()
+
+
+def test_without_latest_only_backlog_is_retained(tmp_path, monkeypatch):
+    """Default (durable) behaviour keeps every sample even when stalled."""
+    _, _, coordinator = setup_pipeline(tmp_path, max_fps=30)  # latest_only off
+    try:
+        _park_prepare(coordinator, monkeypatch)
+        for seq in range(20):
+            coordinator.submit(
+                b"jpeg", stream_session_id="camera", frame_sequence=seq,
+                timestamp_seconds=seq * 0.1,
+            )
+        stats = coordinator.stats()
+        assert stats["dropped_backpressure"] == 0
+        assert stats["disk_pending_frames"] == 20  # whole backlog retained
+    finally:
+        coordinator.close()
+
+
+def test_latest_only_releases_spool_under_overload(tmp_path, monkeypatch):
+    """Dropped candidates never consume journal quota; the retained pair can
+    still finish through the normal durable request and commit path."""
+    received = []
+    _, _, coordinator = setup_pipeline(
+        tmp_path, received.append, max_fps=30, latest_only=True,
+        spool_max_bytes=16384,
+    )
+    try:
+        with monkeypatch.context() as parked:
+            _park_prepare(coordinator, parked)
+            for seq in range(40):
+                assert coordinator.submit(
+                    b"x" * 1000, stream_session_id="camera", frame_sequence=seq,
+                    timestamp_seconds=seq * 0.1,
+                )
+            stats = coordinator.stats()
+            assert stats["submitted"] == 40
+            assert stats["candidate_frames"] == 2
+            assert stats["disk_pending_frames"] == 0
+            assert stats["dropped_backpressure"] == 38
+            assert not stats["recovery_required"]
+            assert coordinator._journal().stats()["retained_sources"] == 0
+        coordinator.flush()
+        assert coordinator.wait_until_idle(5)
+        assert coordinator.stats()["state"] == "finished"
+        assert output_sequences(received)[-1] == 39
+        assert coordinator._journal().stats()["retained_sources"] == 0
+        assert all(row["state"] == "committed"
+                   for row in coordinator._journal().records())
+    finally:
+        coordinator.close()
+
+
 def test_prepare_and_http_progress_while_previous_commit_waits(tmp_path, monkeypatch):
     commit_entered, commit_release = threading.Event(), threading.Event()
     prepared_while_http_busy = threading.Event()
@@ -478,11 +557,7 @@ def test_slow_prepare_does_not_block_previous_request_or_commit(tmp_path, monkey
 
 def test_ordered_spool_survives_burst_without_replacing_waiting_sources(tmp_path):
     received = []
-    # The first append stays blocked for every durable admit. Its deadline has
-    # to outlast synchronous spool writes on a slow Windows runner.
-    server, _, coordinator = setup_pipeline(
-        tmp_path, received.append, timeout_seconds=30,
-    )
+    server, _, coordinator = setup_pipeline(tmp_path, received.append)
     server.release.clear()
     try:
         submit(coordinator, frames(1, 1))
@@ -493,7 +568,7 @@ def test_ordered_spool_survives_burst_without_replacing_waiting_sources(tmp_path
         assert coordinator._spool.stats()["retained_sources"] == 41
         coordinator.flush()
         server.release.set()
-        assert coordinator.wait_until_idle(30)
+        assert coordinator.wait_until_idle(8)
         assert output_sequences(received) == [3 * index for index in range(1, 42)]
         assert coordinator._spool.stats()["retained_sources"] == 0
         assert all(row["state"] == "committed" for row in coordinator._spool.records())
@@ -632,24 +707,27 @@ def test_close_waits_for_preparation_to_unwind_and_keeps_uncommitted_sources(
     received = []
     _, client, coordinator = setup_pipeline(
         tmp_path, received.append, queue_policy=queue_policy,
+        # Exercise close after preparation starts, allowing native-session and
+        # journal setup to finish before a latest-only candidate expires.
+        realtime_max_age_seconds=10,
     )
     prepare = client.prepare_append
 
     def blocked_prepare(inputs, **kwargs):
         entered.set()
-        assert release.wait(3)
+        assert release.wait(5)
         return prepare(inputs, **kwargs)
 
     monkeypatch.setattr(client, "prepare_append", blocked_prepare)
     try:
         submit(coordinator, frames(1, 1))
-        assert entered.wait(2)
+        assert entered.wait(5), coordinator.stats()
         assert coordinator._spool._connection is not None
         coordinator.close(timeout_seconds=0)
         assert coordinator._spool._connection is None
         assert not coordinator.close_complete()
         release.set()
-        wait_for(coordinator.close_complete)
+        wait_for(coordinator.close_complete, timeout=5)
         assert received == []
         assert coordinator._spool.load(0, [3])[0].jpeg_bytes == b"jpeg"
         assert coordinator._spool._connection is None

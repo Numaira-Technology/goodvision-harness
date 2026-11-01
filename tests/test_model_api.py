@@ -10,7 +10,6 @@ import yaml
 
 import goodvision_harness.config as config_module
 import goodvision_harness.model_api as model_api_module
-from goodvision_harness.aiclub import AIClubClient, AIClubError, AIClubSettings
 from goodvision_harness.config import load_config
 from goodvision_harness.grounding import (
     SAFETY_EVENT_LABELS,
@@ -31,13 +30,6 @@ from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTES = (
-    (
-        "aiclub",
-        "https://aiclub.zimaocloud.com/model/openApi/v1/chat/completions",
-        "AICLUB_API_KEY",
-        "qwen3.5-plus",
-        {},
-    ),
     (
         "openrouter",
         "https://openrouter.ai/api/v1/chat/completions",
@@ -100,12 +92,6 @@ def _window() -> FrameWindow:
         width=10,
         height=10,
     ),))
-
-
-def test_aiclub_imports_remain_compatibility_aliases() -> None:
-    assert AIClubSettings is ModelAPISettings
-    assert AIClubClient is ModelAPIClient
-    assert AIClubError is ModelAPIError
 
 
 @pytest.mark.parametrize("kind", ["binary", "grounding", "selected", "fixed_five"])
@@ -268,7 +254,7 @@ def test_nested_route_options_override_common_settings_without_leaking(
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     service = data["inference_service"]
     service["extra_headers"] = {"X-Shared": "common"}
-    service["providers"]["aiclub"]["extra_headers"] = {"X-AIClub": "local"}
+    service["providers"]["dashscope"]["extra_headers"] = {"X-DashScope": "local"}
     service["providers"]["openrouter"] = {
         "endpoint": "https://route.example/v1/chat/completions",
         "api_key_env": "CUSTOM_MODEL_KEY",
@@ -292,15 +278,15 @@ def test_nested_route_options_override_common_settings_without_leaking(
         "temperature": 0.3, "max_tokens": 1200, "provider": {"sort": "latency"},
     }
 
-    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
+    monkeypatch.setenv("INFERENCE_PROVIDER", "dashscope")
     switched = load_config(config_path)
-    assert switched.model_api.endpoint == ROUTES[0][1]
-    assert switched.model_api.api_key_env == "AICLUB_API_KEY"
+    assert switched.model_api.endpoint == ROUTES[1][1]
+    assert switched.model_api.api_key_env == "DASHSCOPE_API_KEY"
     assert switched.model_api.extra_headers == {
-        "X-Shared": "common", "X-AIClub": "local",
+        "X-Shared": "common", "X-DashScope": "local",
     }
     assert switched.inference.request_parameters == {
-        "temperature": 0.0, "max_tokens": 1200,
+        "temperature": 0.0, "max_tokens": 1200, "enable_thinking": False,
     }
 
 
@@ -312,8 +298,9 @@ def test_switch_discards_original_service_endpoint_and_key_name(
 ) -> None:
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     service = data["inference_service"]
+    service["provider"] = "dashscope"
     service["endpoint"] = "https://original.example/v1/chat/completions"
-    service["api_key_env"] = "AICLUB_API_KEY"
+    service["api_key_env"] = "DASHSCOPE_API_KEY"
     service["extra_headers"] = {"HTTP-Referer": "https://original.example"}
     data["inference"]["request_parameters"].update({
         "provider": {"only": ["legacy-backend"]},
@@ -326,7 +313,6 @@ def test_switch_discards_original_service_endpoint_and_key_name(
             "api_key_env": "CUSTOM_MODEL_KEY",
         })
     else:
-        service.pop("provider")
         service.pop("providers")
     config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
     monkeypatch.setenv("INFERENCE_PROVIDER", "openrouter")
@@ -334,7 +320,7 @@ def test_switch_discards_original_service_endpoint_and_key_name(
     selected = load_config(config_path)
     assert selected.model_api.endpoint == (
         "https://selected.example/v1/chat/completions"
-        if nested_override else ROUTES[1][1]
+        if nested_override else ROUTES[0][1]
     )
     assert selected.model_api.api_key_env == (
         "CUSTOM_MODEL_KEY" if nested_override else "OPENROUTER_API_KEY"
@@ -352,17 +338,17 @@ def test_switch_discards_original_service_endpoint_and_key_name(
 
 def test_optional_null_route_blocks_keep_default_behavior(config_path: Path) -> None:
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    data["aiclub"] = None
+    data["openrouter"] = None
     service = data["inference_service"]
     service["extra_headers"] = None
-    service["providers"] = {"aiclub": None}
+    service["providers"] = {"openrouter": None}
     data["inference"]["request_parameters"] = None
     config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
     selected = load_config(config_path)
     assert selected.model_api.endpoint == ROUTES[0][1]
     assert selected.model_api.extra_headers == {}
-    assert selected.inference.request_parameters == {}
+    assert selected.inference.request_parameters["reasoning"] == {"enabled": False}
 
     service["providers"] = None
     config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
@@ -373,9 +359,9 @@ def test_mixed_legacy_and_service_settings_preserve_precedence(
     config_path: Path,
 ) -> None:
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    data["aiclub"] = {
+    data["openrouter"] = {
         "endpoint": "https://legacy.example/v1/chat/completions",
-        "api_key_env": "AICLUB_API_KEY",
+        "api_key_env": "OPENROUTER_API_KEY",
         "timeout_seconds": 9,
         "max_retries": 2,
     }
@@ -388,13 +374,13 @@ def test_mixed_legacy_and_service_settings_preserve_precedence(
     assert neutral.endpoint == "https://service.example/v1/chat/completions"
     assert neutral.timeout_seconds == 20
     assert neutral.max_retries == 2
-    assert neutral.api_key_env == "AICLUB_API_KEY"
+    assert neutral.api_key_env == "OPENROUTER_API_KEY"
 
     service["api_key_env"] = "CUSTOM_MODEL_KEY"
     config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
     assert load_config(config_path).model_api.api_key_env == "CUSTOM_MODEL_KEY"
 
-    service["providers"] = {"aiclub": {
+    service["providers"] = {"openrouter": {
         "endpoint": "https://selected.example/v1/chat/completions",
         "api_key_env": "SELECTED_MODEL_KEY",
         "timeout_seconds": 30,
@@ -407,7 +393,7 @@ def test_mixed_legacy_and_service_settings_preserve_precedence(
     assert selected.max_retries == 2
 
 
-@pytest.mark.parametrize("legacy_provider", ["aiclub", "openrouter"])
+@pytest.mark.parametrize("legacy_provider", ["openrouter"])
 def test_legacy_connection_and_model_survive_until_route_is_changed(
     config_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -440,7 +426,7 @@ def test_legacy_connection_and_model_survive_until_route_is_changed(
     monkeypatch.setenv("INFERENCE_PROVIDER", "dashscope")
     switched = load_config(config_path)
     assert switched.model_api.provider == "dashscope"
-    assert switched.model_api.endpoint == ROUTES[2][1]
+    assert switched.model_api.endpoint == ROUTES[1][1]
     assert switched.model_api.api_key_env == "DASHSCOPE_API_KEY"
     assert switched.inference.model == "qwen3.5-plus"
     assert switched.inference.request_parameters == {
@@ -448,7 +434,7 @@ def test_legacy_connection_and_model_survive_until_route_is_changed(
     }
 
 
-@pytest.mark.parametrize("provider", ["aiclub", "openrouter", "dashscope"])
+@pytest.mark.parametrize("provider", ["openrouter", "dashscope"])
 def test_dry_run_builders_need_no_provider_credentials(
     monkeypatch: pytest.MonkeyPatch, provider: str,
 ) -> None:

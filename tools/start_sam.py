@@ -19,12 +19,18 @@ from urllib.request import ProxyHandler, build_opener
 from uuid import uuid4
 
 if __package__:
+    from . import cloud_analysis
     from .cloud_gpu_settings import CloudGPUSettings
+    from .relay_bootstrap import controller_environment
 else:
     try:
+        import cloud_analysis
         from cloud_gpu_settings import CloudGPUSettings
+        from relay_bootstrap import controller_environment
     except ModuleNotFoundError:
+        from tools import cloud_analysis
         from tools.cloud_gpu_settings import CloudGPUSettings
+        from tools.relay_bootstrap import controller_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE = "/workspace/goodvision-sam"
@@ -48,6 +54,10 @@ WORKER_ENV = {
     "SAM31_ENABLED": "true",
     "SAM31_SESSION_ENABLED": "false",
     "SAM31_LIVE_ENABLED": "true",
+    # Number of concurrent camera lanes the worker serves from one shared model.
+    # Set SAM31_LIVE_CAMERAS=N when renting to run an N-stream GPU-contention test
+    # (diag/run_multistream_diag.sh). Default 1 keeps the single-lane behaviour.
+    "SAM31_LIVE_CAMERAS": os.environ.get("SAM31_LIVE_CAMERAS", "1"),
     "SAM_SCENE_IMAGE_ENABLED": "false",
     "SAM31_SESSION_H264_ENABLED": "true",
     "SAM31_SESSION_HOTSTART_DELAY": "5",
@@ -168,6 +178,13 @@ def offer_was_unavailable(payload) -> bool:
         "ask_unavailable", "offer_unavailable", "machine_unavailable",
         "offer_already_rented", "ask_already_rented", "offer_taken",
     }
+    # Vast sometimes wraps an unavailable-offer refusal in a generic
+    # error=invalid_args while naming the real cause (e.g. no_such_ask) only in
+    # the message. An explicit capacity code anywhere in the provider's message
+    # is unambiguous, so treat it as unavailable and skip to the next offer.
+    diagnostic = creation_diagnostic(payload).lower()
+    if any(code in diagnostic for code in codes):
+        return True
     for name in ("code", "error_code"):
         value = payload.get(name)
         if isinstance(value, str) and value.lower() not in codes:
@@ -282,6 +299,15 @@ def create_from_offers(
 
 def prepare_ssh_key(source: Path, directory: Path) -> Path:
     """Copy a host-mounted key with private permissions and validate before renting."""
+    if os.name == "nt":
+        result = subprocess.run(
+            ["ssh-keygen", "-y", "-P", "", "-f", str(source)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=10,
+        )
+        if result.returncode:
+            raise RuntimeError("SSH key validation failed before renting a GPU.")
+        return source
     key = directory / "identity"
     # Windows Docker bind mounts may report 0777. Create a 0600 copy in the
     # controller's private temporary directory without changing the host file.
@@ -322,10 +348,10 @@ def stop_process(process: subprocess.Popen | None) -> None:
 def run(command: list[str], *, input: str | None = None, timeout: int = 120) -> None:
     process = subprocess.Popen(
         command, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
-        text=True, start_new_session=True,
+        start_new_session=True,
     )
     try:
-        process.communicate(input=input, timeout=timeout)
+        process.communicate(input=input.encode("utf-8") if input is not None else None, timeout=timeout)
         if process.returncode:
             raise RuntimeError(f"{Path(command[0]).name} exited with status {process.returncode}.")
     finally:
@@ -400,7 +426,10 @@ def release_instance(vast, instance_id: int) -> None:
 
 
 def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
-                 sam_port: int, settings: CloudGPUSettings | None = None):
+                 sam_port: int, settings: CloudGPUSettings | None = None,
+                 hybrid_port: int | None = None):
+    if hybrid_port is not None and cloud_analysis.enabled():
+        raise RuntimeError("Hybrid analysis and the analysis gateway cannot run together.")
     settings = settings or CloudGPUSettings()
     print("Waiting for SSH...", flush=True)
     host, ssh_port = wait_for_ssh(vast, instance_id, options)
@@ -433,13 +462,37 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
         f"{worker_environment} "
         f"{REMOTE}/env/bin/python -m uvicorn cloud_pool:app --host 127.0.0.1 --port 8092 --workers 1"
     )
+    extra_forwards = []
+    scp = ["scp", *options, "-P", str(ssh_port)]
+    if cloud_analysis.enabled():
+        cloud_analysis.prepare(ROOT, REMOTE, ssh, scp, run)
+        worker_command = cloud_analysis.worker_command(REMOTE, environment, worker_command)
+        extra_forwards = [
+            "-L", "0.0.0.0:8094:127.0.0.1:10000",
+            "-L", "127.0.0.1:8095:127.0.0.1:8095",
+            "-R", "127.0.0.1:8096:127.0.0.1:8093",
+        ]
+    elif hybrid_port is not None:
+        if __package__:
+            from . import hybrid_cloud
+        else:
+            import hybrid_cloud
+        hybrid_cloud.validate_ports(settings.streams, hybrid_port, sam_port)
+        print("Deploying cloud CPU analysis; presentation remains in the local browser...", flush=True)
+        hybrid_cloud.deploy(ROOT, ssh, run, os.environ)
+        worker_command = hybrid_cloud.launch_command(worker_command, settings.streams)
+        extra_forwards = hybrid_cloud.forwards(settings.streams, hybrid_port)
     print("Starting SAM and its SSH tunnel; waiting for model loading (logs follow)...", flush=True)
-    return subprocess.Popen([
+    sam_bind = "127.0.0.1" if hybrid_port is not None else "0.0.0.0"
+    process = subprocess.Popen([
         *ssh[:-1], "-o", "ExitOnForwardFailure=yes",
-        # Compose keeps this port inside its network; it is not published.
-        "-L", f"0.0.0.0:{sam_port}:127.0.0.1:8092",
-        ssh[-1], worker_command,
+        # Direct hybrid mode stays private; Compose needs its internal bind.
+        "-L", f"{sam_bind}:{sam_port}:127.0.0.1:8092",
+        *extra_forwards, ssh[-1], worker_command,
     ], stdin=subprocess.DEVNULL, start_new_session=True)
+    if cloud_analysis.enabled():
+        process.analysis_connection = (ssh, scp)
+    return process
 
 
 def main() -> int:
@@ -456,6 +509,10 @@ def main() -> int:
         help="Recover an existing GoodVision instance without renting another. "
         "Failure or normal shutdown releases it, as with a new rental.",
     )
+    parser.add_argument("--hybrid-analysis", action="store_true",
+                        help="Run CPU analysis beside SAM; browser capture/display stay local.")
+    parser.add_argument("--analysis-port", type=int, default=8280,
+                        help="First localhost console port for hybrid analysis; one port per lane.")
     args = parser.parse_args()
 
     vast = None
@@ -469,6 +526,8 @@ def main() -> int:
     label = f"goodvision-sam-{uuid4().hex[:12]}"
     cleanup_confirmed = True
     failure = None
+    analysis_ready = False
+    backup_failed = False
 
     def report(state, *, clean=False):
         if args.status_file is not None:
@@ -494,6 +553,9 @@ def main() -> int:
                 "Missing controller dependencies; rebuild the sam-remote image with Docker Compose."
             ) from error
         load_dotenv(ROOT / ".env", override=False)
+        os.environ.update(controller_environment(
+            os.environ, cloud_analysis.state_directory(),
+        ))
         defaults = CloudGPUSettings.from_environment().public()
         settings = CloudGPUSettings(**{name: getattr(args, name) if getattr(args, name) is not None
                                       else value for name, value in defaults.items()})
@@ -508,6 +570,14 @@ def main() -> int:
             raise RuntimeError(f"SSH private key does not exist: {ssh_key}")
         if args.disk_gb <= 0 or not 1 <= args.sam_port <= 65535:
             raise RuntimeError("Disk size must be positive and the forwarding port must be within 1..65535.")
+        if args.hybrid_analysis:
+            if cloud_analysis.enabled():
+                raise RuntimeError("Hybrid analysis and the analysis gateway cannot run together.")
+            if __package__:
+                from . import hybrid_cloud
+            else:
+                import hybrid_cloud
+            hybrid_cloud.validate_ports(settings.streams, args.analysis_port, args.sam_port)
         for filename in WORKER_FILES:
             if not (ROOT / "workers" / "sam_scene" / filename).is_file():
                 raise RuntimeError(f"Missing SAM worker source: {filename}")
@@ -527,6 +597,8 @@ def main() -> int:
             ):
                 raise RuntimeError("Resume requires an existing running GoodVision SAM instance.")
             instance_id = args.resume_instance_id
+            # A resumed host can hold the only copy of data before readiness.
+            analysis_ready = cloud_analysis.enabled()
             cleanup_confirmed = False
             report("starting")
             print(f"Recovering existing instance: {instance_id}; no new rental.", flush=True)
@@ -570,8 +642,13 @@ def main() -> int:
                 worker = start_worker(
                     vast, instance_id, options, hf_token=hf_token, sam_port=args.sam_port,
                     settings=settings,
+                    **({"hybrid_port": args.analysis_port} if args.hybrid_analysis else {}),
                 )
                 wait_for_worker(worker, args.sam_port)
+                if cloud_analysis.enabled():
+                    cloud_analysis.wait_ready(worker)
+                if args.hybrid_analysis:
+                    hybrid_cloud.wait_ready(worker, settings.streams, args.analysis_port)
             except Exception as error:
                 # Explicit resume never creates a rental; signals also bypass
                 # this handler. Once ready, a live session is not replaced.
@@ -591,6 +668,7 @@ def main() -> int:
                 label = f"goodvision-sam-{uuid4().hex[:12]}"
                 continue
             break
+        analysis_ready = cloud_analysis.enabled()
         report("ready")
         print(
             "SAM is ready: sam_live passed its GPU health check.\n"
@@ -598,6 +676,9 @@ def main() -> int:
             "Stop the Compose application to release this GPU. Closing the browser does not release it.",
             flush=True,
         )
+        if args.hybrid_analysis:
+            for lane in range(settings.streams):
+                print(f"Camera {lane + 1}: http://127.0.0.1:{args.analysis_port + lane}", flush=True)
         worker.wait()
         raise RuntimeError(f"SAM/SSH exited with status {worker.returncode}; releasing the instance.")
     except KeyboardInterrupt:
@@ -613,6 +694,17 @@ def main() -> int:
         if vast is not None:
             # Fit lookup + destruction inside Compose's 90-second shutdown grace.
             vast.client.timeout = (5, 20)
+        if analysis_ready:
+            report("stopping")
+            try:
+                cloud_analysis.backup(worker, REMOTE, run)
+            except Exception as error:
+                backup_failed = True
+                failure = (
+                    "Analysis backup failed; instance retained for data recovery. "
+                    + creation_diagnostic({"message": str(error)})
+                )
+                print(failure, file=sys.stderr, flush=True)
         try:
             stop_process(worker)
         except OSError:
@@ -635,7 +727,7 @@ def main() -> int:
                     "An instance may appear after this lookup. Destroy that instance in Vast Instances.",
                     file=sys.stderr, flush=True,
                 )
-        if instance_id is not None:
+        if instance_id is not None and not backup_failed:
             try:
                 release_instance(vast, instance_id)
                 cleanup_confirmed = True

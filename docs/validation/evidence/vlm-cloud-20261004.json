@@ -1,0 +1,2246 @@
+{
+  "scope": "Historical external VLM API capacity measurements; not an acceptance result for this PR revision or semantic accuracy.",
+  "video_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "runs": [
+    {
+      "run_id": "20261004T160705Z-6a75c3d7",
+      "summary_sha256": "5e66d923aa0060fcc9f10f9284424701dbf774c0bedc270efbe4100a6b556943",
+      "plan": {
+        "version": 1,
+        "provider": "openrouter",
+        "model": "qwen/qwen3.5-35b-a3b",
+        "simulate": false,
+        "streams": [
+          8,
+          12
+        ],
+        "duration": 30,
+        "repeats": 2,
+        "soak_seconds": 0,
+        "compare": false,
+        "compare_concurrency": false,
+        "compare_arrival": false,
+        "compare_routing": false,
+        "provider_sort": "latency",
+        "arrival_mode": "staggered",
+        "event_json_mode": "schema",
+        "global_limit": 48,
+        "per_stream_limit": 4,
+        "request_rate": 20,
+        "queue_timeout": 1,
+        "observation_fps": 1.25,
+        "deadline": 3,
+        "min_coverage": 0.95,
+        "max_error_fraction": 0.01,
+        "max_uncertain_fraction": 0.1
+      },
+      "effective_inference": {
+        "model": "qwen/qwen3.5-35b-a3b",
+        "provider": "openrouter",
+        "output_mode": "events",
+        "request_parameters": {
+          "reasoning": {
+            "enabled": false
+          },
+          "provider": {
+            "sort": "latency",
+            "allow_fallbacks": true,
+            "ignore": [
+              "coreweave",
+              "novita"
+            ],
+            "require_parameters": true
+          },
+          "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+              "name": "scene_events",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "fight": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "smoking": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "fall": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "weapon": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "fight",
+                  "smoking",
+                  "fall",
+                  "weapon"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "max_output_tokens": 160,
+        "http_timeout_seconds": 5.0,
+        "max_retries": 0,
+        "max_image_side": 720,
+        "jpeg_quality": 90,
+        "sample_fps": 2.5,
+        "local_concurrency": 4,
+        "event_json_mode": "schema",
+        "parser_policy": "strict_json_or_single_outer_fence_no_content_repair"
+      },
+      "source_hashes": {
+        "src/goodvision_harness/config.py": "c157d6242b3ac9d96a3ca50d503a0985596cdc900d26735ea5d2ff52a42d453d",
+        "src/goodvision_harness/event_sensitivity.py": "f75d2444246fe7c2c36bd445e3fe6c2fc03c509666ec385ad2ea4a54a1ccb0e0",
+        "src/goodvision_harness/model_routing.py": "81c8b5ca652114d05462c11fd55d16fb117e6022c94e8d58837210e7fc6e534c",
+        "src/goodvision_harness/scene_model.py": "512c749bacf5226c97952e34187e7aca77f2669800ad41daea9c3b83ce976d26",
+        "src/goodvision_harness/vlm_admission.py": "aa1687a73669eb4c84d5e63f35ef593f142c392f5c9a84bfd3525fb62d2550f8",
+        "src/goodvision_harness/vlm_compact_model.py": "ef4dbbf046b395497c8e3341820712ac228eccd13576d7b9b00fd7806426fc92",
+        "src/goodvision_harness/vlm_independent.py": "dd4c5db2abf6d588c9516217a8b69fd22be279195bc2351bdb305ada7361d4d5",
+        "tools/vlm_benchmark/cloud.py": "90d5966e4d20307f62aa3b9a2de7676cbdbbdf677b3f01b664fe735dde8f1ad1",
+        "tools/vlm_benchmark/config.json": "830a4b6e1f71891fda20c875ab3f8ac87fe0666dc4ee40210910fa9f7f47dbc3",
+        "tools/vlm_benchmark/plan.py": "5e457aff10643856aab4371a3ec66461c3df895cba619a64a1921cad1621ed19",
+        "tools/vlm_multistream_benchmark.py": "87afa8f9d2e54e5a57d8d0503ba944f8f6a072d1bd4cf8959afedf63493d80e5"
+      },
+      "jobs": [
+        {
+          "id": "ramp-8-1-shared",
+          "streams": 8,
+          "gate": {
+            "passed": false,
+            "reasons": [
+              "camera1:low_on_time_coverage",
+              "camera2:low_on_time_coverage",
+              "camera3:low_on_time_coverage",
+              "camera4:low_on_time_coverage",
+              "camera5:low_on_time_coverage",
+              "camera6:low_on_time_coverage",
+              "camera7:low_on_time_coverage",
+              "camera8:low_on_time_coverage"
+            ]
+          },
+          "input_timing_valid": true,
+          "all_drained": true,
+          "result_records_missing": 0,
+          "per_stream": [
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 31,
+              "on_time_coverage": 0.8378378378378378,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.526142977993004,
+                "p95": 3.6735190660110675,
+                "p99": 3.825422129011713,
+                "max": 3.825422129011713
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005308969004545361,
+                "p95": 0.008158336975611746,
+                "p99": 0.014164334977976978,
+                "max": 0.014164334977976978
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 30,
+              "on_time_coverage": 0.8108108108108109,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3882973800064065,
+                "p95": 3.2866502390243113,
+                "p99": 4.5144403940066695,
+                "max": 4.5144403940066695
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005472989985719323,
+                "p95": 0.030331604997627437,
+                "p99": 0.042744269012473524,
+                "max": 0.042744269012473524
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 31,
+              "on_time_coverage": 0.8378378378378378,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.422735095024109,
+                "p95": 3.6934656989760697,
+                "p99": 4.065480591030791,
+                "max": 4.065480591030791
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005431218014564365,
+                "p95": 0.029331589001230896,
+                "p99": 0.047119507973548025,
+                "max": 0.047119507973548025
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 29,
+              "on_time_coverage": 0.7837837837837838,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.6598205400514416,
+                "p95": 3.5440468169981614,
+                "p99": 4.3344150760094635,
+                "max": 4.3344150760094635
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005495431018061936,
+                "p95": 0.023615562997292727,
+                "p99": 0.050771613023243845,
+                "max": 0.050771613023243845
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 34,
+              "on_time_coverage": 0.918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.39923782000551,
+                "p95": 3.4247297669644468,
+                "p99": 3.776227473979816,
+                "max": 3.776227473979816
+              },
+              "admission_wait_seconds": {
+                "p50": 0.00556320499163121,
+                "p95": 0.01630488899536431,
+                "p99": 0.06498253805330023,
+                "max": 0.06498253805330023
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3384418220375665,
+                "p95": 3.189548856986221,
+                "p99": 3.612368502013851,
+                "max": 3.612368502013851
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005505870969500393,
+                "p95": 0.030698515009135008,
+                "p99": 0.038667655957397074,
+                "max": 0.038667655957397074
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.444553896028083,
+                "p95": 3.7948991709854454,
+                "p99": 3.8783333400497213,
+                "max": 3.8783333400497213
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005402139970101416,
+                "p95": 0.019767132005654275,
+                "p99": 0.0197674420196563,
+                "max": 0.0197674420196563
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 35,
+              "on_time_coverage": 0.9459459459459459,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.399207567970734,
+                "p95": 3.3971602609963156,
+                "p99": 3.7345612529898062,
+                "max": 3.7345612529898062
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005415309977252036,
+                "p95": 0.0387252289801836,
+                "p99": 0.10718458000337705,
+                "max": 0.10718458000337705
+              }
+            }
+          ]
+        },
+        {
+          "id": "ramp-8-2-shared",
+          "streams": 8,
+          "gate": {
+            "passed": false,
+            "reasons": [
+              "camera5:low_on_time_coverage",
+              "camera7:low_on_time_coverage"
+            ]
+          },
+          "input_timing_valid": true,
+          "all_drained": true,
+          "result_records_missing": 0,
+          "per_stream": [
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 37,
+              "on_time_coverage": 1.0,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.399504380999133,
+                "p95": 2.845965899992734,
+                "p99": 2.9345863169874065,
+                "max": 2.9345863169874065
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005320696043781936,
+                "p95": 0.017539676977321506,
+                "p99": 0.031000005023088306,
+                "max": 0.031000005023088306
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 36,
+              "on_time_coverage": 0.972972972972973,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3899422750109807,
+                "p95": 2.833922801015433,
+                "p99": 3.0388999260030687,
+                "max": 3.0388999260030687
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005322843033354729,
+                "p95": 0.03904166299616918,
+                "p99": 0.044462937978096306,
+                "max": 0.044462937978096306
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 36,
+              "on_time_coverage": 0.972972972972973,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.463675359962508,
+                "p95": 2.965613576991018,
+                "p99": 3.0229355699848384,
+                "max": 3.0229355699848384
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005371088976971805,
+                "p95": 0.024408357974607497,
+                "p99": 0.04243257798952982,
+                "max": 0.04243257798952982
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 36,
+              "on_time_coverage": 0.972972972972973,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3184850349789485,
+                "p95": 2.883424808969721,
+                "p99": 3.052353762963321,
+                "max": 3.052353762963321
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005260953039396554,
+                "p95": 0.031230097985826433,
+                "p99": 0.03471259499201551,
+                "max": 0.03471259499201551
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 35,
+              "on_time_coverage": 0.9459459459459459,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.4765235009836033,
+                "p95": 3.2812999360030517,
+                "p99": 3.3454647110193036,
+                "max": 3.3454647110193036
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005496466008480638,
+                "p95": 0.04209691396681592,
+                "p99": 0.044735050993040204,
+                "max": 0.044735050993040204
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 37,
+              "on_time_coverage": 1.0,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.339199789974373,
+                "p95": 2.933676431013737,
+                "p99": 2.9446534430026077,
+                "max": 2.9446534430026077
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005438024003524333,
+                "p95": 0.02945282094879076,
+                "p99": 0.03389348997734487,
+                "max": 0.03389348997734487
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 35,
+              "on_time_coverage": 0.9459459459459459,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.2764409130322747,
+                "p95": 3.006641732004937,
+                "p99": 3.066085977014154,
+                "max": 3.066085977014154
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005464241956360638,
+                "p95": 0.03175289498176426,
+                "p99": 0.031880952999927104,
+                "max": 0.031880952999927104
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 36,
+              "on_time_coverage": 0.972972972972973,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3077391810365953,
+                "p95": 2.853085540991742,
+                "p99": 3.0669615190126933,
+                "max": 3.0669615190126933
+              },
+              "admission_wait_seconds": {
+                "p50": 0.00536110601387918,
+                "p95": 0.03347219800343737,
+                "p99": 0.03674934501759708,
+                "max": 0.03674934501759708
+              }
+            }
+          ]
+        },
+        {
+          "id": "ramp-12-1-shared",
+          "streams": 12,
+          "gate": {
+            "passed": false,
+            "reasons": [
+              "camera1:low_on_time_coverage",
+              "camera2:low_on_time_coverage",
+              "camera3:low_on_time_coverage",
+              "camera3:request_errors",
+              "camera4:low_on_time_coverage",
+              "camera5:low_on_time_coverage",
+              "camera6:low_on_time_coverage",
+              "camera7:low_on_time_coverage",
+              "camera8:low_on_time_coverage",
+              "camera9:low_on_time_coverage",
+              "camera10:low_on_time_coverage",
+              "camera11:low_on_time_coverage",
+              "camera12:low_on_time_coverage"
+            ]
+          },
+          "input_timing_valid": true,
+          "all_drained": true,
+          "result_records_missing": 0,
+          "per_stream": [
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 31,
+              "on_time_coverage": 0.8378378378378378,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.4717257390148006,
+                "p95": 4.024817158002406,
+                "p99": 4.205999908968806,
+                "max": 4.205999908968806
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005510031012818217,
+                "p95": 0.5567278659436852,
+                "p99": 0.6217190530151129,
+                "max": 0.6217190530151129
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.399719805980567,
+                "p95": 3.399293869966641,
+                "p99": 3.8071511210291646,
+                "max": 3.8071511210291646
+              },
+              "admission_wait_seconds": {
+                "p50": 0.0054978649714030325,
+                "p95": 0.5476996200159192,
+                "p99": 0.6320087910280563,
+                "max": 0.6320087910280563
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "admission_superseded": 1
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3987107040011324,
+                "p95": 3.036127246043179,
+                "p99": 3.7351409969851375,
+                "max": 3.7351409969851375
+              },
+              "admission_wait_seconds": {
+                "p50": 0.0053720499854534864,
+                "p95": 0.052817625051829964,
+                "p99": 0.28563971299445257,
+                "max": 0.28563971299445257
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 34,
+              "on_time_coverage": 0.918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3842856970150024,
+                "p95": 4.037038149952423,
+                "p99": 4.083685671968851,
+                "max": 4.083685671968851
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005547819018829614,
+                "p95": 0.1282708549988456,
+                "p99": 0.1313898689695634,
+                "max": 0.1313898689695634
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.467752710042987,
+                "p95": 3.9686220479779877,
+                "p99": 4.58097190503031,
+                "max": 4.58097190503031
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005663304997142404,
+                "p95": 0.4767525870120153,
+                "p99": 0.5356098100310192,
+                "max": 0.5356098100310192
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 31,
+              "on_time_coverage": 0.8378378378378378,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.5168404360301793,
+                "p95": 3.5926699499832466,
+                "p99": 3.63577593798982,
+                "max": 3.63577593798982
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005606252991128713,
+                "p95": 0.45967184100300074,
+                "p99": 0.5375339610036463,
+                "max": 0.5375339610036463
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3943973919958808,
+                "p95": 3.3684553620405495,
+                "p99": 3.6144395859446377,
+                "max": 3.6144395859446377
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005471886019222438,
+                "p95": 0.4472025149734691,
+                "p99": 0.523082292987965,
+                "max": 0.523082292987965
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 34,
+              "on_time_coverage": 0.918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.514329605968669,
+                "p95": 3.4217875050380826,
+                "p99": 3.5489320409833454,
+                "max": 3.5489320409833454
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005477294966112822,
+                "p95": 0.47780848294496536,
+                "p99": 0.5697898220387287,
+                "max": 0.5697898220387287
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 31,
+              "on_time_coverage": 0.8378378378378378,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.402455733041279,
+                "p95": 3.9484346589888446,
+                "p99": 4.7185545259853825,
+                "max": 4.7185545259853825
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005582724988926202,
+                "p95": 0.15688343002693728,
+                "p99": 0.201247830002103,
+                "max": 0.201247830002103
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.4684003579895943,
+                "p95": 3.383260563015938,
+                "p99": 3.9802602540003136,
+                "max": 3.9802602540003136
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005588604020886123,
+                "p95": 0.5735371790360659,
+                "p99": 0.583166363008786,
+                "max": 0.583166363008786
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3695243209949695,
+                "p95": 3.9397291100467555,
+                "p99": 4.311096961027943,
+                "max": 4.311096961027943
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005479438055772334,
+                "p95": 0.4708753729937598,
+                "p99": 0.5774035609792918,
+                "max": 0.5774035609792918
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.4129722240031697,
+                "p95": 3.5324741580407135,
+                "p99": 3.8654331050347537,
+                "max": 3.8654331050347537
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005524911044631153,
+                "p95": 0.5553210320067592,
+                "p99": 0.5701836619991809,
+                "max": 0.5701836619991809
+              }
+            }
+          ]
+        },
+        {
+          "id": "ramp-12-2-shared",
+          "streams": 12,
+          "gate": {
+            "passed": false,
+            "reasons": [
+              "camera1:low_on_time_coverage",
+              "camera2:low_on_time_coverage",
+              "camera3:low_on_time_coverage",
+              "camera4:low_on_time_coverage",
+              "camera5:low_on_time_coverage",
+              "camera6:low_on_time_coverage",
+              "camera7:low_on_time_coverage",
+              "camera9:low_on_time_coverage",
+              "camera10:low_on_time_coverage",
+              "camera10:request_errors",
+              "camera11:low_on_time_coverage"
+            ]
+          },
+          "input_timing_valid": true,
+          "all_drained": true,
+          "result_records_missing": 0,
+          "per_stream": [
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3892133540357463,
+                "p95": 4.249338488967624,
+                "p99": 4.9239319750340655,
+                "max": 4.9239319750340655
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005319731018971652,
+                "p95": 0.051244365982711315,
+                "p99": 0.06339071999536827,
+                "max": 0.06339071999536827
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 35,
+              "on_time_coverage": 0.9459459459459459,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.40079769899603,
+                "p95": 3.082363238965627,
+                "p99": 3.4007757119834423,
+                "max": 3.4007757119834423
+              },
+              "admission_wait_seconds": {
+                "p50": 0.00544052995974198,
+                "p95": 0.03525120095582679,
+                "p99": 0.05251377000240609,
+                "max": 0.05251377000240609
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 35,
+              "on_time_coverage": 0.9459459459459459,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.4695059020305052,
+                "p95": 3.0956397589761764,
+                "p99": 3.182451343978755,
+                "max": 3.182451343978755
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005457482009660453,
+                "p95": 0.026962122006807476,
+                "p99": 0.04204793099779636,
+                "max": 0.04204793099779636
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 35,
+              "on_time_coverage": 0.9459459459459459,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.4237681810045615,
+                "p95": 3.1264943740097806,
+                "p99": 4.044185992970597,
+                "max": 4.044185992970597
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005229168978985399,
+                "p95": 0.03374894498847425,
+                "p99": 0.05016673501813784,
+                "max": 0.05016673501813784
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3786687970277853,
+                "p95": 3.369487917982042,
+                "p99": 3.4593120150384493,
+                "max": 3.4593120150384493
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005529356014449149,
+                "p95": 0.04163959698053077,
+                "p99": 0.04338575596921146,
+                "max": 0.04338575596921146
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3894873760291375,
+                "p95": 3.162507995031774,
+                "p99": 3.3742827069945633,
+                "max": 3.3742827069945633
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005473952041938901,
+                "p95": 0.03682978800497949,
+                "p99": 0.0633379879873246,
+                "max": 0.0633379879873246
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 35,
+              "on_time_coverage": 0.9459459459459459,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.317566842015367,
+                "p95": 3.0276593530434184,
+                "p99": 3.3982416359940544,
+                "max": 3.3982416359940544
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005469830997753888,
+                "p95": 0.019769885984715074,
+                "p99": 0.028290576010476798,
+                "max": 0.028290576010476798
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 36,
+              "on_time_coverage": 0.972972972972973,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.337554779020138,
+                "p95": 2.937664531986229,
+                "p99": 3.2555488079669885,
+                "max": 3.2555488079669885
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005453707010019571,
+                "p95": 0.056062171002849936,
+                "p99": 0.05869996000546962,
+                "max": 0.05869996000546962
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 35,
+              "on_time_coverage": 0.9459459459459459,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.433774386998266,
+                "p95": 3.1080728819943033,
+                "p99": 3.271076795004774,
+                "max": 3.271076795004774
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005505269975401461,
+                "p95": 0.07296562800183892,
+                "p99": 0.09800664999056607,
+                "max": 0.09800664999056607
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 1
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.331723166978918,
+                "p95": 3.6295769329881296,
+                "p99": 3.636468190001324,
+                "max": 3.636468190001324
+              },
+              "admission_wait_seconds": {
+                "p50": 0.00538358703488484,
+                "p95": 0.07375779800349846,
+                "p99": 0.08463747298810631,
+                "max": 0.08463747298810631
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 34,
+              "on_time_coverage": 0.918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3925542180077173,
+                "p95": 3.09248137997929,
+                "p99": 3.1734650830039755,
+                "max": 3.1734650830039755
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005407144955825061,
+                "p95": 0.05547887895954773,
+                "p99": 0.0864706159918569,
+                "max": 0.0864706159918569
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 36,
+              "on_time_coverage": 0.972972972972973,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3294335390091874,
+                "p95": 2.8766254609799944,
+                "p99": 4.050469898036681,
+                "max": 4.050469898036681
+              },
+              "admission_wait_seconds": {
+                "p50": 0.005478200037032366,
+                "p95": 0.05088260502088815,
+                "p99": 0.07786717498674989,
+                "max": 0.07786717498674989
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run_id": "20261004T161740Z-a57f9d2c",
+      "summary_sha256": "e962e3921d34ae6912030eb3ab4f95b52ee5120c49557cafeed88b4bb09e3412",
+      "plan": {
+        "version": 1,
+        "provider": "openrouter",
+        "model": "qwen/qwen3.5-35b-a3b",
+        "simulate": false,
+        "streams": [
+          8,
+          12
+        ],
+        "duration": 30,
+        "repeats": 2,
+        "soak_seconds": 0,
+        "compare": false,
+        "compare_concurrency": false,
+        "compare_arrival": false,
+        "compare_routing": false,
+        "provider_sort": "",
+        "provider_only": "parasail",
+        "arrival_mode": "aligned",
+        "event_json_mode": "schema",
+        "global_limit": 48,
+        "per_stream_limit": 4,
+        "request_rate": 50.0,
+        "queue_timeout": 1,
+        "observation_fps": 1.25,
+        "deadline": 3,
+        "min_coverage": 0.95,
+        "max_error_fraction": 0.01,
+        "max_uncertain_fraction": 0.1
+      },
+      "effective_inference": {
+        "model": "qwen/qwen3.5-35b-a3b",
+        "provider": "openrouter",
+        "output_mode": "events",
+        "request_parameters": {
+          "reasoning": {
+            "enabled": false
+          },
+          "provider": {
+            "sort": "throughput",
+            "allow_fallbacks": false,
+            "ignore": [
+              "coreweave",
+              "novita"
+            ],
+            "require_parameters": true,
+            "only": [
+              "parasail"
+            ]
+          },
+          "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+              "name": "scene_events",
+              "strict": true,
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "fight": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "smoking": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "fall": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "weapon": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "fight",
+                  "smoking",
+                  "fall",
+                  "weapon"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "max_output_tokens": 160,
+        "http_timeout_seconds": 5.0,
+        "max_retries": 0,
+        "max_image_side": 720,
+        "jpeg_quality": 90,
+        "sample_fps": 2.5,
+        "local_concurrency": 4,
+        "event_json_mode": "schema",
+        "parser_policy": "strict_json_or_single_outer_fence_no_content_repair"
+      },
+      "source_hashes": {
+        "src/goodvision_harness/config.py": "c157d6242b3ac9d96a3ca50d503a0985596cdc900d26735ea5d2ff52a42d453d",
+        "src/goodvision_harness/event_sensitivity.py": "f75d2444246fe7c2c36bd445e3fe6c2fc03c509666ec385ad2ea4a54a1ccb0e0",
+        "src/goodvision_harness/model_routing.py": "81c8b5ca652114d05462c11fd55d16fb117e6022c94e8d58837210e7fc6e534c",
+        "src/goodvision_harness/scene_model.py": "512c749bacf5226c97952e34187e7aca77f2669800ad41daea9c3b83ce976d26",
+        "src/goodvision_harness/vlm_admission.py": "aa1687a73669eb4c84d5e63f35ef593f142c392f5c9a84bfd3525fb62d2550f8",
+        "src/goodvision_harness/vlm_compact_model.py": "ef4dbbf046b395497c8e3341820712ac228eccd13576d7b9b00fd7806426fc92",
+        "src/goodvision_harness/vlm_independent.py": "dd4c5db2abf6d588c9516217a8b69fd22be279195bc2351bdb305ada7361d4d5",
+        "tools/vlm_benchmark/cloud.py": "f505700e3f6ef03ee92d76720365dcbea67ba68c3b508ff867b4898ee9dd4ea1",
+        "tools/vlm_benchmark/config.json": "830a4b6e1f71891fda20c875ab3f8ac87fe0666dc4ee40210910fa9f7f47dbc3",
+        "tools/vlm_benchmark/plan.py": "f8b105376621ec2704da8a8abda6f2c5ed2480d05335a5d3454013cf6037f7bb",
+        "tools/vlm_multistream_benchmark.py": "87afa8f9d2e54e5a57d8d0503ba944f8f6a072d1bd4cf8959afedf63493d80e5"
+      },
+      "jobs": [
+        {
+          "id": "ramp-8-1-shared",
+          "streams": 8,
+          "gate": {
+            "passed": false,
+            "reasons": [
+              "camera1:low_on_time_coverage",
+              "camera2:low_on_time_coverage",
+              "camera2:request_errors",
+              "camera3:low_on_time_coverage",
+              "camera4:low_on_time_coverage",
+              "camera4:request_errors",
+              "camera5:low_on_time_coverage",
+              "camera5:request_errors",
+              "camera6:low_on_time_coverage",
+              "camera6:request_errors",
+              "camera7:low_on_time_coverage",
+              "camera8:low_on_time_coverage"
+            ]
+          },
+          "input_timing_valid": true,
+          "all_drained": true,
+          "result_records_missing": 0,
+          "per_stream": [
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 28,
+              "on_time_coverage": 0.7567567567567568,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.227961668977514,
+                "p95": 3.6033031690167263,
+                "p99": 4.181943179981317,
+                "max": 4.181943179981317
+              },
+              "admission_wait_seconds": {
+                "p50": 0.08049018197925761,
+                "p95": 0.19948731502518058,
+                "p99": 0.21067677397513762,
+                "max": 0.21067677397513762
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 29,
+              "on_time_coverage": 0.7837837837837838,
+              "uncertain_judgment_fraction": 0.006944444444444444,
+              "errors": {
+                "http_error": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 2.2448374570230953,
+                "p95": 3.867437342996709,
+                "p99": 4.043987461016513,
+                "max": 4.043987461016513
+              },
+              "admission_wait_seconds": {
+                "p50": 0.10939108300954103,
+                "p95": 0.1938073249766603,
+                "p99": 0.21870519901858643,
+                "max": 0.21870519901858643
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 30,
+              "on_time_coverage": 0.8108108108108109,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3121169109945185,
+                "p95": 3.7674685359816067,
+                "p99": 3.9606776220025495,
+                "max": 3.9606776220025495
+              },
+              "admission_wait_seconds": {
+                "p50": 0.05938087502727285,
+                "p95": 0.17406970099546015,
+                "p99": 0.24297238001599908,
+                "max": 0.24297238001599908
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 29,
+              "on_time_coverage": 0.7837837837837838,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "admission_superseded": 1
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.2587855359888636,
+                "p95": 3.9073678120039403,
+                "p99": 4.003881637006998,
+                "max": 4.003881637006998
+              },
+              "admission_wait_seconds": {
+                "p50": 0.08470507198944688,
+                "p95": 0.1981887969886884,
+                "p99": 0.2001162960077636,
+                "max": 0.2001162960077636
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 35,
+              "on_time_valid_results": 27,
+              "on_time_coverage": 0.7297297297297297,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "admission_superseded": 1
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3198333280161023,
+                "p95": 4.131652795011178,
+                "p99": 4.766733012977056,
+                "max": 4.766733012977056
+              },
+              "admission_wait_seconds": {
+                "p50": 0.060012342990376055,
+                "p95": 0.16606983402743936,
+                "p99": 0.17814920196542516,
+                "max": 0.17814920196542516
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 35,
+              "on_time_valid_results": 27,
+              "on_time_coverage": 0.7297297297297297,
+              "uncertain_judgment_fraction": 0.007142857142857143,
+              "errors": {
+                "http_error": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 2.223636067006737,
+                "p95": 4.0139842760399915,
+                "p99": 4.024044446996413,
+                "max": 4.024044446996413
+              },
+              "admission_wait_seconds": {
+                "p50": 0.09855005901772529,
+                "p95": 0.1934421049663797,
+                "p99": 0.2061588069773279,
+                "max": 0.2061588069773279
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 28,
+              "on_time_coverage": 0.7567567567567568,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.2793258099700324,
+                "p95": 4.1119173660408705,
+                "p99": 4.771955934993457,
+                "max": 4.771955934993457
+              },
+              "admission_wait_seconds": {
+                "p50": 0.04776144499192014,
+                "p95": 0.1853577559813857,
+                "p99": 0.2584109950112179,
+                "max": 0.2584109950112179
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 30,
+              "on_time_coverage": 0.8108108108108109,
+              "uncertain_judgment_fraction": 0.006944444444444444,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.32502532802755,
+                "p95": 4.0447294560144655,
+                "p99": 4.156473478011321,
+                "max": 4.156473478011321
+              },
+              "admission_wait_seconds": {
+                "p50": 0.1587822919827886,
+                "p95": 0.1989481559721753,
+                "p99": 0.20674614096060395,
+                "max": 0.20674614096060395
+              }
+            }
+          ]
+        },
+        {
+          "id": "ramp-8-2-shared",
+          "streams": 8,
+          "gate": {
+            "passed": false,
+            "reasons": [
+              "camera1:low_on_time_coverage",
+              "camera2:low_on_time_coverage",
+              "camera3:low_on_time_coverage",
+              "camera4:low_on_time_coverage",
+              "camera5:low_on_time_coverage",
+              "camera6:low_on_time_coverage",
+              "camera7:low_on_time_coverage",
+              "camera8:low_on_time_coverage"
+            ]
+          },
+          "input_timing_valid": true,
+          "all_drained": true,
+          "result_records_missing": 0,
+          "per_stream": [
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.209046114992816,
+                "p95": 3.694738321006298,
+                "p99": 3.7747615089756437,
+                "max": 3.7747615089756437
+              },
+              "admission_wait_seconds": {
+                "p50": 0.11842171900207177,
+                "p95": 0.21865672402782366,
+                "p99": 0.3275084869819693,
+                "max": 0.3275084869819693
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.2366719520068727,
+                "p95": 3.5596098889946006,
+                "p99": 3.7550604380085133,
+                "max": 3.7550604380085133
+              },
+              "admission_wait_seconds": {
+                "p50": 0.07690164598170668,
+                "p95": 0.2069489720161073,
+                "p99": 0.3553678849712014,
+                "max": 0.3553678849712014
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.213970879034605,
+                "p95": 3.6348811990465038,
+                "p99": 4.094553090981208,
+                "max": 4.094553090981208
+              },
+              "admission_wait_seconds": {
+                "p50": 0.0819508689455688,
+                "p95": 0.18997172999661416,
+                "p99": 0.1962352119735442,
+                "max": 0.1962352119735442
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 33,
+              "on_time_coverage": 0.8918918918918919,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.228744441003073,
+                "p95": 3.645221905026119,
+                "p99": 3.83376185700763,
+                "max": 3.83376185700763
+              },
+              "admission_wait_seconds": {
+                "p50": 0.16679143597139046,
+                "p95": 0.21214594302000478,
+                "p99": 0.2618716669967398,
+                "max": 0.2618716669967398
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.2170382339973003,
+                "p95": 3.7897757839527912,
+                "p99": 4.439891360991169,
+                "max": 4.439891360991169
+              },
+              "admission_wait_seconds": {
+                "p50": 0.08301835699239746,
+                "p95": 0.1859788519795984,
+                "p99": 0.2178331940085627,
+                "max": 0.2178331940085627
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 29,
+              "on_time_coverage": 0.7837837837837838,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.3289911490282975,
+                "p95": 3.803190830978565,
+                "p99": 4.424352074041963,
+                "max": 4.424352074041963
+              },
+              "admission_wait_seconds": {
+                "p50": 0.15411621902603656,
+                "p95": 0.2111668729921803,
+                "p99": 0.2441233440185897,
+                "max": 0.2441233440185897
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 37,
+              "on_time_valid_results": 32,
+              "on_time_coverage": 0.8648648648648649,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.2489299720036797,
+                "p95": 3.7071577279712074,
+                "p99": 3.8281068290234543,
+                "max": 3.8281068290234543
+              },
+              "admission_wait_seconds": {
+                "p50": 0.08521735400427133,
+                "p95": 0.171999275975395,
+                "p99": 0.2976227239705622,
+                "max": 0.2976227239705622
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 36,
+              "on_time_valid_results": 31,
+              "on_time_coverage": 0.8378378378378378,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 2.2085188789642416,
+                "p95": 3.6571428279858083,
+                "p99": 4.104229388991371,
+                "max": 4.104229388991371
+              },
+              "admission_wait_seconds": {
+                "p50": 0.1001049280166626,
+                "p95": 0.16529793001245707,
+                "p99": 0.2714932310045697,
+                "max": 0.2714932310045697
+              }
+            }
+          ]
+        },
+        {
+          "id": "ramp-12-1-shared",
+          "streams": 12,
+          "gate": {
+            "passed": false,
+            "reasons": [
+              "camera1:low_on_time_coverage",
+              "camera2:low_on_time_coverage",
+              "camera2:request_errors",
+              "camera3:low_on_time_coverage",
+              "camera3:request_errors",
+              "camera4:low_on_time_coverage",
+              "camera4:request_errors",
+              "camera5:low_on_time_coverage",
+              "camera5:request_errors",
+              "camera6:low_on_time_coverage",
+              "camera6:request_errors",
+              "camera7:low_on_time_coverage",
+              "camera7:request_errors",
+              "camera8:low_on_time_coverage",
+              "camera8:request_errors",
+              "camera9:low_on_time_coverage",
+              "camera9:request_errors",
+              "camera10:low_on_time_coverage",
+              "camera10:request_errors",
+              "camera11:low_on_time_coverage",
+              "camera11:request_errors",
+              "camera12:low_on_time_coverage",
+              "camera12:request_errors"
+            ]
+          },
+          "input_timing_valid": true,
+          "all_drained": true,
+          "result_records_missing": 0,
+          "per_stream": [
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 30,
+              "on_time_valid_results": 10,
+              "on_time_coverage": 0.2702702702702703,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {},
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 3.434600369015243,
+                "p95": 4.563594306993764,
+                "p99": 5.014373913989402,
+                "max": 5.014373913989402
+              },
+              "admission_wait_seconds": {
+                "p50": 0.1257140589877963,
+                "p95": 0.33825701603200287,
+                "p99": 0.35138627397827804,
+                "max": 0.35138627397827804
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 31,
+              "on_time_valid_results": 11,
+              "on_time_coverage": 0.2972972972972973,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "admission_superseded": 1
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 3.295198782987427,
+                "p95": 4.553751978033688,
+                "p99": 4.571546252002008,
+                "max": 4.571546252002008
+              },
+              "admission_wait_seconds": {
+                "p50": 0.21108344104140997,
+                "p95": 0.32022850401699543,
+                "p99": 0.3676828519674018,
+                "max": 0.3676828519674018
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 31,
+              "on_time_valid_results": 11,
+              "on_time_coverage": 0.2972972972972973,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 2
+              },
+              "http_status_counts": {
+                "429": 2
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.316396737995092,
+                "p95": 4.527058036008384,
+                "p99": 5.269100870995317,
+                "max": 5.269100870995317
+              },
+              "admission_wait_seconds": {
+                "p50": 0.08460781996836886,
+                "p95": 0.3064878000295721,
+                "p99": 0.31784010300179943,
+                "max": 0.31784010300179943
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 31,
+              "on_time_valid_results": 9,
+              "on_time_coverage": 0.24324324324324326,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 3
+              },
+              "http_status_counts": {
+                "429": 3
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.376164079993032,
+                "p95": 4.465311255014967,
+                "p99": 4.633366016030777,
+                "max": 4.633366016030777
+              },
+              "admission_wait_seconds": {
+                "p50": 0.18559682002523914,
+                "p95": 0.31384583900216967,
+                "p99": 0.44912757497513667,
+                "max": 0.44912757497513667
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 30,
+              "on_time_valid_results": 12,
+              "on_time_coverage": 0.32432432432432434,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 1,
+                "admission_superseded": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.107958978973329,
+                "p95": 4.584644304995891,
+                "p99": 5.119286495028064,
+                "max": 5.119286495028064
+              },
+              "admission_wait_seconds": {
+                "p50": 0.11716871603857726,
+                "p95": 0.2344754819641821,
+                "p99": 0.34975025698076934,
+                "max": 0.34975025698076934
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 30,
+              "on_time_valid_results": 13,
+              "on_time_coverage": 0.35135135135135137,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 1,
+                "admission_superseded": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.1899980979505926,
+                "p95": 4.698539241973776,
+                "p99": 5.394917245022953,
+                "max": 5.394917245022953
+              },
+              "admission_wait_seconds": {
+                "p50": 0.0844194579985924,
+                "p95": 0.26392548700096086,
+                "p99": 0.3257655959459953,
+                "max": 0.3257655959459953
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 31,
+              "on_time_valid_results": 12,
+              "on_time_coverage": 0.32432432432432434,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.409527291019913,
+                "p95": 4.638815243029967,
+                "p99": 5.144701706012711,
+                "max": 5.144701706012711
+              },
+              "admission_wait_seconds": {
+                "p50": 0.12152739998418838,
+                "p95": 0.3075405860436149,
+                "p99": 0.3182245360221714,
+                "max": 0.3182245360221714
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 30,
+              "on_time_valid_results": 14,
+              "on_time_coverage": 0.3783783783783784,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 1,
+                "http_error": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.08239819802111,
+                "p95": 4.556426510971505,
+                "p99": 4.678815770021174,
+                "max": 4.678815770021174
+              },
+              "admission_wait_seconds": {
+                "p50": 0.09323091502301395,
+                "p95": 0.30663617397658527,
+                "p99": 0.309062835003715,
+                "max": 0.309062835003715
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 31,
+              "on_time_valid_results": 13,
+              "on_time_coverage": 0.35135135135135137,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 3
+              },
+              "http_status_counts": {
+                "429": 3
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.251387797994539,
+                "p95": 4.759052986977622,
+                "p99": 4.823991152050439,
+                "max": 4.823991152050439
+              },
+              "admission_wait_seconds": {
+                "p50": 0.06078422500286251,
+                "p95": 0.32760939898435026,
+                "p99": 0.3748446849640459,
+                "max": 0.3748446849640459
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 29,
+              "on_time_valid_results": 12,
+              "on_time_coverage": 0.32432432432432434,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 3,
+                "admission_superseded": 1
+              },
+              "http_status_counts": {
+                "429": 3
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.284161322982982,
+                "p95": 4.5680948460358195,
+                "p99": 4.965669571014587,
+                "max": 4.965669571014587
+              },
+              "admission_wait_seconds": {
+                "p50": 0.08438416698481888,
+                "p95": 0.2448301039985381,
+                "p99": 0.2606893989723176,
+                "max": 0.2606893989723176
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 30,
+              "on_time_valid_results": 9,
+              "on_time_coverage": 0.24324324324324326,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 1,
+                "admission_superseded": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.3125242330133915,
+                "p95": 4.692882097035181,
+                "p99": 5.110366803011857,
+                "max": 5.110366803011857
+              },
+              "admission_wait_seconds": {
+                "p50": 0.15089467697544023,
+                "p95": 0.3169047890114598,
+                "p99": 0.3940712990006432,
+                "max": 0.3940712990006432
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 30,
+              "on_time_valid_results": 10,
+              "on_time_coverage": 0.2702702702702703,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.3839692670153454,
+                "p95": 4.586430353985634,
+                "p99": 5.131142139958683,
+                "max": 5.131142139958683
+              },
+              "admission_wait_seconds": {
+                "p50": 0.162035962974187,
+                "p95": 0.3000350350048393,
+                "p99": 0.33707438298733905,
+                "max": 0.33707438298733905
+              }
+            }
+          ]
+        },
+        {
+          "id": "ramp-12-2-shared",
+          "streams": 12,
+          "gate": {
+            "passed": false,
+            "reasons": [
+              "camera1:low_on_time_coverage",
+              "camera1:request_errors",
+              "camera2:low_on_time_coverage",
+              "camera2:request_errors",
+              "camera3:low_on_time_coverage",
+              "camera3:request_errors",
+              "camera4:low_on_time_coverage",
+              "camera4:request_errors",
+              "camera5:low_on_time_coverage",
+              "camera5:request_errors",
+              "camera6:low_on_time_coverage",
+              "camera6:request_errors",
+              "camera7:low_on_time_coverage",
+              "camera7:request_errors",
+              "camera8:low_on_time_coverage",
+              "camera8:request_errors",
+              "camera9:low_on_time_coverage",
+              "camera9:request_errors",
+              "camera10:low_on_time_coverage",
+              "camera10:request_errors",
+              "camera11:low_on_time_coverage",
+              "camera11:request_errors",
+              "camera12:low_on_time_coverage",
+              "camera12:request_errors"
+            ]
+          },
+          "input_timing_valid": true,
+          "all_drained": true,
+          "result_records_missing": 0,
+          "per_stream": [
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 26,
+              "on_time_valid_results": 9,
+              "on_time_coverage": 0.24324324324324326,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 3
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 3.3128055660054088,
+                "p95": 4.834805818973109,
+                "p99": 5.0520199540187605,
+                "max": 5.0520199540187605
+              },
+              "admission_wait_seconds": {
+                "p50": 0.06043271900853142,
+                "p95": 0.28767335996963084,
+                "p99": 0.42956197302555665,
+                "max": 0.42956197302555665
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 25,
+              "on_time_valid_results": 8,
+              "on_time_coverage": 0.21621621621621623,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 2
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 3.646252463979181,
+                "p95": 5.211598313006107,
+                "p99": 5.258858328976203,
+                "max": 5.258858328976203
+              },
+              "admission_wait_seconds": {
+                "p50": 0.16038864600704983,
+                "p95": 0.3058517700410448,
+                "p99": 0.3376215639873408,
+                "max": 0.3376215639873408
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 26,
+              "on_time_valid_results": 9,
+              "on_time_coverage": 0.24324324324324326,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 3,
+                "timeout": 2
+              },
+              "http_status_counts": {
+                "429": 3
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.3255199510022067,
+                "p95": 4.866348456009291,
+                "p99": 5.106886012014002,
+                "max": 5.106886012014002
+              },
+              "admission_wait_seconds": {
+                "p50": 0.04116826195968315,
+                "p95": 0.33112256694585085,
+                "p99": 0.335381867014803,
+                "max": 0.335381867014803
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 25,
+              "on_time_valid_results": 8,
+              "on_time_coverage": 0.21621621621621623,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 3,
+                "timeout": 2
+              },
+              "http_status_counts": {
+                "429": 3
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.600360593991354,
+                "p95": 5.002959319972433,
+                "p99": 5.052439899998717,
+                "max": 5.052439899998717
+              },
+              "admission_wait_seconds": {
+                "p50": 0.1309713629889302,
+                "p95": 0.3083216189988889,
+                "p99": 0.40023590199416503,
+                "max": 0.40023590199416503
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 25,
+              "on_time_valid_results": 9,
+              "on_time_coverage": 0.24324324324324326,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 2,
+                "http_error": 1
+              },
+              "http_status_counts": {
+                "429": 1
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.3418665420031175,
+                "p95": 4.997431522002444,
+                "p99": 5.31487397098681,
+                "max": 5.31487397098681
+              },
+              "admission_wait_seconds": {
+                "p50": 0.05934212601277977,
+                "p95": 0.2716649930225685,
+                "p99": 0.32560062099946663,
+                "max": 0.32560062099946663
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 26,
+              "on_time_valid_results": 9,
+              "on_time_coverage": 0.24324324324324326,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 2
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 3.352698657021392,
+                "p95": 5.0501708760275505,
+                "p99": 5.1554053479922,
+                "max": 5.1554053479922
+              },
+              "admission_wait_seconds": {
+                "p50": 0.058246782049536705,
+                "p95": 0.2506800349801779,
+                "p99": 0.28247430600458756,
+                "max": 0.28247430600458756
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 25,
+              "on_time_valid_results": 7,
+              "on_time_coverage": 0.1891891891891892,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 2
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 3.5836961370077915,
+                "p95": 5.012207927007694,
+                "p99": 5.033292122010607,
+                "max": 5.033292122010607
+              },
+              "admission_wait_seconds": {
+                "p50": 0.0798910660087131,
+                "p95": 0.20433750696247444,
+                "p99": 0.29660478100413457,
+                "max": 0.29660478100413457
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 26,
+              "on_time_valid_results": 7,
+              "on_time_coverage": 0.1891891891891892,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 2
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 3.6142965289764106,
+                "p95": 5.2308248759945855,
+                "p99": 5.747064119961578,
+                "max": 5.747064119961578
+              },
+              "admission_wait_seconds": {
+                "p50": 0.18536705599399284,
+                "p95": 0.3319508509594016,
+                "p99": 0.38984163803979754,
+                "max": 0.38984163803979754
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 24,
+              "on_time_valid_results": 3,
+              "on_time_coverage": 0.08108108108108109,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 5,
+                "timeout": 2
+              },
+              "http_status_counts": {
+                "429": 5
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.6342934650019743,
+                "p95": 5.068551189033315,
+                "p99": 5.179714499041438,
+                "max": 5.179714499041438
+              },
+              "admission_wait_seconds": {
+                "p50": 0.099290001031477,
+                "p95": 0.24536262301262468,
+                "p99": 0.27892544196220115,
+                "max": 0.27892544196220115
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 25,
+              "on_time_valid_results": 8,
+              "on_time_coverage": 0.21621621621621623,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 2
+              },
+              "http_status_counts": {},
+              "source_to_publish_seconds": {
+                "p50": 3.5169070739648305,
+                "p95": 5.027978422993328,
+                "p99": 5.047073838009965,
+                "max": 5.047073838009965
+              },
+              "admission_wait_seconds": {
+                "p50": 0.13539466098882258,
+                "p95": 0.2614365390036255,
+                "p99": 0.2823534719645977,
+                "max": 0.2823534719645977
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 24,
+              "on_time_valid_results": 7,
+              "on_time_coverage": 0.1891891891891892,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "http_error": 3,
+                "timeout": 3
+              },
+              "http_status_counts": {
+                "429": 3
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.4672252599848434,
+                "p95": 5.044092246971559,
+                "p99": 5.296371599019039,
+                "max": 5.296371599019039
+              },
+              "admission_wait_seconds": {
+                "p50": 0.09888396196765825,
+                "p95": 0.3572858009720221,
+                "p99": 0.36205885495292023,
+                "max": 0.36205885495292023
+              }
+            },
+            {
+              "expected_observations": 37,
+              "complete_valid_results": 25,
+              "on_time_valid_results": 8,
+              "on_time_coverage": 0.21621621621621623,
+              "uncertain_judgment_fraction": 0.0,
+              "errors": {
+                "timeout": 2,
+                "http_error": 5
+              },
+              "http_status_counts": {
+                "429": 5
+              },
+              "source_to_publish_seconds": {
+                "p50": 3.376432394958101,
+                "p95": 5.053180965012871,
+                "p99": 5.261045977997128,
+                "max": 5.261045977997128
+              },
+              "admission_wait_seconds": {
+                "p50": 0.08558508101850748,
+                "p95": 0.25573285296559334,
+                "p99": 0.3145012879977003,
+                "max": 0.3145012879977003
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

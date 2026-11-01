@@ -47,14 +47,14 @@ def window(index):
     )
 
 
-def wait_for(predicate, timeout=8):
-    deadline = time.monotonic() + timeout
+def wait_for(predicate):
+    deadline = time.monotonic() + 8
     while not predicate():
         assert time.monotonic() < deadline, "test watchdog expired"
         threading.Event().wait(0.005)
 
 
-def runtime(tmp_path, monkeypatch, *, gate=None, holding=None):
+def runtime(tmp_path, monkeypatch, *, gate=None, gate_entered=None):
     loaded, calls, finished = [], [], []
 
     class Model:
@@ -69,9 +69,9 @@ def runtime(tmp_path, monkeypatch, *, gate=None, holding=None):
             calls.append(index)
             try:
                 if gate is not None and index == 0:
-                    if holding is not None:
-                        holding.set()
-                    assert gate.wait(30), "test must release first observation"
+                    if gate_entered is not None:
+                        gate_entered.set()
+                    assert gate.wait(8), "test must release first observation"
                 finished.append(index)
                 return [
                     SimpleNamespace(
@@ -99,32 +99,31 @@ def test_parallel_inference_commits_identity_and_facts_in_order(
     tmp_path,
     monkeypatch,
 ):
-    gate = threading.Event()
-    holding = threading.Event()
+    gate, gate_entered = threading.Event(), threading.Event()
     engine, loaded, calls, finished = runtime(
-        tmp_path, monkeypatch, gate=gate, holding=holding,
+        tmp_path, monkeypatch, gate=gate, gate_entered=gate_entered,
     )
     face = FaceRecognitionSession(
         engine, observation_store_path=tmp_path / "facts.db.sqlite"
     )
     order = []
     try:
-        futures = [
-            face.submit_window(
+        def submit_observation(index):
+            return face.submit_window(
                 window(index),
-                on_admitted=lambda future, index=index: future.add_done_callback(
+                on_admitted=lambda future: future.add_done_callback(
                     lambda done: order.append(done.result().window.index),
                 ),
             )
-            for index in range(16)
-        ]
-        # Window 0 must be inside its model before a later finish can prove a
-        # second instance. On a slow disk, window 1 can otherwise reuse slot 0
-        # before window 0 has taken it.
-        assert holding.wait(30)
-        finished_while_held = len(finished)
-        wait_for(lambda: len(finished) > finished_while_held, timeout=30)
-        assert not futures[0].done()
+
+        futures = [submit_observation(0)]
+        # Own the first model slot before admitting other sources. A later
+        # source can otherwise finish and return the same slot before source 0
+        # enters, so two recorded calls alone do not prove parallel inference.
+        assert gate_entered.wait(8), "first observation did not enter its model"
+        futures.extend(submit_observation(index) for index in range(1, 16))
+        wait_for(lambda: 1 in finished)
+        assert not futures[0].done() and not futures[1].done()
         assert not futures[0].cancel()
         assert len(loaded) == 2
         assert face._worker.store._connection is not None

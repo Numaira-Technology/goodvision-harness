@@ -58,3 +58,16 @@ test("failed persistence leaves the selected route unchanged",async()=>{
   assert.match(view.element("route-note").textContent,/未保存，保留原选择/);
   assert.equal(view.state.routeSubmitting,false)
 });
+
+
+test("embedded route health pauses outside its parent workspace and resumes on return",async()=>{
+  const view=dashboard();let page="workflows";
+  view.context.GoodvisionDiagnostic=true;view.context.GoodvisionDiagnosticView="diagnostics";
+  view.context.window.parent={GoodvisionConsole:{currentPage:()=>page}};
+  const calls=[];view.context.fetch=async url=>{calls.push(url);return {ok:true,json:async()=>view.state.routes};};
+  await view.context.loadRoutes();assert.deepEqual(calls,[]);
+  page="overview";await view.context.loadRoutes();assert.deepEqual(calls,["/v1/deployment/routes"]);
+  page="settings";await view.context.loadRoutes();assert.equal(calls.length,1);
+  // A standalone diagnostic document has no hidden parent page.
+  view.context.window.parent=view.context.window;await view.context.loadRoutes();assert.equal(calls.length,2);
+});

@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import subprocess
 import sys
+import time
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
+
+if __package__:
+    from .continuous import _session_ref, _timing_log, _trace_identifier
+else:
+    from continuous import _session_ref, _timing_log, _trace_identifier
+
+LOGGER = logging.getLogger("goodvision.sam31.pool")
 
 HOP_HEADERS = {
     "host",
@@ -176,14 +185,17 @@ def create_app(gpu_count: int, streams: int, *, launch_workers=True, transport=N
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "DELETE"])
     async def proxy(path: str, request: Request):
+        started = time.perf_counter()
         path = "/" + path
         match = re.match(r"^/(v1|health)/cameras/(camera-(\d+))(/.*)$", path)
         gpu = 0
+        camera_id = worker_camera_id = "camera-01"
         if match:
             camera = int(match[3])
             if match[2] != f"camera-{camera:02d}":
                 raise HTTPException(404, "camera not provisioned")
             gpu, lane = assignment(camera, gpu_count, streams)
+            camera_id, worker_camera_id = match[2], f"camera-{lane:02d}"
             path = f"/{match[1]}/cameras/camera-{lane:02d}{match[4]}"
         elif path.startswith("/v1/video/sessions"):
             path = path.replace(
@@ -199,11 +211,84 @@ def create_app(gpu_count: int, streams: int, *, launch_workers=True, transport=N
             )
         elif path != "/v1/perception/routes":
             raise HTTPException(404, "unknown cloud tracking route")
+        # Observe session traffic, not periodic health polling. No body parsing
+        # or buffering is needed to correlate the existing append request ID.
+        session_match = re.search(r"/sessions(?:/([^/]+))?", path)
+        observe = session_match is not None
+        request_bytes = response_bytes = 0
+        forward_started = forward_finished = headers_finished = None
+        stream_started = stream_finished = None
+        stream_outcome = "completed"
+        fields = {
+            "operation": (
+                "append" if path.endswith("/append") else
+                "delete" if request.method == "DELETE" else "create"
+            ),
+            "transport_request_id": _trace_identifier(
+                request.headers.get("X-Goodvision-Request-ID")
+            ),
+            "http_attempt_id": _trace_identifier(
+                request.headers.get("X-Goodvision-HTTP-Attempt-ID")
+            ),
+            "camera_id": camera_id,
+            "worker_camera_id": worker_camera_id,
+            "gpu_index": gpu,
+            "session_ref": _session_ref(
+                session_match[1] if session_match else None
+            ),
+            "timing_basis": "host_wall_clock",
+        }
+
+        def log_proxy(outcome, status_code, *, asgi_send_seconds=0.0, error=None):
+            if not observe:
+                return
+            finished = time.perf_counter()
+            _timing_log(
+                "SAM cloud proxy timing",
+                fields | {
+                    "outcome": outcome,
+                    "status_code": status_code,
+                    "error_type": type(error).__name__ if error else None,
+                    "request_bytes": request_bytes,
+                    "response_bytes": response_bytes,
+                    # This includes forwarding and worker processing; it must
+                    # not be labelled pure network or GPU execution time.
+                    "upstream_headers_seconds": (
+                        (headers_finished or finished) - started
+                    ),
+                    "request_forward_seconds": (
+                        (forward_finished or finished) - forward_started
+                        if forward_started is not None else 0.0
+                    ),
+                    # These spans overlap and include downstream backpressure.
+                    "response_stream_seconds": (
+                        (stream_finished or finished) - stream_started
+                        if stream_started is not None else 0.0
+                    ),
+                    "asgi_send_seconds": asgi_send_seconds,
+                    "total_seconds": finished - started,
+                },
+                level=logging.INFO if outcome == "completed" else logging.WARNING,
+                logger=LOGGER,
+            )
+
         if app.state.processes and app.state.processes[gpu].poll() is not None:
+            log_proxy("worker_exited", 503)
             raise HTTPException(
                 503, "assigned GPU worker exited; session cannot migrate"
             )
         client = app.state.client
+
+        async def forward_body():
+            nonlocal request_bytes, forward_started, forward_finished
+            forward_started = time.perf_counter()
+            try:
+                async for chunk in request.stream():
+                    request_bytes += len(chunk)
+                    yield chunk
+            finally:
+                forward_finished = time.perf_counter()
+
         upstream = client.build_request(
             request.method,
             f"http://127.0.0.1:{8100 + gpu}{path}",
@@ -211,14 +296,51 @@ def create_app(gpu_count: int, streams: int, *, launch_workers=True, transport=N
             headers={
                 k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS
             },
-            content=request.stream(),
+            content=forward_body(),
         )
         try:
             response = await client.send(upstream, stream=True)
-        except httpx.HTTPError:
+            headers_finished = time.perf_counter()
+        except httpx.HTTPError as exc:
+            log_proxy("upstream_failed", 503, error=exc)
             raise HTTPException(503, "assigned GPU worker unavailable") from None
-        return StreamingResponse(
-            response.aiter_raw(),
+        except asyncio.CancelledError as exc:
+            log_proxy("cancelled", 499, error=exc)
+            raise
+
+        async def stream_body():
+            nonlocal response_bytes, stream_started, stream_finished, stream_outcome
+            stream_started = time.perf_counter()
+            try:
+                async for chunk in response.aiter_raw():
+                    response_bytes += len(chunk)
+                    yield chunk
+            except BaseException:
+                stream_outcome = "stream_failed"
+                raise
+            finally:
+                stream_finished = time.perf_counter()
+
+        class TimedResponse(StreamingResponse):
+            async def __call__(self, scope, receive, send):
+                send_started = time.perf_counter()
+                outcome = "completed"
+                error = None
+                try:
+                    return await super().__call__(scope, receive, send)
+                except BaseException as exc:
+                    outcome, error = "send_failed", exc
+                    raise
+                finally:
+                    log_proxy(
+                        stream_outcome if outcome == "completed" else outcome,
+                        self.status_code,
+                        asgi_send_seconds=time.perf_counter() - send_started,
+                        error=error,
+                    )
+
+        return TimedResponse(
+            stream_body(),
             status_code=response.status_code,
             headers={
                 k: v

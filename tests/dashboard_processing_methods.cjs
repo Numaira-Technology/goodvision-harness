@@ -3,6 +3,7 @@ const fs=require("node:fs");
 const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
+const {runDashboard}=require("./helpers/dashboard.cjs");
 
 function dashboard(){
   const elements=new Map(),requests=[],messages=[];
@@ -10,6 +11,7 @@ function dashboard(){
     return {tag,children:[],dataset:{},style:{},value:"",textContent:"",className:"",checked:false,
       classList:{toggle(){}},setAttribute(key,value){this[key]=value},
       appendChild(child){this.children.push(child)},replaceChildren(){this.children=[]},
+      append(...children){this.children.push(...children)},
       querySelectorAll(tag){return this.children.flatMap(child=>[
         ...(child.tag===tag?[child]:[]),...child.querySelectorAll(tag),
       ])},scrollIntoView(){},focus(){},
@@ -18,7 +20,7 @@ function dashboard(){
   function element(id){if(!elements.has(id))elements.set(id,node());return elements.get(id)}
   const context=vm.createContext({
     document:{getElementById:element,createElement:node,
-      querySelectorAll:()=>[{checked:true,dataset:{feature:"smoking"}}]},
+      testFeatures:["smoking"],querySelectorAll:()=>[]},
     window:{isSecureContext:true},location:{hostname:"localhost"},AbortController,setTimeout,clearTimeout,
     capture:raw=>messages.push(JSON.parse(raw)),
     fetch:async(url,options)=>{
@@ -30,7 +32,7 @@ function dashboard(){
   });
   const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
   const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+  runDashboard(context,`
     state.info={api_key_present:true};state.gallery={ready:true};
     state.deployment={persistence_available:true,configured_stream:true,processing_method:"person_tracking",
       processing_methods:[{id:"person_tracking",label:"人员追踪模块 连续分析",description:"持续更新人物",available:true},
