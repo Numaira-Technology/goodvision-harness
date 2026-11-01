@@ -2,13 +2,14 @@
 
 import argparse
 import json
+import math
 from pathlib import Path
 import time
 
 import cv2
 import torch
 
-from runtime import ClipEncoder, REVISIONS, run_streams
+from runtime import ClipEncoder, PROMPTS, REVISIONS, run_streams
 
 
 class SharedRunFailure(RuntimeError):
@@ -19,6 +20,21 @@ def save(path, value):
     pending = path.with_suffix(path.suffix + ".tmp")
     pending.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
     pending.replace(path)
+
+
+def validate_thresholds(frozen, models):
+    """Require explicit finite thresholds before any test inference."""
+    if not isinstance(frozen, dict):
+        raise ValueError("Frozen thresholds must be a model-keyed object")
+    for model_id in models:
+        values = frozen.get(model_id)
+        if not isinstance(values, dict) or set(PROMPTS) - set(values):
+            raise ValueError(f"Missing frozen event thresholds for {model_id}")
+        for event in PROMPTS:
+            value = values[event]
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError(f"Invalid frozen threshold for {model_id}/{event}")
+    return frozen
 
 
 def main():
@@ -34,7 +50,7 @@ def main():
     torch.set_num_threads(1)
     cv2.setNumThreads(1)
     progress = output / "completion.json"
-    encoders, errors, outcomes = {}, {}, {}
+    encoders, errors, outcomes, validated = {}, {}, {}, {}
     try:
         for model_id in REVISIONS:
             short = model_id.rsplit("/", 1)[1]
@@ -50,21 +66,28 @@ def main():
                 )
                 if outcomes["validation-" + short].get("shared_failure"):
                     raise SharedRunFailure(str(outcomes["validation-" + short]["shared_failure"]))
+                if not outcomes["validation-" + short].get("execution_complete"):
+                    raise RuntimeError("Validation sources did not complete")
+                validated[model_id] = encoder
             except SharedRunFailure:
                 raise
             except Exception as error:
                 errors[model_id] = {"stage": "validation", "error": str(error)}
                 save(output / (short + "-error.json"), errors[model_id])
+        if not validated:
+            save(progress, {"phase": "finished", "execution_complete": False,
+                            "model_errors": errors, "groups": outcomes})
+            return 1
         save(progress, {"phase": "awaiting_thresholds", "model_errors": errors,
-                        "available_models": list(encoders)})
+                        "available_models": list(validated)})
         deadline = time.monotonic() + 600
         while not args.thresholds.is_file():
             if time.monotonic() >= deadline:
                 raise TimeoutError("Fixed validation thresholds were not supplied within ten minutes")
             time.sleep(.5)
-        frozen = json.loads(args.thresholds.read_text())
+        frozen = validate_thresholds(json.loads(args.thresholds.read_text()), validated)
         save(output / "frozen-thresholds.json", frozen)
-        for model_id, encoder in encoders.items():
+        for model_id, encoder in validated.items():
             short = model_id.rsplit("/", 1)[1]
             save(progress, {"phase": "test", "model": model_id})
             try:
@@ -79,7 +102,7 @@ def main():
             except Exception as error:
                 errors[model_id] = {"stage": "test", "error": str(error)}
                 save(output / (short + "-error.json"), errors[model_id])
-        complete = len(outcomes) == 4 and all(
+        complete = len(outcomes) == 2 * len(REVISIONS) and all(
             result.get("execution_complete") for result in outcomes.values()
         ) and not errors
         save(progress, {"phase": "finished", "execution_complete": complete,
@@ -90,7 +113,7 @@ def main():
     finally:
         for encoder in encoders.values():
             encoder.close()
-    return 0
+    return 0 if complete else 1
 
 
 if __name__ == "__main__":
