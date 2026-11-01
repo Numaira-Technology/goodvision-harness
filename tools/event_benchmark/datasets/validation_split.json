@@ -16,14 +16,14 @@
  "disjoint_assert": {
   "val_cap_v1_50": 0,
   "val_cap_v1_100": 0,
-  "note": "both must be 0 (verified)"
+  "note": "Historical filename-level assertion only; media hashes are absent and v2 disjointness is not established."
  },
  "tuned_thresholds_v1": {
   "fight": 0.29,
   "smoking": 0.53,
   "fall": 0.58,
   "weapon": 0.46,
-  "picked_on": "this split",
+  "picked_on": "22 scored rows from this proposed 24-clip split; two files missing",
   "frozen": true
  },
  "clips": {
@@ -131,5 +131,7 @@
     "gt": "yes"
    }
   ]
- }
+ },
+ "status": "historical_candidate_list_missing_reviewed_v2_hash_manifest",
+ "scored_in_historical_archive": 22
 }

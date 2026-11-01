@@ -1,8 +1,8 @@
-# 测评结果 — spec v1
+# 历史测评结果 — spec v1
 
 📊 **实时汇总表（running Google Sheet）**：<https://docs.google.com/spreadsheets/d/1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA/edit> — 所有模型最新结果，数字带红→绿色阶可排序；`results` tab 为准确率主表，`threshold-tuning` tab 为 luna 阈值调参。由 `bench-sheet-push` skill 推送（预览 → 确认 → 写入，用会话内 Google OAuth，不存密钥）。
 
-本页分两部分：**历史 v1（50 片）** 为保留存档，**100 题 base-4 + luna 阈值调参** 为本次新增（provisional）。冻结考卷规则见 [`SPEC.md`](SPEC.md)；历史 50 片沿用的原始规则见 [`SPEC_V1.md`](SPEC_V1.md)。**唯一变量是模型**。
+本页的 **50 片、100 题 base-4 和 luna 阈值调参均为历史 v1 输出**，不是当前 v2 runner 的验收结果。新增历史输出中，Gemini/Luna/Qwen 分别有 1/6/50 行含失败帧；验证集 24 行只有 22 个分数，且均无 v2 provenance。冻结考卷规则见 [`SPEC.md`](SPEC.md)；历史 50 片沿用的原始规则见 [`SPEC_V1.md`](SPEC_V1.md)。**唯一变量是模型**。
 
 ---
 
@@ -65,7 +65,7 @@
 
 ## luna 阈值调参（held-out 24 验证集，SPEC §5/§8 脚注）
 
-**只调 decision 类（luna）**；qwen/gemini 输出硬 0/1，阈值无意义。用独立 24 片验证集（4×6，3 正 3 负）每类选最优阈值（验证集 max-margin 中点），固定后在 test 上评。主表仍冻结在 gate=0.5，本节为脚注、不替换主表。
+**只调 decision 类（luna）**；qwen/gemini 输出硬 0/1，阈值无意义。历史拟定验证集有 24 片，但实际只对 22 个可用分数选阈（并列最优网格点的中位数），随后对历史 test 分数做算术比较。该流程未完成 v2 冻结与评分资格校验。主表仍冻结在 gate=0.5，本节为脚注、不替换主表。
 
 每类阈值：**fight 0.29 · smoking 0.53 · fall 0.58 · weapon 0.46**
 
@@ -75,32 +75,33 @@
 | 100 片 | 85% | **92%** |
 
 提升几乎全来自 fall：luna 在 0.5 时 fall 误报多（50 片 FP4、100 片 FP7），fall 阈值抬到 0.58 后这些误报消失。细节见 `results/luna_threshold_tuning.json` 与表格 `threshold-tuning` tab。
-（注：adl-24、adl-28 两片验证视频暂未下载，smoking/fall 验证各用 5 片；补齐后阈值预计不变，因该两片为负例、分数远低于阈值。）
+（注：adl-24、adl-28 在存档中仅有 missing file 错误，没有分数。不能推断它们低于阈值，也不能预言补齐后的阈值不变。）
 
 ---
 
-## 复现
+## 当前工具与后续 v2 验证
 
-v2 重跑写入被 Git 忽略的 `outputs/`，**不覆盖**上面的历史 v1 存档结果。
+`tune_threshold.py` 现在只接受带媒体/答案/runner/spec 指纹的 v2 decision 输出，拒绝
+validation/test 交集（文件名与媒体 SHA-256）、模型或采样不一致、无效概率和部分帧分数。
+验证集必须完整且每类有正负例；测试集错误单列 attempted/scored/errors，不进入分数分母。
+历史 v1 文件保留原样，不能输入当前工具来生成声称有效的 v2 校准报告。
+
+本仓库尚无留出集的已审阅 v2 manifest；`validation_split.json` 只是历史候选清单。
+120 题 manifest 仍为 draft。必须先完成答案审阅和媒体/答案哈希清单，再对所有候选重跑；
+不得把历史 JSON 改写为 v2，也不得据此发布 v2 比较。
+
+下面命令中的路径须替换成已审阅的实际文件。输出写入忽略目录 `outputs/`，不覆盖历史存档：
 
 ```sh
-python tools/event_benchmark/run_eval.py --candidate luna   --out results/luna_1fps.json
-python tools/event_benchmark/run_eval.py --candidate qwen   --out results/qwen_1fps.json
-python tools/event_benchmark/run_eval.py --candidate gemini --out results/gemini_1fps.json
-# 对照节奏: 加 --interval 4 (产品 0.25fps) 或 --dense (能力上限)
-
-# 100 题 base-4 扩展集 (每个候选):
-python tools/event_benchmark/run_eval.py --candidate <cand> \
-  --samples <…/media_extra_50/samples.json> \
-  --media <…/media50/media/media> <…/media_extra_50/新增基础视频_50段> \
-  --out results/<cand>_100base.json
-
-# luna 阈值调参 (先把 24 验证集放到 media_val_24/):
 python tools/event_benchmark/run_eval.py --candidate luna \
-  --samples <…/media_val_24/samples.json> --media <…/media_val_24/videos> \
-  --out results/luna_val24.json
+  --samples /path/to/validation/samples.json \
+  --manifest /path/to/validation/manifest-reviewed.json \
+  --media /path/to/validation/videos --out outputs/luna_validation_v2.json
+python tools/event_benchmark/run_eval.py --candidate luna \
+  --samples /path/to/test/samples.json \
+  --manifest /path/to/test/manifest-reviewed.json \
+  --media /path/to/test/videos --out outputs/luna_test_v2.json
 python tools/event_benchmark/tune_threshold.py \
-  --val results/luna_val24.json \
-  --test results/luna_1fps.json --test results/luna_100base.json \
-  --out results/luna_threshold_tuning.json
+  --val outputs/luna_validation_v2.json --test outputs/luna_test_v2.json \
+  --out outputs/luna_thresholds_v2.json
 ```

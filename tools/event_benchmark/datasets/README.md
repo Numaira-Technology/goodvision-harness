@@ -32,16 +32,17 @@
 审阅只改**答案字段**,视频 SHA 不变。定稿后出一份 `-final` manifest,和 draft 版 diff
 一眼能看出改了哪几条答案 —— 这就是"冻结 100 / 冻结 50"的可审计记录。
 
-## 留出集(threshold 调阈专用,不进主评测)
+## 留出集（尚缺已审阅 v2 manifest）
 
-`validation_split.json` 冻结了一份**与 v1-50 / v1-100 测试集零重叠**的留出集(当前 24 片,fight/smoking/fall/weapon 各 6,12 正 12 负,1fps),**专用于 decision / threshold 类模型的 per-class 阈值标定**(SPEC §5/§8)。
+`validation_split.json` 记录历史 24 片候选（每类 6，12 正 12 负），**不是已冻结的 v2 清单**。
+它没有 samples.json 或媒体 SHA-256，不能替代 runner 所要求的 human_reviewed manifest。
+历史分数中 2 片文件缺失，只有 22 个分数；存档阈值和测试集改善仅为历史 v1 算术结果。
+`disjoint_assert` 是当时记录的文件名检查声明，当前工具不会将它视为内容不重叠的证明。
 
-- 协议:在**本留出集**上按事件选阈 → 冻结 → 在测试集上评估。**绝不在测试集上选阈,主表永远保留 gate 0.5。**
-- 校准结果是**单独标注的变体**(如 `luna (calibrated)`),与 0.5 基线并列,不替换主表。
-- 已固化的 v1 阈值:fight 0.29 · smoking 0.53 · fall 0.58 · weapon 0.46(把 luna 从 85%→92% @100 题、84%→94% @50 片,提升几乎全来自 fall 误报被砍)。
-- language 类(qwen / gemini)输出硬 0/1,阈值无意义,**永不调阈**。
-- 工具:`tune_threshold.py`(纯离线,读 `run_eval.py` 的 `score`,不调 API)。详见 `bench-threshold-tune` skill。
-- `disjoint_assert` 字段记录了与各测试集的重叠数(必须为 0);扩充留出集时重跑核对。
+后续需要：审阅完整答案与媒体、生成哈希 manifest、完整验证集重跑，再在未参与选阈的测试集评估。
+`tune_threshold.py` 强制 v2 decision 概率、完整验证集、每类正负例、相同模型/采样，以及
+validation/test 的文件名和媒体 SHA-256 均不重叠；测试错误单列，主表保留 gate=0.5。
+language 和未定义分数契约的 threshold backend 不能输入此工具。
 
 ## 为什么不直接改 Drive
 
